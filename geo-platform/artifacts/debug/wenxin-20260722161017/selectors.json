@@ -1,0 +1,70 @@
+[
+  {
+    "selector": "textarea",
+    "count": 2,
+    "items": [
+      {
+        "index": 0,
+        "visible": true,
+        "enabled": true,
+        "text": ""
+      },
+      {
+        "index": 1,
+        "visible": false,
+        "enabled": true,
+        "text": ""
+      }
+    ]
+  },
+  {
+    "selector": "[contenteditable=\"true\"][role=\"textbox\"]",
+    "count": 0,
+    "items": []
+  },
+  {
+    "selector": "[contenteditable=\"true\"]",
+    "count": 0,
+    "items": []
+  },
+  {
+    "selector": "[role=\"textbox\"]",
+    "count": 0,
+    "items": []
+  },
+  {
+    "selector": "[class*=\"chat-input\"]",
+    "count": 2,
+    "items": [
+      {
+        "index": 0,
+        "visible": true,
+        "enabled": true,
+        "text": "深度思考\n文心5.1\n任务\nAI生图\nAI志愿报告\nAI写作\nAI PPT\nAI编程\n更多"
+      },
+      {
+        "index": 1,
+        "visible": true,
+        "enabled": true,
+        "text": "深度思考\n文心5.1\n任务\nAI生图\nAI志愿报告\nAI写作\nAI PPT\nAI编程\n更多"
+      }
+    ]
+  },
+  {
+    "selector": "[class*=\"editor\"]",
+    "count": 0,
+    "items": []
+  },
+  {
+    "selector": "[class*=\"input\"] textarea",
+    "count": 1,
+    "items": [
+      {
+        "index": 0,
+        "visible": true,
+        "enabled": true,
+        "text": ""
+      }
+    ]
+  }
+]

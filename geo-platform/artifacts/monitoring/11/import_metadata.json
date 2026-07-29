@@ -1,0 +1,14 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "api-smoke-final",
+  "platform": "????",
+  "platform_domain": "wenxin.baidu.com",
+  "page_title": null,
+  "page_url": "https://wenxin.baidu.com/search/api-smoke-final",
+  "browser_language": null,
+  "viewport": null,
+  "collector": {
+    "type": "browser_plugin",
+    "version": "0.1.0"
+  }
+}

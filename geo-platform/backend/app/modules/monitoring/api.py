@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from app.core.config import get_settings
+from app.core.database import get_db
+from app.models import BrowserMonitorRun, BrowserMonitorTask, MonitoringBatch, Project, Prompt, ReferenceSource, RetrievalCandidate, RunArtifact
+from app.modules.monitoring.enums import BROWSER_AUDIT_ENTRY_TYPE, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER
+from app.modules.monitoring.executor import MonitoringTaskExecutor
+from app.modules.monitoring.importers import import_wenxin_plugin_payload
+from app.modules.monitoring.schemas import (
+    BrowserQueueSummaryRead,
+    RunArtifactContentRead,
+    BrowserRunDetailRead,
+    BrowserRunRead,
+    BrowserTaskCreate,
+    BrowserTaskCreateResponse,
+    BrowserTaskRead,
+    WenxinPluginImportRequest,
+)
+from app.modules.monitoring.services import create_browser_task, task_to_read, update_task_status_from_runs
+
+
+router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
+
+
+@router.post("/tasks", response_model=BrowserTaskCreateResponse)
+def create_task(payload: BrowserTaskCreate, db: Session = Depends(get_db)) -> BrowserTaskCreateResponse:
+    if payload.platform != WENXIN_PLATFORM or payload.source_type != BROWSER_AUDIT_ENTRY_TYPE or payload.adapter != WENXIN_WEB_ADAPTER:
+        raise HTTPException(status_code=400, detail="MVP阶段仅支持 platform=wenxin, source_type=browser_audit, adapter=wenxin_web_audit")
+    project = db.get(Project, payload.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if payload.batch_id is not None:
+        batch = db.get(MonitoringBatch, payload.batch_id)
+        if not batch or batch.project_id != project.id:
+            raise HTTPException(status_code=400, detail="监测批次不属于当前项目")
+    prompts = db.query(Prompt).filter(Prompt.project_id == project.id, Prompt.id.in_(payload.question_ids)).all()
+    if not prompts:
+        raise HTTPException(status_code=400, detail="未选择有效问题")
+
+    task = create_browser_task(
+        db, project, prompts, payload.run_count, payload.execute_now,
+        payload.platform, payload.source_type, payload.adapter, payload.batch_id,
+    )
+    queued_run_count = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == task.id).count()
+    if payload.execute_now:
+        executor = MonitoringTaskExecutor()
+        try:
+            executor.execute_queued_runs(db, task.id)
+        finally:
+            executor.close()
+        update_task_status_from_runs(db, task)
+    return BrowserTaskCreateResponse(task_ids=[task.id], queued_run_count=queued_run_count)
+
+
+@router.get("/queue-summary", response_model=BrowserQueueSummaryRead)
+def get_queue_summary(project_id: Optional[int] = Query(default=None), db: Session = Depends(get_db)) -> BrowserQueueSummaryRead:
+    query = db.query(BrowserMonitorRun).filter(
+        BrowserMonitorRun.platform == WENXIN_PLATFORM,
+        BrowserMonitorRun.source_type == BROWSER_AUDIT_ENTRY_TYPE,
+        BrowserMonitorRun.adapter == WENXIN_WEB_ADAPTER,
+    )
+    if project_id is not None:
+        query = query.filter(BrowserMonitorRun.project_id == project_id)
+    runs = query.all()
+    counts = {status: 0 for status in ["queued", "pending", "running", "success", "partial_success", "failed", "blocked"]}
+    for run in runs:
+        if run.status in counts:
+            counts[run.status] += 1
+    latest = max(runs, key=lambda item: item.id) if runs else None
+    return BrowserQueueSummaryRead(
+        project_id=project_id,
+        queued=counts["queued"],
+        pending=counts["pending"],
+        running=counts["running"],
+        success=counts["success"],
+        partial_success=counts["partial_success"],
+        failed=counts["failed"],
+        blocked=counts["blocked"],
+        total=len(runs),
+        latest_run_id=latest.id if latest else None,
+        latest_status=latest.status if latest else "",
+        latest_stage=latest.stage if latest else "",
+        latest_error_type=latest.error_type if latest else "",
+    )
+
+
+@router.get("/tasks", response_model=list[BrowserTaskRead])
+def list_tasks(
+    project_id: Optional[int] = Query(default=None),
+    platform: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+) -> list[BrowserTaskRead]:
+    query = db.query(BrowserMonitorTask)
+    if project_id is not None:
+        query = query.filter(BrowserMonitorTask.project_id == project_id)
+    if platform:
+        query = query.filter(BrowserMonitorTask.platform == platform)
+    if status:
+        query = query.filter(BrowserMonitorTask.status == status)
+    tasks = query.order_by(BrowserMonitorTask.id.desc()).all()
+    return [task_to_read(db, task) for task in tasks]
+
+
+@router.get("/runs", response_model=list[BrowserRunRead])
+def list_runs(
+    project_id: Optional[int] = Query(default=None),
+    question_id: Optional[int] = Query(default=None),
+    platform: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+) -> list[BrowserMonitorRun]:
+    query = db.query(BrowserMonitorRun)
+    if project_id is not None:
+        query = query.filter(BrowserMonitorRun.project_id == project_id)
+    if question_id is not None:
+        query = query.filter(BrowserMonitorRun.prompt_id == question_id)
+    if platform:
+        query = query.filter(BrowserMonitorRun.platform == platform)
+    if status:
+        query = query.filter(BrowserMonitorRun.status == status)
+    return query.order_by(BrowserMonitorRun.id.desc()).limit(200).all()
+
+
+@router.get("/runs/{run_id}", response_model=BrowserRunDetailRead)
+def get_run(run_id: int, db: Session = Depends(get_db)) -> BrowserRunDetailRead:
+    run = db.get(BrowserMonitorRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="运行不存在")
+    return _run_detail(db, run)
+
+
+@router.get("/artifacts/{artifact_id}", response_model=RunArtifactContentRead)
+def get_artifact_content(artifact_id: int, db: Session = Depends(get_db)) -> RunArtifactContentRead:
+    artifact = db.get(RunArtifact, artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="证据文件不存在")
+    if artifact.mime_type.startswith("image/") or artifact.artifact_type == "page_screenshot":
+        raise HTTPException(status_code=400, detail="截图类证据暂不支持文本预览，请查看文件路径")
+
+    path = Path(artifact.storage_path)
+    if not path.is_absolute():
+        path = Path(get_settings().monitoring_artifact_dir).parent.parent / path
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="证据文件未找到")
+
+    max_chars = 200_000
+    content = path.read_text(encoding="utf-8", errors="replace")
+    truncated = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars]
+    return RunArtifactContentRead(
+        id=artifact.id,
+        run_id=artifact.run_id,
+        artifact_type=artifact.artifact_type,
+        storage_path=artifact.storage_path,
+        mime_type=artifact.mime_type,
+        size_bytes=artifact.size_bytes,
+        content=content,
+        truncated=truncated,
+    )
+
+
+@router.post("/imports/wenxin-plugin", response_model=BrowserRunDetailRead)
+def import_wenxin_plugin(payload: WenxinPluginImportRequest, db: Session = Depends(get_db)) -> BrowserRunDetailRead:
+    try:
+        run = import_wenxin_plugin_payload(db, payload.project_id, payload.payload, payload.prompt_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _run_detail(db, run)
+
+
+@router.post("/runs/{run_id}/retry", response_model=BrowserRunRead)
+def retry_run(run_id: int, db: Session = Depends(get_db)) -> BrowserMonitorRun:
+    run = db.get(BrowserMonitorRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="运行不存在")
+    if run.error_type in {"login_required", "captcha_required", "configuration_error"}:
+        raise HTTPException(status_code=400, detail="该错误类型不支持自动重试")
+    run.status = "queued"
+    run.stage = "queued"
+    run.retry_count += 1
+    run.error_type = ""
+    run.error_message = ""
+    db.commit()
+    db.refresh(run)
+    executor = MonitoringTaskExecutor()
+    try:
+        executor.execute_run(db, run.id)
+    finally:
+        executor.close()
+    db.refresh(run)
+    return run
+
+
+def _run_detail(db: Session, run: BrowserMonitorRun) -> BrowserRunDetailRead:
+    return BrowserRunDetailRead(
+        **BrowserRunRead.model_validate(run).model_dump(),
+        references=db.query(ReferenceSource).filter(ReferenceSource.run_id == run.id).order_by(ReferenceSource.reference_index.asc()).all(),
+        retrieval_candidates=db.query(RetrievalCandidate).filter(RetrievalCandidate.run_id == run.id).order_by(RetrievalCandidate.rank.asc()).all(),
+        artifacts=db.query(RunArtifact).filter(RunArtifact.run_id == run.id).order_by(RunArtifact.id.asc()).all(),
+    )

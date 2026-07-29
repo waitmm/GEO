@@ -1,0 +1,32 @@
+from functools import lru_cache
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    app_name: str = "GEO Platform"
+    database_url: str = "sqlite:///./geo_v0.db"
+    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    wenxin_api_key: str = ""
+    wenxin_secret_key: str = ""
+    wenxin_model: str = "ernie-4.0-turbo-8k"
+    wenxin_access_token_url: str = "https://aip.baidubce.com/oauth/2.0/token"
+    wenxin_endpoint_template: str = "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/{model}"
+    wenxin_timeout_seconds: int = 60
+    monitoring_artifact_dir: str = "./artifacts/monitoring"
+    redis_url: str = "redis://localhost:6379/0"
+    wenxin_profile_dir: str = "./runtime/wenxin-profile"
+    wenxin_web_url: str = "https://chat.baidu.com/"
+    wenxin_headless: bool = False
+    wenxin_browser_timeout_seconds: int = 180
+    wenxin_max_concurrency: int = 1
+    wenxin_max_retries: int = 2
+    reference_resolution_min_rate: float = 0.95
+    reference_title_fuzzy_threshold: float = 0.72
+
+    class Config:
+        env_file = ".env"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

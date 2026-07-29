@@ -1,0 +1,17 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "test-001",
+  "platform": "文心一言",
+  "platform_domain": "wenxin.baidu.com",
+  "page_title": "百度文心助手 - 办公学习一站解决",
+  "page_url": "https://wenxin.baidu.com/search/10938766544680053256?enter_type=yiyan_site",
+  "browser_language": "zh-CN",
+  "viewport": {
+    "width": 1366,
+    "height": 617
+  },
+  "collector": {
+    "type": "tampermonkey",
+    "version": "0.1.0"
+  }
+}

@@ -1,0 +1,158 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #f3f5f8;
+  color: #1f2937;
+}
+
+.app-shell {
+  min-height: 100vh;
+  background: #f3f5f8;
+}
+
+.side-nav {
+  min-height: 100vh;
+  background: #ffffff !important;
+  border-right: 1px solid #dce3ee;
+}
+
+.brand-block {
+  height: 92px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid #e5ebf3;
+}
+
+.brand-block h4 {
+  margin: 0 0 4px;
+}
+
+.side-nav .ant-menu {
+  border-inline-end: 0 !important;
+  padding: 12px 8px;
+}
+
+.side-nav .ant-menu-item {
+  height: 40px;
+  line-height: 40px;
+  border-radius: 6px;
+}
+
+.topbar {
+  height: auto;
+  min-height: 76px;
+  padding: 14px 24px;
+  background: #ffffff;
+  border-bottom: 1px solid #dce3ee;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.topbar h3,
+.topbar h4 {
+  margin: 0;
+}
+
+.project-select {
+  min-width: 240px;
+}
+
+.workspace {
+  padding: 18px;
+}
+
+.page-stack {
+  width: 100%;
+}
+
+.context-card h4 {
+  margin: 0;
+}
+
+.audit-hero {
+  border-left: 4px solid #1677ff;
+}
+
+.audit-hero h4 {
+  margin: 0;
+}
+
+.ant-drawer-body {
+  background: #f5f7fa;
+}
+
+.ant-drawer-body .ant-card {
+  background: #fff;
+}
+
+.worker-hint {
+  margin-top: 18px;
+}
+
+.worker-hint code {
+  white-space: normal;
+  word-break: break-all;
+}
+
+.selected-table-row td {
+  background: #eef4ff !important;
+}
+
+.ant-card {
+  border-radius: 6px;
+}
+
+.ant-statistic-title {
+  font-size: 13px;
+}
+
+.ant-table-row {
+  cursor: pointer;
+}
+
+.content-preview,
+.artifact-preview {
+  width: 100%;
+  margin: 8px 0 0;
+  padding: 12px;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #1f2937;
+  font-family: "Consolas", "SFMono-Regular", monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.content-preview {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.artifact-preview {
+  max-height: 520px;
+  overflow: auto;
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 12px;
+  }
+
+  .project-select {
+    min-width: 100%;
+  }
+
+  .workspace {
+    padding: 10px;
+  }
+}

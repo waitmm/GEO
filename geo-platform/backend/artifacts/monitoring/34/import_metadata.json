@@ -1,0 +1,17 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "smoke-001",
+  "platform": "文心一言",
+  "platform_domain": "wenxin.baidu.com",
+  "page_title": "百度文心助手",
+  "page_url": "https://wenxin.baidu.com/search/smoke",
+  "browser_language": "zh-CN",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "collector": {
+    "type": "browser_plugin",
+    "version": "0.1.0"
+  }
+}

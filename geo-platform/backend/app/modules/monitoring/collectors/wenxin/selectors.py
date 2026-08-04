@@ -1,4 +1,7 @@
 INPUT_CANDIDATES = [
+    ".chat-input-box-pc #chat-textarea",
+    "#cs-bottom #chat-textarea",
+    ".result-chat-input textarea",
     "#chat-textarea",
     ".ci-textarea",
     "textarea.ci-textarea",
@@ -12,7 +15,9 @@ INPUT_CANDIDATES = [
 ]
 
 SUBMIT_BUTTON_CANDIDATES = [
+    "#ci-submit-button-ai.ci-submit-button-ai-active",
     "#ci-submit-button-ai",
+    ".chat-input-box-pc #ci-submit-button-ai",
     '[class*="submit-button"]',
     '[class*="send"]',
     'button:has-text("发送")',

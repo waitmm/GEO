@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from datetime import datetime
 
@@ -33,14 +34,80 @@ class MonitoringTaskExecutor:
         runs = (
             db.query(BrowserMonitorRun)
             .filter(BrowserMonitorRun.task_id == task_id, BrowserMonitorRun.status.in_(["queued", "pending"]))
-            .order_by(BrowserMonitorRun.id.asc())
+            .order_by(BrowserMonitorRun.run_sequence.asc(), BrowserMonitorRun.id.asc())
             .all()
         )
-        completed = 0
+        if not runs:
+            return 0
+
+        # 按 run_sequence 分组，同一组在一个浏览器窗口中连续执行
+        groups: dict[int, list[BrowserMonitorRun]] = {}
         for run in runs:
-            self.execute_run(db, run.id)
-            completed += 1
+            seq = run.run_sequence
+            if seq not in groups:
+                groups[seq] = []
+            groups[seq].append(run)
+
+        completed = 0
+        for sequence, group_runs in groups.items():
+            completed += self._execute_run_group(db, group_runs)
         return completed
+
+    def _execute_run_group(self, db: Session, runs: list[BrowserMonitorRun]) -> int:
+        if not runs:
+            return 0
+
+        collector = None
+        try:
+            first_run = runs[0]
+            project = db.get(Project, first_run.project_id)
+            if not project:
+                raise ValueError(f"Project not found: {first_run.project_id}")
+
+            collector = get_collector(first_run.adapter)
+            # 启动浏览器会话（每个 Sample 组一次）
+            has_session = callable(getattr(collector, "start_session", None))
+            if has_session:
+                self._event_loop.run_until_complete(collector.start_session())
+
+            completed = 0
+            for run in runs:
+                try:
+                    logs = []
+                    started = time.perf_counter()
+                    self._stage(db, run, "launching_browser", "running")
+                    if has_session:
+                        result = self._event_loop.run_until_complete(collector.collect_in_session(run))
+                    else:
+                        result = self._event_loop.run_until_complete(collector.collect(run))
+                    self.apply_result(db, run, project, result)
+                    logs.append(f"run {run.id} finished with status={run.status}")
+                    self.artifacts.save_json(db, run.id, "raw_result", "result.json", result.__dict__)
+                    run.finished_at = datetime.utcnow()
+                    run.duration_ms = int((time.perf_counter() - started) * 1000)
+                    self.artifacts.save_text(db, run.id, "collector_log", "collector.log", "\n".join(logs) + "\n")
+                    db.commit()
+                    completed += 1
+                except WenxinCollectorError as exc:
+                    self._fail_run(run, exc.error_type, str(exc))
+                    logs.append(f"collector failed: {exc.error_type} {exc}")
+                    run.finished_at = datetime.utcnow()
+                    run.duration_ms = int((time.perf_counter() - started) * 1000)
+                    self.artifacts.save_text(db, run.id, "collector_log", "collector.log", "\n".join(logs) + "\n")
+                    db.commit()
+                except Exception as exc:
+                    self._fail_run(run, "unknown_error", str(exc))
+                    logs.append(f"unknown failed: {exc}")
+                    run.finished_at = datetime.utcnow()
+                    run.duration_ms = int((time.perf_counter() - started) * 1000)
+                    self.artifacts.save_text(db, run.id, "collector_log", "collector.log", "\n".join(logs) + "\n")
+                    db.commit()
+            return completed
+        finally:
+            if collector and hasattr(collector, "end_session") and callable(getattr(collector, "end_session")):
+                self._event_loop.run_until_complete(collector.end_session())
+            if collector:
+                self._cleanup_collector(collector)
 
     def execute_run(self, db: Session, run_id: int) -> BrowserMonitorRun:
         run = db.get(BrowserMonitorRun, run_id)
@@ -53,11 +120,9 @@ class MonitoringTaskExecutor:
         started = time.perf_counter()
         logs = []
         self._stage(db, run, "launching_browser", "running")
+        collector = None
         try:
-            collector = self._collectors.get(run.adapter)
-            if collector is None:
-                collector = get_collector(run.adapter)
-                self._collectors[run.adapter] = collector
+            collector = get_collector(run.adapter)
             result = self._event_loop.run_until_complete(collector.collect(run))
             self.apply_result(db, run, project, result)
             logs.append(f"run {run.id} finished with status={run.status}")
@@ -69,6 +134,8 @@ class MonitoringTaskExecutor:
             self._fail_run(run, "unknown_error", str(exc))
             logs.append(f"unknown failed: {exc}")
         finally:
+            # 每个 Run 结束后清理 Collector，确保下一 Run 使用全新浏览器上下文
+            self._cleanup_collector(collector)
             run.finished_at = datetime.utcnow()
             run.duration_ms = int((time.perf_counter() - started) * 1000)
             self.artifacts.save_text(db, run.id, "collector_log", "collector.log", "\n".join(logs) + "\n")
@@ -76,10 +143,26 @@ class MonitoringTaskExecutor:
             db.refresh(run)
         return run
 
+    def _cleanup_collector(self, collector) -> None:
+        if collector is None:
+            return
+        try:
+            close = getattr(collector, "close", None)
+            if close:
+                self._event_loop.run_until_complete(close())
+        except Exception:
+            pass
+        # 清除缓存的 collector，防止下一 Run 复用旧的浏览器会话
+        adapter_keys = list(self._collectors.keys())
+        for key in adapter_keys:
+            if self._collectors[key] is collector:
+                del self._collectors[key]
+
     def apply_result(self, db: Session, run: BrowserMonitorRun, project: Project, result: CollectorResult) -> BrowserMonitorRun:
         self._stage(db, run, "analyzing", "running")
         self._clear_run_outputs(db, run.id)
-        brand = analyze_brand(result.answer_text, project)
+        answer_text = (result.answer_text or "").strip()
+        brand = analyze_brand(answer_text, project)
         db.add(
             BrandMention(
                 run_id=run.id,
@@ -93,9 +176,9 @@ class MonitoringTaskExecutor:
             )
         )
 
-        run.answer_text = result.answer_text
+        run.answer_text = answer_text
         run.answer_html = result.answer_html
-        run.answer_char_count = len(result.answer_text)
+        run.answer_char_count = len(answer_text)
         run.brand_mentioned = brand["brand_mentioned"]
         run.brand_mention_count = brand["mention_count"]
         run.brand_first_position = brand["first_char_position"]
@@ -130,7 +213,18 @@ class MonitoringTaskExecutor:
         self._save_references(db, run.id, result.references)
         self._save_candidates(db, run.id, result.retrieval_candidates)
         self._save_result_artifacts(db, run.id, result.artifacts)
-        run.status = "success" if result.answer_text and run.reference_complete else "partial_success"
+        if not answer_text:
+            run.status = "failed"
+            run.error_type = "empty_answer"
+            run.error_message = "未采集到回答正文"
+        elif len(re.sub(r"\s+", "", answer_text)) < 20:
+            run.answer_text = ""
+            run.answer_char_count = 0
+            run.status = "failed"
+            run.error_type = "empty_answer"
+            run.error_message = "回答正文过短，疑似仅采集到生成前占位内容"
+        else:
+            run.status = "success" if run.reference_complete else "partial_success"
         run.stage = run.status
         if hasattr(run, "outcome_category"):
             run.outcome_category = run.status
@@ -138,9 +232,10 @@ class MonitoringTaskExecutor:
             run.blocked_type = ""
         if hasattr(run, "blocked_reason"):
             run.blocked_reason = ""
-        run.error_stage = ""
-        run.error_type = ""
-        run.error_message = ""
+        if run.status != "failed":
+            run.error_stage = ""
+            run.error_type = ""
+            run.error_message = ""
         return run
 
     def _stage(self, db: Session, run: BrowserMonitorRun, stage: str, status: str) -> None:

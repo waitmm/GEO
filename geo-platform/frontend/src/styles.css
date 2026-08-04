@@ -132,13 +132,23 @@ body {
 }
 
 .content-preview {
-  max-height: 280px;
-  overflow: auto;
+  max-height: none;
+  overflow: visible;
 }
 
 .artifact-preview {
   max-height: 520px;
   overflow: auto;
+}
+
+.artifact-image-preview {
+  display: block;
+  width: 100%;
+  max-height: 720px;
+  object-fit: contain;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #f8fafc;
 }
 
 @media (max-width: 720px) {

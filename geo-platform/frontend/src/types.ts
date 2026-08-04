@@ -31,6 +31,12 @@ export type Prompt = {
   topic_id?: number | null;
   cluster_id?: number | null;
   sample_count?: number;
+  daily_tracking_enabled: boolean;
+  daily_schedule_time: string;
+  daily_sample_count: number;
+  last_scheduled_at?: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Topic = {
@@ -135,11 +141,14 @@ export type BrowserMonitorRun = {
   id: number;
   task_id: number;
   project_id: number;
+  batch_id?: number | null;
   prompt_id: number;
   platform: string;
   source_type: string;
   adapter: string;
   run_sequence: number;
+  sample_index: number;
+  collection_mode: string;
   status: string;
   stage: string;
   original_query: string;
@@ -153,6 +162,10 @@ export type BrowserMonitorRun = {
   expected_reference_count: number;
   detected_reference_count: number;
   resolved_reference_count: number;
+  ui_declared_count?: number;
+  dom_reference_count?: number;
+  parsed_reference_count?: number;
+  resolved_url_count?: number;
   unresolved_reference_count: number;
   reference_complete: boolean;
   brand_mentioned: boolean;
@@ -271,4 +284,23 @@ export type ValidationDashboard = {
     parsed_references: number;
     resolved_urls: number;
   };
+};
+
+export type PromptDailyReport = {
+  id: number;
+  project_id: number;
+  prompt_id: number;
+  report_date: string;
+  run_ids: number[];
+  sample_count: number;
+  success_count: number;
+  brand_mention_count: number;
+  brand_mention_rate: number;
+  avg_reference_count: number;
+  top_reference_domains: Array<{ domain: string; count: number }>;
+  top_retrieval_domains: Array<{ domain: string; count: number }>;
+  summary: string;
+  recommendations: string[];
+  created_at: string;
+  updated_at: string;
 };

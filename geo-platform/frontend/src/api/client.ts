@@ -1,4 +1,4 @@
-import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, Metrics, MonitoringBatch, MonitorRun, Observation, Platform, Project, Prompt, PromptCluster, RunArtifactContent, Topic, ValidationDashboard } from "../types";
+import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, Metrics, MonitoringBatch, MonitorRun, Observation, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, Topic, ValidationDashboard } from "../types";
 
 const API_BASE = "";
 
@@ -36,10 +36,16 @@ export const api = {
   listProjects: () => request<Project[]>("/api/projects"),
   createProject: (payload: unknown) =>
     request<Project>("/api/projects", { method: "POST", body: JSON.stringify(payload) }),
+  updateProject: (id: number, payload: unknown) =>
+    request<Project>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteProject: (id: number) =>
+    request<{ deleted: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
   listPrompts: (projectId: number) => request<Prompt[]>(`/api/projects/${projectId}/prompts`),
   listPlatforms: () => request<Platform[]>("/api/platforms"),
   createPrompt: (projectId: number, payload: unknown) =>
     request<Prompt>(`/api/projects/${projectId}/prompts`, { method: "POST", body: JSON.stringify(payload) }),
+  updatePrompt: (projectId: number, promptId: number, payload: unknown) =>
+    request<Prompt>(`/api/projects/${projectId}/prompts/${promptId}`, { method: "PATCH", body: JSON.stringify(payload) }),
   listTopics: (projectId: number) => request<Topic[]>(`/api/projects/${projectId}/topics`),
   createTopic: (projectId: number, payload: unknown) =>
     request<Topic>(`/api/projects/${projectId}/topics`, { method: "POST", body: JSON.stringify(payload) }),
@@ -72,6 +78,16 @@ export const api = {
     request<BrowserMonitorRunDetail>("/api/monitoring/imports/wenxin-plugin", { method: "POST", body: JSON.stringify(payload) }),
   retryBrowserAuditRun: (runId: number) =>
     request<BrowserMonitorRun>(`/api/monitoring/runs/${runId}/retry`, { method: "POST" }),
+  executeBrowserAuditTask: (taskId: number) =>
+    request<BrowserMonitorTask>(`/api/monitoring/tasks/${taskId}/execute`, { method: "POST" }),
+  executeQueuedRuns: (projectId: number) =>
+    request<{ executed: number }>(`/api/monitoring/queue/execute?project_id=${projectId}`, { method: "POST" }),
+  queueDailyPromptSchedules: (projectId: number, executeNow = false) =>
+    request<{ task_ids: number[]; queued_run_count: number }>(`/api/monitoring/daily-schedules/queue?project_id=${projectId}&execute_now=${executeNow}`, { method: "POST" }),
+  listPromptDailyReports: (projectId: number, promptId?: number) =>
+    request<PromptDailyReport[]>(`/api/analytics/projects/${projectId}/prompt-daily-reports${promptId ? `?prompt_id=${promptId}` : ""}`),
+  generatePromptDailyReport: (projectId: number, promptId: number, reportDate?: string) =>
+    request<PromptDailyReport>(`/api/analytics/projects/${projectId}/prompt-daily-reports/generate?prompt_id=${promptId}${reportDate ? `&report_date=${encodeURIComponent(reportDate)}` : ""}`, { method: "POST" }),
   getValidationDashboard: async (projectId: number): Promise<ValidationDashboard> => {
     const data = await request<ValidationDashboardWire>(`/api/analytics/projects/${projectId}/validation-dashboard?citation_limit=10`);
     return {

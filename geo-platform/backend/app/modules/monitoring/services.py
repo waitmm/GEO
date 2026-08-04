@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 
 from app.models import BrowserMonitorRun, BrowserMonitorTask, MonitoringBatch, Project, Prompt
@@ -37,6 +39,7 @@ def create_browser_task(
     source_type: str = BROWSER_AUDIT_ENTRY_TYPE,
     adapter: str = WENXIN_WEB_ADAPTER,
     batch_id: int | None = None,
+    schedule_type: str = "manual",
 ) -> BrowserMonitorTask:
     batch = db.get(MonitoringBatch, batch_id) if batch_id else None
     task = BrowserMonitorTask(
@@ -47,7 +50,7 @@ def create_browser_task(
         adapter=adapter,
         question_ids_json=dumps([prompt.id for prompt in prompts]),
         run_count=run_count,
-        schedule_type="manual",
+        schedule_type=schedule_type,
         status="queued" if execute_now else "pending",
     )
     db.add(task)
@@ -76,6 +79,70 @@ def create_browser_task(
     db.commit()
     db.refresh(task)
     return task
+
+
+def queue_due_daily_prompt_tasks(
+    db: Session,
+    project: Project,
+    execute_now: bool = False,
+) -> tuple[list[BrowserMonitorTask], int]:
+    now = datetime.utcnow()
+    today_key = now.date().isoformat()
+    prompts = (
+        db.query(Prompt)
+        .filter(
+            Prompt.project_id == project.id,
+            Prompt.enabled == True,  # noqa: E712
+            Prompt.daily_tracking_enabled == True,  # noqa: E712
+        )
+        .order_by(Prompt.id.asc())
+        .all()
+    )
+    due_prompts = [
+        prompt for prompt in prompts
+        if not prompt.last_scheduled_at or prompt.last_scheduled_at.date().isoformat() < today_key
+    ]
+    if not due_prompts:
+        return [], 0
+
+    grouped: dict[int, list[Prompt]] = {}
+    for prompt in due_prompts:
+        sample_count = max(1, int(prompt.daily_sample_count or 1))
+        grouped.setdefault(sample_count, []).append(prompt)
+
+    tasks: list[BrowserMonitorTask] = []
+    queued_count = 0
+    for sample_count, group in grouped.items():
+        batch = MonitoringBatch(
+            project_id=project.id,
+            name=f"每日 Prompt 监测 {today_key} · Sample={sample_count}",
+            platform=WENXIN_PLATFORM,
+            collection_mode="single_continuous",
+            sample_count=sample_count,
+            status="queued" if execute_now else "pending",
+            notes="daily_prompt_tracking",
+        )
+        db.add(batch)
+        db.flush()
+        task = create_browser_task(
+            db,
+            project,
+            group,
+            sample_count,
+            execute_now,
+            platform=WENXIN_PLATFORM,
+            source_type=BROWSER_AUDIT_ENTRY_TYPE,
+            adapter=WENXIN_WEB_ADAPTER,
+            batch_id=batch.id,
+            schedule_type="daily",
+        )
+        tasks.append(task)
+        queued_count += db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == task.id).count()
+
+    for prompt in due_prompts:
+        prompt.last_scheduled_at = now
+    db.commit()
+    return tasks, queued_count
 
 
 def update_task_status_from_runs(db: Session, task: BrowserMonitorTask) -> BrowserMonitorTask:

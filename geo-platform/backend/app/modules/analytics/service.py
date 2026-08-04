@@ -1,23 +1,25 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
 from typing import Iterable
 
 from sqlalchemy.orm import Session
 
-from app.models import BrowserMonitorRun, Competitor, Project, Prompt, ReferenceSource
+from app.models import BrowserMonitorRun, Competitor, Project, Prompt, PromptDailyReport, ReferenceSource, RetrievalCandidate
 from app.modules.analytics.schemas import (
     CitationDomainRow,
     CitationUrlRow,
     DataQuality,
     PresenceRow,
+    PromptDailyReportRead,
     PromptSummary,
     RecommendationPresence,
     ReferenceQuality,
     ValidationDashboard,
 )
-from app.services.serialization import loads
+from app.services.serialization import dumps, loads
 
 
 VALID_STATUSES = {"success", "partial_success"}
@@ -47,6 +49,165 @@ def build_validation_dashboard(db: Session, project: Project, limit: int = 10) -
         .order_by(BrowserMonitorRun.id.asc())
         .all()
     )
+
+
+def build_prompt_daily_report(
+    db: Session,
+    project: Project,
+    prompt: Prompt,
+    report_date: str | None = None,
+) -> PromptDailyReport:
+    target_date = _parse_report_date(report_date)
+    start_at = datetime.combine(target_date, time.min)
+    end_at = start_at + timedelta(days=1)
+    runs = (
+        db.query(BrowserMonitorRun)
+        .filter(
+            BrowserMonitorRun.project_id == project.id,
+            BrowserMonitorRun.prompt_id == prompt.id,
+            BrowserMonitorRun.created_at >= start_at,
+            BrowserMonitorRun.created_at < end_at,
+        )
+        .order_by(BrowserMonitorRun.id.asc())
+        .all()
+    )
+    valid_runs = [run for run in runs if run.status in VALID_STATUSES]
+    run_ids = [run.id for run in valid_runs]
+    references = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(run_ids)).all() if run_ids else []
+    retrievals = db.query(RetrievalCandidate).filter(RetrievalCandidate.run_id.in_(run_ids)).all() if run_ids else []
+
+    brand_aliases = _aliases(project.brand_name, getattr(project, "brand_aliases_json", "[]"))
+    brand_mentions = sum(_mentions(run.answer_text, brand_aliases) for run in valid_runs)
+    reference_total = sum(parsed_count_for_run(run) for run in valid_runs)
+    top_reference_domains = _rank_domains([item.domain for item in references], limit=8)
+    top_retrieval_domains = _rank_domains([item.domain for item in retrievals], limit=8)
+    report_date_key = target_date.isoformat()
+    recommendations = _daily_recommendations(
+        project=project,
+        prompt=prompt,
+        sample_count=len(valid_runs),
+        brand_mentions=brand_mentions,
+        avg_reference_count=round(reference_total / len(valid_runs), 2) if valid_runs else 0,
+        top_reference_domains=top_reference_domains,
+        top_retrieval_domains=top_retrieval_domains,
+    )
+    summary = _daily_summary(
+        project=project,
+        prompt=prompt,
+        report_date=report_date_key,
+        sample_count=len(valid_runs),
+        brand_mentions=brand_mentions,
+        avg_reference_count=round(reference_total / len(valid_runs), 2) if valid_runs else 0,
+    )
+
+    report = (
+        db.query(PromptDailyReport)
+        .filter(
+            PromptDailyReport.project_id == project.id,
+            PromptDailyReport.prompt_id == prompt.id,
+            PromptDailyReport.report_date == report_date_key,
+        )
+        .first()
+    )
+    if report is None:
+        report = PromptDailyReport(project_id=project.id, prompt_id=prompt.id, report_date=report_date_key)
+        db.add(report)
+    report.run_ids_json = dumps(run_ids)
+    report.sample_count = len(valid_runs)
+    report.success_count = sum(run.status == "success" for run in valid_runs)
+    report.brand_mention_count = brand_mentions
+    report.brand_mention_rate = round(brand_mentions / len(valid_runs), 4) if valid_runs else 0
+    report.avg_reference_count = round(reference_total / len(valid_runs), 2) if valid_runs else 0
+    report.top_reference_domains_json = dumps(top_reference_domains)
+    report.top_retrieval_domains_json = dumps(top_retrieval_domains)
+    report.summary = summary
+    report.recommendations_json = dumps(recommendations)
+    db.commit()
+    db.refresh(report)
+    return report
+
+
+def prompt_daily_report_to_read(report: PromptDailyReport) -> PromptDailyReportRead:
+    return PromptDailyReportRead(
+        id=report.id,
+        project_id=report.project_id,
+        prompt_id=report.prompt_id,
+        report_date=report.report_date,
+        run_ids=loads(report.run_ids_json, []),
+        sample_count=report.sample_count,
+        success_count=report.success_count,
+        brand_mention_count=report.brand_mention_count,
+        brand_mention_rate=report.brand_mention_rate,
+        avg_reference_count=report.avg_reference_count,
+        top_reference_domains=loads(report.top_reference_domains_json, []),
+        top_retrieval_domains=loads(report.top_retrieval_domains_json, []),
+        summary=report.summary,
+        recommendations=loads(report.recommendations_json, []),
+        created_at=report.created_at,
+        updated_at=report.updated_at,
+    )
+
+
+def _parse_report_date(value: str | None) -> date:
+    if not value:
+        return datetime.utcnow().date()
+    return date.fromisoformat(value)
+
+
+def _rank_domains(domains: Iterable[str], limit: int) -> list[dict[str, object]]:
+    counter = Counter(domain.strip().lower() for domain in domains if domain and domain.strip())
+    return [{"domain": domain, "count": count} for domain, count in counter.most_common(limit)]
+
+
+def _daily_summary(
+    project: Project,
+    prompt: Prompt,
+    report_date: str,
+    sample_count: int,
+    brand_mentions: int,
+    avg_reference_count: float,
+) -> str:
+    if sample_count == 0:
+        return f"{report_date} 尚无可用于分析的成功样本，Prompt「{prompt.prompt_text[:60]}」需要先完成采集。"
+    rate = round(brand_mentions / sample_count * 100, 1)
+    return (
+        f"{report_date} 对 Prompt「{prompt.prompt_text[:60]}」完成 {sample_count} 个有效样本；"
+        f"品牌「{project.brand_name}」出现 {brand_mentions} 次，出现率 {rate}%；"
+        f"平均引用资料 {avg_reference_count} 条。"
+    )
+
+
+def _daily_recommendations(
+    project: Project,
+    prompt: Prompt,
+    sample_count: int,
+    brand_mentions: int,
+    avg_reference_count: float,
+    top_reference_domains: list[dict],
+    top_retrieval_domains: list[dict],
+) -> list[str]:
+    if sample_count == 0:
+        return ["先完成当天采集，再生成报告；没有样本时不建议给出品牌优化结论。"]
+    recommendations: list[str] = []
+    if brand_mentions == 0:
+        recommendations.append(
+            f"品牌「{project.brand_name}」未进入该 Prompt 的答案，需要建设直接回答该问题的内容页，并在标题、H1、首段明确覆盖 Prompt 的核心问法。"
+        )
+    elif brand_mentions < sample_count:
+        recommendations.append(
+            "品牌只在部分样本出现，建议补强更稳定的品牌实体信号：官网内容、品牌别名、典型使用场景和第三方可引用资料需要保持一致。"
+        )
+    else:
+        recommendations.append("品牌已在当天全部有效样本出现，下一步重点从“被提及”提升到“被明确推荐”。")
+    if top_reference_domains:
+        domain = top_reference_domains[0]["domain"]
+        recommendations.append(f"优先研究高频引用域名 {domain} 的内容结构，补齐同类问题的定义、步骤、避坑、案例和更新时间信号。")
+    if top_retrieval_domains:
+        domain = top_retrieval_domains[0]["domain"]
+        recommendations.append(f"检索候选里高频出现 {domain}，说明模型检索阶段会先接触这类来源；可围绕该来源覆盖的关键词布局对标内容。")
+    if avg_reference_count < 3:
+        recommendations.append("当天平均引用资料偏少，建议增加可被引用的长文、教程、FAQ 或权威说明页，提高检索阶段可选资料密度。")
+    return recommendations
     valid_runs = [run for run in runs if run.status in VALID_STATUSES]
     valid_run_ids = [run.id for run in valid_runs]
     references = (
@@ -82,15 +243,14 @@ def _prompt_summary(
 ) -> PromptSummary:
     prompt_ids_with_runs = {run.prompt_id for run in runs}
     clusters = {
-        (getattr(prompt, "prompt_group", "") or "Ungrouped").strip()
+        getattr(prompt, "cluster_id", None) or (getattr(prompt, "prompt_group", "") or "Ungrouped").strip()
         for prompt in prompts
     }
-    configured_samples = sum(max(1, int(getattr(prompt, "sample_count", 1) or 1)) for prompt in prompts)
     return PromptSummary(
         total_prompts=len(prompts),
         total_clusters=len(clusters) if prompts else 0,
         prompts_with_runs=len(prompt_ids_with_runs),
-        configured_samples=configured_samples,
+        configured_samples=len(runs),
         collected_samples=len(runs),
         valid_samples=len(valid_runs),
     )

@@ -119,6 +119,10 @@ class Prompt(Base, TimestampMixin):
     intent_type: Mapped[str] = mapped_column(String(80), default="category_awareness")
     importance: Mapped[int] = mapped_column(Integer, default=3)
     sample_count: Mapped[int] = mapped_column(Integer, default=3)
+    daily_tracking_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    daily_schedule_time: Mapped[str] = mapped_column(String(8), default="09:00")
+    daily_sample_count: Mapped[int] = mapped_column(Integer, default=1)
+    last_scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     project: Mapped[Project] = relationship(back_populates="prompts")
@@ -306,6 +310,25 @@ class RetrievalCandidate(Base):
     snippet: Mapped[str] = mapped_column(Text, default="")
     evidence_path: Mapped[str] = mapped_column(String(800), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PromptDailyReport(Base, TimestampMixin):
+    __tablename__ = "prompt_daily_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    report_date: Mapped[str] = mapped_column(String(10), index=True)
+    run_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    brand_mention_count: Mapped[int] = mapped_column(Integer, default=0)
+    brand_mention_rate: Mapped[float] = mapped_column(Float, default=0)
+    avg_reference_count: Mapped[float] = mapped_column(Float, default=0)
+    top_reference_domains_json: Mapped[str] = mapped_column(Text, default="[]")
+    top_retrieval_domains_json: Mapped[str] = mapped_column(Text, default="[]")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    recommendations_json: Mapped[str] = mapped_column(Text, default="[]")
 
 
 class BrandMention(Base):

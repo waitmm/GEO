@@ -25,6 +25,7 @@ from app.schemas.v0 import (
     ProjectRead,
     PromptCreate,
     PromptRead,
+    PromptUpdate,
     PromptClusterCreate,
     PromptClusterRead,
     PromptClusterUpdate,
@@ -162,6 +163,38 @@ def get_project(project_id: int, db: Session = Depends(get_db)) -> ProjectRead:
         raise HTTPException(status_code=404, detail="Project not found")
     competitors = db.query(Competitor).filter(Competitor.project_id == project.id).all()
     return project_to_read(project, competitors)
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectRead)
+def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depends(get_db)) -> ProjectRead:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    data = payload.model_dump(exclude_unset=True)
+    competitors_payload = data.pop("competitors", None)
+    brand_aliases = data.pop("brand_aliases", None)
+    if brand_aliases is not None:
+        project.brand_aliases_json = dumps(brand_aliases)
+    for key, value in data.items():
+        setattr(project, key, value)
+    if competitors_payload is not None:
+        db.query(Competitor).filter(Competitor.project_id == project_id).delete()
+        for item in competitors_payload:
+            db.add(Competitor(project_id=project_id, name=item["name"], aliases_json=dumps(item.get("aliases", [])), website_url=item.get("website_url", "")))
+    db.commit()
+    db.refresh(project)
+    competitors = db.query(Competitor).filter(Competitor.project_id == project.id).all()
+    return project_to_read(project, competitors)
+
+
+@router.delete("/projects/{project_id}")
+def delete_project(project_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    db.delete(project)
+    db.commit()
+    return {"deleted": True}
 
 
 @router.post("/projects/{project_id}/topics", response_model=TopicRead)
@@ -312,6 +345,27 @@ def create_prompt(project_id: int, payload: PromptCreate, db: Session = Depends(
 @router.get("/projects/{project_id}/prompts", response_model=list[PromptRead])
 def list_prompts(project_id: int, db: Session = Depends(get_db)) -> list[Prompt]:
     return db.query(Prompt).filter(Prompt.project_id == project_id).order_by(Prompt.id.desc()).all()
+
+
+@router.patch("/projects/{project_id}/prompts/{prompt_id}", response_model=PromptRead)
+def update_prompt(project_id: int, prompt_id: int, payload: PromptUpdate, db: Session = Depends(get_db)) -> Prompt:
+    prompt = db.get(Prompt, prompt_id)
+    if not prompt or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    values = payload.model_dump(exclude_unset=True)
+    if "topic_id" in values and values["topic_id"] is not None:
+        topic = db.get(Topic, values["topic_id"])
+        if not topic or topic.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Topic does not belong to project")
+    if "cluster_id" in values and values["cluster_id"] is not None:
+        cluster = db.get(PromptCluster, values["cluster_id"])
+        if not cluster or cluster.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Prompt cluster does not belong to project")
+    for key, value in values.items():
+        setattr(prompt, key, value)
+    db.commit()
+    db.refresh(prompt)
+    return prompt
 
 
 @router.get("/platforms")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -73,3 +75,21 @@ class ValidationDashboard(BaseModel):
     top_citation_urls: list[CitationUrlRow] = Field(default_factory=list)
     data_quality: DataQuality
 
+
+class PromptDailyReportRead(BaseModel):
+    id: int
+    project_id: int
+    prompt_id: int
+    report_date: str
+    run_ids: list[int] = Field(default_factory=list)
+    sample_count: int = 0
+    success_count: int = 0
+    brand_mention_count: int = 0
+    brand_mention_rate: float = 0
+    avg_reference_count: float = 0
+    top_reference_domains: list[dict] = Field(default_factory=list)
+    top_retrieval_domains: list[dict] = Field(default_factory=list)
+    summary: str = ""
+    recommendations: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime

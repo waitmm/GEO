@@ -29,3 +29,11 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Monitoring artifacts (generated)
+artifacts/
+
+# Temp files
+tmp/
+path/
+

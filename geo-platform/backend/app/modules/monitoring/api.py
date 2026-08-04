@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Optional
 
@@ -22,10 +23,58 @@ from app.modules.monitoring.schemas import (
     BrowserTaskRead,
     WenxinPluginImportRequest,
 )
-from app.modules.monitoring.services import create_browser_task, task_to_read, update_task_status_from_runs
+from app.modules.monitoring.services import (
+    create_browser_task,
+    queue_due_daily_prompt_tasks,
+    task_to_read,
+    update_task_status_from_runs,
+)
 
 
 router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
+
+
+def _prompt_lines(prompt: Prompt) -> list[str]:
+    lines = [line.strip() for line in (prompt.prompt_text or "").splitlines() if line.strip()]
+    return lines or [prompt.prompt_text]
+
+
+def _materialize_independent_prompts(db: Session, prompts: list[Prompt]) -> list[Prompt]:
+    independent: list[Prompt] = []
+    for prompt in prompts:
+        lines = _prompt_lines(prompt)
+        if len(lines) == 1:
+            independent.append(prompt)
+            continue
+        for line in lines:
+            existing = (
+                db.query(Prompt)
+                .filter(
+                    Prompt.project_id == prompt.project_id,
+                    Prompt.topic_id == prompt.topic_id,
+                    Prompt.cluster_id == prompt.cluster_id,
+                    Prompt.prompt_text == line,
+                )
+                .first()
+            )
+            if existing:
+                independent.append(existing)
+                continue
+            created = Prompt(
+                project_id=prompt.project_id,
+                topic_id=prompt.topic_id,
+                cluster_id=prompt.cluster_id,
+                title=line[:60],
+                prompt_text=line,
+                prompt_group=prompt.prompt_group,
+                intent_type=prompt.intent_type,
+                importance=prompt.importance,
+                enabled=prompt.enabled,
+            )
+            db.add(created)
+            db.flush()
+            independent.append(created)
+    return independent
 
 
 @router.post("/tasks", response_model=BrowserTaskCreateResponse)
@@ -35,16 +84,21 @@ def create_task(payload: BrowserTaskCreate, db: Session = Depends(get_db)) -> Br
     project = db.get(Project, payload.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+    batch = None
     if payload.batch_id is not None:
         batch = db.get(MonitoringBatch, payload.batch_id)
         if not batch or batch.project_id != project.id:
             raise HTTPException(status_code=400, detail="监测批次不属于当前项目")
-    prompts = db.query(Prompt).filter(Prompt.project_id == project.id, Prompt.id.in_(payload.question_ids)).all()
+    prompt_rows = db.query(Prompt).filter(Prompt.project_id == project.id, Prompt.id.in_(payload.question_ids)).all()
+    prompt_by_id = {prompt.id: prompt for prompt in prompt_rows}
+    prompts = [prompt_by_id[prompt_id] for prompt_id in payload.question_ids if prompt_id in prompt_by_id]
     if not prompts:
         raise HTTPException(status_code=400, detail="未选择有效问题")
+    prompts = _materialize_independent_prompts(db, prompts)
 
+    run_count = batch.sample_count if batch else payload.run_count
     task = create_browser_task(
-        db, project, prompts, payload.run_count, payload.execute_now,
+        db, project, prompts, run_count, payload.execute_now,
         payload.platform, payload.source_type, payload.adapter, payload.batch_id,
     )
     queued_run_count = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == task.id).count()
@@ -56,6 +110,60 @@ def create_task(payload: BrowserTaskCreate, db: Session = Depends(get_db)) -> Br
             executor.close()
         update_task_status_from_runs(db, task)
     return BrowserTaskCreateResponse(task_ids=[task.id], queued_run_count=queued_run_count)
+
+
+@router.post("/daily-schedules/queue", response_model=BrowserTaskCreateResponse)
+def queue_daily_schedules(
+    project_id: int = Query(...),
+    execute_now: bool = Query(default=False),
+    db: Session = Depends(get_db),
+) -> BrowserTaskCreateResponse:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    tasks, queued_run_count = queue_due_daily_prompt_tasks(db, project, execute_now=execute_now)
+    if execute_now:
+        executor = MonitoringTaskExecutor()
+        try:
+            for task in tasks:
+                executor.execute_queued_runs(db, task.id)
+                update_task_status_from_runs(db, task)
+        finally:
+            executor.close()
+    return BrowserTaskCreateResponse(task_ids=[task.id for task in tasks], queued_run_count=queued_run_count)
+
+
+@router.post("/queue/execute")
+def execute_queue(
+    project_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    query = db.query(BrowserMonitorRun).filter(
+        BrowserMonitorRun.status.in_(["queued", "pending"]),
+        BrowserMonitorRun.platform == WENXIN_PLATFORM,
+        BrowserMonitorRun.source_type == BROWSER_AUDIT_ENTRY_TYPE,
+        BrowserMonitorRun.adapter == WENXIN_WEB_ADAPTER,
+    )
+    if project_id is not None:
+        query = query.filter(BrowserMonitorRun.project_id == project_id)
+    runs = query.order_by(BrowserMonitorRun.task_id.asc(), BrowserMonitorRun.run_sequence.asc(), BrowserMonitorRun.id.asc()).all()
+
+    # 按 (task_id, run_sequence) 分组，同一组在一个浏览器窗口中连续执行
+    groups: dict[tuple, list[BrowserMonitorRun]] = {}
+    for run in runs:
+        key = (run.task_id, run.run_sequence)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(run)
+
+    executor = MonitoringTaskExecutor()
+    executed = 0
+    try:
+        for group_runs in groups.values():
+            executed += executor._execute_run_group(db, group_runs)
+    finally:
+        executor.close()
+    return {"executed": executed}
 
 
 @router.get("/queue-summary", response_model=BrowserQueueSummaryRead)
@@ -88,6 +196,21 @@ def get_queue_summary(project_id: Optional[int] = Query(default=None), db: Sessi
         latest_stage=latest.stage if latest else "",
         latest_error_type=latest.error_type if latest else "",
     )
+
+
+@router.post("/tasks/{task_id}/execute", response_model=BrowserTaskRead)
+def execute_task(task_id: int, db: Session = Depends(get_db)) -> BrowserTaskRead:
+    task = db.get(BrowserMonitorTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    executor = MonitoringTaskExecutor()
+    try:
+        executor.execute_queued_runs(db, task.id)
+    finally:
+        executor.close()
+    update_task_status_from_runs(db, task)
+    db.refresh(task)
+    return task_to_read(db, task)
 
 
 @router.get("/tasks", response_model=list[BrowserTaskRead])
@@ -125,7 +248,15 @@ def list_runs(
         query = query.filter(BrowserMonitorRun.platform == platform)
     if status:
         query = query.filter(BrowserMonitorRun.status == status)
-    return query.order_by(BrowserMonitorRun.id.desc()).limit(200).all()
+    return (
+        query.order_by(
+            BrowserMonitorRun.task_id.desc(),
+            BrowserMonitorRun.run_sequence.asc(),
+            BrowserMonitorRun.id.asc(),
+        )
+        .limit(200)
+        .all()
+    )
 
 
 @router.get("/runs/{run_id}", response_model=BrowserRunDetailRead)
@@ -141,8 +272,6 @@ def get_artifact_content(artifact_id: int, db: Session = Depends(get_db)) -> Run
     artifact = db.get(RunArtifact, artifact_id)
     if not artifact:
         raise HTTPException(status_code=404, detail="证据文件不存在")
-    if artifact.mime_type.startswith("image/") or artifact.artifact_type == "page_screenshot":
-        raise HTTPException(status_code=400, detail="截图类证据暂不支持文本预览，请查看文件路径")
 
     path = Path(artifact.storage_path)
     if not path.is_absolute():
@@ -150,7 +279,20 @@ def get_artifact_content(artifact_id: int, db: Session = Depends(get_db)) -> Run
     if not path.exists():
         raise HTTPException(status_code=404, detail="证据文件未找到")
 
-    max_chars = 200_000
+    if artifact.mime_type.startswith("image/") or artifact.artifact_type == "page_screenshot":
+        content = f"data:{artifact.mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        return RunArtifactContentRead(
+            id=artifact.id,
+            run_id=artifact.run_id,
+            artifact_type=artifact.artifact_type,
+            storage_path=artifact.storage_path,
+            mime_type=artifact.mime_type,
+            size_bytes=artifact.size_bytes,
+            content=content,
+            truncated=False,
+        )
+
+    max_chars = 10_000_000
     content = path.read_text(encoding="utf-8", errors="replace")
     truncated = len(content) > max_chars
     if truncated:

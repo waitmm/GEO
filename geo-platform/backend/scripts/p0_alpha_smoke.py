@@ -33,9 +33,9 @@ def main() -> None:
         ).json()
         cluster = client.post(
             f"/api/projects/{project['id']}/prompt-clusters",
-            json={"topic_id": topic["id"], "name": "企业选型", "sample_count": 3},
+            json={"topic_id": topic["id"], "name": "企业选型"},
         ).json()
-        prompt = client.post(
+        prompt_a = client.post(
             f"/api/projects/{project['id']}/prompts",
             json={
                 "topic_id": topic["id"],
@@ -44,7 +44,17 @@ def main() -> None:
                 "prompt_text": "企业二维码平台哪个好",
                 "prompt_group": "企业选型",
                 "intent_type": "supplier_recommendation",
-                "sample_count": 3,
+            },
+        ).json()
+        prompt_b = client.post(
+            f"/api/projects/{project['id']}/prompts",
+            json={
+                "topic_id": topic["id"],
+                "cluster_id": cluster["id"],
+                "title": "适合做产品二维码的工具有哪些",
+                "prompt_text": "适合做产品二维码的工具有哪些",
+                "prompt_group": "企业选型",
+                "intent_type": "supplier_recommendation",
             },
         ).json()
         batch = client.post(
@@ -52,7 +62,7 @@ def main() -> None:
             json={
                 "name": "P0 Smoke Batch",
                 "collection_mode": "single_continuous",
-                "sample_count": 3,
+                "sample_count": 2,
                 "status": "queued",
             },
         ).json()
@@ -61,25 +71,31 @@ def main() -> None:
             json={
                 "project_id": project["id"],
                 "batch_id": batch["id"],
-                "question_ids": [prompt["id"]],
-                "run_count": 3,
+                "question_ids": [prompt_a["id"], prompt_b["id"]],
+                "run_count": 2,
                 "execute_now": False,
             },
         )
         task.raise_for_status()
         runs = client.get(f"/api/monitoring/runs?project_id={project['id']}").json()
-        assert len(runs) == 3
+        assert len(runs) == 4
         assert all(run["batch_id"] == batch["id"] for run in runs)
         assert all(run["collection_mode"] == "single_continuous" for run in runs)
-        assert [run["sample_index"] for run in reversed(runs)] == [1, 2, 3]
+        assert [(run["run_sequence"], run["prompt_id"], run["sample_index"]) for run in runs] == [
+            (1, prompt_a["id"], 1),
+            (1, prompt_b["id"], 1),
+            (2, prompt_a["id"], 2),
+            (2, prompt_b["id"], 2),
+        ]
         dashboard = client.get(
             f"/api/analytics/projects/{project['id']}/validation-dashboard"
         )
         dashboard.raise_for_status()
         payload = dashboard.json()
         assert payload["sample_label"] == "Validation Sample"
-        assert payload["prompts"]["total_prompts"] == 1
-        assert payload["data_quality"]["pending"] == 3
+        assert payload["prompts"]["total_prompts"] == 2
+        assert payload["prompts"]["configured_samples"] == 4
+        assert payload["data_quality"]["pending"] == 4
         print(
             "p0 alpha smoke ok",
             {

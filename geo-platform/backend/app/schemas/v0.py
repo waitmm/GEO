@@ -47,6 +47,18 @@ class ProjectCreate(BaseModel):
     language: str = "zh-CN"
 
 
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    brand_name: Optional[str] = None
+    brand_aliases: Optional[list[str]] = None
+    website_url: Optional[str] = None
+    competitors: Optional[list[CompetitorCreate]] = None
+    industry: Optional[str] = None
+    region: Optional[str] = None
+    language: Optional[str] = None
+    status: Optional[str] = None
+
+
 class ProjectRead(BaseModel):
     id: int
     organization_id: int
@@ -72,12 +84,31 @@ class PromptCreate(BaseModel):
     intent_type: str = "category_awareness"
     importance: int = Field(default=3, ge=1, le=5)
     sample_count: int = Field(default=3, ge=1, le=20)
+    daily_tracking_enabled: bool = False
+    daily_schedule_time: str = "09:00"
+    daily_sample_count: int = Field(default=1, ge=1, le=20)
     enabled: bool = True
+
+
+class PromptUpdate(BaseModel):
+    topic_id: Optional[int] = None
+    cluster_id: Optional[int] = None
+    title: Optional[str] = None
+    prompt_text: Optional[str] = None
+    prompt_group: Optional[str] = None
+    intent_type: Optional[str] = None
+    importance: Optional[int] = Field(default=None, ge=1, le=5)
+    sample_count: Optional[int] = Field(default=None, ge=1, le=20)
+    daily_tracking_enabled: Optional[bool] = None
+    daily_schedule_time: Optional[str] = None
+    daily_sample_count: Optional[int] = Field(default=None, ge=1, le=20)
+    enabled: Optional[bool] = None
 
 
 class PromptRead(PromptCreate):
     id: int
     project_id: int
+    last_scheduled_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

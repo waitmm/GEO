@@ -32,6 +32,7 @@ from app.modules.monitoring.collectors.wenxin.selectors import (
     STOP_BUTTON_TEXT_MARKERS,
     SUBMIT_BUTTON_CANDIDATES,
 )
+from app.modules.monitoring.collectors.wenxin.url_normalizer import canonicalize_url, clean_resolved_url, domain_from_url, is_static_resource
 
 
 class WenxinWebCollector(BaseCollector):
@@ -44,6 +45,46 @@ class WenxinWebCollector(BaseCollector):
         self._last_reference_panel_html = ""
         self._network_events = []
         self._capture_network = False
+        self._session_active = False
+
+    def _find_chromium_path(self) -> str | None:
+        candidates = []
+        # 1. 环境变量 CHROMIUM_EXECUTABLE_PATH
+        env_path = os.environ.get("CHROMIUM_EXECUTABLE_PATH")
+        if env_path:
+            candidates.append(env_path)
+        # 2. 系统 Chrome（macOS / Linux / Windows）
+        system = platform.system()
+        if system == "Darwin":
+            candidates.append("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+            candidates.append("/Applications/Chromium.app/Contents/MacOS/Chromium")
+        elif system == "Linux":
+            candidates.extend(["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"])
+        elif system == "Windows":
+            candidates.extend([
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ])
+        # 3. Playwright 已有的旧版 Chromium（从高版本到低版本）
+        pw_cache_dir = "~/Library/Caches/ms-playwright" if system == "Darwin" else \
+                        "~/.cache/ms-playwright" if system == "Linux" else \
+                        "~/AppData/Local/ms-playwright"
+        pw_cache = Path(os.path.expanduser(pw_cache_dir))
+        if pw_cache.exists():
+            for d in sorted(pw_cache.iterdir(), reverse=True):
+                if d.is_dir() and "chromium" in d.name and "headless" not in d.name:
+                    if system == "Darwin":
+                        chrome_app = d / "chrome-mac-x64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
+                    elif system == "Linux":
+                        chrome_app = d / "chrome-linux64" / "chrome"
+                    else:
+                        chrome_app = d / "chrome-win" / "chrome.exe"
+                    if chrome_app.exists():
+                        candidates.append(str(chrome_app))
+        for p in candidates:
+            if Path(p).exists():
+                return p
+        return None
 
     async def collect(self, run) -> CollectorResult:
         try:
@@ -53,35 +94,95 @@ class WenxinWebCollector(BaseCollector):
             raise ConfigurationError("未安装 Playwright，请先安装依赖并执行 playwright install chromium") from exc
 
         settings = get_settings()
+        await self._start_browser_session(async_playwright, settings)
+        try:
+            return await self._collect_one(run, settings)
+        finally:
+            await self._end_browser_session()
+
+    async def start_session(self) -> None:
+        """启动一次浏览器会话，调用方可以在同一个窗口中多次 collect_in_session"""
+        try:
+            from playwright.async_api import async_playwright
+        except Exception as exc:
+            raise ConfigurationError("未安装 Playwright，请先安装依赖并执行 playwright install chromium") from exc
+        settings = get_settings()
+        await self._start_browser_session(async_playwright, settings)
+
+    async def collect_in_session(self, run) -> CollectorResult:
+        """在当前已打开的浏览器窗口中采集一条独立 Prompt。"""
+        settings = get_settings()
+        await self._ensure_active_session(settings)
+        return await self._collect_one(run, settings)
+
+    async def end_session(self) -> None:
+        """关闭当前浏览器会话"""
+        await self._end_browser_session()
+
+    async def _start_browser_session(self, async_playwright, settings) -> None:
         profile_dir = Path(settings.wenxin_profile_dir)
         profile_dir.mkdir(parents=True, exist_ok=True)
-        chrome_path = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        chrome_path = self._find_chromium_path()
         browser_options = {
             "user_data_dir": str(profile_dir),
             "headless": settings.wenxin_headless,
             "viewport": {"width": 1440, "height": 1000},
             "locale": "zh-CN",
             "timezone_id": "Asia/Shanghai",
+            "args": ["--no-first-run", "--disable-dev-shm-usage"],
         }
-        if chrome_path.exists():
-            browser_options["executable_path"] = str(chrome_path)
+        if chrome_path:
+            browser_options["executable_path"] = chrome_path
+        self._playwright = await async_playwright().start()
+        self._context = await self._playwright.chromium.launch_persistent_context(**browser_options)
+        self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+        self._page.on("response", self._record_response)
+        self._conversation_id = str(uuid.uuid4())
+        self._session_active = True
+        await self._page.goto(
+            settings.wenxin_web_url,
+            wait_until="domcontentloaded",
+            timeout=settings.wenxin_browser_timeout_seconds * 1000,
+        )
+        await self._page.wait_for_timeout(3000)
 
-        page = await self._ensure_session(async_playwright, settings, browser_options)
+    async def _ensure_active_session(self, settings) -> None:
+        if self._page is not None and not self._page.is_closed():
+            return
+        await self._end_browser_session()
+        try:
+            from playwright.async_api import async_playwright
+        except Exception as exc:
+            raise ConfigurationError("未安装 Playwright，请先安装依赖并执行 playwright install chromium") from exc
+        await self._start_browser_session(async_playwright, settings)
+
+    async def _collect_one(self, run, settings) -> CollectorResult:
+        try:
+            from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+        except Exception as exc:
+            raise ConfigurationError("Playwright 导入失败") from exc
+
         self._network_events = []
         self._capture_network = True
+        actual_query = run.original_query
         try:
-            if not page.url.startswith(("https://chat.baidu.com/", "https://wenxin.baidu.com/")):
-                await page.goto(settings.wenxin_web_url, wait_until="domcontentloaded", timeout=settings.wenxin_browser_timeout_seconds * 1000)
-                await page.wait_for_timeout(3000)
-            await self._raise_for_login_or_captcha(page)
-            await self._prepare_collection_mode(page, getattr(run, "collection_mode", "single_continuous"))
-            await self._submit_query(page, run.original_query)
-            run.page_query = run.original_query
-            run.retrieval_query = run.original_query
-            answer_text = await self._wait_answer_complete(page, run.original_query, settings.wenxin_browser_timeout_seconds)
-            answer_html = await self._extract_answer_html(page)
-            references = await self._extract_references(page)
-            artifacts = await self._capture_page_artifacts(page)
+            if not self._page.url.startswith(("https://chat.baidu.com/", "https://wenxin.baidu.com/")):
+                await self._page.goto(
+                    settings.wenxin_web_url,
+                    wait_until="domcontentloaded",
+                    timeout=settings.wenxin_browser_timeout_seconds * 1000,
+                )
+                await self._page.wait_for_timeout(3000)
+            await self._raise_for_login_or_captcha(self._page)
+            await self._prepare_collection_mode(self._page, run.collection_mode)
+            await self._submit_query(self._page, actual_query)
+            run.page_query = actual_query
+            run.retrieval_query = actual_query
+            answer_text = await self._wait_answer_complete(self._page, actual_query, settings.wenxin_browser_timeout_seconds)
+            answer_html = await self._extract_answer_html(self._page)
+            references = await self._extract_references(self._page)
+            retrieval_candidates = await self._extract_retrieval_candidates(self._page, actual_query)
+            artifacts = await self._capture_page_artifacts(self._page)
             if self._last_reference_panel_html:
                 artifacts.append(
                     {
@@ -104,15 +205,25 @@ class WenxinWebCollector(BaseCollector):
                 answer_text=answer_text,
                 answer_html=answer_html,
                 references=references,
-                retrieval_candidates=[],
+                retrieval_candidates=retrieval_candidates,
                 artifacts=artifacts,
-                metrics=dict(self._last_reference_metrics),
-                environment=await self._environment_metadata(page, settings),
+                metrics={**self._last_reference_metrics, "retrieval_candidate_count": len(retrieval_candidates)},
+                environment=await self._environment_metadata(self._page, settings),
             )
         except PlaywrightTimeoutError as exc:
             raise AnswerTimeoutError(str(exc)) from exc
         finally:
             self._capture_network = False
+
+    async def _end_browser_session(self) -> None:
+        if self._context is not None:
+            await self._context.close()
+        if self._playwright is not None:
+            await self._playwright.stop()
+        self._page = None
+        self._context = None
+        self._playwright = None
+        self._session_active = False
 
     async def _prepare_collection_mode(self, page, collection_mode: str) -> None:
         if collection_mode != "single_independent":
@@ -187,7 +298,6 @@ class WenxinWebCollector(BaseCollector):
             pass
         return {
             "collector_id": socket.gethostname(),
-            "collection_mode": "single_continuous",
             "browser": "Google Chrome",
             "browser_version": browser_version,
             "os": f"{platform.system()} {platform.release()}",
@@ -233,32 +343,64 @@ class WenxinWebCollector(BaseCollector):
         return False
 
     async def _submit_query(self, page, query: str) -> None:
+        await page.wait_for_timeout(500)
         for selector in INPUT_CANDIDATES:
-            locator = page.locator(selector).last
             try:
-                if not await locator.is_visible(timeout=1000):
-                    continue
-                await locator.click()
-                await locator.fill(query)
+                locator = page.locator(selector).last
+                await locator.wait_for(state="visible", timeout=1500)
+                await locator.scroll_into_view_if_needed(timeout=1500)
+                await locator.click(timeout=2000)
+                tag_name = await locator.evaluate("node => node.tagName.toLowerCase()")
+                if tag_name == "textarea" or tag_name == "input":
+                    await locator.fill("")
+                    await locator.evaluate(
+                        """(node, value) => {
+                            node.value = value;
+                            node.dispatchEvent(new Event('input', { bubbles: true }));
+                            node.dispatchEvent(new Event('change', { bubbles: true }));
+                        }""",
+                        query,
+                    )
+                    current_value = await locator.input_value(timeout=1000)
+                    if current_value != query:
+                        await locator.fill(query)
+                else:
+                    await locator.evaluate(
+                        """(node, value) => {
+                            node.textContent = value;
+                            node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+                        }""",
+                        query,
+                    )
                 await self._click_submit(page)
-                await page.wait_for_timeout(1200)
-                body_text = await page.locator("body").inner_text(timeout=5000)
-                if query[:20] in body_text:
-                    return
-            except Exception:
+                await page.wait_for_timeout(2000)
+                return
+            except Exception as exc:
+                last_error = exc
                 continue
-        raise PageStructureError("未找到可输入的问题输入框")
+        try:
+            await page.locator("body").click(timeout=2000)
+            await page.keyboard.insert_text(query)
+            await self._click_submit(page)
+            await page.wait_for_timeout(2000)
+            return
+        except Exception as exc:
+            last_error = exc
+        raise PageStructureError(f"未找到可输入的问题输入框: {last_error}")
 
     async def _click_submit(self, page) -> None:
         for selector in SUBMIT_BUTTON_CANDIDATES:
             try:
                 locator = page.locator(selector).last
-                if await locator.is_visible(timeout=800):
-                    await locator.click(timeout=1500)
-                    return
+                await locator.wait_for(state="visible", timeout=1000)
+                await locator.click(timeout=2000)
+                return
             except Exception:
                 continue
-        await page.keyboard.press("Enter")
+        try:
+            await page.keyboard.press("Meta+Enter")
+        except Exception:
+            await page.keyboard.press("Enter")
 
     async def _wait_answer_complete(self, page, query: str, timeout_seconds: int) -> str:
         stable_count = 0
@@ -285,6 +427,44 @@ class WenxinWebCollector(BaseCollector):
             return best_answer
         raise AnswerTimeoutError("等待回答超时，未采集到回答正文")
 
+    def _strip_reference_block(self, text: str) -> str:
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        if not lines:
+            return ""
+        start = next((index for index, line in enumerate(lines[:4]) if re.match(REFERENCE_TEXT_PATTERN, line)), -1)
+        if start < 0:
+            return "\n".join(lines).strip()
+
+        match = re.match(REFERENCE_TEXT_PATTERN, lines[start])
+        if not match:
+            return "\n".join(lines).strip()
+
+        expected_count = int(match.group(1) or 0)
+        index = start + 1
+        consumed = 0
+        while index < len(lines) and consumed < expected_count:
+            line = lines[index]
+            if re.match(r"^\d+[.．、]\s*$", line):
+                index += 2
+                consumed += 1
+                continue
+            if re.match(r"^\d+[.．、]\s*\S+", line):
+                index += 1
+                consumed += 1
+                continue
+            if consumed == 0:
+                break
+            index += 1
+        return "\n".join(lines[index:]).strip()
+
+    def _is_substantial_answer(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", text or "")
+        if len(compact) < 20:
+            return False
+        if re.match(r"^(理解问题|检索\d+篇结果|调用工具|搜索.+篇资料)$", compact):
+            return False
+        return True
+
     async def _current_answer_text(self, page) -> str:
         selectors = [
             "#conversation-flow-content .conversation-flow-answer-container .cs-answer-container",
@@ -305,8 +485,8 @@ class WenxinWebCollector(BaseCollector):
                     if stripped in {"思考已停止", "深度思考"}:
                         continue
                     lines.append(stripped)
-                answer = "\n".join(lines).strip()
-                if answer:
+                answer = self._strip_reference_block("\n".join(lines).strip())
+                if self._is_substantial_answer(answer):
                     return answer
             except Exception:
                 continue
@@ -349,6 +529,18 @@ class WenxinWebCollector(BaseCollector):
             return []
         expected_count = int(expected_matches[-1])
         self._last_reference_metrics["ui_declared_count"] = expected_count
+
+        dom_items = await self._reference_dom_items(page, expected_count)
+        if len(dom_items) >= expected_count:
+            resolved = [resolve_reference_url(item, []) for item in dom_items[:expected_count]]
+            self._last_reference_metrics.update(
+                {
+                    "dom_reference_count": len(resolved),
+                    "parsed_reference_count": sum(bool(item.get("display_title")) for item in resolved),
+                    "resolved_url_count": sum(bool(item.get("url")) for item in resolved),
+                }
+            )
+            return resolved
 
         await self._open_reference_panel(page)
         await self._scroll_reference_panels(page)
@@ -402,6 +594,99 @@ class WenxinWebCollector(BaseCollector):
         )
         return resolved
 
+    async def _extract_retrieval_candidates(self, page, query: str) -> list[dict]:
+        try:
+            raw_items = await page.locator("body").evaluate(
+                """(body) => {
+                    const clean = value => String(value || '')
+                        .replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+                    const parseJson = value => {
+                        try { return JSON.parse(value || '{}'); } catch { return {}; }
+                    };
+                    const textOf = (root, selectors) => {
+                        for (const selector of selectors) {
+                            const node = root.querySelector(selector);
+                            const text = clean(node?.innerText || node?.textContent || '');
+                            if (text) return text;
+                        }
+                        return '';
+                    };
+                    const attrOf = (root, names) => {
+                        for (const name of names) {
+                            const node = root.matches?.(`[${name}]`) ? root : root.querySelector(`[${name}]`);
+                            const value = clean(node?.getAttribute(name) || '');
+                            if (value && value !== '#') return value;
+                        }
+                        return '';
+                    };
+                    const cards = Array.from(body.querySelectorAll('[data-show-ext]'))
+                        .filter(node => {
+                            const ext = parseJson(node.getAttribute('data-show-ext'));
+                            return ext.value === 'all_net_search_result' || ext.component_name === 'searchResult';
+                        });
+                    const results = [];
+                    const seen = new Set();
+                    for (const card of cards) {
+                        const ext = parseJson(card.getAttribute('data-show-ext'));
+                        const title = textOf(card, [
+                            '.cosc-title-slot',
+                            '.cosc-title',
+                            'h3',
+                            '[class*="title"]'
+                        ]).replace(/^\\d+[.、]\\s*/, '');
+                        const snippet = textOf(card, [
+                            'p[class*="cos-line-clamp"]',
+                            'p[class*="content"]',
+                            '[class*="content"]'
+                        ]);
+                        const source = textOf(card, ['.cosc-source-text', '[class*="source-text"]']);
+                        const url = attrOf(card, ['href', 'data-url', 'data-href', 'data-link', 'data-target-url']);
+                        if (title.length < 4 || title.length > 300) continue;
+                        if (/共参考\\s*\\d+\\s*篇资料|复制|分享|重新生成|有用|没用/.test(title)) continue;
+                        const key = `${title}|${snippet.slice(0, 80)}`;
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        results.push({
+                            rank: Number(ext.abspos || ext.relativepos || results.length + 1),
+                            title,
+                            snippet,
+                            source,
+                            url,
+                            outer_html: card.outerHTML || ''
+                        });
+                    }
+                    return results.sort((a, b) => a.rank - b.rank).slice(0, 20);
+                }"""
+            )
+        except Exception:
+            return []
+
+        candidates: list[dict] = []
+        seen_keys: set[str] = set()
+        for index, item in enumerate(raw_items or [], start=1):
+            title = (item.get("title") or "").strip()
+            snippet = (item.get("snippet") or "").strip()
+            url = clean_resolved_url(item.get("url") or "")
+            if url and is_static_resource(url):
+                url = ""
+            key = f"{title}|{url or snippet[:80]}"
+            if not title or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            candidates.append(
+                {
+                    "retrieval_query": query,
+                    "rank": int(item.get("rank") or index),
+                    "title": title,
+                    "url": url,
+                    "canonical_url": canonicalize_url(url) if url else "",
+                    "domain": domain_from_url(url) if url else (item.get("source") or ""),
+                    "snippet": snippet,
+                    "evidence_path": "page.html#all_net_search_result",
+                }
+            )
+        return candidates
+
     async def _scroll_reference_panels(self, page) -> None:
         selectors = ", ".join(REFERENCE_PANEL_CANDIDATES)
         try:
@@ -427,6 +712,9 @@ class WenxinWebCollector(BaseCollector):
                     const {selectors, expectedCount} = args;
                     const clean = value => String(value || '')
                         .replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+                    const parseJson = value => {
+                        try { return JSON.parse(value || '{}'); } catch { return {}; }
+                    };
                     const visible = el => {
                         const rect = el.getBoundingClientRect();
                         const style = getComputedStyle(el);
@@ -438,42 +726,27 @@ class WenxinWebCollector(BaseCollector):
                         'data-source-url', 'data-target-url', 'data-jump-url',
                         'data-redirect-url', 'data-tc-url', 'data-origin-url'
                     ];
-                    const panels = Array.from(body.querySelectorAll(selectors))
-                        .filter(visible)
-                        .sort((a, b) => clean(b.innerText).length - clean(a.innerText).length);
-                    const panel = panels[0];
-                    if (!panel) return [];
-                    const serializedNodes = Array.from(
-                        panel.querySelectorAll('[data-long-press-ext-info]')
-                    );
-                    const nodes = serializedNodes.length >= expectedCount
-                        ? serializedNodes
-                        : Array.from(panel.querySelectorAll(
-                            'a,button,[role="link"],[data-url],[data-href],[data-link],[data-long-press-ext-info],div,span,p'
-                        )).filter(visible);
-                    const results = [];
-                    const seen = new Set();
-                    for (const el of nodes) {
+                    const buildItem = (el, fallbackIndex) => {
+                        const extInfo = parseJson(el.getAttribute('data-long-press-ext-info'));
+                        const indexText = clean(
+                            el.querySelector('[class*="_index_"]')?.innerText ||
+                            el.querySelector('[class*="_index_"]')?.textContent || ''
+                        );
+                        const parsedIndex = Number((indexText.match(/\\d+/) || [])[0]);
                         const title = clean(
+                            el.querySelector('[class*="_text_"]')?.innerText ||
+                            el.querySelector('[class*="_text_"]')?.textContent ||
+                            extInfo.linkTitle ||
                             el.innerText || el.textContent ||
                             el.getAttribute('aria-label') || el.getAttribute('title')
                         ).replace(/^\\d+[.、]\\s*/, '');
-                        if (title.length < 4 || title.length > 300) continue;
-                        if (/共参考\\s*\\d+\\s*篇资料|收起|展开|关闭|复制|分享|重新生成|有用|没用|赞|踩/.test(title)) continue;
-                        const child = el.querySelector(
-                            'a,button,[role="link"],[data-url],[data-href],[data-link]'
-                        );
-                        if (child && clean(child.innerText) === title) continue;
-                        if (seen.has(title)) continue;
-                        const style = getComputedStyle(el);
-                        const clickable = el.matches('a,button,[role="link"],[data-url],[data-href],[data-link]') ||
-                            el.hasAttribute('data-long-press-ext-info') ||
-                            style.cursor === 'pointer' || attrs.some(name => el.hasAttribute(name));
-                        if (!clickable) continue;
+                        if (title.length < 4 || title.length > 300) return null;
+                        if (/共参考\\s*\\d+\\s*篇资料|收起|展开|关闭|复制|分享|重新生成|有用|没用|赞|踩/.test(title)) return null;
                         const item = {
-                            reference_index: results.length + 1,
+                            reference_index: Number.isFinite(parsedIndex) && parsedIndex > 0 ? parsedIndex : fallbackIndex,
                             display_title: title,
                             outer_html: el.outerHTML || '',
+                            serialized: el.getAttribute('data-long-press-ext-info') || '',
                             ancestor_outer_html: []
                         };
                         for (const name of attrs) {
@@ -491,8 +764,77 @@ class WenxinWebCollector(BaseCollector):
                             }
                             parent = parent.parentElement;
                         }
+                        return item;
+                    };
+                    const referenceLists = Array.from(body.querySelectorAll(
+                        'ol[class*="_reference_"], ol[class*="reference"], ol[data-show-ext]'
+                    )).map((list, order) => {
+                        const nodes = Array.from(list.querySelectorAll(
+                            'li[class*="_reference-item_"], li[data-long-press-ext-info]'
+                        ));
+                        const indexes = nodes.map(node => {
+                            const text = clean(
+                                node.querySelector('[class*="_index_"]')?.innerText ||
+                                node.querySelector('[class*="_index_"]')?.textContent || ''
+                            );
+                            return Number((text.match(/\\d+/) || [])[0]);
+                        }).filter(Number.isFinite);
+                        const showExt = parseJson(list.getAttribute('data-show-ext'));
+                        const totalNum = Number(showExt.total_num || showExt.totalNum || 0);
+                        const maxIndex = indexes.length ? Math.max(...indexes) : 0;
+                        const uniqueCount = new Set(indexes).size || nodes.length;
+                        const score =
+                            (totalNum === expectedCount ? 1000 : 0) +
+                            (maxIndex === expectedCount ? 500 : 0) +
+                            (uniqueCount === expectedCount ? 200 : 0) -
+                            Math.abs(uniqueCount - expectedCount) +
+                            order / 1000;
+                        return {list, nodes, order, totalNum, maxIndex, uniqueCount, score};
+                    }).filter(candidate => candidate.nodes.length > 0);
+                    referenceLists.sort((a, b) => b.score - a.score);
+                    const referenceList = referenceLists[0];
+                    if (referenceList && (referenceList.totalNum === expectedCount || referenceList.maxIndex === expectedCount)) {
+                        const results = [];
+                        const seenIndexes = new Set();
+                        for (const el of referenceList.nodes) {
+                            const item = buildItem(el, results.length + 1);
+                            if (!item) continue;
+                            if (seenIndexes.has(item.reference_index)) continue;
+                            results.push(item);
+                            seenIndexes.add(item.reference_index);
+                        }
+                        return results.sort((a, b) => a.reference_index - b.reference_index);
+                    }
+                    const panels = Array.from(body.querySelectorAll(selectors))
+                        .filter(visible)
+                        .sort((a, b) => clean(b.innerText).length - clean(a.innerText).length);
+                    const panel = panels[0];
+                    if (!panel) return [];
+                    const serializedNodes = Array.from(
+                        panel.querySelectorAll('[data-long-press-ext-info]')
+                    );
+                    const nodes = serializedNodes.length >= expectedCount
+                        ? serializedNodes
+                        : Array.from(panel.querySelectorAll(
+                            'a,button,[role="link"],[data-url],[data-href],[data-link],[data-long-press-ext-info],div,span,p'
+                        )).filter(visible);
+                    const results = [];
+                    const seen = new Set();
+                    for (const el of nodes) {
+                        const item = buildItem(el, results.length + 1);
+                        if (!item) continue;
+                        const child = el.querySelector(
+                            'a,button,[role="link"],[data-url],[data-href],[data-link]'
+                        );
+                        if (child && clean(child.innerText) === item.display_title) continue;
+                        if (seen.has(item.display_title)) continue;
+                        const style = getComputedStyle(el);
+                        const clickable = el.matches('a,button,[role="link"],[data-url],[data-href],[data-link]') ||
+                            el.hasAttribute('data-long-press-ext-info') ||
+                            style.cursor === 'pointer' || attrs.some(name => el.hasAttribute(name));
+                        if (!clickable) continue;
                         results.push(item);
-                        seen.add(title);
+                        seen.add(item.display_title);
                         if (Number.isFinite(expectedCount) && results.length >= expectedCount) break;
                     }
                     return results;
@@ -567,9 +909,15 @@ class WenxinWebCollector(BaseCollector):
         return max(candidates, key=len) if candidates else ""
 
     async def _capture_page_artifacts(self, page) -> list[dict]:
-        html = await page.locator("body").evaluate("node => node.outerHTML")
-        screenshot = await page.screenshot(full_page=True)
-        return [
-            {"artifact_type": "page_html", "filename": "page.html", "content": html, "mime_type": "text/html"},
-            {"artifact_type": "page_screenshot", "filename": "page.png", "content_bytes": screenshot, "mime_type": "image/png"},
-        ]
+        artifacts = []
+        try:
+            html = await page.locator("body").evaluate("node => node.outerHTML")
+            artifacts.append({"artifact_type": "page_html", "filename": "page.html", "content": html, "mime_type": "text/html"})
+        except Exception as exc:
+            artifacts.append({"artifact_type": "page_html_error", "filename": "page-html-error.txt", "content": str(exc), "mime_type": "text/plain"})
+        try:
+            screenshot = await page.screenshot(full_page=False, timeout=10000)
+            artifacts.append({"artifact_type": "page_screenshot", "filename": "page.png", "content_bytes": screenshot, "mime_type": "image/png"})
+        except Exception as exc:
+            artifacts.append({"artifact_type": "page_screenshot_error", "filename": "page-screenshot-error.txt", "content": str(exc), "mime_type": "text/plain"})
+        return artifacts

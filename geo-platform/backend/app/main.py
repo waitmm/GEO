@@ -1,5 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 from app.api.v0 import router
 from app.core.config import get_settings
@@ -28,3 +31,20 @@ def on_startup() -> None:
 app.include_router(router)
 app.include_router(monitoring_router)
 app.include_router(analytics_router)
+
+# 托管前端构建产物（SPA 模式）
+FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+if FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str, request: Request):
+        index_path = FRONTEND_DIST / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
+        return {"detail": "Frontend not found"}
+else:
+    @app.get("/")
+    async def no_frontend():
+        return {"message": "Frontend not built. Run: cd frontend && npm run build"}

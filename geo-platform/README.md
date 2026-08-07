@@ -16,6 +16,7 @@ You can start using it for:
 - Running Wenxin web-audit collection for small batches
 - Importing browser-plugin JSON evidence into the same `wenxin_web_audit` data model
 - Viewing answer text, page HTML, screenshots, collector logs, brand mentions, and reference titles
+- Running the P0 optimization loop: issue discovery, action recording, fixed retest comparison, and human conclusion
 
 Current limitation:
 
@@ -33,6 +34,28 @@ Current limitation:
 - Basic metrics overview
 - React V0 dashboard
 
+## Local dev stack
+
+From the repository root:
+
+```bash
+./scripts/dev.sh
+```
+
+Default URLs:
+
+- Backend: `http://127.0.0.1:8000`
+- Frontend: `http://localhost:5173`
+
+Optional environment overrides:
+
+```bash
+BACKEND_RELOAD=1 BACKEND_PORT=8000 FRONTEND_HOST=localhost FRONTEND_PORT=5173 ./scripts/dev.sh
+```
+
+The script uses `geo-platform/backend/.venv/bin/python` when it exists, and loads
+`nvm` automatically when `npm` is not already on `PATH`.
+
 ## Local backend
 
 ```bash
@@ -40,7 +63,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+python -m uvicorn app.main:app
 ```
 
 The default database is SQLite at `backend/geo_v0.db`.
@@ -100,6 +123,36 @@ cd backend
 python scripts/worker_monitoring_loop.py --interval 10 --batch-size 1
 ```
 
+For daily Prompt monitoring, queue due schedules once:
+
+```bash
+cd backend
+python scripts/queue_daily_schedules.py --project-id 3
+```
+
+Queue and execute due daily schedules immediately:
+
+```bash
+cd backend
+python scripts/queue_daily_schedules.py --project-id 3 --execute-now
+```
+
+When starting the local dev stack, daily scheduling and the monitoring worker
+can be enabled explicitly:
+
+```bash
+DAILY_SCHEDULER=1 DAILY_SCHEDULER_PROJECT_ID=3 MONITORING_WORKER=1 ./scripts/dev.sh
+```
+
+If you want the daily scheduler itself to execute queued browser tasks, use:
+
+```bash
+DAILY_SCHEDULER=1 DAILY_SCHEDULER_PROJECT_ID=3 DAILY_SCHEDULER_EXECUTE_NOW=1 ./scripts/dev.sh
+```
+
+The default browser collection timeout is controlled by
+`WENXIN_BROWSER_TIMEOUT_SECONDS` and is now 300 seconds.
+
 Plugin-exported JSON can also be imported through the frontend "文心网页审计" page, or by command line:
 
 ```bash
@@ -119,7 +172,8 @@ Open `http://localhost:5173`.
 
 ## Next development steps
 
-1. Add Alembic migrations.
-2. Replace placeholder adapters with Qwen, Kimi, Wenxin, and DeepSeek API clients.
-3. Move monitor execution to Redis plus Celery or RQ.
-4. Add source page snapshots and content recommendation modules for V1.
+1. Deepen citation-source analysis inside the optimization loop.
+2. Add repeatable retest task creation from experiments.
+3. Add Alembic migrations.
+4. Replace placeholder adapters with Qwen, Kimi, Wenxin, and DeepSeek API clients.
+5. Move monitor execution to Redis plus Celery or RQ.

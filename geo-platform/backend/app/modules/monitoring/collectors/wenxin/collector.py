@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html as html_lib
 import json
 import os
 import platform
@@ -16,6 +17,7 @@ from app.core.config import get_settings
 from app.modules.monitoring.collectors.base import BaseCollector, CollectorHealth, CollectorResult
 from app.modules.monitoring.collectors.wenxin.exceptions import (
     AnswerTimeoutError,
+    BrowserProfileLockedError,
     CaptchaRequiredError,
     ConfigurationError,
     LoginRequiredError,
@@ -44,6 +46,8 @@ class WenxinWebCollector(BaseCollector):
         self._last_reference_metrics = {}
         self._last_reference_panel_html = ""
         self._network_events = []
+        self._network_body_tasks = []
+        self._search_result_payloads = []
         self._capture_network = False
         self._session_active = False
 
@@ -53,19 +57,9 @@ class WenxinWebCollector(BaseCollector):
         env_path = os.environ.get("CHROMIUM_EXECUTABLE_PATH")
         if env_path:
             candidates.append(env_path)
-        # 2. 系统 Chrome（macOS / Linux / Windows）
+        # 2. Playwright Chromium avoids macOS handing a launch to an existing
+        # user Chrome session, which breaks persistent-context collection.
         system = platform.system()
-        if system == "Darwin":
-            candidates.append("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-            candidates.append("/Applications/Chromium.app/Contents/MacOS/Chromium")
-        elif system == "Linux":
-            candidates.extend(["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"])
-        elif system == "Windows":
-            candidates.extend([
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            ])
-        # 3. Playwright 已有的旧版 Chromium（从高版本到低版本）
         pw_cache_dir = "~/Library/Caches/ms-playwright" if system == "Darwin" else \
                         "~/.cache/ms-playwright" if system == "Linux" else \
                         "~/AppData/Local/ms-playwright"
@@ -81,6 +75,17 @@ class WenxinWebCollector(BaseCollector):
                         chrome_app = d / "chrome-win" / "chrome.exe"
                     if chrome_app.exists():
                         candidates.append(str(chrome_app))
+        # 3. 系统 Chrome（macOS / Linux / Windows）作为兜底。
+        if system == "Darwin":
+            candidates.append("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+            candidates.append("/Applications/Chromium.app/Contents/MacOS/Chromium")
+        elif system == "Linux":
+            candidates.extend(["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"])
+        elif system == "Windows":
+            candidates.extend([
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ])
         for p in candidates:
             if Path(p).exists():
                 return p
@@ -134,7 +139,11 @@ class WenxinWebCollector(BaseCollector):
         if chrome_path:
             browser_options["executable_path"] = chrome_path
         self._playwright = await async_playwright().start()
-        self._context = await self._playwright.chromium.launch_persistent_context(**browser_options)
+        try:
+            self._context = await self._playwright.chromium.launch_persistent_context(**browser_options)
+        except Exception as exc:
+            await self._end_browser_session()
+            self._raise_browser_launch_error(exc, profile_dir)
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         self._page.on("response", self._record_response)
         self._conversation_id = str(uuid.uuid4())
@@ -163,6 +172,8 @@ class WenxinWebCollector(BaseCollector):
             raise ConfigurationError("Playwright 导入失败") from exc
 
         self._network_events = []
+        self._network_body_tasks = []
+        self._search_result_payloads = []
         self._capture_network = True
         actual_query = run.original_query
         try:
@@ -179,10 +190,20 @@ class WenxinWebCollector(BaseCollector):
             run.page_query = actual_query
             run.retrieval_query = actual_query
             answer_text = await self._wait_answer_complete(self._page, actual_query, settings.wenxin_browser_timeout_seconds)
+            await self._drain_network_body_tasks()
             answer_html = await self._extract_answer_html(self._page)
             references = await self._extract_references(self._page)
             retrieval_candidates = await self._extract_retrieval_candidates(self._page, actual_query)
             artifacts = await self._capture_page_artifacts(self._page)
+            for index, payload in enumerate(self._search_result_payloads, start=1):
+                artifacts.append(
+                    {
+                        "artifact_type": "search_result_response",
+                        "filename": f"searchresult-{index}.json",
+                        "content": payload.get("body") or "",
+                        "mime_type": "application/json",
+                    }
+                )
             if self._last_reference_panel_html:
                 artifacts.append(
                     {
@@ -248,7 +269,12 @@ class WenxinWebCollector(BaseCollector):
         if self._page is not None and not self._page.is_closed():
             return self._page
         self._playwright = await async_playwright().start()
-        self._context = await self._playwright.chromium.launch_persistent_context(**browser_options)
+        profile_dir = Path(browser_options.get("user_data_dir") or settings.wenxin_profile_dir)
+        try:
+            self._context = await self._playwright.chromium.launch_persistent_context(**browser_options)
+        except Exception as exc:
+            await self._end_browser_session()
+            self._raise_browser_launch_error(exc, profile_dir)
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         self._page.on("response", self._record_response)
         self._conversation_id = str(uuid.uuid4())
@@ -260,19 +286,66 @@ class WenxinWebCollector(BaseCollector):
         await self._page.wait_for_timeout(3000)
         return self._page
 
+    def _raise_browser_launch_error(self, exc: Exception, profile_dir: Path) -> None:
+        message = str(exc)
+        lock_markers = (
+            "正在现有的浏览器会话中打开",
+            "ProcessSingleton",
+            "SingletonLock",
+            "another browser is running",
+            "user data directory is already in use",
+            "Target page, context or browser has been closed",
+        )
+        if any(marker.lower() in message.lower() for marker in lock_markers):
+            raise BrowserProfileLockedError(
+                f"文心浏览器 Profile 正被占用，请先关闭使用该目录的 Chrome 后重试：{profile_dir}"
+            ) from exc
+        raise exc
+
     def _record_response(self, response) -> None:
         if not self._capture_network:
             return
         try:
-            self._network_events.append(
-                {
-                    "captured_at": datetime.utcnow().isoformat() + "Z",
-                    "url": self._safe_network_url(response.url),
-                    "status": response.status,
-                    "resource_type": response.request.resource_type,
-                    "method": response.request.method,
-                }
+            event = {
+                "captured_at": datetime.utcnow().isoformat() + "Z",
+                "url": self._safe_network_url(response.url),
+                "status": response.status,
+                "resource_type": response.request.resource_type,
+                "method": response.request.method,
+            }
+            self._network_events.append(event)
+            if self._should_capture_search_result_body(response):
+                self._network_body_tasks.append(asyncio.create_task(self._record_search_result_body(response, event)))
+        except Exception:
+            return
+
+    def _should_capture_search_result_body(self, response) -> bool:
+        try:
+            parsed = urllib.parse.urlsplit(response.url)
+            return (
+                response.status == 200
+                and parsed.netloc == "chat.baidu.com"
+                and parsed.path == "/csaitab/searchresult"
             )
+        except Exception:
+            return False
+
+    async def _record_search_result_body(self, response, event: dict) -> None:
+        try:
+            body = await response.text()
+        except Exception:
+            return
+        if not body:
+            return
+        self._search_result_payloads.append({**event, "body": body[:2_000_000]})
+
+    async def _drain_network_body_tasks(self) -> None:
+        if not self._network_body_tasks:
+            return
+        tasks = list(self._network_body_tasks)
+        self._network_body_tasks = []
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
         except Exception:
             return
 
@@ -530,9 +603,11 @@ class WenxinWebCollector(BaseCollector):
         expected_count = int(expected_matches[-1])
         self._last_reference_metrics["ui_declared_count"] = expected_count
 
-        dom_items = await self._reference_dom_items(page, expected_count)
-        if len(dom_items) >= expected_count:
-            resolved = [resolve_reference_url(item, []) for item in dom_items[:expected_count]]
+        initial_dom_items = await self._reference_dom_items(page, expected_count)
+        initial_html_items = self._reference_items_from_html(await page.content(), expected_count)
+        initial_items = self._merge_reference_items([initial_dom_items, initial_html_items], expected_count)
+        if self._has_complete_reference_indexes(initial_items, expected_count):
+            resolved = [resolve_reference_url(item, []) for item in initial_items[:expected_count]]
             self._last_reference_metrics.update(
                 {
                     "dom_reference_count": len(resolved),
@@ -543,9 +618,23 @@ class WenxinWebCollector(BaseCollector):
             return resolved
 
         await self._open_reference_panel(page)
+        panel_dom_items = await self._reference_dom_items(page, expected_count)
+        panel_html_items = self._reference_items_from_html(await page.content(), expected_count)
         await self._scroll_reference_panels(page)
         self._last_reference_panel_html = await self._reference_panel_html(page)
-        dom_items = await self._reference_dom_items(page, expected_count)
+        scrolled_dom_items = await self._reference_dom_items(page, expected_count)
+        scrolled_html_items = self._reference_items_from_html(await page.content(), expected_count)
+        dom_items = self._merge_reference_items(
+            [
+                initial_dom_items,
+                initial_html_items,
+                panel_dom_items,
+                panel_html_items,
+                scrolled_dom_items,
+                scrolled_html_items,
+            ],
+            expected_count,
+        )
         if dom_items:
             resolved = [resolve_reference_url(item, []) for item in dom_items]
             self._last_reference_metrics.update(
@@ -593,6 +682,108 @@ class WenxinWebCollector(BaseCollector):
             }
         )
         return resolved
+
+    def _reference_items_from_html(self, page_html: str, expected_count: int) -> list[dict]:
+        candidates = []
+        lists = re.findall(r'<ol\b[^>]*data-show-ext="([^"]+)"[^>]*>(.*?)</ol>', page_html or "", flags=re.S)
+        for order, (raw_ext, list_html) in enumerate(lists):
+            try:
+                show_ext = json.loads(html_lib.unescape(raw_ext))
+            except json.JSONDecodeError:
+                show_ext = {}
+            total_num = int(show_ext.get("total_num") or show_ext.get("totalNum") or 0)
+            items = []
+            for fallback_index, match in enumerate(
+                re.finditer(r'<li\b[^>]*data-long-press-ext-info="([^"]+)"[^>]*>(.*?)</li>', list_html, flags=re.S),
+                start=1,
+            ):
+                raw_info = html_lib.unescape(match.group(1))
+                try:
+                    ext_info = json.loads(raw_info)
+                except json.JSONDecodeError:
+                    ext_info = {}
+                item_html = match.group(0)
+                index_match = re.search(r'<[^>]*class="[^"]*_index_[^"]*"[^>]*>\s*(\d+)', item_html)
+                reference_index = int(index_match.group(1)) if index_match else fallback_index
+                title = (ext_info.get("linkTitle") or ext_info.get("title") or "").strip()
+                if not title:
+                    text_match = re.search(r'<[^>]*class="[^"]*_text_[^"]*"[^>]*>(.*?)</[^>]+>', item_html, flags=re.S)
+                    if text_match:
+                        title = re.sub(r"<[^>]+>", "", html_lib.unescape(text_match.group(1))).strip()
+                title = re.sub(r"\s+", " ", html_lib.unescape(title)).strip()
+                if len(title) > 500:
+                    title = title[:500]
+                if len(title) < 4:
+                    continue
+                url = ext_info.get("link") or ext_info.get("linkUrl") or ext_info.get("url") or ext_info.get("href") or ""
+                items.append(
+                    {
+                        "reference_index": reference_index,
+                        "display_title": title,
+                        "href": url,
+                        "outer_html": item_html,
+                        "serialized": raw_info,
+                        "ancestor_outer_html": [list_html],
+                    }
+                )
+            if items:
+                score = (1000 if total_num == expected_count else 0) + len(items) + order / 1000
+                candidates.append((score, items))
+        if not candidates:
+            return []
+        return max(candidates, key=lambda item: item[0])[1]
+
+    def _merge_reference_items(self, item_groups: list[list[dict]], expected_count: int) -> list[dict]:
+        by_index: dict[int, dict] = {}
+        by_title: dict[str, dict] = {}
+        for group in item_groups:
+            for item in group:
+                title = (item.get("display_title") or "").strip()
+                if not title:
+                    continue
+                try:
+                    index = int(item.get("reference_index") or 0)
+                except (TypeError, ValueError):
+                    index = 0
+                if 1 <= index <= expected_count:
+                    current = by_index.get(index)
+                    if current is None or self._reference_item_score(item) > self._reference_item_score(current):
+                        by_index[index] = item
+                    continue
+                by_title.setdefault(title, item)
+
+        next_index = 1
+        for item in by_title.values():
+            while next_index in by_index and next_index <= expected_count:
+                next_index += 1
+            if next_index > expected_count:
+                break
+            by_index[next_index] = {**item, "reference_index": next_index}
+
+        return [by_index[index] for index in sorted(by_index)]
+
+    def _has_complete_reference_indexes(self, items: list[dict], expected_count: int) -> bool:
+        if expected_count <= 0:
+            return False
+        indexes = {int(item.get("reference_index") or 0) for item in items}
+        return all(index in indexes for index in range(1, expected_count + 1))
+
+    def _reference_item_score(self, item: dict) -> int:
+        url_keys = [
+            "href",
+            "data-url",
+            "data-href",
+            "data-link",
+            "data-source-url",
+            "data-target-url",
+            "data-jump-url",
+            "data-redirect-url",
+            "url",
+        ]
+        score = sum(20 for key in url_keys if item.get(key))
+        score += 10 if item.get("serialized") else 0
+        score += min(len(item.get("outer_html") or ""), 1000) // 100
+        return score
 
     async def _extract_retrieval_candidates(self, page, query: str) -> list[dict]:
         try:
@@ -655,11 +846,14 @@ class WenxinWebCollector(BaseCollector):
                             outer_html: card.outerHTML || ''
                         });
                     }
-                    return results.sort((a, b) => a.rank - b.rank).slice(0, 20);
+                    return results.sort((a, b) => a.rank - b.rank);
                 }"""
             )
         except Exception:
             return []
+
+        api_items = self._search_result_items_from_payloads(query)
+        raw_items = self._merge_retrieval_items(raw_items or [], api_items)
 
         candidates: list[dict] = []
         seen_keys: set[str] = set()
@@ -686,6 +880,170 @@ class WenxinWebCollector(BaseCollector):
                 }
             )
         return candidates
+
+    def _merge_retrieval_items(self, dom_items: list[dict], api_items: list[dict]) -> list[dict]:
+        merged = [dict(item) for item in dom_items]
+        by_title = {self._retrieval_title_key(item.get("title") or ""): item for item in merged}
+        for item in api_items:
+            key = self._retrieval_title_key(item.get("title") or "")
+            if not key:
+                continue
+            existing = by_title.get(key)
+            if existing:
+                if item.get("url") and not existing.get("url"):
+                    existing["url"] = item.get("url") or ""
+                    existing["source"] = item.get("source") or existing.get("source") or ""
+                    existing["api_rank"] = item.get("rank")
+                if item.get("snippet") and not existing.get("snippet"):
+                    existing["snippet"] = item.get("snippet") or ""
+                continue
+            merged.append(item)
+            by_title[key] = item
+        return sorted(merged, key=lambda item: int(item.get("rank") or item.get("api_rank") or 9999))
+
+    def _retrieval_title_key(self, value: str) -> str:
+        value = self._clean_retrieval_text(value)
+        value = re.sub(r"\s+", "", value).strip().lower()
+        return value[:120]
+
+    def _clean_retrieval_text(self, value: str) -> str:
+        value = re.sub(r"<[^>]+>", "", html_lib.unescape(value or ""))
+        value = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", value)
+        return re.sub(r"\s+", " ", value).strip()
+
+    def _search_result_items_from_payloads(self, query: str) -> list[dict]:
+        items: list[dict] = []
+        for payload in self._search_result_payloads:
+            body = payload.get("body") or ""
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                continue
+            items.extend(self._search_result_items_from_node(data, query))
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for item in items:
+            title = (item.get("title") or "").strip()
+            url = clean_resolved_url(item.get("url") or "")
+            if url and is_static_resource(url):
+                continue
+            key = f"{self._retrieval_title_key(title)}|{canonicalize_url(url) if url else ''}"
+            if not title or not url or key in seen:
+                continue
+            seen.add(key)
+            unique.append({**item, "url": url})
+        return unique
+
+    def _search_result_items_from_node(self, node, query: str) -> list[dict]:
+        results: list[dict] = []
+        if isinstance(node, dict):
+            item = self._search_result_item_from_dict(node, query)
+            if item:
+                results.append(item)
+            for value in node.values():
+                results.extend(self._search_result_items_from_node(value, query))
+        elif isinstance(node, list):
+            for value in node:
+                results.extend(self._search_result_items_from_node(value, query))
+        elif isinstance(node, str) and ("http" in node and ("title" in node or "url" in node)):
+            try:
+                nested = json.loads(html_lib.unescape(node))
+            except json.JSONDecodeError:
+                nested = None
+            if nested is not None:
+                results.extend(self._search_result_items_from_node(nested, query))
+        return results
+
+    def _search_result_item_from_dict(self, data: dict, query: str) -> dict | None:
+        title = self._first_text_value(
+            data,
+            [
+                "title",
+                "titleText",
+                "displayTitle",
+                "display_title",
+                "name",
+                "resultTitle",
+                "result_title",
+            ],
+        )
+        url = self._first_url_value(
+            data,
+            [
+                "url",
+                "mu",
+                "link",
+                "linkUrl",
+                "link_url",
+                "href",
+                "sourceUrl",
+                "source_url",
+                "targetUrl",
+                "target_url",
+                "jumpUrl",
+                "jump_url",
+                "originUrl",
+                "origin_url",
+                "realUrl",
+                "real_url",
+                "displayUrl",
+                "display_url",
+            ],
+        )
+        if not title or not url:
+            return None
+        title = self._clean_retrieval_text(title)
+        if len(title) < 4 or len(title) > 500:
+            return None
+        snippet = self._first_text_value(
+            data,
+            ["abstract", "summary", "desc", "description", "content", "snippet"],
+        )
+        source = self._first_text_value(data, ["source", "siteName", "site_name", "author", "provider"])
+        rank = self._first_int_value(data, ["rank", "abspos", "relativepos", "position", "index", "order"])
+        return {
+            "retrieval_query": query,
+            "rank": rank or 9999,
+            "title": title[:300],
+            "snippet": self._clean_retrieval_text(snippet or ""),
+            "source": self._clean_retrieval_text(source or ""),
+            "url": url,
+            "outer_html": "",
+        }
+
+    def _first_text_value(self, data: dict, keys: list[str]) -> str:
+        lower_keys = {key.lower() for key in keys}
+        for key, value in data.items():
+            if key.lower() not in lower_keys:
+                continue
+            if isinstance(value, (str, int, float)):
+                return str(value).strip()
+            if isinstance(value, dict):
+                nested = self._first_text_value(value, ["text", "content", "value"])
+                if nested:
+                    return nested
+        return ""
+
+    def _first_url_value(self, data: dict, keys: list[str]) -> str:
+        lower_keys = {key.lower() for key in keys}
+        for key, value in data.items():
+            if key.lower() not in lower_keys or not isinstance(value, str):
+                continue
+            value = html_lib.unescape(value).strip()
+            if value.startswith(("http://", "https://")):
+                return value
+        return ""
+
+    def _first_int_value(self, data: dict, keys: list[str]) -> int | None:
+        lower_keys = {key.lower() for key in keys}
+        for key, value in data.items():
+            if key.lower() not in lower_keys:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
 
     async def _scroll_reference_panels(self, page) -> None:
         selectors = ", ".join(REFERENCE_PANEL_CANDIDATES)
@@ -733,14 +1091,15 @@ class WenxinWebCollector(BaseCollector):
                             el.querySelector('[class*="_index_"]')?.textContent || ''
                         );
                         const parsedIndex = Number((indexText.match(/\\d+/) || [])[0]);
-                        const title = clean(
+                        let title = clean(
                             el.querySelector('[class*="_text_"]')?.innerText ||
                             el.querySelector('[class*="_text_"]')?.textContent ||
                             extInfo.linkTitle ||
                             el.innerText || el.textContent ||
                             el.getAttribute('aria-label') || el.getAttribute('title')
                         ).replace(/^\\d+[.、]\\s*/, '');
-                        if (title.length < 4 || title.length > 300) return null;
+                        if (title.length > 500) title = title.slice(0, 500);
+                        if (title.length < 4) return null;
                         if (/共参考\\s*\\d+\\s*篇资料|收起|展开|关闭|复制|分享|重新生成|有用|没用|赞|踩/.test(title)) return null;
                         const item = {
                             reference_index: Number.isFinite(parsedIndex) && parsedIndex > 0 ? parsedIndex : fallbackIndex,
@@ -855,8 +1214,8 @@ class WenxinWebCollector(BaseCollector):
             if number < 1 or number > expected_count:
                 continue
             title = match.group(2).strip()
-            if 4 <= len(title) <= 300:
-                titles.append(title)
+            if len(title) >= 4:
+                titles.append(title[:500])
         if len(titles) >= expected_count:
             return titles[:expected_count]
 
@@ -869,9 +1228,10 @@ class WenxinWebCollector(BaseCollector):
             if number < 1 or number > expected_count:
                 continue
             title = " ".join(match.group(2).split()).strip()
-            if 4 <= len(title) <= 300 and title not in existing:
-                titles.append(title)
-                existing.add(title)
+            if len(title) >= 4 and title not in existing:
+                truncated = title[:500]
+                titles.append(truncated)
+                existing.add(truncated)
             if len(titles) >= expected_count:
                 break
         return titles
@@ -915,9 +1275,52 @@ class WenxinWebCollector(BaseCollector):
             artifacts.append({"artifact_type": "page_html", "filename": "page.html", "content": html, "mime_type": "text/html"})
         except Exception as exc:
             artifacts.append({"artifact_type": "page_html_error", "filename": "page-html-error.txt", "content": str(exc), "mime_type": "text/plain"})
-        try:
-            screenshot = await page.screenshot(full_page=False, timeout=10000)
-            artifacts.append({"artifact_type": "page_screenshot", "filename": "page.png", "content_bytes": screenshot, "mime_type": "image/png"})
-        except Exception as exc:
-            artifacts.append({"artifact_type": "page_screenshot_error", "filename": "page-screenshot-error.txt", "content": str(exc), "mime_type": "text/plain"})
+        screenshot = await self._capture_reference_screenshot(page)
+        if screenshot:
+            artifacts.append(
+                {
+                    "artifact_type": "reference_sources_screenshot",
+                    "filename": "reference-sources.png",
+                    "content_bytes": screenshot,
+                    "mime_type": "image/png",
+                }
+            )
         return artifacts
+
+    async def _capture_reference_screenshot(self, page) -> bytes | None:
+        expected_count = int(self._last_reference_metrics.get("ui_declared_count") or 0)
+        selectors = [
+            'ol[data-show-ext]',
+            'ol[class*="_reference_"]',
+            'ol[class*="reference"]',
+            *REFERENCE_PANEL_CANDIDATES,
+        ]
+        best = None
+        best_score = -1
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                count = await locator.count()
+            except Exception:
+                continue
+            for index in range(count):
+                candidate = locator.nth(index)
+                try:
+                    if not await candidate.is_visible(timeout=300):
+                        continue
+                    text = await candidate.inner_text(timeout=800)
+                    item_count = await candidate.locator("[data-long-press-ext-info], li").count()
+                    score = len(text or "") + item_count * 100
+                    if expected_count and item_count == expected_count:
+                        score += 10000
+                    if score > best_score:
+                        best = candidate
+                        best_score = score
+                except Exception:
+                    continue
+        if best is None:
+            return None
+        try:
+            return await best.screenshot(timeout=10000)
+        except Exception:
+            return None

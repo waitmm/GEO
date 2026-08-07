@@ -4,16 +4,16 @@ import {
   Alert, Button, Card, Col, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
   Layout, Menu, Modal, Popconfirm, Progress, Row, Select, Space, Statistic, Table, Tag, Typography, message
 } from "antd";
-import { BarChart3, CalendarDays, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
+import { BarChart3, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
 import { api } from "./api/client";
 import type {
-  BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, Topic,
+  BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
   ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text, Link } = Typography;
-type PageKey = "validation" | "config" | "reports" | "runs";
+type PageKey = "validation" | "optimization" | "config" | "runs" | "ranking";
 
 const emptyQueue: BrowserQueueSummary = {
   project_id: null, queued: 0, pending: 0, running: 0, success: 0,
@@ -71,7 +71,7 @@ function deriveDashboard(project: Project, prompts: Prompt[], runs: BrowserMonit
     prompts: {
       total: prompts.length,
       executed: new Set(valid.map((run) => run.prompt_id)).size,
-      clusters: new Set(prompts.map((prompt) => prompt.cluster_id || prompt.prompt_group).filter(Boolean)).size,
+      clusters: new Set(prompts.map((prompt) => prompt.prompt_group).filter(Boolean)).size,
       valid_runs: valid.length,
       sample_runs: runs.length
     },
@@ -91,8 +91,8 @@ function deriveDashboard(project: Project, prompts: Prompt[], runs: BrowserMonit
       collector_failed_runs: runs.filter((run) => run.status === "failed" && !run.error_type?.includes("captcha") && !run.error_type?.includes("blocked")).length,
       complete_reference_runs: valid.filter((run) => run.reference_complete).length,
       eligible_reference_runs: valid.length,
-      parsed_references: valid.reduce((sum, run) => sum + (run.parsed_reference_count ?? run.detected_reference_count), 0),
-      resolved_urls: valid.reduce((sum, run) => sum + (run.resolved_url_count ?? run.resolved_reference_count), 0)
+      parsed_references: valid.reduce((sum, run) => sum + run.detected_reference_count, 0),
+      resolved_urls: valid.reduce((sum, run) => sum + run.resolved_reference_count, 0)
     }
   };
 }
@@ -120,29 +120,25 @@ export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [clusters, setClusters] = useState<PromptCluster[]>([]);
   const [runs, setRuns] = useState<BrowserMonitorRun[]>([]);
-  const [reports, setReports] = useState<PromptDailyReport[]>([]);
   const [queue, setQueue] = useState<BrowserQueueSummary>(emptyQueue);
   const [selectedPrompts, setSelectedPrompts] = useState<Key[]>([]);
   const [dashboard, setDashboard] = useState<ValidationDashboard>();
   const [detail, setDetail] = useState<BrowserMonitorRunDetail>();
   const [artifact, setArtifact] = useState<RunArtifactContent>();
+  const [rankingData, setRankingData] = useState<any>(null);
+  const [rankingLoading, setRankingLoading] = useState(false);
+  const [strategyData, setStrategyData] = useState<any>(null);
+  const [strategyLoading, setStrategyLoading] = useState(false);
+  const [evidencePackages, setEvidencePackages] = useState<any[]>([]);
+  const [selectedPkgId, setSelectedPkgId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [fallback, setFallback] = useState(false);
   const [promptForm] = Form.useForm();
   const [auditForm] = Form.useForm();
-  const [reportForm] = Form.useForm();
   const [projectForm] = Form.useForm();
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<number | null>(null);
   const project = projects.find((item) => item.id === projectId);
-  const artifactIsImage = artifact ? (artifact.mime_type || "").startsWith("image/") : false;
-  const promptRows = useMemo(
-    () => [...prompts].sort((a, b) => {
-      const createdDiff = new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      return createdDiff || b.id - a.id;
-    }),
-    [prompts]
-  );
 
   function openProjectModal(id?: number) {
     if (id) {
@@ -206,16 +202,15 @@ export default function App() {
   async function loadProject(id: number) {
     setLoading(true);
     try {
-      const [nextPrompts, nextRuns, nextQueue, nextTopics, nextClusters, nextReports] = await Promise.all([
+      const [nextPrompts, nextRuns, nextQueue, nextTopics, nextClusters] = await Promise.all([
         api.listPrompts(id), api.listBrowserAuditRuns(id), api.getBrowserQueueSummary(id),
-        api.listTopics(id), api.listPromptClusters(id), api.listPromptDailyReports(id)
+        api.listTopics(id), api.listPromptClusters(id)
       ]);
       setPrompts(nextPrompts);
       setRuns(nextRuns);
       setQueue(nextQueue);
       setTopics(nextTopics);
       setClusters(nextClusters);
-      setReports(nextReports);
       try {
         setDashboard(await api.getValidationDashboard(id));
         setFallback(false);
@@ -262,26 +257,31 @@ export default function App() {
         cluster = await api.createPromptCluster(projectId, {
           topic_id: topic.id,
           name: values.prompt_group.trim(),
+          sample_count: 3,
           enabled: true
         });
       }
-      const promptText = values.prompt_text.trim();
-      const created = await api.createPrompt(projectId, {
-        topic_id: topic.id,
-        cluster_id: cluster.id,
-        title: promptText.slice(0, 60),
-        prompt_text: promptText,
-        prompt_group: values.prompt_group,
-        intent_type: "supplier_recommendation",
-        importance: values.importance || 3,
-        enabled: true
-      });
+      // 将换行输入拆分为多个独立的问题，每个问题单独提问
+      const lines = values.prompt_text
+        .split("\n")
+        .map((line: string) => line.trim())
+        .filter((line: string) => line.length > 0);
+      for (const line of lines) {
+        await api.createPrompt(projectId, {
+          topic_id: topic.id,
+          cluster_id: cluster.id,
+          title: line.slice(0, 60),
+          prompt_text: line,
+          prompt_group: values.prompt_group,
+          intent_type: "supplier_recommendation",
+          importance: values.importance || 3,
+          sample_count: 3,
+          enabled: true
+        });
+      }
       promptForm.resetFields();
-      setSelectedPrompts([created.id]);
-      message.success("Prompt 已创建，并已自动选中");
+      message.success(lines.length > 1 ? `已创建 ${lines.length} 个 Prompt` : "Prompt 已创建");
       await loadProject(projectId);
-    } catch (err: any) {
-      message.error(err.message || "Prompt 创建失败，请检查必填项后重试");
     } finally {
       setLoading(false);
     }
@@ -309,6 +309,7 @@ export default function App() {
         adapter: "wenxin_web_audit",
         question_ids: selectedPrompts.map(Number),
         run_count: values.run_count,
+        sample_count: values.run_count,
         execute_now: values.execute_now
       });
       if (values.execute_now) {
@@ -318,52 +319,6 @@ export default function App() {
       }
       setSelectedPrompts([]);
       await loadProject(projectId);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function updatePromptDailyTracking(prompt: Prompt, enabled: boolean) {
-    if (!projectId) return;
-    setLoading(true);
-    try {
-      await api.updatePrompt(projectId, prompt.id, {
-        daily_tracking_enabled: enabled,
-        daily_schedule_time: prompt.daily_schedule_time || "09:00",
-        daily_sample_count: prompt.daily_sample_count || 1
-      });
-      message.success(enabled ? "已开启每日监测" : "已关闭每日监测");
-      await loadProject(projectId);
-    } catch (err: any) {
-      message.error(err.message || "更新每日监测失败");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function queueDailySchedules(executeNow = false) {
-    if (!projectId) return;
-    setLoading(true);
-    try {
-      const result = await api.queueDailyPromptSchedules(projectId, executeNow);
-      message.success(result.queued_run_count ? `已生成今日定时队列，共 ${result.queued_run_count} 个 Run` : "今日没有到期的每日监测 Prompt");
-      await loadProject(projectId);
-    } catch (err: any) {
-      message.error(err.message || "生成每日监测队列失败");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function generateDailyReport(values: { prompt_id?: number; report_date?: string }) {
-    if (!projectId || !values.prompt_id) return;
-    setLoading(true);
-    try {
-      await api.generatePromptDailyReport(projectId, values.prompt_id, values.report_date?.trim() || undefined);
-      message.success("Prompt 日报已生成");
-      setReports(await api.listPromptDailyReports(projectId));
-    } catch (err: any) {
-      message.error(err.message || "生成日报失败");
     } finally {
       setLoading(false);
     }
@@ -384,13 +339,14 @@ export default function App() {
       <Menu mode="inline" selectedKeys={[page]} onClick={({ key }) => setPage(key as PageKey)} items={[
         { key: "validation", icon: <BarChart3 size={18} />, label: "Validation Dashboard" },
         { key: "config", icon: <ListChecks size={18} />, label: "审计配置" },
-        { key: "reports", icon: <CalendarDays size={18} />, label: "Prompt 日报" },
-        { key: "runs", icon: <Monitor size={18} />, label: "Batch / Sample Runs" }
+        { key: "optimization", icon: <ShieldCheck size={18} />, label: "Strategy (V2)" },
+        { key: "runs", icon: <Monitor size={18} />, label: "Batch / Sample Runs" },
+        { key: "ranking", icon: <BarChart3 size={18} />, label: "Citation Ranking V0" }
       ]} />
     </Sider>
     <Layout>
       <Header className="topbar">
-        <div><Title level={3}>{page === "validation" ? "验证看板" : page === "config" ? "审计配置" : page === "reports" ? "Prompt 每日报告" : "采集样本"}</Title><Text type="secondary">Observation · Evidence · Comparison</Text></div>
+        <div><Title level={3}>{page === "validation" ? "验证看板" : page === "optimization" ? "Evidence → Strategy (V2)" : page === "config" ? "审计配置" : page === "ranking" ? "Citation Evidence Signal Ranking V0" : "采集样本"}</Title><Text type="secondary">Observation · Evidence · Comparison</Text></div>
         <Space>
           <Select className="project-select" value={projectId} placeholder="选择项目" onChange={setProjectId} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
           <Button icon={<Plus size={16} />} onClick={() => openProjectModal()}>新建项目</Button>
@@ -437,6 +393,57 @@ export default function App() {
               <Col xs={12} md={4}><Statistic title="已解析 URL" value={q!.resolved_urls} /></Col>
             </Row>
           </Card>
+        </Space> : page === "optimization" ? <Space direction="vertical" size={16} className="page-stack">
+          <Card title="Evidence → Strategy (V2)" extra={<Tag color="green">V2 Engine</Tag>}>
+            <Alert type="info" showIcon style={{marginBottom:12}}
+              message="V2 Strategy Generation uses EvidenceActionContext. Intervention types are derived from evidence — NOT preselected. Target platform can be UNRESOLVED."
+            />
+            {!strategyData ? <Space direction="vertical">
+              <Text>Select an Evidence Package and generate strategies for the current project.</Text>
+              <Space>
+                <Select placeholder="Load packages first" style={{width:280}} value={selectedPkgId}
+                  onChange={setSelectedPkgId}
+                  options={(evidencePackages||[]).map((p:any)=>({label:`Package #${p.id} · Prompt #${p.prompt_id||'?'} · v${p.version} · ${p.schema_version}`,value:p.id}))}
+                />
+                <Button onClick={async()=>{try{setEvidencePackages(await api.listEvidencePackages(projectId!))}catch(e:any){message.error(e.message)}}} disabled={!projectId}>Load Packages</Button>
+              </Space>
+              <Button type="primary" loading={strategyLoading} disabled={!selectedPkgId}
+                onClick={async()=>{
+                  if(!projectId||!selectedPkgId)return;
+                  setStrategyLoading(true);
+                  try{setStrategyData(await api.generateStrategyCandidatesV2(projectId,{evidence_package_id:selectedPkgId,max_hypotheses:3}));message.success("Generated")}
+                  catch(e:any){message.error(e.message)}
+                  finally{setStrategyLoading(false)}
+                }}>Generate (V2)</Button>
+            </Space> : <Space direction="vertical" size={12}>
+              <Descriptions size="small" bordered column={3} items={[
+                {key:"status",label:"Decision",children:<Tag color={strategyData.decision_status==="OPTIONS_AVAILABLE"?"green":"orange"}>{strategyData.decision_status}</Tag>},
+                {key:"capability",label:"Capability",children:<Tag>{strategyData.decision_capability}</Tag>},
+                {key:"count",label:"Candidates",children:strategyData.strategy_options_count},
+              ]}/>
+              {(strategyData.candidates||[]).map((c:any)=><Card key={c.id} size="small" title={<Space>Candidate #{c.id}<Tag>{c.structured_payload?.intervention_type}</Tag><Tag color={c.review_status==="PENDING_REVIEW"?"blue":"green"}>{c.review_status}</Tag></Space>}>
+                <Descriptions size="small" bordered column={2} items={[
+                  {key:"platform",label:"Target Platform",children:<Tag color={c.structured_payload?.target_platform==="UNRESOLVED"?"orange":"blue"}>{c.structured_payload?.target_platform||"N/A"}</Tag>},
+                  {key:"asset",label:"Target Asset",children:c.structured_payload?.target_asset||"N/A"},
+                  {key:"content",label:"Content Type",children:c.structured_payload?.target_content_type||"N/A"},
+                  {key:"metric",label:"Primary Metric",children:c.structured_payload?.target_metric||"N/A"},
+                  {key:"evidence_fit",label:"Evidence Fit",children:<Tag>{c.structured_payload?.evidence_fit||"N/A"}</Tag>},
+                  {key:"execution",label:"Execution Feasibility",children:<Tag>{c.structured_payload?.execution_feasibility||"UNASSESSED"}</Tag>},
+                ]}/>
+                <Descriptions size="small" bordered column={1} style={{marginTop:8}} items={[
+                  {key:"problem",label:"Observed Problem",children:c.structured_payload?.observed_problem||"-"},
+                  {key:"cause",label:"Hypothesized Cause",children:c.structured_payload?.hypothesized_cause||"-"},
+                  {key:"action",label:"Recommended Action",children:typeof c.structured_payload?.recommended_action==="object"?JSON.stringify(c.structured_payload.recommended_action):c.structured_payload?.recommended_action||"-"},
+                ]}/>
+              </Card>)}
+              <Button icon={<RefreshCw size={14}/>} loading={strategyLoading} onClick={async()=>{
+                setStrategyLoading(true);
+                try{setStrategyData(await api.generateStrategyCandidatesV2(projectId!,{evidence_package_id:selectedPkgId!,max_hypotheses:3}));message.success("Refreshed")}
+                catch(e:any){message.error(e.message)}
+                finally{setStrategyLoading(false)}
+              }}>Regenerate</Button>
+            </Space>}
+          </Card>
         </Space> : page === "config" ? <Space direction="vertical" size={16} className="page-stack">
           <Alert
             type="info"
@@ -454,13 +461,8 @@ export default function App() {
                   <Form.Item name="prompt_group" label="Prompt Cluster" rules={[{ required: true, message: "请输入 Cluster" }]}>
                     <Input placeholder="例如：企业选型" />
                   </Form.Item>
-                  <Form.Item
-                    name="prompt_text"
-                    label="Prompt"
-                    extra="一次创建一条 Prompt，便于后续按同一 Prompt 做持续跟踪。"
-                    rules={[{ required: true, message: "请输入问题" }]}
-                  >
-                    <Input.TextArea rows={3} placeholder="例如：企业二维码平台哪一个好？" />
+                  <Form.Item name="prompt_text" label="Prompt" rules={[{ required: true, message: "请输入问题" }]}>
+                    <Input.TextArea rows={4} placeholder="例如：企业二维码平台哪一个好？" />
                   </Form.Item>
                   <Form.Item name="importance" label="重要度">
                     <InputNumber min={1} max={5} />
@@ -516,42 +518,19 @@ export default function App() {
                   size="small"
                   rowKey="id"
                   pagination={{ pageSize: 10 }}
-                  dataSource={promptRows}
+                  dataSource={[...prompts].sort((a, b) => `${a.topic_id}/${a.cluster_id}`.localeCompare(`${b.topic_id}/${b.cluster_id}`, "zh-CN"))}
                   rowSelection={{ selectedRowKeys: selectedPrompts, onChange: setSelectedPrompts }}
                   columns={[
                     { title: "Topic", width: 150, render: (_, row) => <Tag color="geekblue">{topics.find((item) => item.id === row.topic_id)?.name || "未分类"}</Tag> },
                     { title: "Cluster", width: 170, render: (_, row) => <Tag color="cyan">{clusters.find((item) => item.id === row.cluster_id)?.name || row.prompt_group || "默认 Cluster"}</Tag> },
                     { title: "Prompt", dataIndex: "prompt_text" },
-                    { title: "重要度", dataIndex: "importance", width: 80 },
-                    {
-                      title: "每日监测",
-                      width: 210,
-                      render: (_, row) => <Space size={6}>
-                        {row.daily_tracking_enabled
-                          ? <Tag color="green">{row.daily_schedule_time || "09:00"} · Sample{row.daily_sample_count || 1}</Tag>
-                          : <Tag>未开启</Tag>}
-                        <Button
-                          size="small"
-                          onClick={() => updatePromptDailyTracking(row, !row.daily_tracking_enabled)}
-                        >
-                          {row.daily_tracking_enabled ? "关闭" : "开启"}
-                        </Button>
-                      </Space>
-                    }
+                    { title: "重要度", dataIndex: "importance", width: 80 }
                   ]}
                 />
               </Card>
               <Card title="采集队列" style={{ marginTop: 16 }} extra={
                 <Space>
                   {queue.latest_run_id ? <Tag>最新 Run #{queue.latest_run_id}</Tag> : null}
-                  <Button
-                    size="small"
-                    icon={<CalendarDays size={14} />}
-                    loading={loading}
-                    onClick={() => queueDailySchedules(false)}
-                  >
-                    生成今日定时队列
-                  </Button>
                   <Button
                     type="primary"
                     size="small"
@@ -584,61 +563,82 @@ export default function App() {
               </Card>
             </Col>
           </Row>
-        </Space> : page === "reports" ? <Space direction="vertical" size={16} className="page-stack">
-          <Card title="生成 Prompt 日报" extra={<Tag>按 Prompt × 日期聚合</Tag>}>
-            <Form form={reportForm} layout="inline" onFinish={generateDailyReport}>
-              <Form.Item name="prompt_id" label="Prompt" rules={[{ required: true, message: "请选择 Prompt" }]}>
-                <Select
-                  style={{ minWidth: 360 }}
-                  placeholder="选择要分析的 Prompt"
-                  options={promptRows.map((prompt) => ({ value: prompt.id, label: prompt.prompt_text.slice(0, 80) }))}
-                />
-              </Form.Item>
-              <Form.Item name="report_date" label="日期">
-                <Input placeholder="YYYY-MM-DD，留空为今天" style={{ width: 180 }} />
-              </Form.Item>
-              <Button type="primary" htmlType="submit" loading={loading}>生成日报</Button>
-            </Form>
-          </Card>
-          <Card title="历史 Prompt 日报">
-            <Table
-              rowKey="id"
-              loading={loading}
-              dataSource={reports}
-              pagination={{ pageSize: 8 }}
-              columns={[
-                { title: "日期", dataIndex: "report_date", width: 120 },
-                { title: "Prompt", width: 280, render: (_, row) => prompts.find((prompt) => prompt.id === row.prompt_id)?.prompt_text || `Prompt #${row.prompt_id}` },
-                { title: "样本", width: 90, render: (_, row) => `${row.success_count}/${row.sample_count}` },
-                { title: "品牌出现", width: 120, render: (_, row) => <Tag color={row.brand_mention_count ? "blue" : "default"}>{Math.round(row.brand_mention_rate * 1000) / 10}%</Tag> },
-                { title: "摘要", dataIndex: "summary" },
-                { title: "建议", render: (_, row) => <Space direction="vertical" size={2}>{row.recommendations.map((item, index) => <Text key={index} type="secondary">{index + 1}. {item}</Text>)}</Space> }
-              ]}
-              expandable={{
-                expandedRowRender: (row) => <Row gutter={[12, 12]}>
-                  <Col xs={24} md={12}>
-                    <Card size="small" title="高频引用域名">
-                      <Space wrap>{row.top_reference_domains.length ? row.top_reference_domains.map((item) => <Tag key={item.domain}>{item.domain} · {item.count}</Tag>) : <Text type="secondary">暂无引用域名</Text>}</Space>
-                    </Card>
-                  </Col>
-                  <Col xs={24} md={12}>
-                    <Card size="small" title="高频检索域名">
-                      <Space wrap>{row.top_retrieval_domains.length ? row.top_retrieval_domains.map((item) => <Tag key={item.domain}>{item.domain} · {item.count}</Tag>) : <Text type="secondary">暂无检索域名</Text>}</Space>
-                    </Card>
-                  </Col>
-                </Row>
-              }}
+        </Space> : page === "ranking" ? <Space direction="vertical" size={16} className="page-stack">
+          <Card title={<Space>Citation Evidence Signal Ranking V0<Tag color="blue">scoring.v0</Tag></Space>} extra={<Text type="secondary">Package #{rankingData?.package_id} · {rankingData?.scoring_spec_fingerprint?.slice(0,8)}</Text>}>
+            <Alert type="info" showIcon style={{marginBottom:12}}
+              message={<span><strong>Citation Evidence Signal Ranking V0</strong> — Relative citation signal strength within this Package. <strong>NOT</strong> platform effectiveness, success probability, or causal claims. Scores are within-package relative.</span>}
             />
+            {!rankingData ? <Empty description={<Space><Text>Load citation ranking for Evidence Package #7</Text><Button type="primary" loading={rankingLoading} onClick={async()=>{
+              setRankingLoading(true); try{setRankingData(await api.getCitationRanking(7));message.success("Loaded")}catch(e:any){message.error(e.message)}finally{setRankingLoading(false)}
+            }}>Load Ranking</Button></Space>}/> : <Space direction="vertical" size={12}>
+              <Row gutter={12}>
+                <Col span={8}><Statistic title="Total Refs" value={rankingData.total_references}/></Col>
+                <Col span={8}><Statistic title="Unique Domains" value={rankingData.unique_domains}/></Col>
+                <Col span={8}><Statistic title="Unique URLs" value={rankingData.unique_urls_global}/></Col>
+              </Row>
+              <Card size="small" title={<Space>Domain Ranking<Tag>ranking_scope={rankingData.ranking_scope}</Tag></Space>}>
+                <Table size="small" rowKey="source_domain" pagination={{pageSize:10}} dataSource={rankingData.domain_ranking||[]}
+                  columns={[
+                    {title:"Rank",dataIndex:"evidence_rank_raw",width:55},
+                    {title:"Domain",dataIndex:"source_domain",width:170},
+                    {title:"Platform",width:90,render:(_:any,r:any)=><Tag>{r.inferred_platform}</Tag>},
+                    {title:"Score",width:65,render:(_:any,r:any)=>(r.raw_evidence_score as number)?.toFixed(1)},
+                    {title:"Conf",width:60,render:(_:any,r:any)=><Tag color={r.confidence==="HIGH"?"green":r.confidence==="MEDIUM"?"gold":"orange"}>{r.confidence}</Tag>},
+                    {title:"Occ",dataIndex:"citation_occurrence_count",width:55},
+                    {title:"URLs",dataIndex:"unique_citation_urls",width:50},
+                    {title:"Top1",width:55,render:(_:any,r:any)=>r.top1_url_share?Math.round((r.top1_url_share as number)*100)+"%":"-"},
+                  ]}
+                  expandable={{expandedRowRender:(row:any)=><Space direction="vertical" size={6}>
+                    <Text strong>Factor Decomposition (Total: {row._decomposition?.total_score})</Text>
+                    {(Object.entries(row._decomposition||{})as[string,any][]).filter(([k])=>k!=="total_score").map(([fn,fd])=>(
+                      <Card key={fn} size="small" title={<Space><Text strong>{fn}</Text><Tag color={fd.factor_status==="ACTIVE"?"green":fd.factor_status==="DIAGNOSTIC_ONLY"?"gold":"default"}>{fd.factor_status}</Tag></Space>}>
+                        <Row gutter={[8,4]}>
+                          <Col span={6}><Text type="secondary">Config: {((fd.configured_weight as number)*100).toFixed(0)}%</Text></Col>
+                          <Col span={6}><Text type="secondary">Active: {((fd.active_weight as number)*100).toFixed(1)}%</Text></Col>
+                          <Col span={6}><Text type="secondary">Contrib: {(fd.weighted_contribution as number)?.toFixed(3)}</Text></Col>
+                          <Col span={6}><Text>Raw: {fd.raw_factor_score}</Text></Col>
+                        </Row>
+                        <Space wrap>{(fd.primary_dimensions as string[])?.map((d:string)=><Tag key={d} color="blue">{d}</Tag>)}
+                        {(fd.auxiliary_dimensions as string[])?.map((d:string)=><Tag key={d} color="gold">{d}</Tag>)}
+                        {(fd.excluded_dimensions as string[])?.map((d:string)=><Tag key={d} color="default">{d}</Tag>)}</Space>
+                        {fd.reason?<Alert type={fd.factor_status==="DIAGNOSTIC_ONLY"?"warning":"info"} style={{marginTop:4}} message={fd.reason}/>:null}
+                      </Card>
+                    ))}
+                  </Space>}}
+                />
+              </Card>
+              <Card size="small" title={<Space>Platform Ranking<Tag color="gold">INFERRED_FROM_DOMAIN</Tag></Space>}>
+                <Table size="small" rowKey="inferred_platform" pagination={false} dataSource={rankingData.platform_ranking||[]}
+                  columns={[
+                    {title:"Rank",dataIndex:"platform_rank",width:55},
+                    {title:"Platform",dataIndex:"inferred_platform",width:100},
+                    {title:"Score",width:65,render:(_:any,r:any)=>(r.avg_raw_evidence_score as number)?.toFixed(1)},
+                    {title:"Domains",dataIndex:"domain_count",width:65},
+                    {title:"Occurrences",dataIndex:"total_citation_occurrences",width:90},
+                  ]}
+                  expandable={{expandedRowRender:(row:any)=><Space direction="vertical" size={4}>
+                    <Text strong>Constituent Domains</Text>
+                    {(row.domains as string[])?.map((d:string)=><Tag key={d} color="blue">{d}</Tag>)}
+                  </Space>}}
+                />
+              </Card>
+              <Card size="small" title="Known Limitations">
+                {(rankingData.known_limitations||[]).map((lim:any)=><Alert key={lim.code} type="warning" showIcon style={{marginBottom:6}}
+                  message={<Space><Tag>{lim.code}</Tag><Text strong>{lim.title}</Text></Space>} description={lim.description}/>)}
+              </Card>
+              <Button icon={<RefreshCw size={14}/>} loading={rankingLoading} onClick={async()=>{
+                setRankingLoading(true); try{setRankingData(await api.getCitationRanking(7));message.success("Refreshed")}catch(e:any){message.error(e.message)}finally{setRankingLoading(false)}
+              }}>Refresh</Button>
+            </Space>}
           </Card>
-        </Space> : <Card title="Batch / Sample Runs" extra={<Tag>每行是一条 Prompt × Sample Run</Tag>}>
+        </Space> : <Card title="Batch / Sample Runs" extra={<Tag>每行是一条 Sample Run</Tag>}>
           <Table rowKey="id" loading={loading} dataSource={runs} pagination={{ pageSize: 12 }} onRow={(row) => ({ onClick: () => openRun(row.id) })} columns={[
-            { title: "Run ID", dataIndex: "id", width: 90, render: (value) => `#${value}` },
-            { title: "采集轮次", dataIndex: "run_sequence", width: 100, render: (value) => `run#${value}` },
+            { title: "Sample", dataIndex: "id", width: 90, render: (id) => `Run #${id}` },
             { title: "Prompt", dataIndex: "original_query", ellipsis: true },
-            { title: "样本序号", dataIndex: "sample_index", width: 110, render: (value) => `Sample${value}` },
             { title: "状态", dataIndex: "status", width: 110, render: statusTag },
+            { title: "样本序号", dataIndex: "run_sequence", width: 100, render: (value) => `Sample ${value}` },
             { title: "品牌", width: 110, render: (_, row) => row.brand_mentioned ? <Tag color="blue">出现 {row.brand_mention_count} 次</Tag> : <Tag>未出现</Tag> },
-            { title: "四层引用", width: 230, render: (_, row) => <Space size={4}><Tag>UI {row.ui_declared_count ?? row.expected_reference_count}</Tag><Tag>DOM {row.dom_reference_count ?? row.detected_reference_count}</Tag><Tag>标题 {row.parsed_reference_count ?? row.detected_reference_count}</Tag><Tag color={(row.resolved_url_count ?? row.resolved_reference_count) === (row.parsed_reference_count ?? row.detected_reference_count) ? "green" : "gold"}>URL {row.resolved_url_count ?? row.resolved_reference_count}</Tag></Space> },
+            { title: "四层引用", width: 230, render: (_, row) => <Space size={4}><Tag>UI {row.expected_reference_count}</Tag><Tag>DOM {row.detected_reference_count}</Tag><Tag>标题 {row.detected_reference_count}</Tag><Tag color={row.resolved_reference_count === row.detected_reference_count ? "green" : "gold"}>URL {row.resolved_reference_count}</Tag></Space> },
             { title: "Evidence", width: 100, render: (_, row) => <Button size="small" onClick={(event) => { event.stopPropagation(); openRun(row.id); }}>查看</Button> }
           ]} />
         </Card>}
@@ -690,13 +690,11 @@ export default function App() {
         </Space>
       </Form>
     </Modal>
-    <Drawer width={760} open={Boolean(detail)} onClose={() => { setDetail(undefined); setArtifact(undefined); }} title={detail ? `Run #${detail.id} · run#${detail.run_sequence} · Sample${detail.sample_index}` : ""}>
+    <Drawer width={760} open={Boolean(detail)} onClose={() => { setDetail(undefined); setArtifact(undefined); }} title={detail ? `Sample Run #${detail.id}` : ""}>
       {detail && <Space direction="vertical" className="page-stack" size={16}>
         <Descriptions bordered size="small" column={2} items={[
           { key: "status", label: "状态", children: statusTag(detail.status) },
-          { key: "run_id", label: "Run ID", children: `#${detail.id}` },
-          { key: "run_sequence", label: "采集轮次", children: `run#${detail.run_sequence}` },
-          { key: "sample", label: "样本序号", children: `Sample${detail.sample_index}` },
+          { key: "sample", label: "Sample", children: detail.run_sequence },
           { key: "duration", label: "耗时", children: `${detail.duration_ms} ms` },
           { key: "brand", label: "品牌", children: detail.brand_mentioned ? `出现 ${detail.brand_mention_count} 次` : "未出现" }
         ]} />
@@ -705,13 +703,6 @@ export default function App() {
         </Card>
         <Card size="small" title="Prompt"><Text>{detail.original_query}</Text></Card>
         <Card size="small" title="回答正文"><pre className="content-preview">{detail.answer_text || "无回答正文"}</pre></Card>
-        <Card size="small" title="检索资料"><Table size="small" rowKey="id" pagination={{ pageSize: 8 }} dataSource={detail.retrieval_candidates} locale={{ emptyText: "本次未解析到全网搜索候选资料" }} columns={[
-          { title: "#", dataIndex: "rank", width: 50 },
-          { title: "标题", dataIndex: "title" },
-          { title: "来源/域名", dataIndex: "domain", width: 140 },
-          { title: "摘要", dataIndex: "snippet", ellipsis: true },
-          { title: "URL", width: 70, render: (_, row) => row.url ? <Link href={row.url} target="_blank"><ExternalLink size={15} /></Link> : <Tag>未暴露</Tag> }
-        ]} /></Card>
         <Card size="small" title="引用详情"><Table size="small" rowKey="id" pagination={{ pageSize: 8 }} dataSource={detail.references} columns={[
           { title: "#", dataIndex: "reference_index", width: 50 }, { title: "标题", dataIndex: "display_title" },
           { title: "域名", dataIndex: "domain", width: 150 }, { title: "URL", width: 70, render: (_, row) => row.url ? <Link href={row.url} target="_blank"><ExternalLink size={15} /></Link> : <Tag color="gold">未解析</Tag> }
@@ -719,11 +710,9 @@ export default function App() {
         <Card size="small" title="Evidence 证据"><Table size="small" rowKey="id" pagination={false} dataSource={detail.artifacts} columns={[
           { title: "证据类型", dataIndex: "artifact_type", render: (value) => <Space><FileText size={15} />{value}</Space> },
           { title: "文件", dataIndex: "storage_path", ellipsis: true }, { title: "大小", dataIndex: "size_bytes", width: 100 },
-          { title: "操作", width: 90, render: (_, row) => <Button size="small" onClick={() => openArtifact(row.id)}>预览</Button> }
+          { title: "操作", width: 90, render: (_, row) => <Button size="small" disabled={(row.mime_type || "").startsWith("image/")} onClick={() => openArtifact(row.id)}>预览</Button> }
         ]} /></Card>
-        {artifact && <Card size="small" title={`Evidence 预览 · ${artifact.artifact_type}`} extra={artifact.truncated ? <Tag color="gold">已截断</Tag> : <Tag color="green">完整</Tag>}>
-          {artifactIsImage ? <img className="artifact-image-preview" src={artifact.content} alt={artifact.artifact_type} /> : <pre className="artifact-preview">{artifact.content}</pre>}
-        </Card>}
+        {artifact && <Card size="small" title={`Evidence 预览 · ${artifact.artifact_type}`} extra={artifact.truncated ? <Tag color="gold">已截断</Tag> : <Tag color="green">完整</Tag>}><pre className="artifact-preview">{artifact.content}</pre></Card>}
       </Space>}
     </Drawer>
   </Layout>;

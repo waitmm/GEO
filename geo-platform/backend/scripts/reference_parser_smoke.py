@@ -9,6 +9,7 @@ from app.modules.monitoring.collectors.wenxin.reference_parser import (
     resolve_reference_url,
     title_similarity,
 )
+from app.modules.monitoring.collectors.wenxin.collector import WenxinWebCollector
 from app.modules.monitoring.collectors.wenxin.url_normalizer import (
     canonicalize_url,
     extract_first_url,
@@ -70,6 +71,24 @@ def main() -> None:
     )
     assert wenxin_long_press["canonical_url"] == "https://cli.im/app"
     assert canonicalize_url("https://cli.im/app%E3%80%82%E7%9B%AE%E5%89%8D") == "https://cli.im/app"
+    collector = WenxinWebCollector()
+    first_window = [{"reference_index": index, "display_title": f"引用{index}", "serialized": "{}"} for index in range(1, 32)]
+    second_window = [{"reference_index": index, "display_title": f"引用{index}", "serialized": "{}"} for index in range(2, 33)]
+    merged = collector._merge_reference_items([first_window, second_window], 32)
+    assert len(merged) == 32
+    assert [item["reference_index"] for item in merged] == list(range(1, 33))
+    html_items = collector._reference_items_from_html(
+        '<ol data-show-ext="{&quot;total_num&quot;:2}">'
+        '<li data-long-press-ext-info="{&quot;link&quot;:&quot;https://example.com/a&quot;,&quot;linkTitle&quot;:&quot;引用标题一&quot;}">'
+        '<span class="_index_x">1.</span><span class="_text_x">引用标题一</span></li>'
+        '<li data-long-press-ext-info="{&quot;link&quot;:&quot;https://example.com/b&quot;,&quot;linkTitle&quot;:&quot;引用标题二&quot;}">'
+        '<span class="_index_x">2.</span><span class="_text_x">引用标题二</span></li>'
+        '</ol>',
+        2,
+    )
+    assert len(html_items) == 2
+    assert html_items[0]["reference_index"] == 1
+    assert html_items[1]["href"] == "https://example.com/b"
     print("reference parser smoke ok")
 
 

@@ -115,6 +115,74 @@ body {
   cursor: pointer;
 }
 
+.optimization-page .ant-table-cell {
+  vertical-align: top;
+}
+
+.source-analysis-table .ant-table-tbody > tr > td {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.optimization-prompt-cell,
+.source-title-cell {
+  width: 100%;
+}
+
+.source-compact-cell {
+  width: 100%;
+}
+
+.source-title-link {
+  color: #1f2937;
+  display: -webkit-box;
+  font-weight: 600;
+  line-height: 1.45;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.source-title-link:hover {
+  color: #1677ff;
+}
+
+.source-meta-line {
+  font-size: 12px;
+}
+
+.source-reason-clamp {
+  display: -webkit-box;
+  line-height: 1.55;
+  max-height: 4.65em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.optimization-prompt-cell .ant-typography,
+.source-title-cell .ant-typography,
+.source-detail-note {
+  display: block;
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.55;
+}
+
+.source-analysis-table .ant-table-expanded-row > .ant-table-cell {
+  background: #f8fafc;
+}
+
+.source-analysis-table .ant-descriptions-item-content,
+.optimization-page .ant-card-body {
+  overflow-wrap: anywhere;
+}
+
 .content-preview,
 .artifact-preview {
   width: 100%;

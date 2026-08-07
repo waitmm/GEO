@@ -1,4 +1,4 @@
-import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, Metrics, MonitoringBatch, MonitorRun, Observation, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, Topic, ValidationDashboard } from "../types";
+import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, StrategyCandidate, Topic, ValidationDashboard } from "../types";
 
 const API_BASE = "";
 
@@ -88,6 +88,66 @@ export const api = {
     request<PromptDailyReport[]>(`/api/analytics/projects/${projectId}/prompt-daily-reports${promptId ? `?prompt_id=${promptId}` : ""}`),
   generatePromptDailyReport: (projectId: number, promptId: number, reportDate?: string) =>
     request<PromptDailyReport>(`/api/analytics/projects/${projectId}/prompt-daily-reports/generate?prompt_id=${promptId}${reportDate ? `&report_date=${encodeURIComponent(reportDate)}` : ""}`, { method: "POST" }),
+  listOptimizationIssues: (projectId: number) =>
+    request<OptimizationIssue[]>(`/api/optimization/projects/${projectId}/issues`),
+  listEvidencePackages: (projectId: number, promptId?: number) =>
+    request<EvidencePackage[]>(`/api/optimization/projects/${projectId}/evidence-packages${promptId ? `?prompt_id=${promptId}` : ""}`),
+  createEvidencePackage: (projectId: number, payload: unknown) =>
+    request<EvidencePackage>(`/api/optimization/projects/${projectId}/evidence-packages`, { method: "POST", body: JSON.stringify(payload) }),
+  getEvidencePackage: (packageId: number) =>
+    request<EvidencePackage>(`/api/optimization/evidence-packages/${packageId}`),
+  listStrategyCandidates: (projectId: number, evidencePackageId?: number, experimentId?: number) =>
+    request<StrategyCandidate[]>(`/api/optimization/projects/${projectId}/strategy-candidates${[
+      evidencePackageId ? `evidence_package_id=${evidencePackageId}` : "",
+      experimentId ? `experiment_id=${experimentId}` : "",
+    ].filter(Boolean).join("&").replace(/^(.+)/, "?$1")}`),
+  generateStrategyCandidates: (projectId: number, payload: unknown) =>
+    request<StrategyCandidate[]>(`/api/optimization/projects/${projectId}/strategy-candidates/generate`, { method: "POST", body: JSON.stringify(payload) }),
+  generateStrategyCandidatesV2: (projectId: number, payload: unknown) =>
+    request<any>(`/api/optimization/projects/${projectId}/strategy-candidates/generate-v2`, { method: "POST", body: JSON.stringify(payload) }),
+  reviewStrategyCandidate: (candidateId: number, payload: unknown) =>
+    request<StrategyCandidate>(`/api/optimization/strategy-candidates/${candidateId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  strategyToExperimentPlan: (candidateId: number) =>
+    request<Record<string, any>>(`/api/optimization/strategy-candidates/${candidateId}/experiment-plan`, { method: "POST" }),
+  listPageSnapshots: (projectId: number, experimentId?: number) =>
+    request<any[]>(`/api/optimization/projects/${projectId}/page-snapshots${experimentId ? `?experiment_id=${experimentId}` : ""}`),
+  capturePageSnapshot: (projectId: number, payload: unknown) =>
+    request<any>(`/api/optimization/projects/${projectId}/page-snapshots`, { method: "POST", body: JSON.stringify(payload) }),
+  generateOptimizationIssues: (projectId: number) =>
+    request<OptimizationIssue[]>(`/api/optimization/projects/${projectId}/issues/generate-candidates`, { method: "POST" }),
+  confirmOptimizationIssue: (issueId: number) =>
+    request<OptimizationIssue>(`/api/optimization/issues/${issueId}/confirm`, { method: "POST" }),
+  rejectOptimizationIssue: (issueId: number, note: string) =>
+    request<OptimizationIssue>(`/api/optimization/issues/${issueId}/reject`, { method: "POST", body: JSON.stringify({ note }) }),
+  getOptimizationEvidenceChain: (issueId: number) =>
+    request<OptimizationEvidenceChain>(`/api/optimization/issues/${issueId}/evidence-chain`),
+  createOptimizationAction: (issueId: number, payload: unknown) =>
+    request<OptimizationAction>(`/api/optimization/issues/${issueId}/actions`, { method: "POST", body: JSON.stringify(payload) }),
+  releaseOptimizationAction: (actionId: number, payload: unknown) =>
+    request<OptimizationAction>(`/api/optimization/actions/${actionId}/release`, { method: "POST", body: JSON.stringify(payload) }),
+  createOptimizationExperiment: (actionId: number, payload: unknown) =>
+    request<OptimizationExperiment>(`/api/optimization/actions/${actionId}/experiments`, { method: "POST", body: JSON.stringify(payload) }),
+  listOptimizationHypotheses: (experimentId: number) =>
+    request<any[]>(`/api/optimization/experiments/${experimentId}/hypotheses`),
+  createOptimizationHypothesis: (experimentId: number, payload: unknown) =>
+    request<any>(`/api/optimization/experiments/${experimentId}/hypotheses`, { method: "POST", body: JSON.stringify(payload) }),
+  lockOptimizationBaseline: (experimentId: number, runIds: number[]) =>
+    request<OptimizationExperiment>(`/api/optimization/experiments/${experimentId}/lock-baseline`, { method: "POST", body: JSON.stringify({ run_ids: runIds }) }),
+  confirmExperimentRelease: (experimentId: number, payload: unknown) =>
+    request<OptimizationExperiment>(`/api/optimization/experiments/${experimentId}/release-confirmation`, { method: "POST", body: JSON.stringify(payload) }),
+  startOptimizationValidation: (experimentId: number) =>
+    request<OptimizationExperiment>(`/api/optimization/experiments/${experimentId}/start-validation`, { method: "POST" }),
+  queueOptimizationRetest: (experimentId: number, payload: unknown) =>
+    request<{ experiment_id: number; batch_id: number; task_id: number; run_ids: number[]; queued_run_count: number; status: string }>(
+      `/api/optimization/experiments/${experimentId}/queue-retest`,
+      { method: "POST", body: JSON.stringify(payload) }
+    ),
+  attachOptimizationValidationRuns: (experimentId: number, runIds: number[]) =>
+    request<OptimizationExperiment>(`/api/optimization/experiments/${experimentId}/attach-validation-runs`, { method: "POST", body: JSON.stringify({ run_ids: runIds }) }),
+  analyzeOptimizationExperiment: (experimentId: number) =>
+    request<OptimizationExperiment>(`/api/optimization/experiments/${experimentId}/analyze`, { method: "POST" }),
+  confirmOptimizationConclusion: (experimentId: number, payload: unknown) =>
+    request<OptimizationExperiment>(`/api/optimization/experiments/${experimentId}/confirm-conclusion`, { method: "POST", body: JSON.stringify(payload) }),
   getValidationDashboard: async (projectId: number): Promise<ValidationDashboard> => {
     const data = await request<ValidationDashboardWire>(`/api/analytics/projects/${projectId}/validation-dashboard?citation_limit=10`);
     return {
@@ -129,5 +189,8 @@ export const api = {
         resolved_urls: data.data_quality.references.resolved_url_count
       }
     };
-  }
+  },
+
+  getCitationRanking: (packageId: number) =>
+    request(`/api/optimization/evidence-packages/${packageId}/citation-ranking`),
 };

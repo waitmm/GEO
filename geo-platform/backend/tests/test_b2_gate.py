@@ -763,6 +763,40 @@ def test_array_replacement_not_append(db):
     assert "C" not in effective["required_sections"]
 
 
+def test_backfilled_unverified_fail_closed(db):
+    """BACKFILLED_UNVERIFIED effective payload must be rejected by execution paths."""
+    project, prompt, runs = _seed_for_effective_payload(db)
+    pkg = OptimizationEvidencePackage(id=1, project_id=1, prompt_id=1, version=1,
+        source_run_ids_json="[1,2]", target_page_urls_json="[]",
+        package_payload_json='{"metrics":[],"metric_snapshot":{}}',
+        package_hash="x", status="active")
+    effective = {"intervention_type": "OFFICIAL_NEW_PAGE", "target_platform": "UNRESOLVED",
+        "target_metric": "brand_mention_rate", "observed_problem": "test", "hypothesized_cause": "可能",
+        "core_mechanism": "mech", "recommended_action": "do", "validation_plan": {},
+        "invalidating_result": "test", "changed_features": [{"feature":"FAQ"}], "controlled_variables": ["URL"]}
+    candidate = OptimizationStrategyCandidate(
+        id=1, project_id=1, evidence_package_id=1,
+        effective_payload_json=dumps(effective),
+        effective_payload_version="effective_payload.v1",
+        effective_validation_status="BACKFILLED_UNVERIFIED",  # NOT VALIDATED
+        generation_status="GENERATED",
+        evidence_validation_status="VALIDATED",
+        hypothesis_validation_status="VALIDATED",
+        review_status="ACCEPTED",
+        reviewed_by="test",
+        structured_payload_json=dumps(effective),
+    )
+    db.add_all([pkg, candidate])
+    db.commit()
+
+    from fastapi import HTTPException
+    from app.modules.optimization.service import get_effective_strategy_payload
+    with pytest.raises(HTTPException) as exc:
+        get_effective_strategy_payload(candidate)
+    assert "not validated" in str(exc.value.detail).lower()
+    assert "BACKFILLED_UNVERIFIED" in str(exc.value.detail)
+
+
 def test_missing_effective_payload_fail_closed(db):
     """Execution must fail when effective_payload is missing."""
     project, prompt, runs = _seed_for_effective_payload(db)
@@ -853,7 +887,8 @@ def test_strategy_to_experiment_uses_effective_payload(db):
     if result.get("action_id"):
         action = db.get(OptimizationAction, result["action_id"])
         if action:
-            assert action.action_type in ("article_publish", "content_create")
+            assert action.action_type == "article_publish", f"Expected article_publish, got {action.action_type}"
+            assert action.target_type == "external_platform", f"Expected external_platform, got {action.target_type}"
 
 
 def test_historical_hypothesis_immutable_on_rebind(db):
@@ -893,16 +928,77 @@ def test_historical_hypothesis_immutable_on_rebind(db):
     assert "HYPOTHESIS_EVIDENCE_IMMUTABLE" in str(exc.value.detail)
 
 
-def test_experiment_13_untouched(db):
-    """Experiment #13 must remain unchanged (release_blocked, not released)."""
-    import sqlite3
-    main_db = sqlite3.connect('/Users/bmwqr/Desktop/python/GEO/geo-platform/backend/geo_v0.db')
-    r = main_db.execute("SELECT primary_metric, release_blocked, released_at FROM optimization_experiments WHERE id = 13").fetchone()
-    # Also check the action's target_url
-    a = main_db.execute("SELECT target_url FROM optimization_actions WHERE id = 13").fetchone()
-    main_db.close()
-    assert r is not None, "Experiment #13 must exist"
-    assert r[1] == 1, "release_blocked must be True"
-    assert r[2] is None, "released_at must be None"
-    assert a is not None, "Action #13 must exist"
-    assert "card" in (a[0] or ""), "Action target_url must be /card"
+def test_experiment_identity_is_preserved(db):
+    """V2 strategy_to_experiment_plan creates a NEW experiment, never overwrites existing."""
+    project = Project(id=1, organization_id=1, name="X", brand_name="X", website_url="http://x.com")
+    prompt = Prompt(id=1, project_id=1, prompt_text="test", title="test")
+    task = BrowserMonitorTask(id=1, project_id=1, question_ids_json="[1]", status="completed")
+    runs = [
+        BrowserMonitorRun(id=1, task_id=1, project_id=1, prompt_id=1, status="success", reference_complete=True, parsed_reference_count=3, resolved_url_count=3),
+        BrowserMonitorRun(id=2, task_id=1, project_id=1, prompt_id=1, status="success", reference_complete=True, parsed_reference_count=3, resolved_url_count=3),
+    ]
+    refs = [ReferenceSource(id=1, run_id=1, display_title="T", url="http://x.com/a", domain="x.com")]
+    cands = [RetrievalCandidate(id=i, run_id=1, title="T", url=f"http://x.com/{i}", domain="x.com") for i in range(1, 31)]
+    db.add_all([project, prompt, task, *runs, *refs, *cands])
+    db.commit()
+
+    # Create a pre-existing experiment (like Experiment #13 with /card target)
+    issue = OptimizationIssue(id=1, project_id=1, prompt_id=1, issue_type="brand_absent", status="in_action")
+    action = OptimizationAction(id=1, issue_id=1, target_url="http://x.com/card", action_type="content_update", target_type="owned_content", status="PLANNED")
+    existing_exp = OptimizationExperiment(id=1, action_id=1, status="baseline_locked",
+        primary_metric="target_page_retrieval_rate", target_prompt_scope_json="[1]",
+        release_blocked=True, release_blocked_reason="WAITING_FOR_INTERVENTION_SELECTION", released_at=None)
+    db.add_all([issue, action, existing_exp])
+    db.commit()
+
+    # Now create a V2 strategy and run strategy_to_experiment_plan
+    effective = {
+        "intervention_type": "EXTERNAL_PLATFORM_ARTICLE",
+        "target_platform": "ZHIHU",
+        "target_url": "",
+        "target_metric": "brand_mention_rate",
+        "observed_problem": "test", "hypothesized_cause": "可能是因为外部平台",
+        "core_mechanism": "test", "recommended_action": "Publish",
+        "validation_plan": {"test": True}, "invalidating_result": "test",
+        "changed_features": [{"feature": "FAQ"}], "controlled_variables": ["URL"],
+    }
+    pkg = OptimizationEvidencePackage(id=1, project_id=1, prompt_id=1, version=1,
+        source_run_ids_json="[1,2]", target_page_urls_json="[]",
+        package_payload_json=dumps({
+            "run_metric_eligibility":{"citation_eligible_run_ids":[1,2],"answer_eligible_run_ids":[1,2],"retrieval_eligible_run_ids":[1,2],"excluded_run_ids_by_metric":{},"exclusion_reasons":{}},
+            "metrics":[{"metric_name":"brand_mention_rate","numerator":1,"denominator":2,"value":0.5,"calculation_status":"ok"}],
+            "metric_snapshot":{"brand_mention_rate":0.5,"valid_run_count":2},
+            "platform_gap_matrix":[],"content_type_distribution":[],"time_distribution":[],
+            "retrieval_metrics_status":"ok","retrieval_coverage_summary":{},"representative_sources":[],"prompt":{"prompt_text":"test"}}),
+        package_hash="z", status="active")
+    db.add(pkg)
+    db.commit()
+
+    candidate = OptimizationStrategyCandidate(
+        id=1, project_id=1, evidence_package_id=1,
+        structured_payload_json=dumps(effective), human_edited_payload_json=dumps({}),
+        effective_payload_json=dumps(effective), effective_payload_version="effective_payload.v1",
+        effective_validation_status="VALIDATED",
+        generation_status="GENERATED", evidence_validation_status="VALIDATED",
+        hypothesis_validation_status="VALIDATED", review_status="ACCEPTED", reviewed_by="test",
+    )
+    db.add(candidate)
+    db.commit()
+
+    result = service.strategy_to_experiment_plan(db, candidate.id)
+
+    # Must create a NEW experiment, not reuse the existing one
+    assert result["experiment_id"] != 1, "Must create a new experiment, not reuse Experiment #1"
+    assert result["experiment_id"] is not None, "Must create an experiment"
+    assert result["readiness_status"] in ("READY", "BLOCKED")
+
+    # The pre-existing experiment must remain unchanged
+    existing = db.get(OptimizationExperiment, 1)
+    assert existing.release_blocked is True
+    assert existing.released_at is None
+    assert existing.primary_metric == "target_page_retrieval_rate"
+
+    # Verify the action of the existing experiment is untouched
+    old_action = db.get(OptimizationAction, 1)
+    assert old_action.target_url == "http://x.com/card"
+    assert old_action.action_type == "content_update"

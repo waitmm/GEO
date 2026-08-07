@@ -166,9 +166,18 @@ def get_effective_strategy_payload(candidate) -> dict:
     All execution paths (Action, Experiment, Hypothesis, Release Gate, metric
     mapping) MUST use this function. Legacy identity columns and unstructured
     payloads are NEVER authoritative.
+
+    Fail-closed: only VALIDATED effective payloads can be executed.
+    BACKFILLED_UNVERIFIED, LEGACY_INVALID, PENDING, VALIDATION_FAILED
+    are all rejected — backfill is not automatic re-certification.
     """
     if not candidate:
         return {}
+    if candidate.effective_validation_status != "VALIDATED":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Strategy Candidate #{candidate.id} effective payload is not validated (status={candidate.effective_validation_status}). Cannot execute. Backfilled candidates must be re-validated before execution.",
+        )
     effective = loads(candidate.effective_payload_json, {})
     if not effective:
         raise HTTPException(
@@ -405,6 +414,10 @@ def strategy_candidate_to_read(candidate: OptimizationStrategyCandidate) -> dict
         "original_llm_payload": loads(candidate.original_llm_payload_json, {}),
         "structured_payload": loads(candidate.structured_payload_json, {}),
         "human_edited_payload": loads(candidate.human_edited_payload_json, {}),
+        "effective_payload": loads(candidate.effective_payload_json, {}),
+        "effective_payload_version": candidate.effective_payload_version,
+        "effective_validation_status": candidate.effective_validation_status,
+        "effective_validated_at": candidate.effective_validated_at,
         "evidence_validation_status": candidate.evidence_validation_status,
         "evidence_validation_errors": loads(candidate.evidence_validation_errors_json, []),
         "evidence_validation_warnings": loads(candidate.evidence_validation_warnings_json, []),

@@ -928,6 +928,56 @@ def test_historical_hypothesis_immutable_on_rebind(db):
     assert "HYPOTHESIS_EVIDENCE_IMMUTABLE" in str(exc.value.detail)
 
 
+def test_no_action_creates_no_experiment(db):
+    """NO_ACTION must not create Action, Experiment, or Hypothesis."""
+    project, prompt, runs = _seed_for_effective_payload(db)
+    pkg = OptimizationEvidencePackage(id=1, project_id=1, prompt_id=1, version=1,
+        source_run_ids_json="[1,2]", target_page_urls_json="[]",
+        package_payload_json=dumps({
+            "run_metric_eligibility":{"citation_eligible_run_ids":[1,2],"answer_eligible_run_ids":[1,2],"retrieval_eligible_run_ids":[1,2],"excluded_run_ids_by_metric":{},"exclusion_reasons":{}},
+            "metrics":[{"metric_name":"brand_mention_rate","numerator":1,"denominator":2,"value":0.5,"calculation_status":"ok"}],
+            "metric_snapshot":{"brand_mention_rate":0.5,"valid_run_count":2},
+            "platform_gap_matrix":[],"content_type_distribution":[],"time_distribution":[],
+            "retrieval_metrics_status":"ok","retrieval_coverage_summary":{},"representative_sources":[],"prompt":{"prompt_text":"test"}}),
+        package_hash="noop", status="active")
+    db.add(pkg)
+    db.commit()
+
+    effective = {
+        "intervention_type": "NO_ACTION",
+        "target_platform": "UNRESOLVED",
+        "target_metric": "brand_mention_rate",
+        "observed_problem": "test", "hypothesized_cause": "可能",
+        "core_mechanism": "mech", "recommended_action": "monitor",
+        "validation_plan": {}, "invalidating_result": "test",
+        "changed_features": [{"feature":"FAQ"}], "controlled_variables": ["URL"],
+    }
+    candidate = OptimizationStrategyCandidate(
+        id=1, project_id=1, evidence_package_id=1,
+        structured_payload_json=dumps(effective), human_edited_payload_json=dumps({}),
+        effective_payload_json=dumps(effective), effective_payload_version="effective_payload.v1",
+        effective_validation_status="VALIDATED",
+        generation_status="GENERATED", evidence_validation_status="VALIDATED",
+        hypothesis_validation_status="VALIDATED", review_status="ACCEPTED", reviewed_by="test",
+    )
+    db.add(candidate)
+    db.commit()
+
+    action_count_before = db.query(OptimizationAction).count()
+    experiment_count_before = db.query(OptimizationExperiment).count()
+
+    result = service.strategy_to_experiment_plan(db, candidate.id)
+
+    assert result["readiness_status"] == "NO_ACTION"
+    assert result["experiment_id"] is None
+    assert result["action_id"] is None
+    assert result["hypothesis_id"] is None
+
+    # No new Action, Experiment, or Hypothesis created
+    assert db.query(OptimizationAction).count() == action_count_before
+    assert db.query(OptimizationExperiment).count() == experiment_count_before
+
+
 def test_experiment_identity_is_preserved(db):
     """V2 strategy_to_experiment_plan creates a NEW experiment, never overwrites existing."""
     project = Project(id=1, organization_id=1, name="X", brand_name="X", website_url="http://x.com")

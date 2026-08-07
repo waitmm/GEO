@@ -860,6 +860,7 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
                 candidate.hypothesis_validation_errors_json = dumps(hypothesis_result["errors"])
                 candidate.hypothesis_validation_warnings_json = dumps(hypothesis_result["warnings"])
                 candidate.effective_validation_status = "VALIDATED"
+                candidate.effective_validated_at = datetime.utcnow()
             else:
                 candidate.effective_validation_status = "BACKFILLED_UNVERIFIED"
         # Save the effective payload as single executable truth
@@ -871,6 +872,8 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
         candidate.effective_payload_json = candidate.structured_payload_json
         candidate.effective_payload_version = EFFECTIVE_PAYLOAD_VERSION
         candidate.effective_validation_status = candidate.evidence_validation_status
+        if candidate.evidence_validation_status == "VALIDATED":
+            candidate.effective_validated_at = datetime.utcnow()
     db.commit()
     db.refresh(candidate)
     return strategy_candidate_to_read(candidate)
@@ -886,7 +889,22 @@ def strategy_to_experiment_plan(db: Session, candidate_id: int) -> dict:
     effective = get_effective_strategy_payload(candidate)
     experiment = db.get(OptimizationExperiment, candidate.experiment_id) if candidate.experiment_id else None
 
-    # P0-2: If strategy is accepted but has no experiment, auto-create Action + Experiment
+    # NO_ACTION: evidence does not support any intervention — do not create Action/Experiment
+    if effective.get("intervention_type") == "NO_ACTION":
+        candidate.experiment_plan_json = dumps({"readiness_status": "NO_ACTION", "reason": "Current evidence does not support any intervention."})
+        db.commit()
+        return {
+            "strategy_candidate_id": candidate.id,
+            "readiness_status": "NO_ACTION",
+            "readiness_errors": [],
+            "readiness_warnings": [],
+            "experiment_id": None,
+            "action_id": None,
+            "hypothesis_id": None,
+            "plan_payload": {"readiness_status": "NO_ACTION"},
+        }
+
+    # Auto-create Action + Experiment if strategy accepted but has no experiment
     if not experiment and candidate.review_status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"}:
         target_url = effective.get("target_url") or ""
         intervention_type = effective.get("intervention_type") or ""

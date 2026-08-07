@@ -24,3 +24,7 @@ class PageStructureError(WenxinCollectorError):
 
 class BrowserCrashedError(WenxinCollectorError):
     error_type = "browser_crashed"
+
+
+class BrowserProfileLockedError(WenxinCollectorError):
+    error_type = "browser_profile_locked"

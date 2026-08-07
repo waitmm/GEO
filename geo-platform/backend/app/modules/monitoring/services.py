@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
 from app.models import BrowserMonitorRun, BrowserMonitorTask, MonitoringBatch, Project, Prompt
+from app.core.config import get_settings
 from app.modules.monitoring.enums import BROWSER_AUDIT_ENTRY_TYPE, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER
 from app.modules.monitoring.schemas import BrowserTaskRead
 from app.services.serialization import dumps, loads
@@ -81,13 +83,57 @@ def create_browser_task(
     return task
 
 
+def prompt_lines(prompt: Prompt) -> list[str]:
+    lines = [line.strip() for line in (prompt.prompt_text or "").splitlines() if line.strip()]
+    return lines or [prompt.prompt_text]
+
+
+def materialize_independent_prompts(db: Session, prompts: list[Prompt]) -> list[Prompt]:
+    independent: list[Prompt] = []
+    for prompt in prompts:
+        lines = prompt_lines(prompt)
+        if len(lines) == 1:
+            independent.append(prompt)
+            continue
+        for line in lines:
+            existing = (
+                db.query(Prompt)
+                .filter(
+                    Prompt.project_id == prompt.project_id,
+                    Prompt.topic_id == prompt.topic_id,
+                    Prompt.cluster_id == prompt.cluster_id,
+                    Prompt.prompt_text == line,
+                )
+                .first()
+            )
+            if existing:
+                independent.append(existing)
+                continue
+            created = Prompt(
+                project_id=prompt.project_id,
+                topic_id=prompt.topic_id,
+                cluster_id=prompt.cluster_id,
+                title=line[:60],
+                prompt_text=line,
+                prompt_group=prompt.prompt_group,
+                intent_type=prompt.intent_type,
+                importance=prompt.importance,
+                enabled=prompt.enabled,
+            )
+            db.add(created)
+            db.flush()
+            independent.append(created)
+    return independent
+
+
 def queue_due_daily_prompt_tasks(
     db: Session,
     project: Project,
     execute_now: bool = False,
 ) -> tuple[list[BrowserMonitorTask], int]:
-    now = datetime.utcnow()
-    today_key = now.date().isoformat()
+    utc_now = datetime.utcnow()
+    local_now = _daily_local_now(utc_now)
+    today_key = local_now.date().isoformat()
     prompts = (
         db.query(Prompt)
         .filter(
@@ -100,7 +146,7 @@ def queue_due_daily_prompt_tasks(
     )
     due_prompts = [
         prompt for prompt in prompts
-        if not prompt.last_scheduled_at or prompt.last_scheduled_at.date().isoformat() < today_key
+        if _daily_prompt_is_due(prompt, local_now, today_key)
     ]
     if not due_prompts:
         return [], 0
@@ -113,6 +159,7 @@ def queue_due_daily_prompt_tasks(
     tasks: list[BrowserMonitorTask] = []
     queued_count = 0
     for sample_count, group in grouped.items():
+        independent_group = materialize_independent_prompts(db, group)
         batch = MonitoringBatch(
             project_id=project.id,
             name=f"每日 Prompt 监测 {today_key} · Sample={sample_count}",
@@ -127,7 +174,7 @@ def queue_due_daily_prompt_tasks(
         task = create_browser_task(
             db,
             project,
-            group,
+            independent_group,
             sample_count,
             execute_now,
             platform=WENXIN_PLATFORM,
@@ -140,9 +187,38 @@ def queue_due_daily_prompt_tasks(
         queued_count += db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == task.id).count()
 
     for prompt in due_prompts:
-        prompt.last_scheduled_at = now
+        prompt.last_scheduled_at = utc_now
     db.commit()
     return tasks, queued_count
+
+
+def _daily_local_now(utc_now: datetime) -> datetime:
+    timezone_name = get_settings().app_timezone or "Asia/Shanghai"
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except Exception:
+        timezone = ZoneInfo("Asia/Shanghai")
+    return utc_now.replace(tzinfo=ZoneInfo("UTC")).astimezone(timezone)
+
+
+def _daily_prompt_is_due(prompt: Prompt, local_now: datetime, today_key: str) -> bool:
+    if not _daily_time_reached(prompt.daily_schedule_time, local_now):
+        return False
+    last_scheduled = prompt.last_scheduled_at
+    if not last_scheduled:
+        return True
+    last_local = _daily_local_now(last_scheduled)
+    return last_local.date().isoformat() < today_key
+
+
+def _daily_time_reached(schedule_time: str, local_now: datetime) -> bool:
+    try:
+        hour_text, minute_text = (schedule_time or "09:00").split(":", 1)
+        hour = max(0, min(23, int(hour_text)))
+        minute = max(0, min(59, int(minute_text)))
+    except (TypeError, ValueError):
+        hour, minute = 9, 0
+    return (local_now.hour, local_now.minute) >= (hour, minute)
 
 
 def update_task_status_from_runs(db: Session, task: BrowserMonitorTask) -> BrowserMonitorTask:

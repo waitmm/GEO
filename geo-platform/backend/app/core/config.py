@@ -14,14 +14,19 @@ class Settings(BaseSettings):
     wenxin_timeout_seconds: int = 60
     monitoring_artifact_dir: str = "./artifacts/monitoring"
     redis_url: str = "redis://localhost:6379/0"
+    app_timezone: str = "Asia/Shanghai"
     wenxin_profile_dir: str = "./runtime/wenxin-profile"
     wenxin_web_url: str = "https://chat.baidu.com/"
     wenxin_headless: bool = False
-    wenxin_browser_timeout_seconds: int = 180
+    wenxin_browser_timeout_seconds: int = 300
     wenxin_max_concurrency: int = 1
     wenxin_max_retries: int = 2
     reference_resolution_min_rate: float = 0.95
     reference_title_fuzzy_threshold: float = 0.72
+    minimum_retrieval_candidate_count: int = 30
+    strategy_llm_provider: str = "local_rule"
+    strategy_llm_model: str = "local-rule-v1"
+    strategy_llm_prompt_version: str = "strategy_prompt.v1"
 
     class Config:
         env_file = ".env"

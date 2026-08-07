@@ -49,6 +49,34 @@ def build_validation_dashboard(db: Session, project: Project, limit: int = 10) -
         .order_by(BrowserMonitorRun.id.asc())
         .all()
     )
+    valid_runs = [run for run in runs if run.status in VALID_STATUSES]
+    valid_run_ids = [run.id for run in valid_runs]
+    references = (
+        db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(valid_run_ids)).all()
+        if valid_run_ids
+        else []
+    )
+
+    brand = _Entity(
+        entity_type="brand",
+        name=project.brand_name,
+        aliases=_aliases(project.brand_name, getattr(project, "brand_aliases_json", "[]")),
+    )
+    competitors = [
+        _Entity("competitor", item.name, _aliases(item.name, item.aliases_json))
+        for item in db.query(Competitor).filter(Competitor.project_id == project.id).all()
+    ]
+
+    return ValidationDashboard(
+        project_id=project.id,
+        prompts=_prompt_summary(prompts, runs, valid_runs),
+        brand_presence=_presence(brand, valid_runs),
+        competitor_presence=[_presence(entity, valid_runs) for entity in competitors],
+        recommendation_presence=_recommendations(brand, valid_runs),
+        top_citation_domains=_top_domains(references, runs, limit),
+        top_citation_urls=_top_urls(references, runs, limit),
+        data_quality=_data_quality(runs),
+    )
 
 
 def build_prompt_daily_report(
@@ -208,34 +236,6 @@ def _daily_recommendations(
     if avg_reference_count < 3:
         recommendations.append("当天平均引用资料偏少，建议增加可被引用的长文、教程、FAQ 或权威说明页，提高检索阶段可选资料密度。")
     return recommendations
-    valid_runs = [run for run in runs if run.status in VALID_STATUSES]
-    valid_run_ids = [run.id for run in valid_runs]
-    references = (
-        db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(valid_run_ids)).all()
-        if valid_run_ids
-        else []
-    )
-
-    brand = _Entity(
-        entity_type="brand",
-        name=project.brand_name,
-        aliases=_aliases(project.brand_name, getattr(project, "brand_aliases_json", "[]")),
-    )
-    competitors = [
-        _Entity("competitor", item.name, _aliases(item.name, item.aliases_json))
-        for item in db.query(Competitor).filter(Competitor.project_id == project.id).all()
-    ]
-
-    return ValidationDashboard(
-        project_id=project.id,
-        prompts=_prompt_summary(prompts, runs, valid_runs),
-        brand_presence=_presence(brand, valid_runs),
-        competitor_presence=[_presence(entity, valid_runs) for entity in competitors],
-        recommendation_presence=_recommendations(brand, valid_runs),
-        top_citation_domains=_top_domains(references, runs, limit),
-        top_citation_urls=_top_urls(references, runs, limit),
-        data_quality=_data_quality(runs),
-    )
 
 
 def _prompt_summary(

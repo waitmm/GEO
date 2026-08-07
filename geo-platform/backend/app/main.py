@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.database import init_db
 from app.modules.analytics.api import router as analytics_router
 from app.modules.monitoring.api import router as monitoring_router
+from app.modules.optimization.api import router as optimization_router
 
 
 settings = get_settings()
@@ -31,6 +32,7 @@ def on_startup() -> None:
 app.include_router(router)
 app.include_router(monitoring_router)
 app.include_router(analytics_router)
+app.include_router(optimization_router)
 
 # 托管前端构建产物（SPA 模式）
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"

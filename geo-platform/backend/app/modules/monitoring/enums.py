@@ -34,6 +34,7 @@ RUN_STAGES = {
 
 RETRYABLE_ERRORS = {
     "browser_crashed",
+    "browser_profile_locked",
     "answer_timeout",
     "reference_panel_not_opened",
     "network_error",

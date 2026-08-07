@@ -25,6 +25,7 @@ from app.modules.monitoring.schemas import (
 )
 from app.modules.monitoring.services import (
     create_browser_task,
+    materialize_independent_prompts,
     queue_due_daily_prompt_tasks,
     task_to_read,
     update_task_status_from_runs,
@@ -32,49 +33,6 @@ from app.modules.monitoring.services import (
 
 
 router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
-
-
-def _prompt_lines(prompt: Prompt) -> list[str]:
-    lines = [line.strip() for line in (prompt.prompt_text or "").splitlines() if line.strip()]
-    return lines or [prompt.prompt_text]
-
-
-def _materialize_independent_prompts(db: Session, prompts: list[Prompt]) -> list[Prompt]:
-    independent: list[Prompt] = []
-    for prompt in prompts:
-        lines = _prompt_lines(prompt)
-        if len(lines) == 1:
-            independent.append(prompt)
-            continue
-        for line in lines:
-            existing = (
-                db.query(Prompt)
-                .filter(
-                    Prompt.project_id == prompt.project_id,
-                    Prompt.topic_id == prompt.topic_id,
-                    Prompt.cluster_id == prompt.cluster_id,
-                    Prompt.prompt_text == line,
-                )
-                .first()
-            )
-            if existing:
-                independent.append(existing)
-                continue
-            created = Prompt(
-                project_id=prompt.project_id,
-                topic_id=prompt.topic_id,
-                cluster_id=prompt.cluster_id,
-                title=line[:60],
-                prompt_text=line,
-                prompt_group=prompt.prompt_group,
-                intent_type=prompt.intent_type,
-                importance=prompt.importance,
-                enabled=prompt.enabled,
-            )
-            db.add(created)
-            db.flush()
-            independent.append(created)
-    return independent
 
 
 @router.post("/tasks", response_model=BrowserTaskCreateResponse)
@@ -94,7 +52,7 @@ def create_task(payload: BrowserTaskCreate, db: Session = Depends(get_db)) -> Br
     prompts = [prompt_by_id[prompt_id] for prompt_id in payload.question_ids if prompt_id in prompt_by_id]
     if not prompts:
         raise HTTPException(status_code=400, detail="未选择有效问题")
-    prompts = _materialize_independent_prompts(db, prompts)
+    prompts = materialize_independent_prompts(db, prompts)
 
     run_count = batch.sample_count if batch else payload.run_count
     task = create_browser_task(

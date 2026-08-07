@@ -12,6 +12,10 @@ dist/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 
 # Runtime / Logs
 runtime/
@@ -25,6 +29,15 @@ logs/
 # Environment
 .env
 .env.local
+.env.*.local
+
+# Browser/session secrets
+storage_state*.json
+cookies*.json
+.playwright/
+playwright-profile/
+browser-profile/
+profiles/
 
 # OS
 .DS_Store
@@ -36,4 +49,3 @@ artifacts/
 # Temp files
 tmp/
 path/
-

@@ -1005,6 +1005,89 @@ def test_strategy_free_of_hardcoded_package7_data(db):
         assert opt.get("target_platform") == "UNRESOLVED", "target_platform must be UNRESOLVED"
 
 
+def test_baseline_comes_from_target_metric_not_brand_rate(db):
+    """Baseline must use target_page_retrieval_rate FACT, not brand_mention_rate."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id":"F-1","content_type":"TUTORIAL","candidate_run_count":5,"citation_run_count":5},
+            {"fact_id":"F-2","metric_name":"target_page_retrieval_rate","numerator":2,"denominator":5,"value":0.4,"calculation_status":"ok"},
+            {"fact_id":"F-3","metric_name":"brand_mention_rate","numerator":1,"denominator":3,"value":0.3333,"calculation_status":"ok"},
+        ],
+        "evidence_confidence":"MEDIUM","decision_capability":"CONTENT_DIRECTION_ONLY",
+        "content_type_patterns":{"high_citation_types":["TUTORIAL"],"low_citation_types":[]},
+        "brand_presence":{"brand_name":"Test","brand_mention_rate":0.3333},
+        "brand_channel_gaps":[],"official_site_fit":{},"target_page_urls":["http://x.com"],
+        "source_relation_landscape":{"role":"DIAGNOSTIC_METADATA","join_rate":0.2,"citation_only_count":7,"total_citations":11},
+        "citation_content_analysis_available":False,"missing_evidence":[],
+        "citation_landscape":{"total_citation_runs":5},"retrieval_landscape":{"total_retrieval_runs":5},
+        "source_run_ids":[1,2,3,4,5],
+    }
+    result = provider.generate_from_context(
+        Project(id=1,organization_id=1,name="X",brand_name="T",website_url="http://x.com"),
+        OptimizationEvidencePackage(id=20,project_id=1,version=1),context)
+    if result.get("strategy_options"):
+        opt = result["strategy_options"][0]
+        # Baseline must reflect target_page_retrieval_rate (2/5), not brand_mention_rate (1/3)
+        assert "2/5" in opt.get("baseline_value",""), f"baseline must be 2/5, got {opt.get('baseline_value')}"
+        # Brand mention is 1/3, must NOT become 0/3 via float rounding
+        text = str(opt)
+        assert "0/3" not in text, "brand_mention 1/3 must not become 0/3"
+
+
+def test_run_count_not_12_does_not_show_12(db):
+    """With run_count != 12, no /12 should appear in strategy output."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id":"F-1","content_type":"TUTORIAL","candidate_run_count":3,"citation_run_count":3},
+            {"fact_id":"F-2","metric_name":"target_page_retrieval_rate","numerator":0,"denominator":8,"value":0,"calculation_status":"ok"},
+            {"fact_id":"F-3","metric_name":"brand_mention_rate","numerator":0,"denominator":8,"value":0,"calculation_status":"ok"},
+        ],
+        "evidence_confidence":"MEDIUM","decision_capability":"CONTENT_DIRECTION_ONLY",
+        "content_type_patterns":{"high_citation_types":["TUTORIAL"],"low_citation_types":[]},
+        "brand_presence":{"brand_name":"Test","brand_mention_rate":0},"brand_channel_gaps":[],
+        "official_site_fit":{},"target_page_urls":[],
+        "source_relation_landscape":{"role":"DIAGNOSTIC_METADATA","join_rate":0.2,"citation_only_count":7,"total_citations":11},
+        "citation_content_analysis_available":False,"missing_evidence":[],
+        "citation_landscape":{"total_citation_runs":8},"retrieval_landscape":{"total_retrieval_runs":8},
+        "source_run_ids":list(range(1,9)),
+    }
+    result = provider.generate_from_context(
+        Project(id=1,organization_id=1,name="X",brand_name="T",website_url="http://x.com"),
+        OptimizationEvidencePackage(id=25,project_id=1,version=1),context)
+    if result.get("strategy_options"):
+        opt = result["strategy_options"][0]
+        text = str(opt)
+        assert "/12" not in text, "must not show /12 with 8-run package"
+
+
+def test_source_relation_total_in_context(db):
+    """source_relation_landscape must include total_citations and total_candidates."""
+    from app.modules.optimization.service import _build_source_relations
+    from app.models import ReferenceSource, RetrievalCandidate
+    refs = [ReferenceSource(id=i,run_id=1,display_title="T",url=f"http://x.com/{i}",domain="x.com") for i in range(1,8)]
+    cands = [RetrievalCandidate(id=i,run_id=1,title="T",url=f"http://y.com/{i}",domain="y.com") for i in range(1,15)]
+    result = _build_source_relations(refs, cands)
+    assert result["total_citations"] == 7
+    assert result["total_candidates"] == 14
+    assert result["citation_only_count"] >= 7
+    # Verify these flow through to context
+    assert result.get("citation_run_count") == 1
+    assert result.get("candidate_run_count") == 1
+
+
+def test_official_site_fit_uses_dynamic_run_count(db):
+    """_analyze_official_site_fit must use run_count, not hardcoded /12."""
+    from app.modules.optimization.service import _analyze_official_site_fit
+    result = _analyze_official_site_fit(
+        [], [{"content_type":"TOOL_PAGE","candidate_run_count":3,"citation_run_count":1}],
+        [], "", "", {"total_citations":0,"citation_only_count":0,"join_rate":0}, run_count=5)
+    assert "/5" in result.get("tool_page_candidate_coverage","")
+    assert "/5" in result.get("tool_page_citation_coverage","")
+    assert "/12" not in str(result)
+
+
 def test_strategy_without_tool_page_does_not_mention_tool_page(db):
     """Without TOOL_PAGE fact, strategy must not claim tool page retrieval/citation numbers."""
     provider = service.EvidenceDrivenStrategyProvider()

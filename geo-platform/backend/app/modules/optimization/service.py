@@ -5057,6 +5057,7 @@ def _build_evidence_action_context(
         target_urls[0] if target_urls else "",
         brand_domain,
         source_relations,
+        run_count=len(runs),
     )
 
     # --- Content Type Patterns ---
@@ -5122,6 +5123,10 @@ def _build_evidence_action_context(
         "source_relation_landscape": {
             "role": source_relations.get("role", "DIAGNOSTIC_METADATA"),
             "relation_spec_version": source_relations["relation_spec_version"],
+            "total_citations": source_relations.get("total_citations", 0),
+            "total_candidates": source_relations.get("total_candidates", 0),
+            "citation_run_count": source_relations.get("citation_run_count", 0),
+            "candidate_run_count": source_relations.get("candidate_run_count", 0),
             "matched_count": source_relations["matched_count"],
             "citation_only_count": source_relations["citation_only_count"],
             "candidate_only_count": source_relations["candidate_only_count"],
@@ -5207,6 +5212,7 @@ def _analyze_official_site_fit(
     target_url: str,
     brand_domain: str,
     source_relations: dict,
+    run_count: int = 0,
 ) -> dict:
     """Analyze whether official site content is a good fit for this prompt's citation patterns."""
     # Target page performance
@@ -5253,8 +5259,8 @@ def _analyze_official_site_fit(
         "target_page_retrieval_status": retrieval_rate.get("calculation_status") if retrieval_rate else "unknown",
         "official_domain_cited_runs": official_citation_runs,
         "official_reference_rate": 0.0,
-        "tool_page_candidate_coverage": f"{tool_page_perf['candidate_run_count']}/12",
-        "tool_page_citation_coverage": f"{tool_page_perf['citation_run_count']}/12",
+        "tool_page_candidate_coverage": f"{tool_page_perf['candidate_run_count']}/{run_count}",
+        "tool_page_citation_coverage": f"{tool_page_perf['citation_run_count']}/{run_count}",
         "tool_page_fit_assessment": tool_page_fit,
         "high_performing_owned_content_types": high_performing_types,
         "owned_content_extension_viable": owned_content_opportunity,
@@ -5562,8 +5568,13 @@ class EvidenceDrivenStrategyProvider:
             # --- Dynamic evidence from context, never hardcoded ---
             run_count = len(context.get('source_run_ids', []))
             brand_rate = brand_presence.get('brand_mention_rate', 0)
-            brand_mention_n = int(brand_rate * run_count) if brand_rate else 0
             target_url = target_urls[0] if target_urls else None
+
+            # Brand mention — read structured FACT directly, never reverse-engineer
+            brand_mention_fact = next((f for f in facts if f.get('metric_name') == 'brand_mention_rate'), None)
+            brand_mention_n = brand_mention_fact.get('numerator') if brand_mention_fact else None
+            brand_mention_d = brand_mention_fact.get('denominator') if brand_mention_fact else None
+            brand_mention_str = f"{brand_mention_n}/{brand_mention_d}" if (brand_mention_n is not None and brand_mention_d is not None) else str(brand_rate)
 
             # TOOL_PAGE data — only if present in facts
             tool_page_fact = next((f for f in facts if f.get('content_type') == 'TOOL_PAGE'), None)
@@ -5572,15 +5583,23 @@ class EvidenceDrivenStrategyProvider:
             # Citation-only count from context
             cit_only = source_relations.get('citation_only_count', 0)
             total_cit = source_relations.get('total_citations', 0)
+            run_count_str = str(run_count)
 
-            # Baseline from target metric
-            baseline = f"{brand_mention_n}/{run_count}"
+            # Baseline from TARGET METRIC fact (not brand_mention_rate)
+            target_metric_name = INTERVENTION_METRIC_MAP.get("OFFICIAL_NEW_PAGE", "target_page_retrieval_rate")
+            target_metric_fact = next((f for f in facts if f.get('metric_name') == target_metric_name), None)
+            if target_metric_fact:
+                tn = target_metric_fact.get('numerator')
+                td = target_metric_fact.get('denominator')
+                baseline = f"{tn}/{td}" if (tn is not None and td is not None) else f"?/{run_count_str}"
+            else:
+                baseline = f"?/{run_count_str}"
 
             # Prompt topic
             prompt_info = context.get('citation_landscape', {})
 
             # Build observed_problem dynamically
-            parts = [f"品牌「{project.brand_name}」在 {run_count} 次采样中的品牌提及率为 {brand_rate}。"]
+            parts = [f"品牌「{project.brand_name}」在 {run_count} 次采样中的品牌提及率为 {brand_mention_str}。"]
             if has_tool_page:
                 tc = tool_page_fact.get('candidate_run_count', 0)
                 tc2 = tool_page_fact.get('citation_run_count', 0)
@@ -5593,7 +5612,7 @@ class EvidenceDrivenStrategyProvider:
             # Evidence summary
             summary_parts = [
                 f"证据包 #{package.id}：{run_count} 次采样。",
-                f"品牌提及率：{brand_rate}。",
+                f"品牌提及率：{brand_mention_str}。",
                 f"高引用内容类型：{content_types_str}。",
             ]
             if has_tool_page:

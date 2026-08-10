@@ -50,65 +50,60 @@ def compute_spec_fingerprint() -> str:
 KNOWN_LIMITATIONS = [
     {
         "code": "SIGNAL_SCOPE_LIMITATION",
-        "title": "Signal Scope",
+        "title": "信号范围局限",
         "status": "ACKNOWLEDGED",
         "description": (
-            "Current active evidence signals mainly reflect citation frequency "
-            "and citation rank strength. Predictive value for real GEO uplift "
-            "has not yet been validated through controlled experiments."
+            "当前活跃的证据信号主要反映引用频率和引用排名强度。"
+            "对真实 GEO 提升效果的预测能力尚未通过受控实验验证。"
         ),
-        "evidence_scope": "Package #7, 1 prompt, 1 model, 12 runs",
-        "impact": "V0 ranking represents relative citation signal strength, not GEO effectiveness.",
+        "evidence_scope": "证据包 #7，1 个 Prompt，1 个模型，12 次采样",
+        "impact": "V0 排名代表相对引用信号强度，不代表 GEO 有效性。",
     },
     {
         "code": "PLATFORM_AGGREGATION_LIMITATION",
-        "title": "Platform Aggregation",
+        "title": "平台聚合局限",
         "status": "ACKNOWLEDGED",
         "description": (
-            "Inferred platforms are derived from source domains via DOMAIN_PLATFORM_MAP. "
-            "Domains mapped to the same inferred platform may not represent the same "
-            "content ecosystem, publishing mechanism, or execution channel."
+            "推断平台是通过域名映射表从来源域名推导得出的。"
+            "映射到同一推断平台的域名可能并不代表相同的内容生态、"
+            "发布机制或执行渠道。"
         ),
-        "evidence_scope": "Domain-to-platform mapping is heuristic (INFERRED_FROM_DOMAIN).",
-        "impact": "Platform scores aggregate heterogeneous sources. Always drill down to domain level.",
+        "evidence_scope": "域名到平台的映射基于启发式规则（基于域名推断）。",
+        "impact": "平台分数聚合了异质来源。请务必下钻到域名级别查看详情。",
     },
     {
         "code": "CITATION_SOURCE_CONCENTRATION_LIMITATION",
-        "title": "Citation Source Concentration",
+        "title": "引用来源集中度",
         "status": "ACKNOWLEDGED",
         "description": (
-            "Package #7 shows high citation-source concentration: 372 occurrences "
-            "from only 31 unique canonical URLs; 10/17 domains have 100% top1 URL share. "
-            "Whether this concentration implies persistence over time or difficulty "
-            "for new content to enter the cited-source set remains unverified."
+            "证据包 #7 显示较高的引用来源集中度：372 次引用仅来自 31 个独立规范 URL；"
+            "10/17 个域名的最高频 URL 占比达到 100%。"
+            "这种集中度是否意味着引用来源的长期固化，或新内容进入引用集合存在困难，目前尚未验证。"
         ),
-        "evidence_scope": "Package #7, single time window.",
-        "impact": "High-ranking domains may be driven by a small number of URLs. "
-                 "Do not interpret as a fixed citation pool.",
+        "evidence_scope": "证据包 #7，单个时间窗口。",
+        "impact": "排名靠前的域名可能仅由少量 URL 驱动。请勿将其解读为固定的引用池。",
     },
     {
         "code": "COMPLETENESS_VALIDATION_LIMITATION",
-        "title": "Completeness Validation",
+        "title": "完整度验证局限",
         "status": "ACKNOWLEDGED",
         "description": (
-            "All ranked domains in Package #7 have 100% evidence completeness. "
-            "The three completeness models (RAW_NO_PENALTY, LINEAR_PENALTY, "
-            "MINIMUM_COMPLETENESS_GATE) produce identical rankings under uniform "
-            "completeness. This validates that the models do not incorrectly perturb "
-            "rankings given complete data, but does not validate their behavior "
-            "under real missing-data conditions."
+            "证据包 #7 中所有排名域名的证据完整度均为 100%。"
+            "三种完整度模型在数据完整度一致的条件下产生相同的排名，"
+            "这验证了模型不会在数据完整时错误扰动排名，"
+            "但无法验证在真实缺失数据条件下的行为。"
         ),
-        "evidence_scope": "Package #7, uniform completeness.",
-        "impact": "Completeness model behavior under real data gaps remains untested.",
+        "evidence_scope": "证据包 #7，完整度均一。",
+        "impact": "完整度模型在真实数据缺失场景下的行为尚未经过检验。",
     },
 ]
 
 USAGE_WARNINGS = [
-    "Evidence Score is a relative signal ranking within the current Evidence Package — not a probability (0–100%) and not cross-Package comparable.",
-    "Confidence (LOW/MEDIUM/HIGH) reflects data support for the ranking judgment — not experiment success probability.",
-    "Platform Rank is derived from domain aggregation — not a recommendation for the single best publishing platform.",
-    "Rankings are WITHIN_PACKAGE_RELATIVE. Scores from different Packages should not be directly compared without calibration.",
-    "V0 is frozen. Any formula-level change (weights, thresholds, models, rules) requires scoring.v1.",
+    "证据分数是当前证据包内的相对信号排名 —— 不是概率（0-100%），不可跨证据包直接比较。",
+    "置信度（高/中/低）反映排名判断的数据支持程度 —— 不代表实验成功概率。",
+    "平台排名来自域名聚合 —— 不是对单一最佳发布平台的推荐。",
+    "排名范围为「证据包内相对比较」。不同证据包的分数不应在未经校准的情况下直接对比。",
+    "V0 已冻结。任何公式级别修改（权重、阈值、模型、规则）需升级至 scoring.v1。",
 ]
 # ---------------------------------------------------------------------------
 SCORING_SPEC_VERSION = "scoring.v0"

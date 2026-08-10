@@ -60,8 +60,73 @@ from app.modules.optimization.service import (
 )
 
 # ---------------------------------------------------------------------------
-# URL Canonicalization
+# Chinese Label Map — all user-facing output must use Chinese labels
 # ---------------------------------------------------------------------------
+_ZH = {
+    # Factor names
+    "citation_strength": "引用强度",
+    "rank_strength": "排名强度",
+    "source_diversity": "来源多样性",
+    "cross_run_presence": "跨采样稳定性",
+    # Factor status
+    "ACTIVE": "活跃",
+    "DIAGNOSTIC_ONLY": "仅诊断",
+    "NON_DISCRIMINATIVE": "无区分力",
+    "UNAVAILABLE": "不可用",
+    "REDUNDANT_AUXILIARY": "冗余（辅助）",
+    "PRIMARY": "主要",
+    # Dimension names
+    "citation_occurrence_count": "引用出现次数",
+    "citation_run_count": "引用涉及采样数",
+    "citation_run_coverage": "引用采样覆盖率",
+    "citation_volume_share": "引用占比",
+    "mean_citation_rank": "平均引用排名",
+    "median_citation_rank": "中位引用排名",
+    "top3_occurrence_share": "前三引用占比",
+    "top5_occurrence_share": "前五引用占比",
+    "top10_occurrence_share": "前十引用占比",
+    "unique_citation_urls": "独立引用URL",
+    "source_diversity_ratio": "来源多样性比率",
+    "source_concentration": "来源集中度",
+    "top1_url_share": "最高频URL占比",
+    "top3_url_share": "前三URL占比",
+    "min_rank": "最小排名",
+    "max_rank": "最大排名",
+    # Confidence
+    "HIGH": "高",
+    "MEDIUM": "中",
+    "LOW": "低",
+    "sample_adequacy": "样本充分性",
+    "evidence_completeness": "证据完整度",
+    "signal_consistency": "信号一致性",
+    "cross_scope_validation": "跨范围验证",
+    # Platform semantics
+    "INFERRED_FROM_DOMAIN": "基于域名推断",
+    "NO_DOMAIN": "无域名",
+    "NO_MAPPING": "无法映射",
+    # Completeness models
+    "RAW_NO_PENALTY": "原始不惩罚",
+    "LINEAR_PENALTY": "线性惩罚",
+    "MINIMUM_COMPLETENESS_GATE": "最低完整度门槛",
+    # Stability
+    "STABLE": "稳定",
+    "SENSITIVE": "敏感",
+    "MODERATELY_SENSITIVE": "中等敏感",
+    # Domain mapping method
+    "DOMAIN_MAPPING": "域名精确映射",
+    "DOMAIN_SUFFIX_MAPPING": "域名后缀映射",
+    # Other
+    "total_score": "总分",
+    "sources": "来源",
+    "reason": "原因",
+}
+
+def _zh(key: str) -> str:
+    """Return Chinese label for a key, falling back to the key itself."""
+    return _ZH.get(key, key)
+
+
+# ---------------------------------------------------------------------------\n# URL Canonicalization\n# ---------------------------------------------------------------------------
 
 def canonicalize_citation_url(url: str) -> str:
     """Canonicalize citation URL for deduplication (relation.v1 compatible).
@@ -696,11 +761,11 @@ def _compute_factor_decomposition(
         # Determine reason string
         reasons = []
         if status == "DIAGNOSTIC_ONLY":
-            reasons.append("No independent PRIMARY dimension — all available dimensions are highly correlated with another factor's primary dimension")
+            reasons.append("无独立主要维度 —— 所有可用维度均与另一因子的主要维度高度相关")
         elif status == "NON_DISCRIMINATIVE":
-            reasons.append("All dimensions have zero variance across candidates")
+            reasons.append("所有维度在当前候选间无差异（零方差）")
         elif status == "UNAVAILABLE":
-            reasons.append("No dimension data available")
+            reasons.append("无可用维度数据")
 
         if active_factors and status == "ACTIVE" and total_configured_active > 0:
             # Proportional renormalization
@@ -722,14 +787,20 @@ def _compute_factor_decomposition(
             contribution = 0.0
 
         decomposition[factor_name] = {
+            "factor_name": factor_name,
+            "factor_name_zh": _zh(factor_name),
             "factor_status": status,
+            "factor_status_zh": _zh(status),
             "configured_weight": configured_w,
             "active_weight": round(active_weight, 6),
             "raw_factor_score": round(factor_raw, 4) if factor_raw is not None else None,
             "weighted_contribution": round(contribution, 6),
             "primary_dimensions": [d["dimension"] for d in primary_dims],
+            "primary_dimensions_zh": [_zh(d["dimension"]) for d in primary_dims],
             "auxiliary_dimensions": [d["dimension"] for d in aux_dims],
+            "auxiliary_dimensions_zh": [_zh(d["dimension"]) for d in aux_dims],
             "excluded_dimensions": [d["dimension"] for d in excl_dims],
+            "excluded_dimensions_zh": [_zh(d["dimension"]) for d in excl_dims],
             "dimensions_detail": dims,
             "reason": "; ".join(reasons) if reasons else "",
         }
@@ -1133,10 +1204,14 @@ def run_citation_evidence_ranking_v0(
         row.pop("unique_urls", None)
         row.pop("domains", None)
         # Keep _decomposition for frontend
-        # Convert sets to lists
+        # Convert sets to lists and add Chinese labels
         for k, v in list(row.items()):
             if isinstance(v, set):
                 row[k] = sorted(v)
+        row["confidence_zh"] = _zh(row.get("confidence", ""))
+        row["sample_adequacy_zh"] = _zh(row.get("sample_adequacy", ""))
+        if row.get("inferred_platform"):
+            row["inferred_platform_zh"] = row["inferred_platform"]
 
     return {
         "scoring_spec_version": SCORING_SPEC_VERSION,
@@ -1213,6 +1288,7 @@ def _build_platform_ranking(
         result.append({
             "inferred_platform": platform,
             "platform_semantics": "INFERRED_FROM_DOMAIN",
+            "platform_semantics_zh": _zh("INFERRED_FROM_DOMAIN"),
             "domain_count": len(pd["domains"]),
             "domains": sorted(pd["domains"]),
             "total_citation_occurrences": pd["total_occurrences"],

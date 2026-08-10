@@ -928,6 +928,198 @@ def test_historical_hypothesis_immutable_on_rebind(db):
     assert "HYPOTHESIS_EVIDENCE_IMMUTABLE" in str(exc.value.detail)
 
 
+def test_batch_delete_preflight_rejects_if_any_has_runs(db):
+    """batch-delete must reject entire batch if any prompt has dependencies."""
+    project = Project(id=100, organization_id=1, name="X", brand_name="X", website_url="http://x.com")
+    prompt_a = Prompt(id=100, project_id=100, prompt_text="clean", title="clean", enabled=True)
+    prompt_b = Prompt(id=101, project_id=100, prompt_text="dirty", title="dirty", enabled=True)
+    task = BrowserMonitorTask(id=100, project_id=100, question_ids_json="[101]", status="completed")
+    run = BrowserMonitorRun(id=100, task_id=100, project_id=100, prompt_id=101, status="success")
+    db.add_all([project, prompt_a, prompt_b, task, run])
+    db.commit()
+
+    from fastapi import HTTPException
+    from app.api.v0 import batch_delete_prompts
+    with pytest.raises(HTTPException) as exc_info:
+        batch_delete_prompts(100, {"ids": [100, 101]}, db)
+    assert "400" in str(exc_info.value.status_code)
+    # Both prompts must still exist
+    assert db.get(Prompt, 100) is not None
+    assert db.get(Prompt, 101) is not None
+
+
+def test_batch_delete_succeeds_when_all_clean(db):
+    """batch-delete succeeds when no prompts have dependencies."""
+    project = Project(id=200, organization_id=1, name="X", brand_name="X", website_url="http://x.com")
+    prompt_a = Prompt(id=200, project_id=200, prompt_text="a", title="a", enabled=True)
+    prompt_b = Prompt(id=201, project_id=200, prompt_text="b", title="b", enabled=True)
+    db.add_all([project, prompt_a, prompt_b])
+    db.commit()
+
+    from app.api.v0 import batch_delete_prompts
+    result = batch_delete_prompts(200, {"ids": [200, 201]}, db)
+    assert result["deleted"] == 2
+    assert db.get(Prompt, 200) is None
+    assert db.get(Prompt, 201) is None
+
+
+def test_strategy_free_of_hardcoded_package7_data(db):
+    """Strategy must not contain hardcoded Package #7 values."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id": "F-1", "content_type": "TUTORIAL", "candidate_run_count": 5, "citation_run_count": 5, "metric_name": "brand_mention_rate"},
+            {"fact_id": "F-2", "content_type": "TOOL_PAGE", "candidate_run_count": 3, "citation_run_count": 1, "metric_name": "brand_mention_rate"},
+            {"fact_id": "F-3", "metric_name": "brand_mention_rate", "numerator": 1, "denominator": 5, "value": 0.2},
+        ],
+        "evidence_confidence": "MEDIUM",
+        "decision_capability": "CONTENT_DIRECTION_ONLY",
+        "content_type_patterns": {"high_citation_types": ["TUTORIAL"], "low_citation_types": []},
+        "brand_presence": {"brand_name": "Test", "brand_mention_rate": 0.2},
+        "brand_channel_gaps": [],
+        "source_relation_landscape": {"role": "DIAGNOSTIC_METADATA", "join_rate": 0.2, "citation_only_count": 50, "total_citations": 100},
+        "citation_content_analysis_available": False,
+        "official_site_fit": {},
+        "target_page_urls": ["http://example.com/test"],
+        "missing_evidence": [],
+        "citation_landscape": {"total_citation_runs": 5},
+        "retrieval_landscape": {"total_retrieval_runs": 5},
+        "source_run_ids": [1, 2, 3, 4, 5],
+    }
+    result = provider.generate_from_context(
+        Project(id=1, organization_id=1, name="X", brand_name="TestBrand", website_url="http://example.com"),
+        OptimizationEvidencePackage(id=10, project_id=1, version=1),
+        context,
+    )
+    if result.get("strategy_options"):
+        opt = result["strategy_options"][0]
+        text = str(opt)
+        # Must NOT contain Package #7 hardcoded values
+        assert "抖音跳转链接" not in text, "hardcoded prompt text found"
+        assert "/card" not in text, "hardcoded /card URL found"
+        assert "0/12" not in text, "hardcoded 0/12 baseline found"
+        assert "10/12" not in text, "hardcoded 10/12 found"
+        assert "372" not in text, "hardcoded 372 found"
+        assert "348" not in text, "hardcoded 348 found"
+        # target_platform must be UNRESOLVED
+        assert opt.get("target_platform") == "UNRESOLVED", "target_platform must be UNRESOLVED"
+
+
+def test_baseline_comes_from_target_metric_not_brand_rate(db):
+    """Baseline must use target_page_retrieval_rate FACT, not brand_mention_rate."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id":"F-1","content_type":"TUTORIAL","candidate_run_count":5,"citation_run_count":5},
+            {"fact_id":"F-2","metric_name":"target_page_retrieval_rate","numerator":2,"denominator":5,"value":0.4,"calculation_status":"ok"},
+            {"fact_id":"F-3","metric_name":"brand_mention_rate","numerator":1,"denominator":3,"value":0.3333,"calculation_status":"ok"},
+        ],
+        "evidence_confidence":"MEDIUM","decision_capability":"CONTENT_DIRECTION_ONLY",
+        "content_type_patterns":{"high_citation_types":["TUTORIAL"],"low_citation_types":[]},
+        "brand_presence":{"brand_name":"Test","brand_mention_rate":0.3333},
+        "brand_channel_gaps":[],"official_site_fit":{},"target_page_urls":["http://x.com"],
+        "source_relation_landscape":{"role":"DIAGNOSTIC_METADATA","join_rate":0.2,"citation_only_count":7,"total_citations":11},
+        "citation_content_analysis_available":False,"missing_evidence":[],
+        "citation_landscape":{"total_citation_runs":5},"retrieval_landscape":{"total_retrieval_runs":5},
+        "source_run_ids":[1,2,3,4,5],
+    }
+    result = provider.generate_from_context(
+        Project(id=1,organization_id=1,name="X",brand_name="T",website_url="http://x.com"),
+        OptimizationEvidencePackage(id=20,project_id=1,version=1),context)
+    if result.get("strategy_options"):
+        opt = result["strategy_options"][0]
+        # Baseline must reflect target_page_retrieval_rate (2/5), not brand_mention_rate (1/3)
+        assert "2/5" in opt.get("baseline_value",""), f"baseline must be 2/5, got {opt.get('baseline_value')}"
+        # Brand mention is 1/3, must NOT become 0/3 via float rounding
+        text = str(opt)
+        assert "0/3" not in text, "brand_mention 1/3 must not become 0/3"
+
+
+def test_run_count_not_12_does_not_show_12(db):
+    """With run_count != 12, no /12 should appear in strategy output."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id":"F-1","content_type":"TUTORIAL","candidate_run_count":3,"citation_run_count":3},
+            {"fact_id":"F-2","metric_name":"target_page_retrieval_rate","numerator":0,"denominator":8,"value":0,"calculation_status":"ok"},
+            {"fact_id":"F-3","metric_name":"brand_mention_rate","numerator":0,"denominator":8,"value":0,"calculation_status":"ok"},
+        ],
+        "evidence_confidence":"MEDIUM","decision_capability":"CONTENT_DIRECTION_ONLY",
+        "content_type_patterns":{"high_citation_types":["TUTORIAL"],"low_citation_types":[]},
+        "brand_presence":{"brand_name":"Test","brand_mention_rate":0},"brand_channel_gaps":[],
+        "official_site_fit":{},"target_page_urls":[],
+        "source_relation_landscape":{"role":"DIAGNOSTIC_METADATA","join_rate":0.2,"citation_only_count":7,"total_citations":11},
+        "citation_content_analysis_available":False,"missing_evidence":[],
+        "citation_landscape":{"total_citation_runs":8},"retrieval_landscape":{"total_retrieval_runs":8},
+        "source_run_ids":list(range(1,9)),
+    }
+    result = provider.generate_from_context(
+        Project(id=1,organization_id=1,name="X",brand_name="T",website_url="http://x.com"),
+        OptimizationEvidencePackage(id=25,project_id=1,version=1),context)
+    if result.get("strategy_options"):
+        opt = result["strategy_options"][0]
+        text = str(opt)
+        assert "/12" not in text, "must not show /12 with 8-run package"
+
+
+def test_source_relation_total_in_context(db):
+    """source_relation_landscape must include total_citations and total_candidates."""
+    from app.modules.optimization.service import _build_source_relations
+    from app.models import ReferenceSource, RetrievalCandidate
+    refs = [ReferenceSource(id=i,run_id=1,display_title="T",url=f"http://x.com/{i}",domain="x.com") for i in range(1,8)]
+    cands = [RetrievalCandidate(id=i,run_id=1,title="T",url=f"http://y.com/{i}",domain="y.com") for i in range(1,15)]
+    result = _build_source_relations(refs, cands)
+    assert result["total_citations"] == 7
+    assert result["total_candidates"] == 14
+    assert result["citation_only_count"] >= 7
+    # Verify these flow through to context
+    assert result.get("citation_run_count") == 1
+    assert result.get("candidate_run_count") == 1
+
+
+def test_official_site_fit_uses_dynamic_run_count(db):
+    """_analyze_official_site_fit must use run_count, not hardcoded /12."""
+    from app.modules.optimization.service import _analyze_official_site_fit
+    result = _analyze_official_site_fit(
+        [], [{"content_type":"TOOL_PAGE","candidate_run_count":3,"citation_run_count":1}],
+        [], "", "", {"total_citations":0,"citation_only_count":0,"join_rate":0}, run_count=5)
+    assert "/5" in result.get("tool_page_candidate_coverage","")
+    assert "/5" in result.get("tool_page_citation_coverage","")
+    assert "/12" not in str(result)
+
+
+def test_strategy_without_tool_page_does_not_mention_tool_page(db):
+    """Without TOOL_PAGE fact, strategy must not claim tool page retrieval/citation numbers."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id": "F-1", "content_type": "TUTORIAL", "candidate_run_count": 8, "citation_run_count": 8},
+        ],
+        "evidence_confidence": "MEDIUM",
+        "decision_capability": "CONTENT_DIRECTION_ONLY",
+        "content_type_patterns": {"high_citation_types": ["TUTORIAL"], "low_citation_types": []},
+        "brand_presence": {"brand_name": "Test", "brand_mention_rate": 0.0},
+        "brand_channel_gaps": [],
+        "source_relation_landscape": {"role": "DIAGNOSTIC_METADATA", "join_rate": 0.1, "citation_only_count": 10, "total_citations": 20},
+        "citation_content_analysis_available": False,
+        "official_site_fit": {},
+        "target_page_urls": [],
+        "missing_evidence": [],
+        "citation_landscape": {"total_citation_runs": 8},
+        "retrieval_landscape": {"total_retrieval_runs": 8},
+        "source_run_ids": list(range(1, 9)),
+    }
+    result = provider.generate_from_context(
+        Project(id=1, organization_id=1, name="X", brand_name="TestBrand", website_url="http://example.com"),
+        OptimizationEvidencePackage(id=15, project_id=1, version=1),
+        context,
+    )
+    if result.get("strategy_options"):
+        opt = result["strategy_options"][0]
+        text = str(opt)
+        assert "工具页" not in text or "TOOL" not in text, "must not mention tool page when no TOOL_PAGE fact exists"
+
+
 def test_no_action_creates_no_experiment(db):
     """NO_ACTION must not create Action, Experiment, or Hypothesis."""
     project, prompt, runs = _seed_for_effective_payload(db)

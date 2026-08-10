@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.adapters.registry import list_platforms
 from app.core.database import get_db
 from app.models import (
-    AnswerCitation, Competitor, ExtractedMention, MonitorRun, MonitoringBatch,
+    AnswerCitation, BrowserMonitorRun, Competitor, ExtractedMention, MonitorRun, MonitoringBatch,
     Observation, Organization, Project, Prompt, PromptCluster, Topic,
 )
 from app.schemas.v0 import (
@@ -366,6 +366,49 @@ def update_prompt(project_id: int, prompt_id: int, payload: PromptUpdate, db: Se
     db.commit()
     db.refresh(prompt)
     return prompt
+
+
+@router.delete("/projects/{project_id}/prompts/{prompt_id}")
+def delete_prompt(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    prompt = db.get(Prompt, prompt_id)
+    if not prompt or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    # Check dependencies
+    run_count = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.prompt_id == prompt_id).count()
+    obs_count = db.query(Observation).filter(Observation.prompt_id == prompt_id).count()
+    if run_count > 0 or obs_count > 0:
+        raise HTTPException(status_code=400, detail=f"无法删除：该 Prompt 有 {run_count} 个采集 Run 和 {obs_count} 个观测记录，请先删除关联数据")
+    db.delete(prompt)
+    db.commit()
+    return {"deleted": True, "id": prompt_id}
+
+
+@router.post("/projects/{project_id}/prompts/batch-delete")
+def batch_delete_prompts(project_id: int, payload: dict, db: Session = Depends(get_db)):
+    prompt_ids = payload.get("ids", [])
+    if not prompt_ids:
+        raise HTTPException(status_code=400, detail="请提供要删除的 Prompt ID 列表")
+    # Preflight: check ALL prompts before deleting any
+    blocked = []
+    for pid in prompt_ids:
+        prompt = db.get(Prompt, pid)
+        if not prompt or prompt.project_id != project_id:
+            blocked.append(f"#{pid}: 不存在或不属于该项目")
+            continue
+        runs = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.prompt_id == pid).count()
+        obs = db.query(Observation).filter(Observation.prompt_id == pid).count()
+        if runs > 0 or obs > 0:
+            blocked.append(f"#{pid}: 有 {runs} 个采集 Run / {obs} 个观测记录")
+    if blocked:
+        raise HTTPException(
+            status_code=400,
+            detail=f"批量删除失败，以下 Prompt 无法删除：{'；'.join(blocked)}。请先清理关联数据后再试。",
+        )
+    # All clear — delete all
+    for pid in prompt_ids:
+        db.delete(db.get(Prompt, pid))
+    db.commit()
+    return {"deleted": len(prompt_ids)}
 
 
 @router.get("/platforms")

@@ -33,6 +33,11 @@ function statusTag(status: string) {
   return <Tag color={colors[status]}>{labels[status] || status || "未知"}</Tag>;
 }
 
+function formatDateTime(v: string | null | undefined) {
+  if (!v) return "-";
+  try { return new Date(v).toLocaleString("zh-CN", { hour12: false }); }
+  catch { return v; }
+}
 function safeRate(n: number, d: number) {
   return d ? Math.round((n / d) * 1000) / 10 : 0;
 }
@@ -66,7 +71,7 @@ function deriveDashboard(project: Project, prompts: Prompt[], runs: BrowserMonit
   }));
   return {
     project_id: project.id,
-    sample_label: "Validation Sample",
+    sample_label: "验证样本",
     environment_label: "本机 · 文心网页端 · 单一采集环境",
     prompts: {
       total: prompts.length,
@@ -131,6 +136,7 @@ export default function App() {
   const [strategyLoading, setStrategyLoading] = useState(false);
   const [evidencePackages, setEvidencePackages] = useState<any[]>([]);
   const [selectedPkgId, setSelectedPkgId] = useState<number | null>(null);
+  const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [fallback, setFallback] = useState(false);
   const [promptForm] = Form.useForm();
@@ -335,18 +341,18 @@ export default function App() {
 
   return <Layout className="app-shell">
     <Sider width={228} className="side-nav">
-      <div className="brand-block"><Title level={4}>GEO Audit Alpha</Title><Text type="secondary">AI 可见度与引用审计</Text></div>
+      <div className="brand-block"><Title level={4}>GEO 决策平台</Title><Text type="secondary">生成式搜索品牌优化</Text></div>
       <Menu mode="inline" selectedKeys={[page]} onClick={({ key }) => setPage(key as PageKey)} items={[
-        { key: "validation", icon: <BarChart3 size={18} />, label: "Validation Dashboard" },
-        { key: "config", icon: <ListChecks size={18} />, label: "审计配置" },
-        { key: "optimization", icon: <ShieldCheck size={18} />, label: "Strategy (V2)" },
-        { key: "runs", icon: <Monitor size={18} />, label: "Batch / Sample Runs" },
-        { key: "ranking", icon: <BarChart3 size={18} />, label: "Citation Ranking V0" }
+        { key: "validation", icon: <BarChart3 size={18} />, label: "品牌监测" },
+        { key: "config", icon: <ListChecks size={18} />, label: "问题配置" },
+        { key: "optimization", icon: <ShieldCheck size={18} />, label: "优化策略" },
+        { key: "runs", icon: <Monitor size={18} />, label: "采集记录" },
+        { key: "ranking", icon: <BarChart3 size={18} />, label: "引用分析" }
       ]} />
     </Sider>
     <Layout>
       <Header className="topbar">
-        <div><Title level={3}>{page === "validation" ? "验证看板" : page === "optimization" ? "Evidence → Strategy (V2)" : page === "config" ? "审计配置" : page === "ranking" ? "Citation Evidence Signal Ranking V0" : "采集样本"}</Title><Text type="secondary">Observation · Evidence · Comparison</Text></div>
+        <div><Title level={3}>{page === "validation" ? "品牌 AI 可见度监测" : page === "optimization" ? "证据 → 优化策略" : page === "config" ? "Prompt 与采集配置" : page === "ranking" ? "AI 引用来源分析" : "采集记录"}</Title><Text type="secondary">观察 · 证据 · 对比</Text></div>
         <Space>
           <Select className="project-select" value={projectId} placeholder="选择项目" onChange={setProjectId} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
           <Button icon={<Plus size={16} />} onClick={() => openProjectModal()}>新建项目</Button>
@@ -358,104 +364,162 @@ export default function App() {
         {!project || !dashboard ? <Card loading={loading}><Empty description="请选择包含采集数据的项目" /></Card> : page === "validation" ? <Space direction="vertical" size={16} className="page-stack">
           <Card size="small" className="audit-hero">
             <Row align="middle" justify="space-between" gutter={[16, 16]}>
-              <Col><Space direction="vertical" size={4}><Space><Title level={4}>{project.name}</Title><Tag color="blue">{dashboard.sample_label || "Validation Sample"}</Tag></Space><Text type="secondary">{dashboard.environment_label || "单一采集环境，仅表示当前验证样本"}</Text></Space></Col>
+              <Col><Space direction="vertical" size={4}><Space><Title level={4}>{project.name}</Title><Tag color="blue">{dashboard.sample_label || "验证样本"}</Tag></Space><Text type="secondary">{dashboard.environment_label || "单一采集环境，仅表示当前验证样本"}</Text></Space></Col>
               <Col><Alert type="info" showIcon message="以下为验证样本观察值，不代表总体品牌曝光概率。" /></Col>
             </Row>
           </Card>
           {fallback && <Alert type="warning" showIcon message="聚合接口尚未返回数据，当前看板由已有 Run 实时兼容汇总。" />}
           <Row gutter={[16, 16]}>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="Prompt" value={dashboard.prompts.total} /></Card></Col>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="已运行 Prompt" value={dashboard.prompts.executed} /></Card></Col>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="Prompt Cluster" value={dashboard.prompts.clusters} /></Card></Col>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="有效 Run" value={dashboard.prompts.valid_runs} /></Card></Col>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="总样本" value={dashboard.prompts.sample_runs} suffix="Runs" /></Card></Col>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="URL 解析率" value={referenceResolution} suffix="%" precision={1} /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title="配置问题数" value={dashboard.prompts.total} /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title="已采集" value={dashboard.prompts.executed} /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title="问题组" value={dashboard.prompts.clusters} /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title="成功采集" value={dashboard.prompts.valid_runs} /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title="总采集次数" value={dashboard.prompts.sample_runs} suffix="次" /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title="引用URL解析率" value={referenceResolution} suffix="%" precision={1} /></Card></Col>
           </Row>
           <Row gutter={[16, 16]}>
-            <Col xs={24} xl={14}><Card title="品牌 / 竞品出现" extra={<Tag>Validation Sample · n={dashboard.prompts.valid_runs}</Tag>}><PresenceTable data={dashboard.presence} /></Card></Col>
-            <Col xs={24} xl={10}><Card title="推荐 Presence" extra={<Text type="secondary">不计算排名分</Text>}>
+            <Col xs={24} xl={14}><Card title="品牌与竞品在 AI 回答中的出现情况" extra={<Tag>样本量 n={dashboard.prompts.valid_runs}</Tag>}><PresenceTable data={dashboard.presence} /></Card></Col>
+            <Col xs={24} xl={10}><Card title="AI 推荐情况" extra={<Text type="secondary">仅统计明确推荐</Text>}>
               <Space direction="vertical" className="page-stack">
                 {recommendationRows.map((row) => <div key={row.key}><Space style={{ justifyContent: "space-between", width: "100%" }}><Text>{row.label}</Text><Text strong>{row.count} / {dashboard.recommendation.sample_runs}</Text></Space><Progress percent={safeRate(row.count, dashboard.recommendation.sample_runs)} showInfo={false} strokeColor={row.color} /></div>)}
               </Space>
             </Card></Col>
           </Row>
           <Row gutter={[16, 16]}>
-            <Col xs={24} xl={10}><Card title="Top Domains"><SourceTable data={dashboard.top_domains} /></Card></Col>
-            <Col xs={24} xl={14}><Card title="Top URLs"><SourceTable data={dashboard.top_urls} url /></Card></Col>
+            <Col xs={24} xl={10}><Card title="高频域名"><SourceTable data={dashboard.top_domains} /></Card></Col>
+            <Col xs={24} xl={14}><Card title="高频页面"><SourceTable data={dashboard.top_urls} url /></Card></Col>
           </Row>
-          <Card title={<Space><ShieldCheck size={18} />Data Quality</Space>} extra={<Text type="secondary">公开采集可信度</Text>}>
+          <Card title={<Space><ShieldCheck size={18} />数据质量</Space>} extra={<Text type="secondary">公开采集可信度</Text>}>
             <Row gutter={[16, 16]}>
-              <Col xs={12} md={4}><Statistic title="成功 Run" value={q!.successful_runs} suffix={`/ ${q!.total_runs}`} /></Col>
-              <Col xs={12} md={4}><Statistic title="Blocked" value={q!.blocked_runs} /></Col>
-              <Col xs={12} md={4}><Statistic title="Collector 失败" value={q!.collector_failed_runs} /></Col>
-              <Col xs={12} md={4}><Statistic title="引用完整" value={referenceComplete} suffix="%" precision={1} /></Col>
+              <Col xs={12} md={4}><Statistic title="成功采集" value={q!.successful_runs} suffix={`/ ${q!.total_runs}`} /></Col>
+              <Col xs={12} md={4}><Statistic title="被拦截" value={q!.blocked_runs} /></Col>
+              <Col xs={12} md={4}><Statistic title="采集失败" value={q!.collector_failed_runs} /></Col>
+              <Col xs={12} md={4}><Statistic title="引用完整度" value={referenceComplete} suffix="%" precision={1} /></Col>
               <Col xs={12} md={4}><Statistic title="已解析标题" value={q!.parsed_references} /></Col>
               <Col xs={12} md={4}><Statistic title="已解析 URL" value={q!.resolved_urls} /></Col>
             </Row>
           </Card>
         </Space> : page === "optimization" ? <Space direction="vertical" size={16} className="page-stack">
-          <Card title="Evidence → Strategy (V2)" extra={<Tag color="green">V2 Engine</Tag>}>
-            <Alert type="info" showIcon style={{marginBottom:12}}
-              message="V2 Strategy Generation uses EvidenceActionContext. Intervention types are derived from evidence — NOT preselected. Target platform can be UNRESOLVED."
+          <Card size="small" title="生成证据包" extra={<Space>
+            <Button size="small" onClick={async()=>{try{setEvidencePackages(await api.listEvidencePackages(projectId!));message.success("列表已刷新")}catch(e:any){message.error(e.message)}}}>刷新列表</Button>
+            {selectedPrompts.length>0 && <Button type="primary" size="small" loading={loading} onClick={async()=>{
+              if(!projectId){message.error("请先选择项目");return;}
+              setLoading(true);
+              let ok=0;const errs:string[]=[];
+              for(const pid of selectedPrompts.map(Number)){
+                try{await api.createEvidencePackage(projectId,{prompt_id:pid});ok++}catch(e:any){errs.push(`#${pid}:${e?.message||e}`)}
+              }
+              if(ok>0)message.success(`已生成 ${ok}/${selectedPrompts.length} 个证据包`);
+              if(errs.length>0)message.error(`失败 ${errs.length} 个: ${errs.slice(0,3).join("; ")}`);
+              if(ok>0){setEvidencePackages(await api.listEvidencePackages(projectId));}
+              setLoading(false);
+            }}>为选中 Prompt 生成证据包 ({selectedPrompts.length})</Button>}
+          </Space>}>
+            <Table size="small" rowKey="id" pagination={{pageSize:8}}
+              dataSource={[...prompts].sort((a,b)=>(b.id as number)-(a.id as number))}
+              rowSelection={{selectedRowKeys:selectedPrompts,onChange:setSelectedPrompts}}
+              columns={[
+                {title:"ID",dataIndex:"id",width:50},
+                {title:"问题内容",dataIndex:"prompt_text",ellipsis:true},
+                {title:"已有Run",width:70,render:(_,row:any)=>runs.filter((r:any)=>r.prompt_id===row.id).length||0},
+              ]}
             />
-            {!strategyData ? <Space direction="vertical">
-              <Text>Select an Evidence Package and generate strategies for the current project.</Text>
+          </Card>
+          <Card title="优化策略生成" extra={<Tag color="green">V2 引擎</Tag>}>
+            <Alert type="info" showIcon style={{marginBottom:12}}
+              message="根据证据包数据自动分析，生成内容干预建议。策略由客观证据推导，不预设方案。"
+            />
+            <Space direction="vertical" style={{width:"100%"}}>
+              <Text>选择证据包查看已有策略，或为新证据包生成策略。</Text>
               <Space>
-                <Select placeholder="Load packages first" style={{width:280}} value={selectedPkgId}
-                  onChange={setSelectedPkgId}
-                  options={(evidencePackages||[]).map((p:any)=>({label:`Package #${p.id} · Prompt #${p.prompt_id||'?'} · v${p.version} · ${p.schema_version}`,value:p.id}))}
+                <Select placeholder="选证据包" style={{width:360}} value={selectedPkgId}
+                  onChange={async(v)=>{
+                    setSelectedPkgId(v);
+                    if(!projectId||!v)return;
+                    setStrategyLoading(true);
+                    try{
+                      const existing = await api.listStrategyCandidates(projectId,v);
+                      if(existing.length>0){setStrategyData({decision_status:"OPTIONS_AVAILABLE",decision_capability:"CONTENT_DIRECTION_ONLY",strategy_options_count:existing.length,candidates:existing});message.success(`已加载 ${existing.length} 个已有策略`)}
+                      else setStrategyData(null);
+                    }catch{setStrategyData(null)}
+                    finally{setStrategyLoading(false)}
+                  }}
+                  notFoundContent={evidencePackages?.length===0?"暂无证据包，请先在上方生成":undefined}
+                  options={(evidencePackages||[]).map((p:any)=>({label:`证据包 #${p.id} ·「${p.prompt_text||'#'+(p.prompt_id||'?')}」· v${p.version}`,value:p.id}))}
                 />
-                <Button onClick={async()=>{try{setEvidencePackages(await api.listEvidencePackages(projectId!))}catch(e:any){message.error(e.message)}}} disabled={!projectId}>Load Packages</Button>
+                <Button onClick={async()=>{try{setEvidencePackages(await api.listEvidencePackages(projectId!))}catch{}}}>刷新包列表</Button>
+                <Button type="primary" loading={strategyLoading} disabled={!selectedPkgId}
+                  onClick={async()=>{
+                    if(!projectId||!selectedPkgId)return;
+                    setStrategyLoading(true);
+                    try{setStrategyData(await api.generateStrategyCandidatesV2(projectId,{evidence_package_id:selectedPkgId,max_hypotheses:3}));message.success("新策略已生成")}
+                    catch(e:any){message.error(e.message)}
+                    finally{setStrategyLoading(false)}
+                  }}>重新生成新策略</Button>
               </Space>
-              <Button type="primary" loading={strategyLoading} disabled={!selectedPkgId}
-                onClick={async()=>{
-                  if(!projectId||!selectedPkgId)return;
-                  setStrategyLoading(true);
-                  try{setStrategyData(await api.generateStrategyCandidatesV2(projectId,{evidence_package_id:selectedPkgId,max_hypotheses:3}));message.success("Generated")}
-                  catch(e:any){message.error(e.message)}
-                  finally{setStrategyLoading(false)}
-                }}>Generate (V2)</Button>
-            </Space> : <Space direction="vertical" size={12}>
-              <Descriptions size="small" bordered column={3} items={[
-                {key:"status",label:"Decision",children:<Tag color={strategyData.decision_status==="OPTIONS_AVAILABLE"?"green":"orange"}>{strategyData.decision_status}</Tag>},
-                {key:"capability",label:"Capability",children:<Tag>{strategyData.decision_capability}</Tag>},
-                {key:"count",label:"Candidates",children:strategyData.strategy_options_count},
-              ]}/>
-              {(strategyData.candidates||[]).map((c:any)=><Card key={c.id} size="small" title={<Space>Candidate #{c.id}<Tag>{c.structured_payload?.intervention_type}</Tag><Tag color={c.review_status==="PENDING_REVIEW"?"blue":"green"}>{c.review_status}</Tag></Space>}>
-                <Descriptions size="small" bordered column={2} items={[
-                  {key:"platform",label:"Target Platform",children:<Tag color={c.structured_payload?.target_platform==="UNRESOLVED"?"orange":"blue"}>{c.structured_payload?.target_platform||"N/A"}</Tag>},
-                  {key:"asset",label:"Target Asset",children:c.structured_payload?.target_asset||"N/A"},
-                  {key:"content",label:"Content Type",children:c.structured_payload?.target_content_type||"N/A"},
-                  {key:"metric",label:"Primary Metric",children:c.structured_payload?.target_metric||"N/A"},
-                  {key:"evidence_fit",label:"Evidence Fit",children:<Tag>{c.structured_payload?.evidence_fit||"N/A"}</Tag>},
-                  {key:"execution",label:"Execution Feasibility",children:<Tag>{c.structured_payload?.execution_feasibility||"UNASSESSED"}</Tag>},
-                ]}/>
-                <Descriptions size="small" bordered column={1} style={{marginTop:8}} items={[
-                  {key:"problem",label:"Observed Problem",children:c.structured_payload?.observed_problem||"-"},
-                  {key:"cause",label:"Hypothesized Cause",children:c.structured_payload?.hypothesized_cause||"-"},
-                  {key:"action",label:"Recommended Action",children:typeof c.structured_payload?.recommended_action==="object"?JSON.stringify(c.structured_payload.recommended_action):c.structured_payload?.recommended_action||"-"},
-                ]}/>
+            </Space>
+            {!strategyData ? <Empty description="选择证据包后自动加载已有策略，或点「重新生成新策略」创建新的" /> : strategyData.decision_status === "NEEDS_MORE_EVIDENCE" ? <Alert type="warning" showIcon
+              message="证据不足，无法生成策略"
+              description={strategyData.missing_evidence?.length > 0
+                ? (strategyData.missing_evidence as any[]).slice(0,3).map((m:any)=>m.reason||m.category).join("；")
+                : "当前证据包的数据量或维度不足以支持策略生成，建议使用数据更丰富的证据包（如 Package #7）。"}
+            /> : <Space direction="vertical" size={12}>
+              <Alert type="success" showIcon message={<Space><Tag color="green">{strategyData.decision_status}</Tag><Tag>{strategyData.decision_capability}</Tag><Text>共 {strategyData.strategy_options_count} 个策略候选</Text></Space>} />
+              {(strategyData.candidates||[]).map((c:any)=><Card key={c.id} size="small" title={<Space><Tag color="blue">#{c.id}</Tag><Text strong>{c.structured_payload?.intervention_type}</Text></Space>} extra={<Tag color={c.review_status==="PENDING_REVIEW"?"default":"green"}>{c.review_status}</Tag>}>
+                <Row gutter={[12,12]}>
+                  <Col xs={24} md={8}>
+                    <Card size="small" title="📊 证据事实" style={{background:"#f6ffed"}}>
+                      <Text>{c.structured_payload?.evidence_summary||"无"}</Text>
+                      {c.structured_payload?.evidence_fact_ids?.length>0 && <div style={{marginTop:8}}><Text type="secondary">引用事实ID: {(c.structured_payload.evidence_fact_ids as string[]).join(", ")}</Text></div>}
+                    </Card>
+                  </Col>
+                  <Col xs={24} md={8}>
+                    <Card size="small" title="🔍 推断" style={{background:"#fff7e6"}}>
+                      {(c.structured_payload?.inferences||[]).length>0
+                        ? (c.structured_payload.inferences as any[]).map((inf:any)=><Alert key={inf.inference_id} type="warning" style={{marginBottom:4}} message={<Text>{inf.statement}</Text>} />)
+                        : <Text type="secondary">基于当前证据推导的有限判断</Text>}
+                      <div style={{marginTop:8}}><Text strong>推断原因：</Text><Text>{c.structured_payload?.hypothesized_cause||"-"}</Text></div>
+                    </Card>
+                  </Col>
+                  <Col xs={24} md={8}>
+                    <Card size="small" title="🎯 策略建议" style={{background:"#e6f7ff"}}>
+                      <Descriptions size="small" column={1} items={[
+                        {key:"type",label:"干预类型",children:<Tag color="blue">{c.structured_payload?.intervention_type||"-"}</Tag>},
+                        {key:"plat",label:"目标平台",children:<Tag color={c.structured_payload?.target_platform==="UNRESOLVED"?"orange":"blue"}>{c.structured_payload?.target_platform||"未知"}</Tag>},
+                        {key:"ct",label:"内容类型",children:<Tag>{c.structured_payload?.target_content_type||"-"}</Tag>},
+                        {key:"fit",label:"证据匹配度 / 执行可行性",children:<Space><Tag>{c.structured_payload?.evidence_fit||"-"}</Tag><Tag>{c.structured_payload?.execution_feasibility||"未评估"}</Tag></Space>},
+                      ]}/>
+                      {c.structured_payload?.recommended_action && typeof c.structured_payload.recommended_action === "object"
+                        ? <Space direction="vertical" size={4} style={{marginTop:8}}>
+                            <Text strong>内容方向：</Text><Text>{(c.structured_payload.recommended_action as any).content_direction||"-"}</Text>
+                            <Text strong>平台方向：</Text><Text>{(c.structured_payload.recommended_action as any).platform_direction||"-"}</Text>
+                            <Text strong>资产方向：</Text><Text>{(c.structured_payload.recommended_action as any).asset_direction||"-"}</Text>
+                          </Space>
+                        : <Text>{c.structured_payload?.recommended_action||"-"}</Text>}
+                    </Card>
+                  </Col>
+                </Row>
               </Card>)}
               <Button icon={<RefreshCw size={14}/>} loading={strategyLoading} onClick={async()=>{
                 setStrategyLoading(true);
-                try{setStrategyData(await api.generateStrategyCandidatesV2(projectId!,{evidence_package_id:selectedPkgId!,max_hypotheses:3}));message.success("Refreshed")}
+                try{setStrategyData(await api.generateStrategyCandidatesV2(projectId!,{evidence_package_id:selectedPkgId!,max_hypotheses:3}));message.success("已刷新")}
                 catch(e:any){message.error(e.message)}
                 finally{setStrategyLoading(false)}
-              }}>Regenerate</Button>
+              }}>重新生成</Button>
             </Space>}
           </Card>
         </Space> : page === "config" ? <Space direction="vertical" size={16} className="page-stack">
           <Alert
             type="info"
             showIcon
-            message="Topic → Prompt Cluster → Prompt"
-            description="人工维护 Topic 与 Prompt Cluster；每个 Prompt 可配置多个 Validation Sample。"
+            message="管理 AI 搜索问题，按主题和问题簇组织"
+            description="同一用户意图可以有多个变体问法，每次独立采集验证。"
           />
           <Row gutter={[16, 16]}>
             <Col xs={24} xl={8}>
               <Card title="新增 Prompt" extra={<Plus size={17} />}>
                 <Form form={promptForm} layout="vertical" onFinish={createPrompt} initialValues={{ importance: 3 }}>
-                  <Form.Item name="topic" label="Topic">
+                  <Form.Item name="topic" label="主题">
                     <Input placeholder="例如：二维码平台选择" />
                   </Form.Item>
                   <Form.Item name="prompt_group" label="Prompt Cluster" rules={[{ required: true, message: "请输入 Cluster" }]}>
@@ -477,7 +541,7 @@ export default function App() {
                   run_count: 3,
                   execute_now: true
                 }}>
-                  <Form.Item label="已选择 Prompt"><Text strong>{selectedPrompts.length}</Text><Text type="secondary"> 条</Text></Form.Item>
+                  <Form.Item label="已选 Prompt"><Text strong>{selectedPrompts.length}</Text><Text type="secondary"> 条</Text></Form.Item>
                   <Form.Item name="batch_name" label="Batch 名称" rules={[{ required: true }]}>
                     <Input />
                   </Form.Item>
@@ -513,7 +577,10 @@ export default function App() {
               </Card>
             </Col>
             <Col xs={24} xl={16}>
-              <Card title="Topic / Cluster / Prompt" extra={<Tag>{prompts.length} Prompts</Tag>}>
+              <Card title="问题列表" extra={<Space><Tag>{prompts.length} 条</Tag>{selectedPrompts.length>0 && <Popconfirm title={`确定删除选中的 ${selectedPrompts.length} 个 Prompt？`} onConfirm={async()=>{
+                try{await api.batchDeletePrompts(projectId!,selectedPrompts.map(Number));message.success(`已删除`);setSelectedPrompts([]);loadProject(projectId!)}
+                catch(e:any){message.error(e.message)}
+              }}><Button danger size="small">批量删除 ({selectedPrompts.length})</Button></Popconfirm>}</Space>}>
                 <Table
                   size="small"
                   rowKey="id"
@@ -521,10 +588,13 @@ export default function App() {
                   dataSource={[...prompts].sort((a, b) => `${a.topic_id}/${a.cluster_id}`.localeCompare(`${b.topic_id}/${b.cluster_id}`, "zh-CN"))}
                   rowSelection={{ selectedRowKeys: selectedPrompts, onChange: setSelectedPrompts }}
                   columns={[
-                    { title: "Topic", width: 150, render: (_, row) => <Tag color="geekblue">{topics.find((item) => item.id === row.topic_id)?.name || "未分类"}</Tag> },
-                    { title: "Cluster", width: 170, render: (_, row) => <Tag color="cyan">{clusters.find((item) => item.id === row.cluster_id)?.name || row.prompt_group || "默认 Cluster"}</Tag> },
-                    { title: "Prompt", dataIndex: "prompt_text" },
-                    { title: "重要度", dataIndex: "importance", width: 80 }
+                    { title: "主题", width: 120, render: (_, row) => <Tag color="geekblue">{topics.find((item) => item.id === row.topic_id)?.name || "未分类"}</Tag> },
+                    { title: "问题组", width: 120, render: (_, row) => <Tag color="cyan">{clusters.find((item) => item.id === row.cluster_id)?.name || row.prompt_group || "-"}</Tag> },
+                    { title: "问题内容", dataIndex: "prompt_text", ellipsis: true },
+                    { title: "操作", width: 80, render: (_, row) => <Popconfirm title="确定删除？" onConfirm={async()=>{
+                      try{await api.deletePrompt(projectId!,row.id);message.success("已删除");loadProject(projectId!)}
+                      catch(e:any){message.error(e.message)}
+                    }}><Button danger size="small">删除</Button></Popconfirm> }
                   ]}
                 />
               </Card>
@@ -564,82 +634,89 @@ export default function App() {
             </Col>
           </Row>
         </Space> : page === "ranking" ? <Space direction="vertical" size={16} className="page-stack">
-          <Card title={<Space>Citation Evidence Signal Ranking V0<Tag color="blue">scoring.v0</Tag></Space>} extra={<Text type="secondary">Package #{rankingData?.package_id} · {rankingData?.scoring_spec_fingerprint?.slice(0,8)}</Text>}>
+          <Card title={<Space>AI 引用来源排名<Tag color="blue">scoring.v0</Tag></Space>} extra={<Text type="secondary">证据包 #{rankingData?.package_id} · {rankingData?.scoring_spec_fingerprint?.slice(0,8)}</Text>}>
             <Alert type="info" showIcon style={{marginBottom:12}}
-              message={<span><strong>Citation Evidence Signal Ranking V0</strong> — Relative citation signal strength within this Package. <strong>NOT</strong> platform effectiveness, success probability, or causal claims. Scores are within-package relative.</span>}
+              message={<span><strong>引用来源排名</strong> — 展示当前证据包内各域名/平台的相对引用信号强度。<strong>不代表</strong>平台有效性、成功概率或因果关系。分数仅在同一证据包内可比较。</span>}
             />
-            {!rankingData ? <Empty description={<Space><Text>Load citation ranking for Evidence Package #7</Text><Button type="primary" loading={rankingLoading} onClick={async()=>{
-              setRankingLoading(true); try{setRankingData(await api.getCitationRanking(7));message.success("Loaded")}catch(e:any){message.error(e.message)}finally{setRankingLoading(false)}
-            }}>Load Ranking</Button></Space>}/> : <Space direction="vertical" size={12}>
+            <Space style={{marginBottom:12}}>
+              <Button type="primary" loading={rankingLoading} onClick={()=>{
+                setRankingLoading(true);
+                api.getCitationRanking(7).then(data=>{setRankingData(data);message.success("已加载")}).catch(e=>{message.error(String(e.message||e))}).finally(()=>setRankingLoading(false));
+              }}>加载排名数据</Button>
+              {rankingData && <Button onClick={()=>setRankingData(null)}>清除</Button>}
+            </Space>
+            {!rankingData ? <Empty description="点击「加载排名数据」查看 Package #7 的引用证据排名" /> : <Space direction="vertical" size={12}>
               <Row gutter={12}>
-                <Col span={8}><Statistic title="Total Refs" value={rankingData.total_references}/></Col>
-                <Col span={8}><Statistic title="Unique Domains" value={rankingData.unique_domains}/></Col>
-                <Col span={8}><Statistic title="Unique URLs" value={rankingData.unique_urls_global}/></Col>
+                <Col span={8}><Statistic title="引用总数" value={rankingData.total_references}/></Col>
+                <Col span={8}><Statistic title="独立域名" value={rankingData.unique_domains}/></Col>
+                <Col span={8}><Statistic title="独立 URL" value={rankingData.unique_urls_global}/></Col>
               </Row>
-              <Card size="small" title={<Space>Domain Ranking<Tag>ranking_scope={rankingData.ranking_scope}</Tag></Space>}>
+              <Card size="small" title={<Space>域名排名<Tag>范围={rankingData.ranking_scope}</Tag></Space>}>
                 <Table size="small" rowKey="source_domain" pagination={{pageSize:10}} dataSource={rankingData.domain_ranking||[]}
                   columns={[
-                    {title:"Rank",dataIndex:"evidence_rank_raw",width:55},
-                    {title:"Domain",dataIndex:"source_domain",width:170},
-                    {title:"Platform",width:90,render:(_:any,r:any)=><Tag>{r.inferred_platform}</Tag>},
-                    {title:"Score",width:65,render:(_:any,r:any)=>(r.raw_evidence_score as number)?.toFixed(1)},
-                    {title:"Conf",width:60,render:(_:any,r:any)=><Tag color={r.confidence==="HIGH"?"green":r.confidence==="MEDIUM"?"gold":"orange"}>{r.confidence}</Tag>},
-                    {title:"Occ",dataIndex:"citation_occurrence_count",width:55},
-                    {title:"URLs",dataIndex:"unique_citation_urls",width:50},
-                    {title:"Top1",width:55,render:(_:any,r:any)=>r.top1_url_share?Math.round((r.top1_url_share as number)*100)+"%":"-"},
+                    {title:"排名",dataIndex:"evidence_rank_raw",width:55},
+                    {title:"域名",dataIndex:"source_domain",width:170},
+                    {title:"平台",width:90,render:(_:any,r:any)=><Tag>{r.inferred_platform}</Tag>},
+                    {title:"分数",width:65,render:(_:any,r:any)=>(r.raw_evidence_score as number)?.toFixed(1)},
+                    {title:"置信度",width:60,render:(_:any,r:any)=><Tag color={r.confidence==="HIGH"?"green":r.confidence==="MEDIUM"?"gold":"orange"}>{r.confidence_zh||r.confidence}</Tag>},
+                    {title:"次数",dataIndex:"citation_occurrence_count",width:55},
+                    {title:"独立URL",dataIndex:"unique_citation_urls",width:50},
+                    {title:"Top1占比",width:55,render:(_:any,r:any)=>r.top1_url_share?Math.round((r.top1_url_share as number)*100)+"%":"-"},
                   ]}
                   expandable={{expandedRowRender:(row:any)=><Space direction="vertical" size={6}>
-                    <Text strong>Factor Decomposition (Total: {row._decomposition?.total_score})</Text>
+                    <Text strong>因子分解（总分：{row._decomposition?.total_score}）</Text>
                     {(Object.entries(row._decomposition||{})as[string,any][]).filter(([k])=>k!=="total_score").map(([fn,fd])=>(
-                      <Card key={fn} size="small" title={<Space><Text strong>{fn}</Text><Tag color={fd.factor_status==="ACTIVE"?"green":fd.factor_status==="DIAGNOSTIC_ONLY"?"gold":"default"}>{fd.factor_status}</Tag></Space>}>
+                      <Card key={fn} size="small" title={<Space><Text strong>{fd.factor_name_zh||fn}</Text><Tag color={fd.factor_status==="ACTIVE"?"green":fd.factor_status==="DIAGNOSTIC_ONLY"?"gold":"default"}>{fd.factor_status_zh||fd.factor_status}</Tag></Space>}>
                         <Row gutter={[8,4]}>
-                          <Col span={6}><Text type="secondary">Config: {((fd.configured_weight as number)*100).toFixed(0)}%</Text></Col>
-                          <Col span={6}><Text type="secondary">Active: {((fd.active_weight as number)*100).toFixed(1)}%</Text></Col>
-                          <Col span={6}><Text type="secondary">Contrib: {(fd.weighted_contribution as number)?.toFixed(3)}</Text></Col>
-                          <Col span={6}><Text>Raw: {fd.raw_factor_score}</Text></Col>
+                          <Col span={6}><Text type="secondary">配置权重: {((fd.configured_weight as number)*100).toFixed(0)}%</Text></Col>
+                          <Col span={6}><Text type="secondary">实际权重: {((fd.active_weight as number)*100).toFixed(1)}%</Text></Col>
+                          <Col span={6}><Text type="secondary">贡献: {(fd.weighted_contribution as number)?.toFixed(3)}</Text></Col>
+                          <Col span={6}><Text>原始: {fd.raw_factor_score}</Text></Col>
                         </Row>
-                        <Space wrap>{(fd.primary_dimensions as string[])?.map((d:string)=><Tag key={d} color="blue">{d}</Tag>)}
-                        {(fd.auxiliary_dimensions as string[])?.map((d:string)=><Tag key={d} color="gold">{d}</Tag>)}
-                        {(fd.excluded_dimensions as string[])?.map((d:string)=><Tag key={d} color="default">{d}</Tag>)}</Space>
+                        <Space wrap>{(fd.primary_dimensions_zh||fd.primary_dimensions||[])?.map((d:string)=><Tag key={d} color="blue">{d}</Tag>)}
+                        {(fd.auxiliary_dimensions_zh||fd.auxiliary_dimensions||[])?.map((d:string)=><Tag key={d} color="gold">{d}</Tag>)}
+                        {(fd.excluded_dimensions_zh||fd.excluded_dimensions||[])?.map((d:string)=><Tag key={d} color="default">{d}</Tag>)}</Space>
                         {fd.reason?<Alert type={fd.factor_status==="DIAGNOSTIC_ONLY"?"warning":"info"} style={{marginTop:4}} message={fd.reason}/>:null}
                       </Card>
                     ))}
                   </Space>}}
                 />
               </Card>
-              <Card size="small" title={<Space>Platform Ranking<Tag color="gold">INFERRED_FROM_DOMAIN</Tag></Space>}>
+              <Card size="small" title={<Space>平台排名<Tag color="gold">{rankingData.platform_ranking?.[0]?.platform_semantics_zh||"基于域名推断"}</Tag></Space>}>
                 <Table size="small" rowKey="inferred_platform" pagination={false} dataSource={rankingData.platform_ranking||[]}
                   columns={[
-                    {title:"Rank",dataIndex:"platform_rank",width:55},
-                    {title:"Platform",dataIndex:"inferred_platform",width:100},
-                    {title:"Score",width:65,render:(_:any,r:any)=>(r.avg_raw_evidence_score as number)?.toFixed(1)},
-                    {title:"Domains",dataIndex:"domain_count",width:65},
-                    {title:"Occurrences",dataIndex:"total_citation_occurrences",width:90},
+                    {title:"排名",dataIndex:"platform_rank",width:55},
+                    {title:"平台",dataIndex:"inferred_platform",width:100},
+                    {title:"分数",width:65,render:(_:any,r:any)=>(r.avg_raw_evidence_score as number)?.toFixed(1)},
+                    {title:"域名数",dataIndex:"domain_count",width:65},
+                    {title:"引用次数",dataIndex:"total_citation_occurrences",width:90},
                   ]}
                   expandable={{expandedRowRender:(row:any)=><Space direction="vertical" size={4}>
-                    <Text strong>Constituent Domains</Text>
+                    <Text strong>构成域名</Text>
                     {(row.domains as string[])?.map((d:string)=><Tag key={d} color="blue">{d}</Tag>)}
                   </Space>}}
                 />
               </Card>
-              <Card size="small" title="Known Limitations">
+              <Card size="small" title="已知局限">
                 {(rankingData.known_limitations||[]).map((lim:any)=><Alert key={lim.code} type="warning" showIcon style={{marginBottom:6}}
                   message={<Space><Tag>{lim.code}</Tag><Text strong>{lim.title}</Text></Space>} description={lim.description}/>)}
               </Card>
-              <Button icon={<RefreshCw size={14}/>} loading={rankingLoading} onClick={async()=>{
-                setRankingLoading(true); try{setRankingData(await api.getCitationRanking(7));message.success("Refreshed")}catch(e:any){message.error(e.message)}finally{setRankingLoading(false)}
-              }}>Refresh</Button>
+              <Button icon={<RefreshCw size={14}/>} loading={rankingLoading} onClick={()=>{
+                setRankingLoading(true);
+                api.getCitationRanking(7).then(data=>{setRankingData(data);message.success("已刷新")}).catch(e=>{message.error(String(e.message||e))}).finally(()=>setRankingLoading(false));
+              }}>刷新</Button>
             </Space>}
           </Card>
-        </Space> : <Card title="Batch / Sample Runs" extra={<Tag>每行是一条 Sample Run</Tag>}>
+        </Space> : <Card title="采集记录" extra={<Tag>每行是一次独立采样</Tag>}>
           <Table rowKey="id" loading={loading} dataSource={runs} pagination={{ pageSize: 12 }} onRow={(row) => ({ onClick: () => openRun(row.id) })} columns={[
-            { title: "Sample", dataIndex: "id", width: 90, render: (id) => `Run #${id}` },
-            { title: "Prompt", dataIndex: "original_query", ellipsis: true },
-            { title: "状态", dataIndex: "status", width: 110, render: statusTag },
-            { title: "样本序号", dataIndex: "run_sequence", width: 100, render: (value) => `Sample ${value}` },
+            { title: "编号", dataIndex: "id", width: 70, render: (id) => `#${id}` },
+            { title: "采集时间", width: 150, render: (_, row: any) => formatDateTime(row.finished_at || row.started_at || row.created_at) },
+            { title: "问题", dataIndex: "original_query", ellipsis: true },
+            { title: "状态", dataIndex: "status", width: 100, render: statusTag },
+            { title: "样本", dataIndex: "run_sequence", width: 70, render: (value) => `第${value}次` },
             { title: "品牌", width: 110, render: (_, row) => row.brand_mentioned ? <Tag color="blue">出现 {row.brand_mention_count} 次</Tag> : <Tag>未出现</Tag> },
-            { title: "四层引用", width: 230, render: (_, row) => <Space size={4}><Tag>UI {row.expected_reference_count}</Tag><Tag>DOM {row.detected_reference_count}</Tag><Tag>标题 {row.detected_reference_count}</Tag><Tag color={row.resolved_reference_count === row.detected_reference_count ? "green" : "gold"}>URL {row.resolved_reference_count}</Tag></Space> },
-            { title: "Evidence", width: 100, render: (_, row) => <Button size="small" onClick={(event) => { event.stopPropagation(); openRun(row.id); }}>查看</Button> }
+            { title: "引用解析", width: 230, render: (_, row) => <Space size={4}><Tag>界面 {row.expected_reference_count}</Tag><Tag>结构 {row.detected_reference_count}</Tag><Tag>标题 {row.detected_reference_count}</Tag><Tag color={row.resolved_reference_count === row.detected_reference_count ? "green" : "gold"}>URL {row.resolved_reference_count}</Tag></Space> },
+            { title: "详情", width: 80, render: (_, row) => <Button size="small" onClick={(event) => { event.stopPropagation(); openRun(row.id); }}>查看</Button> }
           ]} />
         </Card>}
       </Content>
@@ -690,11 +767,11 @@ export default function App() {
         </Space>
       </Form>
     </Modal>
-    <Drawer width={760} open={Boolean(detail)} onClose={() => { setDetail(undefined); setArtifact(undefined); }} title={detail ? `Sample Run #${detail.id}` : ""}>
+    <Drawer width={760} open={Boolean(detail)} onClose={() => { setDetail(undefined); setArtifact(undefined); }} title={detail ? `采样详情 #${detail.id}` : ""}>
       {detail && <Space direction="vertical" className="page-stack" size={16}>
         <Descriptions bordered size="small" column={2} items={[
           { key: "status", label: "状态", children: statusTag(detail.status) },
-          { key: "sample", label: "Sample", children: detail.run_sequence },
+          { key: "sample", label: "轮次", children: detail.run_sequence },
           { key: "duration", label: "耗时", children: `${detail.duration_ms} ms` },
           { key: "brand", label: "品牌", children: detail.brand_mentioned ? `出现 ${detail.brand_mention_count} 次` : "未出现" }
         ]} />
@@ -707,7 +784,7 @@ export default function App() {
           { title: "#", dataIndex: "reference_index", width: 50 }, { title: "标题", dataIndex: "display_title" },
           { title: "域名", dataIndex: "domain", width: 150 }, { title: "URL", width: 70, render: (_, row) => row.url ? <Link href={row.url} target="_blank"><ExternalLink size={15} /></Link> : <Tag color="gold">未解析</Tag> }
         ]} /></Card>
-        <Card size="small" title="Evidence 证据"><Table size="small" rowKey="id" pagination={false} dataSource={detail.artifacts} columns={[
+        <Card size="small" title="证据"><Table size="small" rowKey="id" pagination={false} dataSource={detail.artifacts} columns={[
           { title: "证据类型", dataIndex: "artifact_type", render: (value) => <Space><FileText size={15} />{value}</Space> },
           { title: "文件", dataIndex: "storage_path", ellipsis: true }, { title: "大小", dataIndex: "size_bytes", width: 100 },
           { title: "操作", width: 90, render: (_, row) => <Button size="small" disabled={(row.mime_type || "").startsWith("image/")} onClick={() => openArtifact(row.id)}>预览</Button> }

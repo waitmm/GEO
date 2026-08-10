@@ -386,14 +386,29 @@ def delete_prompt(project_id: int, prompt_id: int, db: Session = Depends(get_db)
 @router.post("/projects/{project_id}/prompts/batch-delete")
 def batch_delete_prompts(project_id: int, payload: dict, db: Session = Depends(get_db)):
     prompt_ids = payload.get("ids", [])
-    deleted = 0
+    if not prompt_ids:
+        raise HTTPException(status_code=400, detail="请提供要删除的 Prompt ID 列表")
+    # Preflight: check ALL prompts before deleting any
+    blocked = []
     for pid in prompt_ids:
         prompt = db.get(Prompt, pid)
-        if prompt and prompt.project_id == project_id:
-            db.delete(prompt)
-            deleted += 1
+        if not prompt or prompt.project_id != project_id:
+            blocked.append(f"#{pid}: 不存在或不属于该项目")
+            continue
+        runs = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.prompt_id == pid).count()
+        obs = db.query(Observation).filter(Observation.prompt_id == pid).count()
+        if runs > 0 or obs > 0:
+            blocked.append(f"#{pid}: 有 {runs} 个采集 Run / {obs} 个观测记录")
+    if blocked:
+        raise HTTPException(
+            status_code=400,
+            detail=f"批量删除失败，以下 Prompt 无法删除：{'；'.join(blocked)}。请先清理关联数据后再试。",
+        )
+    # All clear — delete all
+    for pid in prompt_ids:
+        db.delete(db.get(Prompt, pid))
     db.commit()
-    return {"deleted": deleted}
+    return {"deleted": len(prompt_ids)}
 
 
 @router.get("/platforms")

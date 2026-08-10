@@ -5558,26 +5558,66 @@ class EvidenceDrivenStrategyProvider:
         if high_citation_types:
             fact_refs = self._find_fact_refs(facts, content_types=high_citation_types)
             content_types_str = ", ".join(high_citation_types[:4])
+
+            # --- Dynamic evidence from context, never hardcoded ---
+            run_count = len(context.get('source_run_ids', []))
+            brand_rate = brand_presence.get('brand_mention_rate', 0)
+            brand_mention_n = int(brand_rate * run_count) if brand_rate else 0
+            target_url = target_urls[0] if target_urls else None
+
+            # TOOL_PAGE data — only if present in facts
+            tool_page_fact = next((f for f in facts if f.get('content_type') == 'TOOL_PAGE'), None)
+            has_tool_page = tool_page_fact is not None
+
+            # Citation-only count from context
+            cit_only = source_relations.get('citation_only_count', 0)
+            total_cit = source_relations.get('total_citations', 0)
+
+            # Baseline from target metric
+            baseline = f"{brand_mention_n}/{run_count}"
+
+            # Prompt topic
+            prompt_info = context.get('citation_landscape', {})
+
+            # Build observed_problem dynamically
+            parts = [f"品牌「{project.brand_name}」在 {run_count} 次采样中的品牌提及率为 {brand_rate}。"]
+            if has_tool_page:
+                tc = tool_page_fact.get('candidate_run_count', 0)
+                tc2 = tool_page_fact.get('citation_run_count', 0)
+                parts.append(f"工具页在 {tc}/{run_count} 次采样中进入了检索候选，但引用次数为 {tc2}。")
+            if target_url:
+                parts.append(f"当前目标页面为 {target_url}。")
+            parts.append(f"信息型内容（{content_types_str}）在引用中占主导。")
+            observed = "".join(parts)
+
+            # Evidence summary
+            summary_parts = [
+                f"证据包 #{package.id}：{run_count} 次采样。",
+                f"品牌提及率：{brand_rate}。",
+                f"高引用内容类型：{content_types_str}。",
+            ]
+            if has_tool_page:
+                tc2 = tool_page_fact.get('citation_run_count', 0)
+                summary_parts.append(f"工具页引用覆盖：{tc2}/{run_count}。")
+            if total_cit > 0:
+                summary_parts.append(f"引用来源：{total_cit} 条引用，其中 {cit_only} 条仅引用无候选。")
+            evidence_summary_str = "".join(summary_parts)
+
             option_a = {
                 "intervention_type": "OFFICIAL_NEW_PAGE",
                 "target_platform": "UNRESOLVED",
                 "target_asset": "NEW_INFORMATIONAL_CONTENT",
                 "target_content_type": high_citation_types[0] if high_citation_types else "TUTORIAL",
-                "target_url": None,
+                "target_url": target_url,
                 "content_direction": f"信息型内容（{content_types_str}）在当前 Prompt 的 AI 引用中占主导地位。",
                 "platform_direction": (
-                    "平台选择暂无法确定 —— 引用内容正文分析尚不可用，"
-                    "因此无法从当前证据中确定最佳发布平台。"
-                    "官网、知乎、百家号和 B 站都是可能的候选，需进一步证据支持。"
+                    "发布平台仍未确定，需要结合已有资产、可控性、"
+                    "内容适配度、执行可行性和边际机会再做选择，"
+                    "不得从引用强度直接跳到发布决策。"
                 ),
                 "evidence_fit": "MEDIUM",
                 "execution_feasibility": "UNASSESSED",
-                "observed_problem": (
-                    f"品牌「{project.brand_name}」在 12 次采样中的品牌提及率和推荐率均为 0/12。"
-                    f"当前官方页面（{target_urls[0] if target_urls else '无'}）属于工具页类型 —— "
-                    f"工具页在 10/12 次采样中进入了检索候选，但引用次数为 0。"
-                    f"反观信息型内容（{content_types_str}）在引用中占主导。"
-                ),
+                "observed_problem": observed,
                 "hypothesized_cause": (
                     "AI 在回答此类信息型意图的问题时，可能更倾向于选择教程、问答、规则解释等信息型内容，"
                     "而非纯工具/交易类页面。即使工具页能够进入检索候选，"
@@ -5589,19 +5629,19 @@ class EvidenceDrivenStrategyProvider:
                     "核心机制：内容类型匹配 AI 引用偏好 → 更高的被引用概率。"
                 ),
                 "recommended_action": {
-                    "content_direction": f"围绕「抖音跳转链接」主题，制作 {content_types_str} 格式的信息型内容。",
-                    "platform_direction": "暂无法确定最佳发布平台。官网是当前最可控的首选测试渠道；外部平台需要先确认引用来源后再决策。",
-                    "asset_direction": "新建独立的信息型内容资产（而非修改现有 /card 工具页）。建议包含：概念定义、平台规则、操作步骤、常见失败原因、FAQ。",
+                    "content_direction": f"围绕当前 Prompt 主题，制作 {content_types_str} 格式的信息型内容。",
+                    "platform_direction": "发布平台仍未确定，需要结合已有资产、可控性、内容适配度、执行可行性和边际机会再做选择。",
+                    "asset_direction": "新建独立的信息型内容资产。建议包含：概念定义、平台规则、操作步骤、常见失败原因、FAQ。",
                 },
-                "recommended_title": "关于抖音跳转链接的完整说明（方案、规则与常见问题）",
-                "recommended_outline": ["什么是抖音跳转链接", "适用场景与平台规则", "操作步骤", "常见失败原因与排查", "FAQ"],
-                "required_sections": ["定义与边界", "平台限制说明", "操作步骤", "失败排查", "FAQ"],
+                "recommended_title": None,
+                "recommended_outline": [],
+                "required_sections": [],
                 "evidence_fact_ids": fact_refs,
                 "inferences": self._select_inferences(inferences, ["content_type_pattern", "tool_page_gap"]),
                 "target_metric": INTERVENTION_METRIC_MAP.get("OFFICIAL_NEW_PAGE", "target_page_retrieval_rate"),
                 "expected_secondary_metrics": ["brand_mention_rate", "brand_recommendation_rate"],
                 "metric_availability": "「目标页面检索进入率」仅适用于自有站点资产；外部平台内容暂以「品牌提及率」作为代理指标。",
-                "baseline_value": "0/12",
+                "baseline_value": baseline,
                 "expected_direction": "increase",
                 "priority": "HIGH",
                 "evidence_support_level": "SOURCE_LEVEL_ONLY",
@@ -5611,20 +5651,15 @@ class EvidenceDrivenStrategyProvider:
                 "validation_plan": {
                     "entry_observed_condition": "新信息型内容资产已发布并确认为可公开访问。",
                     "sustained_improvement_condition": "目标资产或品牌在独立复采中出现在检索候选或引用中。",
-                    "minimum_sample_count": 12,
+                    "minimum_sample_count": run_count,
                 },
-                "invalidating_result": "复采后新信息资产未被检索或引用；品牌提及率仍为 0/12。",
-                "evidence_summary": (
-                    f"证据包 #{package.id}：{len(context.get('source_run_ids', []))} 次采样。"
-                    f"品牌提及率：{brand_presence.get('brand_mention_rate', 0)}。"
-                    f"高引用内容类型：{content_types_str}。"
-                    f"工具页引用覆盖：0/12。"
-                    f"仅引用无候选的来源：{source_relations.get('citation_only_count', 0)} / {source_relations.get('total_citations', 0)} 条。"
-                ),
+                "invalidating_result": f"复采后新信息资产未被检索或引用；品牌提及率无变化。",
+                "evidence_summary": evidence_summary_str,
                 "reason_for_not_choosing_alternatives": (
-                    "暂不推荐直接去知乎、B 站、百家号等外部平台发布，原因：(1) 引用内容正文分析尚不可用，"
-                    "无法确认什么内容结构驱动了引用；(2) 大多数域名的引用来源无法确认（372 条引用中 348 条为仅引用无候选）；"
-                    "(3) 品牌在外部平台的资产状态未确认。当前策略聚焦于「应该生产什么类型的内容」；「在哪里发布」仍需更多证据。"
+                    "暂不推荐直接去外部平台发布，原因：(1) 引用内容正文分析尚不可用，"
+                    "无法确认什么内容结构驱动了引用；(2) 大多数域名的引用来源无法确认；"
+                    "(3) 品牌在外部平台的资产状态未确认。"
+                    "当前策略聚焦于「应该生产什么类型的内容」；「在哪里发布」仍需更多证据。"
                 )
             }
             options.append(option_a)

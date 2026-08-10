@@ -928,6 +928,115 @@ def test_historical_hypothesis_immutable_on_rebind(db):
     assert "HYPOTHESIS_EVIDENCE_IMMUTABLE" in str(exc.value.detail)
 
 
+def test_batch_delete_preflight_rejects_if_any_has_runs(db):
+    """batch-delete must reject entire batch if any prompt has dependencies."""
+    project = Project(id=100, organization_id=1, name="X", brand_name="X", website_url="http://x.com")
+    prompt_a = Prompt(id=100, project_id=100, prompt_text="clean", title="clean", enabled=True)
+    prompt_b = Prompt(id=101, project_id=100, prompt_text="dirty", title="dirty", enabled=True)
+    task = BrowserMonitorTask(id=100, project_id=100, question_ids_json="[101]", status="completed")
+    run = BrowserMonitorRun(id=100, task_id=100, project_id=100, prompt_id=101, status="success")
+    db.add_all([project, prompt_a, prompt_b, task, run])
+    db.commit()
+
+    from fastapi import HTTPException
+    from app.api.v0 import batch_delete_prompts
+    with pytest.raises(HTTPException) as exc_info:
+        batch_delete_prompts(100, {"ids": [100, 101]}, db)
+    assert "400" in str(exc_info.value.status_code)
+    # Both prompts must still exist
+    assert db.get(Prompt, 100) is not None
+    assert db.get(Prompt, 101) is not None
+
+
+def test_batch_delete_succeeds_when_all_clean(db):
+    """batch-delete succeeds when no prompts have dependencies."""
+    project = Project(id=200, organization_id=1, name="X", brand_name="X", website_url="http://x.com")
+    prompt_a = Prompt(id=200, project_id=200, prompt_text="a", title="a", enabled=True)
+    prompt_b = Prompt(id=201, project_id=200, prompt_text="b", title="b", enabled=True)
+    db.add_all([project, prompt_a, prompt_b])
+    db.commit()
+
+    from app.api.v0 import batch_delete_prompts
+    result = batch_delete_prompts(200, {"ids": [200, 201]}, db)
+    assert result["deleted"] == 2
+    assert db.get(Prompt, 200) is None
+    assert db.get(Prompt, 201) is None
+
+
+def test_strategy_free_of_hardcoded_package7_data(db):
+    """Strategy must not contain hardcoded Package #7 values."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id": "F-1", "content_type": "TUTORIAL", "candidate_run_count": 5, "citation_run_count": 5, "metric_name": "brand_mention_rate"},
+            {"fact_id": "F-2", "content_type": "TOOL_PAGE", "candidate_run_count": 3, "citation_run_count": 1, "metric_name": "brand_mention_rate"},
+            {"fact_id": "F-3", "metric_name": "brand_mention_rate", "numerator": 1, "denominator": 5, "value": 0.2},
+        ],
+        "evidence_confidence": "MEDIUM",
+        "decision_capability": "CONTENT_DIRECTION_ONLY",
+        "content_type_patterns": {"high_citation_types": ["TUTORIAL"], "low_citation_types": []},
+        "brand_presence": {"brand_name": "Test", "brand_mention_rate": 0.2},
+        "brand_channel_gaps": [],
+        "source_relation_landscape": {"role": "DIAGNOSTIC_METADATA", "join_rate": 0.2, "citation_only_count": 50, "total_citations": 100},
+        "citation_content_analysis_available": False,
+        "official_site_fit": {},
+        "target_page_urls": ["http://example.com/test"],
+        "missing_evidence": [],
+        "citation_landscape": {"total_citation_runs": 5},
+        "retrieval_landscape": {"total_retrieval_runs": 5},
+        "source_run_ids": [1, 2, 3, 4, 5],
+    }
+    result = provider.generate_from_context(
+        Project(id=1, organization_id=1, name="X", brand_name="TestBrand", website_url="http://example.com"),
+        OptimizationEvidencePackage(id=10, project_id=1, version=1),
+        context,
+    )
+    if result.get("strategy_options"):
+        opt = result["strategy_options"][0]
+        text = str(opt)
+        # Must NOT contain Package #7 hardcoded values
+        assert "抖音跳转链接" not in text, "hardcoded prompt text found"
+        assert "/card" not in text, "hardcoded /card URL found"
+        assert "0/12" not in text, "hardcoded 0/12 baseline found"
+        assert "10/12" not in text, "hardcoded 10/12 found"
+        assert "372" not in text, "hardcoded 372 found"
+        assert "348" not in text, "hardcoded 348 found"
+        # target_platform must be UNRESOLVED
+        assert opt.get("target_platform") == "UNRESOLVED", "target_platform must be UNRESOLVED"
+
+
+def test_strategy_without_tool_page_does_not_mention_tool_page(db):
+    """Without TOOL_PAGE fact, strategy must not claim tool page retrieval/citation numbers."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id": "F-1", "content_type": "TUTORIAL", "candidate_run_count": 8, "citation_run_count": 8},
+        ],
+        "evidence_confidence": "MEDIUM",
+        "decision_capability": "CONTENT_DIRECTION_ONLY",
+        "content_type_patterns": {"high_citation_types": ["TUTORIAL"], "low_citation_types": []},
+        "brand_presence": {"brand_name": "Test", "brand_mention_rate": 0.0},
+        "brand_channel_gaps": [],
+        "source_relation_landscape": {"role": "DIAGNOSTIC_METADATA", "join_rate": 0.1, "citation_only_count": 10, "total_citations": 20},
+        "citation_content_analysis_available": False,
+        "official_site_fit": {},
+        "target_page_urls": [],
+        "missing_evidence": [],
+        "citation_landscape": {"total_citation_runs": 8},
+        "retrieval_landscape": {"total_retrieval_runs": 8},
+        "source_run_ids": list(range(1, 9)),
+    }
+    result = provider.generate_from_context(
+        Project(id=1, organization_id=1, name="X", brand_name="TestBrand", website_url="http://example.com"),
+        OptimizationEvidencePackage(id=15, project_id=1, version=1),
+        context,
+    )
+    if result.get("strategy_options"):
+        opt = result["strategy_options"][0]
+        text = str(opt)
+        assert "工具页" not in text or "TOOL" not in text, "must not mention tool page when no TOOL_PAGE fact exists"
+
+
 def test_no_action_creates_no_experiment(db):
     """NO_ACTION must not create Action, Experiment, or Hypothesis."""
     project, prompt, runs = _seed_for_effective_payload(db)

@@ -5555,7 +5555,7 @@ class EvidenceDrivenStrategyProvider:
         high_citation_types = content_patterns.get("high_citation_types", [])
         low_citation_types = content_patterns.get("low_citation_types", [])
 
-        if high_citation_types and "TOOL_PAGE" in low_citation_types:
+        if high_citation_types:
             fact_refs = self._find_fact_refs(facts, content_types=high_citation_types)
             content_types_str = ", ".join(high_citation_types[:4])
             option_a = {
@@ -5564,34 +5564,34 @@ class EvidenceDrivenStrategyProvider:
                 "target_asset": "NEW_INFORMATIONAL_CONTENT",
                 "target_content_type": high_citation_types[0] if high_citation_types else "TUTORIAL",
                 "target_url": None,
-                "content_direction": f"Informational content types ({content_types_str}) dominate AI citations for this prompt.",
+                "content_direction": f"信息型内容（{content_types_str}）在当前 Prompt 的 AI 引用中占主导地位。",
                 "platform_direction": (
-                    "Platform selection is UNRESOLVED — citation content body analysis is unavailable, "
-                    "so the best platform for publishing cannot be determined from current evidence. "
-                    "Owned site, Zhihu, Baijiahao, and Bilibili are all possible candidates pending further evidence."
+                    "平台选择暂无法确定 —— 引用内容正文分析尚不可用，"
+                    "因此无法从当前证据中确定最佳发布平台。"
+                    "官网、知乎、百家号和 B 站都是可能的候选，需进一步证据支持。"
                 ),
                 "evidence_fit": "MEDIUM",
                 "execution_feasibility": "UNASSESSED",
                 "observed_problem": (
-                    f"Brand '{project.brand_name}' has 0/12 mention rate and 0/12 recommendation rate. "
-                    f"Current owned page ({target_urls[0] if target_urls else 'N/A'}) is a TOOL_PAGE — "
-                    f"TOOL_PAGE content type shows 0/12 citation coverage despite 10/12 candidate coverage. "
-                    f"Informational content types ({content_types_str}) dominate citations."
+                    f"品牌「{project.brand_name}」在 12 次采样中的品牌提及率和推荐率均为 0/12。"
+                    f"当前官方页面（{target_urls[0] if target_urls else '无'}）属于工具页类型 —— "
+                    f"工具页在 10/12 次采样中进入了检索候选，但引用次数为 0。"
+                    f"反观信息型内容（{content_types_str}）在引用中占主导。"
                 ),
                 "hypothesized_cause": (
-                    "The AI answer may select informational/instructional content over transactional/tool pages "
-                    "when responding to this informational-intent prompt. Pure tool pages, even when retrieved, "
-                    "may not provide the explanatory structure needed for citation inclusion."
+                    "AI 在回答此类信息型意图的问题时，可能更倾向于选择教程、问答、规则解释等信息型内容，"
+                    "而非纯工具/交易类页面。即使工具页能够进入检索候选，"
+                    "也可能因为缺少 AI 组织答案所需的结构化解释信息而未被选中为引用来源。"
                 ),
                 "core_mechanism": (
-                    "Create informational content (tutorial/QA/rule explanation) that directly answers "
-                    "the prompt intent with structured, citable information. "
-                    "The mechanism: content type matches citation pattern → higher probability of inclusion."
+                    "创建能够直接回应问题意图的信息型内容（教程/问答/规则解释），"
+                    "使其具备清晰、可被引用的结构化信息。"
+                    "核心机制：内容类型匹配 AI 引用偏好 → 更高的被引用概率。"
                 ),
                 "recommended_action": {
-                    "content_direction": f"Produce informational content in the {content_types_str} format covering '抖音跳转链接' topic.",
-                    "platform_direction": "UNRESOLVED — cannot determine optimal platform from current evidence. Owned site is the most controllable option for first test; external platforms require additional provenance investigation.",
-                    "asset_direction": "Create a NEW informational asset (not a modification of the existing /card tool page). Suggested structure: definition, platform rules, step-by-step guide, common failures, FAQ.",
+                    "content_direction": f"围绕「抖音跳转链接」主题，制作 {content_types_str} 格式的信息型内容。",
+                    "platform_direction": "暂无法确定最佳发布平台。官网是当前最可控的首选测试渠道；外部平台需要先确认引用来源后再决策。",
+                    "asset_direction": "新建独立的信息型内容资产（而非修改现有 /card 工具页）。建议包含：概念定义、平台规则、操作步骤、常见失败原因、FAQ。",
                 },
                 "recommended_title": "关于抖音跳转链接的完整说明（方案、规则与常见问题）",
                 "recommended_outline": ["什么是抖音跳转链接", "适用场景与平台规则", "操作步骤", "常见失败原因与排查", "FAQ"],
@@ -5600,7 +5600,7 @@ class EvidenceDrivenStrategyProvider:
                 "inferences": self._select_inferences(inferences, ["content_type_pattern", "tool_page_gap"]),
                 "target_metric": INTERVENTION_METRIC_MAP.get("OFFICIAL_NEW_PAGE", "target_page_retrieval_rate"),
                 "expected_secondary_metrics": ["brand_mention_rate", "brand_recommendation_rate"],
-                "metric_availability": "target_page_retrieval_rate is available for owned-site assets only; for external platforms, brand_mention_rate is the available proxy metric.",
+                "metric_availability": "「目标页面检索进入率」仅适用于自有站点资产；外部平台内容暂以「品牌提及率」作为代理指标。",
                 "baseline_value": "0/12",
                 "expected_direction": "increase",
                 "priority": "HIGH",
@@ -5609,25 +5609,23 @@ class EvidenceDrivenStrategyProvider:
                 "blocking_evidence": [],
                 "decision_capability": decision_capability,
                 "validation_plan": {
-                    "entry_observed_condition": "New informational asset published and verified publicly accessible.",
-                    "sustained_improvement_condition": "Target asset or brand appears in retrieval candidates or citations in independent re-collection.",
+                    "entry_observed_condition": "新信息型内容资产已发布并确认为可公开访问。",
+                    "sustained_improvement_condition": "目标资产或品牌在独立复采中出现在检索候选或引用中。",
                     "minimum_sample_count": 12,
                 },
-                "invalidating_result": "Re-collection shows no retrieval or citation of new informational content; brand mention rate remains 0/12.",
+                "invalidating_result": "复采后新信息资产未被检索或引用；品牌提及率仍为 0/12。",
                 "evidence_summary": (
-                    f"Package #{package.id}: {len(context.get('source_run_ids', []))} runs. "
-                    f"Brand presence: {brand_presence.get('brand_mention_rate', 0)} mention rate. "
-                    f"High-citation content types: {content_types_str}. "
-                    f"TOOL_PAGE citation coverage: 0/12. "
-                    f"Citation-only sources: {source_relations.get('citation_only_count', 0)} of {source_relations.get('total_citations', 0)} total citations."
+                    f"证据包 #{package.id}：{len(context.get('source_run_ids', []))} 次采样。"
+                    f"品牌提及率：{brand_presence.get('brand_mention_rate', 0)}。"
+                    f"高引用内容类型：{content_types_str}。"
+                    f"工具页引用覆盖：0/12。"
+                    f"仅引用无候选的来源：{source_relations.get('citation_only_count', 0)} / {source_relations.get('total_citations', 0)} 条。"
                 ),
                 "reason_for_not_choosing_alternatives": (
-                    "Platform-specific publishing (Zhihu, Bilibili, Baijiahao, etc.) is deferred because: "
-                    "(1) citation content body analysis is unavailable (cannot verify what content structure drives citations); "
-                    "(2) citation provenance for most domains is UNKNOWN (348/372 citations are CITATION_ONLY); "
-                    "(3) brand external asset status is unconfirmed. "
-                    "This strategy focuses on WHAT content type to produce; WHERE to publish remains UNRESOLVED."
-                ),
+                    "暂不推荐直接去知乎、B 站、百家号等外部平台发布，原因：(1) 引用内容正文分析尚不可用，"
+                    "无法确认什么内容结构驱动了引用；(2) 大多数域名的引用来源无法确认（372 条引用中 348 条为仅引用无候选）；"
+                    "(3) 品牌在外部平台的资产状态未确认。当前策略聚焦于「应该生产什么类型的内容」；「在哪里发布」仍需更多证据。"
+                )
             }
             options.append(option_a)
 
@@ -5674,15 +5672,14 @@ class EvidenceDrivenStrategyProvider:
                 "inference_id": "INF-001",
                 "inference_type": "content_type_citation_pattern",
                 "statement": (
-                    f"AI citations for this prompt show stronger association with "
-                    f"{', '.join(high_citation_types[:4])} content types. "
-                    f"TOOL_PAGE content appears in retrieval candidates but not in final citations."
+                    f"该 Prompt 的 AI 引用与 {', '.join(high_citation_types[:4])} 等内容类型关联更强。"
+                    f"工具页虽能进入检索候选，但几乎不被最终引用。"
                 ),
                 "confidence": "MEDIUM",
                 "supporting_fact_ids": fact_ids[:8],
                 "limitations": [
-                    "Content type classification is rule-based (content_classifier.v1), not body-content-based.",
-                    "12 runs, single prompt (Prompt #19), single model (wenxin).",
+                    "内容类型分类基于规则（content_classifier.v1），非正文内容分析。",
+                    "仅 12 次采样、单个 Prompt（#19）、单个模型（文心）。",
                 ],
             })
 
@@ -5693,15 +5690,14 @@ class EvidenceDrivenStrategyProvider:
                 "inference_id": "INF-002",
                 "inference_type": "tool_page_citation_gap",
                 "statement": (
-                    "Pure TOOL_PAGE content has high retrieval visibility but near-zero citation inclusion. "
-                    "This may indicate the AI model prefers explanatory/informational content over "
-                    "transactional/tool pages when composing answers for informational-intent prompts."
+                    "工具页在检索可见性方面表现良好，但几乎从未被 AI 选为引用来源。"
+                    "这可能表明 AI 在组织信息型回答时，更倾向于选择解释型/教程型内容，而非纯工具/交易类页面。"
                 ),
                 "confidence": "MEDIUM",
                 "supporting_fact_ids": [f["fact_id"] for f in facts if f.get("content_type") == "TOOL_PAGE"][:6],
                 "limitations": [
-                    "Single prompt, single model — cannot rule out model-specific behavior.",
-                    "Tool page content body was not analyzed — only title/domain/URL evidence available.",
+                    "仅单个 Prompt、单个模型 —— 无法排除模型特有行为。",
+                    "工具页正文内容未被分析 —— 仅有标题/域名/URL 级别证据。",
                 ],
             })
 
@@ -5712,15 +5708,14 @@ class EvidenceDrivenStrategyProvider:
                 "inference_id": "INF-003",
                 "inference_type": "brand_visibility_gap",
                 "statement": (
-                    f"The brand '{brand_presence.get('brand_name', '')}' is absent from all 12 AI answers. "
-                    f"No brand-owned content appears in citations. The brand does not currently exist "
-                    f"in the AI's reference pool for this prompt intent."
+                    f"品牌「{brand_presence.get('brand_name', '')}」在全部 12 次 AI 回答中均未被提及。"
+                    f"引用来源中未出现任何品牌自有内容。该品牌当前不存在于 AI 对该 Prompt 意图的引用池中。"
                 ),
                 "confidence": "HIGH",
                 "supporting_fact_ids": [f["fact_id"] for f in facts if f.get("metric_name") == "brand_mention_rate"][:3],
                 "limitations": [
-                    "12 runs, single prompt, single model.",
-                    "Brand absence may be specific to this prompt's intent domain; other prompts may show different behavior.",
+                    "仅 12 次采样、单个 Prompt、单个模型。",
+                    "品牌缺失可能是该 Prompt 意图领域特有的；其他 Prompt 可能表现不同。",
                 ],
             })
 
@@ -5731,16 +5726,15 @@ class EvidenceDrivenStrategyProvider:
                 "inference_id": "INF-004",
                 "inference_type": "source_relation_diagnostic",
                 "statement": (
-                    f"Citation-candidate URL join rate is very low ({src_relations.get('join_rate', 0):.1%}). "
-                    f"This is a DIAGNOSTIC observation — it does NOT directly inform platform or content strategy. "
-                    f"It indicates the retrieval parser's visible candidate pool and the AI's final citation pool "
-                    f"are largely distinct sets."
+                    f"引用与候选的 URL 匹配率极低（{src_relations.get('join_rate', 0):.1%}）。"
+                    f"这是诊断性观察 —— 不直接用于平台或内容策略决策。"
+                    f"它表明检索解析器可见的候选池与 AI 最终引用池在很大程度上是不同的集合。"
                 ),
                 "confidence": "HIGH",
                 "supporting_fact_ids": [f["fact_id"] for f in facts if f.get("fact_type") == "SOURCE_RELATION"][:3],
                 "limitations": [
-                    "This is normal behavior for many AI search platforms and does not indicate a parser bug.",
-                    "Do not use join_rate as primary strategy evidence.",
+                    "这是许多 AI 搜索平台的正常行为，不代表解析器存在 bug。",
+                    "请勿将 join_rate 作为主要策略证据使用。",
                 ],
             })
 

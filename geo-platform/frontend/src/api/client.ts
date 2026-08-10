@@ -46,6 +46,10 @@ export const api = {
     request<Prompt>(`/api/projects/${projectId}/prompts`, { method: "POST", body: JSON.stringify(payload) }),
   updatePrompt: (projectId: number, promptId: number, payload: unknown) =>
     request<Prompt>(`/api/projects/${projectId}/prompts/${promptId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deletePrompt: (projectId: number, promptId: number) =>
+    request<{ deleted: boolean }>(`/api/projects/${projectId}/prompts/${promptId}`, { method: "DELETE" }),
+  batchDeletePrompts: (projectId: number, ids: number[]) =>
+    request<{ deleted: number }>(`/api/projects/${projectId}/prompts/batch-delete`, { method: "POST", body: JSON.stringify({ ids }) }),
   listTopics: (projectId: number) => request<Topic[]>(`/api/projects/${projectId}/topics`),
   createTopic: (projectId: number, payload: unknown) =>
     request<Topic>(`/api/projects/${projectId}/topics`, { method: "POST", body: JSON.stringify(payload) }),

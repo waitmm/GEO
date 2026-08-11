@@ -78,6 +78,47 @@ def _extract_baidu_redirect_target(html: str) -> str | None:
     return None
 
 
+def fetch_page_playwright(urls: list[str]) -> list[dict]:
+    """Fetch multiple URLs using Playwright browser (handles JS-rendered pages)."""
+    results = []
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                locale="zh-CN",
+            )
+            page = context.new_page()
+            for url in urls:
+                result = {
+                    "url": url, "canonical_url": url, "domain": urlparse(url).netloc.lower(),
+                    "fetch_status": "pending", "failure_reason": "", "title": "",
+                    "raw_html": "", "clean_text": "", "fetch_time": datetime.utcnow(),
+                }
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(2000)  # Wait for JS to render
+                    html = page.content()
+                    result["raw_html"] = html[:500000]
+                    result["title"] = page.title() or ""
+                    # Extract clean text
+                    body = page.inner_text("body") if page.locator("body").count() > 0 else ""
+                    clean = _MULTI_NL.sub("\n\n", body.strip())[:200000]
+                    result["clean_text"] = clean
+                    result["fetch_status"] = "SUCCESS" if len(clean) > 100 else "PARTIAL"
+                except Exception as e:
+                    result["fetch_status"] = "FETCH_FAILED"
+                    result["failure_reason"] = str(e)[:200]
+                results.append(result)
+            browser.close()
+    except ImportError:
+        # Fallback to urllib
+        for url in urls:
+            results.append(fetch_page(url))
+    return results
+
+
 def fetch_page(url: str, follow_baidu_redirect: bool = True) -> dict:
     """Fetch a URL and extract clean text."""
     normalized = _normalize_url_for_fetch(url)
@@ -142,7 +183,7 @@ def fetch_page(url: str, follow_baidu_redirect: bool = True) -> dict:
 def acquire_cited_sources(db: Session, run_ids: list[int]) -> dict:
     """Acquire content for all cited URLs in given runs.
 
-    Returns {stats, documents_created, failures}
+    Uses Playwright browser for JS-rendered pages, falls back to urllib.
     """
     refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(run_ids)).all()
     # Deduplicate by canonical URL
@@ -154,26 +195,33 @@ def acquire_cited_sources(db: Session, run_ids: list[int]) -> dict:
             seen.add(url)
             unique_urls.append((url, ref.domain, "CITED"))
 
-    created, failed = 0, 0
+    # Filter out already-acquired URLs
+    new_urls = []
     for url, domain, src_type in unique_urls:
         existing = db.query(SourceDocument).filter(SourceDocument.url == url).first()
-        if existing:
-            continue
-        result = fetch_page(url)
-        doc = SourceDocument(
-            url=url, domain=domain, source_type=src_type,
-            fetch_status=result["fetch_status"], failure_reason=result["failure_reason"],
-            title=result["title"], raw_html=result["raw_html"][:500000],
-            clean_text=result["clean_text"][:200000],
-            clean_text_hash=hashlib.sha256(result["clean_text"].encode()).hexdigest()[:16],
-            fetch_time=result["fetch_time"],
-        )
-        db.add(doc)
-        if result["fetch_status"] == "SUCCESS":
-            created += 1
-        else:
-            failed += 1
-    db.commit()
+        if not existing:
+            new_urls.append(url)
+
+    created, failed = 0, 0
+    if new_urls:
+        # Try Playwright first
+        results = fetch_page_playwright(new_urls)
+        for i, (url, domain, src_type) in enumerate([(u, d, s) for u, d, s in unique_urls if u in new_urls]):
+            result = results[i] if i < len(results) else fetch_page(url)
+            doc = SourceDocument(
+                url=url, domain=domain, source_type=src_type,
+                fetch_status=result["fetch_status"], failure_reason=result["failure_reason"],
+                title=result["title"], raw_html=result.get("raw_html", "")[:500000],
+                clean_text=result["clean_text"][:200000],
+                clean_text_hash=hashlib.sha256((result["clean_text"] or "").encode()).hexdigest()[:16],
+                fetch_time=result["fetch_time"],
+            )
+            db.add(doc)
+            if result["fetch_status"] == "SUCCESS":
+                created += 1
+            else:
+                failed += 1
+        db.commit()
     return {"unique_urls": len(unique_urls), "created": created, "failed": failed}
 
 

@@ -770,7 +770,7 @@ export default function App() {
               </Row>
               {/* Source Documents + Manual Capture (merged) */}
               <Card size="small" title="引用资料" extra={<Button size="small" onClick={async()=>{
-                try{setGoldenData({...goldenData, docs:await (await fetch("/api/optimization/golden-case/documents")).json()})}
+                try{setGoldenData({...goldenData, docs:await (await fetch(`/api/optimization/golden-case/documents?run_ids=${goldenData?.runIds||""}`)).json()})}
                 catch(e:any){message.error(e.message)}
               }}>刷新列表</Button>}>
                 <Row gutter={12} style={{marginBottom:8}}>
@@ -798,7 +798,7 @@ export default function App() {
                   await fetch("/api/optimization/golden-case/documents/manual",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
                   message.success("已录入");
                   setManualUrl("");setManualText("");setManualHtml("");
-                  setGoldenData({...goldenData, docs:await (await fetch("/api/optimization/golden-case/documents")).json()});
+                  setGoldenData({...goldenData, docs:await (await fetch(`/api/optimization/golden-case/documents?run_ids=${goldenData?.runIds||""}`)).json()});
                 }}>录入</Button>
               </Card>
               {/* URL Audit */}

@@ -302,8 +302,15 @@ def golden_case_alignments(run_ids: str = "173,174,175,176,177,178,179,180,181,1
 
 
 @router.get("/golden-case/documents")
-def golden_case_documents(db: Session = Depends(get_db)):
-    docs = db.query(SourceDocument).order_by(SourceDocument.source_type, SourceDocument.id).all()
+def golden_case_documents(run_ids: str = "", db: Session = Depends(get_db)):
+    if run_ids:
+        ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+        # Get unique citation URLs for these runs
+        refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(ids)).all()
+        cit_urls = set((r.canonical_url or r.url) for r in refs if (r.canonical_url or r.url))
+        docs = db.query(SourceDocument).filter(SourceDocument.url.in_(cit_urls)).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
+    else:
+        docs = db.query(SourceDocument).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
     return [{"id": d.id, "url": d.url, "domain": d.domain, "source_type": d.source_type,
              "fetch_status": d.fetch_status, "title": d.title, "clean_text_len": len(d.clean_text or ""),
              "blocks_count": len(loads(d.content_blocks_json, [])),

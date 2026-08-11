@@ -79,35 +79,47 @@ def _extract_baidu_redirect_target(html: str) -> str | None:
 
 
 def fetch_page_playwright(urls: list[str]) -> list[dict]:
-    """Fetch multiple URLs using Playwright browser (sequential, with short timeout)."""
+    """Fetch multiple URLs using Playwright with full page rendering."""
     results = []
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-blink-features=AutomationControlled"])
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 locale="zh-CN",
+                viewport={"width": 1440, "height": 900},
             )
             page = context.new_page()
             for url in urls:
+                normalized = _normalize_url_for_fetch(url)
                 result = {
-                    "url": url, "canonical_url": url, "domain": urlparse(url).netloc.lower(),
+                    "url": url, "canonical_url": normalized, "domain": urlparse(normalized).netloc.lower(),
                     "fetch_status": "pending", "failure_reason": "", "title": "",
                     "raw_html": "", "clean_text": "", "fetch_time": datetime.utcnow(),
                 }
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=5000)
-                    html = page.content()
-                    result["raw_html"] = html[:500000]
-                    result["title"] = page.title() or ""
-                    body = page.inner_text("body") if page.locator("body").count() > 0 else ""
-                    clean = _MULTI_NL.sub("\n\n", body.strip())[:200000]
-                    result["clean_text"] = clean
-                    result["fetch_status"] = "SUCCESS" if len(clean) > 100 else "PARTIAL"
-                except Exception as e:
-                    result["fetch_status"] = "FETCH_FAILED"
-                    result["failure_reason"] = str(e)[:200]
+                for attempt in range(2):  # Retry once
+                    try:
+                        page.goto(normalized, wait_until="networkidle", timeout=20000)
+                        # Scroll to load lazy content
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        page.wait_for_timeout(500)
+                        page.evaluate("window.scrollTo(0, 0)")
+                        page.wait_for_timeout(300)
+                        html = page.content()
+                        title = page.title() or ""
+                        # Get all visible text
+                        body = page.inner_text("body") if page.locator("body").count() > 0 else ""
+                        clean = _MULTI_NL.sub("\n\n", body.strip())[:200000]
+                        result["raw_html"] = html[:500000]
+                        result["title"] = title
+                        result["clean_text"] = clean
+                        result["fetch_status"] = "SUCCESS" if len(clean) > 200 else "PARTIAL"
+                        break
+                    except Exception as e:
+                        if attempt == 1:
+                            result["fetch_status"] = "FETCH_FAILED"
+                            result["failure_reason"] = str(e)[:200]
                 results.append(result)
             browser.close()
     except ImportError:

@@ -139,6 +139,9 @@ export default function App() {
   const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null);
   const [goldenData, setGoldenData] = useState<any>(null);
   const [goldenLoading, setGoldenLoading] = useState(false);
+  const [manualUrl, setManualUrl] = useState("");
+  const [manualText, setManualText] = useState("");
+  const [manualHtml, setManualHtml] = useState("");
   const [loading, setLoading] = useState(false);
   const [fallback, setFallback] = useState(false);
   const [promptForm] = Form.useForm();
@@ -780,25 +783,21 @@ export default function App() {
                   {title:"域名",dataIndex:"domain",width:100},
                   {title:"URL/标题",ellipsis:true,render:(_,r:any)=><a href={r.url} target="_blank" rel="noreferrer" style={{fontSize:12}}>{r.title||r.url}</a>},
                   {title:"字数",width:60,render:(_,r:any)=><Tag>{r.clean_text_len||0}</Tag>},
-                  {title:"补录",width:70,render:(_,r:any)=>r.fetch_status!=="SUCCESS"?<Button size="small" onClick={()=>{
-                    (document.getElementById("manual-url")as HTMLInputElement).value=r.url;
-                    window.scrollTo(0,document.getElementById("manual-url")!.offsetTop-100);
-                  }}>补录</Button>:null},
+                  {title:"补录",width:70,render:(_,r:any)=>r.fetch_status!=="SUCCESS"?<Button size="small" onClick={()=>setManualUrl(r.url)}>补录</Button>:null},
                 ]} />}
                 <Divider />
-                <Input placeholder="页面URL" id="manual-url" style={{width:"100%",marginBottom:6}}/>
-                <Input.TextArea id="manual-text" rows={4} placeholder="粘贴正文..." />
-                <Input.TextArea id="manual-html" rows={4} placeholder="或粘贴HTML源码..." style={{marginTop:6}}/>
+                <Input placeholder="页面URL" value={manualUrl} onChange={e=>setManualUrl(e.target.value)} style={{width:"100%",marginBottom:6}}/>
+                <Input.TextArea value={manualText} onChange={e=>setManualText(e.target.value)} rows={4} placeholder="粘贴正文..." />
+                <Input.TextArea value={manualHtml} onChange={e=>setManualHtml(e.target.value)} rows={4} placeholder="或粘贴HTML源码..." style={{marginTop:6}}/>
                 <Button type="primary" style={{marginTop:6}} onClick={async()=>{
-                  const url=(document.getElementById("manual-url")as HTMLInputElement).value;
-                  const text=(document.getElementById("manual-text")as HTMLTextAreaElement).value;
-                  const html=(document.getElementById("manual-html")as HTMLTextAreaElement).value;
-                  if(!url){message.warning("请输入URL");return;}
-                  const body:any={url,source_type:"CITED"};
-                  if(html)body.raw_html=html;
-                  if(text)body.clean_text=text;
+                  if(!manualUrl){message.warning("请输入URL");return;}
+                  if(!manualText&&!manualHtml){message.warning("请输入正文或HTML源码");return;}
+                  const body:any={url:manualUrl,source_type:"CITED"};
+                  if(manualHtml)body.raw_html=manualHtml;
+                  if(manualText)body.clean_text=manualText;
                   await fetch("/api/optimization/golden-case/documents/manual",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
                   message.success("已录入");
+                  setManualUrl("");setManualText("");setManualHtml("");
                   setGoldenData({...goldenData, docs:await (await fetch("/api/optimization/golden-case/documents")).json()});
                 }}>录入</Button>
               </Card>

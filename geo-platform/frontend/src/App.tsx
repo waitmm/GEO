@@ -730,13 +730,14 @@ export default function App() {
                 }
               }catch{}
               try{
-                const [s, nm, claims, audit] = await Promise.all([
+                const [s, nm, claims, audit, docs] = await Promise.all([
                   (await fetch("/api/optimization/golden-case/summary")).json(),
                   (await fetch(`/api/optimization/golden-case/need-map-validated?run_ids=${runIds}`)).json(),
                   (await fetch(`/api/optimization/golden-case/claims?run_ids=${runIds}`)).json(),
                   (await fetch("/api/optimization/golden-case/url-audit")).json(),
+                  (await fetch(`/api/optimization/golden-case/documents?run_ids=${runIds}`)).json(),
                 ]);
-                setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, promptId:v, runIds:runIds});
+                setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, docs, promptId:v, runIds:runIds});
               }catch(e:any){message.error(e.message)}
               finally{setGoldenLoading(false)}
             }}
@@ -747,13 +748,14 @@ export default function App() {
               if(!goldenData?.runIds)return;
               setGoldenLoading(true);
               try{
-                const [s, nm, claims, audit] = await Promise.all([
+                const [s, nm, claims, audit, docs] = await Promise.all([
                   (await fetch("/api/optimization/golden-case/summary")).json(),
                   (await fetch(`/api/optimization/golden-case/need-map-validated?run_ids=${goldenData.runIds}`)).json(),
                   (await fetch(`/api/optimization/golden-case/claims?run_ids=${goldenData.runIds}`)).json(),
                   (await fetch("/api/optimization/golden-case/url-audit")).json(),
+                  (await fetch(`/api/optimization/golden-case/documents?run_ids=${goldenData.runIds}`)).json(),
                 ]);
-                setGoldenData({...goldenData, summary:s, needMap:nm, claims, urlAudit:audit});
+                setGoldenData({...goldenData, summary:s, needMap:nm, claims, urlAudit:audit, docs});
               }catch(e:any){message.error(e.message)}
               finally{setGoldenLoading(false)}
             }}>加载数据</Button>

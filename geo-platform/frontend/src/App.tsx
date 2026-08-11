@@ -13,7 +13,7 @@ import type {
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text, Link } = Typography;
-type PageKey = "validation" | "optimization" | "config" | "runs" | "ranking";
+type PageKey = "validation" | "optimization" | "config" | "runs" | "ranking" | "golden";
 
 const emptyQueue: BrowserQueueSummary = {
   project_id: null, queued: 0, pending: 0, running: 0, success: 0,
@@ -137,6 +137,8 @@ export default function App() {
   const [evidencePackages, setEvidencePackages] = useState<any[]>([]);
   const [selectedPkgId, setSelectedPkgId] = useState<number | null>(null);
   const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null);
+  const [goldenData, setGoldenData] = useState<any>(null);
+  const [goldenLoading, setGoldenLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fallback, setFallback] = useState(false);
   const [promptForm] = Form.useForm();
@@ -347,12 +349,13 @@ export default function App() {
         { key: "config", icon: <ListChecks size={18} />, label: "问题配置" },
         { key: "optimization", icon: <ShieldCheck size={18} />, label: "优化策略" },
         { key: "runs", icon: <Monitor size={18} />, label: "采集记录" },
-        { key: "ranking", icon: <BarChart3 size={18} />, label: "引用分析" }
+        { key: "ranking", icon: <BarChart3 size={18} />, label: "引用分析" },
+        { key: "golden", icon: <ShieldCheck size={18} />, label: "Golden Case" }
       ]} />
     </Sider>
     <Layout>
       <Header className="topbar">
-        <div><Title level={3}>{page === "validation" ? "品牌 AI 可见度监测" : page === "optimization" ? "证据 → 优化策略" : page === "config" ? "Prompt 与采集配置" : page === "ranking" ? "AI 引用来源分析" : "采集记录"}</Title><Text type="secondary">观察 · 证据 · 对比</Text></div>
+        <div><Title level={3}>{page === "validation" ? "品牌 AI 可见度监测" : page === "optimization" ? "证据 → 优化策略" : page === "config" ? "Prompt 与采集配置" : page === "ranking" ? "AI 引用来源分析" : page === "golden" ? "Golden Case 内容分析" : "采集记录"}</Title><Text type="secondary">观察 · 证据 · 对比</Text></div>
         <Space>
           <Select className="project-select" value={projectId} placeholder="选择项目" onChange={setProjectId} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
           <Button icon={<Plus size={16} />} onClick={() => openProjectModal()}>新建项目</Button>
@@ -705,6 +708,68 @@ export default function App() {
                 setRankingLoading(true);
                 api.getCitationRanking(7).then(data=>{setRankingData(data);message.success("已刷新")}).catch(e=>{message.error(String(e.message||e))}).finally(()=>setRankingLoading(false));
               }}>刷新</Button>
+            </Space>}
+          </Card>
+        </Space> : page === "golden" ? <Space direction="vertical" size={16} className="page-stack">
+          <Card title="Golden Case · Prompt #19「抖音跳转链接」" extra={<Space>
+            <Tag color="orange">CITATION_ONLY</Tag>
+            <Button type="primary" loading={goldenLoading} onClick={async()=>{
+              setGoldenLoading(true);
+              try{setGoldenData(await (await fetch("/api/optimization/golden-case/summary")).json())}
+              catch(e:any){message.error(e.message)}
+              finally{setGoldenLoading(false)}
+            }}>加载数据</Button>
+          </Space>}>
+            <Alert type="warning" showIcon style={{marginBottom:12}}
+              message="内容抓取受限：第三方平台（B站、知乎、抖音等）拒绝自动化访问，仅百度系部分页面成功。此 Golden Case 基于 Answer 文本分析 + 部分 Citation 内容。完整 Passage Alignment 需人工辅助或升级抓取能力。"
+            />
+            {!goldenData ? <Empty description="点击「加载数据」查看 Golden Case 分析结果" /> : <Space direction="vertical" size={12}>
+              <Row gutter={12}>
+                <Col span={6}><Statistic title="Answer Claims" value={goldenData.answer_claims}/></Col>
+                <Col span={6}><Statistic title="Alignments" value={goldenData.alignments}/></Col>
+                <Col span={6}><Statistic title="L1 Exact" value={goldenData.l1_exact}/></Col>
+                <Col span={6}><Statistic title="L2 Near-Dup" value={goldenData.l2_near_duplicate}/></Col>
+              </Row>
+              <Card size="small" title="AI 信息需求图谱（12 次回答中反复出现的信息类型）" extra={<Button size="small" onClick={async()=>{
+                try{setGoldenData({...goldenData, needMap:await (await fetch("/api/optimization/golden-case/need-map")).json()});message.success("已加载需求图谱")}
+                catch(e:any){message.error(e.message)}
+              }}>加载需求图谱</Button>}>
+                {goldenData.needMap ? <Table size="small" rowKey="need_name" pagination={false}
+                  dataSource={goldenData.needMap.answer_need_map||[]}
+                  columns={[
+                    {title:"信息需求",dataIndex:"need_name",width:120},
+                    {title:"出现次数",dataIndex:"claim_count",width:80},
+                    {title:"Run覆盖",dataIndex:"coverage",width:80},
+                    {title:"示例",render:(_,r:any)=>(r.sample_claims||[]).slice(0,2).map((s:string,i:number)=><Text key={i} type="secondary" style={{display:"block"}}>{s}</Text>)},
+                  ]}
+                /> : <Text type="secondary">点击按钮加载</Text>}
+              </Card>
+              <Card size="small" title="品牌信息缺口" extra={<Button size="small" onClick={async()=>{
+                try{setGoldenData({...goldenData, brandGap:await (await fetch("/api/optimization/golden-case/brand-gap")).json()});message.success("已加载缺口分析")}
+                catch(e:any){message.error(e.message)}
+              }}>加载缺口分析</Button>}>
+                {goldenData.brandGap ? <Space direction="vertical" size={8}>
+                  {goldenData.brandGap.status==="BRAND_CONTENT_UNAVAILABLE" && <Alert type="warning" showIcon message="品牌页面 /card 抓取失败（HTTP 访问被拒），无法进行内容对比。缺口分析基于 AI 需求图谱推断。" />}
+                  {(goldenData.brandGap.gaps||[]).length>0 ? (goldenData.brandGap.gaps||[]).map((g:any)=><Alert key={g.need_name} type="warning" showIcon message={<Space><Text strong>{g.need_name}</Text><Tag color={g.severity==="HIGH"?"red":"orange"}>{g.severity}</Tag></Space>} description={`AI回答中出现 ${g.ai_claim_count} 次，覆盖 ${g.ai_run_coverage} 个 Run。品牌页面未检测到相关内容。`} />) : <Text type="secondary">品牌内容不可用，无法计算缺口。手动对比已知：爱短链 /card 页面为产品功能页，缺少教程型信息块。</Text>}
+                </Space> : <Text type="secondary">点击按钮加载</Text>}
+              </Card>
+              <Card size="small" title="Answer Claims（前 20 条）" extra={<Button size="small" onClick={async()=>{
+                try{setGoldenData({...goldenData, claims:await (await fetch("/api/optimization/golden-case/claims")).json()});message.success("已加载Claims")}
+                catch(e:any){message.error(e.message)}
+              }}>加载Claims</Button>}>
+                {goldenData.claims ? <Table size="small" rowKey="id" pagination={{pageSize:20}}
+                  dataSource={(goldenData.claims||[]).slice(0,20)}
+                  columns={[
+                    {title:"Run",dataIndex:"run_id",width:55},
+                    {title:"#",dataIndex:"claim_index",width:40},
+                    {title:"内容",dataIndex:"raw_text",ellipsis:true,render:(v:string)=><Text style={{fontSize:12}}>{v}</Text>},
+                    {title:"引用锚点",width:70,render:(_,r:any)=>r.citation_ids?.length>0?<Tag>{r.citation_ids.join(",")}</Tag>:<Tag color="default">无</Tag>},
+                  ]}
+                /> : <Text type="secondary">点击按钮加载</Text>}
+              </Card>
+              <Alert type="info" showIcon
+                message={<span><strong>Golden Case 当前结论</strong>：AI 在「抖音跳转链接」12 次回答中反复需要的核心信息是<strong>操作步骤</strong>（144 claims, 12/12 runs）。引用资料以教程型内容为主。品牌 /card 为产品工具页，缺少独立操作步骤说明块。建议优先验证在可控资产中补充操作流程信息。<strong>内容抓取受限</strong>（第三方平台反爬），完整 Passage Evidence 需人工辅助获取引用页面内容。</span>}
+              />
             </Space>}
           </Card>
         </Space> : <Card title="采集记录" extra={<Tag>每行是一次独立采样</Tag>}>

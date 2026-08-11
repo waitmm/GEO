@@ -594,6 +594,68 @@ class OptimizationExperiment(Base, TimestampMixin):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+# ---------------------------------------------------------------------------
+# Citation Passage Intelligence — Golden Case models
+# ---------------------------------------------------------------------------
+
+class SourceDocument(Base, TimestampMixin):
+    __tablename__ = "source_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    url: Mapped[str] = mapped_column(String(1200), index=True)
+    canonical_url: Mapped[str] = mapped_column(String(1200), default="")
+    domain: Mapped[str] = mapped_column(String(255), default="", index=True)
+    source_type: Mapped[str] = mapped_column(String(40), default="CITED", index=True)
+    fetch_status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
+    failure_reason: Mapped[str] = mapped_column(Text, default="")
+    title: Mapped[str] = mapped_column(String(500), default="")
+    author: Mapped[str] = mapped_column(String(240), default="")
+    publish_time: Mapped[str] = mapped_column(String(80), default="")
+    raw_html: Mapped[str] = mapped_column(Text, default="")
+    clean_text: Mapped[str] = mapped_column(Text, default="")
+    clean_text_hash: Mapped[str] = mapped_column(String(64), default="")
+    content_blocks_json: Mapped[str] = mapped_column(Text, default="[]")
+    fetch_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AnswerClaim(Base, TimestampMixin):
+    __tablename__ = "answer_claims"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+    claim_index: Mapped[int] = mapped_column(Integer, default=0)
+    raw_text: Mapped[str] = mapped_column(Text, default="")
+    claim_type: Mapped[str] = mapped_column(String(60), default="")
+    citation_anchor: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    citation_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    epistemic_status: Mapped[str] = mapped_column(String(40), default="FACT")
+    provenance: Mapped[str] = mapped_column(String(40), default="RULE_DERIVED")
+    reviewer: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    answer_position: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class PassageAlignment(Base, TimestampMixin):
+    __tablename__ = "passage_alignments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    answer_claim_id: Mapped[int] = mapped_column(ForeignKey("answer_claims.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+    citation_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reference_sources.id"), nullable=True, index=True)
+    source_document_id: Mapped[Optional[int]] = mapped_column(ForeignKey("source_documents.id"), nullable=True, index=True)
+    passage_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    alignment_level: Mapped[str] = mapped_column(String(40), default="UNRESOLVED")
+    alignment_method: Mapped[str] = mapped_column(String(80), default="")
+    score: Mapped[float] = mapped_column(Float, default=0)
+    evidence: Mapped[str] = mapped_column(Text, default="")
+    epistemic_status: Mapped[str] = mapped_column(String(40), default="FACT")
+    provenance: Mapped[str] = mapped_column(String(40), default="RULE_DERIVED")
+    review_status: Mapped[str] = mapped_column(String(40), default="PENDING")
+    reviewer: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class BrandMention(Base):
     __tablename__ = "brand_mentions"
 

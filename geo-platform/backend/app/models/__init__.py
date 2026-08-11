@@ -1,5 +1,6 @@
 from app.models.db import (
     AnswerCitation,
+    AnswerClaim,
     Base,
     BrandMention,
     BrowserMonitorRun,
@@ -18,6 +19,7 @@ from app.models.db import (
     OptimizationStrategyCandidate,
     Organization,
     PageSnapshot,
+    PassageAlignment,
     Project,
     Prompt,
     PromptCluster,
@@ -26,6 +28,7 @@ from app.models.db import (
     ReleaseAuditRecord,
     RetrievalCandidate,
     RunArtifact,
+    SourceDocument,
     SourceMetadataCache,
     Topic,
     User,
@@ -33,6 +36,7 @@ from app.models.db import (
 
 __all__ = [
     "AnswerCitation",
+    "AnswerClaim",
     "Base",
     "BrandMention",
     "BrowserMonitorRun",
@@ -51,6 +55,7 @@ __all__ = [
     "OptimizationStrategyCandidate",
     "Organization",
     "PageSnapshot",
+    "PassageAlignment",
     "Project",
     "Prompt",
     "PromptCluster",
@@ -59,6 +64,7 @@ __all__ = [
     "ReleaseAuditRecord",
     "RetrievalCandidate",
     "RunArtifact",
+    "SourceDocument",
     "SourceMetadataCache",
     "Topic",
     "User",

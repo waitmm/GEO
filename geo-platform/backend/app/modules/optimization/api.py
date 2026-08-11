@@ -239,3 +239,91 @@ def evidence_chain_endpoint(issue_id: int, db: Session = Depends(get_db)) -> dic
 @router.get("/evidence-packages/{package_id}/citation-ranking")
 def citation_evidence_ranking_endpoint(package_id: int, db: Session = Depends(get_db)):
     return run_citation_evidence_ranking_v0(db, package_id)
+
+
+# --- Citation Passage Intelligence V0 ---
+
+from app.modules.optimization.passage_service import (
+    run_golden_case_pipeline,
+    acquire_cited_sources,
+    acquire_brand_asset,
+    extract_answer_claims,
+    segment_all_documents,
+    align_claims_to_passages,
+    generate_answer_need_map,
+    analyze_brand_information_gap,
+)
+from app.models import AnswerClaim, PassageAlignment, SourceDocument
+
+
+@router.post("/golden-case/run")
+def golden_case_run(payload: dict, db: Session = Depends(get_db)):
+    run_ids = payload.get("run_ids", list(range(173, 185)))
+    brand_url = payload.get("brand_url", "https://www.aifabu.com/card")
+    return run_golden_case_pipeline(db, run_ids, brand_url)
+
+
+@router.get("/golden-case/claims")
+def golden_case_claims(run_ids: str = "173,174,175,176,177,178,179,180,181,182,183,184", db: Session = Depends(get_db)):
+    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+    claims = db.query(AnswerClaim).filter(AnswerClaim.run_id.in_(ids)).order_by(AnswerClaim.run_id, AnswerClaim.claim_index).all()
+    return [{"id": c.id, "run_id": c.run_id, "claim_index": c.claim_index, "raw_text": c.raw_text,
+             "claim_type": c.claim_type, "citation_anchor": c.citation_anchor,
+             "citation_ids": loads(c.citation_ids_json, []),
+             "answer_position": c.answer_position, "epistemic_status": c.epistemic_status,
+             "provenance": c.provenance, "reviewer": c.reviewer, "review_note": c.review_note} for c in claims]
+
+
+@router.get("/golden-case/alignments")
+def golden_case_alignments(run_ids: str = "173,174,175,176,177,178,179,180,181,182,183,184", db: Session = Depends(get_db)):
+    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+    als = db.query(PassageAlignment).filter(PassageAlignment.run_id.in_(ids)).order_by(PassageAlignment.id).all()
+    result = []
+    for a in als:
+        claim = db.query(AnswerClaim).get(a.answer_claim_id) if a.answer_claim_id else None
+        doc = db.query(SourceDocument).get(a.source_document_id) if a.source_document_id else None
+        result.append({
+            "id": a.id, "answer_claim_id": a.answer_claim_id, "run_id": a.run_id,
+            "citation_id": a.citation_id, "source_document_id": a.source_document_id,
+            "passage_index": a.passage_index, "alignment_level": a.alignment_level,
+            "alignment_method": a.alignment_method, "score": a.score, "evidence": a.evidence,
+            "claim_text": claim.raw_text if claim else "",
+            "doc_title": doc.title if doc else "", "doc_url": doc.url if doc else "",
+            "epistemic_status": a.epistemic_status, "provenance": a.provenance,
+            "review_status": a.review_status,
+        })
+    return result
+
+
+@router.get("/golden-case/documents")
+def golden_case_documents(db: Session = Depends(get_db)):
+    docs = db.query(SourceDocument).order_by(SourceDocument.source_type, SourceDocument.id).all()
+    return [{"id": d.id, "url": d.url, "domain": d.domain, "source_type": d.source_type,
+             "fetch_status": d.fetch_status, "title": d.title, "clean_text_len": len(d.clean_text or ""),
+             "blocks_count": len(loads(d.content_blocks_json, [])),
+             "failure_reason": d.failure_reason} for d in docs]
+
+
+@router.get("/golden-case/need-map")
+def golden_case_need_map(run_ids: str = "173,174,175,176,177,178,179,180,181,182,183,184", db: Session = Depends(get_db)):
+    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+    return generate_answer_need_map(db, ids)
+
+
+@router.get("/golden-case/brand-gap")
+def golden_case_brand_gap(db: Session = Depends(get_db)):
+    ids = list(range(173, 185))
+    need_map = generate_answer_need_map(db, ids)
+    return analyze_brand_information_gap(db, "https://www.aifabu.com/card", need_map["answer_need_map"], ids)
+
+
+@router.get("/golden-case/summary")
+def golden_case_summary(db: Session = Depends(get_db)):
+    docs = db.query(SourceDocument).count()
+    claims = db.query(AnswerClaim).count()
+    als = db.query(PassageAlignment).count()
+    l1 = db.query(PassageAlignment).filter(PassageAlignment.alignment_level == "L1_EXACT_OVERLAP").count()
+    l2 = db.query(PassageAlignment).filter(PassageAlignment.alignment_level == "L2_NEAR_DUPLICATE").count()
+    return {"source_documents": docs, "answer_claims": claims, "alignments": als,
+            "l1_exact": l1, "l2_near_duplicate": l2,
+            "eligibility": "CITATION_ONLY", "note": "Candidate-citation URL overlap ~3%"}

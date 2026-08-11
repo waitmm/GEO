@@ -730,14 +730,15 @@ export default function App() {
                 }
               }catch{}
               try{
-                const [s, nm, claims, audit, docs] = await Promise.all([
+                const [s, nm, claims, audit, docs, als] = await Promise.all([
                   (await fetch("/api/optimization/golden-case/summary")).json(),
                   (await fetch(`/api/optimization/golden-case/need-map-validated?run_ids=${runIds}`)).json(),
                   (await fetch(`/api/optimization/golden-case/claims?run_ids=${runIds}`)).json(),
                   (await fetch("/api/optimization/golden-case/url-audit")).json(),
                   (await fetch(`/api/optimization/golden-case/documents?run_ids=${runIds}`)).json(),
+                  (await fetch(`/api/optimization/golden-case/alignments?run_ids=${runIds}`)).json(),
                 ]);
-                setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, docs, promptId:v, runIds:runIds});
+                setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, docs, alignments:als, promptId:v, runIds:runIds});
               }catch(e:any){message.error(e.message)}
               finally{setGoldenLoading(false)}
             }}
@@ -829,6 +830,29 @@ export default function App() {
                   setManualUrl("");setManualText("");setManualHtml("");
                   setGoldenData({...goldenData, docs:await (await fetch(`/api/optimization/golden-case/documents?run_ids=${goldenData?.runIds||""}`)).json()});
                 }}>录入</Button>
+              </Card>
+              {/* Passage Alignments */}
+              <Card size="small" title="Claim → Citation → Passage 对齐" extra={<Button size="small" onClick={async()=>{
+                try{setGoldenData({...goldenData, alignments:await (await fetch(`/api/optimization/golden-case/alignments?run_ids=${goldenData?.runIds||""}`)).json()})}
+                catch(e:any){message.error(e.message)}
+              }}>加载对齐</Button>}>
+                {goldenData.alignments ? <>
+                  {goldenData.alignments.filter((a:any)=>a.alignment_level!=="L5_UNRESOLVED").length===0
+                    ? <Alert type="warning" showIcon message="当前无有效对齐。AI回答与引用页面正文之间无直接文本重叠，需要人工辅助建立语义对齐。" />
+                    : <Table size="small" rowKey="id" pagination={{pageSize:10}}
+                        dataSource={goldenData.alignments.filter((a:any)=>a.alignment_level!=="L5_UNRESOLVED")}
+                        columns={[
+                          {title:"级别",width:60,render:(_:any,r:any)=><Tag color={r.alignment_level==="L1_EXACT_OVERLAP"?"green":"blue"}>{r.alignment_level==="L1_EXACT_OVERLAP"?"精确匹配":"近重复"}</Tag>},
+                          {title:"Answer Claim",ellipsis:true,render:(_:any,r:any)=><Text style={{fontSize:12}}>{r.claim_text}</Text>},
+                          {title:"引用来源",width:150,render:(_:any,r:any)=><a href={r.doc_url} target="_blank" style={{fontSize:11}}>{r.doc_title||r.doc_url}</a>},
+                          {title:"证据",ellipsis:true,render:(_:any,r:any)=><Text type="secondary" style={{fontSize:11}}>{r.evidence}</Text>},
+                        ]}
+                      />}
+                  <div style={{marginTop:8}}><Text type="secondary">
+                    已对齐: {goldenData.alignments.filter((a:any)=>a.alignment_level!=="L5_UNRESOLVED").length} 条 /
+                    未对齐: {goldenData.alignments.filter((a:any)=>a.alignment_level==="L5_UNRESOLVED").length} 条
+                  </Text></div>
+                </> : <Text type="secondary">点击加载对齐数据</Text>}
               </Card>
               {/* URL Audit */}
               {goldenData.urlAudit && <Card size="small" title="URL 身份审计">

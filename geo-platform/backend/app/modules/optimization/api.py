@@ -354,6 +354,16 @@ def golden_case_extract_claims(payload: dict, db: Session = Depends(get_db)):
     return result
 
 
+@router.post("/golden-case/acquire")
+def golden_case_acquire(payload: dict, db: Session = Depends(get_db)):
+    run_ids = payload.get("run_ids", [])
+    if not run_ids:
+        raise HTTPException(status_code=400, detail="请提供run_ids")
+    result = acquire_cited_sources(db, run_ids)
+    segment_all_documents(db)
+    return result
+
+
 @router.get("/golden-case/summary")
 def golden_case_summary(db: Session = Depends(get_db)):
     docs = db.query(SourceDocument).count()

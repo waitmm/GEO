@@ -737,7 +737,15 @@ export default function App() {
                   (await fetch("/api/optimization/golden-case/url-audit")).json(),
                   (await fetch(`/api/optimization/golden-case/documents?run_ids=${runIds}`)).json(),
                 ]);
-                setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, docs, promptId:v, runIds:runIds});
+                // Auto-acquire docs if few found
+                if(docs.length<5){
+                  message.loading("正在抓取引用资料...",1);
+                  await fetch("/api/optimization/golden-case/acquire",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_ids:runIdList})});
+                  const docs2=await(await fetch(`/api/optimization/golden-case/documents?run_ids=${runIds}`)).json();
+                  setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, docs:docs2, promptId:v, runIds:runIds});
+                } else {
+                  setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, docs, promptId:v, runIds:runIds});
+                }
               }catch(e:any){message.error(e.message)}
               finally{setGoldenLoading(false)}
             }}

@@ -305,10 +305,25 @@ def golden_case_alignments(run_ids: str = "173,174,175,176,177,178,179,180,181,1
 def golden_case_documents(run_ids: str = "", db: Session = Depends(get_db)):
     if run_ids:
         ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
-        # Get unique citation URLs for these runs
         refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(ids)).all()
-        cit_urls = set((r.canonical_url or r.url) for r in refs if (r.canonical_url or r.url))
-        docs = db.query(SourceDocument).filter(SourceDocument.url.in_(cit_urls)).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
+        # Collect both raw and normalized URLs for matching
+        cit_urls = set()
+        for r in refs:
+            u = r.canonical_url or r.url
+            if u:
+                cit_urls.add(u)
+                # Also add normalized variants
+                from app.modules.optimization.passage_service import _normalize_url_for_fetch, _normalize_for_match
+                try:
+                    cit_urls.add(_normalize_url_for_fetch(u))
+                except Exception:
+                    pass
+        # Match against SourceDocument.url using IN
+        all_docs = db.query(SourceDocument).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
+        docs = [d for d in all_docs if d.url in cit_urls or any(
+            d.url.endswith(u.split("://")[-1]) or u.endswith(d.url.split("://")[-1])
+            for u in cit_urls if "://" in d.url and "://" in u
+        )]
     else:
         docs = db.query(SourceDocument).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
     return [{"id": d.id, "url": d.url, "domain": d.domain, "source_type": d.source_type,

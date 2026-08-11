@@ -201,14 +201,22 @@ def extract_answer_claims(db: Session, run_ids: list[int]) -> dict:
                     continue
                 claims.append(sp)
 
-        # Detect citation anchors
+        # Detect citation anchors and classify claim type
         for i, claim_text in enumerate(claims):
             anchors = _CITATION_ANCHOR.findall(claim_text)
             anchor_ids = [int(a) for a in anchors if a.isdigit()]
             citation_anchor = min(anchor_ids) if anchor_ids else None
 
+            # Rule-based claim type classification
+            ctype = ""
+            for need_name, patterns in _NEED_PATTERNS.items():
+                if any(re.search(p, claim_text) for p in patterns):
+                    ctype = need_name
+                    break
+
             claim = AnswerClaim(
                 run_id=run.id, claim_index=i + 1, raw_text=claim_text[:2000],
+                claim_type=ctype,
                 citation_anchor=citation_anchor,
                 citation_ids_json=dumps(anchor_ids),
                 answer_position=i + 1,

@@ -727,7 +727,7 @@ export default function App() {
               finally{setGoldenLoading(false)}
             }}>加载全部数据</Button>
           </Space>}>
-            <Alert type="warning" showIcon style={{marginBottom:12}} message="第三方平台（B站、知乎、抖音等）拒绝自动化访问。当前基于 Answer 文本规则分析。完整 Passage Evidence 需人工辅助获取引用页面内容。Candidate↔Citation URL 重叠约3%，负样本不可用。" />
+            <Alert type="warning" showIcon style={{marginBottom:12}} message="12次采样答案内容一致（同一Prompt/模型/会话），Claims 会重复出现。各Run可独立审核，也可只审一个Run后批量应用。第三方平台抓取受限，仅有百度系部分页面成功。Candidate↔Citation URL重叠约3%，负样本不可用。" />
             {!goldenData ? <Empty description="点击「加载全部数据」开始" /> : <Space direction="vertical" size={12}>
               <Row gutter={12}>
                 <Col span={4}><Statistic title="Claims总数" value={goldenData.summary?.answer_claims}/></Col>

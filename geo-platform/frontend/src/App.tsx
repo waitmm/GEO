@@ -737,25 +737,42 @@ export default function App() {
                 <Col span={4}><Statistic title="错误" value={goldenData.needMap?.mislabeled||0}/></Col>
                 <Col span={4}><Statistic title="模糊" value={goldenData.needMap?.ambiguous||0}/></Col>
               </Row>
-              {/* Source Documents */}
-              <Card size="small" title="引用资料获取情况" extra={<Button size="small" onClick={async()=>{
+              {/* Source Documents + Manual Capture (merged) */}
+              <Card size="small" title="引用资料" extra={<Button size="small" onClick={async()=>{
                 try{setGoldenData({...goldenData, docs:await (await fetch("/api/optimization/golden-case/documents")).json()})}
                 catch(e:any){message.error(e.message)}
-              }}>加载</Button>}>
-                {goldenData.docs ? <>
-                  <Row gutter={12} style={{marginBottom:8}}>
-                    <Col span={8}><Tag color="green">成功: {goldenData.docs.filter((d:any)=>d.fetch_status==="SUCCESS").length}</Tag></Col>
-                    <Col span={8}><Tag color="gold">部分: {goldenData.docs.filter((d:any)=>d.fetch_status==="PARTIAL").length}</Tag></Col>
-                    <Col span={8}><Tag color="red">失败: {goldenData.docs.filter((d:any)=>d.fetch_status!=="SUCCESS"&&d.fetch_status!=="PARTIAL").length}</Tag></Col>
-                  </Row>
-                  <Table size="small" rowKey="id" pagination={{pageSize:10}} dataSource={goldenData.docs} columns={[
-                    {title:"状态",width:65,render:(_,r:any)=><Tag color={r.fetch_status==="SUCCESS"?"green":r.fetch_status==="PARTIAL"?"gold":"red"}>{r.fetch_status==="SUCCESS"?"成功":r.fetch_status==="PARTIAL"?"部分":"失败"}</Tag>},
-                    {title:"域名",dataIndex:"domain",width:120},
-                    {title:"标题/URL",ellipsis:true,render:(_,r:any)=><Text>{r.title||r.url}</Text>},
-                    {title:"正文长度",width:80,render:(_,r:any)=><Tag>{r.clean_text_len||0}字</Tag>},
-                    {title:"块数",dataIndex:"blocks_count",width:50},
-                  ]} />
-                </> : <Text type="secondary">点击加载查看引用资料抓取状态</Text>}
+              }}>刷新列表</Button>}>
+                <Row gutter={12} style={{marginBottom:8}}>
+                  <Col span={8}><Tag color="green">成功: {goldenData?.docs?.filter((d:any)=>d.fetch_status==="SUCCESS").length||0}</Tag></Col>
+                  <Col span={8}><Tag color="gold">部分: {goldenData?.docs?.filter((d:any)=>d.fetch_status==="PARTIAL").length||0}</Tag></Col>
+                  <Col span={8}><Tag color="red">待补: {goldenData?.docs?.filter((d:any)=>d.fetch_status!=="SUCCESS"&&d.fetch_status!=="PARTIAL").length||0}</Tag></Col>
+                </Row>
+                {goldenData.docs && <Table size="small" rowKey="id" pagination={{pageSize:8}} dataSource={goldenData.docs} columns={[
+                  {title:"状态",width:60,render:(_,r:any)=><Tag color={r.fetch_status==="SUCCESS"?"green":r.fetch_status==="PARTIAL"?"gold":"red"}>{r.fetch_status==="SUCCESS"?"成功":r.fetch_status==="PARTIAL"?"部分":"失败"}</Tag>},
+                  {title:"域名",dataIndex:"domain",width:100},
+                  {title:"URL/标题",ellipsis:true,render:(_,r:any)=><Text>{r.title||r.url}</Text>},
+                  {title:"字数",width:60,render:(_,r:any)=><Tag>{r.clean_text_len||0}</Tag>},
+                  {title:"补录",width:70,render:(_,r:any)=>r.fetch_status!=="SUCCESS"?<Button size="small" onClick={()=>{
+                    (document.getElementById("manual-url")as HTMLInputElement).value=r.url;
+                    window.scrollTo(0,document.getElementById("manual-url")!.offsetTop-100);
+                  }}>补录</Button>:null},
+                ]} />}
+                <Divider />
+                <Input placeholder="页面URL" id="manual-url" style={{width:"100%",marginBottom:6}}/>
+                <Input.TextArea id="manual-text" rows={4} placeholder="粘贴正文..." />
+                <Input.TextArea id="manual-html" rows={4} placeholder="或粘贴HTML源码..." style={{marginTop:6}}/>
+                <Button type="primary" style={{marginTop:6}} onClick={async()=>{
+                  const url=(document.getElementById("manual-url")as HTMLInputElement).value;
+                  const text=(document.getElementById("manual-text")as HTMLTextAreaElement).value;
+                  const html=(document.getElementById("manual-html")as HTMLTextAreaElement).value;
+                  if(!url){message.warning("请输入URL");return;}
+                  const body:any={url,source_type:"CITED"};
+                  if(html)body.raw_html=html;
+                  if(text)body.clean_text=text;
+                  await fetch("/api/optimization/golden-case/documents/manual",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+                  message.success("已录入");
+                  setGoldenData({...goldenData, docs:await (await fetch("/api/optimization/golden-case/documents")).json()});
+                }}>录入</Button>
               </Card>
               {/* URL Audit */}
               {goldenData.urlAudit && <Card size="small" title="URL 身份审计">
@@ -775,52 +792,29 @@ export default function App() {
                 ]} />
               </Card>}
               {/* Claims Review Table */}
-              <Card size="small" title="Answer Claims 审核（点击行审核）">
+              <Card size="small" title="Answer Claims 审核">
                 <Table size="small" rowKey="id" pagination={{pageSize:15}}
                   dataSource={(goldenData.claims||[]).slice(0,60)}
                   columns={[
                     {title:"Run",dataIndex:"run_id",width:50},
                     {title:"#",dataIndex:"claim_index",width:35},
                     {title:"内容",dataIndex:"raw_text",ellipsis:true,render:(v:string)=><Text style={{fontSize:12}}>{v}</Text>},
-                    {title:"规则分类",width:75,render:(_,r:any)=><Tag>{r.claim_type||"-"}</Tag>},
+                    {title:"分类",width:75,render:(_,r:any)=><Tag>{r.claim_type||"-"}</Tag>},
                     {title:"审核",width:70,render:(_,r:any)=><Tag color={r.review_status==="CONFIRMED"?"green":r.review_status==="REFINED"?"blue":r.review_status==="MISLABELED"?"red":r.review_status==="AMBIGUOUS"?"orange":"default"}>{r.review_status==="CONFIRMED"?"已确认":r.review_status==="REFINED"?"已修正":r.review_status==="MISLABELED"?"分类错误":r.review_status==="AMBIGUOUS"?"存在歧义":"待审核"}</Tag>},
-                    {title:"操作",width:150,render:(_,r:any)=><Space size={2}>
+                    {title:"操作",width:120,render:(_,r:any)=><Space size={1}>
                       <Button size="small" onClick={async()=>{
                         await fetch(`/api/optimization/golden-case/claims/${r.id}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({review_status:"CONFIRMED",human_labels:[r.claim_type],reviewer:"human"})});
                         message.success("已确认");
                         setGoldenData({...goldenData,claims:goldenData.claims.map((c:any)=>c.id===r.id?{...c,review_status:"CONFIRMED"}:c)});
-                      }}>✓</Button>
-                      <Button size="small" onClick={async()=>{
-                        await fetch(`/api/optimization/golden-case/claims/${r.id}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({review_status:"REFINED",human_labels:[r.claim_type],reviewer:"human"})});
-                        message.success("已修正");
-                        setGoldenData({...goldenData,claims:goldenData.claims.map((c:any)=>c.id===r.id?{...c,review_status:"REFINED"}:c)});
-                      }}>修正</Button>
+                      }}>确认</Button>
                       <Button size="small" danger onClick={async()=>{
                         await fetch(`/api/optimization/golden-case/claims/${r.id}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({review_status:"MISLABELED",human_labels:[],reviewer:"human"})});
                         message.success("已标记错误");
                         setGoldenData({...goldenData,claims:goldenData.claims.map((c:any)=>c.id===r.id?{...c,review_status:"MISLABELED"}:c)});
-                      }}>✗</Button>
+                      }}>错误</Button>
                     </Space>},
                   ]}
                 />
-              </Card>
-              {/* Manual Capture */}
-              <Card size="small" title="人工录入引用内容">
-                <Input placeholder="页面URL" id="manual-url" style={{width:"100%",marginBottom:8}}/>
-                <Input.TextArea id="manual-text" rows={6} placeholder="粘贴页面正文（纯文本）..." />
-                <Input.TextArea id="manual-html" rows={6} placeholder="或粘贴页面HTML源码，系统自动提取正文..." style={{marginTop:8}}/>
-                <Button type="primary" style={{marginTop:8}} onClick={async()=>{
-                  const url=(document.getElementById("manual-url")as HTMLInputElement).value;
-                  const text=(document.getElementById("manual-text")as HTMLTextAreaElement).value;
-                  const html=(document.getElementById("manual-html")as HTMLTextAreaElement).value;
-                  if(!url){message.warning("请输入URL");return;}
-                  if(!text&&!html){message.warning("请输入正文或HTML源码");return;}
-                  const body:any={url,source_type:"CITED"};
-                  if(html){body.raw_html=html;}
-                  if(text){body.clean_text=text;}
-                  await fetch("/api/optimization/golden-case/documents/manual",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-                  message.success("已录入并自动分块");
-                }}>录入内容</Button>
               </Card>
               <Alert type="info" showIcon message={<span><strong>当前状态</strong>：规则分类显示「操作步骤」为最高频信息需求（144/180 claims）。该结论正在进行人工验证。引用正文证据仍不足，品牌 /card 尚未完成同口径分析。<strong>策略继续保持暂缓决策（DEFERRED）</strong>，待 Passage Evidence 与 Brand Asset Evidence 补齐后重新评估。</span>} />
             </Space>}

@@ -408,21 +408,27 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
     url = payload.get("url", "")
     html = payload.get("raw_html", "")
     text = payload.get("clean_text", "")
+    title = payload.get("title", "")
 
     # If HTML provided, extract clean text from it
-    if html and not text:
-        import re as _re
-        clean = _re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=_re.DOTALL | _re.IGNORECASE)
-        clean = _re.sub(r"<[^>]+>", " ", clean)
-        clean = _re.sub(r"&[a-z]+;", " ", clean)
-        clean = _re.sub(r"\s+", " ", clean)
-        text = clean.strip()
+    import re as _re
+    if html:
+        # Always extract from HTML as primary source
+        s = _re.sub(r"<(script|style|noscript|iframe)[^>]*>.*?</\1>", " ", html, flags=_re.DOTALL | _re.IGNORECASE)
+        s = _re.sub(r"<!--.*?-->", " ", s, flags=_re.DOTALL)
+        s = _re.sub(r"<[^>]+>", "\n", s)
+        s = _re.sub(r"&[a-z]+;|&#\d+;", " ", s)
+        s = _re.sub(r"\n\s*\n", "\n\n", s)
+        s = _re.sub(r"[ \t]{2,}", " ", s)
+        html_text = s.strip()
+        if not text or len(html_text) > len(text):
+            text = html_text
         # Extract title
-        title = ""
-        tm = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
-        if tm:
-            title = _re.sub(r"<[^>]+>", "", tm.group(1)).strip()
-    else:
+        if not title:
+            tm = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
+            if tm:
+                title = _re.sub(r"<[^>]+>", "", tm.group(1)).strip()
+    if not title:
         title = payload.get("title", url)
 
     doc = SourceDocument(

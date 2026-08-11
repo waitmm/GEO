@@ -737,15 +737,7 @@ export default function App() {
                   (await fetch("/api/optimization/golden-case/url-audit")).json(),
                   (await fetch(`/api/optimization/golden-case/documents?run_ids=${runIds}`)).json(),
                 ]);
-                // Auto-acquire docs if few found
-                if(docs.length<5){
-                  message.loading("正在抓取引用资料...",1);
-                  await fetch("/api/optimization/golden-case/acquire",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_ids:runIdList})});
-                  const docs2=await(await fetch(`/api/optimization/golden-case/documents?run_ids=${runIds}`)).json();
-                  setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, docs:docs2, promptId:v, runIds:runIds});
-                } else {
-                  setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, docs, promptId:v, runIds:runIds});
-                }
+                setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, docs, promptId:v, runIds:runIds});
               }catch(e:any){message.error(e.message)}
               finally{setGoldenLoading(false)}
             }}
@@ -779,10 +771,25 @@ export default function App() {
                 <Col span={4}><Statistic title="模糊" value={goldenData.needMap?.ambiguous||0}/></Col>
               </Row>
               {/* Source Documents + Manual Capture (merged) */}
-              <Card size="small" title="引用资料" extra={<Button size="small" onClick={async()=>{
-                try{setGoldenData({...goldenData, docs:await (await fetch(`/api/optimization/golden-case/documents?run_ids=${goldenData?.runIds||""}`)).json()})}
-                catch(e:any){message.error(e.message)}
-              }}>刷新列表</Button>}>
+              <Card size="small" title="引用资料" extra={<Space>
+                {goldenData?.docs?.length < 5 && goldenData?.runIds && <Button size="small" type="primary" loading={goldenLoading} onClick={async()=>{
+                  setGoldenLoading(true);
+                  try{
+                    const runIdList = (goldenData.runIds as string).split(",").map(Number);
+                    message.loading({content:"正在使用浏览器抓取引用页面...",duration:0,key:"acquire"});
+                    await fetch("/api/optimization/golden-case/acquire",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_ids:runIdList})});
+                    message.destroy("acquire");
+                    const dd=await(await fetch(`/api/optimization/golden-case/documents?run_ids=${goldenData.runIds}`)).json();
+                    setGoldenData({...goldenData, docs:dd});
+                    message.success(`抓取完成，共 ${dd.length} 条`);
+                  }catch(e:any){message.destroy("acquire");message.error(e.message)}
+                  finally{setGoldenLoading(false)}
+                }}>抓取引用资料</Button>}
+                <Button size="small" onClick={async()=>{
+                  try{setGoldenData({...goldenData, docs:await (await fetch(`/api/optimization/golden-case/documents?run_ids=${goldenData?.runIds||""}`)).json()})}
+                  catch(e:any){message.error(e.message)}
+                }}>刷新</Button>
+              </Space>}>
                 <Row gutter={12} style={{marginBottom:8}}>
                   <Col span={8}><Tag color="green">成功: {goldenData?.docs?.filter((d:any)=>d.fetch_status==="SUCCESS").length||0}</Tag></Col>
                   <Col span={8}><Tag color="gold">部分: {goldenData?.docs?.filter((d:any)=>d.fetch_status==="PARTIAL").length||0}</Tag></Col>

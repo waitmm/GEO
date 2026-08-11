@@ -253,7 +253,11 @@ from app.modules.optimization.passage_service import (
     generate_answer_need_map,
     analyze_brand_information_gap,
 )
-from app.models import AnswerClaim, PassageAlignment, SourceDocument
+from app.models import AnswerClaim, PassageAlignment, ReferenceSource, RetrievalCandidate, SourceDocument
+from datetime import datetime
+import hashlib
+from urllib.parse import urlparse
+from collections import defaultdict
 
 
 @router.post("/golden-case/run")
@@ -324,6 +328,116 @@ def golden_case_summary(db: Session = Depends(get_db)):
     als = db.query(PassageAlignment).count()
     l1 = db.query(PassageAlignment).filter(PassageAlignment.alignment_level == "L1_EXACT_OVERLAP").count()
     l2 = db.query(PassageAlignment).filter(PassageAlignment.alignment_level == "L2_NEAR_DUPLICATE").count()
+    reviewed = db.query(AnswerClaim).filter(AnswerClaim.review_status != "PENDING").count()
     return {"source_documents": docs, "answer_claims": claims, "alignments": als,
             "l1_exact": l1, "l2_near_duplicate": l2,
+            "claims_reviewed": reviewed,
             "eligibility": "CITATION_ONLY", "note": "Candidate-citation URL overlap ~3%"}
+
+
+@router.post("/golden-case/claims/{claim_id}/review")
+def review_claim(claim_id: int, payload: dict, db: Session = Depends(get_db)):
+    claim = db.get(AnswerClaim, claim_id)
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    claim.review_status = payload.get("review_status", "CONFIRMED")
+    claim.human_labels_json = dumps(payload.get("human_labels", []))
+    claim.claim_type = payload.get("claim_type", claim.claim_type)
+    claim.reviewer = payload.get("reviewer", "human")
+    claim.reviewed_at = datetime.utcnow()
+    claim.review_note = payload.get("review_note", "")
+    db.commit()
+    return {"id": claim.id, "review_status": claim.review_status, "human_labels": loads(claim.human_labels_json, [])}
+
+
+@router.get("/golden-case/need-map-validated")
+def golden_case_need_map_validated(run_ids: str = "173,174,175,176,177,178,179,180,181,182,183,184", db: Session = Depends(get_db)):
+    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+    claims = db.query(AnswerClaim).filter(AnswerClaim.run_id.in_(ids)).all()
+    total = len(claims)
+    reviewed = [c for c in claims if c.review_status != "PENDING"]
+    confirmed = [c for c in claims if c.review_status == "CONFIRMED"]
+    refined = [c for c in claims if c.review_status == "REFINED"]
+    mislabeled = [c for c in claims if c.review_status == "MISLABELED"]
+    ambiguous = [c for c in claims if c.review_status == "AMBIGUOUS"]
+
+    # Build validated need counts from human labels
+    rule_map = generate_answer_need_map(db, ids)
+    human_needs = defaultdict(lambda: {"claim_count": 0, "run_ids": set()})
+    for c in reviewed:
+        labels = loads(c.human_labels_json, []) or [c.claim_type]
+        for label in labels:
+            if label:
+                human_needs[label]["claim_count"] += 1
+                human_needs[label]["run_ids"].add(c.run_id)
+
+    validated = []
+    for name, data in sorted(human_needs.items(), key=lambda x: -x[1]["claim_count"]):
+        rule_data = next((r for r in rule_map["answer_need_map"] if r["need_name"] == name), None)
+        validated.append({
+            "need_name": name,
+            "rule_count": rule_data["claim_count"] if rule_data else 0,
+            "human_count": data["claim_count"],
+            "run_coverage": f"{len(data['run_ids'])}/12",
+        })
+
+    return {
+        "total_claims": total,
+        "reviewed": len(reviewed),
+        "confirmed": len(confirmed),
+        "refined": len(refined),
+        "mislabeled": len(mislabeled),
+        "ambiguous": len(ambiguous),
+        "validated_needs": validated,
+    }
+
+
+@router.post("/golden-case/documents/manual")
+def add_manual_document(payload: dict, db: Session = Depends(get_db)):
+    url = payload.get("url", "")
+    doc = SourceDocument(
+        url=url, domain=urlparse(url).netloc.lower() if url else "",
+        source_type=payload.get("source_type", "CITED"),
+        fetch_status="SUCCESS", title=payload.get("title", ""),
+        clean_text=payload.get("clean_text", "")[:200000],
+        clean_text_hash=hashlib.sha256((payload.get("clean_text", "")).encode()).hexdigest()[:16],
+        fetch_time=datetime.utcnow(),
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    # Segment
+    from app.modules.optimization.passage_service import segment_document
+    blocks = segment_document(doc)
+    doc.content_blocks_json = dumps(blocks)
+    db.commit()
+    return {"id": doc.id, "url": doc.url, "blocks": len(blocks), "status": "MANUAL_CAPTURE"}
+
+
+@router.get("/golden-case/url-audit")
+def golden_case_url_audit(db: Session = Depends(get_db)):
+    from app.modules.optimization.passage_service import _normalize_for_match, _normalize_url_for_fetch
+    run_ids = list(range(173, 185))
+    refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(run_ids)).all()
+    cands = db.query(RetrievalCandidate).filter(RetrievalCandidate.run_id.in_(run_ids)).all()
+
+    # Deduplicate
+    ref_urls = list(set((ref.canonical_url or ref.url) for ref in refs if (ref.canonical_url or ref.url)))
+    cand_urls = list(set((c.canonical_url or c.url) for c in cands if (c.canonical_url or c.url)))
+
+    # Raw overlap
+    ref_set = set(ref_urls)
+    cand_set = set(cand_urls)
+    raw_overlap = ref_set & cand_set
+
+    # Normalized overlap
+    norm_ref = {_normalize_for_match(u) for u in ref_urls}
+    norm_cand = {_normalize_for_match(u) for u in cand_urls}
+    norm_overlap = norm_ref & norm_cand
+
+    return {
+        "raw": {"cited": len(ref_urls), "candidates": len(cand_urls), "overlap": len(raw_overlap), "overlap_rate": f"{len(raw_overlap)}/{len(ref_urls)}"},
+        "normalized": {"cited": len(norm_ref), "candidates": len(norm_cand), "overlap": len(norm_overlap), "overlap_rate": f"{len(norm_overlap)}/{len(norm_ref)}"},
+        "eligibility": "CITATION_ONLY",
+        "note": "Even after normalization, candidate-citation URL pools remain largely disjoint. This is accepted as a platform characteristic, not a parser bug.",
+    }

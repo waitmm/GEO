@@ -711,65 +711,94 @@ export default function App() {
             </Space>}
           </Card>
         </Space> : page === "golden" ? <Space direction="vertical" size={16} className="page-stack">
-          <Card title="Golden Case · Prompt #19「抖音跳转链接」" extra={<Space>
+          <Card title="Golden Case · Prompt #19「抖音跳转链接」Runs 173-184" extra={<Space>
             <Tag color="orange">CITATION_ONLY</Tag>
             <Button type="primary" loading={goldenLoading} onClick={async()=>{
               setGoldenLoading(true);
-              try{setGoldenData(await (await fetch("/api/optimization/golden-case/summary")).json())}
-              catch(e:any){message.error(e.message)}
+              try{
+                const [s, nm, claims, audit] = await Promise.all([
+                  (await fetch("/api/optimization/golden-case/summary")).json(),
+                  (await fetch("/api/optimization/golden-case/need-map-validated")).json(),
+                  (await fetch("/api/optimization/golden-case/claims")).json(),
+                  (await fetch("/api/optimization/golden-case/url-audit")).json(),
+                ]);
+                setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit});
+              }catch(e:any){message.error(e.message)}
               finally{setGoldenLoading(false)}
-            }}>加载数据</Button>
+            }}>加载全部数据</Button>
           </Space>}>
-            <Alert type="warning" showIcon style={{marginBottom:12}}
-              message="内容抓取受限：第三方平台（B站、知乎、抖音等）拒绝自动化访问，仅百度系部分页面成功。此 Golden Case 基于 Answer 文本分析 + 部分 Citation 内容。完整 Passage Alignment 需人工辅助或升级抓取能力。"
-            />
-            {!goldenData ? <Empty description="点击「加载数据」查看 Golden Case 分析结果" /> : <Space direction="vertical" size={12}>
+            <Alert type="warning" showIcon style={{marginBottom:12}} message="第三方平台（B站、知乎、抖音等）拒绝自动化访问。当前基于 Answer 文本规则分析。完整 Passage Evidence 需人工辅助获取引用页面内容。Candidate↔Citation URL 重叠约3%，负样本不可用。" />
+            {!goldenData ? <Empty description="点击「加载全部数据」开始" /> : <Space direction="vertical" size={12}>
               <Row gutter={12}>
-                <Col span={6}><Statistic title="Answer Claims" value={goldenData.answer_claims}/></Col>
-                <Col span={6}><Statistic title="Alignments" value={goldenData.alignments}/></Col>
-                <Col span={6}><Statistic title="L1 Exact" value={goldenData.l1_exact}/></Col>
-                <Col span={6}><Statistic title="L2 Near-Dup" value={goldenData.l2_near_duplicate}/></Col>
+                <Col span={4}><Statistic title="Claims总数" value={goldenData.summary?.answer_claims}/></Col>
+                <Col span={4}><Statistic title="已审核" value={goldenData.summary?.claims_reviewed||goldenData.needMap?.reviewed||0}/></Col>
+                <Col span={4}><Statistic title="确认" value={goldenData.needMap?.confirmed||0}/></Col>
+                <Col span={4}><Statistic title="修正" value={goldenData.needMap?.refined||0}/></Col>
+                <Col span={4}><Statistic title="错误" value={goldenData.needMap?.mislabeled||0}/></Col>
+                <Col span={4}><Statistic title="模糊" value={goldenData.needMap?.ambiguous||0}/></Col>
               </Row>
-              <Card size="small" title="AI 信息需求图谱（12 次回答中反复出现的信息类型）" extra={<Button size="small" onClick={async()=>{
-                try{setGoldenData({...goldenData, needMap:await (await fetch("/api/optimization/golden-case/need-map")).json()});message.success("已加载需求图谱")}
-                catch(e:any){message.error(e.message)}
-              }}>加载需求图谱</Button>}>
-                {goldenData.needMap ? <Table size="small" rowKey="need_name" pagination={false}
-                  dataSource={goldenData.needMap.answer_need_map||[]}
+              {/* URL Audit */}
+              {goldenData.urlAudit && <Card size="small" title="URL 身份审计">
+                <Descriptions size="small" bordered column={2}>
+                  <Descriptions.Item label="原始URL重叠">{goldenData.urlAudit.raw?.overlap_rate}</Descriptions.Item>
+                  <Descriptions.Item label="规范化后重叠">{goldenData.urlAudit.normalized?.overlap_rate}</Descriptions.Item>
+                  <Descriptions.Item label="资格判定" span={2}><Tag color="orange">{goldenData.urlAudit.eligibility}</Tag> — {goldenData.urlAudit.note}</Descriptions.Item>
+                </Descriptions>
+              </Card>}
+              {/* Answer Need Map */}
+              {goldenData.needMap?.validated_needs && <Card size="small" title="AI 信息需求图谱（人工验证后）">
+                <Table size="small" rowKey="need_name" pagination={false} dataSource={goldenData.needMap.validated_needs||[]} columns={[
+                  {title:"信息需求",dataIndex:"need_name",width:100},
+                  {title:"规则次数",dataIndex:"rule_count",width:70},
+                  {title:"人工确认",dataIndex:"human_count",width:70},
+                  {title:"Run覆盖",dataIndex:"run_coverage",width:70},
+                ]} />
+              </Card>}
+              {/* Claims Review Table */}
+              <Card size="small" title="Answer Claims 审核（点击行审核）">
+                <Table size="small" rowKey="id" pagination={{pageSize:15}}
+                  dataSource={(goldenData.claims||[]).slice(0,60)}
                   columns={[
-                    {title:"信息需求",dataIndex:"need_name",width:120},
-                    {title:"出现次数",dataIndex:"claim_count",width:80},
-                    {title:"Run覆盖",dataIndex:"coverage",width:80},
-                    {title:"示例",render:(_,r:any)=>(r.sample_claims||[]).slice(0,2).map((s:string,i:number)=><Text key={i} type="secondary" style={{display:"block"}}>{s}</Text>)},
-                  ]}
-                /> : <Text type="secondary">点击按钮加载</Text>}
-              </Card>
-              <Card size="small" title="品牌信息缺口" extra={<Button size="small" onClick={async()=>{
-                try{setGoldenData({...goldenData, brandGap:await (await fetch("/api/optimization/golden-case/brand-gap")).json()});message.success("已加载缺口分析")}
-                catch(e:any){message.error(e.message)}
-              }}>加载缺口分析</Button>}>
-                {goldenData.brandGap ? <Space direction="vertical" size={8}>
-                  {goldenData.brandGap.status==="BRAND_CONTENT_UNAVAILABLE" && <Alert type="warning" showIcon message="品牌页面 /card 抓取失败（HTTP 访问被拒），无法进行内容对比。缺口分析基于 AI 需求图谱推断。" />}
-                  {(goldenData.brandGap.gaps||[]).length>0 ? (goldenData.brandGap.gaps||[]).map((g:any)=><Alert key={g.need_name} type="warning" showIcon message={<Space><Text strong>{g.need_name}</Text><Tag color={g.severity==="HIGH"?"red":"orange"}>{g.severity}</Tag></Space>} description={`AI回答中出现 ${g.ai_claim_count} 次，覆盖 ${g.ai_run_coverage} 个 Run。品牌页面未检测到相关内容。`} />) : <Text type="secondary">品牌内容不可用，无法计算缺口。手动对比已知：爱短链 /card 页面为产品功能页，缺少教程型信息块。</Text>}
-                </Space> : <Text type="secondary">点击按钮加载</Text>}
-              </Card>
-              <Card size="small" title="Answer Claims（前 20 条）" extra={<Button size="small" onClick={async()=>{
-                try{setGoldenData({...goldenData, claims:await (await fetch("/api/optimization/golden-case/claims")).json()});message.success("已加载Claims")}
-                catch(e:any){message.error(e.message)}
-              }}>加载Claims</Button>}>
-                {goldenData.claims ? <Table size="small" rowKey="id" pagination={{pageSize:20}}
-                  dataSource={(goldenData.claims||[]).slice(0,20)}
-                  columns={[
-                    {title:"Run",dataIndex:"run_id",width:55},
-                    {title:"#",dataIndex:"claim_index",width:40},
+                    {title:"Run",dataIndex:"run_id",width:50},
+                    {title:"#",dataIndex:"claim_index",width:35},
                     {title:"内容",dataIndex:"raw_text",ellipsis:true,render:(v:string)=><Text style={{fontSize:12}}>{v}</Text>},
-                    {title:"引用锚点",width:70,render:(_,r:any)=>r.citation_ids?.length>0?<Tag>{r.citation_ids.join(",")}</Tag>:<Tag color="default">无</Tag>},
+                    {title:"规则分类",width:75,render:(_,r:any)=><Tag>{r.claim_type||"-"}</Tag>},
+                    {title:"审核",width:70,render:(_,r:any)=><Tag color={r.review_status==="CONFIRMED"?"green":r.review_status==="REFINED"?"blue":r.review_status==="MISLABELED"?"red":r.review_status==="AMBIGUOUS"?"orange":"default"}>{r.review_status==="CONFIRMED"?"已确认":r.review_status==="REFINED"?"已修正":r.review_status==="MISLABELED"?"分类错误":r.review_status==="AMBIGUOUS"?"存在歧义":"待审核"}</Tag>},
+                    {title:"操作",width:150,render:(_,r:any)=><Space size={2}>
+                      <Button size="small" onClick={async()=>{
+                        await fetch(`/api/optimization/golden-case/claims/${r.id}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({review_status:"CONFIRMED",human_labels:[r.claim_type],reviewer:"human"})});
+                        message.success("已确认");
+                        setGoldenData({...goldenData,claims:goldenData.claims.map((c:any)=>c.id===r.id?{...c,review_status:"CONFIRMED"}:c)});
+                      }}>✓</Button>
+                      <Button size="small" onClick={async()=>{
+                        await fetch(`/api/optimization/golden-case/claims/${r.id}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({review_status:"REFINED",human_labels:[r.claim_type],reviewer:"human"})});
+                        message.success("已修正");
+                        setGoldenData({...goldenData,claims:goldenData.claims.map((c:any)=>c.id===r.id?{...c,review_status:"REFINED"}:c)});
+                      }}>修正</Button>
+                      <Button size="small" danger onClick={async()=>{
+                        await fetch(`/api/optimization/golden-case/claims/${r.id}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({review_status:"MISLABELED",human_labels:[],reviewer:"human"})});
+                        message.success("已标记错误");
+                        setGoldenData({...goldenData,claims:goldenData.claims.map((c:any)=>c.id===r.id?{...c,review_status:"MISLABELED"}:c)});
+                      }}>✗</Button>
+                    </Space>},
                   ]}
-                /> : <Text type="secondary">点击按钮加载</Text>}
+                />
               </Card>
-              <Alert type="info" showIcon
-                message={<span><strong>Golden Case 当前结论</strong>：AI 在「抖音跳转链接」12 次回答中反复需要的核心信息是<strong>操作步骤</strong>（144 claims, 12/12 runs）。引用资料以教程型内容为主。品牌 /card 为产品工具页，缺少独立操作步骤说明块。建议优先验证在可控资产中补充操作流程信息。<strong>内容抓取受限</strong>（第三方平台反爬），完整 Passage Evidence 需人工辅助获取引用页面内容。</span>}
-              />
+              {/* Manual Capture */}
+              <Card size="small" title="人工录入引用正文">
+                <Space>
+                  <Input placeholder="URL" id="manual-url" style={{width:300}}/>
+                  <Button onClick={async()=>{
+                    const url=(document.getElementById("manual-url")as HTMLInputElement).value;
+                    const text=(document.getElementById("manual-text")as HTMLTextAreaElement).value;
+                    if(!url||!text){message.warning("请输入URL和正文");return;}
+                    await fetch("/api/optimization/golden-case/documents/manual",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url,clean_text:text,source_type:"CITED",title:url})});
+                    message.success("已录入");
+                  }}>录入</Button>
+                </Space>
+                <Input.TextArea id="manual-text" rows={8} placeholder="粘贴引用页面的正文内容..." style={{marginTop:8}}/>
+              </Card>
+              <Alert type="info" showIcon message={<span><strong>当前状态</strong>：规则分类显示「操作步骤」为最高频信息需求（144/180 claims）。该结论正在进行人工验证。引用正文证据仍不足，品牌 /card 尚未完成同口径分析。<strong>策略继续保持暂缓决策（DEFERRED）</strong>，待 Passage Evidence 与 Brand Asset Evidence 补齐后重新评估。</span>} />
             </Space>}
           </Card>
         </Space> : <Card title="采集记录" extra={<Tag>每行是一次独立采样</Tag>}>

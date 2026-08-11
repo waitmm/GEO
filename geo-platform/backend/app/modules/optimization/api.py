@@ -397,12 +397,32 @@ def golden_case_need_map_validated(run_ids: str = "173,174,175,176,177,178,179,1
 @router.post("/golden-case/documents/manual")
 def add_manual_document(payload: dict, db: Session = Depends(get_db)):
     url = payload.get("url", "")
+    html = payload.get("raw_html", "")
+    text = payload.get("clean_text", "")
+
+    # If HTML provided, extract clean text from it
+    if html and not text:
+        import re as _re
+        clean = _re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=_re.DOTALL | _re.IGNORECASE)
+        clean = _re.sub(r"<[^>]+>", " ", clean)
+        clean = _re.sub(r"&[a-z]+;", " ", clean)
+        clean = _re.sub(r"\s+", " ", clean)
+        text = clean.strip()
+        # Extract title
+        title = ""
+        tm = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
+        if tm:
+            title = _re.sub(r"<[^>]+>", "", tm.group(1)).strip()
+    else:
+        title = payload.get("title", url)
+
     doc = SourceDocument(
         url=url, domain=urlparse(url).netloc.lower() if url else "",
         source_type=payload.get("source_type", "CITED"),
-        fetch_status="SUCCESS", title=payload.get("title", ""),
-        clean_text=payload.get("clean_text", "")[:200000],
-        clean_text_hash=hashlib.sha256((payload.get("clean_text", "")).encode()).hexdigest()[:16],
+        fetch_status="SUCCESS", title=title,
+        raw_html=html[:500000] if html else "",
+        clean_text=text[:200000],
+        clean_text_hash=hashlib.sha256(text.encode()).hexdigest()[:16] if text else "",
         fetch_time=datetime.utcnow(),
     )
     db.add(doc)

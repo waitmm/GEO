@@ -43,39 +43,60 @@ _MULTI_SP = re.compile(r"[ \t]{2,}")
 
 
 def _normalize_url_for_fetch(url: str) -> str:
-    """Normalize URL for fetching: add scheme, www prefix for known domains."""
+    """Normalize URL for fetching."""
     u = url.strip()
     if not u.startswith("http"):
         u = "https://" + u
+    # Force HTTPS
+    if u.startswith("http://"):
+        u = "https://" + u[7:]
     parsed = urlparse(u)
     domain = parsed.netloc.lower()
-    # Fix common missing-www patterns
-    if not domain.startswith("www.") and domain.count(".") >= 2:
-        # For known domains that need www
-        for known in ["bilibili.com", "zhihu.com", "douyin.com", "sohu.com"]:
-            if domain.endswith(known):
-                domain = "www." + domain
+    # Add www for known domains that need it
+    www_domains = {"bilibili.com", "zhihu.com", "douyin.com", "sohu.com",
+                   "baidu.com", "jingyan.baidu.com", "haokan.baidu.com",
+                   "shangjiajia.com", "molelink.cn", "jp-soft.cn"}
+    if not domain.startswith("www."):
+        for known in www_domains:
+            if domain == known or domain.endswith("." + known):
+                if not domain.startswith("www."):
+                    domain = "www." + domain
                 break
-    scheme = parsed.scheme or "https"
-    return f"{scheme}://{domain}{parsed.path}{'?'+parsed.query if parsed.query else ''}"
+    return f"https://{domain}{parsed.path}{'?'+parsed.query if parsed.query else ''}"
 
 
-def fetch_page(url: str) -> dict:
+def _extract_baidu_redirect_target(html: str) -> str | None:
+    """Extract target URL from Baidu redirect wrapper pages."""
+    # mbd.baidu.com landing pages often contain a redirect/meta refresh
+    m = re.search(r'content=["\']?\d+;\s*url=([^"\']+)["\']?', html, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    # Also check for direct links in baidu content wrappers
+    m = re.search(r'<a[^>]+href=["\'](https?://[^"\']+)[^>]*>.*?原文', html, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
+
+
+def fetch_page(url: str, follow_baidu_redirect: bool = True) -> dict:
     """Fetch a URL and extract clean text."""
     normalized = _normalize_url_for_fetch(url)
+    domain = urlparse(normalized).netloc.lower()
     result = {
-        "url": url, "canonical_url": normalized, "domain": urlparse(normalized).netloc.lower(),
+        "url": url, "canonical_url": normalized, "domain": domain,
         "fetch_status": "pending", "failure_reason": "", "title": "",
         "raw_html": "", "clean_text": "", "fetch_time": datetime.utcnow(),
     }
     try:
         req = urllib.request.Request(normalized, headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "zh-CN,zh;q=0.9",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+            "Referer": "https://www.google.com/",
         })
         with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
             raw = resp.read()
+            final_url = resp.geturl()
             try:
                 html = raw.decode("utf-8", errors="replace")
             except Exception:
@@ -83,7 +104,19 @@ def fetch_page(url: str) -> dict:
                     html = raw.decode("gbk", errors="replace")
                 except Exception:
                     html = raw.decode("latin-1", errors="replace")
+
             result["raw_html"] = html[:500000]
+            result["canonical_url"] = final_url
+
+            # Try Baidu redirect extraction
+            if follow_baidu_redirect and ("baidu.com" in domain or "mbd.baidu" in domain):
+                target = _extract_baidu_redirect_target(html)
+                if target:
+                    result["fetch_status"] = "SUCCESS"
+                    result["title"] = f"[Baidu redirect → {target[:80]}]"
+                    result["clean_text"] = html  # Store the wrapper page for later analysis
+                    return result
+
             tm = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
             if tm:
                 result["title"] = _html.unescape(tm.group(1).strip())

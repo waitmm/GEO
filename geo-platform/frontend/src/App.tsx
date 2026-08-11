@@ -805,18 +805,22 @@ export default function App() {
                 />
               </Card>
               {/* Manual Capture */}
-              <Card size="small" title="人工录入引用正文">
-                <Space>
-                  <Input placeholder="URL" id="manual-url" style={{width:300}}/>
-                  <Button onClick={async()=>{
-                    const url=(document.getElementById("manual-url")as HTMLInputElement).value;
-                    const text=(document.getElementById("manual-text")as HTMLTextAreaElement).value;
-                    if(!url||!text){message.warning("请输入URL和正文");return;}
-                    await fetch("/api/optimization/golden-case/documents/manual",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url,clean_text:text,source_type:"CITED",title:url})});
-                    message.success("已录入");
-                  }}>录入</Button>
-                </Space>
-                <Input.TextArea id="manual-text" rows={8} placeholder="粘贴引用页面的正文内容..." style={{marginTop:8}}/>
+              <Card size="small" title="人工录入引用内容">
+                <Input placeholder="页面URL" id="manual-url" style={{width:"100%",marginBottom:8}}/>
+                <Input.TextArea id="manual-text" rows={6} placeholder="粘贴页面正文（纯文本）..." />
+                <Input.TextArea id="manual-html" rows={6} placeholder="或粘贴页面HTML源码，系统自动提取正文..." style={{marginTop:8}}/>
+                <Button type="primary" style={{marginTop:8}} onClick={async()=>{
+                  const url=(document.getElementById("manual-url")as HTMLInputElement).value;
+                  const text=(document.getElementById("manual-text")as HTMLTextAreaElement).value;
+                  const html=(document.getElementById("manual-html")as HTMLTextAreaElement).value;
+                  if(!url){message.warning("请输入URL");return;}
+                  if(!text&&!html){message.warning("请输入正文或HTML源码");return;}
+                  const body:any={url,source_type:"CITED"};
+                  if(html){body.raw_html=html;}
+                  if(text){body.clean_text=text;}
+                  await fetch("/api/optimization/golden-case/documents/manual",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+                  message.success("已录入并自动分块");
+                }}>录入内容</Button>
               </Card>
               <Alert type="info" showIcon message={<span><strong>当前状态</strong>：规则分类显示「操作步骤」为最高频信息需求（144/180 claims）。该结论正在进行人工验证。引用正文证据仍不足，品牌 /card 尚未完成同口径分析。<strong>策略继续保持暂缓决策（DEFERRED）</strong>，待 Passage Evidence 与 Brand Asset Evidence 补齐后重新评估。</span>} />
             </Space>}

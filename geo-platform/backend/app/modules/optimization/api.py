@@ -254,6 +254,7 @@ from app.modules.optimization.passage_service import (
     analyze_brand_information_gap,
 )
 from app.models import AnswerClaim, PassageAlignment, ReferenceSource, RetrievalCandidate, SourceDocument
+from app.services.serialization import dumps, loads
 from datetime import datetime
 import hashlib
 from urllib.parse import urlparse
@@ -275,7 +276,8 @@ def golden_case_claims(run_ids: str = "173,174,175,176,177,178,179,180,181,182,1
              "claim_type": c.claim_type, "citation_anchor": c.citation_anchor,
              "citation_ids": loads(c.citation_ids_json, []),
              "answer_position": c.answer_position, "epistemic_status": c.epistemic_status,
-             "provenance": c.provenance, "reviewer": c.reviewer, "review_note": c.review_note} for c in claims]
+             "provenance": c.provenance, "review_status": c.review_status,
+             "reviewer": c.reviewer, "review_note": c.review_note} for c in claims]
 
 
 @router.get("/golden-case/alignments")

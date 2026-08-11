@@ -630,6 +630,8 @@ class AnswerClaim(Base, TimestampMixin):
     citation_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     epistemic_status: Mapped[str] = mapped_column(String(40), default="FACT")
     provenance: Mapped[str] = mapped_column(String(40), default="RULE_DERIVED")
+    review_status: Mapped[str] = mapped_column(String(40), default="PENDING")
+    human_labels_json: Mapped[str] = mapped_column(Text, default="[]")
     reviewer: Mapped[str] = mapped_column(String(120), default="")
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     review_note: Mapped[str] = mapped_column(Text, default="")

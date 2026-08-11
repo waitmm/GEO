@@ -711,21 +711,42 @@ export default function App() {
             </Space>}
           </Card>
         </Space> : page === "golden" ? <Space direction="vertical" size={16} className="page-stack">
-          <Card title="Golden Case · Prompt #19「抖音跳转链接」Runs 173-184" extra={<Space>
+          <Card title="Golden Case 内容分析" extra={<Space>
+            <Select placeholder="选Prompt" style={{width:220}} value={selectedPromptId} onChange={async(v)=>{
+              setSelectedPromptId(v);
+              // Find runs for this prompt
+              const promptRuns = runs.filter((r:any)=>r.prompt_id===v&&(r.status==="success"||r.status==="partial_success"));
+              if(promptRuns.length===0){message.warning("该Prompt没有可用Run");return;}
+              setGoldenLoading(true);
+              const runIds = promptRuns.map((r:any)=>r.id).join(",");
+              try{
+                const [s, nm, claims, audit] = await Promise.all([
+                  (await fetch("/api/optimization/golden-case/summary")).json(),
+                  (await fetch(`/api/optimization/golden-case/need-map-validated?run_ids=${runIds}`)).json(),
+                  (await fetch(`/api/optimization/golden-case/claims?run_ids=${runIds}`)).json(),
+                  (await fetch("/api/optimization/golden-case/url-audit")).json(),
+                ]);
+                setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit, promptId:v, runIds:runIds});
+              }catch(e:any){message.error(e.message)}
+              finally{setGoldenLoading(false)}
+            }}
+              options={[...new Map(runs.filter((r:any)=>r.status==="success"||r.status==="partial_success").map((r:any)=>[r.prompt_id,{id:r.prompt_id,text:r.original_query}])).values()].map((p:any)=>({label:`#${p.id} ${p.text}`,value:p.id}))}
+            />
             <Tag color="orange">CITATION_ONLY</Tag>
-            <Button type="primary" loading={goldenLoading} onClick={async()=>{
+            <Button type="primary" loading={goldenLoading} disabled={!selectedPromptId} onClick={async()=>{
+              if(!goldenData?.runIds)return;
               setGoldenLoading(true);
               try{
                 const [s, nm, claims, audit] = await Promise.all([
                   (await fetch("/api/optimization/golden-case/summary")).json(),
-                  (await fetch("/api/optimization/golden-case/need-map-validated")).json(),
-                  (await fetch("/api/optimization/golden-case/claims")).json(),
+                  (await fetch(`/api/optimization/golden-case/need-map-validated?run_ids=${goldenData.runIds}`)).json(),
+                  (await fetch(`/api/optimization/golden-case/claims?run_ids=${goldenData.runIds}`)).json(),
                   (await fetch("/api/optimization/golden-case/url-audit")).json(),
                 ]);
-                setGoldenData({summary:s, needMap:nm, claims, urlAudit:audit});
+                setGoldenData({...goldenData, summary:s, needMap:nm, claims, urlAudit:audit});
               }catch(e:any){message.error(e.message)}
               finally{setGoldenLoading(false)}
-            }}>加载全部数据</Button>
+            }}>加载数据</Button>
           </Space>}>
             <Alert type="warning" showIcon style={{marginBottom:12}} message="12次采样答案内容一致（同一Prompt/模型/会话），Claims 会重复出现。各Run可独立审核，也可只审一个Run后批量应用。第三方平台抓取受限，仅有百度系部分页面成功。Candidate↔Citation URL重叠约3%，负样本不可用。" />
             {!goldenData ? <Empty description="点击「加载全部数据」开始" /> : <Space direction="vertical" size={12}>

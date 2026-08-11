@@ -462,12 +462,24 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
     if not title:
         title = payload.get("title", url)
 
-    doc = SourceDocument(
-        url=url, domain=urlparse(url).netloc.lower() if url else "",
-        source_type=payload.get("source_type", "CITED"),
-        fetch_status="SUCCESS", title=title,
-        raw_html=html[:500000] if html else "",
-        clean_text=text[:200000],
+    # Check if a failed doc already exists for this URL and update it
+    existing = db.query(SourceDocument).filter(
+        (SourceDocument.original_url == url) | (SourceDocument.url == url)
+    ).first()
+    if existing:
+        existing.clean_text = text[:200000] if text else existing.clean_text
+        existing.raw_html = html[:500000] if html else existing.raw_html
+        existing.title = title or existing.title
+        existing.fetch_status = "SUCCESS"
+        existing.fetch_time = datetime.utcnow()
+        doc = existing
+    else:
+        doc = SourceDocument(
+            url=url, original_url=url, domain=urlparse(url).netloc.lower() if url else "",
+            source_type=payload.get("source_type", "CITED"),
+            fetch_status="SUCCESS", title=title,
+            raw_html=html[:500000] if html else "",
+            clean_text=text[:200000],
         clean_text_hash=hashlib.sha256(text.encode()).hexdigest()[:16] if text else "",
         fetch_time=datetime.utcnow(),
     )

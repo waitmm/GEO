@@ -603,6 +603,7 @@ class SourceDocument(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     url: Mapped[str] = mapped_column(String(1200), index=True)
+    original_url: Mapped[str] = mapped_column(String(1200), default="")
     canonical_url: Mapped[str] = mapped_column(String(1200), default="")
     domain: Mapped[str] = mapped_column(String(255), default="", index=True)
     source_type: Mapped[str] = mapped_column(String(40), default="CITED", index=True)

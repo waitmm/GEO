@@ -192,10 +192,12 @@ def acquire_cited_sources(db: Session, run_ids: list[int]) -> dict:
             seen.add(url)
             unique_urls.append((url, ref.domain, "CITED"))
 
-    # Filter out already-acquired URLs
+    # Filter out already-acquired URLs (check both original_url and url)
     new_urls = []
     for url, domain, src_type in unique_urls:
-        existing = db.query(SourceDocument).filter(SourceDocument.url == url).first()
+        existing = db.query(SourceDocument).filter(
+            (SourceDocument.original_url == url) | (SourceDocument.url == url)
+        ).first()
         if not existing:
             new_urls.append(url)
 
@@ -206,7 +208,8 @@ def acquire_cited_sources(db: Session, run_ids: list[int]) -> dict:
         for i, (url, domain, src_type) in enumerate([(u, d, s) for u, d, s in unique_urls if u in new_urls]):
             result = results[i] if i < len(results) else fetch_page(url)
             doc = SourceDocument(
-                url=url, domain=domain, source_type=src_type,
+                url=result.get("canonical_url", url), original_url=url,
+                domain=domain, source_type=src_type,
                 fetch_status=result["fetch_status"], failure_reason=result["failure_reason"],
                 title=result["title"], raw_html=result.get("raw_html", "")[:500000],
                 clean_text=result["clean_text"][:200000],

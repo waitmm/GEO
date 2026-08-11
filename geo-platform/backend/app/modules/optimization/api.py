@@ -306,27 +306,26 @@ def golden_case_documents(run_ids: str = "", db: Session = Depends(get_db)):
     if run_ids:
         ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
         refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(ids)).all()
-        # Collect both raw and normalized URLs for matching
+        # Build set of citation URLs (both raw and normalized)
         cit_urls = set()
         for r in refs:
-            u = r.canonical_url or r.url
-            if u:
-                cit_urls.add(u)
-                # Also add normalized variants
-                from app.modules.optimization.passage_service import _normalize_url_for_fetch, _normalize_for_match
-                try:
-                    cit_urls.add(_normalize_url_for_fetch(u))
-                except Exception:
-                    pass
-        # Match against SourceDocument.url using IN
-        all_docs = db.query(SourceDocument).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
-        docs = [d for d in all_docs if d.url in cit_urls or any(
-            d.url.endswith(u.split("://")[-1]) or u.endswith(d.url.split("://")[-1])
-            for u in cit_urls if "://" in d.url and "://" in u
-        )]
+            raw = r.url or ""
+            can = r.canonical_url or ""
+            if raw: cit_urls.add(raw)
+            if can: cit_urls.add(can)
+        # Match documents by original_url matching citation URL
+        all_docs = db.query(SourceDocument).filter(
+            SourceDocument.original_url.in_(cit_urls)
+        ).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
+        # Also match by url if original_url is empty
+        if not all_docs:
+            all_docs = db.query(SourceDocument).filter(
+                SourceDocument.url.in_(cit_urls)
+            ).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
+        docs = all_docs
     else:
         docs = db.query(SourceDocument).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
-    return [{"id": d.id, "url": d.url, "domain": d.domain, "source_type": d.source_type,
+    return [{"id": d.id, "url": d.url or d.original_url, "domain": d.domain, "source_type": d.source_type,
              "fetch_status": d.fetch_status, "title": d.title, "clean_text_len": len(d.clean_text or ""),
              "blocks_count": len(loads(d.content_blocks_json, [])),
              "failure_reason": d.failure_reason} for d in docs]

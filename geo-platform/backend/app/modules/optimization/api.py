@@ -257,6 +257,8 @@ from app.models import AnswerClaim, PassageAlignment, ReferenceSource, Retrieval
 from app.services.serialization import dumps, loads
 from datetime import datetime
 import hashlib
+import html as _html
+import re
 from urllib.parse import urlparse
 from collections import defaultdict
 
@@ -361,6 +363,37 @@ def golden_case_acquire(payload: dict, db: Session = Depends(get_db)):
     result = acquire_cited_sources(db, run_ids)
     segment_all_documents(db)
     return result
+
+
+@router.post("/golden-case/extract-primary")
+def golden_case_extract_primary(payload: dict, db: Session = Depends(get_db)):
+    doc_ids = payload.get("doc_ids", [])
+    if doc_ids:
+        docs = db.query(SourceDocument).filter(SourceDocument.id.in_(doc_ids)).all()
+    else:
+        docs = db.query(SourceDocument).filter(
+            SourceDocument.fetch_status.in_(["SUCCESS", "PARTIAL"]),
+            SourceDocument.raw_html.isnot(None), SourceDocument.raw_html != "",
+        ).all()
+    from app.modules.optimization.primary_content import extract_from_html
+    from app.modules.optimization.passage_service import segment_document
+    results = []
+    for doc in docs:
+        r = extract_from_html(doc.raw_html or "", doc.url or "")
+        old_len = len(doc.clean_text or "")
+        if r["primary_content_length"] > 100 and r["extraction_status"] != "SUSPECT":
+            doc.clean_text = r["primary_content"]
+        doc.title = doc.title or _extract_title_from_html(doc.raw_html or "")
+        results.append({"id": doc.id, "url": doc.url, "old_len": old_len,
+                        "new_len": r["primary_content_length"], "status": r["extraction_status"],
+                        "type": r["content_type"], "confidence": r["extraction_confidence"]})
+    db.commit()
+    return {"processed": len(results), "results": results}
+
+
+def _extract_title_from_html(html: str) -> str:
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    return _html.unescape(re.sub(r"<[^>]+>", "", m.group(1)).strip()) if m else ""
 
 
 @router.post("/golden-case/refetch")

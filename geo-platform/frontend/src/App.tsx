@@ -778,7 +778,7 @@ export default function App() {
                 {goldenData.docs && <Table size="small" rowKey="id" pagination={{pageSize:8}} dataSource={goldenData.docs} columns={[
                   {title:"状态",width:60,render:(_,r:any)=><Tag color={r.fetch_status==="SUCCESS"?"green":r.fetch_status==="PARTIAL"?"gold":"red"}>{r.fetch_status==="SUCCESS"?"成功":r.fetch_status==="PARTIAL"?"部分":"失败"}</Tag>},
                   {title:"域名",dataIndex:"domain",width:100},
-                  {title:"URL/标题",ellipsis:true,render:(_,r:any)=><Text>{r.title||r.url}</Text>},
+                  {title:"URL/标题",ellipsis:true,render:(_,r:any)=><a href={r.url} target="_blank" rel="noreferrer" style={{fontSize:12}}>{r.title||r.url}</a>},
                   {title:"字数",width:60,render:(_,r:any)=><Tag>{r.clean_text_len||0}</Tag>},
                   {title:"补录",width:70,render:(_,r:any)=>r.fetch_status!=="SUCCESS"?<Button size="small" onClick={()=>{
                     (document.getElementById("manual-url")as HTMLInputElement).value=r.url;

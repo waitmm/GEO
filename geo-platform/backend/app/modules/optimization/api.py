@@ -462,36 +462,47 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
     if not title:
         title = payload.get("title", url)
 
-    # Check if a failed doc already exists for this URL and update it
-    existing = db.query(SourceDocument).filter(
-        (SourceDocument.original_url == url) | (SourceDocument.url == url)
-    ).first()
-    if existing:
-        existing.clean_text = text[:200000] if text else existing.clean_text
-        existing.raw_html = html[:500000] if html else existing.raw_html
-        existing.title = title or existing.title
-        existing.fetch_status = "SUCCESS"
-        existing.fetch_time = datetime.utcnow()
-        doc = existing
-    else:
+    # Normalize URL for matching: extract path+query as the resource key
+    from urllib.parse import urlparse as _up
+    def _url_key(u: str) -> str:
+        p = _up(u if "://" in u else "https://"+u)
+        return (p.netloc.replace("www.","").lower() + p.path.rstrip("/") + ("?"+p.query if p.query else "")).lower()
+
+    target_key = _url_key(url)
+    # Find ALL documents sharing the same normalized URL key (http/https/www variants)
+    all_docs = db.query(SourceDocument).filter(
+        SourceDocument.fetch_status != "SUCCESS"
+    ).all()
+    updated = 0
+    for d in all_docs:
+        if (_url_key(d.url) == target_key or _url_key(d.original_url or d.url) == target_key):
+            d.clean_text = text[:200000] if text else d.clean_text
+            d.raw_html = html[:500000] if html else d.raw_html
+            d.title = title or d.title
+            d.fetch_status = "SUCCESS"
+            d.fetch_time = datetime.utcnow()
+            updated += 1
+            if updated == 1:
+                doc = d
+    if updated == 0:
         doc = SourceDocument(
             url=url, original_url=url, domain=urlparse(url).netloc.lower() if url else "",
             source_type=payload.get("source_type", "CITED"),
             fetch_status="SUCCESS", title=title,
             raw_html=html[:500000] if html else "",
             clean_text=text[:200000],
-        clean_text_hash=hashlib.sha256(text.encode()).hexdigest()[:16] if text else "",
-        fetch_time=datetime.utcnow(),
-    )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
+            clean_text_hash=hashlib.sha256(text.encode()).hexdigest()[:16] if text else "",
+            fetch_time=datetime.utcnow(),
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
     # Segment
     from app.modules.optimization.passage_service import segment_document
     blocks = segment_document(doc)
     doc.content_blocks_json = dumps(blocks)
     db.commit()
-    return {"id": doc.id, "url": doc.url, "blocks": len(blocks), "status": "MANUAL_CAPTURE"}
+    return {"id": doc.id, "url": doc.url, "blocks": len(blocks), "updated_count": updated, "status": "MANUAL_CAPTURE"}
 
 
 @router.get("/golden-case/url-audit")

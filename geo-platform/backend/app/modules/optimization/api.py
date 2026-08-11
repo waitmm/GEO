@@ -363,6 +363,37 @@ def golden_case_acquire(payload: dict, db: Session = Depends(get_db)):
     return result
 
 
+@router.post("/golden-case/refetch")
+def golden_case_refetch(payload: dict, db: Session = Depends(get_db)):
+    urls = payload.get("urls", [])
+    if not urls:
+        raise HTTPException(status_code=400, detail="请提供urls")
+    from app.modules.optimization.passage_service import fetch_page_playwright
+    results = fetch_page_playwright(urls)
+    for r in results:
+        existing = db.query(SourceDocument).filter(
+            (SourceDocument.original_url == r["url"]) | (SourceDocument.url == r["url"])
+        ).first()
+        if existing:
+            existing.clean_text = r["clean_text"][:200000]
+            existing.raw_html = r.get("raw_html", "")[:500000]
+            existing.title = r["title"] or existing.title
+            existing.fetch_status = r["fetch_status"]
+            existing.failure_reason = r.get("failure_reason", "")
+        elif r["fetch_status"] == "SUCCESS" and len(r["clean_text"]) > 50:
+            doc = SourceDocument(
+                url=r.get("canonical_url", r["url"]), original_url=r["url"],
+                domain=r["domain"], source_type="CITED",
+                fetch_status=r["fetch_status"], title=r["title"],
+                raw_html=r.get("raw_html", "")[:500000],
+                clean_text=r["clean_text"][:200000],
+                clean_text_hash="", fetch_time=r["fetch_time"],
+            )
+            db.add(doc)
+    db.commit()
+    return {"refetched": len(urls), "results": [{"url": r["url"], "status": r["fetch_status"]} for r in results]}
+
+
 @router.get("/golden-case/summary")
 def golden_case_summary(db: Session = Depends(get_db)):
     docs = db.query(SourceDocument).count()

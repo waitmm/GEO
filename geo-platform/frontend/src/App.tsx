@@ -800,7 +800,19 @@ export default function App() {
                   {title:"域名",dataIndex:"domain",width:100},
                   {title:"URL/标题",ellipsis:true,render:(_,r:any)=><a href={r.url} target="_blank" rel="noreferrer" style={{fontSize:12}}>{r.title||r.url}</a>},
                   {title:"字数",width:60,render:(_,r:any)=><Tag>{r.clean_text_len||0}</Tag>},
-                  {title:"补录",width:70,render:(_,r:any)=>r.fetch_status!=="SUCCESS"?<Button size="small" onClick={()=>setManualUrl(r.url)}>补录</Button>:null},
+                  {title:"操作",width:120,render:(_,r:any)=><Space size={2}>
+                    {r.fetch_status!=="SUCCESS"&&<Button size="small" onClick={()=>setManualUrl(r.url)}>补录</Button>}
+                    {r.fetch_status==="FETCH_FAILED"&&<Button size="small" danger onClick={async()=>{
+                      message.loading({content:"重新抓取中...",duration:0,key:"refetch"});
+                      try{
+                        await fetch("/api/optimization/golden-case/refetch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({urls:[r.url]})});
+                        message.destroy("refetch");
+                        const dd=await(await fetch(`/api/optimization/golden-case/documents?run_ids=${goldenData?.runIds||""}`)).json();
+                        setGoldenData({...goldenData, docs:dd});
+                        message.success("已重新抓取");
+                      }catch(e:any){message.destroy("refetch");message.error(e.message)}
+                    }}>重抓</Button>}
+                  </Space>},
                 ]} />}
                 <Divider />
                 <Input placeholder="页面URL" value={manualUrl} onChange={e=>setManualUrl(e.target.value)} style={{width:"100%",marginBottom:6}}/>

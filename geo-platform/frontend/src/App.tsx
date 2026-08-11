@@ -737,6 +737,26 @@ export default function App() {
                 <Col span={4}><Statistic title="错误" value={goldenData.needMap?.mislabeled||0}/></Col>
                 <Col span={4}><Statistic title="模糊" value={goldenData.needMap?.ambiguous||0}/></Col>
               </Row>
+              {/* Source Documents */}
+              <Card size="small" title="引用资料获取情况" extra={<Button size="small" onClick={async()=>{
+                try{setGoldenData({...goldenData, docs:await (await fetch("/api/optimization/golden-case/documents")).json()})}
+                catch(e:any){message.error(e.message)}
+              }}>加载</Button>}>
+                {goldenData.docs ? <>
+                  <Row gutter={12} style={{marginBottom:8}}>
+                    <Col span={8}><Tag color="green">成功: {goldenData.docs.filter((d:any)=>d.fetch_status==="SUCCESS").length}</Tag></Col>
+                    <Col span={8}><Tag color="gold">部分: {goldenData.docs.filter((d:any)=>d.fetch_status==="PARTIAL").length}</Tag></Col>
+                    <Col span={8}><Tag color="red">失败: {goldenData.docs.filter((d:any)=>d.fetch_status!=="SUCCESS"&&d.fetch_status!=="PARTIAL").length}</Tag></Col>
+                  </Row>
+                  <Table size="small" rowKey="id" pagination={{pageSize:10}} dataSource={goldenData.docs} columns={[
+                    {title:"状态",width:65,render:(_,r:any)=><Tag color={r.fetch_status==="SUCCESS"?"green":r.fetch_status==="PARTIAL"?"gold":"red"}>{r.fetch_status==="SUCCESS"?"成功":r.fetch_status==="PARTIAL"?"部分":"失败"}</Tag>},
+                    {title:"域名",dataIndex:"domain",width:120},
+                    {title:"标题/URL",ellipsis:true,render:(_,r:any)=><Text>{r.title||r.url}</Text>},
+                    {title:"正文长度",width:80,render:(_,r:any)=><Tag>{r.clean_text_len||0}字</Tag>},
+                    {title:"块数",dataIndex:"blocks_count",width:50},
+                  ]} />
+                </> : <Text type="secondary">点击加载查看引用资料抓取状态</Text>}
+              </Card>
               {/* URL Audit */}
               {goldenData.urlAudit && <Card size="small" title="URL 身份审计">
                 <Descriptions size="small" bordered column={2}>

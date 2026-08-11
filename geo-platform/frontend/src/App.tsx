@@ -714,11 +714,18 @@ export default function App() {
           <Card title="Golden Case 内容分析" extra={<Space>
             <Select placeholder="选Prompt" style={{width:220}} value={selectedPromptId} onChange={async(v)=>{
               setSelectedPromptId(v);
-              // Find runs for this prompt
               const promptRuns = runs.filter((r:any)=>r.prompt_id===v&&(r.status==="success"||r.status==="partial_success"));
               if(promptRuns.length===0){message.warning("该Prompt没有可用Run");return;}
               setGoldenLoading(true);
               const runIds = promptRuns.map((r:any)=>r.id).join(",");
+              const runIdList = promptRuns.map((r:any)=>r.id);
+              // Auto-extract claims if not yet extracted
+              try{
+                const existing = await (await fetch(`/api/optimization/golden-case/claims?run_ids=${runIds}`)).json();
+                if(!existing||existing.length===0){
+                  await fetch("/api/optimization/golden-case/extract-claims",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_ids:runIdList})});
+                }
+              }catch{}
               try{
                 const [s, nm, claims, audit] = await Promise.all([
                   (await fetch("/api/optimization/golden-case/summary")).json(),

@@ -323,6 +323,15 @@ def golden_case_brand_gap(db: Session = Depends(get_db)):
     return analyze_brand_information_gap(db, "https://www.aifabu.com/card", need_map["answer_need_map"], ids)
 
 
+@router.post("/golden-case/extract-claims")
+def golden_case_extract_claims(payload: dict, db: Session = Depends(get_db)):
+    run_ids = payload.get("run_ids", [])
+    if not run_ids:
+        raise HTTPException(status_code=400, detail="请提供run_ids")
+    result = extract_answer_claims(db, run_ids)
+    return result
+
+
 @router.get("/golden-case/summary")
 def golden_case_summary(db: Session = Depends(get_db)):
     docs = db.query(SourceDocument).count()

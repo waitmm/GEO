@@ -79,7 +79,7 @@ def _extract_baidu_redirect_target(html: str) -> str | None:
 
 
 def fetch_page_playwright(urls: list[str]) -> list[dict]:
-    """Fetch multiple URLs using Playwright browser (handles JS-rendered pages)."""
+    """Fetch multiple URLs using Playwright browser (sequential, with short timeout)."""
     results = []
     try:
         from playwright.sync_api import sync_playwright
@@ -97,12 +97,10 @@ def fetch_page_playwright(urls: list[str]) -> list[dict]:
                     "raw_html": "", "clean_text": "", "fetch_time": datetime.utcnow(),
                 }
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                    page.wait_for_timeout(2000)  # Wait for JS to render
+                    page.goto(url, wait_until="domcontentloaded", timeout=5000)
                     html = page.content()
                     result["raw_html"] = html[:500000]
                     result["title"] = page.title() or ""
-                    # Extract clean text
                     body = page.inner_text("body") if page.locator("body").count() > 0 else ""
                     clean = _MULTI_NL.sub("\n\n", body.strip())[:200000]
                     result["clean_text"] = clean
@@ -113,7 +111,6 @@ def fetch_page_playwright(urls: list[str]) -> list[dict]:
                 results.append(result)
             browser.close()
     except ImportError:
-        # Fallback to urllib
         for url in urls:
             results.append(fetch_page(url))
     return results

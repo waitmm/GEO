@@ -365,6 +365,34 @@ def golden_case_acquire(payload: dict, db: Session = Depends(get_db)):
     return result
 
 
+# --- Answer Intelligence: Atomic Claim Extraction ---
+
+@router.post("/golden-case/extract-atomic-claims")
+def extract_atomic_claims(payload: dict, db: Session = Depends(get_db)):
+    from app.modules.optimization.claim_extraction import run_claim_extraction, list_atomic_claims
+    run_ids = payload.get("run_ids", [])
+    if not run_ids:
+        raise HTTPException(status_code=400, detail="请提供run_ids")
+    result = run_claim_extraction(db, run_ids)
+    return result
+
+
+@router.get("/golden-case/atomic-claims")
+def get_atomic_claims(run_ids: str = "", db: Session = Depends(get_db)):
+    from app.modules.optimization.claim_extraction import list_atomic_claims
+    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()] if run_ids else None
+    return list_atomic_claims(db, ids)
+
+
+@router.post("/golden-case/atomic-claims/{claim_id}/review")
+def review_atomic_claim_endpoint(claim_id: int, payload: dict, db: Session = Depends(get_db)):
+    from app.modules.optimization.claim_extraction import review_atomic_claim
+    try:
+        return review_atomic_claim(db, claim_id, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.post("/golden-case/extract-primary")
 def golden_case_extract_primary(payload: dict, db: Session = Depends(get_db)):
     doc_ids = payload.get("doc_ids", [])

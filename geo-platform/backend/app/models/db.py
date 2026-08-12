@@ -238,6 +238,7 @@ class BrowserMonitorRun(Base):
     os: Mapped[str] = mapped_column(String(120), default="")
     profile_identifier: Mapped[str] = mapped_column(String(200), default="")
     conversation_id: Mapped[str] = mapped_column(String(240), default="")
+    sampling_mode: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
     network_region: Mapped[str] = mapped_column(String(120), default="unknown")
     collector_version: Mapped[str] = mapped_column(String(80), default="")
     parser_version: Mapped[str] = mapped_column(String(80), default="")
@@ -637,6 +638,54 @@ class AnswerClaim(Base, TimestampMixin):
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     review_note: Mapped[str] = mapped_column(Text, default="")
     answer_position: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# ---------------------------------------------------------------------------
+# Answer Intelligence — Claim Extraction + Atomic Claim
+# ---------------------------------------------------------------------------
+
+class ClaimExtractionRun(Base, TimestampMixin):
+    __tablename__ = "claim_extraction_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    extractor_type: Mapped[str] = mapped_column(String(40), default="rule")
+    model_provider: Mapped[str] = mapped_column(String(80), default="")
+    model_name: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(80), default="")
+    extraction_version: Mapped[str] = mapped_column(String(40), default="v1")
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="pending")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+
+
+class AtomicClaim(Base, TimestampMixin):
+    __tablename__ = "atomic_claims"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    source_segment_id: Mapped[int] = mapped_column(ForeignKey("answer_claims.id"), index=True)
+    claim_extraction_run_id: Mapped[int] = mapped_column(ForeignKey("claim_extraction_runs.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+
+    claim_text: Mapped[str] = mapped_column(Text, default="")
+    claim_types_json: Mapped[str] = mapped_column(Text, default="[]")
+    speech_act: Mapped[str] = mapped_column(String(40), default="ASSERTION")
+    epistemic_status: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
+    polarity: Mapped[str] = mapped_column(String(20), default="NEUTRAL")
+    is_negated: Mapped[bool] = mapped_column(Boolean, default=False)
+    verification_priority: Mapped[str] = mapped_column(String(20), default="LOW")
+    geo_importance: Mapped[str] = mapped_column(String(20), default="LOW")
+    entities_json: Mapped[str] = mapped_column(Text, default="[]")
+    extraction_confidence: Mapped[float] = mapped_column(Float, default=0)
+
+    # Human review
+    review_status: Mapped[str] = mapped_column(String(40), default="PENDING")
+    machine_claim_text: Mapped[str] = mapped_column(Text, default="")
+    human_claim_text: Mapped[str] = mapped_column(Text, default="")
+    reviewer: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
 
 
 class PassageAlignment(Base, TimestampMixin):

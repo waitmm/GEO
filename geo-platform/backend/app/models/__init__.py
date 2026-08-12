@@ -1,7 +1,9 @@
 from app.models.db import (
     AnswerCitation,
     AnswerClaim,
+    AtomicClaim,
     Base,
+    ClaimExtractionRun,
     BrandMention,
     BrowserMonitorRun,
     BrowserMonitorTask,

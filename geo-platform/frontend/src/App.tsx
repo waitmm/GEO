@@ -871,6 +871,48 @@ export default function App() {
                   {title:"Run覆盖",dataIndex:"run_coverage",width:70},
                 ]} />
               </Card>}
+              {/* Atomic Claims Review */}
+              <Card size="small" title="Atomic Claims 审核" extra={<Space>
+                <Button size="small" type="primary" loading={goldenLoading} onClick={async()=>{
+                  if(!goldenData?.runIds)return;
+                  setGoldenLoading(true);
+                  try{
+                    await fetch("/api/optimization/golden-case/extract-atomic-claims",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_ids:goldenData.runIds.split(",").map(Number)})});
+                    const acs=await(await fetch(`/api/optimization/golden-case/atomic-claims?run_ids=${goldenData.runIds}`)).json();
+                    setGoldenData({...goldenData, atomicClaims:acs});
+                    message.success(`已提取 ${acs.length} 条 Atomic Claims`);
+                  }catch(e:any){message.error(e.message)}
+                  finally{setGoldenLoading(false)}
+                }}>提取 Atomic Claims</Button>
+                <Button size="small" onClick={async()=>{
+                  try{setGoldenData({...goldenData, atomicClaims:await(await fetch(`/api/optimization/golden-case/atomic-claims?run_ids=${goldenData?.runIds||""}`)).json()})}
+                  catch(e:any){message.error(e.message)}
+                }}>加载已有</Button>
+              </Space>}>
+                {goldenData.atomicClaims ? <>
+                  <Row gutter={12} style={{marginBottom:8}}>
+                    <Col span={6}><Tag>总数: {goldenData.atomicClaims.length}</Tag></Col>
+                    <Col span={6}><Tag color="green">已确认: {goldenData.atomicClaims.filter((c:any)=>c.review_status==="CONFIRMED").length}</Tag></Col>
+                    <Col span={6}><Tag color="blue">已编辑: {goldenData.atomicClaims.filter((c:any)=>c.review_status==="EDITED").length}</Tag></Col>
+                    <Col span={6}><Tag color="red">已拒绝: {goldenData.atomicClaims.filter((c:any)=>c.review_status==="REJECTED").length}</Tag></Col>
+                  </Row>
+                  <Table size="small" rowKey="id" pagination={{pageSize:20}}
+                    dataSource={goldenData.atomicClaims}
+                    columns={[
+                      {title:"Claim",ellipsis:true,render:(_:any,r:any)=><Text style={{fontSize:12}}>{r.claim_text}</Text>},
+                      {title:"类型",width:80,render:(_:any,r:any)=><Space size={2}>{(r.claim_types||[]).slice(0,2).map((t:string)=><Tag key={t} color="blue" style={{fontSize:10}}>{t}</Tag>)}</Space>},
+                      {title:"语义",width:65,render:(_:any,r:any)=><Tag style={{fontSize:10}}>{r.speech_act==="ASSERTION"?"陈述":r.speech_act==="INSTRUCTION"?"指令":r.speech_act==="RECOMMENDATION"?"推荐":r.speech_act==="WARNING"?"警告":r.speech_act}</Tag>},
+                      {title:"极性",width:55,render:(_:any,r:any)=><Tag color={r.polarity==="POSITIVE"?"green":"red"} style={{fontSize:10}}>{r.polarity==="POSITIVE"?"正面":"负面"}</Tag>},
+                      {title:"GEO",width:50,render:(_:any,r:any)=><Tag color={r.geo_importance==="HIGH"?"red":"default"} style={{fontSize:10}}>{r.geo_importance==="HIGH"?"高":"低"}</Tag>},
+                      {title:"状态",width:65,render:(_:any,r:any)=><Tag color={r.review_status==="CONFIRMED"?"green":r.review_status==="EDITED"?"blue":"default"} style={{fontSize:10}}>{r.review_status==="CONFIRMED"?"已确认":r.review_status==="EDITED"?"已编辑":r.review_status==="REJECTED"?"已拒绝":"待审"}</Tag>},
+                      {title:"操作",width:120,render:(_:any,r:any)=><Space size={1}>
+                        <Button size="small" onClick={async()=>{await fetch(`/api/optimization/golden-case/atomic-claims/${r.id}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({review_status:"CONFIRMED",reviewer:"human"})});message.success("已确认");setGoldenData({...goldenData,atomicClaims:goldenData.atomicClaims.map((c:any)=>c.id===r.id?{...c,review_status:"CONFIRMED"}:c)});}}>确认</Button>
+                        <Button size="small" danger onClick={async()=>{await fetch(`/api/optimization/golden-case/atomic-claims/${r.id}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({review_status:"REJECTED",reviewer:"human"})});message.success("已拒绝");setGoldenData({...goldenData,atomicClaims:goldenData.atomicClaims.map((c:any)=>c.id===r.id?{...c,review_status:"REJECTED"}:c)});}}>拒绝</Button>
+                      </Space>},
+                    ]}
+                  />
+                </> : <Text type="secondary">点击「提取 Atomic Claims」运行 V1 RuleBased 提取器，或「加载已有」查看之前结果</Text>}
+              </Card>
               {/* Claims Review Table */}
               <Card size="small" title="Answer Claims 审核">
                 <Table size="small" rowKey="id" pagination={{pageSize:15}}

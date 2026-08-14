@@ -84,7 +84,10 @@ def fetch_page_playwright(urls: list[str]) -> list[dict]:
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-blink-features=AutomationControlled"])
+            try:
+                browser = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-blink-features=AutomationControlled"])
+            except Exception:
+                return [fetch_page(url) for url in urls]
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 locale="zh-CN",
@@ -402,6 +405,9 @@ def align_claims_to_passages(db: Session, run_ids: list[int]) -> dict:
     claims = db.query(AnswerClaim).filter(AnswerClaim.run_id.in_(run_ids)).all()
     docs = db.query(SourceDocument).filter(SourceDocument.fetch_status.in_(["SUCCESS", "PARTIAL"])).all()
     refs = {ref.id: ref for ref in db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(run_ids)).all()}
+    refs_by_run: dict[int, list[ReferenceSource]] = defaultdict(list)
+    for ref in refs.values():
+        refs_by_run[ref.run_id].append(ref)
 
     # Clear existing alignments
     db.query(PassageAlignment).filter(PassageAlignment.run_id.in_(run_ids)).delete()
@@ -411,8 +417,9 @@ def align_claims_to_passages(db: Session, run_ids: list[int]) -> dict:
         claim_text = claim.raw_text
         anchor_ids = loads(claim.citation_ids_json, [])
         matched = False
+        candidate_ref_ids = anchor_ids or [ref.id for ref in refs_by_run.get(claim.run_id, [])]
 
-        for ref_id in (anchor_ids or list(refs.keys())):
+        for ref_id in candidate_ref_ids:
             ref = refs.get(ref_id)
             if not ref:
                 continue
@@ -487,10 +494,10 @@ def align_claims_to_passages(db: Session, run_ids: list[int]) -> dict:
                     matched = True
 
         # L3: UNRESOLVED — no match found
-        if not matched and claim.citation_anchor:
+        if not matched:
             al = PassageAlignment(
                 answer_claim_id=claim.id, run_id=claim.run_id,
-                citation_id=claim.citation_anchor,
+                citation_id=claim.citation_anchor or (candidate_ref_ids[0] if candidate_ref_ids else None),
                 alignment_level="L5_UNRESOLVED",
                 alignment_method="no_match",
                 score=0.0,

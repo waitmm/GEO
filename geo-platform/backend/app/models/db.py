@@ -372,6 +372,328 @@ class OptimizationEvidencePackage(Base, TimestampMixin):
     superseded_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("optimization_evidence_packages.id"), nullable=True)
 
 
+class RecommendationIntelligenceSnapshot(Base, TimestampMixin):
+    __tablename__ = "recommendation_intelligence_snapshots"
+    __table_args__ = (
+        Index("ix_recommendation_snapshots_project_prompt_status", "project_id", "prompt_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id", ondelete="CASCADE"), index=True)
+    source_run_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    recommendation_schema_version: Mapped[str] = mapped_column(String(60), default="recommendation_schema.v1")
+    entity_resolver_version: Mapped[str] = mapped_column(String(60), default="entity_resolver.v1")
+    recommendation_extractor_version: Mapped[str] = mapped_column(String(60), default="recommendation_extractor.v1")
+    decision_mode: Mapped[str] = mapped_column(String(60), default="INFORMATIONAL", index=True)
+    recommendation_expected: Mapped[bool] = mapped_column(Boolean, default=False)
+    metric_eligibility_json: Mapped[str] = mapped_column(Text, default="{}")
+    landscape_json: Mapped[str] = mapped_column(Text, default="[]")
+    positioning_json: Mapped[str] = mapped_column(Text, default="[]")
+    evidence_links_json: Mapped[str] = mapped_column(Text, default="[]")
+    gap_diagnosis_json: Mapped[str] = mapped_column(Text, default="[]")
+    intervention_candidates_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(40), default="active", index=True)
+
+
+class RecommendationEntity(Base, TimestampMixin):
+    __tablename__ = "recommendation_entities"
+    __table_args__ = (
+        UniqueConstraint("project_id", "entity_type", "normalized_key", name="uq_recommendation_entity_project_type_key"),
+        Index("ix_recommendation_entities_project_type", "project_id", "entity_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    canonical_name: Mapped[str] = mapped_column(String(240), index=True)
+    entity_type: Mapped[str] = mapped_column(String(40), default="PRODUCT", index=True)
+    entity_role: Mapped[str] = mapped_column(String(80), default="BRAND", index=True)
+    is_choice_candidate: Mapped[bool] = mapped_column(Boolean, default=False)
+    aliases_json: Mapped[str] = mapped_column(Text, default="[]")
+    domain: Mapped[str] = mapped_column(String(255), default="")
+    official_urls_json: Mapped[str] = mapped_column(Text, default="[]")
+    normalized_key: Mapped[str] = mapped_column(String(240), index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.8)
+    source: Mapped[str] = mapped_column(String(80), default="RULE_DERIVED")
+
+
+class RecommendationClaim(Base, TimestampMixin):
+    __tablename__ = "recommendation_claims"
+    __table_args__ = (
+        Index("ix_recommendation_claims_project_prompt", "project_id", "prompt_id"),
+        Index("ix_recommendation_claims_run_entity", "run_id", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_intelligence_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id", ondelete="CASCADE"), index=True)
+    entity_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_entities.id", ondelete="SET NULL"), nullable=True, index=True)
+    entity_name: Mapped[str] = mapped_column(String(240), default="")
+    recommendation_type: Mapped[str] = mapped_column(String(60), default="MENTION_ONLY", index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_conditional: Mapped[bool] = mapped_column(Boolean, default=False)
+    condition_type: Mapped[str] = mapped_column(String(60), default="")
+    condition_text: Mapped[str] = mapped_column(Text, default="")
+    recommendation_text: Mapped[str] = mapped_column(Text, default="")
+    recommendation_span: Mapped[str] = mapped_column(Text, default="")
+    start_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    end_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    recommendation_strength: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
+    is_choice_candidate: Mapped[bool] = mapped_column(Boolean, default=False)
+    answer_span: Mapped[str] = mapped_column(Text, default="")
+    polarity: Mapped[str] = mapped_column(String(20), default="NEUTRAL")
+    reason_texts_json: Mapped[str] = mapped_column(Text, default="[]")
+    extraction_method: Mapped[str] = mapped_column(String(80), default="RULE_DERIVED")
+    extraction_confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(80), default="recommendation_extractor.v1")
+    review_status: Mapped[str] = mapped_column(String(40), default="PENDING", index=True)
+    human_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class RecommendationReasonClaim(Base, TimestampMixin):
+    __tablename__ = "recommendation_reason_claims"
+    __table_args__ = (
+        Index("ix_recommendation_reason_claims_rec_claim", "recommendation_claim_id"),
+        Index("ix_recommendation_reason_claims_project_prompt", "project_id", "prompt_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_intelligence_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    recommendation_claim_id: Mapped[int] = mapped_column(ForeignKey("recommendation_claims.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id", ondelete="CASCADE"), index=True)
+    entity_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_entities.id", ondelete="SET NULL"), nullable=True, index=True)
+    entity_name: Mapped[str] = mapped_column(String(240), default="")
+    reason_type: Mapped[str] = mapped_column(String(80), default="OTHER", index=True)
+    reason_text: Mapped[str] = mapped_column(Text, default="")
+    reason_span: Mapped[str] = mapped_column(Text, default="")
+    start_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    end_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    claim_span: Mapped[str] = mapped_column(Text, default="")
+    polarity: Mapped[str] = mapped_column(String(20), default="NEUTRAL")
+    is_limitation: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_comparison: Mapped[bool] = mapped_column(Boolean, default=False)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    extractor: Mapped[str] = mapped_column(String(80), default="RULE_DERIVED")
+    extractor_version: Mapped[str] = mapped_column(String(80), default="recommendation_reason.v1_rule_zh")
+    review_status: Mapped[str] = mapped_column(String(40), default="UNREVIEWED", index=True)
+    human_labels_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class AnswerSemanticFact(Base, TimestampMixin):
+    __tablename__ = "answer_semantic_facts"
+    __table_args__ = (
+        Index("ix_answer_semantic_facts_snapshot", "snapshot_id"),
+        Index("ix_answer_semantic_facts_project_prompt", "project_id", "prompt_id"),
+        Index("ix_answer_semantic_facts_run_type", "run_id", "fact_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_intelligence_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id", ondelete="CASCADE"), index=True)
+    fact_type: Mapped[str] = mapped_column(String(80), index=True)
+    fact_value: Mapped[bool] = mapped_column(Boolean, default=False)
+    evidence_span: Mapped[str] = mapped_column(Text, default="")
+    start_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    end_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    extractor: Mapped[str] = mapped_column(String(80), default="RULE_DERIVED")
+    extractor_version: Mapped[str] = mapped_column(String(80), default="answer_semantic_fact.v1_rule_zh")
+    review_status: Mapped[str] = mapped_column(String(40), default="UNREVIEWED", index=True)
+    human_labels_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class RecommendationEvidenceLink(Base, TimestampMixin):
+    __tablename__ = "recommendation_evidence_links"
+    __table_args__ = (
+        Index("ix_recommendation_evidence_links_rec_claim", "recommendation_claim_id"),
+        Index("ix_recommendation_evidence_links_citation", "citation_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_intelligence_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    recommendation_claim_id: Mapped[int] = mapped_column(ForeignKey("recommendation_claims.id", ondelete="CASCADE"), index=True)
+    reason_claim_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_reason_claims.id", ondelete="SET NULL"), nullable=True, index=True)
+    citation_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reference_sources.id", ondelete="SET NULL"), nullable=True, index=True)
+    supported_entity_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_entities.id", ondelete="SET NULL"), nullable=True, index=True)
+    supported_entity_name: Mapped[str] = mapped_column(String(240), default="")
+    evidence_roles_json: Mapped[str] = mapped_column(Text, default="[]")
+    primary_evidence_role: Mapped[str] = mapped_column(String(80), default="", index=True)
+    role_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    role_reason: Mapped[str] = mapped_column(Text, default="")
+    attribution_method: Mapped[str] = mapped_column(String(80), default="RULE_DERIVED")
+    attribution_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    answer_span: Mapped[str] = mapped_column(Text, default="")
+    source_passage: Mapped[str] = mapped_column(Text, default="")
+    match_method: Mapped[str] = mapped_column(String(80), default="")
+    match_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+
+class DecisionSelectionCriterion(Base, TimestampMixin):
+    __tablename__ = "decision_selection_criteria"
+    __table_args__ = (
+        Index("ix_decision_selection_criteria_snapshot", "snapshot_id"),
+        Index("ix_decision_selection_criteria_project_prompt", "project_id", "prompt_id"),
+        Index("ix_decision_selection_criteria_run", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_intelligence_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id", ondelete="CASCADE"), index=True)
+    criterion_type: Mapped[str] = mapped_column(String(80), default="OTHER", index=True)
+    criterion_label: Mapped[str] = mapped_column(String(160), default="")
+    normalized_criterion: Mapped[str] = mapped_column(String(160), default="", index=True)
+    answer_span: Mapped[str] = mapped_column(Text, default="")
+    start_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    end_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    criterion_present: Mapped[bool] = mapped_column(Boolean, default=True)
+    criterion_used_for_selection: Mapped[bool] = mapped_column(Boolean, default=False)
+    related_brand_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_entities.id", ondelete="SET NULL"), nullable=True, index=True)
+    related_brand_name: Mapped[str] = mapped_column(String(240), default="")
+    related_solution_object: Mapped[str] = mapped_column(String(160), default="")
+    polarity: Mapped[str] = mapped_column(String(20), default="NEUTRAL")
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    extractor: Mapped[str] = mapped_column(String(80), default="RULE_DERIVED")
+    extractor_version: Mapped[str] = mapped_column(String(80), default="selection_criterion.v1_rule_zh")
+    review_status: Mapped[str] = mapped_column(String(40), default="UNREVIEWED", index=True)
+    human_label_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class BrandCapabilityClaim(Base, TimestampMixin):
+    __tablename__ = "brand_capability_claims"
+    __table_args__ = (
+        Index("ix_brand_capability_claims_snapshot", "snapshot_id"),
+        Index("ix_brand_capability_claims_project_prompt", "project_id", "prompt_id"),
+        Index("ix_brand_capability_claims_run_brand", "run_id", "brand_entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_intelligence_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id", ondelete="CASCADE"), index=True)
+    brand_entity_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_entities.id", ondelete="SET NULL"), nullable=True, index=True)
+    brand_name: Mapped[str] = mapped_column(String(240), default="")
+    need_label: Mapped[str] = mapped_column(String(160), default="")
+    capability_label: Mapped[str] = mapped_column(String(160), default="")
+    subject_text: Mapped[str] = mapped_column(String(240), default="")
+    predicate: Mapped[str] = mapped_column(String(60), default="UNKNOWN", index=True)
+    object_text: Mapped[str] = mapped_column(String(240), default="")
+    claim_text: Mapped[str] = mapped_column(Text, default="")
+    answer_span: Mapped[str] = mapped_column(Text, default="")
+    start_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    end_offset: Mapped[int] = mapped_column(Integer, default=-1)
+    polarity: Mapped[str] = mapped_column(String(20), default="NEUTRAL")
+    negation: Mapped[bool] = mapped_column(Boolean, default=False)
+    epistemic_status: Mapped[str] = mapped_column(String(40), default="OBSERVED")
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    extractor_version: Mapped[str] = mapped_column(String(80), default="brand_capability.v1_rule_zh")
+    review_status: Mapped[str] = mapped_column(String(40), default="UNREVIEWED", index=True)
+    human_label_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class DecisionEvidenceAdoption(Base, TimestampMixin):
+    __tablename__ = "decision_evidence_adoptions"
+    __table_args__ = (
+        Index("ix_decision_evidence_adoptions_snapshot", "snapshot_id"),
+        Index("ix_decision_evidence_adoptions_project_prompt", "project_id", "prompt_id"),
+        Index("ix_decision_evidence_adoptions_run", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_intelligence_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[Optional[int]] = mapped_column(ForeignKey("source_documents.id", ondelete="SET NULL"), nullable=True, index=True)
+    chunk_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    citation_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reference_sources.id", ondelete="SET NULL"), nullable=True, index=True)
+    retrieval_candidate_id: Mapped[Optional[int]] = mapped_column(ForeignKey("retrieval_candidates.id", ondelete="SET NULL"), nullable=True, index=True)
+    answer_claim_id: Mapped[Optional[int]] = mapped_column(ForeignKey("answer_claims.id", ondelete="SET NULL"), nullable=True, index=True)
+    recommendation_claim_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_claims.id", ondelete="SET NULL"), nullable=True, index=True)
+    selection_criterion_id: Mapped[Optional[int]] = mapped_column(ForeignKey("decision_selection_criteria.id", ondelete="SET NULL"), nullable=True, index=True)
+    retrieval_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    retrieved: Mapped[bool] = mapped_column(Boolean, default=False)
+    cited: Mapped[bool] = mapped_column(Boolean, default=False)
+    supports_claim: Mapped[bool] = mapped_column(Boolean, default=False)
+    associated_with_selection_reason: Mapped[bool] = mapped_column(Boolean, default=False)
+    evidence_status: Mapped[str] = mapped_column(String(40), default="UNCERTAIN", index=True)
+    support_role: Mapped[str] = mapped_column(String(80), default="UNKNOWN", index=True)
+    support_strength: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    attribution_method: Mapped[str] = mapped_column(String(80), default="RULE_DERIVED")
+    attribution_version: Mapped[str] = mapped_column(String(80), default="evidence_adoption.v1")
+    review_status: Mapped[str] = mapped_column(String(40), default="UNREVIEWED", index=True)
+    human_label_json: Mapped[str] = mapped_column(Text, default="{}")
+    answer_span: Mapped[str] = mapped_column(Text, default="")
+    evidence_span: Mapped[str] = mapped_column(Text, default="")
+    source_url: Mapped[str] = mapped_column(String(1200), default="")
+    source_domain: Mapped[str] = mapped_column(String(255), default="")
+    source_title: Mapped[str] = mapped_column(String(500), default="")
+
+
+class TargetBrandCapabilityTruth(Base, TimestampMixin):
+    __tablename__ = "target_brand_capability_truths"
+    __table_args__ = (
+        UniqueConstraint("project_id", "brand_id", "capability_key", name="uq_target_brand_capability_truth"),
+        Index("ix_target_brand_capability_truths_project_status", "project_id", "product_truth_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    brand_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_entities.id", ondelete="SET NULL"), nullable=True, index=True)
+    capability_key: Mapped[str] = mapped_column(String(160), index=True)
+    capability_label: Mapped[str] = mapped_column(String(160), default="")
+    product_truth_status: Mapped[str] = mapped_column(String(40), default="UNKNOWN", index=True)
+    truth_source: Mapped[str] = mapped_column(String(80), default="MANUAL_CONFIRMED")
+    source_reference: Mapped[str] = mapped_column(Text, default="")
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
+class DecisionGapDiagnosis(Base, TimestampMixin):
+    __tablename__ = "decision_gap_diagnoses"
+    __table_args__ = (
+        Index("ix_decision_gap_diagnoses_snapshot", "snapshot_id"),
+        Index("ix_decision_gap_diagnoses_project_prompt", "project_id", "prompt_id"),
+        Index("ix_decision_gap_diagnoses_type", "gap_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_intelligence_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id", ondelete="CASCADE"), index=True)
+    gap_type: Mapped[str] = mapped_column(String(80), default="UNKNOWN", index=True)
+    severity: Mapped[str] = mapped_column(String(40), default="UNKNOWN", index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    numerator: Mapped[int] = mapped_column(Integer, default=0)
+    denominator: Mapped[int] = mapped_column(Integer, default=0)
+    eligible_denominator: Mapped[int] = mapped_column(Integer, default=0)
+    metric_name: Mapped[str] = mapped_column(String(120), default="")
+    metric_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    supporting_run_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    counterexample_run_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    supporting_claim_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    supporting_evidence_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    diagnosis_basis_json: Mapped[str] = mapped_column(Text, default="{}")
+    rule_version: Mapped[str] = mapped_column(String(80), default="gap_diagnosis.v1")
+    llm_version: Mapped[str] = mapped_column(String(120), default="")
+    review_status: Mapped[str] = mapped_column(String(40), default="UNREVIEWED", index=True)
+    human_label_json: Mapped[str] = mapped_column(Text, default="{}")
+    diagnosis_text: Mapped[str] = mapped_column(Text, default="")
+    action_hint: Mapped[str] = mapped_column(Text, default="")
+
+
 class PageSnapshot(Base, TimestampMixin):
     __tablename__ = "page_snapshots"
     __table_args__ = (
@@ -566,6 +888,12 @@ class OptimizationExperiment(Base, TimestampMixin):
     action_id: Mapped[int] = mapped_column(ForeignKey("optimization_actions.id"), index=True)
     status: Mapped[str] = mapped_column(String(40), default="draft", index=True)
     hypothesis: Mapped[str] = mapped_column(Text, default="")
+    hypothesis_type: Mapped[str] = mapped_column(String(80), default="", index=True)
+    mechanism: Mapped[str] = mapped_column(Text, default="")
+    intervention_family: Mapped[str] = mapped_column(String(80), default="", index=True)
+    intervention_variables_json: Mapped[str] = mapped_column(Text, default="{}")
+    allowed_changes_json: Mapped[str] = mapped_column(Text, default="[]")
+    forbidden_changes_json: Mapped[str] = mapped_column(Text, default="[]")
     target_prompt_scope_json: Mapped[str] = mapped_column(Text, default="[]")
     control_prompt_scope_json: Mapped[str] = mapped_column(Text, default="[]")
     sentinel_prompt_scope_json: Mapped[str] = mapped_column(Text, default="[]")
@@ -573,6 +901,15 @@ class OptimizationExperiment(Base, TimestampMixin):
     sample_plan_json: Mapped[str] = mapped_column(Text, default="{}")
     primary_metric: Mapped[str] = mapped_column(String(120), default="brand_recommendation_rate")
     secondary_metrics_json: Mapped[str] = mapped_column(Text, default="[]")
+    baseline_numerator: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    baseline_denominator: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    baseline_metric_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    success_threshold: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sample_size_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    target_prompt_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    target_brand_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_entities.id", ondelete="SET NULL"), nullable=True, index=True)
+    target_asset_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    recollection_strategy_json: Mapped[str] = mapped_column(Text, default="{}")
     baseline_start: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     baseline_end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     baseline_run_ids_json: Mapped[str] = mapped_column(Text, default="[]")
@@ -590,6 +927,10 @@ class OptimizationExperiment(Base, TimestampMixin):
     per_prompt_results_json: Mapped[str] = mapped_column(Text, default="[]")
     per_environment_results_json: Mapped[str] = mapped_column(Text, default="[]")
     confounders_json: Mapped[str] = mapped_column(Text, default="[]")
+    known_environment_audit_json: Mapped[str] = mapped_column(Text, default="{}")
+    comparability_status: Mapped[str] = mapped_column(String(40), default="INSUFFICIENT_CONTEXT", index=True)
+    comparability_note: Mapped[str] = mapped_column(Text, default="")
+    controlled_intervention_json: Mapped[str] = mapped_column(Text, default="{}")
     conclusion: Mapped[str] = mapped_column(Text, default="")
     conclusion_reason: Mapped[str] = mapped_column(Text, default="")
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

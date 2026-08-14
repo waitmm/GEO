@@ -316,6 +316,12 @@ class OptimizationActionRead(BaseModel):
 
 class OptimizationExperimentCreate(BaseModel):
     hypothesis: str
+    hypothesis_type: str = ""
+    mechanism: str = ""
+    intervention_family: str = ""
+    intervention_variables: dict[str, Any] = Field(default_factory=dict)
+    allowed_changes: list[str] = Field(default_factory=list)
+    forbidden_changes: list[str] = Field(default_factory=list)
     target_prompt_scope: list[int] = Field(default_factory=list)
     control_prompt_scope: list[int] = Field(default_factory=list)
     sentinel_prompt_scope: list[int] = Field(default_factory=list)
@@ -323,6 +329,19 @@ class OptimizationExperimentCreate(BaseModel):
     sample_plan: dict[str, Any] = Field(default_factory=lambda: {"baseline_samples": 3, "validation_samples": 3})
     primary_metric: str = "target_page_retrieval_rate"
     secondary_metrics: list[str] = Field(default_factory=lambda: ["target_page_conversion_rate", "brand_mention_rate", "brand_recommendation_rate", "official_reference_rate", "avg_reference_count"])
+    baseline_numerator: Optional[int] = None
+    baseline_denominator: Optional[int] = None
+    baseline_metric_value: Optional[float] = None
+    success_threshold: Optional[float] = None
+    sample_size_target: Optional[int] = None
+    target_prompt_ids: list[int] = Field(default_factory=list)
+    target_brand_id: Optional[int] = None
+    target_asset_ids: list[int] = Field(default_factory=list)
+    recollection_strategy: dict[str, Any] = Field(default_factory=dict)
+    known_environment_audit: dict[str, Any] = Field(default_factory=dict)
+    comparability_status: str = "INSUFFICIENT_CONTEXT"
+    comparability_note: str = ""
+    controlled_intervention: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExperimentRunsPayload(BaseModel):
@@ -331,7 +350,7 @@ class ExperimentRunsPayload(BaseModel):
 
 class ExperimentRetestCreate(BaseModel):
     sample_count: int = Field(default=3, ge=1, le=20)
-    collection_mode: str = "single_continuous"
+    collection_mode: str = "single_independent"
     batch_name: str = ""
     execute_now: bool = False
 
@@ -349,6 +368,9 @@ class ExperimentConclusionPayload(BaseModel):
     conclusion: str
     conclusion_reason: str
     confounders: list[str] = Field(default_factory=list)
+    known_environment_audit: dict[str, Any] = Field(default_factory=dict)
+    comparability_status: str = ""
+    comparability_note: str = ""
     resolved: bool = False
 
 
@@ -407,6 +429,12 @@ class OptimizationExperimentRead(BaseModel):
     action_id: int
     status: str
     hypothesis: str
+    hypothesis_type: str = ""
+    mechanism: str = ""
+    intervention_family: str = ""
+    intervention_variables: dict[str, Any] = Field(default_factory=dict)
+    allowed_changes: list[str] = Field(default_factory=list)
+    forbidden_changes: list[str] = Field(default_factory=list)
     target_prompt_scope: list[int] = Field(default_factory=list)
     control_prompt_scope: list[int] = Field(default_factory=list)
     sentinel_prompt_scope: list[int] = Field(default_factory=list)
@@ -414,6 +442,15 @@ class OptimizationExperimentRead(BaseModel):
     sample_plan: dict[str, Any] = Field(default_factory=dict)
     primary_metric: str
     secondary_metrics: list[str] = Field(default_factory=list)
+    baseline_numerator: Optional[int] = None
+    baseline_denominator: Optional[int] = None
+    baseline_metric_value: Optional[float] = None
+    success_threshold: Optional[float] = None
+    sample_size_target: Optional[int] = None
+    target_prompt_ids: list[int] = Field(default_factory=list)
+    target_brand_id: Optional[int] = None
+    target_asset_ids: list[int] = Field(default_factory=list)
+    recollection_strategy: dict[str, Any] = Field(default_factory=dict)
     baseline_start: Optional[datetime] = None
     baseline_end: Optional[datetime] = None
     baseline_run_ids: list[int] = Field(default_factory=list)
@@ -431,6 +468,10 @@ class OptimizationExperimentRead(BaseModel):
     per_prompt_results: list[dict[str, Any]] = Field(default_factory=list)
     per_environment_results: list[dict[str, Any]] = Field(default_factory=list)
     confounders: list[str] = Field(default_factory=list)
+    known_environment_audit: dict[str, Any] = Field(default_factory=dict)
+    comparability_status: str = "INSUFFICIENT_CONTEXT"
+    comparability_note: str = ""
+    controlled_intervention: dict[str, Any] = Field(default_factory=dict)
     conclusion: str = ""
     conclusion_reason: str = ""
     created_at: datetime

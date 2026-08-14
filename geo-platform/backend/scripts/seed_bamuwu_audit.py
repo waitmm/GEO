@@ -38,7 +38,7 @@ def main() -> None:
     parser.add_argument(
         "--collection-mode",
         choices=["single_continuous", "single_independent"],
-        default="single_continuous",
+        default="single_independent",
     )
     args = parser.parse_args()
 
@@ -118,7 +118,7 @@ def main() -> None:
             status="queued" if args.queue else "draft",
             notes=(
                 "Validation Sample；单一采集环境。"
-                "single_continuous 用于稳定产品观测，不能解释为真实曝光概率。"
+                "single_independent 强制每个 Prompt 使用独立对话上下文。"
             ),
         )
         db.add(batch)

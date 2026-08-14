@@ -27,7 +27,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail || response.statusText);
+    let message = detail || response.statusText;
+    try {
+      const parsed = JSON.parse(detail);
+      message = parsed.detail || parsed.message || message;
+    } catch {
+      // Non-JSON error bodies are surfaced as-is.
+    }
+    if (response.status === 405) {
+      message = "接口方法不匹配，请确认后端已重启到最新版本";
+    }
+    throw new Error(message);
   }
   return response.json() as Promise<T>;
 }
@@ -109,6 +119,55 @@ export const api = {
     request<StrategyCandidate[]>(`/api/optimization/projects/${projectId}/strategy-candidates/generate`, { method: "POST", body: JSON.stringify(payload) }),
   generateStrategyCandidatesV2: (projectId: number, payload: unknown) =>
     request<any>(`/api/optimization/projects/${projectId}/strategy-candidates/generate-v2`, { method: "POST", body: JSON.stringify(payload) }),
+  generateRecommendationAnalysis: (projectId: number, payload: unknown) =>
+    request<any>(`/api/optimization/projects/${projectId}/recommendation-analysis`, { method: "POST", body: JSON.stringify(payload) }),
+  getRecommendationLandscape: (projectId: number, promptId: number, snapshotId?: number) =>
+    request<any>(`/api/optimization/projects/${projectId}/recommendation-landscape?prompt_id=${promptId}${snapshotId ? `&snapshot_id=${snapshotId}` : ""}`),
+  listRecommendationSnapshots: (projectId: number, promptId?: number, limit = 30) =>
+    request<any[]>(`/api/optimization/projects/${projectId}/recommendation-snapshots?${[
+      promptId ? `prompt_id=${promptId}` : "",
+      `limit=${limit}`,
+    ].filter(Boolean).join("&")}`),
+  listRecommendationClaims: (snapshotId: number) =>
+    request<any[]>(`/api/optimization/recommendation-claims?snapshot_id=${snapshotId}`),
+  reviewRecommendationClaim: (claimId: number, payload: unknown) =>
+    request<any>(`/api/optimization/recommendation-claims/${claimId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  listRecommendationEntities: (snapshotId: number) =>
+    request<any[]>(`/api/optimization/recommendation-entities?snapshot_id=${snapshotId}`),
+  reviewRecommendationEntity: (entityId: number, payload: unknown) =>
+    request<any>(`/api/optimization/recommendation-entities/${entityId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  listRecommendationReasons: (snapshotId: number) =>
+    request<any[]>(`/api/optimization/recommendation-reasons?snapshot_id=${snapshotId}`),
+  reviewRecommendationReason: (reasonId: number, payload: unknown) =>
+    request<any>(`/api/optimization/recommendation-reasons/${reasonId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  listDecisionSelectionCriteria: (snapshotId: number) =>
+    request<any[]>(`/api/optimization/decision-market/selection-criteria?snapshot_id=${snapshotId}`),
+  reviewDecisionSelectionCriterion: (criterionId: number, payload: unknown) =>
+    request<any>(`/api/optimization/decision-market/selection-criteria/${criterionId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  listDecisionAnswerSemanticFacts: (snapshotId: number) =>
+    request<any[]>(`/api/optimization/decision-market/answer-semantic-facts?snapshot_id=${snapshotId}`),
+  getDecisionPassageSupport: (snapshotId: number) =>
+    request<any>(`/api/optimization/decision-market/passage-support?snapshot_id=${snapshotId}`),
+  reviewDecisionAnswerSemanticFact: (factId: number, payload: unknown) =>
+    request<any>(`/api/optimization/decision-market/answer-semantic-facts/${factId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  listDecisionCapabilityClaims: (snapshotId: number) =>
+    request<any[]>(`/api/optimization/decision-market/capability-claims?snapshot_id=${snapshotId}`),
+  reviewDecisionCapabilityClaim: (claimId: number, payload: unknown) =>
+    request<any>(`/api/optimization/decision-market/capability-claims/${claimId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  listDecisionEvidenceAdoptions: (snapshotId: number) =>
+    request<any[]>(`/api/optimization/decision-market/evidence-adoptions?snapshot_id=${snapshotId}`),
+  reviewDecisionEvidenceAdoption: (adoptionId: number, payload: unknown) =>
+    request<any>(`/api/optimization/decision-market/evidence-adoptions/${adoptionId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  listDecisionGaps: (snapshotId: number) =>
+    request<any[]>(`/api/optimization/decision-market/gaps?snapshot_id=${snapshotId}`),
+  reviewDecisionGap: (gapId: number, payload: unknown) =>
+    request<any>(`/api/optimization/decision-market/gaps/${gapId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  listTargetBrandCapabilityTruths: (projectId: number) =>
+    request<any[]>(`/api/optimization/projects/${projectId}/target-brand-capability-truths`),
+  upsertTargetBrandCapabilityTruth: (projectId: number, payload: unknown) =>
+    request<any>(`/api/optimization/projects/${projectId}/target-brand-capability-truths`, { method: "POST", body: JSON.stringify(payload) }),
+  createDecisionExperimentDraft: (snapshotId: number, payload: unknown = {}) =>
+    request<any>(`/api/optimization/decision-market/snapshots/${snapshotId}/experiment-draft`, { method: "POST", body: JSON.stringify(payload) }),
   reviewStrategyCandidate: (candidateId: number, payload: unknown) =>
     request<StrategyCandidate>(`/api/optimization/strategy-candidates/${candidateId}/review`, { method: "POST", body: JSON.stringify(payload) }),
   strategyToExperimentPlan: (candidateId: number) =>

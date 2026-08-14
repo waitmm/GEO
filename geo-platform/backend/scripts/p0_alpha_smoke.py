@@ -61,7 +61,7 @@ def main() -> None:
             f"/api/projects/{project['id']}/monitoring-batches",
             json={
                 "name": "P0 Smoke Batch",
-                "collection_mode": "single_continuous",
+                "collection_mode": "single_independent",
                 "sample_count": 2,
                 "status": "queued",
             },
@@ -80,7 +80,7 @@ def main() -> None:
         runs = client.get(f"/api/monitoring/runs?project_id={project['id']}").json()
         assert len(runs) == 4
         assert all(run["batch_id"] == batch["id"] for run in runs)
-        assert all(run["collection_mode"] == "single_continuous" for run in runs)
+        assert all(run["collection_mode"] == "single_independent" for run in runs)
         assert [(run["run_sequence"], run["prompt_id"], run["sample_index"]) for run in runs] == [
             (1, prompt_a["id"], 1),
             (1, prompt_b["id"], 1),

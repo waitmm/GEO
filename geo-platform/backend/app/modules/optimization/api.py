@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -70,6 +70,31 @@ from app.modules.optimization.service import (
     update_action,
 )
 from app.modules.optimization.ranking import run_citation_evidence_ranking_v0
+from app.modules.optimization.recommendation import (
+    create_decision_market_experiment_draft,
+    get_recommendation_landscape,
+    list_answer_semantic_facts,
+    list_capability_claims,
+    list_evidence_adoptions,
+    list_gap_diagnoses,
+    list_passage_support_summary,
+    list_recommendation_entities,
+    list_recommendation_claims,
+    list_recommendation_reason_claims,
+    list_recommendation_snapshots,
+    list_selection_criteria,
+    list_target_brand_capability_truths,
+    review_answer_semantic_fact,
+    review_capability_claim,
+    review_evidence_adoption,
+    review_gap_diagnosis,
+    review_recommendation_claim,
+    review_recommendation_entity,
+    review_recommendation_reason_claim,
+    review_selection_criterion,
+    run_recommendation_analysis,
+    upsert_target_brand_capability_truth,
+)
 
 
 router = APIRouter(prefix="/api/optimization", tags=["optimization"])
@@ -241,6 +266,151 @@ def citation_evidence_ranking_endpoint(package_id: int, db: Session = Depends(ge
     return run_citation_evidence_ranking_v0(db, package_id)
 
 
+# --- Recommendation Market Intelligence V1 ---
+
+@router.post("/projects/{project_id}/recommendation-analysis")
+def generate_recommendation_analysis(project_id: int, payload: dict, db: Session = Depends(get_db)):
+    prompt_id = payload.get("prompt_id")
+    if not prompt_id:
+        raise HTTPException(status_code=400, detail="请提供问题编号")
+    return run_recommendation_analysis(db, project_id, int(prompt_id), payload.get("run_ids"))
+
+
+@router.get("/projects/{project_id}/recommendation-landscape")
+def recommendation_landscape(project_id: int, prompt_id: int, snapshot_id: int | None = None, db: Session = Depends(get_db)):
+    return get_recommendation_landscape(db, project_id, prompt_id, snapshot_id)
+
+
+@router.get("/projects/{project_id}/recommendation-snapshots")
+def recommendation_snapshots(project_id: int, prompt_id: int | None = None, limit: int = 30, db: Session = Depends(get_db)):
+    return list_recommendation_snapshots(db, project_id, prompt_id, limit)
+
+
+@router.get("/projects/{project_id}/decision-market/{prompt_id}/summary")
+def decision_market_summary(project_id: int, prompt_id: int, snapshot_id: int | None = None, db: Session = Depends(get_db)):
+    data = get_recommendation_landscape(db, project_id, prompt_id, snapshot_id)
+    return {
+        "snapshot_id": data["id"],
+        "project_id": project_id,
+        "prompt_id": prompt_id,
+        "prompt_text": data.get("prompt_text", ""),
+        "run_ids": data.get("run_ids", []),
+        "run_count": data.get("run_count", 0),
+        "decision_market": data.get("decision_market", {}),
+    }
+
+
+@router.get("/projects/{project_id}/decision-market/{prompt_id}/action-package")
+def decision_market_action_package(project_id: int, prompt_id: int, snapshot_id: int | None = None, db: Session = Depends(get_db)):
+    data = get_recommendation_landscape(db, project_id, prompt_id, snapshot_id)
+    return {
+        "snapshot_id": data["id"],
+        "project_id": project_id,
+        "prompt_id": prompt_id,
+        "action_package": (data.get("decision_market") or {}).get("action_package", {}),
+    }
+
+
+@router.get("/recommendation-claims")
+def recommendation_claims(snapshot_id: int, db: Session = Depends(get_db)):
+    return list_recommendation_claims(db, snapshot_id)
+
+
+@router.get("/recommendation-entities")
+def recommendation_entities(snapshot_id: int, db: Session = Depends(get_db)):
+    return list_recommendation_entities(db, snapshot_id)
+
+
+@router.post("/recommendation-entities/{entity_id}/review")
+def recommendation_entity_review(entity_id: int, payload: dict, db: Session = Depends(get_db)):
+    return review_recommendation_entity(db, entity_id, payload)
+
+
+@router.post("/recommendation-claims/{claim_id}/review")
+def recommendation_claim_review(claim_id: int, payload: dict, db: Session = Depends(get_db)):
+    return review_recommendation_claim(db, claim_id, payload)
+
+
+@router.get("/recommendation-reasons")
+def recommendation_reasons(snapshot_id: int, db: Session = Depends(get_db)):
+    return list_recommendation_reason_claims(db, snapshot_id)
+
+
+@router.post("/recommendation-reasons/{reason_id}/review")
+def recommendation_reason_review(reason_id: int, payload: dict, db: Session = Depends(get_db)):
+    return review_recommendation_reason_claim(db, reason_id, payload)
+
+
+@router.get("/decision-market/selection-criteria")
+def decision_market_selection_criteria(snapshot_id: int, db: Session = Depends(get_db)):
+    return list_selection_criteria(db, snapshot_id)
+
+
+@router.get("/decision-market/answer-semantic-facts")
+def decision_market_answer_semantic_facts(snapshot_id: int, db: Session = Depends(get_db)):
+    return list_answer_semantic_facts(db, snapshot_id)
+
+
+@router.get("/decision-market/passage-support")
+def decision_market_passage_support(snapshot_id: int, db: Session = Depends(get_db)):
+    return list_passage_support_summary(db, snapshot_id)
+
+
+@router.post("/decision-market/answer-semantic-facts/{fact_id}/review")
+def decision_market_answer_semantic_fact_review(fact_id: int, payload: dict, db: Session = Depends(get_db)):
+    return review_answer_semantic_fact(db, fact_id, payload)
+
+
+@router.post("/decision-market/selection-criteria/{criterion_id}/review")
+def decision_market_selection_criterion_review(criterion_id: int, payload: dict, db: Session = Depends(get_db)):
+    return review_selection_criterion(db, criterion_id, payload)
+
+
+@router.get("/decision-market/capability-claims")
+def decision_market_capability_claims(snapshot_id: int, db: Session = Depends(get_db)):
+    return list_capability_claims(db, snapshot_id)
+
+
+@router.post("/decision-market/capability-claims/{claim_id}/review")
+def decision_market_capability_claim_review(claim_id: int, payload: dict, db: Session = Depends(get_db)):
+    return review_capability_claim(db, claim_id, payload)
+
+
+@router.get("/projects/{project_id}/target-brand-capability-truths")
+def target_brand_capability_truths(project_id: int, db: Session = Depends(get_db)):
+    return list_target_brand_capability_truths(db, project_id)
+
+
+@router.post("/projects/{project_id}/target-brand-capability-truths")
+def target_brand_capability_truth_upsert(project_id: int, payload: dict, db: Session = Depends(get_db)):
+    return upsert_target_brand_capability_truth(db, project_id, payload)
+
+
+@router.get("/decision-market/evidence-adoptions")
+def decision_market_evidence_adoptions(snapshot_id: int, db: Session = Depends(get_db)):
+    return list_evidence_adoptions(db, snapshot_id)
+
+
+@router.post("/decision-market/evidence-adoptions/{adoption_id}/review")
+def decision_market_evidence_adoption_review(adoption_id: int, payload: dict, db: Session = Depends(get_db)):
+    return review_evidence_adoption(db, adoption_id, payload)
+
+
+@router.get("/decision-market/gaps")
+def decision_market_gaps(snapshot_id: int, db: Session = Depends(get_db)):
+    return list_gap_diagnoses(db, snapshot_id)
+
+
+@router.post("/decision-market/gaps/{gap_id}/review")
+def decision_market_gap_review(gap_id: int, payload: dict, db: Session = Depends(get_db)):
+    return review_gap_diagnosis(db, gap_id, payload)
+
+
+@router.post("/decision-market/snapshots/{snapshot_id}/experiment-draft")
+def decision_market_experiment_draft(snapshot_id: int, payload: dict | None = None, db: Session = Depends(get_db)):
+    return create_decision_market_experiment_draft(db, snapshot_id, payload or {})
+
+
 # --- Citation Passage Intelligence V0 ---
 
 from app.modules.optimization.passage_service import (
@@ -263,16 +433,155 @@ from urllib.parse import urlparse
 from collections import defaultdict
 
 
+def _parse_required_run_ids(run_ids: str) -> list[int]:
+    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="请提供run_ids")
+    return ids
+
+
+def _source_document_query_for_runs(db: Session, run_ids: list[int]):
+    refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(run_ids)).all()
+    citation_urls = set()
+    for ref in refs:
+        raw = ref.url or ""
+        canonical = ref.canonical_url or ""
+        if raw:
+            citation_urls.add(raw)
+        if canonical:
+            citation_urls.add(canonical)
+    if not citation_urls:
+        return []
+    docs = db.query(SourceDocument).filter(
+        SourceDocument.original_url.in_(citation_urls)
+    ).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
+    if not docs:
+        docs = db.query(SourceDocument).filter(
+            SourceDocument.url.in_(citation_urls)
+        ).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
+    return docs
+
+
+def _build_golden_case_manual_todos(
+    claims: list[AnswerClaim],
+    docs: list[SourceDocument],
+    alignments: list[PassageAlignment],
+) -> list[dict]:
+    todos: list[dict] = []
+    if not claims:
+        todos.append({
+            "code": "NO_CLAIMS",
+            "severity": "warning",
+            "title": "当前还没有回答主张",
+            "detail": "自动抽取未产出可审核主张，需要先确认采样回答是否为空，或人工筛选代表性采样后再继续。",
+            "items": [],
+        })
+        return todos
+
+    failed_docs = [doc for doc in docs if doc.fetch_status == "FETCH_FAILED"]
+    empty_docs = [doc for doc in docs if doc.fetch_status in {"SUCCESS", "PARTIAL"} and not (doc.clean_text or "").strip()]
+    if failed_docs or empty_docs:
+        items = [
+            {
+                "url": doc.url or doc.original_url or "",
+                "domain": doc.domain or "",
+                "status": doc.fetch_status,
+                "reason": doc.failure_reason or ("页面正文为空，建议人工补录正文或源码" if doc in empty_docs else ""),
+            }
+            for doc in (failed_docs + empty_docs)[:12]
+        ]
+        todos.append({
+            "code": "DOCUMENTS_NEED_MANUAL_INPUT",
+            "severity": "warning",
+            "title": "部分引用页面无法自动形成可用正文",
+            "detail": "这些链接需要人工补录正文或页面源码，否则后续正文对齐和证据判断会持续为空。",
+            "items": items,
+        })
+
+    anchorless_claims = [claim for claim in claims if not loads(claim.citation_ids_json, []) and not claim.citation_anchor]
+    if anchorless_claims:
+        todos.append({
+            "code": "CLAIMS_WITHOUT_CITATION_ANCHOR",
+            "severity": "info",
+            "title": "多数回答主张没有显式引用锚点",
+            "detail": f"当前 {len(anchorless_claims)}/{len(claims)} 条主张没有 citation anchor。系统会尝试在全部引用正文里自动匹配，但准确率有限，建议优先人工审核代表性主张。",
+            "items": [],
+        })
+
+    resolved_alignments = [alignment for alignment in alignments if alignment.alignment_level != "L5_UNRESOLVED"]
+    if claims and not resolved_alignments:
+        todos.append({
+            "code": "NO_PASSAGE_ALIGNMENT",
+            "severity": "warning",
+            "title": "自动正文对齐没有命中有效结果",
+            "detail": "这通常意味着回答措辞与引用正文没有直接文本重叠，或引用正文质量不足。请优先补录失败页面，再人工核对高频主张与代表性来源。",
+            "items": [],
+        })
+
+    return todos
+
+
+def _golden_case_prepare_response(
+    db: Session,
+    run_ids: list[int],
+    acquisition_result: dict | None = None,
+    claim_result: dict | None = None,
+    alignment_result: dict | None = None,
+) -> dict:
+    claims = db.query(AnswerClaim).filter(AnswerClaim.run_id.in_(run_ids)).order_by(AnswerClaim.run_id, AnswerClaim.claim_index).all()
+    docs = _source_document_query_for_runs(db, run_ids)
+    alignments = db.query(PassageAlignment).filter(PassageAlignment.run_id.in_(run_ids)).order_by(PassageAlignment.id).all()
+    summary = golden_case_summary(run_ids=",".join(str(run_id) for run_id in run_ids), db=db)
+    manual_todos = _build_golden_case_manual_todos(claims, docs, alignments)
+    return {
+        "run_ids": run_ids,
+        "summary": summary,
+        "automation": {
+            "claims": claim_result or {"claims_extracted": len(claims)},
+            "acquisition": acquisition_result or {"created": 0, "failed": 0},
+            "alignment": alignment_result or {"claims_processed": len(claims), "alignments_created": len([row for row in alignments if row.alignment_level != "L5_UNRESOLVED"])},
+        },
+        "manual_todos": manual_todos,
+    }
+
+
 @router.post("/golden-case/run")
 def golden_case_run(payload: dict, db: Session = Depends(get_db)):
-    run_ids = payload.get("run_ids", list(range(173, 185)))
-    brand_url = payload.get("brand_url", "https://www.aifabu.com/card")
+    run_ids = payload.get("run_ids", [])
+    if not run_ids:
+        raise HTTPException(status_code=400, detail="请提供run_ids")
+    brand_url = payload.get("brand_url", "")
+    if not brand_url:
+        raise HTTPException(status_code=400, detail="请提供brand_url")
     return run_golden_case_pipeline(db, run_ids, brand_url)
 
 
+@router.post("/golden-case/prepare")
+def golden_case_prepare(payload: dict, db: Session = Depends(get_db)):
+    run_ids = payload.get("run_ids", [])
+    if not run_ids:
+        raise HTTPException(status_code=400, detail="请提供run_ids")
+    skip_acquire = bool(payload.get("skip_acquire", False))
+
+    existing_claims = db.query(AnswerClaim).filter(AnswerClaim.run_id.in_(run_ids)).count()
+    claim_result = extract_answer_claims(db, run_ids) if existing_claims == 0 else {"claims_extracted": existing_claims, "status": "existing"}
+
+    acquisition_result = {"created": 0, "failed": 0, "skipped": 0, "status": "skipped"} if skip_acquire else acquire_cited_sources(db, run_ids)
+    segment_all_documents(db)
+    alignment_result = align_claims_to_passages(db, run_ids)
+
+    return _golden_case_prepare_response(
+        db,
+        run_ids,
+        acquisition_result=acquisition_result,
+        claim_result=claim_result,
+        alignment_result=alignment_result,
+    )
+
+
 @router.get("/golden-case/claims")
-def golden_case_claims(run_ids: str = "173,174,175,176,177,178,179,180,181,182,183,184", db: Session = Depends(get_db)):
-    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+def golden_case_claims(run_ids: str = "", db: Session = Depends(get_db)):
+    ids = _parse_required_run_ids(run_ids)
     claims = db.query(AnswerClaim).filter(AnswerClaim.run_id.in_(ids)).order_by(AnswerClaim.run_id, AnswerClaim.claim_index).all()
     return [{"id": c.id, "run_id": c.run_id, "claim_index": c.claim_index, "raw_text": c.raw_text,
              "claim_type": c.claim_type, "citation_anchor": c.citation_anchor,
@@ -283,8 +592,8 @@ def golden_case_claims(run_ids: str = "173,174,175,176,177,178,179,180,181,182,1
 
 
 @router.get("/golden-case/alignments")
-def golden_case_alignments(run_ids: str = "173,174,175,176,177,178,179,180,181,182,183,184", db: Session = Depends(get_db)):
-    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+def golden_case_alignments(run_ids: str = "", db: Session = Depends(get_db)):
+    ids = _parse_required_run_ids(run_ids)
     als = db.query(PassageAlignment).filter(PassageAlignment.run_id.in_(ids)).order_by(PassageAlignment.id).all()
     result = []
     for a in als:
@@ -306,25 +615,8 @@ def golden_case_alignments(run_ids: str = "173,174,175,176,177,178,179,180,181,1
 @router.get("/golden-case/documents")
 def golden_case_documents(run_ids: str = "", db: Session = Depends(get_db)):
     if run_ids:
-        ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
-        refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(ids)).all()
-        # Build set of citation URLs (both raw and normalized)
-        cit_urls = set()
-        for r in refs:
-            raw = r.url or ""
-            can = r.canonical_url or ""
-            if raw: cit_urls.add(raw)
-            if can: cit_urls.add(can)
-        # Match documents by original_url matching citation URL
-        all_docs = db.query(SourceDocument).filter(
-            SourceDocument.original_url.in_(cit_urls)
-        ).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
-        # Also match by url if original_url is empty
-        if not all_docs:
-            all_docs = db.query(SourceDocument).filter(
-                SourceDocument.url.in_(cit_urls)
-            ).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
-        docs = all_docs
+        ids = _parse_required_run_ids(run_ids)
+        docs = _source_document_query_for_runs(db, ids)
     else:
         docs = db.query(SourceDocument).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
     return [{"id": d.id, "url": d.url or d.original_url, "domain": d.domain, "source_type": d.source_type,
@@ -334,16 +626,18 @@ def golden_case_documents(run_ids: str = "", db: Session = Depends(get_db)):
 
 
 @router.get("/golden-case/need-map")
-def golden_case_need_map(run_ids: str = "173,174,175,176,177,178,179,180,181,182,183,184", db: Session = Depends(get_db)):
-    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+def golden_case_need_map(run_ids: str = "", db: Session = Depends(get_db)):
+    ids = _parse_required_run_ids(run_ids)
     return generate_answer_need_map(db, ids)
 
 
 @router.get("/golden-case/brand-gap")
-def golden_case_brand_gap(db: Session = Depends(get_db)):
-    ids = list(range(173, 185))
+def golden_case_brand_gap(run_ids: str = "", brand_url: str = "", db: Session = Depends(get_db)):
+    ids = _parse_required_run_ids(run_ids)
+    if not brand_url:
+        raise HTTPException(status_code=400, detail="请提供brand_url")
     need_map = generate_answer_need_map(db, ids)
-    return analyze_brand_information_gap(db, "https://www.aifabu.com/card", need_map["answer_need_map"], ids)
+    return analyze_brand_information_gap(db, brand_url, need_map["answer_need_map"], ids)
 
 
 @router.post("/golden-case/extract-claims")
@@ -456,13 +750,19 @@ def golden_case_refetch(payload: dict, db: Session = Depends(get_db)):
 
 
 @router.get("/golden-case/summary")
-def golden_case_summary(db: Session = Depends(get_db)):
-    docs = db.query(SourceDocument).count()
-    claims = db.query(AnswerClaim).count()
-    als = db.query(PassageAlignment).count()
-    l1 = db.query(PassageAlignment).filter(PassageAlignment.alignment_level == "L1_EXACT_OVERLAP").count()
-    l2 = db.query(PassageAlignment).filter(PassageAlignment.alignment_level == "L2_NEAR_DUPLICATE").count()
-    reviewed = db.query(AnswerClaim).filter(AnswerClaim.review_status != "PENDING").count()
+def golden_case_summary(run_ids: str = "", db: Session = Depends(get_db)):
+    ids = _parse_required_run_ids(run_ids) if run_ids else []
+    docs = len(_source_document_query_for_runs(db, ids)) if ids else db.query(SourceDocument).count()
+    claim_query = db.query(AnswerClaim)
+    alignment_query = db.query(PassageAlignment)
+    if ids:
+        claim_query = claim_query.filter(AnswerClaim.run_id.in_(ids))
+        alignment_query = alignment_query.filter(PassageAlignment.run_id.in_(ids))
+    claims = claim_query.count()
+    als = alignment_query.count()
+    l1 = alignment_query.filter(PassageAlignment.alignment_level == "L1_EXACT_OVERLAP").count()
+    l2 = alignment_query.filter(PassageAlignment.alignment_level == "L2_NEAR_DUPLICATE").count()
+    reviewed = claim_query.filter(AnswerClaim.review_status != "PENDING").count()
     return {"source_documents": docs, "answer_claims": claims, "alignments": als,
             "l1_exact": l1, "l2_near_duplicate": l2,
             "claims_reviewed": reviewed,
@@ -485,8 +785,8 @@ def review_claim(claim_id: int, payload: dict, db: Session = Depends(get_db)):
 
 
 @router.get("/golden-case/need-map-validated")
-def golden_case_need_map_validated(run_ids: str = "173,174,175,176,177,178,179,180,181,182,183,184", db: Session = Depends(get_db)):
-    ids = [int(x.strip()) for x in run_ids.split(",") if x.strip()]
+def golden_case_need_map_validated(run_ids: str = "", db: Session = Depends(get_db)):
+    ids = _parse_required_run_ids(run_ids)
     claims = db.query(AnswerClaim).filter(AnswerClaim.run_id.in_(ids)).all()
     total = len(claims)
     reviewed = [c for c in claims if c.review_status != "PENDING"]
@@ -512,7 +812,7 @@ def golden_case_need_map_validated(run_ids: str = "173,174,175,176,177,178,179,1
             "need_name": name,
             "rule_count": rule_data["claim_count"] if rule_data else 0,
             "human_count": data["claim_count"],
-            "run_coverage": f"{len(data['run_ids'])}/12",
+            "run_coverage": f"{len(data['run_ids'])}/{len(set(ids))}",
         })
 
     return {
@@ -532,10 +832,11 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
     html = payload.get("raw_html", "")
     text = payload.get("clean_text", "")
     title = payload.get("title", "")
+    is_empty_page = bool(payload.get("is_empty_page"))
 
     # If HTML provided, extract clean text from it
     import re as _re
-    if html:
+    if html and not is_empty_page:
         # Always extract from HTML as primary source
         s = _re.sub(r"<(script|style|noscript|iframe)[^>]*>.*?</\1>", " ", html, flags=_re.DOTALL | _re.IGNORECASE)
         s = _re.sub(r"<!--.*?-->", " ", s, flags=_re.DOTALL)
@@ -551,6 +852,11 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
             tm = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
             if tm:
                 title = _re.sub(r"<[^>]+>", "", tm.group(1)).strip()
+    if is_empty_page:
+        html = ""
+        text = ""
+        if not title:
+            title = "页面已删除或无可用正文"
     if not title:
         title = payload.get("title", url)
 
@@ -568,10 +874,12 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
     updated = 0
     for d in all_docs:
         if (_url_key(d.url) == target_key or _url_key(d.original_url or d.url) == target_key):
-            d.clean_text = text[:200000] if text else d.clean_text
-            d.raw_html = html[:500000] if html else d.raw_html
+            d.clean_text = text[:200000] if text else ""
+            d.raw_html = html[:500000] if html else ""
             d.title = title or d.title
-            d.fetch_status = "SUCCESS"
+            d.fetch_status = "MANUAL_EMPTY" if is_empty_page else "SUCCESS"
+            d.failure_reason = "页面已删除或无可用正文（人工标记）" if is_empty_page else ""
+            d.clean_text_hash = hashlib.sha256(text.encode()).hexdigest()[:16] if text else ""
             d.fetch_time = datetime.utcnow()
             updated += 1
             if updated == 1:
@@ -580,7 +888,8 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
         doc = SourceDocument(
             url=url, original_url=url, domain=urlparse(url).netloc.lower() if url else "",
             source_type=payload.get("source_type", "CITED"),
-            fetch_status="SUCCESS", title=title,
+            fetch_status="MANUAL_EMPTY" if is_empty_page else "SUCCESS", title=title,
+            failure_reason="页面已删除或无可用正文（人工标记）" if is_empty_page else "",
             raw_html=html[:500000] if html else "",
             clean_text=text[:200000],
             clean_text_hash=hashlib.sha256(text.encode()).hexdigest()[:16] if text else "",
@@ -598,11 +907,11 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
 
 
 @router.get("/golden-case/url-audit")
-def golden_case_url_audit(db: Session = Depends(get_db)):
+def golden_case_url_audit(run_ids: str = "", db: Session = Depends(get_db)):
     from app.modules.optimization.passage_service import _normalize_for_match, _normalize_url_for_fetch
-    run_ids = list(range(173, 185))
-    refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(run_ids)).all()
-    cands = db.query(RetrievalCandidate).filter(RetrievalCandidate.run_id.in_(run_ids)).all()
+    ids = _parse_required_run_ids(run_ids)
+    refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(ids)).all()
+    cands = db.query(RetrievalCandidate).filter(RetrievalCandidate.run_id.in_(ids)).all()
 
     # Deduplicate
     ref_urls = list(set((ref.canonical_url or ref.url) for ref in refs if (ref.canonical_url or ref.url)))

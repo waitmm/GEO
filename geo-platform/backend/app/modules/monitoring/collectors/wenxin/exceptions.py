@@ -28,3 +28,7 @@ class BrowserCrashedError(WenxinCollectorError):
 
 class BrowserProfileLockedError(WenxinCollectorError):
     error_type = "browser_profile_locked"
+
+
+class ConversationResetError(WenxinCollectorError):
+    error_type = "conversation_reset_failed"

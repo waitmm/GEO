@@ -197,6 +197,7 @@ function interventionFamilyLabel(value?: string) {
     THIRD_PARTY_REVIEW: "第三方评测",
     THIRD_PARTY_COMPARISON: "第三方对比",
     CONTENT_REFRESH: "内容刷新",
+    UNRESOLVED: "待确认",
     NO_ACTION: "不建议干预",
   };
   return labels[value || ""] || value || "-";

@@ -38,8 +38,12 @@ def upgrade() -> None:
             sa.Column("target_content_type", sa.String(length=80), nullable=True))
         _add_column_if_missing("optimization_strategy_candidates",
             sa.Column("expected_primary_metric", sa.String(length=120), nullable=True))
-        _add_column_if_missing("optimization_strategy_candidates",
-            sa.Column("source_package_id", sa.Integer(), sa.ForeignKey("optimization_evidence_packages.id", ondelete="SET NULL"), nullable=True))
+        source_package_column = (
+            sa.Column("source_package_id", sa.Integer(), nullable=True)
+            if op.get_bind().dialect.name == "sqlite"
+            else sa.Column("source_package_id", sa.Integer(), sa.ForeignKey("optimization_evidence_packages.id", ondelete="SET NULL"), nullable=True)
+        )
+        _add_column_if_missing("optimization_strategy_candidates", source_package_column)
 
     # Create indexes for new columns
     # Note: SQLite ALTER TABLE ADD COLUMN does not create FK constraints on

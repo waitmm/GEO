@@ -18,9 +18,11 @@ from app.models import (
     DecisionGapDiagnosis,
     DecisionSelectionCriterion,
     OptimizationAction,
+    OptimizationEvidencePackage,
     OptimizationExperiment,
     OptimizationIssue,
     OptimizationIssueRun,
+    OptimizationStrategyCandidate,
     PassageAlignment,
     Project,
     Prompt,
@@ -34,6 +36,7 @@ from app.models import (
     SourceDocument,
     TargetBrandCapabilityTruth,
 )
+from app.modules.optimization.service import strategy_candidate_to_read
 from app.services.serialization import dumps, loads
 
 
@@ -673,6 +676,32 @@ def review_gap_diagnosis(db: Session, gap_id: int, payload: dict) -> dict:
     return gap_diagnosis_to_read(row)
 
 
+def _latest_evidence_package_for_decision_snapshot(
+    db: Session,
+    project_id: int,
+    prompt_id: int,
+    run_ids: list[int],
+) -> OptimizationEvidencePackage | None:
+    query = (
+        db.query(OptimizationEvidencePackage)
+        .filter(
+            OptimizationEvidencePackage.project_id == project_id,
+            OptimizationEvidencePackage.prompt_id == prompt_id,
+        )
+        .order_by(OptimizationEvidencePackage.version.desc(), OptimizationEvidencePackage.id.desc())
+    )
+    rows = query.limit(20).all()
+    if not rows:
+        return None
+    run_id_set = {int(run_id) for run_id in run_ids if run_id is not None}
+    if run_id_set:
+        for package in rows:
+            package_run_ids = {int(run_id) for run_id in loads(package.source_run_ids_json, []) if run_id is not None}
+            if run_id_set <= package_run_ids:
+                return package
+    return rows[0]
+
+
 def create_decision_market_experiment_draft(db: Session, snapshot_id: int, payload: dict | None = None) -> dict:
     snapshot = db.get(RecommendationIntelligenceSnapshot, snapshot_id)
     if not snapshot:
@@ -690,156 +719,128 @@ def create_decision_market_experiment_draft(db: Session, snapshot_id: int, paylo
     primary_gap = actionable_gaps[0] if actionable_gaps else (gaps[0] if gaps else None)
     action_package = market.get("action_package", {})
     experiment_proposal = action_package.get("experiment_proposal", {})
-    target_url = (payload or {}).get("target_url") or project.website_url or ""
     owner = (payload or {}).get("owner") or "待分配"
 
     if not primary_gap:
         raise HTTPException(status_code=400, detail="当前快照没有可转为实验的结构化差距")
 
-    issue = OptimizationIssue(
-        project_id=project.id,
-        prompt_id=prompt.id,
-        issue_type="decision_market_gap",
-        status="candidate",
-        severity=_issue_severity_from_gap(primary_gap.get("severity", "UNKNOWN")),
-        confidence_level=_confidence_level(primary_gap.get("confidence", 0.0)),
-        observation_start=min((run.created_at for run in runs), default=None),
-        observation_end=max((run.created_at for run in runs), default=None),
-        analyzable_sample_count=len(runs),
-        observed_facts_json=dumps({
-            "snapshot_id": snapshot.id,
-            "gap_type": primary_gap.get("gap_type"),
-            "gap_label": primary_gap.get("gap_type_label"),
-            "metric": primary_gap.get("metric"),
-            "solution_slot": market.get("solution_slot"),
-            "prompt_intents": market.get("prompt_intents"),
-        }),
-        possible_causes_json=dumps([primary_gap.get("diagnosis_text", ""), primary_gap.get("action_hint", "")]),
-        diagnosis_summary=primary_gap.get("diagnosis_text", ""),
-    )
-    db.add(issue)
-    db.flush()
-
-    for run_id in run_ids:
-        db.add(OptimizationIssueRun(
-            issue_id=issue.id,
-            run_id=run_id,
-            evidence_role="supporting",
-            note=f"决策市场快照 #{snapshot.id} 的来源采样",
-        ))
+    evidence_package = _latest_evidence_package_for_decision_snapshot(db, project.id, prompt.id, run_ids)
+    if not evidence_package:
+        raise HTTPException(status_code=400, detail="Decision Market 只能先生成策略候选；请先为该问题生成 Evidence Package，再进入人工审核和 effective_payload 执行链。")
 
     content_brief = action_package.get("content_brief", {})
-    action = OptimizationAction(
-        issue_id=issue.id,
-        action_type="decision_market_content_update",
-        target_type="owned_content",
-        target_url=target_url,
-        status="draft",
-        priority=issue.severity,
-        owner=owner,
-        action_summary=content_brief.get("page_goal") or action_package.get("selection_reason_gap") or "补齐 AI 决策市场缺口",
-        action_detail=dumps({
+    baseline_metric = experiment_proposal.get("baseline") or primary_gap.get("metric") or {}
+    product_truth_gate = action_package.get("product_truth_gate", {})
+    product_truth_ready = product_truth_gate.get("status") == "READY_FOR_STRATEGY_REVIEW"
+    validation_status = "PENDING_HUMAN_CHANNEL_REVIEW" if product_truth_ready else "BLOCKED_PRODUCT_TRUTH"
+    validation_errors = [
+        "目标渠道、资产类型和 target_url 必须在人工审核后的 effective_payload 中确认。",
+    ]
+    if not product_truth_ready:
+        validation_errors.insert(0, "Product Truth UNKNOWN：目标品牌能力尚未人工确认，不能物化 Action/Experiment。")
+
+    proposal_payload = {
+        "source": "DECISION_MARKET",
+        "source_snapshot_id": snapshot.id,
+        "source_evidence_package_id": evidence_package.id,
+        "owner": owner,
+        "observed_problem": primary_gap.get("diagnosis_text", ""),
+        "hypothesized_cause": primary_gap.get("action_hint") or "可能是目标品牌与用户选择标准之间缺少已确认的事实和可引用证据。",
+        "core_mechanism": experiment_proposal.get("mechanism") or primary_gap.get("action_hint", ""),
+        "intervention_type": "UNRESOLVED",
+        "target_platform": "UNRESOLVED",
+        "target_object": "UNRESOLVED",
+        "target_url": "",
+        "proposed_target_url": (payload or {}).get("target_url") or "",
+        "target_metric": experiment_proposal.get("primary_metric") or _primary_metric_for_gap(primary_gap.get("gap_type", "UNKNOWN")),
+        "baseline": baseline_metric,
+        "expected_direction": "increase",
+        "recommended_action": "先完成 Product Truth 与渠道/资产人工审核，再通过 effective_payload 物化 Action/Experiment。",
+        "changed_features": [],
+        "required_sections": content_brief.get("sections", []),
+        "controlled_variables": ["product_truth", "target_channel", "target_asset", "target_url", "collection_prompt"],
+        "validation_plan": {
+            "entry_observed_condition": "人工审核通过 effective_payload 后，再生成 Action/Experiment 并固定复采。",
+            "sustained_improvement_condition": f"{experiment_proposal.get('primary_metric') or 'candidate_capture_rate'} 出现可复核提升。",
+            "minimum_sample_count": experiment_proposal.get("sample_size_target") or max(12, len(runs) or 12),
+        },
+        "invalidating_result": "Product Truth 无法确认，或人工审核后没有可执行的渠道/资产方案。",
+        "product_truth_gate": product_truth_gate,
+        "decision_market": {
+            "gap_type": primary_gap.get("gap_type"),
+            "gap_type_label": primary_gap.get("gap_type_label"),
+            "metric": primary_gap.get("metric"),
             "asset_decision": action_package.get("asset_decision"),
             "must_answer": action_package.get("must_answer", []),
             "evidence_requirements": action_package.get("evidence_requirements", []),
             "content_brief": content_brief,
-            "source_snapshot_id": snapshot.id,
-        }),
-        content_feature_changes_json=dumps(_content_feature_changes_from_action_package(action_package)),
-    )
-    db.add(action)
-    db.flush()
-
-    baseline_metric = experiment_proposal.get("baseline") or primary_gap.get("metric") or {}
-    experiment = OptimizationExperiment(
-        action_id=action.id,
-        status="draft",
-        hypothesis=(
-            f"如果围绕「{prompt.prompt_text}」补齐「{primary_gap.get('gap_type_label')}」所需的中文事实和可引用证据，"
-            f"则「{project.brand_name}」在后续固定复采中应提升 {experiment_proposal.get('primary_metric') or 'candidate_capture_rate'}。"
-        ),
-        hypothesis_type=experiment_proposal.get("hypothesis_type") or primary_gap.get("gap_type", "UNKNOWN"),
-        mechanism=experiment_proposal.get("mechanism") or primary_gap.get("action_hint", ""),
-        intervention_family=experiment_proposal.get("intervention_family") or _intervention_family_for_gap(primary_gap.get("gap_type", "UNKNOWN")),
-        intervention_variables_json=dumps({
-            "asset_decision": action_package.get("asset_decision"),
-            "target_selection_criteria": content_brief.get("target_selection_criteria", []),
-            "target_capability_claims": content_brief.get("target_capability_claims", []),
-            "source_snapshot_id": snapshot.id,
-        }),
-        allowed_changes_json=dumps([
-            "补充真实产品能力说明",
-            "补充可引用中文正文、FAQ、操作步骤",
-            "补充合规边界和证据来源",
-        ]),
-        forbidden_changes_json=dumps([
+            "solution_slot": market.get("solution_slot"),
+            "prompt_intents": market.get("prompt_intents"),
+        },
+        "execution_gate": {
+            "status": validation_status,
+            "required_path": "StrategyCandidate -> human review -> effective_payload=VALIDATED -> Action -> Experiment",
+            "blocked_materialization": True,
+            "errors": validation_errors,
+        },
+        "forbidden_changes": [
             "不得编造产品能力",
-            "不得宣称未经确认的官方授权、绝对安全或唯一方案",
-            "不得覆盖历史 Evidence Package 或 Experiment",
-        ]),
-        target_prompt_scope_json=dumps([prompt.id]),
-        environment_scope_json=dumps({"platform": "wenxin", "source_type": "browser_audit", "decision_market_snapshot_id": snapshot.id}),
-        sample_plan_json=dumps({"baseline_samples": len(runs), "validation_samples": experiment_proposal.get("sample_size_target") or max(12, len(runs) or 12)}),
-        primary_metric=experiment_proposal.get("primary_metric") or _primary_metric_for_gap(primary_gap.get("gap_type", "UNKNOWN")),
-        secondary_metrics_json=dumps(["need_association_rate", "capability_recognition_rate", "candidate_capture_rate", "explicit_recommendation_rate"]),
-        baseline_run_ids_json=dumps(run_ids),
-        baseline_metrics_json=dumps({"decision_market_metric": baseline_metric}),
-        baseline_numerator=baseline_metric.get("numerator") if isinstance(baseline_metric, dict) else None,
-        baseline_denominator=baseline_metric.get("denominator") if isinstance(baseline_metric, dict) else None,
-        baseline_metric_value=baseline_metric.get("value") if isinstance(baseline_metric, dict) else None,
-        success_threshold=(payload or {}).get("success_threshold"),
-        sample_size_target=experiment_proposal.get("sample_size_target") or max(12, len(runs) or 12),
-        target_prompt_ids_json=dumps([prompt.id]),
-        target_asset_ids_json=dumps([]),
-        recollection_strategy_json=dumps({"collection_mode": "single_independent", "execute_now": False, "reason": "固定复采默认每个 Prompt 独立新对话，避免复用上一题上下文；是否立即执行仍需人工触发以控制登录/验证码风险。"}),
-        confounders_json=dumps(["模型版本变化", "搜索索引更新", "竞品内容变化", "采集账号状态变化"]),
-        known_environment_audit_json=dumps({
-            "model_version_known_changed": False,
-            "citation_landscape_changed": False,
-            "competitor_source_changed": False,
-            "brand_market_changed": False,
-            "other_known_changes": False,
-            "other_known_changes_note": "",
-            "audit_note": "草案阶段尚未复采，只记录基线窗口；发布后确认结论前必须补充已知环境变化审计。",
-            "boundary_note": "只能记录当前观察窗口内已知变化；不得声称黑盒 AI 环境完全不变。",
-        }),
-        comparability_status="INSUFFICIENT_CONTEXT",
-        comparability_note="实验草案尚未完成发布后复采，无法判断前后结果是否可比。",
-        controlled_intervention_json=dumps({
-            "intervention_family": experiment_proposal.get("intervention_family") or _intervention_family_for_gap(primary_gap.get("gap_type", "UNKNOWN")),
-            "mechanism": experiment_proposal.get("mechanism") or primary_gap.get("action_hint", ""),
-            "primary_metric": experiment_proposal.get("primary_metric") or _primary_metric_for_gap(primary_gap.get("gap_type", "UNKNOWN")),
-            "allowed_changes": [
-                "补充真实产品能力说明",
-                "补充可引用中文正文、FAQ、操作步骤",
-                "补充合规边界和证据来源",
-            ],
-            "forbidden_changes": [
-                "不得编造产品能力",
-                "不得宣称未经确认的官方授权、绝对安全或唯一方案",
-                "不得同时引入无关竞品对比、价格调整或产品功能变更",
-            ],
-            "target_prompt_scope": [prompt.id],
-            "boundary_note": "一次实验只验证一个主要机制假设；允许多个页面改动，但必须同属同一干预家族。",
-        }),
+            "不得默认官网、外部平台或新页面为执行渠道",
+            "不得绕过 StrategyCandidate/effective_payload 直接创建 Action/Experiment",
+        ],
+        "evidence_run_ids": run_ids,
+        "hypothesis_type": experiment_proposal.get("hypothesis_type") or primary_gap.get("gap_type", "UNKNOWN"),
+        "intervention_family": "UNRESOLVED",
+        "primary_metric": experiment_proposal.get("primary_metric") or _primary_metric_for_gap(primary_gap.get("gap_type", "UNKNOWN")),
+    }
+
+    candidate = OptimizationStrategyCandidate(
+        project_id=project.id,
+        experiment_id=None,
+        evidence_package_id=evidence_package.id,
+        target_url="",
+        provider="decision_market",
+        model="rule_snapshot",
+        prompt_version=DECISION_MARKET_SCHEMA_VERSION,
+        prompt_text=f"Decision Market Snapshot #{snapshot.id} · {prompt.prompt_text}",
+        generated_at=datetime.utcnow(),
+        generation_status="PROPOSED",
+        intervention_type="UNRESOLVED",
+        target_platform="UNRESOLVED",
+        target_asset="UNRESOLVED",
+        target_content_type="UNRESOLVED",
+        expected_primary_metric=proposal_payload["target_metric"],
+        source_package_id=evidence_package.id,
+        original_llm_payload_json=dumps(proposal_payload),
+        structured_payload_json=dumps(proposal_payload),
+        human_edited_payload_json=dumps({}),
+        effective_payload_json=dumps({}),
+        effective_payload_version="",
+        effective_validation_status=validation_status,
+        evidence_validation_status=validation_status,
+        evidence_validation_errors_json=dumps(validation_errors),
+        evidence_validation_warnings_json=dumps(["Decision Market 只生成非执行策略候选；Action/Experiment 必须由已审核且 VALIDATED 的 effective_payload 物化。"]),
+        evidence_validated_at=None,
+        evidence_validator_version=EVIDENCE_ADOPTION_ATTRIBUTION_VERSION,
+        hypothesis_validation_status=validation_status,
+        hypothesis_validation_errors_json=dumps(validation_errors),
+        hypothesis_validation_warnings_json=dumps([]),
+        hypothesis_validated_at=None,
+        hypothesis_validator_version=GAP_DIAGNOSIS_RULE_VERSION,
+        review_status="PENDING_REVIEW",
     )
-    if run_ids:
-        experiment.baseline_start = min((run.created_at for run in runs), default=None)
-        experiment.baseline_end = max((run.created_at for run in runs), default=None)
-    db.add(experiment)
+    db.add(candidate)
     db.commit()
-    db.refresh(issue)
-    db.refresh(action)
-    db.refresh(experiment)
+    db.refresh(candidate)
 
     return {
-        "status": "DRAFT_CREATED",
-        "status_label": "实验草案已生成",
+        "status": "STRATEGY_CANDIDATE_CREATED",
+        "status_label": "已生成待审核策略候选",
         "snapshot_id": snapshot.id,
-        "issue": _decision_issue_to_read(issue),
-        "action": _decision_action_to_read(action),
-        "experiment": _decision_experiment_to_read(experiment),
-        "next_step": "请先人工确认问题、行动和实验假设；只有确认发布后才能进入冷却和复测。",
+        "strategy_candidate": strategy_candidate_to_read(candidate),
+        "blocked_materialization": True,
+        "blocking_reasons": validation_errors,
+        "next_step": "请先完成人工审核和 Product Truth / 渠道 / 资产确认；只有 effective_payload=VALIDATED 后才能生成 Action/Experiment。",
     }
 
 
@@ -1885,10 +1886,10 @@ def _build_intervention_candidates(
         "required_claims": required_claims,
         "required_evidence": ["可公开访问的页面正文", "明确操作步骤或能力说明", "可被引用的 FAQ 或对比说明"],
         "recommended_content_type": "教程/问答型内容",
-        "recommended_channel": "待人工选择",
+        "recommended_channel": "UNRESOLVED",
         "recommended_channel_reason": "渠道必须最后决定，不能仅凭引用数量自动选择。",
-        "intervention_type": "OFFICIAL_NEW_PAGE",
-        "intervention_type_label": "新增自有信息页",
+        "intervention_type": "UNRESOLVED",
+        "intervention_type_label": "待人工确认渠道与资产",
         "recommended_topic": prompt.prompt_text,
         "recommended_title": f"{prompt.prompt_text}：{project.brand_name} 使用场景与操作说明",
         "required_sections": ["直接回答", "适用场景", "操作步骤", "能力边界", "常见问题"],
@@ -2819,16 +2820,16 @@ def _build_action_package(
         asset_decision = "NO_CONTENT_ACTION"
     elif primary_gap and primary_gap.get("gap_type") == "ASSOCIATION_GAP":
         opportunity_type = "BRAND_ASSOCIATION_OPPORTUNITY"
-        asset_decision = "UPDATE_EXISTING"
+        asset_decision = "UNRESOLVED"
     elif primary_gap and primary_gap.get("gap_type") in {"CAPABILITY_GAP", "CAPABILITY_RECOGNITION_GAP"}:
         opportunity_type = "CAPABILITY_RECOGNITION_OPPORTUNITY"
-        asset_decision = "UPDATE_EXISTING"
+        asset_decision = "UNRESOLVED"
     elif primary_gap and primary_gap.get("gap_type") == "EVIDENCE_GAP":
         opportunity_type = "EVIDENCE_OPPORTUNITY"
-        asset_decision = "CREATE_NEW"
+        asset_decision = "UNRESOLVED"
     elif primary_gap:
         opportunity_type = "CANDIDATE_ENTRY_OPPORTUNITY"
-        asset_decision = "UPDATE_EXISTING"
+        asset_decision = "UNRESOLVED"
     else:
         opportunity_type = "NO_ACTIONABLE_OPPORTUNITY"
         asset_decision = "NEED_MORE_EVIDENCE"
@@ -2881,7 +2882,7 @@ def _build_action_package(
         "experiment_proposal": {
             "hypothesis_type": primary_gap.get("gap_type") if primary_gap else "UNKNOWN",
             "mechanism": primary_gap.get("action_hint") if primary_gap else "暂无足够 gap 支撑实验假设。",
-            "intervention_family": _intervention_family_for_gap(primary_gap.get("gap_type") if primary_gap else "UNKNOWN"),
+            "intervention_family": "UNRESOLVED",
             "primary_metric": _primary_metric_for_gap(primary_gap.get("gap_type") if primary_gap else "UNKNOWN"),
             "baseline": target.get("metrics", {}).get(_metric_key_for_gap(primary_gap.get("gap_type") if primary_gap else "UNKNOWN")),
             "success_threshold": "人工确认后设置；建议先以候选进入或能力识别提升作为阈值。",
@@ -3446,6 +3447,7 @@ def _asset_decision_label(decision: str) -> str:
         "CREATE_NEW": "新建资产",
         "MERGE": "合并资产",
         "EXTERNAL_DISTRIBUTION": "外部分发",
+        "UNRESOLVED": "待人工确认",
         "NO_CONTENT_ACTION": "暂不做内容动作",
         "NEED_MORE_EVIDENCE": "需要更多证据",
     }

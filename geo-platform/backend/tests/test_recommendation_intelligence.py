@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -9,8 +11,10 @@ from app.models import (
     BrowserMonitorRun,
     BrowserMonitorTask,
     Competitor,
+    OptimizationAction,
     OptimizationEvidencePackage,
     OptimizationExperiment,
+    OptimizationIssue,
     OptimizationStrategyCandidate,
     Organization,
     PageSnapshot,
@@ -24,6 +28,7 @@ from app.models import (
 )
 from app.modules.optimization import recommendation
 from app.modules.optimization import service
+from app.modules.optimization.schemas import StrategyCandidateReviewPayload
 from app.modules.optimization.service import strategy_to_experiment_plan
 from app.services.serialization import dumps
 
@@ -82,6 +87,42 @@ def _seed_project(db, prompt_text: str, prompt_id: int = 19):
     ])
     db.commit()
     return project, prompt, runs
+
+
+def _seed_evidence_package(db, project_id: int = 3, prompt_id: int = 19, package_id: int = 91):
+    package = OptimizationEvidencePackage(
+        id=package_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        version=1,
+        source_run_ids_json=dumps([173, 174]),
+        target_page_urls_json=dumps(["https://www.aifabu.com/card"]),
+        package_payload_json=dumps({
+            "prompt": {"prompt_text": "抖音跳转链接"},
+            "retrieval_metrics_status": "ok",
+            "metrics": [
+                {
+                    "metric_name": "candidate_capture_rate",
+                    "calculation_status": "ok",
+                    "numerator": 0,
+                    "denominator": 2,
+                    "value": 0,
+                },
+                {
+                    "metric_name": "capability_recognition_rate",
+                    "calculation_status": "ok",
+                    "numerator": 0,
+                    "denominator": 2,
+                    "value": 0,
+                },
+            ],
+        }),
+        package_hash=f"decision-market-{package_id}",
+        status="active",
+    )
+    db.add(package)
+    db.commit()
+    return package
 
 
 def test_how_to_prompt_does_not_make_recommendation_metric_core(db):
@@ -234,6 +275,8 @@ def test_recommendation_action_copy_uses_current_prompt_context(db):
 
 def test_local_strategy_hypothesis_uses_current_prompt_context(db):
     project, prompt, _ = _seed_project(db, "抖音卡片怎么做？", prompt_id=9)
+    project.brand_name = "测试品牌"
+    db.commit()
     snapshot = PageSnapshot(id=9, project_id=3, url="https://www.aifabu.com/card", snapshot_type="PRE_RELEASE", title="原始标题", h1="原始H1")
     evidence = {
         "prompt": {
@@ -267,8 +310,12 @@ def test_local_strategy_hypothesis_uses_current_prompt_context(db):
 
     assert "Prompt 19" not in rendered
     assert "抖音跳转链接" not in rendered
+    assert "爱短链" not in rendered
+    assert "owned_site" not in rendered
     assert "抖音卡片怎么做" in hypothesis["recommended_title"]
     assert hypothesis["target_intent"] == "抖音卡片怎么做？"
+    assert hypothesis["target_platform"] == "UNRESOLVED"
+    assert hypothesis["target_object"] == "UNRESOLVED"
 
 
 def test_answer_semantic_fact_can_be_reviewed(db):
@@ -288,31 +335,126 @@ def test_answer_semantic_fact_can_be_reviewed(db):
     assert reviewed["human_labels"]["reviewer"] == "geo"
 
 
-def test_decision_market_can_create_experiment_draft(db):
+def test_decision_market_creates_non_executable_strategy_candidate(db):
     _seed_project(db, "抖音跳转链接")
+    package = _seed_evidence_package(db)
     result = recommendation.run_recommendation_analysis(db, 3, 19)
 
+    issue_count = db.query(OptimizationIssue).count()
+    action_count = db.query(OptimizationAction).count()
+    experiment_count = db.query(OptimizationExperiment).count()
     draft = recommendation.create_decision_market_experiment_draft(db, result["id"], {"owner": "geo"})
 
-    assert draft["status"] == "DRAFT_CREATED"
-    assert draft["issue"]["issue_type"] == "decision_market_gap"
-    assert draft["action"]["status"] == "draft"
-    assert draft["action"]["owner"] == "geo"
-    assert draft["experiment"]["status"] == "draft"
-    assert draft["experiment"]["baseline_run_ids"] == [173, 174]
-    assert draft["experiment"]["hypothesis_type"]
-    assert draft["experiment"]["primary_metric"] in {
+    assert draft["status"] == "STRATEGY_CANDIDATE_CREATED"
+    assert draft["blocked_materialization"] is True
+    assert db.query(OptimizationIssue).count() == issue_count
+    assert db.query(OptimizationAction).count() == action_count
+    assert db.query(OptimizationExperiment).count() == experiment_count
+    candidate = db.get(OptimizationStrategyCandidate, draft["strategy_candidate"]["id"])
+    assert candidate is not None
+    assert candidate.evidence_package_id == package.id
+    assert candidate.experiment_id is None
+    assert candidate.target_url == ""
+    assert candidate.target_platform == "UNRESOLVED"
+    assert candidate.intervention_type == "UNRESOLVED"
+    assert candidate.effective_validation_status == "BLOCKED_PRODUCT_TRUTH"
+    structured = dumps(draft["strategy_candidate"]["structured_payload"])
+    assert "owned_content" not in structured
+    assert "OFFICIAL_NEW_PAGE" not in structured
+    assert draft["strategy_candidate"]["structured_payload"]["target_platform"] == "UNRESOLVED"
+    assert draft["strategy_candidate"]["structured_payload"]["target_url"] == ""
+    assert draft["strategy_candidate"]["structured_payload"]["product_truth_gate"]["status"] == "NEEDS_HUMAN_CONFIRMATION"
+    assert draft["strategy_candidate"]["structured_payload"]["primary_metric"] in {
         "need_association_rate",
         "capability_recognition_rate",
         "candidate_capture_rate",
         "evidence_link_rate",
         "manual_review",
     }
-    assert draft["experiment"]["forbidden_changes"]
-    assert draft["experiment"]["comparability_status"] == "INSUFFICIENT_CONTEXT"
-    assert "黑盒 AI 环境" in draft["experiment"]["known_environment_audit"]["boundary_note"]
-    assert draft["experiment"]["controlled_intervention"]["intervention_family"]
-    assert "一个主要机制假设" in draft["experiment"]["controlled_intervention"]["boundary_note"]
+
+
+def test_decision_market_requires_evidence_package_before_strategy_candidate(db):
+    _seed_project(db, "抖音跳转链接")
+    result = recommendation.run_recommendation_analysis(db, 3, 19)
+
+    with pytest.raises(Exception) as exc:
+        recommendation.create_decision_market_experiment_draft(db, result["id"], {"owner": "geo"})
+
+    assert "Evidence Package" in str(exc.value)
+
+
+def test_product_truth_unknown_blocks_strategy_acceptance(db):
+    _seed_project(db, "抖音跳转链接")
+    _seed_evidence_package(db)
+    result = recommendation.run_recommendation_analysis(db, 3, 19)
+    draft = recommendation.create_decision_market_experiment_draft(db, result["id"], {"owner": "geo"})
+
+    with pytest.raises(Exception) as exc:
+        service.review_strategy_candidate(db, draft["strategy_candidate"]["id"], StrategyCandidateReviewPayload(
+            review_status="ACCEPTED_WITH_EDITS",
+            reviewed_by="human",
+            human_edited_payload={
+                "intervention_type": "OFFICIAL_PAGE_UPDATE",
+                "target_platform": "OFFICIAL_SITE",
+                "target_url": "https://www.aifabu.com/card",
+            },
+        ))
+
+    assert "Product Truth" in str(exc.value)
+
+
+def test_unresolved_effective_payload_cannot_materialize_experiment(db):
+    _seed_project(db, "抖音跳转链接")
+    package = _seed_evidence_package(db)
+    payload = {
+        "observed_problem": "品牌还没有形成可执行策略。",
+        "hypothesized_cause": "可能是渠道、资产和执行类型仍未确认。",
+        "core_mechanism": "先完成人工审核，再决定执行路径。",
+        "intervention_type": "UNRESOLVED",
+        "target_platform": "UNRESOLVED",
+        "target_asset": "UNRESOLVED",
+        "target_url": "",
+        "target_metric": "candidate_capture_rate",
+        "validation_plan": {"minimum_sample_count": 2},
+        "invalidating_result": "人工审核无法确定执行路径。",
+    }
+    candidate = OptimizationStrategyCandidate(
+        project_id=3,
+        evidence_package_id=package.id,
+        target_url="",
+        provider="test",
+        model="test",
+        prompt_version="test",
+        prompt_text="",
+        generated_at=datetime.utcnow(),
+        generation_status="GENERATED",
+        intervention_type="UNRESOLVED",
+        target_platform="UNRESOLVED",
+        target_asset="UNRESOLVED",
+        target_content_type="UNRESOLVED",
+        expected_primary_metric="candidate_capture_rate",
+        source_package_id=package.id,
+        original_llm_payload_json=dumps(payload),
+        structured_payload_json=dumps(payload),
+        human_edited_payload_json=dumps({}),
+        effective_payload_json=dumps(payload),
+        effective_payload_version="effective_payload.v1",
+        effective_validation_status="VALIDATED",
+        evidence_validation_status="VALIDATED",
+        evidence_validation_errors_json=dumps([]),
+        evidence_validation_warnings_json=dumps([]),
+        hypothesis_validation_status="VALIDATED",
+        hypothesis_validation_errors_json=dumps([]),
+        hypothesis_validation_warnings_json=dumps([]),
+        review_status="ACCEPTED",
+    )
+    db.add(candidate)
+    db.commit()
+
+    with pytest.raises(Exception) as exc:
+        strategy_to_experiment_plan(db, candidate.id)
+
+    assert "unresolved execution fields" in str(exc.value)
 
 
 def test_recommendation_reason_claims_can_be_reviewed(db):

@@ -105,7 +105,9 @@ STRATEGY_VERSION = "strategy.v2"
 # THIRD_PARTY_COMPARISON = secure third-party comparison/list inclusion
 # CONTENT_REFRESH       = refresh stale content
 # NO_ACTION             = no intervention warranted
+# UNRESOLVED            = proposal-stage only; must be resolved during review
 INTERVENTION_TYPE = {
+    "UNRESOLVED",
     "OFFICIAL_PAGE_UPDATE",
     "OFFICIAL_NEW_PAGE",
     "EXTERNAL_PLATFORM_ARTICLE",
@@ -197,10 +199,30 @@ def get_effective_strategy_payload(candidate) -> dict:
             status_code=400,
             detail=f"Strategy Candidate #{candidate.id} has no effective_payload. Cannot execute.",
         )
+    unresolved_fields = _unresolved_strategy_execution_fields(effective)
+    if unresolved_fields:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Strategy Candidate #{candidate.id} effective payload still has unresolved execution fields "
+                f"({', '.join(unresolved_fields)}). Please resolve channel, asset and intervention during review."
+            ),
+        )
     return effective
 
 
+def _unresolved_strategy_execution_fields(payload: dict) -> list[str]:
+    if payload.get("intervention_type") == "NO_ACTION":
+        return []
+    fields: list[str] = []
+    for key in ("intervention_type", "target_platform", "target_object", "target_asset", "target_content_type"):
+        if payload.get(key) == "UNRESOLVED":
+            fields.append(key)
+    return fields
+
+
 INTERVENTION_METRIC_MAP = {
+    "UNRESOLVED": "manual_review",
     "OFFICIAL_PAGE_UPDATE": "target_page_retrieval_rate",
     "OFFICIAL_NEW_PAGE": "target_page_retrieval_rate",
     "EXTERNAL_PLATFORM_ARTICLE": "brand_mention_rate",
@@ -803,56 +825,12 @@ def list_strategy_candidates(db: Session, project_id: int, experiment_id: int | 
 
 
 def generate_strategy_candidates(db: Session, project_id: int, payload) -> list[dict]:
-    project = db.get(Project, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="项目不存在")
-    package = db.get(OptimizationEvidencePackage, payload.evidence_package_id)
-    if not package or package.project_id != project_id:
-        raise HTTPException(status_code=404, detail="证据事实包不存在")
-    target_url = payload.target_url or (loads(package.target_page_urls_json, []) or [""])[0]
-    snapshot = _latest_success_snapshot(db, project_id, target_url, "PRE_RELEASE", payload.experiment_id)
-    provider = LLMStrategyProvider()
-    provider_result = provider.generate(project, package, snapshot, target_url, payload.max_hypotheses)
-    created: list[OptimizationStrategyCandidate] = []
-    for item in provider_result["hypotheses"][: payload.max_hypotheses]:
-        evidence_result = validate_strategy_evidence(package, snapshot, item)
-        hypothesis_result = validate_strategy_hypothesis(item, evidence_result)
-        candidate = OptimizationStrategyCandidate(
-            project_id=project_id,
-            experiment_id=payload.experiment_id,
-            evidence_package_id=package.id,
-            target_url=target_url,
-            provider=provider_result["provider"],
-            model=provider_result["model"],
-            prompt_version=provider_result["prompt_version"],
-            prompt_text=provider_result["prompt_text"],
-            generated_at=provider_result["generated_at"],
-            generation_status="GENERATED",
-            original_llm_payload_json=dumps(item),
-            structured_payload_json=dumps(item),
-            human_edited_payload_json=dumps({}),
-            # effective_payload = structured at birth
-            effective_payload_json=dumps(item),
-            effective_payload_version=EFFECTIVE_PAYLOAD_VERSION,
-            effective_validation_status="VALIDATED" if evidence_result["status"] == "VALIDATED" and hypothesis_result["status"] == "VALIDATED" else "VALIDATION_FAILED",
-            evidence_validation_status=evidence_result["status"],
-            evidence_validation_errors_json=dumps(evidence_result["errors"]),
-            evidence_validation_warnings_json=dumps(evidence_result["warnings"]),
-            evidence_validated_at=evidence_result["validated_at"],
-            evidence_validator_version=EVIDENCE_VALIDATOR_VERSION,
-            hypothesis_validation_status=hypothesis_result["status"],
-            hypothesis_validation_errors_json=dumps(hypothesis_result["errors"]),
-            hypothesis_validation_warnings_json=dumps(hypothesis_result["warnings"]),
-            hypothesis_validated_at=hypothesis_result["validated_at"],
-            hypothesis_validator_version=HYPOTHESIS_VALIDATOR_VERSION,
-            review_status="PENDING_REVIEW" if evidence_result["status"] == "VALIDATED" and hypothesis_result["status"] == "VALIDATED" else "VALIDATION_FAILED",
-        )
-        db.add(candidate)
-        created.append(candidate)
-    db.commit()
-    for candidate in created:
-        db.refresh(candidate)
-    return [strategy_candidate_to_read(row) for row in created]
+    """Legacy endpoint compatibility shim.
+
+    The old local strategy path embedded owned-site assumptions. Keep the route
+    alive for clients, but route all generation through the neutral V2 provider.
+    """
+    return generate_strategy_candidates_v2(db, project_id, payload)
 
 
 def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
@@ -863,6 +841,8 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
     if status not in {"PENDING_REVIEW", "ACCEPTED", "ACCEPTED_WITH_EDITS", "REJECTED", "DEFERRED"}:
         raise HTTPException(status_code=400, detail="未知人工审核状态")
     if status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"}:
+        _ensure_product_truth_gate_allows_strategy_execution(candidate)
+    if status == "ACCEPTED":
         if candidate.evidence_validation_status != "VALIDATED" or candidate.hypothesis_validation_status != "VALIDATED":
             raise HTTPException(status_code=400, detail="Validator 未通过，不能接受策略候选")
     candidate.review_status = status
@@ -909,6 +889,18 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
     db.commit()
     db.refresh(candidate)
     return strategy_candidate_to_read(candidate)
+
+
+def _ensure_product_truth_gate_allows_strategy_execution(candidate: OptimizationStrategyCandidate) -> None:
+    payload = loads(candidate.structured_payload_json, {})
+    gate = payload.get("product_truth_gate") if isinstance(payload, dict) else None
+    if not isinstance(gate, dict):
+        return
+    if gate.get("status") != "READY_FOR_STRATEGY_REVIEW":
+        raise HTTPException(
+            status_code=400,
+            detail="Product Truth 未确认，不能接受或执行该策略候选。请先人工确认目标品牌能力后重新生成候选。",
+        )
 
 
 def strategy_to_experiment_plan(db: Session, candidate_id: int) -> dict:
@@ -1151,7 +1143,7 @@ def _local_strategy_hypothesis(project: Project, evidence: dict, snapshot: PageS
         target_metric = "target_page_retrieval_rate"
         baseline_value = f"{retrieval_metric.get('numerator', 0)}/{retrieval_metric.get('denominator', 0)}"
         observed_problem = (
-            f"「{prompt_text}」的合格新基线中，爱短链目标页 {target_url} "
+            f"「{prompt_text}」的合格新基线中，{project.brand_name} 目标页 {target_url} "
             f"进入检索候选为 {baseline_value}。"
         )
         validation_goal = "目标页进入合格检索候选率出现可复核提升。"
@@ -1159,7 +1151,7 @@ def _local_strategy_hypothesis(project: Project, evidence: dict, snapshot: PageS
         target_metric = "official_reference_rate"
         baseline_value = f"{official_metric.get('numerator', 0)}/{official_metric.get('denominator', 0)}" if official_metric else ""
         observed_problem = (
-            f"「{prompt_text}」的历史样本中，爱短链目标页没有形成可验证的官方引用表现；"
+            f"「{prompt_text}」的历史样本中，{project.brand_name} 目标页没有形成可验证的官方引用表现；"
             "旧检索候选分母不足，不能使用完整候选漏斗判断。"
         )
         validation_goal = "官方域名引用率出现可复核提升，并继续观察目标页是否进入合格检索候选。"
@@ -1172,11 +1164,11 @@ def _local_strategy_hypothesis(project: Project, evidence: dict, snapshot: PageS
         "observed_problem": observed_problem,
         "hypothesized_cause": f"目标页可能更像产品或功能落地页，而不是完整承接「{prompt_text}」搜索意图的解释型内容，因此在 AI 组织答案时缺少可直接引用的定义、边界、步骤和失败排查信息。",
         "core_mechanism": f"强化目标页面对「{prompt_text}」意图的直接承接，使页面具备可被答案引用的完整信息块。",
-        "target_object": "owned_page",
+        "target_object": "UNRESOLVED",
         "target_url": target_url,
-        "target_platform": "owned_site",
+        "target_platform": "UNRESOLVED",
         "target_intent": prompt_text,
-        "recommended_intervention": f"优先验证强化现有页面，而不是立即发布外部平台内容；补足围绕「{prompt_text}」的定义、适用场景、实现路径、步骤、失败原因和 FAQ，并保持产品能力描述真实。",
+        "recommended_intervention": f"先保持渠道和资产未决；围绕「{prompt_text}」整理需要补齐的定义、适用场景、实现路径、步骤、失败原因和 FAQ，并在人工审核后再决定官网、外部平台或暂不行动。",
         "changed_features": [
             {"feature": "TITLE_H1_INTENT_ALIGNMENT", "before": title or "", "after": f"标题和 H1 明确承接「{prompt_text}」意图", "description": f"让页面主题直接回应「{prompt_text}」对应的问题承接", "location": "Title/H1"},
             {"feature": "DIRECT_ANSWER_BLOCK", "before": False, "after": True, "description": f"新增直接回答「{prompt_text}」核心问题、适用边界和完成路径", "location": "正文顶部"},
@@ -5861,7 +5853,7 @@ class EvidenceDrivenStrategyProvider:
             evidence_summary_str = "".join(summary_parts)
 
             option_a = {
-                "intervention_type": "OFFICIAL_NEW_PAGE",
+                "intervention_type": "UNRESOLVED",
                 "target_platform": "UNRESOLVED",
                 "target_asset": "NEW_INFORMATIONAL_CONTENT",
                 "target_content_type": recommended_content_types[0] if recommended_content_types else "TUTORIAL",

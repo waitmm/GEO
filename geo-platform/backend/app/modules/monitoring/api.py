@@ -106,7 +106,7 @@ def execute_queue(
         query = query.filter(BrowserMonitorRun.project_id == project_id)
     runs = query.order_by(BrowserMonitorRun.task_id.asc(), BrowserMonitorRun.run_sequence.asc(), BrowserMonitorRun.id.asc()).all()
 
-    # 按 (task_id, run_sequence) 分组，同一组在一个浏览器窗口中连续执行
+    # 按 (task_id, run_sequence) 分组；独立模式会在组内每条 Prompt 前强制新对话。
     groups: dict[tuple, list[BrowserMonitorRun]] = {}
     for run in runs:
         key = (run.task_id, run.run_sequence)

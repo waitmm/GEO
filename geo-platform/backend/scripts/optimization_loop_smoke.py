@@ -15,7 +15,7 @@ if "geo_v0.db" in SMOKE_DATABASE_URL or SMOKE_DATABASE_URL.endswith("/geo_platfo
 os.environ["DATABASE_URL"] = SMOKE_DATABASE_URL
 
 from app.core.database import SessionLocal, init_db
-from app.models import BrowserMonitorRun, BrowserMonitorTask, OptimizationStrategyCandidate, PageSnapshot, Project, Prompt, ReferenceSource, RetrievalCandidate, SourceMetadataCache
+from app.models import BrowserMonitorRun, BrowserMonitorTask, OptimizationStrategyCandidate, Organization, PageSnapshot, Project, Prompt, ReferenceSource, RetrievalCandidate, SourceMetadataCache
 from app.modules.optimization.schemas import (
     ActionReleasePayload,
     ExperimentConclusionPayload,
@@ -51,8 +51,11 @@ def main() -> None:
     init_db()
     db = SessionLocal()
     try:
+        organization = Organization(name=f"P0 Optimization Smoke Org {datetime.now(UTC).isoformat()}")
+        db.add(organization)
+        db.flush()
         project = Project(
-            organization_id=1,
+            organization_id=organization.id,
             name=f"P0 Optimization Smoke {datetime.now(UTC).isoformat()}",
             brand_name="SmokeBrand",
             brand_aliases_json='["Smoke Brand"]',

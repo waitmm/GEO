@@ -66,3 +66,8 @@ in recent local run notes.
   hide missing reference data.
 - Real business experiment success must not be claimed until release, cooling,
   retest, comparison, and human conclusion are all recorded.
+- Target users are Chinese-language operators who should not need to understand
+  English. User-facing navigation, labels, empty states, warnings, and workflow
+  actions must use Chinese. Stable English enum values may remain in storage or
+  API payloads, but UI/API responses used directly by the frontend must provide
+  Chinese labels.

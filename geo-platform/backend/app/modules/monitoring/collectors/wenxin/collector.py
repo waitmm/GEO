@@ -19,6 +19,7 @@ from app.modules.monitoring.collectors.wenxin.exceptions import (
     AnswerTimeoutError,
     BrowserProfileLockedError,
     CaptchaRequiredError,
+    ConversationResetError,
     ConfigurationError,
     LoginRequiredError,
     PageStructureError,
@@ -249,21 +250,50 @@ class WenxinWebCollector(BaseCollector):
     async def _prepare_collection_mode(self, page, collection_mode: str) -> None:
         if collection_mode != "single_independent":
             return
-        try:
-            existing_turns = await page.locator(
-                "#conversation-flow-content .conversation-flow-question-container"
-            ).count()
-            if existing_turns == 0:
-                return
-            trigger = page.get_by_text(re.compile(r"开启新对话|新对话"), exact=False).first
-            if await trigger.is_visible(timeout=1000):
-                await trigger.click(timeout=3000)
-                await page.wait_for_timeout(1500)
-                self._conversation_id = str(uuid.uuid4())
-        except Exception:
-            # Failure to switch is visible later as turn-binding evidence; do
-            # not restart Chrome because that increases verification risk.
+        existing_turns = await self._conversation_turn_count(page)
+        if existing_turns == 0:
             return
+        try:
+            trigger = page.get_by_text(re.compile(r"开启新对话|新对话"), exact=False).first
+            if not await trigger.is_visible(timeout=1000):
+                raise ConversationResetError("当前页面存在历史对话，但未找到“新对话”入口，无法保证独立会话采集")
+            await trigger.click(timeout=3000)
+            await self._wait_for_fresh_conversation(page, previous_turn_count=existing_turns)
+            self._conversation_id = str(uuid.uuid4())
+        except Exception:
+            try:
+                settings = get_settings()
+                await page.goto(
+                    settings.wenxin_web_url,
+                    wait_until="domcontentloaded",
+                    timeout=settings.wenxin_browser_timeout_seconds * 1000,
+                )
+                await page.wait_for_timeout(1500)
+                await self._wait_for_fresh_conversation(page, previous_turn_count=existing_turns)
+                self._conversation_id = str(uuid.uuid4())
+                return
+            except ConversationResetError:
+                raise
+            except Exception as exc:
+                raise ConversationResetError(
+                    "独立对话采集要求每个 Prompt 先开启新对话，当前未能成功重置会话"
+                ) from exc
+
+    async def _conversation_turn_count(self, page) -> int:
+        return await page.locator(
+            "#conversation-flow-content .conversation-flow-question-container"
+        ).count()
+
+    async def _wait_for_fresh_conversation(self, page, previous_turn_count: int) -> None:
+        # Independent mode must prove the old turns were cleared before input.
+        for _ in range(8):
+            current_turns = await self._conversation_turn_count(page)
+            if current_turns == 0:
+                return
+            if current_turns < previous_turn_count and await self._has_input(page):
+                return
+            await page.wait_for_timeout(400)
+        raise ConversationResetError("点击“新对话”后历史对话仍然存在，已阻止继续在旧会话中采集")
 
     async def _ensure_session(self, async_playwright, settings, browser_options):
         if self._page is not None and not self._page.is_closed():

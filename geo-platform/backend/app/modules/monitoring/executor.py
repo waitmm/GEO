@@ -40,7 +40,8 @@ class MonitoringTaskExecutor:
         if not runs:
             return 0
 
-        # 按 run_sequence 分组，同一组在一个浏览器窗口中连续执行
+        # 按 run_sequence 分组；single_independent 模式会在组内每条 Prompt 前
+        # 强制开启新对话，避免同批次 Prompt 共用历史上下文。
         groups: dict[int, list[BrowserMonitorRun]] = {}
         for run in runs:
             seq = run.run_sequence
@@ -65,7 +66,8 @@ class MonitoringTaskExecutor:
                 raise ValueError(f"Project not found: {first_run.project_id}")
 
             collector = get_collector(first_run.adapter)
-            # 启动浏览器会话（每个 Sample 组一次）
+            # 启动浏览器会话（每个 Sample 组一次）；独立模式是否真正切换为新
+            # 对话，由 collector 在每条 Run 开始前强校验。
             has_session = callable(getattr(collector, "start_session", None))
             if has_session:
                 self._event_loop.run_until_complete(collector.start_session())

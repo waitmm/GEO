@@ -60,6 +60,19 @@ CONCLUSION_TYPES = {
     "NEGATIVE_EFFECT",
     "INSUFFICIENT_EVIDENCE",
 }
+COMPARABILITY_STATUSES = {
+    "COMPARABLE",
+    "POTENTIALLY_CONFOUNDED",
+    "MATERIALLY_CONFOUNDED",
+    "INSUFFICIENT_CONTEXT",
+}
+KNOWN_ENVIRONMENT_AUDIT_KEYS = [
+    "model_version_known_changed",
+    "citation_landscape_changed",
+    "competitor_source_changed",
+    "brand_market_changed",
+    "other_known_changes",
+]
 ISSUE_TYPES = {
     "brand_absent",
     "brand_not_recommended",
@@ -92,7 +105,9 @@ STRATEGY_VERSION = "strategy.v2"
 # THIRD_PARTY_COMPARISON = secure third-party comparison/list inclusion
 # CONTENT_REFRESH       = refresh stale content
 # NO_ACTION             = no intervention warranted
+# UNRESOLVED            = proposal-stage only; must be resolved during review
 INTERVENTION_TYPE = {
+    "UNRESOLVED",
     "OFFICIAL_PAGE_UPDATE",
     "OFFICIAL_NEW_PAGE",
     "EXTERNAL_PLATFORM_ARTICLE",
@@ -184,10 +199,30 @@ def get_effective_strategy_payload(candidate) -> dict:
             status_code=400,
             detail=f"Strategy Candidate #{candidate.id} has no effective_payload. Cannot execute.",
         )
+    unresolved_fields = _unresolved_strategy_execution_fields(effective)
+    if unresolved_fields:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Strategy Candidate #{candidate.id} effective payload still has unresolved execution fields "
+                f"({', '.join(unresolved_fields)}). Please resolve channel, asset and intervention during review."
+            ),
+        )
     return effective
 
 
+def _unresolved_strategy_execution_fields(payload: dict) -> list[str]:
+    if payload.get("intervention_type") == "NO_ACTION":
+        return []
+    fields: list[str] = []
+    for key in ("intervention_type", "target_platform", "target_object", "target_asset", "target_content_type"):
+        if payload.get(key) == "UNRESOLVED":
+            fields.append(key)
+    return fields
+
+
 INTERVENTION_METRIC_MAP = {
+    "UNRESOLVED": "manual_review",
     "OFFICIAL_PAGE_UPDATE": "target_page_retrieval_rate",
     "OFFICIAL_NEW_PAGE": "target_page_retrieval_rate",
     "EXTERNAL_PLATFORM_ARTICLE": "brand_mention_rate",
@@ -288,6 +323,12 @@ def experiment_to_read(experiment: OptimizationExperiment) -> dict:
         "action_id": experiment.action_id,
         "status": experiment.status,
         "hypothesis": experiment.hypothesis,
+        "hypothesis_type": experiment.hypothesis_type,
+        "mechanism": experiment.mechanism,
+        "intervention_family": experiment.intervention_family,
+        "intervention_variables": loads(experiment.intervention_variables_json, {}),
+        "allowed_changes": loads(experiment.allowed_changes_json, []),
+        "forbidden_changes": loads(experiment.forbidden_changes_json, []),
         "target_prompt_scope": loads(experiment.target_prompt_scope_json, []),
         "control_prompt_scope": loads(experiment.control_prompt_scope_json, []),
         "sentinel_prompt_scope": loads(experiment.sentinel_prompt_scope_json, []),
@@ -295,6 +336,15 @@ def experiment_to_read(experiment: OptimizationExperiment) -> dict:
         "sample_plan": loads(experiment.sample_plan_json, {}),
         "primary_metric": experiment.primary_metric,
         "secondary_metrics": loads(experiment.secondary_metrics_json, []),
+        "baseline_numerator": experiment.baseline_numerator,
+        "baseline_denominator": experiment.baseline_denominator,
+        "baseline_metric_value": experiment.baseline_metric_value,
+        "success_threshold": experiment.success_threshold,
+        "sample_size_target": experiment.sample_size_target,
+        "target_prompt_ids": loads(experiment.target_prompt_ids_json, []),
+        "target_brand_id": experiment.target_brand_id,
+        "target_asset_ids": loads(experiment.target_asset_ids_json, []),
+        "recollection_strategy": loads(experiment.recollection_strategy_json, {}),
         "baseline_start": experiment.baseline_start,
         "baseline_end": experiment.baseline_end,
         "baseline_run_ids": loads(experiment.baseline_run_ids_json, []),
@@ -312,6 +362,10 @@ def experiment_to_read(experiment: OptimizationExperiment) -> dict:
         "per_prompt_results": loads(experiment.per_prompt_results_json, []),
         "per_environment_results": loads(experiment.per_environment_results_json, []),
         "confounders": loads(experiment.confounders_json, []),
+        "known_environment_audit": loads(experiment.known_environment_audit_json, {}),
+        "comparability_status": experiment.comparability_status,
+        "comparability_note": experiment.comparability_note,
+        "controlled_intervention": loads(experiment.controlled_intervention_json, {}),
         "conclusion": _normalize_conclusion(experiment.conclusion) if experiment.conclusion else "",
         "conclusion_reason": experiment.conclusion_reason,
         "created_at": experiment.created_at,
@@ -771,56 +825,12 @@ def list_strategy_candidates(db: Session, project_id: int, experiment_id: int | 
 
 
 def generate_strategy_candidates(db: Session, project_id: int, payload) -> list[dict]:
-    project = db.get(Project, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="项目不存在")
-    package = db.get(OptimizationEvidencePackage, payload.evidence_package_id)
-    if not package or package.project_id != project_id:
-        raise HTTPException(status_code=404, detail="证据事实包不存在")
-    target_url = payload.target_url or (loads(package.target_page_urls_json, []) or [""])[0]
-    snapshot = _latest_success_snapshot(db, project_id, target_url, "PRE_RELEASE", payload.experiment_id)
-    provider = LLMStrategyProvider()
-    provider_result = provider.generate(project, package, snapshot, target_url, payload.max_hypotheses)
-    created: list[OptimizationStrategyCandidate] = []
-    for item in provider_result["hypotheses"][: payload.max_hypotheses]:
-        evidence_result = validate_strategy_evidence(package, snapshot, item)
-        hypothesis_result = validate_strategy_hypothesis(item, evidence_result)
-        candidate = OptimizationStrategyCandidate(
-            project_id=project_id,
-            experiment_id=payload.experiment_id,
-            evidence_package_id=package.id,
-            target_url=target_url,
-            provider=provider_result["provider"],
-            model=provider_result["model"],
-            prompt_version=provider_result["prompt_version"],
-            prompt_text=provider_result["prompt_text"],
-            generated_at=provider_result["generated_at"],
-            generation_status="GENERATED",
-            original_llm_payload_json=dumps(item),
-            structured_payload_json=dumps(item),
-            human_edited_payload_json=dumps({}),
-            # effective_payload = structured at birth
-            effective_payload_json=dumps(item),
-            effective_payload_version=EFFECTIVE_PAYLOAD_VERSION,
-            effective_validation_status="VALIDATED" if evidence_result["status"] == "VALIDATED" and hypothesis_result["status"] == "VALIDATED" else "VALIDATION_FAILED",
-            evidence_validation_status=evidence_result["status"],
-            evidence_validation_errors_json=dumps(evidence_result["errors"]),
-            evidence_validation_warnings_json=dumps(evidence_result["warnings"]),
-            evidence_validated_at=evidence_result["validated_at"],
-            evidence_validator_version=EVIDENCE_VALIDATOR_VERSION,
-            hypothesis_validation_status=hypothesis_result["status"],
-            hypothesis_validation_errors_json=dumps(hypothesis_result["errors"]),
-            hypothesis_validation_warnings_json=dumps(hypothesis_result["warnings"]),
-            hypothesis_validated_at=hypothesis_result["validated_at"],
-            hypothesis_validator_version=HYPOTHESIS_VALIDATOR_VERSION,
-            review_status="PENDING_REVIEW" if evidence_result["status"] == "VALIDATED" and hypothesis_result["status"] == "VALIDATED" else "VALIDATION_FAILED",
-        )
-        db.add(candidate)
-        created.append(candidate)
-    db.commit()
-    for candidate in created:
-        db.refresh(candidate)
-    return [strategy_candidate_to_read(row) for row in created]
+    """Legacy endpoint compatibility shim.
+
+    The old local strategy path embedded owned-site assumptions. Keep the route
+    alive for clients, but route all generation through the neutral V2 provider.
+    """
+    return generate_strategy_candidates_v2(db, project_id, payload)
 
 
 def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
@@ -831,6 +841,8 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
     if status not in {"PENDING_REVIEW", "ACCEPTED", "ACCEPTED_WITH_EDITS", "REJECTED", "DEFERRED"}:
         raise HTTPException(status_code=400, detail="未知人工审核状态")
     if status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"}:
+        _ensure_product_truth_gate_allows_strategy_execution(candidate)
+    if status == "ACCEPTED":
         if candidate.evidence_validation_status != "VALIDATED" or candidate.hypothesis_validation_status != "VALIDATED":
             raise HTTPException(status_code=400, detail="Validator 未通过，不能接受策略候选")
     candidate.review_status = status
@@ -879,6 +891,18 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
     return strategy_candidate_to_read(candidate)
 
 
+def _ensure_product_truth_gate_allows_strategy_execution(candidate: OptimizationStrategyCandidate) -> None:
+    payload = loads(candidate.structured_payload_json, {})
+    gate = payload.get("product_truth_gate") if isinstance(payload, dict) else None
+    if not isinstance(gate, dict):
+        return
+    if gate.get("status") != "READY_FOR_STRATEGY_REVIEW":
+        raise HTTPException(
+            status_code=400,
+            detail="Product Truth 未确认，不能接受或执行该策略候选。请先人工确认目标品牌能力后重新生成候选。",
+        )
+
+
 def strategy_to_experiment_plan(db: Session, candidate_id: int) -> dict:
     candidate = db.get(OptimizationStrategyCandidate, candidate_id)
     if not candidate:
@@ -891,7 +915,17 @@ def strategy_to_experiment_plan(db: Session, candidate_id: int) -> dict:
 
     # NO_ACTION: evidence does not support any intervention — do not create Action/Experiment
     if effective.get("intervention_type") == "NO_ACTION":
-        candidate.experiment_plan_json = dumps({"readiness_status": "NO_ACTION", "reason": "Current evidence does not support any intervention."})
+        known_environment_audit = _normalize_known_environment_audit({})
+        comparability_status, comparability_note = _resolve_comparability(None, None, known_environment_audit, [])
+        no_action_plan = {
+            "readiness_status": "NO_ACTION",
+            "reason": "当前证据不支持执行干预，建议继续观察或补充证据。",
+            "known_environment_audit": known_environment_audit,
+            "comparability_status": comparability_status,
+            "comparability_note": comparability_note,
+            "controlled_intervention": _strategy_controlled_intervention_payload(effective, package),
+        }
+        candidate.experiment_plan_json = dumps(no_action_plan)
         db.commit()
         return {
             "strategy_candidate_id": candidate.id,
@@ -901,7 +935,7 @@ def strategy_to_experiment_plan(db: Session, candidate_id: int) -> dict:
             "experiment_id": None,
             "action_id": None,
             "hypothesis_id": None,
-            "plan_payload": {"readiness_status": "NO_ACTION"},
+            "plan_payload": no_action_plan,
         }
 
     # Auto-create Action + Experiment if strategy accepted but has no experiment
@@ -909,6 +943,9 @@ def strategy_to_experiment_plan(db: Session, candidate_id: int) -> dict:
         target_url = effective.get("target_url") or ""
         intervention_type = effective.get("intervention_type") or ""
         primary_metric = INTERVENTION_METRIC_MAP.get(intervention_type, "brand_mention_rate")
+        known_environment_audit = _normalize_known_environment_audit({})
+        comparability_status, comparability_note = _resolve_comparability(None, None, known_environment_audit, [])
+        controlled_intervention = _strategy_controlled_intervention_payload(effective, package)
 
         # Create Issue if needed
         existing_issue = (
@@ -968,9 +1005,25 @@ def strategy_to_experiment_plan(db: Session, candidate_id: int) -> dict:
         experiment = OptimizationExperiment(
             action_id=action.id,
             hypothesis=effective.get("hypothesized_cause", "")[:500],
+            hypothesis_type="strategy_candidate",
+            mechanism=effective.get("core_mechanism", "")[:500],
+            intervention_family=intervention_type,
+            intervention_variables_json=dumps({
+                "strategy_candidate_id": candidate.id,
+                "evidence_package_id": package.id if package else None,
+                "target_url": target_url,
+            }),
+            allowed_changes_json=dumps(controlled_intervention["allowed_changes"]),
+            forbidden_changes_json=dumps(controlled_intervention["forbidden_changes"]),
             target_prompt_scope_json=dumps([package.prompt_id] if package.prompt_id else []),
+            control_prompt_scope_json=dumps([]),
+            sentinel_prompt_scope_json=dumps([]),
             primary_metric=primary_metric,
             secondary_metrics_json=dumps(["brand_mention_rate", "brand_recommendation_rate"]),
+            known_environment_audit_json=dumps(known_environment_audit),
+            comparability_status=comparability_status,
+            comparability_note=comparability_note,
+            controlled_intervention_json=dumps(controlled_intervention),
             status="draft",
             release_blocked=True,
             release_blocked_reason="WAITING_FOR_BASELINE_LOCK",
@@ -1070,6 +1123,9 @@ def _strategy_prompt_text(evidence: dict, snapshot: PageSnapshot | None, target_
 
 
 def _local_strategy_hypothesis(project: Project, evidence: dict, snapshot: PageSnapshot | None, target_url: str) -> dict:
+    prompt = evidence.get("prompt") or {}
+    prompt_text = (prompt.get("prompt_text") or prompt.get("display_label") or "当前问题").strip() or "当前问题"
+    prompt_title = prompt_text.rstrip("？?！!。；;：:") or "当前问题"
     run_ids = evidence.get("citation_eligible_run_ids") or evidence.get("answer_eligible_run_ids") or evidence.get("source_run_ids") or []
     citation_ids = []
     platforms = []
@@ -1087,7 +1143,7 @@ def _local_strategy_hypothesis(project: Project, evidence: dict, snapshot: PageS
         target_metric = "target_page_retrieval_rate"
         baseline_value = f"{retrieval_metric.get('numerator', 0)}/{retrieval_metric.get('denominator', 0)}"
         observed_problem = (
-            f"Prompt 19 的合格新基线中，爱短链目标页 {target_url} "
+            f"「{prompt_text}」的合格新基线中，{project.brand_name} 目标页 {target_url} "
             f"进入检索候选为 {baseline_value}。"
         )
         validation_goal = "目标页进入合格检索候选率出现可复核提升。"
@@ -1095,7 +1151,7 @@ def _local_strategy_hypothesis(project: Project, evidence: dict, snapshot: PageS
         target_metric = "official_reference_rate"
         baseline_value = f"{official_metric.get('numerator', 0)}/{official_metric.get('denominator', 0)}" if official_metric else ""
         observed_problem = (
-            "Prompt 19 的历史样本中，爱短链目标页没有形成可验证的官方引用表现；"
+            f"「{prompt_text}」的历史样本中，{project.brand_name} 目标页没有形成可验证的官方引用表现；"
             "旧检索候选分母不足，不能使用完整候选漏斗判断。"
         )
         validation_goal = "官方域名引用率出现可复核提升，并继续观察目标页是否进入合格检索候选。"
@@ -1106,22 +1162,22 @@ def _local_strategy_hypothesis(project: Project, evidence: dict, snapshot: PageS
     )
     return {
         "observed_problem": observed_problem,
-        "hypothesized_cause": "目标页可能更像产品卡片落地页，而不是完整承接“抖音跳转链接”搜索意图的解释型内容，因此在 AI 组织答案时缺少可直接引用的定义、边界、步骤和失败排查信息。",
-        "core_mechanism": "强化目标页面对“抖音跳转链接”意图的直接承接，使页面具备可被答案引用的完整信息块。",
-        "target_object": "owned_page",
+        "hypothesized_cause": f"目标页可能更像产品或功能落地页，而不是完整承接「{prompt_text}」搜索意图的解释型内容，因此在 AI 组织答案时缺少可直接引用的定义、边界、步骤和失败排查信息。",
+        "core_mechanism": f"强化目标页面对「{prompt_text}」意图的直接承接，使页面具备可被答案引用的完整信息块。",
+        "target_object": "UNRESOLVED",
         "target_url": target_url,
-        "target_platform": "owned_site",
-        "target_intent": "抖音跳转链接",
-        "recommended_intervention": "优先验证强化现有 /card 页面，而不是立即发布外部平台内容；补足定义、平台限制、实现路径、步骤、失败原因和 FAQ，并保持产品能力描述真实。",
+        "target_platform": "UNRESOLVED",
+        "target_intent": prompt_text,
+        "recommended_intervention": f"先保持渠道和资产未决；围绕「{prompt_text}」整理需要补齐的定义、适用场景、实现路径、步骤、失败原因和 FAQ，并在人工审核后再决定官网、外部平台或暂不行动。",
         "changed_features": [
-            {"feature": "TITLE_H1_INTENT_ALIGNMENT", "before": title or "", "after": "标题和 H1 明确包含抖音跳转链接意图", "description": "让页面主题从卡片产品扩展到抖音跳转链接问题承接", "location": "Title/H1"},
-            {"feature": "DIRECT_ANSWER_BLOCK", "before": False, "after": True, "description": "新增直接回答什么是抖音跳转链接、能跳到哪里、合规边界是什么", "location": "正文顶部"},
-            {"feature": "TROUBLESHOOTING_FAQ", "before": False, "after": True, "description": "补充审核失败、链接失效、跳转受限和落地页异常的排查", "location": "页面主体/FAQ"},
+            {"feature": "TITLE_H1_INTENT_ALIGNMENT", "before": title or "", "after": f"标题和 H1 明确承接「{prompt_text}」意图", "description": f"让页面主题直接回应「{prompt_text}」对应的问题承接", "location": "Title/H1"},
+            {"feature": "DIRECT_ANSWER_BLOCK", "before": False, "after": True, "description": f"新增直接回答「{prompt_text}」核心问题、适用边界和完成路径", "location": "正文顶部"},
+            {"feature": "TROUBLESHOOTING_FAQ", "before": False, "after": True, "description": "补充常见失败、受限条件和异常排查", "location": "页面主体/FAQ"},
         ],
         "controlled_variables": ["target_url", "product_capabilities", "collection_prompt", "wenxin_entry", "account_profile", "external_platform_content"],
-        "recommended_title": "抖音跳转链接怎么做？私信卡片、小风车与落地页跳转说明",
-        "recommended_outline": ["直接回答", "适用场景", "平台限制", "操作步骤", "常见失败原因", "FAQ", "使用爱短链完成配置"],
-        "required_sections": ["定义与边界", "抖音私信/群聊卡片", "直播间小风车", "操作步骤", "失败排查", "FAQ"],
+        "recommended_title": f"{prompt_title}：使用场景、操作步骤与常见问题",
+        "recommended_outline": ["直接回答", "适用场景", "限制条件", "操作步骤", "常见失败原因", "FAQ", f"使用{project.brand_name}完成配置"],
+        "required_sections": ["定义与边界", "适用场景", "限制条件", "操作步骤", "失败排查", "FAQ"],
         "evidence_run_ids": run_ids,
         "evidence_candidate_ids": [],
         "evidence_citation_ids": sorted(set(citation_ids))[:20],
@@ -1258,6 +1314,20 @@ def _experiment_readiness_for_strategy(
         errors.append("WAITING_FOR_RECOLLECTED_RETRIEVAL_BASELINE")
     if experiment and experiment.released_at:
         errors.append("发布前 released_at 必须为空")
+    known_environment_audit = _normalize_known_environment_audit(
+        loads(experiment.known_environment_audit_json, {}) if experiment else {}
+    )
+    comparability_status, comparability_note = _resolve_comparability(
+        experiment.comparability_status if experiment else None,
+        experiment.comparability_note if experiment else None,
+        known_environment_audit,
+        loads(experiment.confounders_json, []) if experiment else [],
+    )
+    controlled_intervention = (
+        loads(experiment.controlled_intervention_json, {})
+        if experiment and experiment.controlled_intervention_json
+        else _strategy_controlled_intervention_payload(payload, package)
+    )
     return {
         "readiness_status": "READY" if not errors else "BLOCKED",
         "readiness_errors": errors,
@@ -1266,6 +1336,10 @@ def _experiment_readiness_for_strategy(
         "target_url": candidate.target_url,
         "target_metric": target_metric,
         "baseline": metric,
+        "known_environment_audit": known_environment_audit,
+        "comparability_status": comparability_status,
+        "comparability_note": comparability_note,
+        "controlled_intervention": controlled_intervention,
     }
 
 
@@ -1283,6 +1357,94 @@ def _latest_success_snapshot(db: Session, project_id: int, target_url: str, snap
         if not normalized_target or _normalize_source_url(row.url) == normalized_target or _normalize_source_url(row.canonical_url) == normalized_target:
             return row
     return rows[0] if rows else None
+
+
+def _normalize_known_environment_audit(value: dict | None) -> dict:
+    raw = value or {}
+    audit = {
+        "model_version_known_changed": bool(raw.get("model_version_known_changed", False)),
+        "citation_landscape_changed": bool(raw.get("citation_landscape_changed", False)),
+        "competitor_source_changed": bool(raw.get("competitor_source_changed", False)),
+        "brand_market_changed": bool(raw.get("brand_market_changed", False)),
+        "other_known_changes": bool(raw.get("other_known_changes", False)),
+        "other_known_changes_note": str(raw.get("other_known_changes_note", "") or ""),
+        "audit_note": str(raw.get("audit_note", "") or ""),
+    }
+    audit["boundary_note"] = "只能记录当前观察窗口内已知变化；不得声称黑盒 AI 环境完全不变。"
+    return audit
+
+
+def _resolve_comparability(
+    requested_status: str | None,
+    requested_note: str | None,
+    known_environment_audit: dict,
+    confounders: list[str],
+) -> tuple[str, str]:
+    if requested_status in COMPARABILITY_STATUSES and requested_status != "COMPARABLE":
+        status = requested_status
+    elif known_environment_audit.get("model_version_known_changed") or known_environment_audit.get("brand_market_changed"):
+        status = "MATERIALLY_CONFOUNDED"
+    elif any(known_environment_audit.get(key) for key in KNOWN_ENVIRONMENT_AUDIT_KEYS) or confounders:
+        status = "POTENTIALLY_CONFOUNDED"
+    elif requested_status == "COMPARABLE":
+        status = "COMPARABLE"
+    else:
+        status = "INSUFFICIENT_CONTEXT"
+
+    if requested_note:
+        return status, requested_note
+    notes = {
+        "COMPARABLE": "当前观察窗口内未发现显著已知混杂因素；这不是严格因果证明，也不代表黑盒环境完全不变。",
+        "POTENTIALLY_CONFOUNDED": "存在已知或人工记录的潜在混杂因素，结论只能作为方向性观察。",
+        "MATERIALLY_CONFOUNDED": "存在可能实质影响复采结果的已知变化，不能把差异直接归因于本次改动。",
+        "INSUFFICIENT_CONTEXT": "尚未完成复采环境审计，无法判断前后结果是否可比。",
+    }
+    return status, notes[status]
+
+
+def _controlled_intervention_payload(payload) -> dict:
+    return {
+        "intervention_family": payload.intervention_family,
+        "mechanism": payload.mechanism,
+        "primary_metric": payload.primary_metric,
+        "allowed_changes": payload.allowed_changes,
+        "forbidden_changes": payload.forbidden_changes,
+        "target_prompt_scope": payload.target_prompt_scope,
+        "control_prompt_scope": payload.control_prompt_scope,
+        "sentinel_prompt_scope": payload.sentinel_prompt_scope,
+        "boundary_note": "一次实验只验证一个主要机制假设；允许多个页面改动，但必须同属同一干预家族。",
+    }
+
+
+def _strategy_controlled_intervention_payload(payload: dict, package: OptimizationEvidencePackage | None) -> dict:
+    changed_features = payload.get("changed_features") or []
+    allowed_changes = [
+        str(item.get("feature") or item.get("description") or item)
+        for item in changed_features
+        if item
+    ]
+    forbidden_changes = [
+        str(item)
+        for item in (payload.get("controlled_variables") or [])
+        if item
+    ]
+    prompt_scope = [package.prompt_id] if package and package.prompt_id else []
+    return {
+        "intervention_family": str(payload.get("intervention_type") or payload.get("recommended_intervention") or "strategy_candidate"),
+        "mechanism": str(payload.get("core_mechanism") or payload.get("hypothesized_cause") or ""),
+        "primary_metric": str(payload.get("target_metric") or "official_reference_rate"),
+        "allowed_changes": allowed_changes,
+        "forbidden_changes": forbidden_changes or [
+            "collection_prompt",
+            "target_url",
+            "product_capabilities",
+            "external_platform_content",
+        ],
+        "target_prompt_scope": prompt_scope,
+        "control_prompt_scope": [],
+        "sentinel_prompt_scope": [],
+        "boundary_note": "一次实验只验证一个主要机制假设；允许多个内容块改动，但不得同时混入 Prompt、产品能力、目标 URL 或外部投放变化。",
+    }
 
 
 def _evidence_urls(evidence: dict) -> list[str]:
@@ -1370,9 +1532,22 @@ def create_experiment(db: Session, action_id: int, payload) -> OptimizationExper
     for metric in ["target_page_retrieval_rate", "target_page_conversion_rate"]:
         if metric != payload.primary_metric and metric not in secondary_metrics:
             secondary_metrics = [*secondary_metrics, metric]
+    known_environment_audit = _normalize_known_environment_audit(payload.known_environment_audit)
+    comparability_status, comparability_note = _resolve_comparability(
+        payload.comparability_status,
+        payload.comparability_note,
+        known_environment_audit,
+        [],
+    )
     experiment = OptimizationExperiment(
         action_id=action.id,
         hypothesis=payload.hypothesis,
+        hypothesis_type=payload.hypothesis_type,
+        mechanism=payload.mechanism,
+        intervention_family=payload.intervention_family,
+        intervention_variables_json=dumps(payload.intervention_variables),
+        allowed_changes_json=dumps(payload.allowed_changes),
+        forbidden_changes_json=dumps(payload.forbidden_changes),
         target_prompt_scope_json=dumps(target_scope),
         control_prompt_scope_json=dumps(payload.control_prompt_scope),
         sentinel_prompt_scope_json=dumps(payload.sentinel_prompt_scope),
@@ -1380,6 +1555,19 @@ def create_experiment(db: Session, action_id: int, payload) -> OptimizationExper
         sample_plan_json=dumps(payload.sample_plan),
         primary_metric=payload.primary_metric,
         secondary_metrics_json=dumps(secondary_metrics),
+        baseline_numerator=payload.baseline_numerator,
+        baseline_denominator=payload.baseline_denominator,
+        baseline_metric_value=payload.baseline_metric_value,
+        success_threshold=payload.success_threshold,
+        sample_size_target=payload.sample_size_target,
+        target_prompt_ids_json=dumps(payload.target_prompt_ids),
+        target_brand_id=payload.target_brand_id,
+        target_asset_ids_json=dumps(payload.target_asset_ids),
+        recollection_strategy_json=dumps(payload.recollection_strategy),
+        known_environment_audit_json=dumps(known_environment_audit),
+        comparability_status=comparability_status,
+        comparability_note=comparability_note,
+        controlled_intervention_json=dumps(payload.controlled_intervention or _controlled_intervention_payload(payload)),
     )
     db.add(experiment)
     db.commit()
@@ -1547,6 +1735,16 @@ def confirm_conclusion(db: Session, experiment_id: int, payload) -> Optimization
     experiment.conclusion = conclusion
     experiment.conclusion_reason = payload.conclusion_reason
     experiment.confounders_json = dumps(payload.confounders)
+    known_environment_audit = _normalize_known_environment_audit(payload.known_environment_audit)
+    comparability_status, comparability_note = _resolve_comparability(
+        payload.comparability_status,
+        payload.comparability_note,
+        known_environment_audit,
+        payload.confounders,
+    )
+    experiment.known_environment_audit_json = dumps(known_environment_audit)
+    experiment.comparability_status = comparability_status
+    experiment.comparability_note = comparability_note
     experiment.completed_at = datetime.utcnow()
     if payload.resolved:
         issue.status = "resolved"
@@ -5094,6 +5292,7 @@ def _build_evidence_action_context(
         "evidence_action_version": EVIDENCE_ACTION_VERSION,
         "package_id": package.id,
         "prompt_id": package.prompt_id,
+        "prompt_text": (evidence.get("prompt") or {}).get("prompt_text", ""),
         "source_run_ids": loads(package.source_run_ids_json, []),
         "target_page_urls": target_urls,
 
@@ -5284,10 +5483,15 @@ def _extract_content_type_patterns(content_types: list[dict]) -> dict:
     high_citation = []
     low_citation = []
     for ct in content_types:
+        content_type = ct.get("content_type")
+        if not content_type:
+            continue
+        if content_type in {"OTHER", "UNCATEGORIZED"}:
+            continue
         if ct.get("citation_run_count", 0) >= 6:
-            high_citation.append(ct["content_type"])
+            high_citation.append(content_type)
         if ct.get("candidate_run_count", 0) >= 6 and ct.get("citation_run_count", 0) == 0:
-            low_citation.append(ct["content_type"])
+            low_citation.append(content_type)
     return {
         "high_citation_types": high_citation,
         "low_citation_types": low_citation,
@@ -5296,6 +5500,28 @@ def _extract_content_type_patterns(content_types: list[dict]) -> dict:
             "TOOL_PAGE/NEWS types show divergent candidate-vs-citation behavior."
         ),
     }
+
+
+def _strategy_content_type_label(content_type: str) -> str:
+    return {
+        "VIDEO": "视频教程",
+        "Q_AND_A": "问答内容",
+        "TUTORIAL": "操作教程",
+        "RULE_EXPLANATION": "规则说明",
+        "TROUBLESHOOTING": "排障说明",
+        "COMPARISON": "对比评测",
+        "TOOL_PAGE": "工具说明页",
+        "NEWS": "新闻资讯",
+    }.get(content_type, "其他内容")
+
+
+def _strategy_recommended_content_types(content_types: list[str]) -> list[str]:
+    priority = ["TUTORIAL", "Q_AND_A", "TROUBLESHOOTING", "VIDEO", "RULE_EXPLANATION", "COMPARISON", "TOOL_PAGE"]
+    usable = [item for item in content_types if item not in {"OTHER", "UNCATEGORIZED", "NEWS"}]
+    ordered = [item for item in priority if item in usable]
+    if not ordered and "NEWS" in content_types:
+        ordered = ["TUTORIAL", "Q_AND_A", "RULE_EXPLANATION"]
+    return ordered[:4] or ["TUTORIAL", "Q_AND_A", "RULE_EXPLANATION"]
 
 
 def _extract_time_patterns(time_dist: list[dict]) -> dict:
@@ -5563,7 +5789,9 @@ class EvidenceDrivenStrategyProvider:
 
         if high_citation_types:
             fact_refs = self._find_fact_refs(facts, content_types=high_citation_types)
-            content_types_str = ", ".join(high_citation_types[:4])
+            recommended_content_types = _strategy_recommended_content_types(high_citation_types)
+            observed_content_types_str = "、".join(_strategy_content_type_label(item) for item in high_citation_types[:5])
+            recommended_content_types_str = "、".join(_strategy_content_type_label(item) for item in recommended_content_types)
 
             # --- Dynamic evidence from context, never hardcoded ---
             run_count = len(context.get('source_run_ids', []))
@@ -5585,8 +5813,10 @@ class EvidenceDrivenStrategyProvider:
             total_cit = source_relations.get('total_citations', 0)
             run_count_str = str(run_count)
 
-            # Baseline from TARGET METRIC fact (not brand_mention_rate)
-            target_metric_name = INTERVENTION_METRIC_MAP.get("OFFICIAL_NEW_PAGE", "target_page_retrieval_rate")
+            # When retrieval candidates are incomplete, use answer-level brand visibility
+            # instead of forcing a target-page retrieval funnel.
+            retrieval_status = context.get("retrieval_landscape", {}).get("retrieval_metrics_status")
+            target_metric_name = "brand_mention_rate" if retrieval_status == "insufficient_retrieval_candidates" else INTERVENTION_METRIC_MAP.get("OFFICIAL_NEW_PAGE", "target_page_retrieval_rate")
             target_metric_fact = next((f for f in facts if f.get('metric_name') == target_metric_name), None)
             if target_metric_fact:
                 tn = target_metric_fact.get('numerator')
@@ -5606,14 +5836,14 @@ class EvidenceDrivenStrategyProvider:
                 parts.append(f"工具页在 {tc}/{run_count} 次采样中进入了检索候选，但引用次数为 {tc2}。")
             if target_url:
                 parts.append(f"当前目标页面为 {target_url}。")
-            parts.append(f"信息型内容（{content_types_str}）在引用中占主导。")
+            parts.append(f"引用资料中高频出现的内容形态包括：{observed_content_types_str}。")
             observed = "".join(parts)
 
             # Evidence summary
             summary_parts = [
-                f"证据包 #{package.id}：{run_count} 次采样。",
+                f"证据 #{package.id}：{run_count} 次采样。",
                 f"品牌提及率：{brand_mention_str}。",
-                f"高引用内容类型：{content_types_str}。",
+                f"高频引用内容形态：{observed_content_types_str}。",
             ]
             if has_tool_page:
                 tc2 = tool_page_fact.get('citation_run_count', 0)
@@ -5623,12 +5853,12 @@ class EvidenceDrivenStrategyProvider:
             evidence_summary_str = "".join(summary_parts)
 
             option_a = {
-                "intervention_type": "OFFICIAL_NEW_PAGE",
+                "intervention_type": "UNRESOLVED",
                 "target_platform": "UNRESOLVED",
                 "target_asset": "NEW_INFORMATIONAL_CONTENT",
-                "target_content_type": high_citation_types[0] if high_citation_types else "TUTORIAL",
+                "target_content_type": recommended_content_types[0] if recommended_content_types else "TUTORIAL",
                 "target_url": target_url,
-                "content_direction": f"信息型内容（{content_types_str}）在当前 Prompt 的 AI 引用中占主导地位。",
+                "content_direction": f"引用资料显示，当前问题更常引用{observed_content_types_str}；建议优先补齐{recommended_content_types_str}。",
                 "platform_direction": (
                     "发布平台仍未确定，需要结合已有资产、可控性、"
                     "内容适配度、执行可行性和边际机会再做选择，"
@@ -5648,18 +5878,27 @@ class EvidenceDrivenStrategyProvider:
                     "核心机制：内容类型匹配 AI 引用偏好 → 更高的被引用概率。"
                 ),
                 "recommended_action": {
-                    "content_direction": f"围绕当前 Prompt 主题，制作 {content_types_str} 格式的信息型内容。",
+                    "content_direction": f"围绕「{context.get('prompt_text') or '当前问题'}」制作{recommended_content_types_str}，重点回答定义、适用场景、操作步骤、风险限制和常见失败原因。",
                     "platform_direction": "发布平台仍未确定，需要结合已有资产、可控性、内容适配度、执行可行性和边际机会再做选择。",
-                    "asset_direction": "新建独立的信息型内容资产。建议包含：概念定义、平台规则、操作步骤、常见失败原因、FAQ。",
+                    "asset_direction": "新建或改造一份可公开访问的中文内容资产。建议包含：概念定义、平台规则、操作步骤、常见失败原因、FAQ、案例截图或视频说明。",
                 },
-                "recommended_title": None,
-                "recommended_outline": [],
-                "required_sections": [],
+                "changed_features": [
+                    {"feature": "DIRECT_ANSWER_BLOCK", "description": "新增直接回答定义、适用场景和平台限制", "location": "正文顶部"},
+                    {"feature": "STEP_BY_STEP_GUIDE", "description": "补充可核验的操作步骤和配置流程", "location": "正文主体"},
+                    {"feature": "RISK_AND_FAQ", "description": "补充跳转失败、审核限制、合规风险和常见问题", "location": "FAQ/排障模块"},
+                ],
+                "recommended_title": f"{context.get('prompt_text') or '当前问题'}怎么做？使用场景、操作步骤与常见问题",
+                "recommended_outline": ["直接回答", "适用场景", "平台规则和限制", "操作步骤", "常见失败原因", "FAQ", "案例截图或视频说明"],
+                "required_sections": ["定义与边界", "适用场景", "平台限制", "操作步骤", "失败排查", "FAQ"],
                 "evidence_fact_ids": fact_refs,
                 "inferences": self._select_inferences(inferences, ["content_type_pattern", "tool_page_gap"]),
-                "target_metric": INTERVENTION_METRIC_MAP.get("OFFICIAL_NEW_PAGE", "target_page_retrieval_rate"),
+                "target_metric": target_metric_name,
                 "expected_secondary_metrics": ["brand_mention_rate", "brand_recommendation_rate"],
-                "metric_availability": "「目标页面检索进入率」仅适用于自有站点资产；外部平台内容暂以「品牌提及率」作为代理指标。",
+                "metric_availability": (
+                    "当前检索候选不足，不能使用完整候选漏斗；本轮先用「品牌提及率」验证是否进入回答认知。"
+                    if target_metric_name == "brand_mention_rate"
+                    else "「目标页面检索进入率」仅适用于自有站点资产；外部平台内容暂以「品牌提及率」作为代理指标。"
+                ),
                 "baseline_value": baseline,
                 "expected_direction": "increase",
                 "priority": "HIGH",
@@ -5722,18 +5961,20 @@ class EvidenceDrivenStrategyProvider:
         low_citation_types = context.get("content_type_patterns", {}).get("low_citation_types", [])
         if high_citation_types:
             fact_ids = [f["fact_id"] for f in facts if f.get("fact_type") == "CONTENT_TYPE_DISTRIBUTION"]
+            observed_content_types_str = "、".join(_strategy_content_type_label(item) for item in high_citation_types[:5])
+            run_count = len(context.get("source_run_ids", []))
             inferences.append({
                 "inference_id": "INF-001",
                 "inference_type": "content_type_citation_pattern",
                 "statement": (
-                    f"该 Prompt 的 AI 引用与 {', '.join(high_citation_types[:4])} 等内容类型关联更强。"
+                    f"该问题的智能回答引用资料与{observed_content_types_str}等内容形态关联更强。"
                     f"工具页虽能进入检索候选，但几乎不被最终引用。"
                 ),
                 "confidence": "MEDIUM",
                 "supporting_fact_ids": fact_ids[:8],
                 "limitations": [
                     "内容类型分类基于规则（content_classifier.v1），非正文内容分析。",
-                    "仅 12 次采样、单个 Prompt（#19）、单个模型（文心）。",
+                    f"仅 {run_count} 次采样、单个问题、单个模型（文心）。",
                 ],
             })
 
@@ -5758,11 +5999,12 @@ class EvidenceDrivenStrategyProvider:
         # INF-003: Brand visibility
         brand_presence = context.get("brand_presence", {})
         if brand_presence.get("brand_mention_rate", 0) == 0:
+            run_count = len(context.get("source_run_ids", []))
             inferences.append({
                 "inference_id": "INF-003",
                 "inference_type": "brand_visibility_gap",
                 "statement": (
-                    f"品牌「{brand_presence.get('brand_name', '')}」在全部 12 次 AI 回答中均未被提及。"
+                    f"品牌「{brand_presence.get('brand_name', '')}」在全部 {run_count} 次智能回答中均未被提及。"
                     f"引用来源中未出现任何品牌自有内容。该品牌当前不存在于 AI 对该 Prompt 意图的引用池中。"
                 ),
                 "confidence": "HIGH",

@@ -132,6 +132,9 @@ class MonitoringTaskExecutor:
         if not project:
             raise ValueError(f"Project not found: {run.project_id}")
 
+        # 幂等重跑：清除上次执行残留的 artifact/reference/candidate/mention，
+        # 避免 failed -> failed 重试时 collector.log 等产生重复 RunArtifact 行。
+        self._clear_run_outputs(db, run_id)
         started = time.perf_counter()
         logs = []
         self._stage(db, run, "launching_browser", "running")

@@ -1,9 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PlainSerializer
+
+
+def _serialize_utc(value: datetime) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        # 库内时间为 naive UTC，序列化时声明时区，前端 new Date() 才能正确换算本地时间
+        return value.isoformat() + "Z"
+    return value.astimezone(timezone.utc).isoformat()
+
+
+UtcDatetime = Annotated[datetime, PlainSerializer(_serialize_utc, return_type=str, when_used="json")]
 
 
 class BrowserTaskCreate(BaseModel):
@@ -28,8 +40,8 @@ class BrowserTaskRead(BaseModel):
     run_count: int
     schedule_type: str
     status: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
     queued_run_count: int = 0
 
     class Config:
@@ -62,8 +74,8 @@ class BrowserRunRead(BaseModel):
     original_query: str
     page_query: str
     retrieval_query: str
-    started_at: Optional[datetime]
-    finished_at: Optional[datetime]
+    started_at: Optional[UtcDatetime]
+    finished_at: Optional[UtcDatetime]
     duration_ms: int
     answer_text: str
     answer_char_count: int
@@ -87,8 +99,8 @@ class BrowserRunRead(BaseModel):
     blocked_type: str
     blocked_reason: str
     retry_count: int
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
     class Config:
         from_attributes = True
@@ -138,7 +150,7 @@ class ReferenceSourceRead(BaseModel):
     quality_label: str
     is_official_domain: bool
     is_competitor_domain: bool
-    created_at: datetime
+    created_at: UtcDatetime
 
     class Config:
         from_attributes = True
@@ -155,7 +167,7 @@ class RetrievalCandidateRead(BaseModel):
     domain: str
     snippet: str
     evidence_path: str
-    created_at: datetime
+    created_at: UtcDatetime
 
     class Config:
         from_attributes = True
@@ -168,7 +180,7 @@ class RunArtifactRead(BaseModel):
     storage_path: str
     mime_type: str
     size_bytes: int
-    created_at: datetime
+    created_at: UtcDatetime
 
     class Config:
         from_attributes = True

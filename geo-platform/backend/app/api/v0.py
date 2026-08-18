@@ -23,6 +23,7 @@ from app.schemas.v0 import (
     OrganizationRead,
     ProjectCreate,
     ProjectRead,
+    ProjectUpdate,
     PromptCreate,
     PromptRead,
     PromptUpdate,

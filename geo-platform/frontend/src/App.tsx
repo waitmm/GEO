@@ -618,6 +618,7 @@ export default function App() {
     return data;
   }
   const [loading, setLoading] = useState(false);
+  const [retryingRuns, setRetryingRuns] = useState<Set<number>>(new Set());
   const [fallback, setFallback] = useState(false);
   const [promptForm] = Form.useForm();
   const [auditForm] = Form.useForm();
@@ -743,6 +744,20 @@ export default function App() {
       setArtifact(await api.getRunArtifactContent(id));
     } catch (err: any) {
       message.error(err.message || "无法加载证据内容，可能文件已丢失");
+    }
+  }
+
+  async function retryRun(runId: number) {
+    if (!projectId) return;
+    setRetryingRuns((prev) => new Set(prev).add(runId));
+    try {
+      await api.retryBrowserAuditRun(runId);
+      message.success("已重新采集该 Run");
+      await loadProject(projectId);
+    } catch (err: any) {
+      message.error(err.message || "重新采集失败");
+    } finally {
+      setRetryingRuns((prev) => { const next = new Set(prev); next.delete(runId); return next; });
     }
   }
 
@@ -3144,7 +3159,12 @@ export default function App() {
             { title: "样本", dataIndex: "run_sequence", width: 70, render: (value) => `第${value}次` },
             { title: "品牌", width: 110, render: (_, row) => row.brand_mentioned ? <Tag color="blue">出现 {row.brand_mention_count} 次</Tag> : <Tag>未出现</Tag> },
             { title: "引用解析", width: 230, render: (_, row) => <Space size={4}><Tag>界面 {row.expected_reference_count}</Tag><Tag>结构 {row.detected_reference_count}</Tag><Tag>标题 {row.detected_reference_count}</Tag><Tag color={row.resolved_reference_count === row.detected_reference_count ? "green" : "gold"}>链接 {row.resolved_reference_count}</Tag></Space> },
-            { title: "详情", width: 80, render: (_, row) => <Button size="small" onClick={(event) => { event.stopPropagation(); openRun(row.id); }}>查看</Button> }
+            { title: "操作", width: 170, render: (_, row) => <Space size={4}>
+              <Button size="small" onClick={(event) => { event.stopPropagation(); openRun(row.id); }}>查看</Button>
+              {row.status === "failed" && (
+                <Button size="small" type="primary" ghost danger icon={<RefreshCw size={12} />} loading={retryingRuns.has(row.id)} onClick={(event) => { event.stopPropagation(); retryRun(row.id); }}>重新采集</Button>
+              )}
+            </Space> }
           ]} />
         </Card>}
       </Content>

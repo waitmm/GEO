@@ -66,3 +66,5 @@ ANSWER_NOISE_MARKERS = {
 }
 
 REFERENCE_TEXT_PATTERN = r"共参考\s*(\d+)\s*篇资料"
+# 页面引用计数文案有两种：引用面板"共参考 N 篇资料"，以及搜索工具过程里的"搜索全网N篇资料"
+REFERENCE_COUNT_PATTERN = r"(?:共参考|搜索全网?|全网搜索)\s*(\d+)\s*篇资料"

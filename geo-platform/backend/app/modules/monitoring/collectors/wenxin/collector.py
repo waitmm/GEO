@@ -30,6 +30,7 @@ from app.modules.monitoring.collectors.wenxin.selectors import (
     CAPTCHA_TEXT_MARKERS,
     INPUT_CANDIDATES,
     LOGIN_TEXT_MARKERS,
+    REFERENCE_COUNT_PATTERN,
     REFERENCE_PANEL_CANDIDATES,
     REFERENCE_TEXT_PATTERN,
     STOP_BUTTON_TEXT_MARKERS,
@@ -51,6 +52,8 @@ class WenxinWebCollector(BaseCollector):
         self._search_result_payloads = []
         self._capture_network = False
         self._session_active = False
+        self._last_captured_answer = ""
+        self._last_bubble_count = 0
 
     def _find_chromium_path(self) -> str | None:
         candidates = []
@@ -149,6 +152,8 @@ class WenxinWebCollector(BaseCollector):
         self._page.on("response", self._record_response)
         self._conversation_id = str(uuid.uuid4())
         self._session_active = True
+        self._last_captured_answer = ""
+        self._last_bubble_count = 0
         await self._page.goto(
             settings.wenxin_web_url,
             wait_until="domcontentloaded",
@@ -190,7 +195,15 @@ class WenxinWebCollector(BaseCollector):
             await self._submit_query(self._page, actual_query)
             run.page_query = actual_query
             run.retrieval_query = actual_query
-            answer_text = await self._wait_answer_complete(self._page, actual_query, settings.wenxin_browser_timeout_seconds)
+            answer_text = await self._wait_answer_complete(
+                self._page,
+                actual_query,
+                settings.wenxin_answer_timeout_seconds,
+                previous_answer=self._last_captured_answer,
+                previous_bubble_count=self._last_bubble_count,
+            )
+            self._last_captured_answer = answer_text
+            self._last_bubble_count = await self._count_answer_bubbles(self._page)
             await self._drain_network_body_tasks()
             answer_html = await self._extract_answer_html(self._page)
             references = await self._extract_references(self._page)
@@ -505,17 +518,37 @@ class WenxinWebCollector(BaseCollector):
         except Exception:
             await page.keyboard.press("Enter")
 
-    async def _wait_answer_complete(self, page, query: str, timeout_seconds: int) -> str:
+    async def _wait_answer_complete(
+        self,
+        page,
+        query: str,
+        timeout_seconds: int,
+        previous_answer: str = "",
+        previous_bubble_count: int = 0,
+    ) -> str:
         stable_count = 0
         last_hash = ""
         best_answer = ""
-        deadline = asyncio.get_event_loop().time() + timeout_seconds
-        while asyncio.get_event_loop().time() < deadline:
+        prev_compact = re.sub(r"\s+", "", previous_answer or "")
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout_seconds
+        while loop.time() < deadline:
             await self._raise_for_login_or_captcha(page)
             body_text = await page.locator("body").inner_text(timeout=5000)
+            bubble_count = await self._count_answer_bubbles(page)
             answer_text = await self._current_answer_text(page)
+            compact = re.sub(r"\s+", "", answer_text or "")
+            # 同一浏览器会话里上一题的答案仍留在页面 DOM 中，且新问题的回答气泡尚未出现时，
+            # 采集到的内容等于上一题答案，属于旧答案，跳过继续等新气泡渲染。
+            # 用气泡数量是否增长来判定"新气泡已出现"，避免固定秒数宽限导致搜索耗时较长时误采旧答案。
+            same_as_prev = bool(prev_compact) and compact == prev_compact
+            new_bubble_visible = previous_bubble_count > 0 and bubble_count > previous_bubble_count
+            if same_as_prev and not new_bubble_visible:
+                await page.wait_for_timeout(1000)
+                continue
             current_hash = hashlib.sha256(answer_text.encode("utf-8")).hexdigest()
-            has_reference = re.search(REFERENCE_TEXT_PATTERN, answer_text) is not None
+            # 引用计数行位于整个页面 body，兼容"共参考 N 篇资料"与"搜索全网N篇资料"两种文案
+            has_reference = re.search(REFERENCE_COUNT_PATTERN, body_text) is not None
             has_stop_button = any(marker in body_text for marker in STOP_BUTTON_TEXT_MARKERS)
             if answer_text and current_hash == last_hash:
                 stable_count += 1
@@ -525,10 +558,20 @@ class WenxinWebCollector(BaseCollector):
             last_hash = current_hash
             if best_answer and stable_count >= 3 and (has_reference or not has_stop_button):
                 return best_answer
+            # 兜底：答案已连续 10 秒完全不变，视为生成完成。
+            # "停止生成"按钮文案可能残留在 DOM 里，导致上面条件一直不成立而干等超时。
+            if best_answer and stable_count >= 10:
+                return best_answer
             await page.wait_for_timeout(1000)
         if best_answer:
             return best_answer
         raise AnswerTimeoutError("等待回答超时，未采集到回答正文")
+
+    async def _count_answer_bubbles(self, page) -> int:
+        try:
+            return await page.locator(".chat-search-answer-generate-item").count()
+        except Exception:
+            return 0
 
     def _strip_reference_block(self, text: str) -> str:
         lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
@@ -569,28 +612,45 @@ class WenxinWebCollector(BaseCollector):
         return True
 
     async def _current_answer_text(self, page) -> str:
-        selectors = [
-            "#conversation-flow-content .conversation-flow-answer-container .cs-answer-container",
-            "#conversation-flow-content .conversation-flow-answer-container .answer-container",
-            ".conversation-flow-answer-container",
+        # 优先取 ai-entry-block.ai-markdown（纯正文），避开工具调用/引用列表/视频卡片等噪声。
+        # 文心页面把思考步骤、引用列表、视频推荐各放在独立 ai-entry-block 里，只有正文在 ai-markdown。
+        #
+        # 同一浏览器会话内连续提问时，页面会累积全部历史回答。必须只取"最后一个回答气泡"，
+        # 否则会把之前问题的答案拼接进当前 run（表现为答案雷同且越来越长）。
+        scoped_bubble_selectors = [
+            (".chat-search-answer-generate-item", ".ai-entry-block.ai-markdown"),
+            (
+                "#conversation-flow-content .conversation-flow-answer-container .cs-answer-container",
+                ".ai-entry-block.ai-markdown",
+            ),
+            (
+                "#conversation-flow-content .conversation-flow-answer-container .answer-container",
+                ".ai-entry-block.ai-markdown",
+            ),
         ]
-        for selector in selectors:
+        # 只从"最后一个回答气泡"取正文，且绝不回退到全页面 ai-markdown：
+        # 会话内历史问题的回答一直留在 DOM 里，抓全部块会把之前问题的答案拼接进当前 run。
+        # 若最后一个气泡还没有正文（新问题仍在搜索/生成中），返回空串让等待循环继续等，
+        # 而不是回退去读旧答案。
+        for bubble_selector, md_selector in scoped_bubble_selectors:
             try:
-                locator = page.locator(selector).last
-                if not await locator.is_visible(timeout=500):
+                bubble = page.locator(bubble_selector).last
+                if await bubble.count() == 0:
                     continue
-                text = await locator.inner_text(timeout=2000)
-                lines = []
-                for line in text.splitlines():
-                    stripped = line.strip()
-                    if not stripped or stripped in ANSWER_NOISE_MARKERS:
-                        continue
-                    if stripped in {"思考已停止", "深度思考"}:
-                        continue
-                    lines.append(stripped)
-                answer = self._strip_reference_block("\n".join(lines).strip())
+                locator = bubble.locator(md_selector)
+                count = await locator.count()
+                if count == 0:
+                    return ""
+                parts = []
+                for index in range(count):
+                    text = await locator.nth(index).inner_text(timeout=1000)
+                    cleaned = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+                    if cleaned:
+                        parts.append(cleaned)
+                answer = self._strip_reference_block("\n\n".join(parts))
                 if self._is_substantial_answer(answer):
                     return answer
+                return ""
             except Exception:
                 continue
         return ""
@@ -627,7 +687,9 @@ class WenxinWebCollector(BaseCollector):
         }
         self._last_reference_panel_html = ""
         body_text = await page.locator("body").inner_text(timeout=5000)
-        expected_matches = re.findall(REFERENCE_TEXT_PATTERN, body_text)
+        # 兼容"共参考 N 篇资料"（引用面板）与"搜索全网N篇资料"（搜索过程）两种计数文案，
+        # 否则只写"搜索全网N篇资料"的页面会被误判为无引用而直接返回空列表。
+        expected_matches = re.findall(REFERENCE_COUNT_PATTERN, body_text)
         if not expected_matches:
             return []
         expected_count = int(expected_matches[-1])

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     wenxin_web_url: str = "https://chat.baidu.com/"
     wenxin_headless: bool = False
     wenxin_browser_timeout_seconds: int = 300
+    wenxin_answer_timeout_seconds: int = 120
     wenxin_max_concurrency: int = 1
     wenxin_max_retries: int = 2
     reference_resolution_min_rate: float = 0.95

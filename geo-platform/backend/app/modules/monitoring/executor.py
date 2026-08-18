@@ -70,7 +70,15 @@ class MonitoringTaskExecutor:
             # 对话，由 collector 在每条 Run 开始前强校验。
             has_session = callable(getattr(collector, "start_session", None))
             if has_session:
-                self._event_loop.run_until_complete(collector.start_session())
+                try:
+                    self._event_loop.run_until_complete(collector.start_session())
+                except Exception as exc:
+                    # 浏览器启动失败（profile 被占用、浏览器中途死掉等）不应拖垮整条队列：
+                    # 标记本组所有 run 失败后继续执行后续组。
+                    for run in runs:
+                        self._fail_run(run, "browser_launch_failed", str(exc))
+                    db.commit()
+                    return 0
 
             completed = 0
             for run in runs:
@@ -107,7 +115,12 @@ class MonitoringTaskExecutor:
             return completed
         finally:
             if collector and hasattr(collector, "end_session") and callable(getattr(collector, "end_session")):
-                self._event_loop.run_until_complete(collector.end_session())
+                try:
+                    self._event_loop.run_until_complete(collector.end_session())
+                except Exception:
+                    # 浏览器可能在采集中途就死掉了，close() 会抛 TargetClosedError；
+                    # 清理阶段失败不应中断后续组的执行。
+                    pass
             if collector:
                 self._cleanup_collector(collector)
 

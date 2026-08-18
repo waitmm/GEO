@@ -81,8 +81,8 @@ def test_retry_claims_failed_run(db):
     claimed = claim_run_for_retry(db, 1)
 
     assert claimed.id == 1
-    assert claimed.status == "queued"
-    assert claimed.stage == "queued"
+    assert claimed.status == "running"
+    assert claimed.stage == "launching_browser"
     assert claimed.retry_count == 1
     assert claimed.error_type == ""
     assert claimed.error_message == ""
@@ -104,18 +104,33 @@ def test_concurrent_retry_only_one_request_claims(tmp_path):
         assert session_b.get(BrowserMonitorRun, 1).status == "failed"
 
         winner = claim_run_for_retry(session_a, 1)
-        assert winner.status == "queued"
+        assert winner.status == "running"
         assert winner.retry_count == 1
 
         with pytest.raises(HTTPException) as excinfo:
             claim_run_for_retry(session_b, 1)
         assert excinfo.value.status_code == 409
-        assert "queued" in excinfo.value.detail
+        assert "running" in excinfo.value.detail
     finally:
         session_a.close()
         session_b.close()
         engine_a.dispose()
         engine_b.dispose()
+
+
+def test_claimed_run_not_visible_to_queue_query(db):
+    """retry claim 成功后 run 不再满足 queue 的 queued/pending 查询条件。"""
+    _seed_failed_run(db)
+
+    claim_run_for_retry(db, 1)
+
+    queued = (
+        db.query(BrowserMonitorRun)
+        .filter(BrowserMonitorRun.status.in_(["queued", "pending"]))
+        .all()
+    )
+    assert all(item.id != 1 for item in queued)
+    assert db.get(BrowserMonitorRun, 1).status == "running"
 
 
 class _FakeCollector:

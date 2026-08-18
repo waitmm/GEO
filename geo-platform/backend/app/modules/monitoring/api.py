@@ -283,7 +283,9 @@ def claim_run_for_retry(db: Session, run_id: int) -> BrowserMonitorRun:
     - 仅允许 status == "failed" 的 run 被重试；该约束由 UPDATE 的 WHERE 子句在
       数据库层面保证，两个并发 retry 请求只有第一个能成功，第二个匹配 0 行。
     - queued / pending / running / success / partial_success / blocked 全部拒绝。
-    - 成功后返回已被占用的 run（status=queued, retry_count 已 +1）。
+    - 直接 CAS 到 running（而非经过 queued），避免在 queued 已提交、execute_run
+      尚未切换 running 的窗口里被 queue worker 的 queued/pending 查询重复捞走。
+    - 成功后返回已被占用的 run（status=running, retry_count 已 +1）。
     """
     run = db.get(BrowserMonitorRun, run_id)
     if not run:
@@ -294,8 +296,8 @@ def claim_run_for_retry(db: Session, run_id: int) -> BrowserMonitorRun:
         update(BrowserMonitorRun)
         .where(BrowserMonitorRun.id == run_id, BrowserMonitorRun.status == "failed")
         .values(
-            status="queued",
-            stage="queued",
+            status="running",
+            stage="launching_browser",
             retry_count=BrowserMonitorRun.retry_count + 1,
             error_type="",
             error_message="",

@@ -179,9 +179,21 @@ def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depend
     for key, value in data.items():
         setattr(project, key, value)
     if competitors_payload is not None:
-        db.query(Competitor).filter(Competitor.project_id == project_id).delete()
+        # 安全护栏：删除前先完整校验 payload，任何一项非法立即 fail-closed，
+        # 绝不先删后验（此前事故：测试请求带 1 个竞品覆盖了全部 3 个）。
+        validated: list[dict] = []
         for item in competitors_payload:
-            db.add(Competitor(project_id=project_id, name=item["name"], aliases_json=dumps(item.get("aliases", [])), website_url=item.get("website_url", "")))
+            name = str(item.get("name") or "").strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="竞品名称不能为空")
+            validated.append({
+                "name": name,
+                "aliases": [str(a) for a in (item.get("aliases") or []) if str(a).strip()],
+                "website_url": str(item.get("website_url") or "").strip(),
+            })
+        db.query(Competitor).filter(Competitor.project_id == project_id).delete()
+        for item in validated:
+            db.add(Competitor(project_id=project_id, name=item["name"], aliases_json=dumps(item["aliases"]), website_url=item["website_url"]))
     db.commit()
     db.refresh(project)
     competitors = db.query(Competitor).filter(Competitor.project_id == project.id).all()

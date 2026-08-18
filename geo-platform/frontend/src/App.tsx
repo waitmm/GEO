@@ -666,8 +666,11 @@ export default function App() {
     const aliases = values.brand_aliases ? values.brand_aliases.split(",").map((item: string) => item.trim()).filter(Boolean) : [];
     const compLines = values.competitors ? values.competitors.split("\n").filter((line: string) => line.trim()) : [];
     const competitors = compLines.map((line: string) => {
-      const [name, aliasesStr = "", url = ""] = line.split(":");
-      return { name: name.trim(), aliases: aliasesStr.split(";").map((item) => item.trim()).filter(Boolean), website_url: url.trim() };
+      const parts = line.split(":");
+      const name = (parts[0] || "").trim();
+      const aliasesStr = parts[1] || "";
+      const url = parts.slice(2).join(":").trim(); // URL 含 "://"，重新拼接
+      return { name, aliases: aliasesStr.split(";").map((item: string) => item.trim()).filter(Boolean), website_url: url };
     });
     const payload = { ...values, brand_aliases: aliases, competitors };
     if (editingProjectId) {

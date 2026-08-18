@@ -209,6 +209,90 @@ def test_decision_market_extracts_solution_slot_criteria_and_funnel(db):
     }
 
 
+def test_single_prompt_run_eligibility_excludes_continuous_context_runs(db):
+    _seed_project(db, "抖音跳转链接用什么工具")
+    continuous_run = db.get(BrowserMonitorRun, 174)
+    continuous_run.collection_mode = "single_continuous"
+    continuous_run.answer_text = "连续会话里继续推荐商加加外链，但这条不能进入正式单 Prompt 分析。"
+    db.commit()
+
+    result = recommendation.run_recommendation_analysis(db, 3, 19)
+    eligibility = result["run_eligibility"]
+    market = result["decision_market"]
+
+    assert eligibility["total_runs"] == 2
+    assert eligibility["eligible_runs"] == 1
+    assert eligibility["analysis_usable_runs"] == 1
+    assert eligibility["ineligible_run_ids"] == [174]
+    blocked = next(row for row in eligibility["rows"] if row["run_id"] == 174)
+    assert "CONTEXT_CONTAMINATION" in blocked["reasons"]
+    assert result["run_ids"] == [173]
+    assert market["recommendation_market"]["eligible_runs"] == 1
+    rows = {row["entity_name"]: row for row in market["recommendation_market"]["rows"]}
+    assert rows["商加加"]["candidate"]["denominator"] == 1
+
+
+def test_single_prompt_decision_market_exposes_position_drivers_and_interventions(db):
+    _seed_project(db, "抖音跳转链接用什么工具")
+
+    result = recommendation.run_recommendation_analysis(db, 3, 19)
+    market = result["decision_market"]
+
+    assert market["analysis_unit"] == "SINGLE_PROMPT"
+    assert market["decision_space"]["status"] in {
+        "SOLUTION_CHOICE_SPACE",
+        "BRAND_CANDIDATE_SPACE",
+        "BRAND_RECOMMENDATION_PRESENT",
+        "BRAND_COMPARISON_PRESENT",
+    }
+    assert market["recommendation_market"]["rows"]
+    assert all("denominator" in row["candidate"] for row in market["recommendation_market"]["rows"])
+    assert market["target_brand_position"]["brand_name"] == "爱短链"
+    assert market["target_brand_position"]["primary_gap"]["gap_type"] in {
+        "ASSOCIATION_GAP",
+        "CAPABILITY_RECOGNITION_GAP",
+        "CANDIDATE_INCLUSION_GAP",
+        "RECOMMENDATION_GAP",
+        "TOP_RECOMMENDATION_GAP",
+        "INTENT_FIT_GAP",
+    }
+    assert market["recommendation_drivers"]["rows"]
+    assert any(row["product_truth_status"] == "UNKNOWN" for row in market["recommendation_drivers"]["rows"])
+    assert market["intervention_feasibility"]["status"] == "BLOCKED_PRODUCT_TRUTH"
+    assert market["intervention_candidates"][0]["target_platform"] == "UNRESOLVED"
+    assert market["intervention_candidates"][0]["target_url"] == ""
+
+
+def test_source_content_pattern_keeps_retrieval_and_citation_boundary(db):
+    _seed_project(db, "抖音跳转链接用什么工具")
+
+    result = recommendation.run_recommendation_analysis(db, 3, 19)
+    pattern = result["decision_market"]["source_content_pattern"]
+
+    assert pattern["rows"]
+    assert pattern["metrics"]["citation_occurrence_count"] == 2
+    assert "RetrievalCandidate 不是 ReferenceSource 的上游漏斗" in pattern["boundary_note"]
+    assert "target_page_conversion_rate" not in pattern["metrics"]
+
+
+def test_decision_market_strategy_draft_carries_single_prompt_candidate_context(db):
+    _seed_project(db, "抖音跳转链接用什么工具")
+    _seed_evidence_package(db)
+    result = recommendation.run_recommendation_analysis(db, 3, 19)
+
+    draft = recommendation.create_decision_market_experiment_draft(db, result["id"], {"owner": "geo"})
+    payload = draft["strategy_candidate"]["structured_payload"]
+
+    assert payload["decision_market"]["intervention_candidate"]["schema_version"] == "prompt_intervention_candidate.v1"
+    assert payload["decision_market"]["intervention_feasibility"]["status"] == "BLOCKED_PRODUCT_TRUTH"
+    assert payload["decision_market"]["target_brand_position"]["brand_name"] == "爱短链"
+    assert payload["decision_market"]["recommendation_drivers"]
+    assert payload["decision_market"]["source_content_pattern"]
+    assert payload["intervention_type"] == "UNRESOLVED"
+    assert payload["target_platform"] == "UNRESOLVED"
+    assert payload["execution_gate"]["blocked_materialization"] is True
+
+
 def test_decision_market_keeps_recommendation_rate_diagnostic_for_prompt19(db):
     _seed_project(db, "抖音跳转链接")
 

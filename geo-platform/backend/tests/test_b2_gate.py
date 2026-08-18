@@ -8,6 +8,7 @@ from app.models import (
     Base,
     BrowserMonitorRun,
     BrowserMonitorTask,
+    DecisionEvidenceAdoption,
     OptimizationAction,
     OptimizationExperiment,
     OptimizationHypothesis,
@@ -18,6 +19,8 @@ from app.models import (
     PageSnapshot,
     Project,
     Prompt,
+    RecommendationClaim,
+    RecommendationIntelligenceSnapshot,
     ReferenceSource,
     RetrievalCandidate,
 )
@@ -1033,6 +1036,265 @@ def test_baseline_comes_from_target_metric_not_brand_rate(db):
         # Brand mention is 1/3, must NOT become 0/3 via float rounding
         text = str(opt)
         assert "0/3" not in text, "brand_mention 1/3 must not become 0/3"
+
+
+def test_strategy_generator_avoids_unavailable_retrieval_metric(db):
+    """When retrieval metric row is unavailable, generated V2 strategy must not select it."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id": "F-1", "content_type": "TUTORIAL", "candidate_run_count": 5, "citation_run_count": 5},
+            {
+                "fact_id": "F-2",
+                "metric_name": "target_page_retrieval_rate",
+                "numerator": 0,
+                "denominator": 5,
+                "value": None,
+                "calculation_status": "insufficient_retrieval_candidates",
+            },
+            {"fact_id": "F-3", "metric_name": "brand_mention_rate", "numerator": 5, "denominator": 5, "value": 1.0, "calculation_status": "ok"},
+        ],
+        "evidence_confidence": "MEDIUM",
+        "decision_capability": "CONTENT_DIRECTION_ONLY",
+        "content_type_patterns": {"high_citation_types": ["TUTORIAL"], "low_citation_types": []},
+        "brand_presence": {"brand_name": "Test", "brand_mention_rate": 1.0},
+        "brand_channel_gaps": [],
+        "official_site_fit": {},
+        "target_page_urls": ["http://x.com"],
+        "source_relation_landscape": {"role": "DIAGNOSTIC_METADATA", "join_rate": 0.2, "citation_only_count": 7, "total_citations": 11},
+        "citation_content_analysis_available": False,
+        "missing_evidence": [],
+        "citation_landscape": {"total_citation_runs": 5},
+        "retrieval_landscape": {"total_retrieval_runs": 0},
+        "source_run_ids": [1, 2, 3, 4, 5],
+        "prompt_text": "抖音卡片怎么做？",
+    }
+    result = provider.generate_from_context(
+        Project(id=1, organization_id=1, name="X", brand_name="T", website_url="http://x.com"),
+        OptimizationEvidencePackage(id=21, project_id=1, version=1),
+        context,
+    )
+    assert result.get("strategy_options")
+    opt = result["strategy_options"][0]
+    assert opt["target_metric"] == "brand_mention_rate"
+    assert opt["baseline_value"] == "5/5"
+    assert "检索候选不足" in opt["metric_availability"]
+
+
+def test_strategy_platform_direction_does_not_require_existing_assets(db):
+    """Third-party platform accounts can be registered; existing assets are not a platform gate."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id": "F-1", "content_type": "TUTORIAL", "candidate_run_count": 5, "citation_run_count": 5},
+            {"fact_id": "F-2", "content_type": "VIDEO", "candidate_run_count": 4, "citation_run_count": 5},
+            {"fact_id": "F-3", "content_type": "Q_AND_A", "candidate_run_count": 3, "citation_run_count": 4},
+            {"fact_id": "F-4", "metric_name": "brand_mention_rate", "numerator": 5, "denominator": 5, "value": 1.0, "calculation_status": "ok"},
+        ],
+        "evidence_confidence": "MEDIUM",
+        "decision_capability": "CONTENT_DIRECTION_ONLY",
+        "content_type_patterns": {"high_citation_types": ["TUTORIAL", "VIDEO", "Q_AND_A"], "low_citation_types": []},
+        "platform_patterns": {
+            "top_citation_platforms": [
+                {
+                    "platform": "bilibili",
+                    "platform_label": "B站",
+                    "citation_run_count": 5,
+                    "candidate_run_count": 4,
+                    "citation_occurrence_count": 12,
+                    "representative_cited_urls": [],
+                },
+                {
+                    "platform": "zhihu",
+                    "platform_label": "知乎",
+                    "citation_run_count": 4,
+                    "candidate_run_count": 3,
+                    "citation_occurrence_count": 9,
+                    "representative_cited_urls": [],
+                },
+            ],
+        },
+        "brand_presence": {"brand_name": "Test", "brand_mention_rate": 1.0},
+        "brand_channel_gaps": [],
+        "official_site_fit": {},
+        "target_page_urls": [],
+        "source_relation_landscape": {"role": "DIAGNOSTIC_METADATA", "join_rate": 0.2, "citation_only_count": 7, "total_citations": 11},
+        "citation_content_analysis_available": False,
+        "missing_evidence": [],
+        "citation_landscape": {"total_citation_runs": 5},
+        "retrieval_landscape": {"total_retrieval_runs": 0},
+        "source_run_ids": [1, 2, 3, 4, 5],
+        "prompt_text": "抖音卡片怎么做？",
+    }
+    result = provider.generate_from_context(
+        Project(id=1, organization_id=1, name="X", brand_name="T", website_url="http://x.com"),
+        OptimizationEvidencePackage(id=22, project_id=1, version=1),
+        context,
+    )
+    assert result.get("strategy_options")
+    opt = result["strategy_options"][0]
+    platform_direction = opt["recommended_action"]["platform_direction"]
+    assert "已有资产" not in platform_direction
+    assert "三方平台账号可新注册" in platform_direction
+    assert "优先平台建议" in platform_direction
+    assert "B站" in platform_direction
+    assert "知乎" in platform_direction
+    assert opt["platform_recommendations"][0]["platform"] == "bilibili"
+    assert "视频教程" in opt["platform_recommendations"][0]["content_type_labels"]
+    alternative_reason = opt["reason_for_not_choosing_alternatives"]
+    assert "品牌在外部平台的资产状态未确认" not in alternative_reason
+    assert "优先在哪些平台发布什么内容" in alternative_reason
+
+
+def test_strategy_platform_ranking_prefers_answer_recommendation_context(db):
+    """Answer recommendation context outranks plain citation volume."""
+    provider = service.EvidenceDrivenStrategyProvider()
+    context = {
+        "evidence_facts": [
+            {"fact_id": "F-1", "content_type": "TUTORIAL", "candidate_run_count": 7, "citation_run_count": 7},
+            {"fact_id": "F-2", "content_type": "Q_AND_A", "candidate_run_count": 2, "citation_run_count": 2},
+            {"fact_id": "F-3", "metric_name": "brand_mention_rate", "numerator": 5, "denominator": 5, "value": 1.0, "calculation_status": "ok"},
+        ],
+        "evidence_confidence": "MEDIUM",
+        "decision_capability": "CONTENT_DIRECTION_ONLY",
+        "content_type_patterns": {"high_citation_types": ["TUTORIAL"], "low_citation_types": []},
+        "answer_strategy_signals": {
+            "available": True,
+            "signal_priority_note": "策略信号优先级：答案明确推荐上下文 > 选择理由上下文 > 答案引用上下文 > 普通引用分布。",
+            "recommended_content_types": ["Q_AND_A", "TUTORIAL"],
+            "top_answer_platforms": [
+                {
+                    "platform": "zhihu",
+                    "platform_label": "知乎",
+                    "signal_level": "ANSWER_RECOMMENDATION_CONTEXT",
+                    "signal_level_label": "答案明确推荐上下文",
+                    "recommendation_context_run_count": 1,
+                    "selection_reason_context_run_count": 1,
+                    "answer_citation_context_run_count": 1,
+                    "occurrence_count": 1,
+                    "content_types": ["Q_AND_A"],
+                    "representative_sources": [],
+                },
+            ],
+        },
+        "platform_patterns": {
+            "top_citation_platforms": [
+                {
+                    "platform": "bilibili",
+                    "platform_label": "B站",
+                    "citation_run_count": 7,
+                    "candidate_run_count": 5,
+                    "citation_occurrence_count": 35,
+                    "representative_cited_urls": [],
+                },
+            ],
+        },
+        "brand_presence": {"brand_name": "Test", "brand_mention_rate": 1.0},
+        "brand_channel_gaps": [],
+        "official_site_fit": {},
+        "target_page_urls": [],
+        "source_relation_landscape": {"role": "DIAGNOSTIC_METADATA", "join_rate": 0.2, "citation_only_count": 7, "total_citations": 11},
+        "citation_content_analysis_available": False,
+        "missing_evidence": [],
+        "citation_landscape": {"total_citation_runs": 5},
+        "retrieval_landscape": {"total_retrieval_runs": 0},
+        "source_run_ids": [1, 2, 3, 4, 5],
+        "prompt_text": "抖音卡片怎么做？",
+    }
+    result = provider.generate_from_context(
+        Project(id=1, organization_id=1, name="X", brand_name="T", website_url="http://x.com"),
+        OptimizationEvidencePackage(id=23, project_id=1, version=1),
+        context,
+    )
+    opt = result["strategy_options"][0]
+    assert opt["platform_recommendations"][0]["platform"] == "zhihu"
+    assert opt["platform_recommendations"][0]["signal_level"] == "ANSWER_RECOMMENDATION_CONTEXT"
+    assert "答案明确推荐上下文优先" in opt["recommended_action"]["platform_direction"]
+    assert opt["target_content_type"] == "Q_AND_A"
+
+
+def test_evidence_action_context_extracts_answer_recommendation_signals(db):
+    project, prompt, runs = _seed_project(db)
+    pkg = OptimizationEvidencePackage(
+        id=30,
+        project_id=project.id,
+        prompt_id=prompt.id,
+        version=1,
+        source_run_ids_json=dumps([run.id for run in runs]),
+        target_page_urls_json=dumps([]),
+        environment_snapshot_json=dumps({}),
+        package_payload_json=dumps({
+            "prompt": {"prompt_text": prompt.prompt_text},
+            "run_metric_eligibility": {},
+            "metric_snapshot": {},
+            "metrics": [],
+            "platform_gap_matrix": [
+                {"platform": "bilibili", "platform_label": "B站", "citation_run_count": 2, "citation_occurrence_count": 8, "candidate_run_count": 2},
+                {"platform": "zhihu", "platform_label": "知乎", "citation_run_count": 1, "citation_occurrence_count": 1, "candidate_run_count": 1},
+            ],
+            "content_type_distribution": [
+                {"content_type": "VIDEO", "citation_run_count": 2, "candidate_run_count": 2},
+                {"content_type": "Q_AND_A", "citation_run_count": 1, "candidate_run_count": 1},
+            ],
+        }),
+        package_hash="answer-signal-test",
+    )
+    ref = ReferenceSource(
+        id=31,
+        run_id=runs[0].id,
+        reference_index=1,
+        display_title="知乎：抖音卡片怎么做",
+        url="https://www.zhihu.com/question/1",
+        canonical_url="https://www.zhihu.com/question/1",
+        domain="www.zhihu.com",
+    )
+    snapshot = RecommendationIntelligenceSnapshot(
+        id=41,
+        project_id=project.id,
+        prompt_id=prompt.id,
+        source_run_ids_json=dumps([run.id for run in runs]),
+    )
+    newer_non_overlapping_snapshot = RecommendationIntelligenceSnapshot(
+        id=42,
+        project_id=project.id,
+        prompt_id=prompt.id,
+        source_run_ids_json=dumps([999]),
+    )
+    claim = RecommendationClaim(
+        id=51,
+        snapshot_id=snapshot.id,
+        project_id=project.id,
+        prompt_id=prompt.id,
+        run_id=runs[0].id,
+        entity_name="竞品A",
+        recommendation_type="POSITIVE_RECOMMENDATION",
+        recommendation_text="可以优先考虑竞品A",
+        answer_span="可以优先考虑竞品A，因为教程完整。",
+    )
+    adoption = DecisionEvidenceAdoption(
+        id=61,
+        snapshot_id=snapshot.id,
+        project_id=project.id,
+        prompt_id=prompt.id,
+        run_id=runs[0].id,
+        citation_id=ref.id,
+        recommendation_claim_id=claim.id,
+        cited=True,
+        associated_with_selection_reason=True,
+        answer_span="可以优先考虑竞品A，因为教程完整。",
+        source_domain="www.zhihu.com",
+        source_title="知乎：抖音卡片怎么做",
+    )
+    db.add_all([pkg, ref, snapshot, newer_non_overlapping_snapshot, claim, adoption])
+    db.commit()
+
+    ctx = service._build_evidence_action_context(db, project, pkg, runs, [ref], [], [])
+    signals = ctx["answer_strategy_signals"]
+    assert signals["available"] is True
+    assert signals["snapshot_id"] == snapshot.id
+    assert signals["top_answer_platforms"][0]["platform"] == "zhihu"
+    assert signals["top_answer_platforms"][0]["signal_level"] == "ANSWER_RECOMMENDATION_CONTEXT"
+    assert signals["recommended_content_types"][0] == "Q_AND_A"
 
 
 def test_run_count_not_12_does_not_show_12(db):

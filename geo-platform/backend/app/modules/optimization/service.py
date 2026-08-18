@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     BrowserMonitorRun,
     Competitor,
+    DecisionEvidenceAdoption,
     MonitoringBatch,
     OptimizationAction,
     OptimizationEvidencePackage,
@@ -28,6 +29,8 @@ from app.models import (
     PageSnapshot,
     Project,
     Prompt,
+    RecommendationClaim,
+    RecommendationIntelligenceSnapshot,
     ReferenceSource,
     ReleaseAuditRecord,
     RetrievalCandidate,
@@ -94,6 +97,7 @@ EVIDENCE_VALIDATOR_VERSION = "evidence_validator.v1"
 EVIDENCE_ACTION_VERSION = "evidence_action.v1"
 SOURCE_RELATION_VERSION = "relation.v1"
 STRATEGY_VERSION = "strategy.v2"
+UNAVAILABLE_RETRIEVAL_METRIC_STATUSES = {"not_applicable", "insufficient_retrieval_candidates", "unknown"}
 
 # Canonical intervention types (single source of truth — project spec §7)
 # OFFICIAL_PAGE_UPDATE  = modify existing official page (e.g. /card)
@@ -5261,6 +5265,12 @@ def _build_evidence_action_context(
     # --- Content Type Patterns ---
     content_type_patterns = _extract_content_type_patterns(content_types)
 
+    # --- Platform Patterns ---
+    platform_patterns = _extract_platform_patterns(platform_matrix)
+
+    # --- Answer Strategy Signals ---
+    answer_strategy_signals = _extract_answer_strategy_signals(db, project, package, runs)
+
     # --- Time Patterns ---
     time_patterns = _extract_time_patterns(time_dist)
 
@@ -5336,6 +5346,8 @@ def _build_evidence_action_context(
         "citation_content_patterns": citation_content_patterns,
         "citation_content_analysis_available": citation_content_patterns["available"],
         "content_type_patterns": content_type_patterns,
+        "platform_patterns": platform_patterns,
+        "answer_strategy_signals": answer_strategy_signals,
         "time_patterns": time_patterns,
 
         "brand_presence": {
@@ -5502,6 +5514,209 @@ def _extract_content_type_patterns(content_types: list[dict]) -> dict:
     }
 
 
+def _extract_platform_patterns(platform_matrix: list[dict]) -> dict:
+    citation_platforms = []
+    for row in platform_matrix:
+        platform = row.get("platform", "")
+        citation_run_count = row.get("citation_run_count", 0) or 0
+        if not platform or platform in {"UNKNOWN", "unknown"} or citation_run_count <= 0:
+            continue
+        citation_platforms.append({
+            "platform": platform,
+            "platform_label": row.get("platform_label") or source_platform_label(platform),
+            "citation_run_count": citation_run_count,
+            "candidate_run_count": row.get("candidate_run_count", 0) or 0,
+            "citation_occurrence_count": row.get("citation_occurrence_count", 0) or 0,
+            "representative_cited_urls": (row.get("representative_cited_urls") or [])[:3],
+        })
+    citation_platforms.sort(
+        key=lambda item: (
+            -item["citation_run_count"],
+            -item["citation_occurrence_count"],
+            -item["candidate_run_count"],
+            item["platform_label"],
+        )
+    )
+    return {
+        "top_citation_platforms": citation_platforms[:5],
+        "recommendation_basis": "按最终引用覆盖 Run、引用出现次数和候选覆盖排序；检索候选不足时不解释为完整候选漏斗转化。",
+    }
+
+
+def _signal_level_label(level: str) -> str:
+    return {
+        "ANSWER_RECOMMENDATION_CONTEXT": "答案明确推荐上下文",
+        "SELECTION_REASON_CONTEXT": "选择理由上下文",
+        "ANSWER_CITATION_CONTEXT": "答案引用上下文",
+        "CITATION_FALLBACK": "普通引用分布",
+    }.get(level, level or "未知信号")
+
+
+def _signal_level_rank(level: str) -> int:
+    return {
+        "ANSWER_RECOMMENDATION_CONTEXT": 4,
+        "SELECTION_REASON_CONTEXT": 3,
+        "ANSWER_CITATION_CONTEXT": 2,
+        "CITATION_FALLBACK": 1,
+    }.get(level, 0)
+
+
+def _extract_answer_strategy_signals(
+    db: Session,
+    project: Project,
+    package: OptimizationEvidencePackage,
+    runs: list[BrowserMonitorRun],
+) -> dict:
+    run_ids = sorted({run.id for run in runs})
+    if not run_ids or not package.prompt_id:
+        return {
+            "available": False,
+            "reason": "NO_PROMPT_RUN_SCOPE",
+            "signal_priority_note": "无 Prompt/Run 范围，无法读取答案推荐上下文。",
+            "top_answer_platforms": [],
+            "recommended_content_types": [],
+        }
+
+    snapshots = db.query(RecommendationIntelligenceSnapshot).filter(
+        RecommendationIntelligenceSnapshot.project_id == project.id,
+        RecommendationIntelligenceSnapshot.prompt_id == package.prompt_id,
+    ).order_by(RecommendationIntelligenceSnapshot.id.desc()).limit(20).all()
+    snapshot = None
+    run_id_set = set(run_ids)
+    for candidate_snapshot in snapshots:
+        snapshot_run_ids = set(loads(candidate_snapshot.source_run_ids_json, []))
+        if snapshot_run_ids and snapshot_run_ids.isdisjoint(run_id_set):
+            continue
+        snapshot = candidate_snapshot
+        break
+    if not snapshot:
+        return {
+            "available": False,
+            "reason": "NO_RECOMMENDATION_SNAPSHOT",
+            "signal_priority_note": "尚未生成与当前证据包 Run 重叠的决策诊断快照，策略只能退回普通引用分布。",
+            "top_answer_platforms": [],
+            "recommended_content_types": [],
+        }
+
+    claims = db.query(RecommendationClaim).filter(
+        RecommendationClaim.snapshot_id == snapshot.id,
+        RecommendationClaim.run_id.in_(run_ids),
+    ).all()
+    recommendation_claim_ids = {
+        claim.id
+        for claim in claims
+        if claim.recommendation_type in {"POSITIVE_RECOMMENDATION", "TOP_RECOMMENDATION"}
+    }
+    adoptions = db.query(DecisionEvidenceAdoption).filter(
+        DecisionEvidenceAdoption.snapshot_id == snapshot.id,
+        DecisionEvidenceAdoption.run_id.in_(run_ids),
+        DecisionEvidenceAdoption.cited.is_(True),
+    ).all()
+    refs_by_id = {
+        ref.id: ref
+        for ref in db.query(ReferenceSource).filter(
+            ReferenceSource.id.in_([row.citation_id for row in adoptions if row.citation_id])
+        ).all()
+    } if adoptions else {}
+
+    grouped: dict[str, dict] = {}
+    content_counter: Counter[str] = Counter()
+    for adoption in adoptions:
+        ref = refs_by_id.get(adoption.citation_id)
+        if not ref:
+            continue
+        title = ref.display_title or ref.matched_title or adoption.source_title or ref.url
+        url = ref.canonical_url or ref.url or adoption.source_url
+        domain = ref.domain or adoption.source_domain or host_from_url(url)
+        platform = _item_platform(project, ref, title, url, domain)
+        if not platform or platform in {"UNKNOWN", "unknown"}:
+            platform = "web"
+        content_type = _classify_content_type(title, url, "", domain)["content_type"]
+        if content_type not in {"OTHER", "UNCATEGORIZED", "NEWS"}:
+            content_counter[content_type] += 1
+
+        if adoption.recommendation_claim_id in recommendation_claim_ids:
+            level = "ANSWER_RECOMMENDATION_CONTEXT"
+        elif adoption.associated_with_selection_reason:
+            level = "SELECTION_REASON_CONTEXT"
+        else:
+            level = "ANSWER_CITATION_CONTEXT"
+
+        row = grouped.setdefault(platform, {
+            "platform": platform,
+            "platform_label": source_platform_label(platform),
+            "signal_level": level,
+            "recommendation_context_run_ids": set(),
+            "selection_reason_context_run_ids": set(),
+            "answer_citation_context_run_ids": set(),
+            "occurrence_count": 0,
+            "content_type_counts": Counter(),
+            "representative_sources": [],
+        })
+        if _signal_level_rank(level) > _signal_level_rank(row["signal_level"]):
+            row["signal_level"] = level
+        row["occurrence_count"] += 1
+        row["answer_citation_context_run_ids"].add(adoption.run_id)
+        if level == "ANSWER_RECOMMENDATION_CONTEXT":
+            row["recommendation_context_run_ids"].add(adoption.run_id)
+        if level in {"ANSWER_RECOMMENDATION_CONTEXT", "SELECTION_REASON_CONTEXT"}:
+            row["selection_reason_context_run_ids"].add(adoption.run_id)
+        row["content_type_counts"][content_type] += 1
+        if len(row["representative_sources"]) < 3:
+            row["representative_sources"].append({
+                "title": title,
+                "url": url,
+                "domain": domain,
+                "run_id": adoption.run_id,
+                "signal_level": _signal_level_label(level),
+                "answer_span": (adoption.answer_span or "")[:240],
+            })
+
+    rows = []
+    for row in grouped.values():
+        content_types = [
+            content_type
+            for content_type, _ in row["content_type_counts"].most_common()
+            if content_type not in {"OTHER", "UNCATEGORIZED", "NEWS"}
+        ]
+        rows.append({
+            "platform": row["platform"],
+            "platform_label": row["platform_label"],
+            "signal_level": row["signal_level"],
+            "signal_level_label": _signal_level_label(row["signal_level"]),
+            "recommendation_context_run_count": len(row["recommendation_context_run_ids"]),
+            "selection_reason_context_run_count": len(row["selection_reason_context_run_ids"]),
+            "answer_citation_context_run_count": len(row["answer_citation_context_run_ids"]),
+            "occurrence_count": row["occurrence_count"],
+            "content_types": content_types[:5],
+            "content_type_labels": [_strategy_content_type_label(item) for item in content_types[:5]],
+            "representative_sources": row["representative_sources"],
+        })
+    rows.sort(
+        key=lambda row: (
+            -_signal_level_rank(row["signal_level"]),
+            -row["recommendation_context_run_count"],
+            -row["selection_reason_context_run_count"],
+            -row["answer_citation_context_run_count"],
+            -row["occurrence_count"],
+            row["platform_label"],
+        )
+    )
+    recommended_content_types = [
+        content_type
+        for content_type, _ in content_counter.most_common()
+        if content_type not in {"OTHER", "UNCATEGORIZED", "NEWS"}
+    ]
+    return {
+        "available": bool(rows),
+        "snapshot_id": snapshot.id,
+        "reason": "OK" if rows else "NO_CITED_RECOMMENDATION_CONTEXT",
+        "signal_priority_note": "策略信号优先级：答案明确推荐上下文 > 选择理由上下文 > 答案引用上下文 > 普通引用分布。",
+        "top_answer_platforms": rows[:5],
+        "recommended_content_types": recommended_content_types[:6],
+    }
+
+
 def _strategy_content_type_label(content_type: str) -> str:
     return {
         "VIDEO": "视频教程",
@@ -5515,13 +5730,124 @@ def _strategy_content_type_label(content_type: str) -> str:
     }.get(content_type, "其他内容")
 
 
-def _strategy_recommended_content_types(content_types: list[str]) -> list[str]:
+def _retrieval_metric_is_usable(metric_fact: dict | None) -> bool:
+    if not metric_fact:
+        return False
+    status = str(metric_fact.get("calculation_status") or "unknown")
+    return status not in UNAVAILABLE_RETRIEVAL_METRIC_STATUSES
+
+
+def _strategy_recommended_content_types(content_types: list[str], preserve_order: bool = False) -> list[str]:
     priority = ["TUTORIAL", "Q_AND_A", "TROUBLESHOOTING", "VIDEO", "RULE_EXPLANATION", "COMPARISON", "TOOL_PAGE"]
     usable = [item for item in content_types if item not in {"OTHER", "UNCATEGORIZED", "NEWS"}]
-    ordered = [item for item in priority if item in usable]
+    if preserve_order:
+        ordered = []
+        for item in usable:
+            if item not in ordered:
+                ordered.append(item)
+    else:
+        ordered = [item for item in priority if item in usable]
     if not ordered and "NEWS" in content_types:
         ordered = ["TUTORIAL", "Q_AND_A", "RULE_EXPLANATION"]
     return ordered[:4] or ["TUTORIAL", "Q_AND_A", "RULE_EXPLANATION"]
+
+
+def _strategy_platform_content_focus(platform: str, recommended_content_types: list[str]) -> list[str]:
+    platform_key = (platform or "").lower()
+    focus_map = {
+        "bilibili": ["VIDEO", "TUTORIAL", "TROUBLESHOOTING"],
+        "douyin": ["VIDEO", "TUTORIAL", "Q_AND_A"],
+        "zhihu": ["Q_AND_A", "TUTORIAL", "COMPARISON"],
+        "baijiahao": ["TUTORIAL", "Q_AND_A", "RULE_EXPLANATION"],
+        "wechat_official_account": ["RULE_EXPLANATION", "TUTORIAL", "Q_AND_A"],
+        "xiaohongshu": ["TUTORIAL", "Q_AND_A", "VIDEO"],
+        "web": ["TUTORIAL", "Q_AND_A", "RULE_EXPLANATION"],
+    }
+    preferred = focus_map.get(platform_key, ["TUTORIAL", "Q_AND_A", "RULE_EXPLANATION"])
+    ordered = [item for item in preferred if item in recommended_content_types]
+    ordered.extend(item for item in recommended_content_types if item not in ordered)
+    return ordered[:2] or preferred[:2]
+
+
+def _strategy_platform_action(platform_label: str, content_focus: list[str]) -> str:
+    focus_text = "、".join(_strategy_content_type_label(item) for item in content_focus)
+    if "B站" in platform_label:
+        return f"在{platform_label}发布{focus_text}，重点做完整操作录屏、卡片配置演示、失败排查和风险提醒"
+    if "知乎" in platform_label:
+        return f"在{platform_label}发布{focus_text}，重点回答怎么做、工具选择、限制条件、常见失败原因和安全合规问题"
+    if "抖音" in platform_label:
+        return f"在{platform_label}发布{focus_text}，重点展示卡片效果、配置步骤、适用场景和跳转限制"
+    if "百家号" in platform_label or "网页" in platform_label:
+        return f"在{platform_label}发布{focus_text}，重点沉淀可索引的步骤说明、FAQ、平台规则和排障清单"
+    return f"在{platform_label}发布{focus_text}，围绕当前 Prompt 的定义、步骤、限制、FAQ 和案例证据组织内容"
+
+
+def _strategy_platform_recommendations(
+    platform_patterns: dict,
+    recommended_content_types: list[str],
+    answer_strategy_signals: dict | None = None,
+) -> list[dict]:
+    recommendations = []
+    answer_rows = (answer_strategy_signals or {}).get("top_answer_platforms", [])
+    source_rows = answer_rows if answer_rows else (platform_patterns or {}).get("top_citation_platforms", [])
+    for row in source_rows[:3]:
+        platform = row.get("platform", "")
+        platform_label = row.get("platform_label") or source_platform_label(platform)
+        row_content_types = row.get("content_types") or recommended_content_types
+        content_focus = _strategy_platform_content_focus(platform, row_content_types)
+        signal_level = row.get("signal_level") or "CITATION_FALLBACK"
+        signal_level_label = row.get("signal_level_label") or _signal_level_label(signal_level)
+        citation_run_count = row.get("citation_run_count", row.get("answer_citation_context_run_count", 0))
+        occurrence_count = row.get("citation_occurrence_count", row.get("occurrence_count", 0))
+        representative_sources = row.get("representative_sources") or row.get("representative_cited_urls", [])
+        if signal_level != "CITATION_FALLBACK":
+            evidence_basis = (
+                f"信号等级：{signal_level_label}；推荐上下文覆盖 {row.get('recommendation_context_run_count', 0)} 个 Run，"
+                f"选择理由上下文覆盖 {row.get('selection_reason_context_run_count', 0)} 个 Run，"
+                f"答案引用上下文覆盖 {row.get('answer_citation_context_run_count', 0)} 个 Run。"
+            )
+        else:
+            evidence_basis = (
+                f"{platform_label} 在当前样本中覆盖 {citation_run_count} 个引用 Run，"
+                f"引用出现 {occurrence_count} 次。"
+            )
+        recommendations.append({
+            "platform": platform,
+            "platform_label": platform_label,
+            "signal_level": signal_level,
+            "signal_level_label": signal_level_label,
+            "content_types": content_focus,
+            "content_type_labels": [_strategy_content_type_label(item) for item in content_focus],
+            "recommendation_context_run_count": row.get("recommendation_context_run_count", 0),
+            "selection_reason_context_run_count": row.get("selection_reason_context_run_count", 0),
+            "answer_citation_context_run_count": row.get("answer_citation_context_run_count", 0),
+            "citation_run_count": citation_run_count,
+            "candidate_run_count": row.get("candidate_run_count", 0),
+            "citation_occurrence_count": occurrence_count,
+            "representative_sources": representative_sources,
+            "recommended_action": _strategy_platform_action(platform_label, content_focus),
+            "evidence_basis": evidence_basis,
+        })
+    return recommendations
+
+
+def _strategy_platform_direction(platform_recommendations: list[dict]) -> str:
+    if not platform_recommendations:
+        return (
+            "当前证据不足以形成平台优先级；三方平台账号可新注册，不以历史内容或账号存量作为前置条件。"
+            "请先补齐引用/候选平台证据，再决定发布平台。"
+        )
+    summary = "；".join(
+        f"{item['platform_label']}（{item.get('signal_level_label', '普通引用分布')}），适合发{'、'.join(item['content_type_labels'])}"
+        for item in platform_recommendations
+    )
+    actions = "；".join(item["recommended_action"] for item in platform_recommendations)
+    return (
+        f"基于当前答案信号分层，优先平台建议为：{summary}。"
+        f"建议执行组合：{actions}。"
+        "排序规则：答案明确推荐上下文优先，其次选择理由上下文，再其次普通引用分布。"
+        "三方平台账号可新注册，不以历史内容或账号存量作为前置条件；最终平台、账号和 target_url 仍需人工审核确认。"
+    )
 
 
 def _extract_time_patterns(time_dist: list[dict]) -> dict:
@@ -5683,8 +6009,8 @@ def _identify_missing_evidence(
             missing.append({
                 "category": "BRAND_ASSET_UNKNOWN",
                 "platform": ch.get("platform", "unknown"),
-                "reason": f"Brand has no presence on {ch.get('platform')} which has {ch.get('citation_run_count')} citation runs. However, we do not know if the brand actually has assets on this platform.",
-                "recommended_action": "Confirm whether brand has existing assets (account, content, domain) on this platform.",
+                "reason": f"Brand has no confirmed presence on {ch.get('platform')} which has {ch.get('citation_run_count')} citation runs. Third-party accounts can be registered, but the platform choice and publishing rules still need human review.",
+                "recommended_action": "Confirm whether to register or use an account on this platform, then review publishing rules, account controllability, and content fit.",
             })
 
     # Content body availability
@@ -5768,6 +6094,8 @@ class EvidenceDrivenStrategyProvider:
         confidence = context.get("evidence_confidence", "MEDIUM")
         decision_capability = context.get("decision_capability", "CONTENT_DIRECTION_ONLY")
         content_patterns = context.get("content_type_patterns", {})
+        platform_patterns = context.get("platform_patterns", {})
+        answer_strategy_signals = context.get("answer_strategy_signals", {})
         brand_presence = context.get("brand_presence", {})
         brand_gaps = context.get("brand_channel_gaps", [])
         source_relations = context.get("source_relation_landscape", {})
@@ -5783,14 +6111,22 @@ class EvidenceDrivenStrategyProvider:
         # --- Generate options ---
         options = []
 
-        # --- Option A: New informational content (WHAT direction, not WHERE) ---
+        # --- Option A: Evidence-driven platform + content direction ---
         high_citation_types = content_patterns.get("high_citation_types", [])
         low_citation_types = content_patterns.get("low_citation_types", [])
+        answer_signal_content_types = answer_strategy_signals.get("recommended_content_types", [])
+        strategy_content_types = answer_signal_content_types or high_citation_types
 
-        if high_citation_types:
-            fact_refs = self._find_fact_refs(facts, content_types=high_citation_types)
-            recommended_content_types = _strategy_recommended_content_types(high_citation_types)
-            observed_content_types_str = "、".join(_strategy_content_type_label(item) for item in high_citation_types[:5])
+        if strategy_content_types:
+            fact_refs = self._find_fact_refs(facts, content_types=strategy_content_types)
+            recommended_content_types = _strategy_recommended_content_types(
+                strategy_content_types,
+                preserve_order=bool(answer_signal_content_types),
+            )
+            platform_recommendations = _strategy_platform_recommendations(platform_patterns, recommended_content_types, answer_strategy_signals)
+            platform_direction = _strategy_platform_direction(platform_recommendations)
+            observed_content_types_str = "、".join(_strategy_content_type_label(item) for item in strategy_content_types[:5])
+            content_signal_source = "答案推荐/选择理由上下文" if answer_signal_content_types else "引用资料"
             recommended_content_types_str = "、".join(_strategy_content_type_label(item) for item in recommended_content_types)
 
             # --- Dynamic evidence from context, never hardcoded ---
@@ -5813,10 +6149,14 @@ class EvidenceDrivenStrategyProvider:
             total_cit = source_relations.get('total_citations', 0)
             run_count_str = str(run_count)
 
-            # When retrieval candidates are incomplete, use answer-level brand visibility
-            # instead of forcing a target-page retrieval funnel.
+            # When retrieval metrics are unavailable, use answer-level brand
+            # visibility instead of generating a strategy that validation must reject.
             retrieval_status = context.get("retrieval_landscape", {}).get("retrieval_metrics_status")
-            target_metric_name = "brand_mention_rate" if retrieval_status == "insufficient_retrieval_candidates" else INTERVENTION_METRIC_MAP.get("OFFICIAL_NEW_PAGE", "target_page_retrieval_rate")
+            retrieval_fact = next((f for f in facts if f.get('metric_name') == 'target_page_retrieval_rate'), None)
+            if retrieval_status == "insufficient_retrieval_candidates" or not _retrieval_metric_is_usable(retrieval_fact):
+                target_metric_name = "brand_mention_rate"
+            else:
+                target_metric_name = INTERVENTION_METRIC_MAP.get("OFFICIAL_NEW_PAGE", "target_page_retrieval_rate")
             target_metric_fact = next((f for f in facts if f.get('metric_name') == target_metric_name), None)
             if target_metric_fact:
                 tn = target_metric_fact.get('numerator')
@@ -5836,14 +6176,14 @@ class EvidenceDrivenStrategyProvider:
                 parts.append(f"工具页在 {tc}/{run_count} 次采样中进入了检索候选，但引用次数为 {tc2}。")
             if target_url:
                 parts.append(f"当前目标页面为 {target_url}。")
-            parts.append(f"引用资料中高频出现的内容形态包括：{observed_content_types_str}。")
+            parts.append(f"{content_signal_source}中高频出现的内容形态包括：{observed_content_types_str}。")
             observed = "".join(parts)
 
             # Evidence summary
             summary_parts = [
                 f"证据 #{package.id}：{run_count} 次采样。",
                 f"品牌提及率：{brand_mention_str}。",
-                f"高频引用内容形态：{observed_content_types_str}。",
+                f"{content_signal_source}内容形态：{observed_content_types_str}。",
             ]
             if has_tool_page:
                 tc2 = tool_page_fact.get('citation_run_count', 0)
@@ -5858,12 +6198,10 @@ class EvidenceDrivenStrategyProvider:
                 "target_asset": "NEW_INFORMATIONAL_CONTENT",
                 "target_content_type": recommended_content_types[0] if recommended_content_types else "TUTORIAL",
                 "target_url": target_url,
-                "content_direction": f"引用资料显示，当前问题更常引用{observed_content_types_str}；建议优先补齐{recommended_content_types_str}。",
-                "platform_direction": (
-                    "发布平台仍未确定，需要结合已有资产、可控性、"
-                    "内容适配度、执行可行性和边际机会再做选择，"
-                    "不得从引用强度直接跳到发布决策。"
-                ),
+                "content_direction": f"{content_signal_source}显示，当前问题更需要{observed_content_types_str}；建议优先补齐{recommended_content_types_str}。",
+                "answer_signal_priority_note": answer_strategy_signals.get("signal_priority_note", "未读取到答案推荐上下文，退回普通引用分布。"),
+                "platform_direction": platform_direction,
+                "platform_recommendations": platform_recommendations,
                 "evidence_fit": "MEDIUM",
                 "execution_feasibility": "UNASSESSED",
                 "observed_problem": observed,
@@ -5879,7 +6217,7 @@ class EvidenceDrivenStrategyProvider:
                 ),
                 "recommended_action": {
                     "content_direction": f"围绕「{context.get('prompt_text') or '当前问题'}」制作{recommended_content_types_str}，重点回答定义、适用场景、操作步骤、风险限制和常见失败原因。",
-                    "platform_direction": "发布平台仍未确定，需要结合已有资产、可控性、内容适配度、执行可行性和边际机会再做选择。",
+                    "platform_direction": platform_direction,
                     "asset_direction": "新建或改造一份可公开访问的中文内容资产。建议包含：概念定义、平台规则、操作步骤、常见失败原因、FAQ、案例截图或视频说明。",
                 },
                 "changed_features": [
@@ -5914,10 +6252,10 @@ class EvidenceDrivenStrategyProvider:
                 "invalidating_result": f"复采后新信息资产未被检索或引用；品牌提及率无变化。",
                 "evidence_summary": evidence_summary_str,
                 "reason_for_not_choosing_alternatives": (
-                    "暂不推荐直接去外部平台发布，原因：(1) 引用内容正文分析尚不可用，"
+                    "平台推荐来自当前引用平台分布和内容形态信号；仍不直接物化为执行平台，原因：(1) 引用内容正文分析尚不可用，"
                     "无法确认什么内容结构驱动了引用；(2) 大多数域名的引用来源无法确认；"
-                    "(3) 品牌在外部平台的资产状态未确认。"
-                    "当前策略聚焦于「应该生产什么类型的内容」；「在哪里发布」仍需更多证据。"
+                    "(3) 平台账号可新注册，但具体账号、发布规则、target_url 和发布时间仍需人工审核。"
+                    "当前策略给出「优先在哪些平台发布什么内容」；正式执行仍需 effective_payload 确认。"
                 )
             }
             options.append(option_a)

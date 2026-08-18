@@ -203,6 +203,37 @@ function interventionFamilyLabel(value?: string) {
   return labels[value || ""] || value || "-";
 }
 
+function runEligibilityColor(status?: string) {
+  const colors: Record<string, string> = {
+    ELIGIBLE: "green",
+    PARTIAL: "gold",
+    INELIGIBLE: "red",
+    UNKNOWN: "orange",
+  };
+  return colors[status || ""] || "default";
+}
+
+function decisionSpaceColor(status?: string) {
+  const colors: Record<string, string> = {
+    NO_BRAND_DECISION_SPACE: "default",
+    SOLUTION_CHOICE_SPACE: "blue",
+    BRAND_CANDIDATE_SPACE: "geekblue",
+    BRAND_RECOMMENDATION_PRESENT: "green",
+    BRAND_COMPARISON_PRESENT: "purple",
+  };
+  return colors[status || ""] || "default";
+}
+
+function feasibilityColor(status?: string) {
+  const colors: Record<string, string> = {
+    READY_FOR_HUMAN_REVIEW: "green",
+    BLOCKED_PRODUCT_TRUTH: "gold",
+    BLOCKED_RUN_ELIGIBILITY: "red",
+    NO_ACTION: "default",
+  };
+  return colors[status || ""] || "default";
+}
+
 function experimentStatusLabel(status?: string) {
   const labels: Record<string, string> = {
     draft: "草案",
@@ -311,6 +342,72 @@ function listText(value: unknown, fallback = "-") {
   return fallback;
 }
 
+function strategyDisplayPayload(candidate: any) {
+  const executable =
+    candidate?.effective_payload && Object.keys(candidate.effective_payload).length > 0
+      ? candidate.effective_payload
+      : candidate?.human_edited_payload && Object.keys(candidate.human_edited_payload).length > 0
+        ? candidate.human_edited_payload
+        : candidate?.structured_payload || {};
+  const original = candidate?.original_llm_payload || {};
+  const decisionMarket = original.decision_market || executable.decision_market || {};
+  const contentBrief = decisionMarket.content_brief || executable.content_brief || {};
+  const interventionCandidate = decisionMarket.intervention_candidate || executable.intervention_candidate || {};
+  const executionGate = original.execution_gate || executable.execution_gate || {};
+  const actionText =
+    typeof executable.recommended_action === "string"
+      ? executable.recommended_action
+      : executable.recommended_action?.content_direction ||
+        executable.recommended_action?.asset_direction ||
+        original.recommended_action ||
+        decisionMarket.intervention_candidate?.recommended_direction ||
+        decisionMarket.primary_gap?.action_hint ||
+        "";
+  return {
+    payload: executable,
+    decisionMarket,
+    contentBrief,
+    interventionCandidate,
+    executionGate,
+    evidenceSummary:
+      executable.evidence_summary ||
+      decisionMarket.primary_gap?.diagnosis_text ||
+      interventionCandidate.observed_problem ||
+      original.observed_problem ||
+      "",
+    cause:
+      executable.hypothesized_cause ||
+      original.hypothesized_cause ||
+      decisionMarket.primary_gap?.action_hint ||
+      interventionCandidate.recommended_direction ||
+      "",
+    actionText,
+    interventionType:
+      executable.intervention_type ||
+      interventionCandidate.intervention_type ||
+      original.intervention_type,
+    targetPlatform:
+      executable.target_platform ||
+      interventionCandidate.target_platform ||
+      original.target_platform,
+    targetContentType:
+      executable.target_content_type ||
+      contentBrief.target_content_type,
+    targetMetric:
+      executable.target_metric ||
+      original.target_metric ||
+      decisionMarket.primary_gap?.metric?.metric,
+    metricAvailability: executable.metric_availability || original.metric_availability || "",
+    platformRecommendations:
+      executable.platform_recommendations ||
+      original.platform_recommendations ||
+      [],
+    mustAnswer: decisionMarket.must_answer || [],
+    evidenceRequirements: decisionMarket.evidence_requirements || [],
+    requiredSections: original.required_sections || contentBrief.sections || [],
+  };
+}
+
 function interventionTypeLabel(type?: string) {
   const labels: Record<string, string> = {
     CONTENT_ASSET: "内容资产",
@@ -318,6 +415,17 @@ function interventionTypeLabel(type?: string) {
     PRODUCT_PROOF: "产品证明",
     BRAND_POSITIONING: "品牌定位",
     ANSWER_PATTERN: "回答结构",
+    CONTENT_CREATE: "新建内容",
+    CONTENT_UPDATE: "更新内容",
+    PLATFORM_PUBLISH: "平台发布",
+    TECHNICAL_INDEXABILITY: "技术可索引性",
+    STRUCTURED_DATA: "结构化数据",
+    ENTITY_CONSISTENCY: "实体一致性",
+    INTERNAL_INFORMATION_ARCHITECTURE: "内部信息架构",
+    PLATFORM_AUTHORITY_BUILD: "平台权威建设",
+    RECRAWL_OR_REFRESH: "重抓/刷新",
+    UNRESOLVED: "待人工确认",
+    NO_ACTION: "暂不行动",
   };
   return labels[type || ""] || type || "待判断";
 }
@@ -453,6 +561,7 @@ export default function App() {
   const [strategyLoading, setStrategyLoading] = useState(false);
   const [strategyNotice, setStrategyNotice] = useState<{ type: "success" | "info" | "warning" | "error"; message: string; description?: string } | null>(null);
   const [latestGeneratedStrategyIds, setLatestGeneratedStrategyIds] = useState<number[]>([]);
+  const [strategyCandidateFilter, setStrategyCandidateFilter] = useState("latest");
   const [optimizationIssues, setOptimizationIssues] = useState<any[]>([]);
   const [optimizationChain, setOptimizationChain] = useState<any>(null);
   const [selectedOptimizationIssueId, setSelectedOptimizationIssueId] = useState<number | null>(null);
@@ -728,10 +837,10 @@ export default function App() {
     message.loading({ content: "正在生成决策诊断...", key: "recommendation-analysis", duration: 0 });
     try {
       const promptRuns = runs
-        .filter((run) => run.prompt_id === targetPromptId && (run.status === "success" || run.status === "partial_success"))
+        .filter((run) => run.prompt_id === targetPromptId)
         .map((run) => run.id);
       if (promptRuns.length === 0) {
-        message.warning({ content: "该问题没有成功或部分成功的采集记录，暂时不能生成决策诊断", key: "recommendation-analysis" });
+        message.warning({ content: "该问题还没有采集记录，暂时不能生成决策诊断", key: "recommendation-analysis" });
         return;
       }
       const data = await api.generateRecommendationAnalysis(projectId, { prompt_id: targetPromptId, run_ids: promptRuns });
@@ -871,13 +980,16 @@ export default function App() {
           strategy_options_count: existing.length,
           candidates: sortStrategyCandidates(existing)
         });
+        setStrategyCandidateFilter("latest");
         if (!silent) message.success(`已加载 ${existing.length} 个已有策略`);
       } else {
         setStrategyData(null);
+        setStrategyCandidateFilter("latest");
         if (!silent) message.info("证据已选中，当前还没有策略");
       }
     } catch {
       setStrategyData(null);
+      setStrategyCandidateFilter("latest");
     } finally {
       setStrategyLoading(false);
     }
@@ -903,6 +1015,14 @@ export default function App() {
     });
   }
 
+  function sortStrategyCandidatesByTime(candidates: any[]) {
+    return [...(candidates || [])].sort((a, b) => {
+      const timeDiff = (new Date(b.generated_at || b.created_at).getTime() || 0) - (new Date(a.generated_at || a.created_at).getTime() || 0);
+      if (timeDiff) return timeDiff;
+      return (b.id || 0) - (a.id || 0);
+    });
+  }
+
   function strategyVersionMap(candidates: any[]) {
     return new Map(
       [...(candidates || [])]
@@ -920,10 +1040,21 @@ export default function App() {
   }
 
   function currentStrategySummary(candidates: any[]) {
-    const sorted = sortStrategyCandidates(candidates);
+    const sorted = sortStrategyCandidatesByTime(candidates);
     const current = sorted[0];
     if (!current) return "暂无策略版本";
     return `${strategyVersionLabel(current, candidates)} · 策略 #${current.id} · 生成时间 ${formatDateTime(current.generated_at || current.created_at)} · ${reviewStatusLabel(current.review_status)}`;
+  }
+
+  function filterStrategyCandidates(candidates: any[], filter: string) {
+    const sorted = sortStrategyCandidatesByTime(candidates);
+    if (filter === "all") return sorted;
+    if (filter.startsWith("candidate:")) {
+      const candidateId = Number(filter.replace("candidate:", ""));
+      const matched = sorted.filter((item: any) => item.id === candidateId);
+      return matched.length ? matched : sorted.slice(0, 1);
+    }
+    return sorted.slice(0, 1);
   }
 
   function strategyErrorSummary(candidate: any) {
@@ -958,12 +1089,13 @@ export default function App() {
         strategy_options_count: sorted.length,
         candidates: sorted,
       });
+      setStrategyCandidateFilter("latest");
       if (generatedCandidates.length && generatedCandidates.every((item: any) => item.review_status === "VALIDATION_FAILED")) {
         const first = generatedCandidates[0];
         setStrategyNotice({
           type: reviewable.length ? "warning" : "error",
           message: `本次生成的策略 #${first.id} 未通过校验`,
-          description: `${strategyVersionLabel(first, existing)} · 生成时间 ${formatDateTime(first.generated_at || first.created_at)}；${strategyErrorSummary(first)}${reviewable.length ? `；页面已优先展示 ${strategyVersionLabel(reviewable[0], existing)} · 策略 #${reviewable[0].id}。` : ""}`
+          description: `${strategyVersionLabel(first, existing)} · 生成时间 ${formatDateTime(first.generated_at || first.created_at)}；${strategyErrorSummary(first)}${reviewable.length ? `；如需继续使用上一条可审核策略，可在筛选中选择 ${strategyVersionLabel(reviewable[0], existing)} · 策略 #${reviewable[0].id}。` : ""}`
         });
         message.warning({ content: "本次生成未通过校验，已展示原因", key: "strategy-generate" });
       } else if (generatedCandidates.length) {
@@ -1079,7 +1211,10 @@ export default function App() {
     setRecommendationLoading(true);
     try {
       const result = await api.createDecisionExperimentDraft(recommendationData.id, { owner: "待分配" });
-      message.success(`实验草案已生成：Issue #${result.issue.id} / Action #${result.action.id} / Experiment #${result.experiment.id}`);
+      const candidateId = result.strategy_candidate?.id;
+      message.success(candidateId
+        ? `已生成待审核策略候选 #${candidateId}，请到「最终策略」完成人工审核`
+        : result.status_label || "已生成待审核策略候选");
     } catch (error: any) {
       message.error(error.message || "生成实验草案失败");
     } finally {
@@ -1096,8 +1231,22 @@ export default function App() {
     { key: "absent", label: "未出现", count: dashboard.recommendation.absent, color: "#bfbfbf" }
   ] : [], [dashboard]);
   const decisionMarket = recommendationData?.decision_market;
+  const runEligibility = recommendationData?.run_eligibility || decisionMarket?.run_eligibility || {};
+  const decisionSpace = decisionMarket?.decision_space || {};
+  const targetBrandPosition = decisionMarket?.target_brand_position || {};
+  const interventionFeasibility = decisionMarket?.intervention_feasibility || {};
+  const promptInterventionCandidates = decisionMarket?.intervention_candidates || recommendationData?.intervention_candidates || [];
   const latestRecommendationSnapshotId = recommendationSnapshots[0]?.id;
   const isLatestRecommendationSnapshot = Boolean(recommendationData?.id && latestRecommendationSnapshotId === recommendationData.id);
+  const recommendationMarketRows = useMemo(() => {
+    return decisionMarket?.recommendation_market?.rows || [];
+  }, [decisionMarket]);
+  const driverRows = useMemo(() => {
+    return decisionMarket?.recommendation_drivers?.rows || [];
+  }, [decisionMarket]);
+  const sourcePatternRows = useMemo(() => {
+    return decisionMarket?.source_content_pattern?.rows || [];
+  }, [decisionMarket]);
   const decisionAuditRows = useMemo(() => {
     if (!recommendationData) return [];
     const adoptions = decisionMarket?.citation_context?.adoptions || [];
@@ -1146,6 +1295,16 @@ export default function App() {
       run_ids: [...row.run_ids],
     })).sort((a, b) => b.run_count - a.run_count);
   }, [recommendationReasons]);
+  const sortedStrategyCandidates = sortStrategyCandidatesByTime(strategyData?.candidates || []);
+  const visibleStrategyCandidates = filterStrategyCandidates(sortedStrategyCandidates, strategyCandidateFilter);
+  const strategyFilterOptions = [
+    { label: "最新策略", value: "latest" },
+    { label: "全部策略", value: "all" },
+    ...sortedStrategyCandidates.map((candidate: any) => ({
+      label: `${strategyVersionLabel(candidate, sortedStrategyCandidates)} · 策略 #${candidate.id} · ${reviewStatusLabel(candidate.review_status)}`,
+      value: `candidate:${candidate.id}`,
+    })),
+  ];
 
   return <Layout className="app-shell">
     <Sider width={228} className="side-nav">
@@ -1281,6 +1440,57 @@ export default function App() {
                 <Col xs={12} md={5}><Card size="small"><Statistic title="任务完成指标" value={recommendationData.metric_eligibility?.task_completion_metrics_label || "-"} /></Card></Col>
                 <Col xs={12} md={5}><Card size="small"><Statistic title="抽取版本" value={recommendationData.recommendation_extractor_version} /></Card></Col>
               </Row>
+              {decisionMarket && <Row gutter={[12, 12]}>
+                <Col xs={24} xl={12}>
+                  <Card size="small" title="A. 单 Prompt 样本资格门" extra={<Tag color="blue">{runEligibility.analysis_unit || "SINGLE_PROMPT"}</Tag>}>
+                    <Alert
+                      type={runEligibility.ineligible_runs > 0 ? "warning" : "success"}
+                      showIcon
+                      style={{ marginBottom: 8 }}
+                      message={`可分析样本：${runEligibility.analysis_usable_runs ?? recommendationData.run_count} / ${runEligibility.total_runs ?? recommendationData.run_count}`}
+                      description={runEligibility.boundary_note || "正式 GEO 分析以单 Prompt 的独立新会话采样为单位；采集成功不自动等于分析合格。"}
+                    />
+                    <Row gutter={[8, 8]} style={{ marginBottom: 8 }}>
+                      <Col xs={12} md={6}><Statistic title="合格" value={runEligibility.eligible_runs ?? recommendationData.run_count} /></Col>
+                      <Col xs={12} md={6}><Statistic title="部分" value={runEligibility.partial_runs ?? 0} /></Col>
+                      <Col xs={12} md={6}><Statistic title="不合格" value={runEligibility.ineligible_runs ?? 0} /></Col>
+                      <Col xs={12} md={6}><Statistic title="待确认" value={runEligibility.unknown_runs ?? 0} /></Col>
+                    </Row>
+                    <Table
+                      size="small"
+                      rowKey="run_id"
+                      pagination={{ pageSize: 5 }}
+                      dataSource={runEligibility.rows || []}
+                      locale={{ emptyText: "当前快照没有样本资格明细" }}
+                      columns={[
+                        { title: "采集", dataIndex: "run_id", width: 70, render: (value) => <Tag>#{value}</Tag> },
+                        { title: "状态", width: 110, render: (_, row: any) => <Tag color={runEligibilityColor(row.status)}>{row.status_label || row.status}</Tag> },
+                        { title: "采集模式", dataIndex: "collection_mode", width: 140, render: (value) => <Tag>{value || "未知"}</Tag> },
+                        { title: "Sample", dataIndex: "sample_index", width: 80 },
+                        { title: "原因", render: (_, row: any) => <Space wrap>{(row.reasons || []).map((item: string) => <Tag key={item}>{item}</Tag>)}</Space> },
+                      ]}
+                    />
+                  </Card>
+                </Col>
+                <Col xs={24} xl={12}>
+                  <Card size="small" title="B. 单 Prompt 决策空间与目标品牌位置">
+                    <Alert
+                      type={decisionSpace.status === "NO_BRAND_DECISION_SPACE" ? "warning" : "info"}
+                      showIcon
+                      style={{ marginBottom: 8 }}
+                      message={<Space wrap><Tag color={decisionSpaceColor(decisionSpace.status)}>{decisionSpace.status_label || "决策空间待判断"}</Tag><Text>{decisionSpace.boundary_note || "提及、候选、明确推荐和对比是独立事实。"}</Text></Space>}
+                    />
+                    <Descriptions size="small" column={1}>
+                      <Descriptions.Item label="选择空间">{formatMetric(decisionSpace.metrics?.choice_slot_rate)}</Descriptions.Item>
+                      <Descriptions.Item label="品牌候选">{formatMetric(decisionSpace.metrics?.brand_candidate_rate)}</Descriptions.Item>
+                      <Descriptions.Item label="明确推荐">{formatMetric(decisionSpace.metrics?.explicit_recommendation_rate)}</Descriptions.Item>
+                      <Descriptions.Item label="目标品牌阶段"><Tag color={targetBrandPosition.status === "ABSENT" ? "red" : "blue"}>{targetBrandPosition.status_label || brandStageLabel(targetBrandPosition.status)}</Tag></Descriptions.Item>
+                      <Descriptions.Item label="Primary Gap">{targetBrandPosition.primary_gap?.gap_type_label || decisionMarket.primary_gap?.gap_type_label || "-"}</Descriptions.Item>
+                      <Descriptions.Item label="已具备信号">{(targetBrandPosition.strengths || []).length > 0 ? <Space wrap>{targetBrandPosition.strengths.map((item: string) => <Tag key={item} color="green">{item}</Tag>)}</Space> : <Text type="secondary">暂无稳定目标品牌信号</Text>}</Descriptions.Item>
+                    </Descriptions>
+                  </Card>
+                </Col>
+              </Row>}
               {decisionMarket && <Card size="small" title="决策市场总览" extra={<Tag>结构化诊断规则</Tag>}>
                 <Alert type="info" showIcon style={{ marginBottom: 12 }} message={decisionMarket.primary_metric_note} description={decisionMarket.scope_note} />
                 <Row gutter={[12, 12]}>
@@ -1309,6 +1519,32 @@ export default function App() {
                     </Card>
                   </Col>
                 </Row>
+              </Card>}
+              {decisionMarket && <Card size="small" title="C. 单 Prompt Recommendation Market">
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 8 }}
+                  message={decisionMarket.recommendation_market?.metric_format_note || "提及、候选、明确推荐、第一推荐分别计算，不能互相替代。"}
+                  description={`当前分母为合格独立样本：${decisionMarket.recommendation_market?.eligible_runs ?? recommendationData.run_count} 次。`}
+                />
+                <Table
+                  size="small"
+                  rowKey="entity_name"
+                  pagination={{ pageSize: 8 }}
+                  dataSource={recommendationMarketRows}
+                  locale={{ emptyText: "当前没有品牌/实体进入推荐市场" }}
+                  columns={[
+                    { title: "实体", dataIndex: "entity_name", width: 150, render: (value, row: any) => <Space><Text strong>{value}</Text>{row.is_target_brand && <Tag color="blue">目标品牌</Tag>}</Space> },
+                    { title: "提及", width: 105, render: (_, row: any) => formatMetric(row.mention) },
+                    { title: "候选", width: 105, render: (_, row: any) => formatMetric(row.candidate) },
+                    { title: "明确推荐", width: 120, render: (_, row: any) => formatMetric(row.positive_recommendation) },
+                    { title: "第一推荐", width: 120, render: (_, row: any) => formatMetric(row.top_recommendation) },
+                    { title: "负面", width: 105, render: (_, row: any) => formatMetric(row.negative_recommendation) },
+                    { title: "推荐事件", width: 90, render: (_, row: any) => <Tag>{row.recommendation_event_count || 0}</Tag> },
+                    { title: "典型片段", dataIndex: "representative_claims", render: (value: string[]) => <Text type="secondary">{(value || [])[0] || "-"}</Text> },
+                  ]}
+                />
               </Card>}
               {decisionMarket && <Card size="small" title="答案语义事实">
                 <Alert type="info" showIcon style={{ marginBottom: 8 }} message={decisionMarket.answer_semantic_facts?.boundary_note || "品牌提及、选择空间、明确推荐相互独立判断。"} />
@@ -1463,6 +1699,73 @@ export default function App() {
                             </Space>
                           }}
                         />}
+                  </Card>
+                </Col>
+              </Row>}
+              {decisionMarket && <Row gutter={[12, 12]}>
+                <Col xs={24} xl={14}>
+                  <Card size="small" title="D. Prompt Recommendation Drivers">
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 8 }}
+                      message={decisionMarket.recommendation_drivers?.boundary_note || "Driver 来自推荐理由、选择标准和能力识别，不是词频榜。"}
+                    />
+                    <Table
+                      size="small"
+                      rowKey="driver_key"
+                      pagination={{ pageSize: 6 }}
+                      scroll={{ x: 980 }}
+                      dataSource={driverRows}
+                      locale={{ emptyText: "当前没有可聚合的推荐驱动" }}
+                      columns={[
+                        { title: "驱动", dataIndex: "driver_label", width: 140, render: (value) => <Tag color="blue">{value}</Tag> },
+                        { title: "覆盖", width: 95, render: (_, row: any) => <Tag>{row.supporting_run_count} 次</Tag> },
+                        { title: "用于选择", width: 120, render: (_, row: any) => formatMetric(row.used_for_selection) },
+                        { title: "目标品牌", width: 120, render: (_, row: any) => formatMetric(row.target_brand_observed) },
+                        { title: "竞品", width: 120, render: (_, row: any) => formatMetric(row.competitor_observed) },
+                        { title: "Product Truth", width: 150, render: (_, row: any) => <Tag color={row.product_truth_status === "SUPPORTED" ? "green" : row.product_truth_status === "NOT_SUPPORTED" ? "red" : "gold"}>{row.product_truth_status_label || truthStatusLabel(row.product_truth_status)}</Tag> },
+                        { title: "诊断信号", dataIndex: "diagnostic_signal", width: 235, render: (value) => <Tag style={{ whiteSpace: "nowrap" }}>{value || "-"}</Tag> },
+                      ]}
+                      expandable={{
+                        expandedRowRender: (row: any) => <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                          <Space wrap>{(row.winner_entities || []).map((name: string) => <Tag key={name}>{name}</Tag>)}</Space>
+                          {(row.examples || []).map((example: string, index: number) => <Alert key={index} type="info" message={example} />)}
+                        </Space>
+                      }}
+                    />
+                  </Card>
+                </Col>
+                <Col xs={24} xl={10}>
+                  <Card size="small" title="E. Source / Content Pattern">
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 8 }}
+                      message={decisionMarket.source_content_pattern?.boundary_note || "这里只描述最终引用来源形态，不把检索候选当作引用漏斗。"}
+                    />
+                    <Descriptions size="small" column={1} style={{ marginBottom: 8 }}>
+                      <Descriptions.Item label="引用出现">{formatMetric(decisionMarket.source_content_pattern?.metrics?.citation_presence_rate)}</Descriptions.Item>
+                      <Descriptions.Item label="选择理由上下文">{formatMetric(decisionMarket.source_content_pattern?.metrics?.selection_reason_context_rate)}</Descriptions.Item>
+                      <Descriptions.Item label="引用次数">{decisionMarket.source_content_pattern?.metrics?.citation_occurrence_count ?? 0}</Descriptions.Item>
+                    </Descriptions>
+                    <Table
+                      size="small"
+                      rowKey="content_type"
+                      pagination={false}
+                      dataSource={sourcePatternRows}
+                      locale={{ emptyText: "当前没有可识别的来源内容形态" }}
+                      columns={[
+                        { title: "内容形态", dataIndex: "content_type_label", render: (value) => <Tag color="green">{value}</Tag> },
+                        { title: "覆盖", width: 95, render: (_, row: any) => formatMetric(row.citation_coverage) },
+                        { title: "出现", width: 70, render: (_, row: any) => <Tag>{row.occurrence_count}</Tag> },
+                      ]}
+                      expandable={{
+                        expandedRowRender: (row: any) => <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                          {(row.representative_sources || []).map((source: any) => <a key={source.reference_id} href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>)}
+                        </Space>
+                      }}
+                    />
                   </Card>
                 </Col>
               </Row>}
@@ -1883,9 +2186,18 @@ export default function App() {
               <Card size="small" title="诊断结论：送入最终策略">
                 {decisionMarket?.action_package
                   ? <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                      <Alert
+                        type={interventionFeasibility.status === "READY_FOR_HUMAN_REVIEW" ? "success" : "warning"}
+                        showIcon
+                        message={<Space wrap><Tag color={feasibilityColor(interventionFeasibility.status)}>{interventionFeasibility.status_label || "待人工审核"}</Tag><Text>{(interventionFeasibility.reasons || [])[0] || "只能生成待审核策略候选。"}</Text></Space>}
+                        description={interventionFeasibility.boundary_note || "干预候选不是执行命令；只有人工审核后的 effective_payload=VALIDATED 才能物化 Action/Experiment。"}
+                      />
                       <Descriptions size="small" column={1}>
                         <Descriptions.Item label="机会类型">{decisionMarket.action_package.opportunity_type_label}</Descriptions.Item>
                         <Descriptions.Item label="资产决策">{decisionMarket.action_package.asset_decision_label}</Descriptions.Item>
+                        <Descriptions.Item label="推荐干预">{promptInterventionCandidates[0]
+                          ? `${interventionTypeLabel(promptInterventionCandidates[0].intervention_type)}，执行字段：${promptInterventionCandidates[0].target_platform || "UNRESOLVED"} / ${promptInterventionCandidates[0].target_asset || "UNRESOLVED"}`
+                          : "暂无干预候选"}</Descriptions.Item>
                         <Descriptions.Item label="必须回答">{(decisionMarket.action_package.must_answer || []).map((item: string, index: number) => <div key={index}>问题{index + 1}：{item}</div>)}</Descriptions.Item>
                         <Descriptions.Item label="选择理由缺口">{decisionMarket.action_package.selection_reason_gap}</Descriptions.Item>
                         <Descriptions.Item label="证据要求">{(decisionMarket.action_package.evidence_requirements || []).join("；")}</Descriptions.Item>
@@ -1899,8 +2211,8 @@ export default function App() {
                           草案阶段默认为「上下文不足」，不能声称环境完全不变；结论页只能表达当前观察窗口内是否发现显著已知混杂因素。
                         </Descriptions.Item>
                       </Descriptions>
-                      <Alert type="warning" showIcon message="这里不产出最终策略。点击下方按钮只会生成 Issue / Action / Experiment 草案，最终确认仍在「最终策略」页面完成。" />
-                      <Button type="primary" loading={recommendationLoading} onClick={createDecisionExperimentDraft}>送入最终策略：生成实验草案</Button>
+                      <Alert type="warning" showIcon message="这里不产出最终策略。点击下方按钮只会生成待审核 StrategyCandidate；不会直接创建 Action / Experiment。" />
+                      <Button type="primary" loading={recommendationLoading} onClick={createDecisionExperimentDraft}>送入最终策略：生成待审核策略候选</Button>
                     </Space>
                   : !recommendationData.action_brief
                   ? <Empty description="暂无行动说明" />
@@ -1969,18 +2281,23 @@ export default function App() {
                     />}
               </Card>
               <Card size="small" title="干预候选">
-                {(recommendationData.intervention_candidates || []).map((item: any, index: number) => <Card key={index} size="small" style={{ marginBottom: 8 }}>
-                  <Descriptions size="small" column={1}>
-                    <Descriptions.Item label="要争夺的位置">{item.target_decision_position}</Descriptions.Item>
-                    <Descriptions.Item label="当前问题">{item.observed_market_problem}</Descriptions.Item>
-                    <Descriptions.Item label="需要建立的真实主张">{(item.required_claims || []).join("；")}</Descriptions.Item>
-                    <Descriptions.Item label="需要的证据">{(item.required_evidence || []).join("；")}</Descriptions.Item>
-                    <Descriptions.Item label="内容形式">{item.recommended_content_type}</Descriptions.Item>
-                    <Descriptions.Item label="渠道">{item.recommended_channel}，{item.recommended_channel_reason}</Descriptions.Item>
-                    <Descriptions.Item label="验证指标">{metricLabel(item.target_metric)}，方向：{directionLabel(item.expected_direction)}</Descriptions.Item>
-                    <Descriptions.Item label="验证计划">{item.validation_plan}</Descriptions.Item>
-                  </Descriptions>
-                </Card>)}
+                {promptInterventionCandidates.length === 0
+                  ? <Empty description="当前没有干预候选" />
+                  : <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                    {promptInterventionCandidates.map((item: any, index: number) => <Card key={index} size="small">
+                      <Descriptions size="small" column={1}>
+                        <Descriptions.Item label="干预类型"><Tag color={item.intervention_type === "NO_ACTION" ? "default" : "blue"}>{item.intervention_type_label || interventionTypeLabel(item.intervention_type)}</Tag></Descriptions.Item>
+                        <Descriptions.Item label="可行性"><Tag color={feasibilityColor(item.feasibility_status)}>{interventionFeasibility.status_label || item.feasibility_status || "-"}</Tag></Descriptions.Item>
+                        <Descriptions.Item label="Primary Gap">{item.primary_gap_type_label || item.competitive_gap_type_label || "-"}</Descriptions.Item>
+                        <Descriptions.Item label="当前问题">{item.observed_problem || item.observed_market_problem || "-"}</Descriptions.Item>
+                        <Descriptions.Item label="建议方向">{item.recommended_direction || item.target_decision_position || "-"}</Descriptions.Item>
+                        <Descriptions.Item label="执行字段">平台：{item.target_platform || "UNRESOLVED"}；资产：{item.target_asset || "UNRESOLVED"}；URL：{item.target_url || "未确认"}</Descriptions.Item>
+                        <Descriptions.Item label="候选 URL">{item.suggested_target_url ? `${item.suggested_target_url}（${item.suggested_target_url_note || "仅供人工审核"}）` : "待人工确认"}</Descriptions.Item>
+                        <Descriptions.Item label="证据前提">{(item.evidence_prerequisites || item.required_evidence || []).join("；") || "待补充"}</Descriptions.Item>
+                        <Descriptions.Item label="执行边界">{item.execution_boundary || "StrategyCandidate -> 人工审核 -> effective_payload=VALIDATED -> Action -> Experiment"}</Descriptions.Item>
+                      </Descriptions>
+                    </Card>)}
+                  </Space>}
               </Card>
               <Card size="small" title="推荐判断人工审核">
                 <Table
@@ -2082,17 +2399,31 @@ export default function App() {
               description={strategyData.missing_evidence?.length > 0
                 ? (strategyData.missing_evidence as any[]).slice(0,3).map((m:any)=>m.reason||m.category).join("；")
                 : "当前证据的数据量或维度不足以支持策略生成，建议使用数据更丰富的证据。"}
-            /> : <Space direction="vertical" size={12}>
+            /> : <Space direction="vertical" size={12} style={{ width: "100%" }}>
               <Alert
                 type="success"
                 showIcon
                 message={<Space><Tag color="green">{strategyDecisionStatusLabel(strategyData.decision_status)}</Tag><Tag>{strategyCapabilityLabel(strategyData.decision_capability)}</Tag><Text>共 {strategyData.strategy_options_count} 个策略版本</Text></Space>}
                 description={currentStrategySummary(strategyData.candidates || [])}
               />
-              {(strategyData.candidates||[]).map((c:any)=>{
+              {sortedStrategyCandidates.length > 1 && <Card size="small" style={{ background: "#fafafa" }}>
+                <Space wrap>
+                  <Text type="secondary">策略筛选</Text>
+                  <Select
+                    size="small"
+                    style={{ minWidth: 260 }}
+                    value={strategyCandidateFilter}
+                    options={strategyFilterOptions}
+                    onChange={(value) => setStrategyCandidateFilter(value)}
+                  />
+                  <Text type="secondary">当前显示 {visibleStrategyCandidates.length}/{sortedStrategyCandidates.length} 个版本；默认展示最新可审核策略。</Text>
+                </Space>
+              </Card>}
+              {visibleStrategyCandidates.map((c:any)=>{
                 const allCandidates = strategyData.candidates || [];
                 const plan = experimentPlanPayload(c.experiment_plan);
-                const planPayload = plan.payload || c.structured_payload || {};
+                const strategyView = strategyDisplayPayload(c);
+                const planPayload = plan.payload || strategyView.payload || c.structured_payload || {};
                 const controlled = plan.controlled_intervention || {};
                 const audit = plan.known_environment_audit || {};
                 const isAccepted = c.review_status === "ACCEPTED" || c.review_status === "ACCEPTED_WITH_EDITS";
@@ -2110,7 +2441,7 @@ export default function App() {
                     <Tag color="blue">策略 #{c.id}</Tag>
                     {isCurrent && <Tag color="cyan">当前优先</Tag>}
                     {isJustGenerated && <Tag color="green">本次生成</Tag>}
-                    <Text strong>{interventionTypeLabel(c.structured_payload?.intervention_type)}</Text>
+                    <Text strong>{interventionTypeLabel(strategyView.interventionType)}</Text>
                   </Space>}
                   extra={<Space wrap>
                     <Text type="secondary">生成 {formatDateTime(c.generated_at || c.created_at)}</Text>
@@ -2121,8 +2452,11 @@ export default function App() {
                 <Row gutter={[12,12]}>
                   <Col xs={24} md={8}>
                     <Card size="small" title="📊 证据事实" style={{background:"#f6ffed"}}>
-                      <Text>{c.structured_payload?.evidence_summary||"无"}</Text>
+                      <Text>{strategyView.evidenceSummary || "无"}</Text>
                       {c.structured_payload?.evidence_fact_ids?.length>0 && <div style={{marginTop:8}}><Text type="secondary">引用事实ID: {(c.structured_payload.evidence_fact_ids as string[]).join(", ")}</Text></div>}
+                      {strategyView.decisionMarket?.primary_gap?.metric && <div style={{marginTop:8}}>
+                        <Text type="secondary">主指标：{metricLabel(strategyView.decisionMarket.primary_gap.metric.metric)} · {strategyView.decisionMarket.primary_gap.metric.numerator}/{strategyView.decisionMarket.primary_gap.metric.denominator}</Text>
+                      </div>}
                     </Card>
                   </Col>
                   <Col xs={24} md={8}>
@@ -2130,24 +2464,50 @@ export default function App() {
                       {(c.structured_payload?.inferences||[]).length>0
                         ? (c.structured_payload.inferences as any[]).map((inf:any)=><Alert key={inf.inference_id} type="warning" style={{marginBottom:4}} message={<Text>{inf.statement}</Text>} />)
                         : <Text type="secondary">基于当前证据推导的有限判断</Text>}
-                      <div style={{marginTop:8}}><Text strong>推断原因：</Text><Text>{c.structured_payload?.hypothesized_cause||"-"}</Text></div>
+                      <div style={{marginTop:8}}><Text strong>推断原因：</Text><Text>{strategyView.cause || "-"}</Text></div>
+                      {strategyView.mustAnswer.length > 0 && <div style={{marginTop:8}}>
+                        <Text strong>审核前必须回答：</Text>
+                        <ul style={{margin:"6px 0 0 18px", padding:0}}>
+                          {strategyView.mustAnswer.slice(0, 4).map((item: string, index: number) => <li key={index}><Text>{item}</Text></li>)}
+                        </ul>
+                      </div>}
                     </Card>
                   </Col>
                   <Col xs={24} md={8}>
                     <Card size="small" title="🎯 策略建议" style={{background:"#e6f7ff"}}>
                       <Descriptions size="small" column={1} items={[
-                        {key:"type",label:"干预类型",children:<Tag color="blue">{interventionTypeLabel(c.structured_payload?.intervention_type)}</Tag>},
-                        {key:"plat",label:"目标平台",children:<Tag color={c.structured_payload?.target_platform==="UNRESOLVED"?"orange":"blue"}>{platformLabel(c.structured_payload?.target_platform)}</Tag>},
-                        {key:"ct",label:"内容类型",children:<Tag>{strategyContentTypeLabel(c.structured_payload?.target_content_type)}</Tag>},
+                        {key:"type",label:"干预类型",children:<Tag color={strategyView.interventionType==="UNRESOLVED"?"orange":"blue"}>{interventionTypeLabel(strategyView.interventionType)}</Tag>},
+                        {key:"plat",label:"目标平台",children:<Tag color={strategyView.targetPlatform==="UNRESOLVED"?"orange":"blue"}>{platformLabel(strategyView.targetPlatform)}</Tag>},
+                        {key:"ct",label:"内容类型",children:<Tag>{strategyContentTypeLabel(strategyView.targetContentType)}</Tag>},
                         {key:"fit",label:"证据匹配度 / 执行可行性",children:<Space><Tag>{c.structured_payload?.evidence_fit||"-"}</Tag><Tag>{c.structured_payload?.execution_feasibility||"未评估"}</Tag></Space>},
                       ]}/>
                       {c.structured_payload?.recommended_action && typeof c.structured_payload.recommended_action === "object"
-                        ? <Space direction="vertical" size={4} style={{marginTop:8}}>
+                          ? <Space direction="vertical" size={4} style={{marginTop:8}}>
                             <Text strong>内容方向：</Text><Text>{(c.structured_payload.recommended_action as any).content_direction||"-"}</Text>
                             <Text strong>平台方向：</Text><Text>{(c.structured_payload.recommended_action as any).platform_direction||"-"}</Text>
+                            {strategyView.platformRecommendations.length > 0 && <Space direction="vertical" size={6} style={{width:"100%"}}>
+                              <Text strong>推荐平台组合：</Text>
+                              {strategyView.platformRecommendations.map((item: any, index: number) => <Alert
+                                key={`${item.platform || item.platform_label}-${index}`}
+                                type="info"
+                                showIcon
+                                message={`${index + 1}. ${item.platform_label || platformLabel(item.platform)} · ${item.signal_level_label || "普通引用分布"} · ${(item.content_type_labels || []).join("、") || "内容待确认"}`}
+                                description={<Space direction="vertical" size={2}>
+                                  <Text>{item.recommended_action || "-"}</Text>
+                                  <Text type="secondary">{item.evidence_basis || `引用覆盖 ${item.citation_run_count || 0} 个 Run`}</Text>
+                                </Space>}
+                              />)}
+                            </Space>}
                             <Text strong>资产方向：</Text><Text>{(c.structured_payload.recommended_action as any).asset_direction||"-"}</Text>
+                            {strategyView.metricAvailability && <Alert type="warning" showIcon message="指标边界" description={strategyView.metricAvailability} />}
                           </Space>
-                        : <Text>{c.structured_payload?.recommended_action||"-"}</Text>}
+                        : <Space direction="vertical" size={6} style={{marginTop:8, width:"100%"}}>
+                            <Text>{strategyView.actionText || "-"}</Text>
+                            {strategyView.contentBrief.page_goal && <Alert type="info" showIcon message="内容目标" description={strategyView.contentBrief.page_goal} />}
+                            {strategyView.metricAvailability && <Alert type="warning" showIcon message="指标边界" description={strategyView.metricAvailability} />}
+                            {strategyView.requiredSections.length > 0 && <Text type="secondary">建议结构：{strategyView.requiredSections.join(" / ")}</Text>}
+                            {strategyView.evidenceRequirements.length > 0 && <Text type="secondary">证据要求：{strategyView.evidenceRequirements.join("；")}</Text>}
+                          </Space>}
                     </Card>
                   </Col>
                   <Col xs={24}>
@@ -2183,19 +2543,20 @@ export default function App() {
                       <Descriptions size="small" column={{xs:1, md:2}} items={[
                         {key:"ready",label:"计划状态",children:<Tag color={readinessStatusColor(plan.readiness_status)}>{readinessStatusLabel(plan.readiness_status)}</Tag>},
                         {key:"experiment",label:"实验编号",children:plan.experiment_id || c.experiment_id ? <Tag color="blue">#{plan.experiment_id || c.experiment_id}</Tag> : <Text type="secondary">尚未生成</Text>},
-                        {key:"metric",label:"主指标",children:<Text>{metricLabel(controlled.primary_metric || plan.target_metric || planPayload.target_metric)}</Text>},
+                        {key:"metric",label:"主指标",children:<Text>{metricLabel(controlled.primary_metric || plan.target_metric || planPayload.target_metric || strategyView.targetMetric)}</Text>},
                         {key:"compare",label:"可比性边界",children:<Tag color={comparabilityStatusColor(plan.comparability_status)}>{comparabilityStatusLabel(plan.comparability_status)}</Tag>},
                         {key:"allowed",label:"允许改动",children:<Text>{listText(controlled.allowed_changes || planPayload.changed_features, "按策略中声明的同一机制内容改动")}</Text>},
-                        {key:"forbidden",label:"禁止混改",children:<Text>{listText(controlled.forbidden_changes || planPayload.controlled_variables, "不得同时改采集 Prompt、目标 URL、产品能力、外部平台投放等变量")}</Text>},
+                        {key:"forbidden",label:"禁止混改",children:<Text>{listText(controlled.forbidden_changes || planPayload.controlled_variables || c.original_llm_payload?.forbidden_changes, "不得同时改采集 Prompt、目标 URL、产品能力、外部平台投放等变量")}</Text>},
                       ]}/>
                       <Alert
-                        type={plan.readiness_status === "BLOCKED" ? "warning" : "info"}
+                        type={plan.readiness_status === "BLOCKED" || strategyView.executionGate?.blocked_materialization ? "warning" : "info"}
                         showIcon
                         style={{marginTop:8}}
-                        message={plan.comparability_note || "复采结论只能说明当前观察窗口内的变化，不能声称黑盒 AI 环境严格不变。"}
+                        message={strategyView.executionGate?.blocked_materialization ? "待人工审核：当前只是 StrategyCandidate，不能直接生成 Action / Experiment。" : plan.comparability_note || "复采结论只能说明当前观察窗口内的变化，不能声称黑盒 AI 环境严格不变。"}
                         description={
                           <Space direction="vertical" size={2}>
                             <Text type="secondary">环境审计：模型版本变化 {audit.model_version_known_changed ? "是" : "否"}；引用格局变化 {audit.citation_landscape_changed ? "是" : "否"}；竞品来源变化 {audit.competitor_source_changed ? "是" : "否"}；品牌市场变化 {audit.brand_market_changed ? "是" : "否"}。</Text>
+                            {strategyView.executionGate?.errors?.length > 0 && <Text type="danger">阻塞项：{strategyView.executionGate.errors.join("；")}</Text>}
                             {plan.readiness_errors?.length > 0 && <Text type="danger">阻塞项：{plan.readiness_errors.join("；")}</Text>}
                             {plan.readiness_warnings?.length > 0 && <Text type="secondary">提醒：{plan.readiness_warnings.join("；")}</Text>}
                           </Space>

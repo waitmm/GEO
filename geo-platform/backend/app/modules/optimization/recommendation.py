@@ -44,6 +44,11 @@ RECOMMENDATION_SCHEMA_VERSION = "recommendation_schema.v1"
 ENTITY_RESOLVER_VERSION = "entity_resolver.v1_rule_alias"
 RECOMMENDATION_EXTRACTOR_VERSION = "recommendation_extractor.v1_rule_zh"
 DECISION_MARKET_SCHEMA_VERSION = "decision_market_schema.v2_choice_gate"
+PROMPT_RUN_ELIGIBILITY_VERSION = "prompt_run_eligibility.v1_single_prompt"
+PROMPT_DECISION_SPACE_VERSION = "prompt_decision_space.v1_single_prompt"
+PROMPT_DRIVER_AGGREGATION_VERSION = "prompt_driver_aggregation.v1"
+PROMPT_SOURCE_PATTERN_VERSION = "prompt_source_pattern.v1"
+PROMPT_INTERVENTION_CANDIDATE_VERSION = "prompt_intervention_candidate.v1"
 ANSWER_SEMANTIC_FACT_EXTRACTOR_VERSION = "answer_semantic_fact.v1_rule_zh"
 RECOMMENDATION_REASON_EXTRACTOR_VERSION = "recommendation_reason.v1_rule_zh"
 SELECTION_CRITERION_EXTRACTOR_VERSION = "selection_criterion.v1_rule_zh"
@@ -123,6 +128,48 @@ PRODUCT_TRUTH_STATUS_LABELS = {
     "PARTIALLY_SUPPORTED": "部分支持",
     "NOT_SUPPORTED": "不支持",
     "UNKNOWN": "未确认",
+}
+
+RUN_ELIGIBILITY_LABELS = {
+    "ELIGIBLE": "可用于正式分析",
+    "PARTIAL": "可用于部分分析",
+    "INELIGIBLE": "不可用于正式分析",
+    "UNKNOWN": "需要人工确认",
+}
+
+DECISION_SPACE_LABELS = {
+    "NO_BRAND_DECISION_SPACE": "没有品牌决策空间",
+    "SOLUTION_CHOICE_SPACE": "存在方案选择空间",
+    "BRAND_CANDIDATE_SPACE": "存在品牌候选空间",
+    "BRAND_RECOMMENDATION_PRESENT": "已有品牌推荐",
+    "BRAND_COMPARISON_PRESENT": "已有品牌对比",
+}
+
+INTERVENTION_TYPE_LABELS = {
+    "CONTENT_CREATE": "新建内容",
+    "CONTENT_UPDATE": "更新内容",
+    "PLATFORM_PUBLISH": "平台发布",
+    "TECHNICAL_INDEXABILITY": "技术可索引性",
+    "STRUCTURED_DATA": "结构化数据",
+    "ENTITY_CONSISTENCY": "实体一致性",
+    "INTERNAL_INFORMATION_ARCHITECTURE": "内部信息架构",
+    "PLATFORM_AUTHORITY_BUILD": "平台权威建设",
+    "RECRAWL_OR_REFRESH": "重抓/刷新",
+    "NO_ACTION": "暂不行动",
+    "UNRESOLVED": "待人工确认",
+}
+
+INTERVENTION_PREREQUISITES = {
+    "CONTENT_CREATE": ["已确认 Product Truth", "明确目标问题和目标能力", "可公开访问的发布位置"],
+    "CONTENT_UPDATE": ["已确认 Product Truth", "已有人工作为目标资产的页面/内容", "修改前后内容快照"],
+    "PLATFORM_PUBLISH": ["已确认 Product Truth", "人工确认目标平台和账号", "平台内容可被公开访问"],
+    "TECHNICAL_INDEXABILITY": ["目标 URL 已确认", "canonical/robots/index 状态可检查", "修改前后技术快照"],
+    "STRUCTURED_DATA": ["目标 URL 已确认", "结构化数据字段可被页面真实支撑", "发布后可验证"],
+    "ENTITY_CONSISTENCY": ["目标品牌实体和别名已确认", "官网/第三方资料口径一致", "不能编造未确认能力"],
+    "INTERNAL_INFORMATION_ARCHITECTURE": ["目标内容资产已确认", "内部链接和锚文本可修改", "不改变采集 Prompt"],
+    "PLATFORM_AUTHORITY_BUILD": ["目标平台和账号已确认", "发布主体身份可审计", "内容事实可核验"],
+    "RECRAWL_OR_REFRESH": ["目标 URL 已确认", "内容已实际发布或更新", "刷新动作和时间可记录"],
+    "NO_ACTION": ["当前没有可执行缺口，继续观察或补样本"],
 }
 
 EVIDENCE_STATUS_LABELS = {
@@ -253,6 +300,137 @@ def metric_eligibility_for_mode(decision_mode: str) -> dict:
     }
 
 
+def _assess_prompt_run_eligibility(prompt: Prompt, runs: list[BrowserMonitorRun]) -> dict:
+    conversation_counts: dict[str, int] = defaultdict(int)
+    for run in runs:
+        if run.conversation_id:
+            conversation_counts[run.conversation_id] += 1
+
+    rows = []
+    analysis_run_ids = []
+    answer_analysis_run_ids = []
+    citation_analysis_run_ids = []
+    for run in runs:
+        status, reasons, warnings = _run_eligibility_status(prompt, run, conversation_counts)
+        answer_analysis_usable = status in {"ELIGIBLE", "PARTIAL"}
+        citation_analysis_usable = status == "ELIGIBLE"
+        analysis_usable = answer_analysis_usable
+        if analysis_usable:
+            analysis_run_ids.append(run.id)
+        if answer_analysis_usable:
+            answer_analysis_run_ids.append(run.id)
+        if citation_analysis_usable:
+            citation_analysis_run_ids.append(run.id)
+        rows.append({
+            "run_id": run.id,
+            "sample_index": run.sample_index,
+            "run_sequence": run.run_sequence,
+            "collection_status": run.status,
+            "collection_mode": run.collection_mode,
+            "sampling_mode": run.sampling_mode,
+            "conversation_id": run.conversation_id,
+            "status": status,
+            "status_label": RUN_ELIGIBILITY_LABELS.get(status, status),
+            "analysis_usable": analysis_usable,
+            "answer_analysis_usable": answer_analysis_usable,
+            "citation_analysis_usable": citation_analysis_usable,
+            "reasons": reasons,
+            "warnings": warnings,
+        })
+
+    total = len(rows)
+    eligible_ids = [row["run_id"] for row in rows if row["status"] == "ELIGIBLE"]
+    partial_ids = [row["run_id"] for row in rows if row["status"] == "PARTIAL"]
+    ineligible_ids = [row["run_id"] for row in rows if row["status"] == "INELIGIBLE"]
+    unknown_ids = [row["run_id"] for row in rows if row["status"] == "UNKNOWN"]
+    return {
+        "schema_version": PROMPT_RUN_ELIGIBILITY_VERSION,
+        "analysis_unit": "SINGLE_PROMPT",
+        "prompt_id": prompt.id,
+        "prompt_text": prompt.prompt_text,
+        "total_runs": total,
+        "eligible_runs": len(eligible_ids),
+        "partial_runs": len(partial_ids),
+        "ineligible_runs": len(ineligible_ids),
+        "unknown_runs": len(unknown_ids),
+        "analysis_usable_runs": len(analysis_run_ids),
+        "answer_analysis_usable_runs": len(answer_analysis_run_ids),
+        "citation_analysis_usable_runs": len(citation_analysis_run_ids),
+        "eligible_run_ids": eligible_ids,
+        "partial_run_ids": partial_ids,
+        "analysis_run_ids": analysis_run_ids,
+        "answer_analysis_run_ids": answer_analysis_run_ids,
+        "citation_analysis_run_ids": citation_analysis_run_ids,
+        "ineligible_run_ids": ineligible_ids,
+        "unknown_run_ids": unknown_ids,
+        "metrics": {
+            "eligible_run_rate": _metric("eligible_run_rate", len(eligible_ids), total, total),
+            "analysis_usable_run_rate": _metric("analysis_usable_run_rate", len(analysis_run_ids), total, total),
+            "answer_analysis_usable_run_rate": _metric("answer_analysis_usable_run_rate", len(answer_analysis_run_ids), total, total),
+            "citation_analysis_usable_run_rate": _metric("citation_analysis_usable_run_rate", len(citation_analysis_run_ids), total, total),
+        },
+        "rows": rows,
+        "boundary_note": "正式 GEO 分析以单 Prompt 的独立新会话采样为单位；partial_success 只能进入答案理解等非引用分析，不能进入 Citation/Source/检索重合指标分母。",
+    }
+
+
+def _run_eligibility_status(
+    prompt: Prompt,
+    run: BrowserMonitorRun,
+    conversation_counts: dict[str, int],
+) -> tuple[str, list[str], list[str]]:
+    reasons: list[str] = []
+    warnings: list[str] = []
+
+    if run.status not in VALID_RUN_STATUSES:
+        reasons.append("COLLECTION_STATUS_NOT_ANALYZABLE")
+    if not (run.answer_text or "").strip():
+        reasons.append("EMPTY_ANSWER")
+    if not _run_prompt_matches(prompt, run):
+        reasons.append("PROMPT_MISMATCH")
+    collection_mode = (run.collection_mode or "").strip()
+    if collection_mode != "single_independent":
+        if collection_mode == "single_continuous":
+            reasons.append("CONTEXT_CONTAMINATION")
+        elif collection_mode:
+            warnings.append("UNKNOWN_COLLECTION_MODE")
+        else:
+            warnings.append("MISSING_COLLECTION_MODE")
+    if run.conversation_id and conversation_counts.get(run.conversation_id, 0) > 1:
+        reasons.append("CONVERSATION_ID_REUSED")
+
+    if reasons:
+        return "INELIGIBLE", reasons, warnings
+    if run.status == "partial_success":
+        warnings.append("PARTIAL_COLLECTION_STATUS")
+        return "PARTIAL", ["PARTIAL_BUT_USABLE_FOR_NON_CITATION_ANALYSIS"], warnings
+    if warnings:
+        return "UNKNOWN", ["NEEDS_HUMAN_RUN_ELIGIBILITY_REVIEW"], warnings
+    return "ELIGIBLE", ["FRESH_INDEPENDENT_PROMPT_RUN"], warnings
+
+
+def _run_prompt_matches(prompt: Prompt, run: BrowserMonitorRun) -> bool:
+    expected = (prompt.prompt_text or "").strip()
+    if not expected:
+        return True
+    observed_values = [
+        (run.original_query or "").strip(),
+        (run.page_query or "").strip(),
+        (run.retrieval_query or "").strip(),
+    ]
+    observed_values = [value for value in observed_values if value]
+    if not observed_values:
+        return True
+    expected_key = _normalize_key(expected)
+    for value in observed_values:
+        value_key = _normalize_key(value)
+        if not value_key:
+            continue
+        if expected_key == value_key or expected_key in value_key or value_key in expected_key:
+            return True
+    return False
+
+
 def run_recommendation_analysis(
     db: Session,
     project_id: int,
@@ -267,22 +445,30 @@ def run_recommendation_analysis(
     query = db.query(BrowserMonitorRun).filter(
         BrowserMonitorRun.project_id == project_id,
         BrowserMonitorRun.prompt_id == prompt_id,
-        BrowserMonitorRun.status.in_(VALID_RUN_STATUSES),
     )
     if run_ids:
         query = query.filter(BrowserMonitorRun.id.in_(run_ids))
     runs = query.order_by(BrowserMonitorRun.id).all()
     if not runs:
-        raise HTTPException(status_code=400, detail="该问题没有可分析的成功或部分成功采集记录")
+        raise HTTPException(status_code=400, detail="该问题没有可分析的采集记录")
+
+    run_eligibility = _assess_prompt_run_eligibility(prompt, runs)
+    analysis_run_ids = set(run_eligibility["answer_analysis_run_ids"])
+    citation_analysis_run_ids = set(run_eligibility["citation_analysis_run_ids"])
+    analysis_runs = [run for run in runs if run.id in analysis_run_ids]
+    citation_analysis_runs = [run for run in runs if run.id in citation_analysis_run_ids]
+    if not analysis_runs:
+        raise HTTPException(status_code=400, detail="该问题没有符合独立新会话要求的可分析记录；请先补充 single_independent 采样。")
 
     decision = infer_prompt_decision_mode(prompt.prompt_text)
     eligibility = metric_eligibility_for_mode(decision["decision_mode"])
-    entities = _resolve_entities(db, project, runs)
+    eligibility["run_eligibility"] = run_eligibility
+    entities = _resolve_entities(db, project, analysis_runs)
 
     snapshot = RecommendationIntelligenceSnapshot(
         project_id=project_id,
         prompt_id=prompt_id,
-        source_run_ids_json=dumps([run.id for run in runs]),
+        source_run_ids_json=dumps([run.id for run in analysis_runs]),
         recommendation_schema_version=RECOMMENDATION_SCHEMA_VERSION,
         entity_resolver_version=ENTITY_RESOLVER_VERSION,
         recommendation_extractor_version=RECOMMENDATION_EXTRACTOR_VERSION,
@@ -295,44 +481,50 @@ def run_recommendation_analysis(
     db.flush()
 
     claims = []
-    for run in runs:
+    for run in analysis_runs:
         claims.extend(_extract_claims_for_run(db, snapshot, project_id, prompt_id, run, entities))
     db.flush()
-    semantic_facts = _create_answer_semantic_facts(db, snapshot, project, prompt, runs, claims)
+    semantic_facts = _create_answer_semantic_facts(db, snapshot, project, prompt, analysis_runs, claims)
     db.flush()
 
-    landscape = _build_landscape(runs, claims)
+    landscape = _build_landscape(analysis_runs, claims)
     reason_claims = _create_reason_claims(db, snapshot, claims)
     db.flush()
-    evidence_links = _create_evidence_links(db, snapshot, claims, reason_claims)
+    citation_claims = [claim for claim in claims if claim.run_id in citation_analysis_run_ids]
+    citation_reason_claims = [reason for reason in reason_claims if reason.run_id in citation_analysis_run_ids]
+    evidence_links = _create_evidence_links(db, snapshot, citation_claims, citation_reason_claims)
     db.flush()
-    selection_criteria = _create_selection_criteria(db, snapshot, project, prompt, runs, entities)
+    selection_criteria = _create_selection_criteria(db, snapshot, project, prompt, analysis_runs, entities)
     db.flush()
-    capability_claims = _create_brand_capability_claims(db, snapshot, project, prompt, runs, entities)
+    capability_claims = _create_brand_capability_claims(db, snapshot, project, prompt, analysis_runs, entities)
     db.flush()
-    evidence_adoptions = _create_evidence_adoptions(db, snapshot, claims, selection_criteria, evidence_links)
+    citation_selection_criteria = [criterion for criterion in selection_criteria if criterion.run_id in citation_analysis_run_ids]
+    evidence_adoptions = _create_evidence_adoptions(db, snapshot, citation_claims, citation_selection_criteria, evidence_links)
     db.flush()
     positioning = _build_positioning(claims, reason_claims)
     decision_market = _build_decision_market(
         db=db,
         project=project,
         prompt=prompt,
-        runs=runs,
+        runs=analysis_runs,
         landscape=landscape,
         claims=claims,
+        reason_claims=reason_claims,
         semantic_facts=semantic_facts,
         selection_criteria=selection_criteria,
         capability_claims=capability_claims,
         evidence_adoptions=evidence_adoptions,
+        run_eligibility=run_eligibility,
+        citation_runs=citation_analysis_runs,
     )
     decision_gaps = _create_decision_gap_diagnoses(db, snapshot, project, prompt, decision_market, claims, evidence_adoptions)
     db.flush()
     gaps = _diagnose_competitive_gaps(project, landscape, positioning, eligibility)
-    interventions = _build_intervention_candidates(project, prompt, runs, landscape, positioning, gaps)
+    interventions = decision_market.get("intervention_candidates") or _build_intervention_candidates(project, prompt, analysis_runs, landscape, positioning, gaps)
     snapshot.landscape_json = dumps(landscape)
     snapshot.positioning_json = dumps(positioning)
     snapshot.evidence_links_json = dumps([evidence_link_to_read(link) for link in evidence_links])
-    snapshot.gap_diagnosis_json = dumps(gaps)
+    snapshot.gap_diagnosis_json = dumps(decision_market.get("gap_diagnosis") or gaps)
     snapshot.intervention_candidates_json = dumps(interventions)
     db.commit()
     db.refresh(snapshot)
@@ -715,10 +907,12 @@ def create_decision_market_experiment_draft(db: Session, snapshot_id: int, paylo
     runs = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.id.in_(run_ids)).order_by(BrowserMonitorRun.id).all() if run_ids else []
     market = _decision_market_to_read(db, snapshot, project, prompt, runs, loads(snapshot.landscape_json, []))
     gaps = market.get("gap_diagnosis", [])
-    actionable_gaps = [gap for gap in gaps if gap.get("gap_type") not in {"INTENT_FIT_GAP", "RECOMMENDATION_GAP"}]
+    actionable_gaps = [gap for gap in gaps if gap.get("gap_type") not in {"INTENT_FIT_GAP"}]
     primary_gap = actionable_gaps[0] if actionable_gaps else (gaps[0] if gaps else None)
     action_package = market.get("action_package", {})
     experiment_proposal = action_package.get("experiment_proposal", {})
+    intervention_candidates = market.get("intervention_candidates", [])
+    selected_intervention = intervention_candidates[0] if intervention_candidates else {}
     owner = (payload or {}).get("owner") or "待分配"
 
     if not primary_gap:
@@ -774,6 +968,11 @@ def create_decision_market_experiment_draft(db: Session, snapshot_id: int, paylo
             "must_answer": action_package.get("must_answer", []),
             "evidence_requirements": action_package.get("evidence_requirements", []),
             "content_brief": content_brief,
+            "intervention_candidate": selected_intervention,
+            "intervention_feasibility": market.get("intervention_feasibility", {}),
+            "target_brand_position": market.get("target_brand_position", {}),
+            "recommendation_drivers": market.get("recommendation_drivers", {}).get("rows", [])[:5],
+            "source_content_pattern": market.get("source_content_pattern", {}).get("rows", [])[:5],
             "solution_slot": market.get("solution_slot"),
             "prompt_intents": market.get("prompt_intents"),
         },
@@ -852,6 +1051,7 @@ def snapshot_to_read(db: Session, snapshot: RecommendationIntelligenceSnapshot) 
     landscape = loads(snapshot.landscape_json, [])
     positioning = loads(snapshot.positioning_json, [])
     evidence_links = loads(snapshot.evidence_links_json, [])
+    metric_eligibility = loads(snapshot.metric_eligibility_json, {})
     brand_opportunity = _analyze_brand_opportunity(project, prompt, runs, landscape)
     decision_market = _decision_market_to_read(db, snapshot, project, prompt, runs, landscape)
     return {
@@ -864,7 +1064,8 @@ def snapshot_to_read(db: Session, snapshot: RecommendationIntelligenceSnapshot) 
         "decision_mode": snapshot.decision_mode,
         "decision_mode_label": DECISION_MODE_LABELS.get(snapshot.decision_mode, snapshot.decision_mode),
         "recommendation_expected": snapshot.recommendation_expected,
-        "metric_eligibility": loads(snapshot.metric_eligibility_json, {}),
+        "metric_eligibility": metric_eligibility,
+        "run_eligibility": metric_eligibility.get("run_eligibility", {}),
         "landscape_scope_label": "仅统计项目品牌和竞品品牌",
         "landscape": landscape,
         "positioning": positioning,
@@ -1252,9 +1453,16 @@ def _decision_market_to_read(
     claims = db.query(RecommendationClaim).filter(
         RecommendationClaim.snapshot_id == snapshot.id,
     ).order_by(RecommendationClaim.run_id, RecommendationClaim.position, RecommendationClaim.id).all()
+    reasons = db.query(RecommendationReasonClaim).filter(
+        RecommendationReasonClaim.snapshot_id == snapshot.id,
+    ).order_by(RecommendationReasonClaim.run_id, RecommendationReasonClaim.entity_name, RecommendationReasonClaim.id).all()
     semantic_facts = db.query(AnswerSemanticFact).filter(
         AnswerSemanticFact.snapshot_id == snapshot.id,
     ).order_by(AnswerSemanticFact.run_id, AnswerSemanticFact.fact_type).all()
+    metric_eligibility = loads(snapshot.metric_eligibility_json, {})
+    run_eligibility = metric_eligibility.get("run_eligibility") or {}
+    citation_run_ids = set(run_eligibility.get("citation_analysis_run_ids") or [])
+    citation_runs = [run for run in runs if run.id in citation_run_ids] if citation_run_ids else None
 
     return _build_decision_market(
         db=db,
@@ -1263,11 +1471,14 @@ def _decision_market_to_read(
         runs=runs,
         landscape=landscape,
         claims=claims,
+        reason_claims=reasons,
         semantic_facts=semantic_facts,
         selection_criteria=criteria,
         capability_claims=capabilities,
         evidence_adoptions=adoptions,
+        run_eligibility=run_eligibility,
         persisted_gaps=gaps,
+        citation_runs=citation_runs,
     )
 
 
@@ -1432,6 +1643,7 @@ def _create_answer_semantic_facts(
             _semantic_fact_payload("has_brand_mention", prompt.prompt_text, run.answer_text or "", run_claims),
             _semantic_fact_payload("has_explicit_recommendation", prompt.prompt_text, run.answer_text or "", run_claims),
             _semantic_fact_payload("has_comparison", prompt.prompt_text, run.answer_text or "", run_claims),
+            _semantic_fact_payload("has_brand_comparison", prompt.prompt_text, run.answer_text or "", run_claims),
         ]
         for payload in facts:
             row = AnswerSemanticFact(
@@ -1913,13 +2125,18 @@ def _build_decision_market(
     runs: list[BrowserMonitorRun],
     landscape: list[dict],
     claims: list[RecommendationClaim],
+    reason_claims: list[RecommendationReasonClaim],
     semantic_facts: list[AnswerSemanticFact],
     selection_criteria: list[DecisionSelectionCriterion],
     capability_claims: list[BrandCapabilityClaim],
     evidence_adoptions: list[DecisionEvidenceAdoption],
+    run_eligibility: dict | None = None,
     persisted_gaps: list[DecisionGapDiagnosis] | None = None,
+    citation_runs: list[BrowserMonitorRun] | None = None,
 ) -> dict:
     run_count = len({run.id for run in runs})
+    citation_scope_runs = citation_runs if citation_runs is not None else runs
+    citation_run_count = len({run.id for run in citation_scope_runs})
     prompt_text = prompt.prompt_text if prompt else ""
     intents = _classify_prompt_intents(prompt_text, runs)
     choice_slot = _build_choice_slot(prompt_text, runs, landscape, semantic_facts)
@@ -1928,33 +2145,65 @@ def _build_decision_market(
     criteria_market = _build_selection_criteria_market(project, selection_criteria, run_count)
     brand_funnel = _build_brand_funnel(project, landscape, claims, capability_claims, choice_slot, run_count)
     capability_market = _build_capability_market(capability_claims)
-    citation_source_analysis = _build_citation_source_analysis(db, runs)
-    evidence_market = _build_evidence_adoption_market(evidence_adoptions, run_count)
+    citation_source_analysis = _build_citation_source_analysis(db, citation_scope_runs)
+    evidence_market = _build_evidence_adoption_market(evidence_adoptions, citation_run_count)
     brand_opportunity_gate = _build_brand_opportunity_gate(project, runs, claims, semantic_facts)
     product_truth = _build_product_truth_summary(db, project, capability_market)
     gaps = [gap_diagnosis_to_read(gap) for gap in persisted_gaps] if persisted_gaps is not None else _derive_gap_reads(project, brand_funnel, criteria_market, evidence_market, choice_slot, brand_opportunity_gate, product_truth)
+    decision_space = _build_prompt_decision_space(runs, claims, semantic_facts, choice_slot)
+    recommendation_market = _build_prompt_recommendation_market(project, landscape, run_count)
+    target_brand_position = _build_target_brand_position(project, brand_funnel, gaps)
+    drivers = _build_prompt_recommendation_drivers(
+        project=project,
+        run_count=run_count,
+        claims=claims,
+        reason_claims=reason_claims,
+        selection_criteria=selection_criteria,
+        capability_claims=capability_claims,
+        product_truth=product_truth,
+    )
+    source_pattern = _build_prompt_source_content_pattern(db, citation_scope_runs, evidence_adoptions)
+    feasibility = _build_prompt_intervention_feasibility(run_eligibility or {}, gaps, product_truth)
+    prompt_interventions = _build_prompt_intervention_candidates(
+        project=project,
+        prompt=prompt,
+        gaps=gaps,
+        target_brand_position=target_brand_position,
+        drivers=drivers,
+        source_pattern=source_pattern,
+        feasibility=feasibility,
+    )
 
     return {
         "schema_version": DECISION_MARKET_SCHEMA_VERSION,
         "scope_note": "所有结论仅代表当前 Prompt、当前采样窗口和已保存答案，不代表模型永久认知或真实市场份额。",
+        "analysis_unit": "SINGLE_PROMPT",
+        "run_eligibility": run_eligibility or {},
         "prompt_intents": intents,
         "primary_metric_note": _primary_metric_note(intents),
+        "decision_space": decision_space,
         "answer_semantic_facts": _build_answer_semantic_summary(semantic_facts, run_count),
         "brand_opportunity_gate": brand_opportunity_gate,
         "choice_slot": choice_slot,
         "solution_slot": choice_slot,
+        "recommendation_market": recommendation_market,
         "need_market": need_market,
         "solution_object_market": solution_market,
         "selection_criteria_market": criteria_market,
         "brand_funnel": brand_funnel,
+        "target_brand_position": target_brand_position,
         "capability_recognition": capability_market,
+        "recommendation_drivers": drivers,
         "citation_source_analysis": citation_source_analysis,
+        "source_content_pattern": source_pattern,
         "citation_context": evidence_market,
         "evidence_adoption": evidence_market,
         "product_truth": product_truth,
         "gap_diagnosis": gaps,
         "primary_gap": gaps[0] if gaps else None,
         "contributing_gaps": gaps[1:3],
+        "intervention_feasibility": feasibility,
+        "intervention_candidates": prompt_interventions,
         "action_package": _build_action_package(project, prompt, choice_slot, criteria_market, brand_funnel, evidence_market, gaps, product_truth),
     }
 
@@ -2108,10 +2357,12 @@ def _semantic_fact_payload(fact_type: str, prompt_text: str, answer: str, run_cl
         span = explicit[0].answer_span if explicit else ""
         confidence = 0.82 if value else 0.68
     elif fact_type == "has_comparison":
-        sentences = [sentence for sentence in _split_answer(answer) if any(keyword in sentence for keyword in ["对比", "比较", "相比", "更适合", "优于", "不如"])]
+        sentences = [sentence for sentence in _split_answer(answer) if _sentence_has_comparison(sentence)]
         value = bool(sentences)
         span = sentences[0] if sentences else ""
         confidence = 0.76 if value else 0.62
+    elif fact_type == "has_brand_comparison":
+        value, span, confidence = _answer_has_brand_comparison(answer, run_claims)
     else:
         value, span, confidence = False, "", 0.0
     offset = answer.find(span) if span else -1
@@ -2130,7 +2381,7 @@ def _build_answer_semantic_summary(facts: list[AnswerSemanticFact], run_count: i
     for fact in facts:
         grouped[fact.fact_type].append(fact)
     metrics = {}
-    for fact_type in ["has_choice_slot", "has_brand_mention", "has_explicit_recommendation", "has_comparison"]:
+    for fact_type in ["has_choice_slot", "has_brand_mention", "has_explicit_recommendation", "has_comparison", "has_brand_comparison"]:
         positives = [fact for fact in grouped.get(fact_type, []) if fact.fact_value]
         metrics[fact_type] = _metric(f"{fact_type}_rate", len({fact.run_id for fact in positives}), run_count, run_count)
     return {
@@ -2234,6 +2485,479 @@ def _build_product_truth_summary(db: Session, project: Project | None, capabilit
     }
 
 
+def _build_prompt_decision_space(
+    runs: list[BrowserMonitorRun],
+    claims: list[RecommendationClaim],
+    semantic_facts: list[AnswerSemanticFact],
+    choice_slot: dict,
+) -> dict:
+    run_count = len({run.id for run in runs})
+    choice_runs = {fact.run_id for fact in semantic_facts if fact.fact_type == "has_choice_slot" and fact.fact_value}
+    mention_runs = {claim.run_id for claim in claims}
+    candidate_runs = {
+        claim.run_id for claim in claims
+        if claim.recommendation_type in {"CANDIDATE", "POSITIVE_RECOMMENDATION", "TOP_RECOMMENDATION"}
+    }
+    recommendation_runs = {
+        claim.run_id for claim in claims
+        if claim.recommendation_type in {"POSITIVE_RECOMMENDATION", "TOP_RECOMMENDATION"}
+    }
+    comparison_runs = {fact.run_id for fact in semantic_facts if fact.fact_type == "has_brand_comparison" and fact.fact_value}
+
+    if comparison_runs:
+        status = "BRAND_COMPARISON_PRESENT"
+    elif recommendation_runs:
+        status = "BRAND_RECOMMENDATION_PRESENT"
+    elif candidate_runs:
+        status = "BRAND_CANDIDATE_SPACE"
+    elif choice_runs or choice_slot.get("solution_required") in {"OPTIONAL", "REQUIRED"}:
+        status = "SOLUTION_CHOICE_SPACE"
+    else:
+        status = "NO_BRAND_DECISION_SPACE"
+    return {
+        "schema_version": PROMPT_DECISION_SPACE_VERSION,
+        "status": status,
+        "status_label": DECISION_SPACE_LABELS.get(status, status),
+        "eligible_run_count": run_count,
+        "metrics": {
+            "choice_slot_rate": _metric("choice_slot_rate", len(choice_runs), run_count, run_count),
+            "brand_mention_rate": _metric("brand_mention_rate", len(mention_runs), run_count, run_count),
+            "brand_candidate_rate": _metric("brand_candidate_rate", len(candidate_runs), run_count, run_count),
+            "explicit_recommendation_rate": _metric("explicit_recommendation_rate", len(recommendation_runs), run_count, run_count),
+            "comparison_rate": _metric("comparison_rate", len(comparison_runs), run_count, run_count),
+        },
+        "run_ids": {
+            "choice_slot": sorted(choice_runs),
+            "brand_mention": sorted(mention_runs),
+            "brand_candidate": sorted(candidate_runs),
+            "explicit_recommendation": sorted(recommendation_runs),
+            "comparison": sorted(comparison_runs),
+        },
+        "boundary_note": "决策空间按单 Prompt 的合格独立样本判断；提及、候选、明确推荐和对比是独立事实，不能互相推出。",
+    }
+
+
+def _build_prompt_recommendation_market(project: Project | None, landscape: list[dict], run_count: int) -> dict:
+    rows = []
+    for row in landscape:
+        rows.append({
+            "entity_name": row.get("entity_name"),
+            "is_target_brand": bool(project and row.get("entity_name") == project.brand_name),
+            "mention": _metric("mention_share_of_runs", row.get("mention_run_count", 0), run_count, run_count),
+            "candidate": _metric("candidate_share_of_runs", row.get("candidate_run_count", 0), run_count, run_count),
+            "positive_recommendation": _metric("positive_recommendation_share_of_runs", row.get("recommendation_run_count", 0), run_count, run_count),
+            "top_recommendation": _metric("top_recommendation_share_of_runs", row.get("top1_run_count", 0), run_count, run_count),
+            "negative_recommendation": _metric("negative_recommendation_share_of_runs", row.get("negative_run_count", 0), run_count, run_count),
+            "recommendation_event_count": row.get("recommendation_event_count", 0),
+            "top_recommendation_event_count": row.get("top1_event_count", 0),
+            "ai_recommendation_share": row.get("ai_recommendation_share"),
+            "ai_top1_share": row.get("ai_top1_share"),
+            "average_recommendation_position": row.get("average_recommendation_position"),
+            "representative_claims": row.get("representative_claims", []),
+            "representative_run_ids": row.get("representative_run_ids", []),
+        })
+    return {
+        "schema_version": "prompt_recommendation_market.v1",
+        "eligible_runs": run_count,
+        "rows": rows,
+        "metric_format_note": "每行同时展示 mention/candidate/positive/top/negative 的分子分母；品牌提及不等于推荐。",
+    }
+
+
+def _build_target_brand_position(project: Project | None, brand_funnel: dict, gaps: list[dict]) -> dict:
+    target = next((row for row in brand_funnel.get("rows", []) if row.get("is_target_brand")), None)
+    primary_gap = gaps[0] if gaps else None
+    if not project:
+        return {"status": "UNKNOWN", "status_label": "项目不存在", "target": None, "primary_gap": primary_gap}
+    if not target:
+        return {
+            "status": "ABSENT",
+            "status_label": "目标品牌未进入当前回答事实",
+            "brand_name": project.brand_name,
+            "target": None,
+            "primary_gap": primary_gap,
+            "contributing_gaps": gaps[1:3],
+            "strengths": [],
+        }
+    strengths = []
+    facts = target.get("atomic_facts", {})
+    if facts.get("brand_mentioned"):
+        strengths.append("已被提及")
+    if facts.get("need_associated"):
+        strengths.append("已与需求场景关联")
+    if facts.get("capability_recognized"):
+        strengths.append("已有能力识别")
+    if facts.get("solution_candidate"):
+        strengths.append("已进入候选")
+    if facts.get("explicitly_recommended"):
+        strengths.append("已有明确推荐")
+    if facts.get("top_recommended"):
+        strengths.append("已有第一推荐")
+    return {
+        "status": target.get("derived_stage", "UNKNOWN"),
+        "status_label": _target_stage_label(target.get("derived_stage", "UNKNOWN")),
+        "brand_name": project.brand_name,
+        "target": target,
+        "primary_gap": primary_gap,
+        "contributing_gaps": gaps[1:3],
+        "strengths": strengths,
+        "boundary_note": "目标品牌位置只表示 AI 当前回答里的观察事实，不表示真实产品能力。",
+    }
+
+
+def _build_prompt_recommendation_drivers(
+    project: Project | None,
+    run_count: int,
+    claims: list[RecommendationClaim],
+    reason_claims: list[RecommendationReasonClaim],
+    selection_criteria: list[DecisionSelectionCriterion],
+    capability_claims: list[BrandCapabilityClaim],
+    product_truth: dict,
+) -> dict:
+    target_name = project.brand_name if project else ""
+    competitor_names = {competitor.name for competitor in project.competitors} if project and project.competitors else set()
+    groups: dict[str, dict] = {}
+
+    for criterion in selection_criteria:
+        key = criterion.normalized_criterion or _normalize_key(criterion.criterion_label or criterion.criterion_type)
+        item = groups.setdefault(key, _empty_driver_row(key, criterion.criterion_label or criterion.criterion_type))
+        item["selection_criterion_ids"].add(criterion.id)
+        item["run_ids"].add(criterion.run_id)
+        if criterion.criterion_used_for_selection:
+            item["used_for_selection_run_ids"].add(criterion.run_id)
+        if criterion.related_brand_name == target_name:
+            item["target_brand_run_ids"].add(criterion.run_id)
+        if criterion.related_brand_name in competitor_names:
+            item["competitor_run_ids"].add(criterion.run_id)
+        if len(item["examples"]) < 3 and criterion.answer_span:
+            item["examples"].append(criterion.answer_span[:240])
+
+    for reason in reason_claims:
+        label = _reason_type_label(reason.reason_type)
+        key = _normalize_key(label or reason.reason_type)
+        item = groups.setdefault(key, _empty_driver_row(key, label))
+        item["reason_claim_ids"].add(reason.id)
+        item["run_ids"].add(reason.run_id)
+        if reason.entity_name == target_name:
+            item["target_brand_run_ids"].add(reason.run_id)
+        if reason.entity_name in competitor_names:
+            item["competitor_run_ids"].add(reason.run_id)
+        if reason.entity_name:
+            item["winner_entities"].add(reason.entity_name)
+        if len(item["examples"]) < 3 and reason.reason_span:
+            item["examples"].append(reason.reason_span[:240])
+
+    capability_by_label: dict[str, list[BrandCapabilityClaim]] = defaultdict(list)
+    for claim in capability_claims:
+        label = claim.capability_label or claim.need_label
+        if label:
+            capability_by_label[_normalize_key(label)].append(claim)
+
+    truth_by_key = {
+        row.get("capability_key") or _normalize_key(row.get("capability_label", "")): row
+        for row in product_truth.get("truths", [])
+    }
+    rows = []
+    for key, item in groups.items():
+        matching_capabilities = capability_by_label.get(key, [])
+        target_capability_runs = {claim.run_id for claim in matching_capabilities if claim.brand_name == target_name and not claim.negation}
+        competitor_capability_runs = {claim.run_id for claim in matching_capabilities if claim.brand_name in competitor_names and not claim.negation}
+        item["target_brand_run_ids"].update(target_capability_runs)
+        item["competitor_run_ids"].update(competitor_capability_runs)
+        truth = truth_by_key.get(key) or _best_truth_for_driver(item["display_name"], truth_by_key)
+        product_truth_status = truth.get("product_truth_status", "UNKNOWN") if truth else "UNKNOWN"
+        ai_target_recognized = bool(item["target_brand_run_ids"])
+        rows.append({
+            "driver_key": key,
+            "driver_label": item["display_name"],
+            "supporting_run_count": len(item["run_ids"]),
+            "supporting_runs": sorted(item["run_ids"])[:12],
+            "used_for_selection": _metric("driver_used_for_selection_rate", len(item["used_for_selection_run_ids"]), run_count, run_count),
+            "target_brand_observed": _metric("driver_target_brand_observed_rate", len(item["target_brand_run_ids"]), run_count, run_count),
+            "competitor_observed": _metric("driver_competitor_observed_rate", len(item["competitor_run_ids"]), run_count, run_count),
+            "winner_entities": sorted(item["winner_entities"])[:8],
+            "selection_criterion_ids": sorted(item["selection_criterion_ids"])[:20],
+            "reason_claim_ids": sorted(item["reason_claim_ids"])[:20],
+            "examples": item["examples"][:3],
+            "driver_strength": _driver_strength(len(item["run_ids"]), run_count),
+            "product_truth_status": product_truth_status,
+            "product_truth_status_label": PRODUCT_TRUTH_STATUS_LABELS.get(product_truth_status, product_truth_status),
+            "product_truth": truth or None,
+            "ai_observed_target_status": "RECOGNIZED" if ai_target_recognized else "NOT_RECOGNIZED",
+            "diagnostic_signal": _driver_diagnostic_signal(product_truth_status, ai_target_recognized),
+        })
+    return {
+        "schema_version": PROMPT_DRIVER_AGGREGATION_VERSION,
+        "rows": sorted(rows, key=lambda row: (-row["supporting_run_count"], row["driver_label"]))[:20],
+        "raw_reason_count": len(reason_claims),
+        "raw_selection_criterion_count": len(selection_criteria),
+        "boundary_note": "驱动来自推荐理由、选择标准和能力识别的聚合，不是词频榜；Product Truth 只用于目标品牌事实闸门。",
+    }
+
+
+def _empty_driver_row(key: str, display_name: str) -> dict:
+    return {
+        "driver_key": key,
+        "display_name": display_name,
+        "run_ids": set(),
+        "used_for_selection_run_ids": set(),
+        "target_brand_run_ids": set(),
+        "competitor_run_ids": set(),
+        "winner_entities": set(),
+        "selection_criterion_ids": set(),
+        "reason_claim_ids": set(),
+        "examples": [],
+    }
+
+
+def _build_prompt_source_content_pattern(
+    db: Session,
+    runs: list[BrowserMonitorRun],
+    evidence_adoptions: list[DecisionEvidenceAdoption],
+) -> dict:
+    run_ids = [run.id for run in runs]
+    run_count = len(run_ids)
+    refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(run_ids)).order_by(ReferenceSource.run_id, ReferenceSource.reference_index).all() if run_ids else []
+    grouped: dict[str, dict] = {}
+    cited_run_ids = set()
+    for ref in refs:
+        cited_run_ids.add(ref.run_id)
+        content_type = _source_content_type(ref)
+        row = grouped.setdefault(content_type, {
+            "content_type": content_type,
+            "content_type_label": _source_content_type_label(content_type),
+            "occurrence_count": 0,
+            "run_ids": set(),
+            "domains": set(),
+            "representative_sources": [],
+        })
+        row["occurrence_count"] += 1
+        row["run_ids"].add(ref.run_id)
+        if ref.domain:
+            row["domains"].add(ref.domain)
+        if len(row["representative_sources"]) < 3:
+            row["representative_sources"].append({
+                "reference_id": ref.id,
+                "title": ref.display_title or ref.matched_title or ref.url,
+                "url": ref.canonical_url or ref.url,
+                "domain": ref.domain,
+                "run_id": ref.run_id,
+            })
+    rows = []
+    for row in grouped.values():
+        rows.append({
+            "content_type": row["content_type"],
+            "content_type_label": row["content_type_label"],
+            "occurrence_count": row["occurrence_count"],
+            "citation_run_count": len(row["run_ids"]),
+            "citation_coverage": _metric(f"source_pattern_{row['content_type']}_coverage", len(row["run_ids"]), run_count, run_count),
+            "domains": sorted(row["domains"])[:10],
+            "representative_sources": row["representative_sources"],
+        })
+    cited_context_runs = {item.run_id for item in evidence_adoptions if item.cited}
+    selection_context_runs = {item.run_id for item in evidence_adoptions if item.associated_with_selection_reason}
+    return {
+        "schema_version": PROMPT_SOURCE_PATTERN_VERSION,
+        "metrics": {
+            "citation_presence_rate": _metric("citation_presence_rate", len(cited_run_ids), run_count, run_count),
+            "citation_context_rate": _metric("citation_context_rate", len(cited_context_runs), run_count, run_count),
+            "selection_reason_context_rate": _metric("selection_reason_context_rate", len(selection_context_runs), run_count, run_count),
+            "citation_occurrence_count": len(refs),
+        },
+        "rows": sorted(rows, key=lambda row: (-row["citation_run_count"], -row["occurrence_count"], row["content_type_label"])),
+        "boundary_note": "这里只描述最终引用来源和正文/段落证据形态；RetrievalCandidate 不是 ReferenceSource 的上游漏斗，除非候选覆盖完整且另行声明。",
+    }
+
+
+def _build_prompt_intervention_feasibility(
+    run_eligibility: dict,
+    gaps: list[dict],
+    product_truth: dict,
+) -> dict:
+    unknown_truths = [row for row in product_truth.get("truths", []) if row.get("product_truth_status") == "UNKNOWN"]
+    if (run_eligibility or {}).get("analysis_usable_runs", 0) == 0:
+        status = "BLOCKED_RUN_ELIGIBILITY"
+        reasons = ["没有符合单 Prompt 独立采样要求的可分析记录。"]
+    elif unknown_truths:
+        status = "BLOCKED_PRODUCT_TRUTH"
+        reasons = ["Product Truth 未确认，不能生成确定性执行策略。"]
+    elif not gaps:
+        status = "NO_ACTION"
+        reasons = ["当前没有结构化缺口支撑干预。"]
+    else:
+        status = "READY_FOR_HUMAN_REVIEW"
+        reasons = ["可以生成待审核策略候选，但仍需人工确认渠道、资产和 target_url。"]
+    return {
+        "status": status,
+        "status_label": {
+            "BLOCKED_RUN_ELIGIBILITY": "采样资格不足",
+            "BLOCKED_PRODUCT_TRUTH": "产品事实未确认",
+            "NO_ACTION": "暂不行动",
+            "READY_FOR_HUMAN_REVIEW": "可进入人工策略审核",
+        }.get(status, status),
+        "reasons": reasons,
+        "unknown_capabilities": unknown_truths[:8],
+        "boundary_note": "干预候选不是执行命令；只有人工审核后的 effective_payload=VALIDATED 才能物化 Action/Experiment。",
+    }
+
+
+def _build_prompt_intervention_candidates(
+    project: Project | None,
+    prompt: Prompt | None,
+    gaps: list[dict],
+    target_brand_position: dict,
+    drivers: dict,
+    source_pattern: dict,
+    feasibility: dict,
+) -> list[dict]:
+    brand_name = project.brand_name if project else "目标品牌"
+    prompt_text = prompt.prompt_text if prompt else "当前问题"
+    if feasibility.get("status") == "NO_ACTION" or not gaps:
+        return [{
+            "schema_version": PROMPT_INTERVENTION_CANDIDATE_VERSION,
+            "intervention_type": "NO_ACTION",
+            "intervention_type_label": INTERVENTION_TYPE_LABELS["NO_ACTION"],
+            "feasibility_status": feasibility.get("status"),
+            "priority": "LOW",
+            "reason": "当前单 Prompt 没有足够明确的结构化缺口。",
+            "evidence_prerequisites": INTERVENTION_PREREQUISITES["NO_ACTION"],
+            "target_platform": "UNRESOLVED",
+            "target_asset": "UNRESOLVED",
+            "target_url": "",
+        }]
+    primary_gap = gaps[0]
+    intervention_type = _intervention_type_for_gap(primary_gap.get("gap_type", "UNKNOWN"))
+    top_drivers = drivers.get("rows", [])[:5]
+    top_source_patterns = source_pattern.get("rows", [])[:3]
+    return [{
+        "schema_version": PROMPT_INTERVENTION_CANDIDATE_VERSION,
+        "intervention_type": intervention_type,
+        "intervention_type_label": INTERVENTION_TYPE_LABELS.get(intervention_type, intervention_type),
+        "feasibility_status": feasibility.get("status"),
+        "priority": primary_gap.get("severity", "MEDIUM"),
+        "target_brand": brand_name,
+        "prompt_id": prompt.id if prompt else None,
+        "prompt_text": prompt_text,
+        "primary_gap_type": primary_gap.get("gap_type"),
+        "primary_gap_type_label": primary_gap.get("gap_type_label"),
+        "observed_problem": primary_gap.get("diagnosis_text", ""),
+        "recommended_direction": primary_gap.get("action_hint", ""),
+        "target_platform": "UNRESOLVED",
+        "target_asset": "UNRESOLVED",
+        "target_url": "",
+        "suggested_target_url": "",
+        "suggested_target_url_note": "不因项目配置了官网就默认选择官网；target_url 需由人工基于证据、渠道和资产确认。",
+        "evidence_basis": {
+            "target_brand_position": target_brand_position.get("status"),
+            "drivers": [{
+                "driver_key": row.get("driver_key"),
+                "driver_label": row.get("driver_label"),
+                "supporting_run_count": row.get("supporting_run_count"),
+                "product_truth_status": row.get("product_truth_status"),
+                "diagnostic_signal": row.get("diagnostic_signal"),
+            } for row in top_drivers],
+            "source_patterns": [{
+                "content_type": row.get("content_type"),
+                "content_type_label": row.get("content_type_label"),
+                "citation_run_count": row.get("citation_run_count"),
+            } for row in top_source_patterns],
+            "gap_metric": primary_gap.get("metric"),
+        },
+        "evidence_prerequisites": INTERVENTION_PREREQUISITES.get(intervention_type, []),
+        "execution_boundary": "StrategyCandidate -> 人工审核 -> effective_payload=VALIDATED -> Action -> Experiment；平台短名单只来自证据线索，尚未完成可控性、平台执行性、内容适配和边际机会评估。",
+    }]
+
+
+def _best_truth_for_driver(display_name: str, truth_by_key: dict[str, dict]) -> dict | None:
+    key = _normalize_key(display_name)
+    for truth_key, truth in truth_by_key.items():
+        if not truth_key:
+            continue
+        if truth_key in key or key in truth_key:
+            return truth
+    return None
+
+
+def _driver_strength(numerator: int, denominator: int) -> str:
+    if denominator <= 0:
+        return "UNKNOWN"
+    rate = numerator / denominator
+    if denominator < 3:
+        return "INSUFFICIENT_SAMPLE"
+    if rate >= 0.6:
+        return "HIGH"
+    if rate >= 0.3:
+        return "MEDIUM"
+    if rate > 0:
+        return "LOW"
+    return "UNKNOWN"
+
+
+def _driver_diagnostic_signal(product_truth_status: str, ai_target_recognized: bool) -> str:
+    if product_truth_status in {"SUPPORTED", "PARTIALLY_SUPPORTED"} and not ai_target_recognized:
+        return "TRUE_CAPABILITY_NOT_RECOGNIZED_BY_AI"
+    if product_truth_status == "NOT_SUPPORTED":
+        return "DO_NOT_CLAIM_UNSUPPORTED_CAPABILITY"
+    if product_truth_status == "UNKNOWN":
+        return "NEEDS_PRODUCT_TRUTH_REVIEW"
+    return "NO_GAP_ON_THIS_DRIVER" if ai_target_recognized else "NO_TARGET_AI_ASSOCIATION"
+
+
+def _source_content_type(ref: ReferenceSource) -> str:
+    text = " ".join([ref.display_title or "", ref.matched_title or "", ref.url or ""])
+    lowered = text.lower()
+    if any(keyword in text for keyword in ["教程", "步骤", "怎么", "如何", "设置"]):
+        return "TUTORIAL"
+    if any(keyword in text for keyword in ["常见问题", "FAQ", "问答"]):
+        return "FAQ"
+    if any(keyword in text for keyword in ["对比", "比较", "区别", "哪个好"]):
+        return "COMPARISON"
+    if any(keyword in text for keyword in ["文档", "帮助中心", "说明"]):
+        return "DOCUMENTATION"
+    if any(keyword in text for keyword in ["首页", "官网"]) or lowered.rstrip("/").endswith((".com", ".cn", ".net")):
+        return "HOMEPAGE"
+    if any(keyword in text for keyword in ["新闻", "公告", "资讯"]):
+        return "NEWS"
+    return "ARTICLE_OR_PAGE"
+
+
+def _source_content_type_label(content_type: str) -> str:
+    return {
+        "TUTORIAL": "教程/步骤",
+        "FAQ": "FAQ/问答",
+        "COMPARISON": "对比内容",
+        "DOCUMENTATION": "文档/帮助中心",
+        "HOMEPAGE": "首页/官网",
+        "NEWS": "新闻/公告",
+        "ARTICLE_OR_PAGE": "文章/普通页面",
+    }.get(content_type, content_type)
+
+
+def _intervention_type_for_gap(gap_type: str) -> str:
+    if gap_type in {"ASSOCIATION_GAP", "CAPABILITY_RECOGNITION_GAP", "CANDIDATE_INCLUSION_GAP", "RECOMMENDATION_GAP", "TOP_RECOMMENDATION_GAP"}:
+        return "CONTENT_CREATE"
+    if gap_type in {"ENTITY_GAP"}:
+        return "ENTITY_CONSISTENCY"
+    if gap_type in {"RETRIEVAL_GAP"}:
+        return "TECHNICAL_INDEXABILITY"
+    if gap_type in {"CITATION_GAP", "SOURCE_TOPOLOGY_GAP"}:
+        return "PLATFORM_AUTHORITY_BUILD"
+    return "CONTENT_CREATE"
+
+
+def _target_stage_label(stage: str) -> str:
+    return {
+        "TOP_RECOMMENDED": "第一推荐",
+        "EXPLICITLY_RECOMMENDED": "明确推荐",
+        "SOLUTION_CANDIDATE": "进入候选",
+        "CAPABILITY_RECOGNIZED": "能力被识别",
+        "NEED_ASSOCIATED": "需求已关联",
+        "MENTIONED": "仅被提及",
+        "ABSENT": "未出现",
+        "UNKNOWN": "未知",
+    }.get(stage, stage)
+
+
 def _prioritize_primary_gap(gaps: list[dict], product_truth: dict) -> list[dict]:
     if not gaps:
         return []
@@ -2242,14 +2966,23 @@ def _prioritize_primary_gap(gaps: list[dict], product_truth: dict) -> list[dict]
         "ASSOCIATION_GAP": 1,
         "CAPABILITY_RECOGNITION_GAP": 2,
         "CANDIDATE_INCLUSION_GAP": 3,
-        "SELECTION_REASON_GAP": 4,
-        "RECOMMENDATION_GAP": 5,
-        "EVIDENCE_GAP": 6,
+        "RECOMMENDATION_GAP": 4,
+        "TOP_RECOMMENDATION_GAP": 5,
+        "SELECTION_REASON_GAP": 20,
+        "EVIDENCE_GAP": 21,
     }
     sorted_gaps = sorted(gaps, key=lambda gap: priority.get(gap.get("gap_type"), 99))
     for index, gap in enumerate(sorted_gaps):
-        gap["gap_role"] = "PRIMARY" if index == 0 else "CONTRIBUTING"
-        gap["gap_role_label"] = "最前置缺口" if index == 0 else "辅助缺口"
+        is_primary = index == 0 and gap.get("gap_type") in {
+            "INTENT_FIT_GAP",
+            "ASSOCIATION_GAP",
+            "CAPABILITY_RECOGNITION_GAP",
+            "CANDIDATE_INCLUSION_GAP",
+            "RECOMMENDATION_GAP",
+            "TOP_RECOMMENDATION_GAP",
+        }
+        gap["gap_role"] = "PRIMARY" if is_primary else "CONTRIBUTING"
+        gap["gap_role_label"] = "最前置缺口" if is_primary else "辅助缺口"
         if index == 0:
             gap.setdefault("diagnosis_basis", {})["product_truth_boundary"] = product_truth.get("boundary_note", "")
     return sorted_gaps[:3]
@@ -2362,6 +3095,16 @@ def _derive_gap_reads(
             recommendation_metric,
             "当前没有形成明确推荐；对当前这类信息/操作问题，这不是首要失败点。",
             "先完成前置链路：需求关联、能力识别、候选进入。",
+        ))
+    top_metric = target["metrics"].get("top_recommendation_rate", _metric("top_recommendation_rate", 0, 0, 0))
+    if recommendation_metric["numerator"] > 0 and top_metric["numerator"] == 0:
+        gaps.append(_gap_read(
+            "TOP_RECOMMENDATION_GAP",
+            "LOW",
+            0.52,
+            top_metric,
+            f"「{project.brand_name}」已经出现明确推荐，但尚未稳定成为第一推荐。",
+            "只有在候选进入和明确推荐稳定后，再优化第一推荐位置。",
         ))
     return _prioritize_primary_gap(gaps, product_truth)
 
@@ -3214,6 +3957,24 @@ def _answer_has_choice_slot(prompt_text: str, answer: str, run_claims: list[Reco
     return False, "", 0.66
 
 
+def _sentence_has_comparison(sentence: str) -> bool:
+    return any(keyword in sentence for keyword in ["对比", "比较", "相比", "更适合", "优于", "不如", "区别", "vs", "VS"])
+
+
+def _answer_has_brand_comparison(answer: str, run_claims: list[RecommendationClaim]) -> tuple[bool, str, float]:
+    brand_names = sorted({claim.entity_name for claim in run_claims if claim.entity_name}, key=len, reverse=True)
+    if len(brand_names) < 2:
+        return False, "", 0.7
+
+    for sentence in _split_answer(answer or ""):
+        if not _sentence_has_comparison(sentence):
+            continue
+        mentioned = {name for name in brand_names if name and name in sentence}
+        if len(mentioned) >= 2:
+            return True, sentence, 0.82
+    return False, "", 0.7
+
+
 def _solution_specificity(answer: str, landscape: list[dict]) -> str:
     if any(row.get("entity_name") and row["entity_name"] in answer for row in landscape):
         return "BRAND"
@@ -3393,6 +4154,7 @@ def _gap_type_label(gap_type: str) -> str:
         "ENTITY_GAP": "实体识别缺口",
         "SOURCE_TOPOLOGY_GAP": "来源结构缺口",
         "RECOMMENDATION_GAP": "明确推荐缺口",
+        "TOP_RECOMMENDATION_GAP": "第一推荐缺口",
         "UNKNOWN": "无法判断",
     }
     return labels.get(gap_type, gap_type)
@@ -3481,6 +4243,7 @@ def _primary_metric_for_gap(gap_type: str) -> str:
         "RETRIEVAL_GAP": "target_page_retrieval_rate",
         "CITATION_GAP": "target_page_conversion_rate",
         "RECOMMENDATION_GAP": "explicit_recommendation_rate",
+        "TOP_RECOMMENDATION_GAP": "top_recommendation_rate",
     }.get(gap_type, "manual_review")
 
 
@@ -3492,6 +4255,7 @@ def _metric_key_for_gap(gap_type: str) -> str:
         "CANDIDATE_GAP": "candidate_capture_rate",
         "CANDIDATE_INCLUSION_GAP": "candidate_capture_rate",
         "RECOMMENDATION_GAP": "explicit_recommendation_rate",
+        "TOP_RECOMMENDATION_GAP": "top_recommendation_rate",
     }.get(gap_type, "candidate_capture_rate")
 
 
@@ -3586,6 +4350,7 @@ def _semantic_fact_label(value: str) -> str:
         "has_brand_mention": "出现真实品牌",
         "has_explicit_recommendation": "答案作者执行明确推荐",
         "has_comparison": "存在对比",
+        "has_brand_comparison": "存在品牌对比",
     }.get(value, value)
 
 

@@ -405,6 +405,10 @@ function strategyDisplayPayload(candidate: any) {
     mustAnswer: decisionMarket.must_answer || [],
     evidenceRequirements: decisionMarket.evidence_requirements || [],
     requiredSections: original.required_sections || contentBrief.sections || [],
+    decisionSpace:
+      executable.decision_space ||
+      original.decision_space ||
+      null,
   };
 }
 
@@ -2464,6 +2468,22 @@ export default function App() {
                     <Tag color={isAccepted?"green":c.review_status==="PENDING_REVIEW"?"default":"orange"}>{reviewStatusLabel(c.review_status)}</Tag>
                   </Space>}
                 >
+                {strategyView.decisionSpace && <Alert
+                  type={strategyView.decisionSpace.worth_level === "WORTH_PURSUING" ? "success" : strategyView.decisionSpace.worth_level === "LOW_WORTH" ? "warning" : "info"}
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={<Space wrap>
+                    <Text strong>值不值得做：</Text>
+                    <Tag color={strategyView.decisionSpace.worth_level === "WORTH_PURSUING" ? "green" : strategyView.decisionSpace.worth_level === "LOW_WORTH" ? "volcano" : "orange"}>
+                      {strategyView.decisionSpace.worth_level === "WORTH_PURSUING" ? "值得投入" : strategyView.decisionSpace.worth_level === "LOW_WORTH" ? "收益有限" : "值得观察"}
+                    </Tag>
+                    <Tag>{strategyView.decisionSpace.has_choice_slot_label} {strategyView.decisionSpace.has_choice_slot}</Tag>
+                    <Tag>{strategyView.decisionSpace.has_brand_mention_label} {strategyView.decisionSpace.has_brand_mention}</Tag>
+                    <Tag>{strategyView.decisionSpace.has_explicit_recommendation_label} {strategyView.decisionSpace.has_explicit_recommendation}</Tag>
+                    <Tag>{strategyView.decisionSpace.has_comparison_label} {strategyView.decisionSpace.has_comparison}</Tag>
+                  </Space>}
+                  description={strategyView.decisionSpace.worth_note}
+                />}
                 <Row gutter={[12,12]}>
                   <Col xs={24} md={8}>
                     <Card size="small" title="📊 证据事实" style={{background:"#f6ffed"}}>

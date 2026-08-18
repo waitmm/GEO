@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AnswerSemanticFact,
     BrowserMonitorRun,
     Competitor,
     DecisionEvidenceAdoption,
@@ -5707,11 +5708,60 @@ def _extract_answer_strategy_signals(
         for content_type, _ in content_counter.most_common()
         if content_type not in {"OTHER", "UNCATEGORIZED", "NEWS"}
     ]
+
+    # --- Decision space signals: 这个问题值不值得做 ---
+    facts = db.query(AnswerSemanticFact).filter(
+        AnswerSemanticFact.snapshot_id == snapshot.id,
+        AnswerSemanticFact.run_id.in_(run_ids),
+    ).all()
+    fact_runs: dict[str, set[int]] = defaultdict(set)
+    for fact in facts:
+        if fact.fact_value:
+            fact_runs[fact.fact_type].add(fact.run_id)
+
+    def _rate(fact_type: str) -> str:
+        return f"{len(fact_runs.get(fact_type, set()))}/{len(run_ids)}"
+
+    has_choice_slot = _rate("has_choice_slot")
+    has_brand_mention = _rate("has_brand_mention")
+    has_explicit_rec = _rate("has_explicit_recommendation")
+    has_comparison = _rate("has_comparison")
+
+    # 值不值得做判定：
+    # - 有选择空间（AI 在推荐/选择方案）→ 有干预价值
+    # - 无选择空间 → 该问题答案天然不推荐任何实体，品牌优化空间有限
+    choice_n = len(fact_runs.get("has_choice_slot", set()))
+    if choice_n == 0:
+        worth_level = "LOW_WORTH"
+        worth_note = "答案不存在选择空间：AI 在回答该问题时没有表现出推荐任何品牌/工具的意向，品牌优化收益可能有限。"
+    elif len(fact_runs.get("has_explicit_recommendation", set())) == 0:
+        worth_level = "UNCERTAIN_WORTH"
+        worth_note = "答案存在选择空间，但当前样本中没有出现任何明确推荐：值得观察答案是否以候选/提及方式给品牌留出进入空间。"
+    else:
+        worth_level = "WORTH_PURSUING"
+        worth_note = "答案存在选择空间且出现明确推荐：该问题是品牌 GEO 干预的直接机会点。"
+
+    decision_space = {
+        "worth_level": worth_level,
+        "worth_note": worth_note,
+        "has_choice_slot": has_choice_slot,
+        "has_choice_slot_label": "答案选择空间",
+        "has_brand_mention": has_brand_mention,
+        "has_brand_mention_label": "目标品牌被提及",
+        "has_explicit_recommendation": has_explicit_rec,
+        "has_explicit_recommendation_label": "出现明确推荐",
+        "has_comparison": has_comparison,
+        "has_comparison_label": "出现对比判断",
+        "eligible_run_count": len(run_ids),
+        "fact_review_status": "UNREVIEWED" if any(f.review_status == "UNREVIEWED" for f in facts) else "REVIEWED",
+    }
+
     return {
         "available": bool(rows),
         "snapshot_id": snapshot.id,
         "reason": "OK" if rows else "NO_CITED_RECOMMENDATION_CONTEXT",
         "signal_priority_note": "策略信号优先级：答案明确推荐上下文 > 选择理由上下文 > 答案引用上下文 > 普通引用分布。",
+        "decision_space": decision_space,
         "top_answer_platforms": rows[:5],
         "recommended_content_types": recommended_content_types[:6],
     }
@@ -6200,6 +6250,7 @@ class EvidenceDrivenStrategyProvider:
                 "target_url": target_url,
                 "content_direction": f"{content_signal_source}显示，当前问题更需要{observed_content_types_str}；建议优先补齐{recommended_content_types_str}。",
                 "answer_signal_priority_note": answer_strategy_signals.get("signal_priority_note", "未读取到答案推荐上下文，退回普通引用分布。"),
+                "decision_space": answer_strategy_signals.get("decision_space"),
                 "platform_direction": platform_direction,
                 "platform_recommendations": platform_recommendations,
                 "evidence_fit": "MEDIUM",

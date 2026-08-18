@@ -308,11 +308,19 @@ def _assess_prompt_run_eligibility(prompt: Prompt, runs: list[BrowserMonitorRun]
 
     rows = []
     analysis_run_ids = []
+    answer_analysis_run_ids = []
+    citation_analysis_run_ids = []
     for run in runs:
         status, reasons, warnings = _run_eligibility_status(prompt, run, conversation_counts)
-        analysis_usable = status in {"ELIGIBLE", "PARTIAL"}
+        answer_analysis_usable = status in {"ELIGIBLE", "PARTIAL"}
+        citation_analysis_usable = status == "ELIGIBLE"
+        analysis_usable = answer_analysis_usable
         if analysis_usable:
             analysis_run_ids.append(run.id)
+        if answer_analysis_usable:
+            answer_analysis_run_ids.append(run.id)
+        if citation_analysis_usable:
+            citation_analysis_run_ids.append(run.id)
         rows.append({
             "run_id": run.id,
             "sample_index": run.sample_index,
@@ -324,6 +332,8 @@ def _assess_prompt_run_eligibility(prompt: Prompt, runs: list[BrowserMonitorRun]
             "status": status,
             "status_label": RUN_ELIGIBILITY_LABELS.get(status, status),
             "analysis_usable": analysis_usable,
+            "answer_analysis_usable": answer_analysis_usable,
+            "citation_analysis_usable": citation_analysis_usable,
             "reasons": reasons,
             "warnings": warnings,
         })
@@ -344,17 +354,23 @@ def _assess_prompt_run_eligibility(prompt: Prompt, runs: list[BrowserMonitorRun]
         "ineligible_runs": len(ineligible_ids),
         "unknown_runs": len(unknown_ids),
         "analysis_usable_runs": len(analysis_run_ids),
+        "answer_analysis_usable_runs": len(answer_analysis_run_ids),
+        "citation_analysis_usable_runs": len(citation_analysis_run_ids),
         "eligible_run_ids": eligible_ids,
         "partial_run_ids": partial_ids,
         "analysis_run_ids": analysis_run_ids,
+        "answer_analysis_run_ids": answer_analysis_run_ids,
+        "citation_analysis_run_ids": citation_analysis_run_ids,
         "ineligible_run_ids": ineligible_ids,
         "unknown_run_ids": unknown_ids,
         "metrics": {
             "eligible_run_rate": _metric("eligible_run_rate", len(eligible_ids), total, total),
             "analysis_usable_run_rate": _metric("analysis_usable_run_rate", len(analysis_run_ids), total, total),
+            "answer_analysis_usable_run_rate": _metric("answer_analysis_usable_run_rate", len(answer_analysis_run_ids), total, total),
+            "citation_analysis_usable_run_rate": _metric("citation_analysis_usable_run_rate", len(citation_analysis_run_ids), total, total),
         },
         "rows": rows,
-        "boundary_note": "正式 GEO 分析以单 Prompt 的独立新会话采样为单位；collection_status=success 只是采集完成，不自动等于分析合格。",
+        "boundary_note": "正式 GEO 分析以单 Prompt 的独立新会话采样为单位；partial_success 只能进入答案理解等非引用分析，不能进入 Citation/Source/检索重合指标分母。",
     }
 
 
@@ -437,8 +453,10 @@ def run_recommendation_analysis(
         raise HTTPException(status_code=400, detail="该问题没有可分析的采集记录")
 
     run_eligibility = _assess_prompt_run_eligibility(prompt, runs)
-    analysis_run_ids = set(run_eligibility["analysis_run_ids"])
+    analysis_run_ids = set(run_eligibility["answer_analysis_run_ids"])
+    citation_analysis_run_ids = set(run_eligibility["citation_analysis_run_ids"])
     analysis_runs = [run for run in runs if run.id in analysis_run_ids]
+    citation_analysis_runs = [run for run in runs if run.id in citation_analysis_run_ids]
     if not analysis_runs:
         raise HTTPException(status_code=400, detail="该问题没有符合独立新会话要求的可分析记录；请先补充 single_independent 采样。")
 
@@ -472,13 +490,16 @@ def run_recommendation_analysis(
     landscape = _build_landscape(analysis_runs, claims)
     reason_claims = _create_reason_claims(db, snapshot, claims)
     db.flush()
-    evidence_links = _create_evidence_links(db, snapshot, claims, reason_claims)
+    citation_claims = [claim for claim in claims if claim.run_id in citation_analysis_run_ids]
+    citation_reason_claims = [reason for reason in reason_claims if reason.run_id in citation_analysis_run_ids]
+    evidence_links = _create_evidence_links(db, snapshot, citation_claims, citation_reason_claims)
     db.flush()
     selection_criteria = _create_selection_criteria(db, snapshot, project, prompt, analysis_runs, entities)
     db.flush()
     capability_claims = _create_brand_capability_claims(db, snapshot, project, prompt, analysis_runs, entities)
     db.flush()
-    evidence_adoptions = _create_evidence_adoptions(db, snapshot, claims, selection_criteria, evidence_links)
+    citation_selection_criteria = [criterion for criterion in selection_criteria if criterion.run_id in citation_analysis_run_ids]
+    evidence_adoptions = _create_evidence_adoptions(db, snapshot, citation_claims, citation_selection_criteria, evidence_links)
     db.flush()
     positioning = _build_positioning(claims, reason_claims)
     decision_market = _build_decision_market(
@@ -494,6 +515,7 @@ def run_recommendation_analysis(
         capability_claims=capability_claims,
         evidence_adoptions=evidence_adoptions,
         run_eligibility=run_eligibility,
+        citation_runs=citation_analysis_runs,
     )
     decision_gaps = _create_decision_gap_diagnoses(db, snapshot, project, prompt, decision_market, claims, evidence_adoptions)
     db.flush()
@@ -1438,6 +1460,9 @@ def _decision_market_to_read(
         AnswerSemanticFact.snapshot_id == snapshot.id,
     ).order_by(AnswerSemanticFact.run_id, AnswerSemanticFact.fact_type).all()
     metric_eligibility = loads(snapshot.metric_eligibility_json, {})
+    run_eligibility = metric_eligibility.get("run_eligibility") or {}
+    citation_run_ids = set(run_eligibility.get("citation_analysis_run_ids") or [])
+    citation_runs = [run for run in runs if run.id in citation_run_ids] if citation_run_ids else None
 
     return _build_decision_market(
         db=db,
@@ -1451,8 +1476,9 @@ def _decision_market_to_read(
         selection_criteria=criteria,
         capability_claims=capabilities,
         evidence_adoptions=adoptions,
-        run_eligibility=metric_eligibility.get("run_eligibility"),
+        run_eligibility=run_eligibility,
         persisted_gaps=gaps,
+        citation_runs=citation_runs,
     )
 
 
@@ -1617,6 +1643,7 @@ def _create_answer_semantic_facts(
             _semantic_fact_payload("has_brand_mention", prompt.prompt_text, run.answer_text or "", run_claims),
             _semantic_fact_payload("has_explicit_recommendation", prompt.prompt_text, run.answer_text or "", run_claims),
             _semantic_fact_payload("has_comparison", prompt.prompt_text, run.answer_text or "", run_claims),
+            _semantic_fact_payload("has_brand_comparison", prompt.prompt_text, run.answer_text or "", run_claims),
         ]
         for payload in facts:
             row = AnswerSemanticFact(
@@ -2105,8 +2132,11 @@ def _build_decision_market(
     evidence_adoptions: list[DecisionEvidenceAdoption],
     run_eligibility: dict | None = None,
     persisted_gaps: list[DecisionGapDiagnosis] | None = None,
+    citation_runs: list[BrowserMonitorRun] | None = None,
 ) -> dict:
     run_count = len({run.id for run in runs})
+    citation_scope_runs = citation_runs if citation_runs is not None else runs
+    citation_run_count = len({run.id for run in citation_scope_runs})
     prompt_text = prompt.prompt_text if prompt else ""
     intents = _classify_prompt_intents(prompt_text, runs)
     choice_slot = _build_choice_slot(prompt_text, runs, landscape, semantic_facts)
@@ -2115,8 +2145,8 @@ def _build_decision_market(
     criteria_market = _build_selection_criteria_market(project, selection_criteria, run_count)
     brand_funnel = _build_brand_funnel(project, landscape, claims, capability_claims, choice_slot, run_count)
     capability_market = _build_capability_market(capability_claims)
-    citation_source_analysis = _build_citation_source_analysis(db, runs)
-    evidence_market = _build_evidence_adoption_market(evidence_adoptions, run_count)
+    citation_source_analysis = _build_citation_source_analysis(db, citation_scope_runs)
+    evidence_market = _build_evidence_adoption_market(evidence_adoptions, citation_run_count)
     brand_opportunity_gate = _build_brand_opportunity_gate(project, runs, claims, semantic_facts)
     product_truth = _build_product_truth_summary(db, project, capability_market)
     gaps = [gap_diagnosis_to_read(gap) for gap in persisted_gaps] if persisted_gaps is not None else _derive_gap_reads(project, brand_funnel, criteria_market, evidence_market, choice_slot, brand_opportunity_gate, product_truth)
@@ -2132,7 +2162,7 @@ def _build_decision_market(
         capability_claims=capability_claims,
         product_truth=product_truth,
     )
-    source_pattern = _build_prompt_source_content_pattern(db, runs, evidence_adoptions)
+    source_pattern = _build_prompt_source_content_pattern(db, citation_scope_runs, evidence_adoptions)
     feasibility = _build_prompt_intervention_feasibility(run_eligibility or {}, gaps, product_truth)
     prompt_interventions = _build_prompt_intervention_candidates(
         project=project,
@@ -2327,10 +2357,12 @@ def _semantic_fact_payload(fact_type: str, prompt_text: str, answer: str, run_cl
         span = explicit[0].answer_span if explicit else ""
         confidence = 0.82 if value else 0.68
     elif fact_type == "has_comparison":
-        sentences = [sentence for sentence in _split_answer(answer) if any(keyword in sentence for keyword in ["对比", "比较", "相比", "更适合", "优于", "不如"])]
+        sentences = [sentence for sentence in _split_answer(answer) if _sentence_has_comparison(sentence)]
         value = bool(sentences)
         span = sentences[0] if sentences else ""
         confidence = 0.76 if value else 0.62
+    elif fact_type == "has_brand_comparison":
+        value, span, confidence = _answer_has_brand_comparison(answer, run_claims)
     else:
         value, span, confidence = False, "", 0.0
     offset = answer.find(span) if span else -1
@@ -2349,7 +2381,7 @@ def _build_answer_semantic_summary(facts: list[AnswerSemanticFact], run_count: i
     for fact in facts:
         grouped[fact.fact_type].append(fact)
     metrics = {}
-    for fact_type in ["has_choice_slot", "has_brand_mention", "has_explicit_recommendation", "has_comparison"]:
+    for fact_type in ["has_choice_slot", "has_brand_mention", "has_explicit_recommendation", "has_comparison", "has_brand_comparison"]:
         positives = [fact for fact in grouped.get(fact_type, []) if fact.fact_value]
         metrics[fact_type] = _metric(f"{fact_type}_rate", len({fact.run_id for fact in positives}), run_count, run_count)
     return {
@@ -2470,7 +2502,7 @@ def _build_prompt_decision_space(
         claim.run_id for claim in claims
         if claim.recommendation_type in {"POSITIVE_RECOMMENDATION", "TOP_RECOMMENDATION"}
     }
-    comparison_runs = {fact.run_id for fact in semantic_facts if fact.fact_type == "has_comparison" and fact.fact_value}
+    comparison_runs = {fact.run_id for fact in semantic_facts if fact.fact_type == "has_brand_comparison" and fact.fact_value}
 
     if comparison_runs:
         status = "BRAND_COMPARISON_PRESENT"
@@ -2794,7 +2826,7 @@ def _build_prompt_intervention_candidates(
             "target_url": "",
         }]
     primary_gap = gaps[0]
-    intervention_type = _intervention_type_for_gap(primary_gap.get("gap_type", "UNKNOWN"), bool(project and project.website_url))
+    intervention_type = _intervention_type_for_gap(primary_gap.get("gap_type", "UNKNOWN"))
     top_drivers = drivers.get("rows", [])[:5]
     top_source_patterns = source_pattern.get("rows", [])[:3]
     return [{
@@ -2813,8 +2845,8 @@ def _build_prompt_intervention_candidates(
         "target_platform": "UNRESOLVED",
         "target_asset": "UNRESOLVED",
         "target_url": "",
-        "suggested_target_url": project.website_url if project and project.website_url else "",
-        "suggested_target_url_note": "仅作为人工审核候选，不作为执行 target_url。",
+        "suggested_target_url": "",
+        "suggested_target_url_note": "不因项目配置了官网就默认选择官网；target_url 需由人工基于证据、渠道和资产确认。",
         "evidence_basis": {
             "target_brand_position": target_brand_position.get("status"),
             "drivers": [{
@@ -2832,7 +2864,7 @@ def _build_prompt_intervention_candidates(
             "gap_metric": primary_gap.get("metric"),
         },
         "evidence_prerequisites": INTERVENTION_PREREQUISITES.get(intervention_type, []),
-        "execution_boundary": "StrategyCandidate -> 人工审核 -> effective_payload=VALIDATED -> Action -> Experiment",
+        "execution_boundary": "StrategyCandidate -> 人工审核 -> effective_payload=VALIDATED -> Action -> Experiment；平台短名单只来自证据线索，尚未完成可控性、平台执行性、内容适配和边际机会评估。",
     }]
 
 
@@ -2901,16 +2933,16 @@ def _source_content_type_label(content_type: str) -> str:
     }.get(content_type, content_type)
 
 
-def _intervention_type_for_gap(gap_type: str, has_website: bool) -> str:
+def _intervention_type_for_gap(gap_type: str) -> str:
     if gap_type in {"ASSOCIATION_GAP", "CAPABILITY_RECOGNITION_GAP", "CANDIDATE_INCLUSION_GAP", "RECOMMENDATION_GAP", "TOP_RECOMMENDATION_GAP"}:
-        return "CONTENT_UPDATE" if has_website else "CONTENT_CREATE"
+        return "CONTENT_CREATE"
     if gap_type in {"ENTITY_GAP"}:
         return "ENTITY_CONSISTENCY"
     if gap_type in {"RETRIEVAL_GAP"}:
         return "TECHNICAL_INDEXABILITY"
     if gap_type in {"CITATION_GAP", "SOURCE_TOPOLOGY_GAP"}:
         return "PLATFORM_AUTHORITY_BUILD"
-    return "CONTENT_UPDATE" if has_website else "CONTENT_CREATE"
+    return "CONTENT_CREATE"
 
 
 def _target_stage_label(stage: str) -> str:
@@ -3925,6 +3957,24 @@ def _answer_has_choice_slot(prompt_text: str, answer: str, run_claims: list[Reco
     return False, "", 0.66
 
 
+def _sentence_has_comparison(sentence: str) -> bool:
+    return any(keyword in sentence for keyword in ["对比", "比较", "相比", "更适合", "优于", "不如", "区别", "vs", "VS"])
+
+
+def _answer_has_brand_comparison(answer: str, run_claims: list[RecommendationClaim]) -> tuple[bool, str, float]:
+    brand_names = sorted({claim.entity_name for claim in run_claims if claim.entity_name}, key=len, reverse=True)
+    if len(brand_names) < 2:
+        return False, "", 0.7
+
+    for sentence in _split_answer(answer or ""):
+        if not _sentence_has_comparison(sentence):
+            continue
+        mentioned = {name for name in brand_names if name and name in sentence}
+        if len(mentioned) >= 2:
+            return True, sentence, 0.82
+    return False, "", 0.7
+
+
 def _solution_specificity(answer: str, landscape: list[dict]) -> str:
     if any(row.get("entity_name") and row["entity_name"] in answer for row in landscape):
         return "BRAND"
@@ -4300,6 +4350,7 @@ def _semantic_fact_label(value: str) -> str:
         "has_brand_mention": "出现真实品牌",
         "has_explicit_recommendation": "答案作者执行明确推荐",
         "has_comparison": "存在对比",
+        "has_brand_comparison": "存在品牌对比",
     }.get(value, value)
 
 

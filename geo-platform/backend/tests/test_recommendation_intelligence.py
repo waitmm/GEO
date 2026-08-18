@@ -261,6 +261,8 @@ def test_single_prompt_decision_market_exposes_position_drivers_and_intervention
     assert market["intervention_feasibility"]["status"] == "BLOCKED_PRODUCT_TRUTH"
     assert market["intervention_candidates"][0]["target_platform"] == "UNRESOLVED"
     assert market["intervention_candidates"][0]["target_url"] == ""
+    assert market["intervention_candidates"][0]["suggested_target_url"] == ""
+    assert market["intervention_candidates"][0]["intervention_type"] != "CONTENT_UPDATE"
 
 
 def test_source_content_pattern_keeps_retrieval_and_citation_boundary(db):
@@ -273,6 +275,56 @@ def test_source_content_pattern_keeps_retrieval_and_citation_boundary(db):
     assert pattern["metrics"]["citation_occurrence_count"] == 2
     assert "RetrievalCandidate 不是 ReferenceSource 的上游漏斗" in pattern["boundary_note"]
     assert "target_page_conversion_rate" not in pattern["metrics"]
+
+
+def test_partial_success_stays_out_of_citation_denominators(db):
+    _seed_project(db, "抖音跳转链接用什么工具")
+    partial_run = db.get(BrowserMonitorRun, 174)
+    partial_run.status = "partial_success"
+    db.commit()
+
+    result = recommendation.run_recommendation_analysis(db, 3, 19)
+    eligibility = result["run_eligibility"]
+    source_pattern = result["decision_market"]["source_content_pattern"]
+    citation_source = result["decision_market"]["citation_source_analysis"]
+
+    assert eligibility["analysis_usable_runs"] == 2
+    assert eligibility["answer_analysis_usable_runs"] == 2
+    assert eligibility["citation_analysis_usable_runs"] == 1
+    partial_row = next(row for row in eligibility["rows"] if row["run_id"] == 174)
+    assert partial_row["answer_analysis_usable"] is True
+    assert partial_row["citation_analysis_usable"] is False
+    assert source_pattern["metrics"]["citation_presence_rate"]["denominator"] == 1
+    assert source_pattern["metrics"]["citation_occurrence_count"] == 1
+    assert citation_source["metrics"]["citation_occurrence_count"] == 1
+
+
+def test_solution_comparison_does_not_become_brand_comparison_space(db):
+    _seed_project(db, "静态链接和动态链接哪个好")
+    for run in db.query(BrowserMonitorRun).all():
+        run.answer_text = "静态链接和动态链接相比，静态链接更适合长期资料页，动态链接更适合需要调整目标地址的方案。"
+    db.commit()
+
+    result = recommendation.run_recommendation_analysis(db, 3, 19)
+    facts = result["decision_market"]["answer_semantic_facts"]["metrics"]
+
+    assert facts["has_comparison"]["numerator"] == 2
+    assert facts["has_brand_comparison"]["numerator"] == 0
+    assert result["decision_market"]["decision_space"]["status"] != "BRAND_COMPARISON_PRESENT"
+
+
+def test_brand_vs_brand_comparison_sets_brand_comparison_space(db):
+    _seed_project(db, "抖音跳转链接工具对比")
+    for run in db.query(BrowserMonitorRun).all():
+        run.answer_text = "商加加和爱短链相比，商加加更适合抖音跳转微信的外链引流场景，爱短链更适合基础短链管理。"
+    db.commit()
+
+    result = recommendation.run_recommendation_analysis(db, 3, 19)
+    facts = result["decision_market"]["answer_semantic_facts"]["metrics"]
+
+    assert facts["has_comparison"]["numerator"] == 2
+    assert facts["has_brand_comparison"]["numerator"] == 2
+    assert result["decision_market"]["decision_space"]["status"] == "BRAND_COMPARISON_PRESENT"
 
 
 def test_decision_market_strategy_draft_carries_single_prompt_candidate_context(db):

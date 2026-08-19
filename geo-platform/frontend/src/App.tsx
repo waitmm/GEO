@@ -1424,6 +1424,53 @@ export default function App() {
                 </Space>}
                 description={workflowData.continueResult.action?.target_claim} />
             </Space>}
+            {/* 渠道选择 + 内容大纲（Action 确认后） */}
+            {workflowData.steps.find((s:any)=>s.key==="action")?.done && <Card size="small" title="渠道选择与内容大纲">
+              {!workflowData.experimentDraft ? <Space direction="vertical" size={8} style={{width:"100%"}}>
+                <Text>选择发布渠道（人工决策，系统不代选）：</Text>
+                <Space wrap>
+                  {[["OWNED_NEW_PAGE","官网新建教程页"],["OWNED_UPDATE","官网更新现有页"],["ZHIHU","知乎"],["BAIJIAHAO","百家号"],["BILIBILI","B站视频"]].map(([key,label])=>
+                    <Button key={key} size="small" type="primary" ghost onClick={async()=>{
+                      const draft = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/select-channel`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:key})})).json();
+                      setWorkflowData({...workflowData, experimentDraft: draft, selectedChannel: key});
+                      message.success(`已选择${label}，Experiment 草案 #${draft.experiment_id} 已创建`);
+                    }}>{label}</Button>)}
+                </Space>
+              </Space> : <Space direction="vertical" size={8} style={{width:"100%"}}>
+                <Alert type="success" showIcon message={<Space><Text strong>Experiment 草案 #{workflowData.experimentDraft.experiment_id}</Text><Tag>{workflowData.experimentDraft.channel}</Tag><Tag color="orange">blocked: 等待内容生产</Tag></Space>} />
+                {!workflowData.outline ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
+                  setLoading(true);
+                  try{
+                    const outline = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/generate-outline`,{method:"POST"})).json();
+                    setWorkflowData({...workflowData, outline});
+                  }catch(e:any){message.error(e.message)}
+                  finally{setLoading(false)}
+                }}>生成内容大纲</Button> : <Space direction="vertical" size={4} style={{width:"100%"}}>
+                  <Alert type="success" showIcon message={<Space><Text strong>内容大纲</Text><Tag>{workflowData.outline.title}</Tag></Space>} />
+                  {(workflowData.outline.outline||[]).map((sec:any,i:number)=><div key={i}>
+                    <Text strong>{i+1}. {sec.section}</Text>
+                    <Text type="secondary" style={{display:"block",fontSize:12}}>依据：{sec.evidence_basis}</Text>
+                    <Space wrap>{(sec.key_points||[]).map((kp:string,ki:number)=><Tag key={ki} style={{fontSize:11}}>{kp}</Tag>)}</Space>
+                  </div>)}
+                  {!workflowData.brief ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
+                    setLoading(true);
+                    try{
+                      const brief = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/generate-brief`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({outline:workflowData.outline})})).json();
+                      setWorkflowData({...workflowData, brief});
+                    }catch(e:any){message.error(e.message)}
+                    finally{setLoading(false)}
+                  }}>生成详细内容 Brief</Button> : <Space direction="vertical" size={4} style={{width:"100%"}}>
+                    <Alert type="success" showIcon message={<Text strong>详细内容 Brief</Text>} />
+                    {(workflowData.brief.sections||[]).map((sec:any,i:number)=><Card key={i} size="small" title={sec.section}>
+                      <Text type="secondary" style={{display:"block"}}>写作要求：{sec.writing_requirements}</Text>
+                      <Text type="secondary" style={{display:"block"}}>可核验事实：{(sec.facts_to_include||[]).join("；")}</Text>
+                      <Text type="secondary" style={{display:"block"}}>事实来源：{sec.facts_source}</Text>
+                      {sec.competitor_reference_only && <Tag color="orange" style={{marginTop:4}}>竞品参照（仅市场参照）：{sec.competitor_reference_only}</Tag>}
+                    </Card>)}
+                  </Space>}
+                </Space>}
+              </Space>}
+            </Card>}
           </Card>}
           {fallback && <Alert type="warning" showIcon message="聚合接口尚未返回数据，当前看板由已有采集记录实时兼容汇总。" />}
           <Row gutter={[16, 16]}>

@@ -108,6 +108,11 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     ).all()
     truths_pending = [t for t in truths if t.product_truth_status in {"UNKNOWN", ""}]
 
+    reviews_done = (
+        bool(events) and events_reviewed >= len(unique_event_keys)
+        and bool(supports) and supports_reviewed >= len(supports)
+        and bool(truths) and not truths_pending
+    )
     steps = [
         {"key": "collection", "label": "数据采集", "done": total_runs >= 1, "detail": f"{total_runs} Runs"},
         {"key": "answer_semantic", "label": "推荐行为分析", "done": len(unique_event_keys) >= 1, "detail": f"{len(unique_event_keys)} 组独特事件"},
@@ -115,8 +120,8 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         {"key": "evidence", "label": "Evidence 分析", "done": bool(supports), "detail": f"{len(supports)} 条对齐"},
         {"key": "evidence_review", "label": "Evidence 人工确认", "done": bool(supports) and supports_reviewed >= len(supports), "detail": f"{supports_reviewed}/{len(supports)} 条已审"},
         {"key": "product_truth", "label": "目标品牌能力确认", "done": bool(truths) and not truths_pending, "detail": f"{len(truths)-len(truths_pending)}/{len(truths)} 条已确认" if truths else "0 条"},
-        {"key": "gap", "label": "Gap Diagnosis", "done": False, "detail": "待审核完成后生成"},
-        {"key": "action", "label": "Action Candidate", "done": False, "detail": "待 Gap 后生成"},
+        {"key": "gap", "label": "Gap Diagnosis", "done": reviews_done, "detail": "可生成（点「继续分析」）" if reviews_done else "待审核完成后生成"},
+        {"key": "action", "label": "Action Candidate", "done": reviews_done, "detail": "可生成（点「继续分析」）" if reviews_done else "待 Gap 后生成"},
         {"key": "experiment", "label": "实验", "done": False, "detail": "未开始"},
     ]
     pending = sum(1 for s in steps if not s["done"] and s["key"] not in {"gap", "action", "experiment"})

@@ -22,6 +22,38 @@ from app.services.semantic_llm.cache import LLMCallCache
 logger = logging.getLogger("semantic_llm.deepseek")
 
 
+def _extract_json_object(content: str) -> dict | None:
+    """从文本中提取第一个完整 JSON 对象（容错推理模型的额外文本）。"""
+    start = content.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(content)):
+        ch = content[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(content[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
 def _input_hash(system_prompt: str, user_payload: dict, prompt_version: str, schema_version: str) -> str:
     raw = json.dumps(
         {"system": system_prompt, "payload": user_payload, "pv": prompt_version, "sv": schema_version},
@@ -107,11 +139,20 @@ class DeepSeekClient(SemanticLLMClient):
             "Authorization": f"Bearer {self.api_key}",  # key 只出现在内存 header，不落日志
             "Content-Type": "application/json",
         }
-        try:
-            with httpx.Client(timeout=self.settings.deepseek_timeout_seconds) as client:
-                resp = client.post(url, headers=headers, json=body)
-        except httpx.HTTPError as e:
-            raise SemanticLLMError(f"DeepSeek 网络错误: {e.__class__.__name__}") from e
+        # 有限重试（最多 2 次，指数退避）——应对服务端偶发断连；不无限 retry
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                with httpx.Client(timeout=self.settings.deepseek_timeout_seconds) as client:
+                    resp = client.post(url, headers=headers, json=body)
+                break
+            except httpx.HTTPError as e:
+                last_error = e
+                if attempt < 2:
+                    import time
+                    time.sleep(1.5 * (attempt + 1))
+        else:
+            raise SemanticLLMError(f"DeepSeek 网络错误（重试3次后）: {last_error.__class__.__name__ if last_error else 'unknown'}") from last_error
 
         if resp.status_code != 200:
             # 响应体是 API 错误详情（不含 key），截断后透传，便于调试
@@ -127,8 +168,11 @@ class DeepSeekClient(SemanticLLMClient):
 
         try:
             parsed = json.loads(content)
-        except json.JSONDecodeError as e:
-            raise SemanticLLMError("DeepSeek 返回非 JSON 内容") from e
+        except json.JSONDecodeError:
+            # 推理模型偶发在 JSON 前后附带文本，提取第一个完整 JSON 对象容错
+            parsed = _extract_json_object(content)
+            if parsed is None:
+                raise SemanticLLMError("DeepSeek 返回非 JSON 内容且无法提取")
 
         self._calls += 1
         self._tokens += total_tokens

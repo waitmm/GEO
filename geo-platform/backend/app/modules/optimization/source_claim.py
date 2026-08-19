@@ -95,6 +95,23 @@ class SourceClaimJudge:
         )
 
 
+_REFERENTIAL_SUBJECTS = {"该工具", "该产品", "该平台", "该软件", "该应用", "该服务", "它", "其", "用户", "不少商家", "该功能"}
+
+
+def _normalize_subject_entity(judge_subject: str, owner_entity: str) -> str:
+    """盲评回指词（该工具/该产品等）归一化为页面 owner 实体。
+
+    回指词不是实体——"该产品"指的就是当前页面所属主体。
+    owner_entity=UNKNOWN 时保留原词并标记 UNKNOWN。
+    """
+    subject = (judge_subject or "").strip()
+    if subject in _REFERENTIAL_SUBJECTS and owner_entity not in {"", "UNKNOWN"}:
+        return owner_entity
+    if subject in _REFERENTIAL_SUBJECTS:
+        return "UNKNOWN"
+    return subject
+
+
 def run_source_claim_extraction(
     db: Session,
     project: Project,
@@ -154,14 +171,18 @@ def run_source_claim_extraction(
             else:
                 validation_failed += 1
 
+            subject = _normalize_subject_entity(
+                claim.get("subject_text") or "",
+                ownership["source_owner_entity"],
+            )
             db.add(SourceClaim(
                 project_id=project.id,
                 source_document_id=doc.id,
                 passage_id=key,
                 source_owner_entity=ownership["source_owner_entity"],
                 source_role=ownership["source_role"],
-                # 语义主体以 Judge 识别为准；缺失时用 owner 作为弱 fallback 但标记 UNKNOWN
-                subject_entity=claim.get("subject_text") or "UNKNOWN",
+                # 语义主体以 Judge 识别为准；回指词（该工具/该产品）归一化为 owner
+                subject_entity=subject,
                 normalized_claim=claim.get("normalized_claim", ""),
                 subject_text=claim.get("subject_text", ""),
                 predicate=claim.get("predicate", ""),

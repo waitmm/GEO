@@ -144,6 +144,15 @@ def run_reason_driven_retrieval(
     seen_reasons: set[str] = set()
     result: dict[str, dict] = {}
     total_pages = 0
+    # ownership → docs 映射（Reason 实体的第一方页面优先候选）
+    ownership_map: dict[str, list[int]] = {}
+    for doc in docs:
+        from app.modules.optimization.source_qualification import resolve_ownership
+        r = resolve_ownership(db, project, doc.url or "", doc.domain)
+        owner = r["source_owner_entity"]
+        if owner not in {"", "UNKNOWN"}:
+            ownership_map.setdefault(owner, []).append(doc.id)
+
     for event in events:
         for reason in loads(event.reasons_json, []):
             rtext = reason.get("normalized_reason") or ""
@@ -151,9 +160,20 @@ def run_reason_driven_retrieval(
                 continue
             seen_reasons.add(rtext)
             hits = retrieve_passages_for_reason(rtext, all_passages, top_k)
+            # Reason-driven 增强：ENTITY_SPECIFIC reason 的实体第一方页面优先
+            if reason.get("reason_scope") == "ENTITY_SPECIFIC":
+                owner_doc_ids = ownership_map.get(event.entity_text, [])
+                owner_hits = [p for p in all_passages if p["doc_id"] in owner_doc_ids]
+                owner_scored = retrieve_passages_for_reason(rtext, owner_hits, top_k)
+                merged = {p["passage_id"]: p for p in owner_scored}
+                for p in hits:
+                    if p["passage_id"] not in merged:
+                        merged[p["passage_id"]] = p
+                hits = sorted(merged.values(), key=lambda x: -x["bm25_score"])[:top_k]
             result[rtext] = {
                 "reason_text": rtext,
                 "reason_scope": reason.get("reason_scope"),
+                "reason_entity": event.entity_text,
                 "event_ids": [event.id],
                 "passages": hits,
             }

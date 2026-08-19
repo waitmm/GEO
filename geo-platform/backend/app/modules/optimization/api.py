@@ -933,3 +933,71 @@ def golden_case_url_audit(run_ids: str = "", db: Session = Depends(get_db)):
         "eligibility": "CITATION_ONLY",
         "note": "Even after normalization, candidate-citation URL pools remain largely disjoint. This is accepted as a platform characteristic, not a parser bug.",
     }
+
+
+# --- 人工审核工作流 ---
+
+@router.get("/workflow/{project_id}/{prompt_id}/status")
+def workflow_status_endpoint(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    from app.models import Project
+    from app.modules.optimization.workflow import workflow_status
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return workflow_status(db, project, prompt_id)
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/review-queue")
+def workflow_review_queue_endpoint(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    from app.models import Project
+    from app.modules.optimization.workflow import review_queue
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return review_queue(db, project, prompt_id)
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/competitor-candidates")
+def competitor_candidates_endpoint(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    from app.models import Project
+    from app.modules.optimization.workflow import discover_competitor_candidates
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return discover_competitor_candidates(db, project, prompt_id)
+
+
+@router.post("/workflow/{project_id}/competitor-candidates/confirm")
+def competitor_confirm_endpoint(project_id: int, payload: dict, db: Session = Depends(get_db)):
+    from app.models import Project
+    from app.modules.optimization.workflow import confirm_competitor
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return confirm_competitor(db, project, payload.get("name", ""), payload.get("website_url", ""))
+
+
+@router.post("/workflow/review/events/confirm-batch")
+def batch_confirm_events_endpoint(payload: dict, db: Session = Depends(get_db)):
+    from app.modules.optimization.workflow import batch_confirm_events
+    return batch_confirm_events(db, payload.get("event_ids", []), payload.get("reviewer", "human"))
+
+
+@router.post("/workflow/review/events/reject-batch")
+def batch_reject_events_endpoint(payload: dict, db: Session = Depends(get_db)):
+    from app.models import RecommendationEvent
+    updated = 0
+    for eid in payload.get("event_ids", []):
+        e = db.get(RecommendationEvent, eid)
+        if e:
+            e.review_status = "HUMAN_REJECTED"
+            e.reviewer = payload.get("reviewer", "human")
+            updated += 1
+    db.commit()
+    return {"updated": updated}
+
+
+@router.post("/workflow/review/alignments/{alignment_id}/confirm")
+def confirm_alignment_endpoint(alignment_id: int, payload: dict, db: Session = Depends(get_db)):
+    from app.modules.optimization.workflow import confirm_alignment
+    return confirm_alignment(db, alignment_id, payload.get("relation", "SUPPORTS"), payload.get("reviewer", "human"))

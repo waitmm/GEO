@@ -585,6 +585,10 @@ export default function App() {
   const [selectedPkgId, setSelectedPkgId] = useState<number | null>(null);
   const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null);
   const [goldenData, setGoldenData] = useState<any>(null);
+  const [workflowData, setWorkflowData] = useState<any>(null);
+  const [workflowReviewOpen, setWorkflowReviewOpen] = useState(false);
+  const [reviewQueue, setReviewQueue] = useState<any>(null);
+  const [competitorCandidates, setCompetitorCandidates] = useState<any[]>([]);
   const [goldenLoading, setGoldenLoading] = useState(false);
   const [manualUrl, setManualUrl] = useState("");
   const [manualText, setManualText] = useState("");
@@ -705,6 +709,14 @@ export default function App() {
       setQueue(nextQueue);
       setTopics(nextTopics);
       setClusters(nextClusters);
+      // 加载分析工作流状态（默认展示最近有数据的 Prompt）
+      try {
+        const promptWithRuns = nextRuns.find((r:any)=>r.status==="success"||r.status==="partial_success");
+        if (promptWithRuns) {
+          const wf = await (await fetch(`/api/optimization/workflow/${id}/${promptWithRuns.prompt_id}/status`)).json();
+          setWorkflowData(wf);
+        }
+      } catch { /* 工作流数据加载失败不影响主页面 */ }
       try {
         setDashboard(await api.getValidationDashboard(id));
         setFallback(false);
@@ -1365,6 +1377,21 @@ export default function App() {
               <Col><Alert type="info" showIcon message="以下为验证样本观察值，不代表总体品牌曝光概率。" /></Col>
             </Row>
           </Card>
+          {projectId && workflowData && <Card size="small" title={<Space><ShieldCheck size={18} />Prompt #{workflowData.prompt_id} 分析工作流</Space>} extra={
+            workflowData.all_reviews_done
+              ? <Button type="primary" size="small" onClick={()=>setWorkflowReviewOpen(true)}>继续分析</Button>
+              : <Button type="primary" size="small" danger onClick={()=>setWorkflowReviewOpen(true)}>开始审核（{workflowData.pending_review_steps} 步待处理）</Button>
+          }>
+            <Row gutter={[8,8]}>
+              {workflowData.steps.map((s:any)=><Col key={s.key} xs={12} md={8} lg={4}>
+                <Space size={4}>
+                  <Tag color={s.done ? "green" : s.key==="gap"||s.key==="action"||s.key==="experiment" ? "default" : "orange"}>{s.done ? "✓" : s.key==="gap"||s.key==="action"||s.key==="experiment" ? "·" : "!"}</Tag>
+                  <Text type={s.done ? undefined : "secondary"} style={{fontSize:12}}>{s.label}</Text>
+                </Space>
+                <div style={{fontSize:11, color:"#999", marginLeft:24}}>{s.detail}</div>
+              </Col>)}
+            </Row>
+          </Card>}
           {fallback && <Alert type="warning" showIcon message="聚合接口尚未返回数据，当前看板由已有采集记录实时兼容汇总。" />}
           <Row gutter={[16, 16]}>
             <Col xs={12} lg={4}><Card size="small"><Statistic title="配置问题数" value={dashboard.prompts.total} /></Card></Col>
@@ -3192,6 +3219,91 @@ export default function App() {
         </Card>}
       </Content>
     </Layout>
+    <Modal
+      title="人工审核工作台"
+      open={workflowReviewOpen}
+      onCancel={()=>{setWorkflowReviewOpen(false);setReviewQueue(null);setCompetitorCandidates([]);}}
+      footer={null}
+      width={820}
+    >
+      <Space direction="vertical" size={12} style={{width:"100%"}}>
+        <Alert type="info" showIcon message="机器分析已完成，请逐项人工确认。相同答案只审核一次，确认后自动应用到全部 Run。" />
+        {!reviewQueue && <Button type="primary" loading={loading} onClick={async()=>{
+          setLoading(true);
+          try{
+            const [q, cc] = await Promise.all([
+              (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/review-queue`)).json(),
+              (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/competitor-candidates`)).json(),
+            ]);
+            setReviewQueue(q); setCompetitorCandidates(cc);
+          }catch(e:any){message.error(e.message)}
+          finally{setLoading(false)}
+        }}>加载待审核项</Button>}
+        {reviewQueue && <Space direction="vertical" size={12} style={{width:"100%"}}>
+          {/* 竞品候选确认 */}
+          {competitorCandidates.length>0 && <Card size="small" title={<Space><Tag color="volcano">待确认竞品</Tag><Text>发现 {competitorCandidates.length} 个潜在竞品</Text></Space>}>
+            {competitorCandidates.map((c:any)=><Row key={c.entity} align="middle" style={{marginBottom:8}}>
+              <Col span={16}><Space direction="vertical" size={0}>
+                <Text strong>{c.entity}</Text>
+                <Text type="secondary" style={{fontSize:12}}>出现于 {c.run_coverage} Runs · {c.speech_acts.join("/")}</Text>
+                <Text type="secondary" style={{fontSize:12}}>原文：{c.answer_span?.slice(0,80)}</Text>
+              </Space></Col>
+              <Col span={8}><Space>
+                <Button size="small" type="primary" onClick={async()=>{
+                  await fetch(`/api/optimization/workflow/${projectId}/competitor-candidates/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:c.entity})});
+                  message.success(`已确认竞品：${c.entity}`);
+                  setCompetitorCandidates(competitorCandidates.filter((x:any)=>x.entity!==c.entity));
+                }}>确认竞品</Button>
+                <Button size="small" onClick={()=>setCompetitorCandidates(competitorCandidates.filter((x:any)=>x.entity!==c.entity))}>不是</Button>
+              </Space></Col>
+            </Row>)}
+          </Card>}
+          {/* 推荐事件审核（一屏一判断） */}
+          {reviewQueue.unique_events.map((e:any, idx:number)=><Card key={`ev-${idx}`} size="small" title={<Space><Tag color="blue">推荐事件 {idx+1}/{reviewQueue.unique_events.length}</Tag><Tag>{e.run_count} 个 Runs 相同答案</Tag></Space>}>
+            <Text>机器判断：<strong>{e.entity_text}</strong> = <Tag>{e.speech_act}</Tag>（{e.recommendation_strength}）</Text>
+            <Alert type="info" style={{marginTop:8}} message={`原答案："${e.answer_span}"`} />
+            {(e.reasons||[]).map((r:any,ri:number)=><Text key={ri} type="secondary" style={{display:"block",marginTop:4}}>理由{ri+1}：{r.normalized_reason}（{r.reason_scope}）</Text>)}
+            <Space style={{marginTop:8}}>
+              <Button size="small" type="primary" onClick={async()=>{
+                await fetch("/api/optimization/workflow/review/events/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
+                message.success("已确认并应用到全部相同答案");
+                setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
+              }}>确认</Button>
+              <Button size="small" onClick={async()=>{
+                await fetch("/api/optimization/workflow/review/events/reject-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
+                message.success("已标记错误");
+                setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
+              }}>错误</Button>
+            </Space>
+          </Card>)}
+          {/* Evidence 对齐审核 */}
+          {reviewQueue.alignments.map((a:any, idx:number)=><Card key={`al-${idx}`} size="small" title={<Tag color="purple">Evidence {idx+1}/{reviewQueue.alignments.length}</Tag>}>
+            <Text strong>AI 选择理由：</Text><Text>{a.reason_text}</Text>
+            <Divider style={{margin:6}}/>
+            <Text strong>来源原文：</Text><Alert type="info" message={a.claim_span || a.claim_text} style={{marginTop:4}}/>
+            <Text type="secondary" style={{display:"block",marginTop:4}}>机器判断：<Tag color={a.relation==="SUPPORTS"?"green":"gold"}>{a.relation}</Tag></Text>
+            <Space style={{marginTop:8}}>
+              <Button size="small" type="primary" onClick={async()=>{
+                await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"SUPPORTS"})});
+                message.success("已确认 SUPPORTS");
+                setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
+              }}>确认 SUPPORTS</Button>
+              <Button size="small" onClick={async()=>{
+                await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"RELATED"})});
+                message.success("已改为 RELATED");
+                setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
+              }}>改为 RELATED</Button>
+              <Button size="small" onClick={async()=>{
+                await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"NONE"})});
+                message.success("已改为 NONE");
+                setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
+              }}>NONE</Button>
+            </Space>
+          </Card>)}
+          {reviewQueue.unique_events.length===0 && reviewQueue.alignments.length===0 && <Alert type="success" showIcon message="全部审核完成！关闭窗口后点「继续分析」生成 Gap 与 Action。" />}
+        </Space>}
+      </Space>
+    </Modal>
     <Modal
       title={editingProjectId ? "编辑项目" : "新建项目"}
       open={projectModalOpen}

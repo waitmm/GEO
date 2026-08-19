@@ -985,6 +985,26 @@ class AnswerClaim(Base, TimestampMixin):
 # Answer Intelligence — Claim Extraction + Atomic Claim
 # ---------------------------------------------------------------------------
 
+class LLMCallCache(Base):
+    """语义模型调用缓存 — 相同输入不重复调用 API。"""
+
+    __tablename__ = "llm_call_cache"
+    __table_args__ = (
+        Index("ix_llm_call_cache_lookup", "provider", "model", "prompt_version", "schema_version", "input_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    provider: Mapped[str] = mapped_column(String(40), index=True)
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(80), default="")
+    schema_version: Mapped[str] = mapped_column(String(40), default="v1")
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    raw_response_hash: Mapped[str] = mapped_column(String(64), default="")
+    parsed_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    token_usage: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class ClaimExtractionRun(Base, TimestampMixin):
     __tablename__ = "claim_extraction_runs"
 
@@ -1027,6 +1047,126 @@ class AtomicClaim(Base, TimestampMixin):
     reviewer: Mapped[str] = mapped_column(String(120), default="")
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     review_note: Mapped[str] = mapped_column(Text, default="")
+
+
+class RecommendationEvent(Base, TimestampMixin):
+    """答案语义事件（LLM 提取，machine/human 分离，不覆盖旧 RecommendationClaim）。"""
+
+    __tablename__ = "recommendation_events"
+    __table_args__ = (
+        Index("ix_recommendation_events_run", "run_id"),
+        Index("ix_recommendation_events_answer_hash", "answer_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+    answer_hash: Mapped[str] = mapped_column(String(64), default="")
+    entity_text: Mapped[str] = mapped_column(String(240), default="")
+    entity_type: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
+    speech_act: Mapped[str] = mapped_column(String(40), default="UNRESOLVED")
+    recommendation_strength: Mapped[str] = mapped_column(String(20), default="NONE")
+    polarity: Mapped[str] = mapped_column(String(20), default="NEUTRAL")
+    answer_span: Mapped[str] = mapped_column(Text, default="")
+    raw_start: Mapped[int] = mapped_column(Integer, default=-1)
+    raw_end: Mapped[int] = mapped_column(Integer, default=-1)
+    reasons_json: Mapped[str] = mapped_column(Text, default="[]")
+    selection_criteria_json: Mapped[str] = mapped_column(Text, default="[]")
+    provider: Mapped[str] = mapped_column(String(40), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(80), default="")
+    schema_version: Mapped[str] = mapped_column(String(40), default="v1")
+    machine_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    human_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    review_status: Mapped[str] = mapped_column(String(40), default="MACHINE_CANDIDATE", index=True)
+    reviewer: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class SourceClaim(Base, TimestampMixin):
+    """盲评 Source Claim（subject_entity 为语义主体，owner_entity 仅 provenance）。"""
+
+    __tablename__ = "source_claims"
+    __table_args__ = (
+        Index("ix_source_claims_document", "source_document_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    source_document_id: Mapped[int] = mapped_column(ForeignKey("source_documents.id"), index=True)
+    passage_id: Mapped[str] = mapped_column(String(120), default="")
+    source_owner_entity: Mapped[str] = mapped_column(String(240), default="UNKNOWN")
+    source_role: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
+    subject_entity: Mapped[str] = mapped_column(String(240), default="UNKNOWN")
+    normalized_claim: Mapped[str] = mapped_column(Text, default="")
+    subject_text: Mapped[str] = mapped_column(String(240), default="")
+    predicate: Mapped[str] = mapped_column(String(240), default="")
+    object_text: Mapped[str] = mapped_column(String(500), default="")
+    claim_type: Mapped[str] = mapped_column(String(40), default="OTHER")
+    polarity: Mapped[str] = mapped_column(String(20), default="NEUTRAL")
+    source_span: Mapped[str] = mapped_column(Text, default="")
+    raw_start: Mapped[int] = mapped_column(Integer, default=-1)
+    raw_end: Mapped[int] = mapped_column(Integer, default=-1)
+    provider: Mapped[str] = mapped_column(String(40), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(80), default="")
+    schema_version: Mapped[str] = mapped_column(String(40), default="v1")
+    machine_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    human_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    review_status: Mapped[str] = mapped_column(String(40), default="MACHINE_CANDIDATE", index=True)
+    reviewer: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EvidenceAlignment(Base, TimestampMixin):
+    """语义证据对齐（与旧 decision_evidence_adoptions 并存，不覆盖）。"""
+
+    __tablename__ = "evidence_alignments"
+    __table_args__ = (
+        Index("ix_evidence_alignments_event", "recommendation_event_id"),
+        Index("ix_evidence_alignments_claim", "source_claim_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+    recommendation_event_id: Mapped[int] = mapped_column(ForeignKey("recommendation_events.id"), index=True)
+    recommendation_reason_id: Mapped[str] = mapped_column(String(120), default="")
+    source_document_id: Mapped[int] = mapped_column(ForeignKey("source_documents.id"), index=True)
+    source_claim_id: Mapped[int] = mapped_column(ForeignKey("source_claims.id"), index=True)
+    relation: Mapped[str] = mapped_column(String(40), default="NONE")
+    scope_relation: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
+    provider: Mapped[str] = mapped_column(String(40), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(80), default="")
+    schema_version: Mapped[str] = mapped_column(String(40), default="v1")
+    machine_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    human_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    review_status: Mapped[str] = mapped_column(String(40), default="MACHINE_CANDIDATE", index=True)
+    reviewer: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class SourceQuality(Base):
+    """SourceDocument 内容质量分层（绑定 hash/extractor，不改写 fetch_status）。"""
+
+    __tablename__ = "source_quality"
+    __table_args__ = (
+        Index("ix_source_quality_document", "source_document_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    source_document_id: Mapped[int] = mapped_column(ForeignKey("source_documents.id"), index=True)
+    content_quality_status: Mapped[str] = mapped_column(String(40), default="UNREVIEWED", index=True)
+    quality_source: Mapped[str] = mapped_column(String(80), default="RULE")
+    quality_reason: Mapped[str] = mapped_column(Text, default="")
+    clean_text_hash: Mapped[str] = mapped_column(String(64), default="")
+    extractor_version: Mapped[str] = mapped_column(String(80), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class PassageAlignment(Base, TimestampMixin):

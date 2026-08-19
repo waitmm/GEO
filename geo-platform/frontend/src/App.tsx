@@ -1404,10 +1404,24 @@ export default function App() {
             </Row>
             {workflowData.continueResult && <Space direction="vertical" size={4} style={{width:"100%", marginTop:8}}>
               <Alert type={workflowData.continueResult.gap?.gap_type==="UNRESOLVED" ? "warning" : "success"} showIcon
-                message={<Space><Text strong>Gap：{workflowData.continueResult.gap?.gap_type}</Text><Tag>{workflowData.continueResult.gap?.confidence}</Tag></Space>}
+                message={<Space><Text strong>Gap：{workflowData.continueResult.gap?.gap_type}</Text><Tag>{workflowData.continueResult.gap?.confidence}</Tag>
+                  {!workflowData.steps.find((s:any)=>s.key==="gap")?.done && <Button size="small" type="primary" onClick={async()=>{
+                    await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/confirm-decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step_key:"gap",decision_status:"CONFIRMED"})});
+                    message.success("Gap 已确认");
+                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
+                    setWorkflowData({...wf, continueResult: workflowData.continueResult});
+                  }}>确认此 Gap</Button>}
+                </Space>}
                 description={workflowData.continueResult.gap?.basis} />
               <Alert type="info" showIcon
-                message={<Space><Text strong>Action：{workflowData.continueResult.action?.intervention_goal}</Text><Tag>{workflowData.continueResult.action?.asset_ownership}</Tag><Tag>{workflowData.continueResult.action?.target_platform}</Tag></Space>}
+                message={<Space><Text strong>Action：{workflowData.continueResult.action?.intervention_goal}</Text><Tag>{workflowData.continueResult.action?.asset_ownership}</Tag><Tag>{workflowData.continueResult.action?.target_platform}</Tag>
+                  {!workflowData.steps.find((s:any)=>s.key==="action")?.done && <Button size="small" type="primary" onClick={async()=>{
+                    await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/confirm-decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step_key:"action",decision_status:"CONFIRMED"})});
+                    message.success("Action 已确认");
+                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
+                    setWorkflowData({...wf, continueResult: workflowData.continueResult});
+                  }}>确认此 Action</Button>}
+                </Space>}
                 description={workflowData.continueResult.action?.target_claim} />
             </Space>}
           </Card>}

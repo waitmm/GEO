@@ -113,6 +113,19 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         and bool(supports) and supports_reviewed >= len(supports)
         and bool(truths) and not truths_pending
     )
+
+    # gap/action 的人工确认状态
+    import sqlite3
+    conn = sqlite3.connect('geo_v0.db')
+    confirmed = {
+        r[0] for r in conn.execute(
+            "SELECT step_key FROM workflow_confirmations WHERE project_id=? AND prompt_id=? AND decision_status='CONFIRMED'",
+            (project.id, prompt_id),
+        ).fetchall()
+    }
+    conn.close()
+    gap_confirmed = "gap" in confirmed
+    action_confirmed = "action" in confirmed
     steps = [
         {"key": "collection", "label": "数据采集", "done": total_runs >= 1, "detail": f"{total_runs} Runs"},
         {"key": "answer_semantic", "label": "推荐行为分析", "done": len(unique_event_keys) >= 1, "detail": f"{len(unique_event_keys)} 组独特事件"},
@@ -120,9 +133,9 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         {"key": "evidence", "label": "Evidence 分析", "done": bool(supports), "detail": f"{len(supports)} 条对齐"},
         {"key": "evidence_review", "label": "Evidence 人工确认", "done": bool(supports) and supports_reviewed >= len(supports), "detail": f"{supports_reviewed}/{len(supports)} 条已审"},
         {"key": "product_truth", "label": "目标品牌能力确认", "done": bool(truths) and not truths_pending, "detail": f"{len(truths)-len(truths_pending)}/{len(truths)} 条已确认" if truths else "0 条"},
-        {"key": "gap", "label": "Gap Diagnosis", "done": reviews_done, "detail": "可生成（点「继续分析」）" if reviews_done else "待审核完成后生成"},
-        {"key": "action", "label": "Action Candidate", "done": reviews_done, "detail": "可生成（点「继续分析」）" if reviews_done else "待 Gap 后生成"},
-        {"key": "experiment", "label": "实验", "done": False, "detail": "未开始"},
+        {"key": "gap", "label": "Gap Diagnosis", "done": gap_confirmed, "detail": "已人工确认" if gap_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成")},
+        {"key": "action", "label": "Action Candidate", "done": action_confirmed, "detail": "已人工确认" if action_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待 Gap 后生成")},
+        {"key": "experiment", "label": "实验", "done": False, "detail": "待 Action 确认后进入" if gap_confirmed and action_confirmed else "未开始"},
     ]
     pending = sum(1 for s in steps if not s["done"] and s["key"] not in {"gap", "action", "experiment"})
     return {

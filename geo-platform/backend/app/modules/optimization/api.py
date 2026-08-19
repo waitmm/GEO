@@ -1057,3 +1057,23 @@ def workflow_continue_analysis(project_id: int, prompt_id: int, db: Session = De
     gap = derive_gap(db, project, prompt_id, run_ids)
     action = build_action_candidate(db, project, prompt_id, run_ids, gap)
     return {"gap": gap, "action": action}
+
+
+@router.post("/workflow/{project_id}/{prompt_id}/confirm-decision")
+def workflow_confirm_decision(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
+    """确认/拒绝 Gap 或 Action 决策（step_key: gap / action）。"""
+    import sqlite3
+    step_key = payload.get("step_key")
+    if step_key not in {"gap", "action"}:
+        raise HTTPException(status_code=400, detail="step_key 仅支持 gap / action")
+    decision = payload.get("decision_status", "CONFIRMED")
+    conn = sqlite3.connect('geo_v0.db')
+    conn.execute(
+        """INSERT OR REPLACE INTO workflow_confirmations
+           (project_id, prompt_id, step_key, decision_status, decision_note, reviewer, reviewed_at)
+           VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+        (project_id, prompt_id, step_key, decision, payload.get("note", ""), payload.get("reviewer", "human")),
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "OK", "step_key": step_key, "decision_status": decision}

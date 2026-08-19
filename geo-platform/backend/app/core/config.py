@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     strategy_llm_prompt_version: str = "strategy_prompt.v1"
     # Runtime Semantic LLM (DeepSeek) — 全部来自环境变量，代码不写死
     deepseek_api_key: str = ""
-    deepseek_model: str = "deepseek-chat"
+    deepseek_model: str = "deepseek-v4-flash"
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_timeout_seconds: int = 120
     semantic_case_max_calls: int = 200

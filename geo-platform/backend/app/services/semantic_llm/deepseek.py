@@ -72,6 +72,9 @@ class DeepSeekClient(SemanticLLMClient):
         self._assert_budget(db)
 
         model_name = model or self.settings.deepseek_model
+        # v4-flash 是推理模型：reasoning 会消耗 token 预算，
+        # 实际可用 max_tokens 需给足（默认 4096，调用方可覆盖）。
+        effective_max_tokens = max_tokens if max_tokens >= 2048 else 2048
         input_key = _input_hash(system_prompt, user_payload, prompt_version, schema_version)
 
         # cache hit
@@ -97,7 +100,7 @@ class DeepSeekClient(SemanticLLMClient):
                 {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
             ],
             "temperature": 0.0,
-            "max_tokens": max_tokens,
+            "max_tokens": effective_max_tokens,
             "response_format": {"type": "json_object"},
         }
         headers = {

@@ -1001,3 +1001,27 @@ def batch_reject_events_endpoint(payload: dict, db: Session = Depends(get_db)):
 def confirm_alignment_endpoint(alignment_id: int, payload: dict, db: Session = Depends(get_db)):
     from app.modules.optimization.workflow import confirm_alignment
     return confirm_alignment(db, alignment_id, payload.get("relation", "SUPPORTS"), payload.get("reviewer", "human"))
+
+
+@router.get("/workflow/{project_id}/default-prompt")
+def workflow_default_prompt(project_id: int, db: Session = Depends(get_db)):
+    """返回该项目机器分析进度最好的 Prompt（按语义事件数倒序），
+    无分析数据时返回采集最新的 Prompt。"""
+    from app.models import Project, RecommendationEvent, BrowserMonitorRun
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    # 有语义事件的 prompt，按事件数倒序（Python 侧排序，避免复杂 SQL）
+    rows = db.query(RecommendationEvent.prompt_id).filter(
+        RecommendationEvent.project_id == project_id,
+    ).all()
+    if rows:
+        from collections import Counter
+        counts = Counter(r[0] for r in rows)
+        best_prompt = counts.most_common(1)[0][0]
+        return {"prompt_id": best_prompt, "reason": "HAS_SEMANTIC_EVENTS"}
+    # 否则取采集最新（runs 按 id 倒序第一个）
+    run = db.query(BrowserMonitorRun).filter(
+        BrowserMonitorRun.project_id == project_id,
+    ).order_by(BrowserMonitorRun.id.desc()).first()
+    return {"prompt_id": run.prompt_id if run else None, "reason": "LATEST_RUN" if run else "NO_DATA"}

@@ -114,8 +114,9 @@ class DeepSeekClient(SemanticLLMClient):
             raise SemanticLLMError(f"DeepSeek 网络错误: {e.__class__.__name__}") from e
 
         if resp.status_code != 200:
-            # 响应体可能含 detail，但禁止打印 key；只打印状态码与模型
-            raise SemanticLLMError(f"DeepSeek HTTP {resp.status_code} (model={model_name})")
+            # 响应体是 API 错误详情（不含 key），截断后透传，便于调试
+            detail = resp.text[:300]
+            raise SemanticLLMError(f"DeepSeek HTTP {resp.status_code} (model={model_name}): {detail}")
 
         data = resp.json()
         content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")

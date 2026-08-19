@@ -709,11 +709,17 @@ export default function App() {
       setQueue(nextQueue);
       setTopics(nextTopics);
       setClusters(nextClusters);
-      // 加载分析工作流状态（默认展示最近有数据的 Prompt）
+      // 加载分析工作流状态（默认选已完成机器分析的 Prompt，而非第一个有 Run 的）
       try {
-        const promptWithRuns = nextRuns.find((r:any)=>r.status==="success"||r.status==="partial_success");
-        if (promptWithRuns) {
-          const wf = await (await fetch(`/api/optimization/workflow/${id}/${promptWithRuns.prompt_id}/status`)).json();
+        const validPromptIds = [...new Set(nextRuns.filter((r:any)=>r.status==="success"||r.status==="partial_success").map((r:any)=>r.prompt_id))];
+        let chosen: number | null = null;
+        for (const pid of validPromptIds) {
+          const wf = await (await fetch(`/api/optimization/workflow/${id}/${pid}/status`)).json();
+          // 优先选已有语义事件/对齐数据的 Prompt
+          if ((wf.steps.find((s:any)=>s.key==="answer_semantic")?.done)) { chosen = pid; setWorkflowData(wf); break; }
+        }
+        if (chosen === null && validPromptIds.length > 0) {
+          const wf = await (await fetch(`/api/optimization/workflow/${id}/${validPromptIds[0]}/status`)).json();
           setWorkflowData(wf);
         }
       } catch { /* 工作流数据加载失败不影响主页面 */ }

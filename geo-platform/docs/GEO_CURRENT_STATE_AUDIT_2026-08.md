@@ -872,3 +872,32 @@ Outcome: 无 STOP
   "conclusion": ""
 }
 ```
+
+---
+
+# Post-implementation Addendum（2026-08-19）
+
+以下为审计文档定稿后的新增内容，不改写原始 FORENSIC AUDIT 结论。
+
+## Single Case Evidence 管道落地状态
+
+五层语义管道已实现并真实运行（DeepSeek deepseek-v4-flash）：
+
+| Layer | 状态 | 真实结果 |
+|-------|------|---------|
+| L1 AnswerSemanticJudge | LIVE VERIFIED | 1 次 LLM（12 相同答案 hash 复用），12 事件（商加加 INCLUDE_AS_OPTION） |
+| L2 Source Qualification | LIVE VERIFIED | 88 CONTENT_VALID / 35 NOISY / 7 EMPTY / 73 FETCH_FAILED |
+| L3 Reason-driven Retrieval | LIVE VERIFIED | 3 unique reasons → 15 passages（BM25） |
+| L4 Blind SourceClaimJudge | LIVE VERIFIED | 44 grounded claims，注入防护 RESISTED |
+| L5 Evidence Alignment | LIVE VERIFIED | **10 SUPPORTS** + 114 COMPETITOR_CONTEXT |
+
+## 关键业务结论（机器层）
+
+- Gap 判定：**EVIDENCE_GAP（MEDIUM）**——爱短链能力（Product Truth SUPPORTED：抖音跳转微信/短链生成）真实存在，但 12 次答案 0 提及。
+- Action：EVIDENCE_STRENGTHEN / FIRST_PARTY / UNRESOLVED 平台。
+- 进入真实实验：**NO**（0 人工审核，target_platform 未定）。
+
+## 修复的存量数据问题
+
+- 商加加官网 4 文档为 SPA 壳（无正文），Playwright 重抓恢复真实内容（2035-3092 字）。
+- 项目 #3 竞品列表补充商加加（shangjiajia.com）。

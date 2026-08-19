@@ -3259,25 +3259,28 @@ export default function App() {
             </Row>)}
           </Card>}
           {/* 推荐事件审核（一屏一判断） */}
-          {reviewQueue.unique_events.map((e:any, idx:number)=><Card key={`ev-${idx}`} size="small" title={<Space><Tag color="blue">推荐事件 {idx+1}/{reviewQueue.unique_events.length}</Tag><Tag>{e.run_count} 个 Runs 相同答案</Tag></Space>}>
-            <Text>机器判断：<strong>{e.entity_text}</strong> = <Tag>{e.speech_act}</Tag>（{e.recommendation_strength}）</Text>
+          {reviewQueue.unique_events.map((e:any, idx:number)=><Card key={`ev-${idx}`} size="small" title={<Space><Tag color="blue">AI 说法校验 {idx+1}/{reviewQueue.unique_events.length}</Tag><Tag>{e.run_count} 个 Runs 相同答案</Tag></Space>}>
+            <Alert type="warning" showIcon style={{marginBottom:8}} message="这里校验的是「AI 是否真的这样说了」，不是竞品能力的真实性——竞品能力真假不影响本品牌的干预决策。" />
+            <Text>机器判断：AI 把 <strong>{e.entity_text}</strong> <Tag>{e.speech_act==="INCLUDE_AS_OPTION"?"纳入方案候选":e.speech_act}</Tag>（{e.recommendation_strength}）</Text>
             <Alert type="info" style={{marginTop:8}} message={`原答案："${e.answer_span}"`} />
-            {(e.reasons||[]).map((r:any,ri:number)=><Text key={ri} type="secondary" style={{display:"block",marginTop:4}}>理由{ri+1}：{r.normalized_reason}（{r.reason_scope}）</Text>)}
+            <Text type="secondary" style={{display:"block",marginTop:4}}>AI 给出的理由（仅参考，无需校验其能力真假）：</Text>
+            {(e.reasons||[]).map((r:any,ri:number)=><Text key={ri} type="secondary" style={{display:"block",marginTop:2}}>理由{ri+1}：{r.normalized_reason}</Text>)}
             <Space style={{marginTop:8}}>
               <Button size="small" type="primary" onClick={async()=>{
                 await fetch("/api/optimization/workflow/review/events/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
-                message.success("已确认并应用到全部相同答案");
+                message.success("已确认 AI 说法无误");
                 setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
-              }}>确认</Button>
+              }}>AI 确实这样说了</Button>
               <Button size="small" onClick={async()=>{
                 await fetch("/api/optimization/workflow/review/events/reject-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
                 message.success("已标记错误");
                 setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
-              }}>错误</Button>
+              }}>判断有误</Button>
             </Space>
           </Card>)}
           {/* Evidence 对齐审核 */}
-          {reviewQueue.alignments.map((a:any, idx:number)=><Card key={`al-${idx}`} size="small" title={<Tag color="purple">Evidence {idx+1}/{reviewQueue.alignments.length}</Tag>}>
+          {reviewQueue.alignments.map((a:any, idx:number)=><Card key={`al-${idx}`} size="small" title={<Tag color="purple">证据语义关系校验 {idx+1}/{reviewQueue.alignments.length}</Tag>}>
+            <Alert type="warning" showIcon style={{marginBottom:8}} message="这里校验的是「来源原文是否真的支持这条 AI 理由」的语义关系，不判断竞品能力真伪。竞品证据只用于建立市场标准基线。" />
             <Text strong>AI 选择理由：</Text><Text>{a.reason_text}</Text>
             <Divider style={{margin:6}}/>
             <Text strong>来源原文：</Text><Alert type="info" message={a.claim_span || a.claim_text} style={{marginTop:4}}/>

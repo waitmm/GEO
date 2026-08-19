@@ -1379,7 +1379,18 @@ export default function App() {
           </Card>
           {projectId && workflowData && <Card size="small" title={<Space><ShieldCheck size={18} />Prompt #{workflowData.prompt_id} 分析工作流</Space>} extra={
             workflowData.all_reviews_done
-              ? <Button type="primary" size="small" onClick={()=>setWorkflowReviewOpen(true)}>继续分析</Button>
+              ? <Button type="primary" size="small" loading={loading} onClick={async()=>{
+                  setLoading(true);
+                  try{
+                    const result = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/continue`,{method:"POST"})).json();
+                    setWorkflowData({...workflowData, continueResult: result});
+                    message.success("Gap 与 Action 已生成");
+                    // 刷新工作流状态
+                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
+                    setWorkflowData({...wf, continueResult: result});
+                  }catch(e:any){message.error(e.message||"继续分析失败，请确认审核已全部完成")}
+                  finally{setLoading(false)}
+                }}>继续分析</Button>
               : <Button type="primary" size="small" danger onClick={()=>setWorkflowReviewOpen(true)}>开始审核（{workflowData.pending_review_steps} 步待处理）</Button>
           }>
             <Row gutter={[8,8]}>
@@ -1391,6 +1402,14 @@ export default function App() {
                 <div style={{fontSize:11, color:"#999", marginLeft:24}}>{s.detail}</div>
               </Col>)}
             </Row>
+            {workflowData.continueResult && <Space direction="vertical" size={4} style={{width:"100%", marginTop:8}}>
+              <Alert type={workflowData.continueResult.gap?.gap_type==="UNRESOLVED" ? "warning" : "success"} showIcon
+                message={<Space><Text strong>Gap：{workflowData.continueResult.gap?.gap_type}</Text><Tag>{workflowData.continueResult.gap?.confidence}</Tag></Space>}
+                description={workflowData.continueResult.gap?.basis} />
+              <Alert type="info" showIcon
+                message={<Space><Text strong>Action：{workflowData.continueResult.action?.intervention_goal}</Text><Tag>{workflowData.continueResult.action?.asset_ownership}</Tag><Tag>{workflowData.continueResult.action?.target_platform}</Tag></Space>}
+                description={workflowData.continueResult.action?.target_claim} />
+            </Space>}
           </Card>}
           {fallback && <Alert type="warning" showIcon message="聚合接口尚未返回数据，当前看板由已有采集记录实时兼容汇总。" />}
           <Row gutter={[16, 16]}>

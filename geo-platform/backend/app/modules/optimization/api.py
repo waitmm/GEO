@@ -1025,3 +1025,35 @@ def workflow_default_prompt(project_id: int, db: Session = Depends(get_db)):
         BrowserMonitorRun.project_id == project_id,
     ).order_by(BrowserMonitorRun.id.desc()).first()
     return {"prompt_id": run.prompt_id if run else None, "reason": "LATEST_RUN" if run else "NO_DATA"}
+
+
+@router.post("/workflow/{project_id}/{prompt_id}/continue")
+def workflow_continue_analysis(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    """审核完成后继续分析：Gap 推导 + Action Candidate 生成。
+
+    前置检查：事件与 SUPPORTS 对齐必须已全部人工审核。
+    """
+    from app.models import Project, RecommendationEvent, EvidenceAlignment
+    from app.modules.optimization.gap_action import derive_gap, build_action_candidate
+    from app.modules.optimization.workflow import workflow_status
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    status = workflow_status(db, project, prompt_id)
+    if not status["all_reviews_done"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"审核尚未完成（{status['pending_review_steps']} 步待处理），不能继续分析",
+        )
+
+    run_ids = [
+        r.id for r in db.query(__import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun).filter(
+            __import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun.project_id == project_id,
+            __import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun.prompt_id == prompt_id,
+        ).all()
+    ]
+    gap = derive_gap(db, project, prompt_id, run_ids)
+    action = build_action_candidate(db, project, prompt_id, run_ids, gap)
+    return {"gap": gap, "action": action}

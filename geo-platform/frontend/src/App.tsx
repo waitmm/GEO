@@ -3465,6 +3465,22 @@ export default function App() {
           }catch(e:any){message.error(e.message)}
           finally{setLoading(false)}
         }}>加载待审核项</Button>}
+        {reviewQueue?.status==="NOT_ANALYZED" && <Space direction="vertical" size={8} style={{width:"100%"}}>
+          <Alert type="warning" showIcon message="该 Prompt 尚未执行机器分析——不是「审核完成」，而是还没有可审核的数据。" />
+          <Button type="primary" loading={loading} onClick={async()=>{
+            setLoading(true);
+            try{
+              const r = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/run-analysis`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})})).json();
+              message.success(`机器分析完成：事件 ${r.layer1?.events_created||0} 条，Claims ${r.layer4?.claims_created||0} 条，对齐 ${r.layer5?.alignments_created||0} 条`);
+              // 重新加载队列
+              const q = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/review-queue`)).json();
+              setReviewQueue(q);
+              const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/status`)).json();
+              setWorkflowData(wf);
+            }catch(e:any){message.error(e.message)}
+            finally{setLoading(false)}
+          }}>运行机器分析（约 1-2 分钟）</Button>
+        </Space>}
         {reviewQueue && <Space direction="vertical" size={12} style={{width:"100%"}}>
           {/* 竞品候选确认 */}
           {competitorCandidates.length>0 && <Card size="small" title={<Space><Tag color="volcano">待确认竞品</Tag><Text>发现 {competitorCandidates.length} 个潜在竞品</Text></Space>}>

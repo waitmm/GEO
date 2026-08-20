@@ -203,7 +203,12 @@ def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
             "run_ids": sorted({e.run_id for e in events})[:12],
         })
 
+    if not unique_events and not align_items and not events:
+        # 该 Prompt 尚未运行语义分析：明确告知，不要误报"全部审核完成"
+        return {"status": "NOT_ANALYZED", "unique_events": [], "alignments": [], "message": "该 Prompt 尚未执行机器分析，请先运行分析。"}
+
     return {
+        "status": "READY",
         "unique_events": [
             {**{k: v for k, v in row.items() if k not in {"run_ids", "event_ids"}},
              "run_ids": sorted(row["run_ids"]), "event_ids": row["event_ids"], "run_count": len(row["run_ids"])}

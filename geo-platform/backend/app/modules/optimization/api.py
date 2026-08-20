@@ -1390,3 +1390,35 @@ def workflow_decision_market(project_id: int, prompt_id: int, db: Session = Depe
             for row in entities.values()
         ],
     }
+
+
+@router.post("/workflow/{project_id}/{prompt_id}/run-analysis")
+def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
+    """一键运行机器分析五层管道（Answer Semantic → Source Qualification → Retrieval → Source Claim → Alignment）。"""
+    from app.models import Project, Prompt, BrowserMonitorRun
+    from app.modules.optimization.answer_semantic import run_answer_semantic
+    from app.modules.optimization.source_qualification import run_source_qualification
+    from app.modules.optimization.source_claim import run_source_claim_extraction
+    from app.modules.optimization.evidence_alignment import run_evidence_alignment
+
+    project = db.get(Project, project_id)
+    prompt = db.get(Prompt, prompt_id)
+    if not project or not prompt:
+        raise HTTPException(status_code=404, detail="Project/Prompt not found")
+
+    run_ids = payload.get("run_ids") or [
+        r.id for r in db.query(BrowserMonitorRun).filter(
+            BrowserMonitorRun.project_id == project_id,
+            BrowserMonitorRun.prompt_id == prompt_id,
+            BrowserMonitorRun.status.in_(["success", "partial_success"]),
+        ).all()
+    ]
+    if not run_ids:
+        raise HTTPException(status_code=400, detail="该 Prompt 没有可用的采集 Run")
+
+    results = {}
+    results["layer1"] = run_answer_semantic(db, project, prompt, run_ids)
+    results["layer2"] = run_source_qualification(db, project)
+    results["layer4"] = run_source_claim_extraction(db, project, prompt_id, run_ids)
+    results["layer5"] = run_evidence_alignment(db, project, prompt_id, run_ids)
+    return results

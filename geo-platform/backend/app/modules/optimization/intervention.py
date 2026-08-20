@@ -33,6 +33,7 @@ CHANNEL_OPTIONS = [
     {"key": "ZHIHU", "label": "知乎", "asset_type": "ARTICLE"},
     {"key": "BAIJIAHAO", "label": "百家号", "asset_type": "ARTICLE"},
     {"key": "BILIBILI", "label": "B站", "asset_type": "VIDEO"},
+    {"key": "DOUYIN", "label": "抖音", "asset_type": "VIDEO"},
 ]
 
 

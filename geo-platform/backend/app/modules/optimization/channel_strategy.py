@@ -26,12 +26,14 @@ PLATFORM_CONTENT_TYPES = {
     "DOUYIN": ["视频教程", "操作教程"],
     "BAIJIAHAO": ["操作教程", "问答内容"],
     "ZHIHU": ["问答内容", "操作教程"],
+    "BILIBILI": ["视频教程"],
 }
 
 PLATFORM_LABELS = {
     "DOUYIN": "抖音",
     "BAIJIAHAO": "百家号",
     "ZHIHU": "知乎",
+    "BILIBILI": "B站",
 }
 
 # 平台关键词（事件/理由文本匹配）
@@ -39,6 +41,7 @@ PLATFORM_KEYWORDS = {
     "DOUYIN": ("抖音", "douyin"),
     "BAIJIAHAO": ("百家号", "百度百家号"),
     "ZHIHU": ("知乎",),
+    "BILIBILI": ("bilibili", "b站", "哔哩哔哩"),
 }
 
 # 平台引用域名
@@ -46,6 +49,7 @@ PLATFORM_DOMAINS = {
     "DOUYIN": {"douyin.com"},
     "BAIJIAHAO": {"baijiahao.baidu.com", "mbd.baidu.com", "quanmin.baidu.com"},
     "ZHIHU": {"zhihu.com", "zhuanlan.zhihu.com"},
+    "BILIBILI": {"bilibili.com", "b23.tv"},
 }
 
 # 建议执行组合（按平台拼接，V3 固定文案）
@@ -53,6 +57,7 @@ PLATFORM_COMBINATION_TEXT = {
     "DOUYIN": "在抖音发布视频教程、操作教程，重点展示卡片效果、配置步骤、适用场景和跳转限制",
     "BAIJIAHAO": "在百家号发布操作教程、问答内容，重点沉淀可索引的步骤说明、FAQ、平台规则和排障清单",
     "ZHIHU": "在知乎发布问答内容、操作教程，重点回答怎么做、工具选择、限制条件、常见失败原因和安全合规问题",
+    "BILIBILI": "在B站发布视频教程，重点演示操作步骤、卡片效果、适用场景和常见失败原因",
 }
 
 TIER_LABELS = {

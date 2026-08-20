@@ -1576,7 +1576,7 @@ export default function App() {
                   </Space>
                 </Card>}
                 <Space wrap>
-                  {[["OWNED_NEW_PAGE","官网新建教程页"],["OWNED_UPDATE","官网更新现有页"],["ZHIHU","知乎"],["BAIJIAHAO","百家号"],["BILIBILI","B站视频"]].map(([key,label])=>
+                  {[["OWNED_NEW_PAGE","官网新建教程页"],["OWNED_UPDATE","官网更新现有页"],["ZHIHU","知乎"],["BAIJIAHAO","百家号"],["BILIBILI","B站视频"],["DOUYIN","抖音"]].map(([key,label])=>
                     <Button key={key} size="small" type="primary" ghost onClick={async()=>{
                       const draft = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/select-channel`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:key})})).json();
                       setWorkflowData({...workflowData, experimentDraft: draft, selectedChannel: key});

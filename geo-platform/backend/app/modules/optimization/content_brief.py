@@ -164,6 +164,7 @@ def create_experiment_draft(
         "ZHIHU": {"target_type": "external_platform", "action_type": "article_publish"},
         "BAIJIAHAO": {"target_type": "external_platform", "action_type": "article_publish"},
         "BILIBILI": {"target_type": "external_platform", "action_type": "video_publish"},
+        "DOUYIN": {"target_type": "external_platform", "action_type": "video_publish"},
     }
     info = channel_info.get(channel, {"target_type": "owned_content", "action_type": "content_create"})
 

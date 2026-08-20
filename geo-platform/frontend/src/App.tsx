@@ -1565,7 +1565,7 @@ export default function App() {
                       <Space size={4} wrap>
                         <Tag color={p.tier === 1 ? "red" : p.tier === 2 ? "orange" : "blue"}>{p.tier_label}</Tag>
                         <Text strong>{p.label}</Text>
-                        <Text type="secondary" style={{ fontSize: 12 }}>适合发{p.content_types.join("、")}</Text>
+                        {(p.content_types || []).length > 0 && <Text type="secondary" style={{ fontSize: 12 }}>适合发{p.content_types.join("、")}</Text>}
                         {p.citation_count > 0 && <Text type="secondary" style={{ fontSize: 12 }}>(引用 {p.citation_count} 次 / {p.citation_run_count} 个 Run，计分 {p.citation_score})</Text>}
                         {p.recommended_answer_citation_count > 0 && <Tag color="green" style={{ fontSize: 11 }}>含推荐答案引用 {p.recommended_answer_citation_count} 次</Tag>}
                       </Space>

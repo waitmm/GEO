@@ -71,6 +71,9 @@ SORTING_RULE = "答案明确推荐上下文优先，其次选择理由上下文�
 # 引用计分权重：答案中明确推荐了品牌（含自身品牌与竞品）的答案，其引用计分更高
 RECOMMENDED_ANSWER_CITATION_WEIGHT = 2
 
+# 备选罗列阈值：引用次数超过该值（严格大于 2 次，即 ≥3）的域名都罗列为备选
+MIN_CITATION_THRESHOLD = 3
+
 CONTENT_DIRECTION_TEMPLATE = (
     "围绕「{topic}」制作操作教程、问答内容、视频教程、工具说明页，"
     "重点回答定义、适用场景、操作步骤、风险限制和常见失败原因。"
@@ -134,15 +137,28 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
     citation_count: dict[str, int] = {}
     citation_runs: dict[str, set[int]] = {}
     recommended_answer_citation_count: dict[str, int] = {}
+    # 未映射到四平台的域名单独统计（备选罗列用）
+    domain_count: dict[str, int] = {}
+    domain_runs: dict[str, set[int]] = {}
+    domain_recommended_count: dict[str, int] = {}
     for ref in references:
         domain = (ref.domain or "").strip().lower()
+        if not domain:
+            continue
+        matched = False
         for key, domains in PLATFORM_DOMAINS.items():
             if domain in domains:
                 citation_count[key] = citation_count.get(key, 0) + 1
                 citation_runs.setdefault(key, set()).add(ref.run_id)
                 if ref.run_id in recommended_answer_run_ids:
                     recommended_answer_citation_count[key] = recommended_answer_citation_count.get(key, 0) + 1
+                matched = True
                 break
+        if not matched:
+            domain_count[domain] = domain_count.get(domain, 0) + 1
+            domain_runs.setdefault(domain, set()).add(ref.run_id)
+            if ref.run_id in recommended_answer_run_ids:
+                domain_recommended_count[domain] = domain_recommended_count.get(domain, 0) + 1
 
     platforms = []
     for key in PLATFORM_LABELS:
@@ -166,12 +182,36 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
                 "content_types": PLATFORM_CONTENT_TYPES[key],
             }
         )
-    # 排序：分层优先（V3 规则）；同层内按引用计分降序，平分按引用量，再按固定平台顺序
+    # 引用超过阈值的其他域名罗列为备选（无内容类型映射，只罗列数据）
+    for domain, total in sorted(domain_count.items(), key=lambda item: -item[1]):
+        if total < MIN_CITATION_THRESHOLD:
+            continue
+        rec = domain_recommended_count.get(domain, 0)
+        platforms.append(
+            {
+                "key": f"DOMAIN:{domain}",
+                "label": domain,
+                "tier": 3,
+                "tier_label": TIER_LABELS[3],
+                "tier1_signals": [],
+                "tier2_signals": [],
+                "citation_count": total,
+                "citation_run_count": len(domain_runs.get(domain, set())),
+                "recommended_answer_citation_count": rec,
+                "citation_score": rec * RECOMMENDED_ANSWER_CITATION_WEIGHT + (total - rec),
+                "content_types": [],
+            }
+        )
+    # 排序：分层优先（V3 规则）；同层内按引用计分降序，平分按引用量，再按名称
     platforms.sort(
-        key=lambda p: (p["tier"], -p["citation_score"], -p["citation_count"], list(PLATFORM_LABELS).index(p["key"]))
+        key=lambda p: (p["tier"], -p["citation_score"], -p["citation_count"], p["label"])
     )
 
-    combination = "；".join(PLATFORM_COMBINATION_TEXT[p["key"]] for p in platforms) + "。"
+    combination = "；".join(
+        PLATFORM_COMBINATION_TEXT[p["key"]]
+        for p in platforms
+        if p["key"] in PLATFORM_COMBINATION_TEXT
+    ) + "。"
 
     from app.models import Prompt
 

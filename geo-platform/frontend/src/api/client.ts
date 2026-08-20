@@ -211,8 +211,9 @@ export const api = {
     request<OptimizationExperiment>(`/api/optimization/experiments/${experimentId}/analyze`, { method: "POST" }),
   confirmOptimizationConclusion: (experimentId: number, payload: unknown) =>
     request<OptimizationExperiment>(`/api/optimization/experiments/${experimentId}/confirm-conclusion`, { method: "POST", body: JSON.stringify(payload) }),
-  getValidationDashboard: async (projectId: number): Promise<ValidationDashboard> => {
-    const data = await request<ValidationDashboardWire>(`/api/analytics/projects/${projectId}/validation-dashboard?citation_limit=10`);
+  getValidationDashboard: async (projectId: number, promptId?: number): Promise<ValidationDashboard> => {
+    const query = promptId ? `citation_limit=10&prompt_id=${promptId}` : "citation_limit=10";
+    const data = await request<ValidationDashboardWire>(`/api/analytics/projects/${projectId}/validation-dashboard?${query}`);
     return {
       project_id: data.project_id,
       sample_label: data.sample_label,

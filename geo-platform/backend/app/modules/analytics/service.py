@@ -41,14 +41,15 @@ class _Entity:
     aliases: tuple[str, ...]
 
 
-def build_validation_dashboard(db: Session, project: Project, limit: int = 10) -> ValidationDashboard:
+def build_validation_dashboard(db: Session, project: Project, limit: int = 10, prompt_id: int | None = None) -> ValidationDashboard:
     prompts = db.query(Prompt).filter(Prompt.project_id == project.id).all()
-    runs = (
-        db.query(BrowserMonitorRun)
-        .filter(BrowserMonitorRun.project_id == project.id)
-        .order_by(BrowserMonitorRun.id.asc())
-        .all()
-    )
+    if prompt_id is not None:
+        # 单 Prompt 视图：问题数/问题组等汇总也按该 Prompt 收敛
+        prompts = [p for p in prompts if p.id == prompt_id]
+    runs_query = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.project_id == project.id)
+    if prompt_id is not None:
+        runs_query = runs_query.filter(BrowserMonitorRun.prompt_id == prompt_id)
+    runs = runs_query.order_by(BrowserMonitorRun.id.asc()).all()
     valid_runs = [run for run in runs if run.status in VALID_STATUSES]
     valid_run_ids = [run.id for run in valid_runs]
     references = (

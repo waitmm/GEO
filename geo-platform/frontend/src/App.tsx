@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "react";
 import {
   Alert, Button, Card, Checkbox, Col, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
@@ -546,6 +546,12 @@ function SourceTable({ data, url }: { data: ValidationSource[]; url?: boolean })
   ]} />;
 }
 
+function PromptScopeAlert({ prompt, description }: { prompt: Prompt; description?: string }) {
+  return <Alert type="info" showIcon style={{ marginBottom: -8 }}
+    message={<Space><Text>当前视图：Prompt #{prompt.id}</Text><Text type="secondary">{prompt.prompt_text}</Text></Space>}
+    description={description || "以下内容仅展示该 Prompt 的数据；切回「全部 Prompt」查看项目整体。"} />;
+}
+
 export default function App() {
   const [page, setPage] = useState<PageKey>("validation");
   const [projects, setProjects] = useState<Project[]>([]);
@@ -586,6 +592,7 @@ export default function App() {
   const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null);
   const [goldenData, setGoldenData] = useState<any>(null);
   const [workflowData, setWorkflowData] = useState<any>(null);
+  const [promptContext, setPromptContext] = useState<number | "ALL" | null>(null); // null=未选, "ALL"=全部, number=具体 prompt
   const [strategyPlan, setStrategyPlan] = useState<any>(null);
   const [channelOptions, setChannelOptions] = useState<any[]>([]);
   const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
@@ -641,6 +648,10 @@ export default function App() {
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<number | null>(null);
   const project = projects.find((item) => item.id === projectId);
+  // promptContext：null=未显式选择（等同项目视图），"ALL"=全部 Prompt（项目视图），number=单 Prompt 视图
+  const activePromptId = typeof promptContext === "number" ? promptContext : null;
+  const scopedPrompt = activePromptId ? prompts.find((item) => item.id === activePromptId) : undefined;
+  const visibleRuns = activePromptId ? runs.filter((item) => item.prompt_id === activePromptId) : runs;
 
   function openProjectModal(id?: number) {
     if (id) {
@@ -704,7 +715,70 @@ export default function App() {
     if (!projectId && next.length) setProjectId(next[0].id);
   }
 
-  async function loadProject(id: number) {
+  const workflowRequestSeq = useRef(0);
+  async function loadWorkflowForPrompt(pid: number | null, targetProjectId: number = projectId!) {
+    if (!targetProjectId) return;
+    const seq = ++workflowRequestSeq.current;
+    // 切换 Prompt 上下文时重置该 Prompt 专属的执行策略状态
+    setStrategyPlan(null);
+    setSelectedChannels([]);
+    setStrategyBenchmarks({});
+    setStrategyOutcomes({});
+    setChannelOptions([]);
+    setStrategyExperiments([]);
+    setDecisionMarketEntities([]);
+    try {
+      // pid 为 null 时由后端返回机器分析进度最好的 Prompt（项目视图默认）
+      const target = pid ?? (await (await fetch(`/api/optimization/workflow/${targetProjectId}/default-prompt`)).json())?.prompt_id;
+      if (seq !== workflowRequestSeq.current) return; // 已被更新的切换取代
+      if (!target) { setWorkflowData(null); return; }
+      const wf = await (await fetch(`/api/optimization/workflow/${targetProjectId}/${target}/status`)).json();
+      if (seq !== workflowRequestSeq.current) return;
+      setWorkflowData(wf);
+      // 同步加载执行策略上下文（渠道/实验/决策市场）
+      const [channels, exps, dm] = await Promise.all([
+        fetch(`/api/optimization/workflow/${targetProjectId}/${target}/channels`).then((r) => r.json()).catch(() => []),
+        fetch(`/api/optimization/workflow/${targetProjectId}/${target}/experiments`).then((r) => r.json()).catch(() => []),
+        fetch(`/api/optimization/workflow/${targetProjectId}/${target}/decision-market`).then((r) => r.json()).catch(() => null),
+      ]);
+      if (seq !== workflowRequestSeq.current) return;
+      setChannelOptions(channels);
+      setStrategyExperiments(exps);
+      if (dm?.entities) setDecisionMarketEntities(dm.entities);
+    } catch {
+      // 工作流数据加载失败不影响主页面
+      if (pid === null && seq === workflowRequestSeq.current) setWorkflowData(null);
+    }
+  }
+
+  const dashboardRequestSeq = useRef(0);
+  async function loadDashboard(id: number, promptId: number | null, freshRuns?: BrowserMonitorRun[], freshPrompts?: Prompt[]) {
+    const seq = ++dashboardRequestSeq.current;
+    try {
+      const data = await api.getValidationDashboard(id, promptId ?? undefined);
+      if (seq !== dashboardRequestSeq.current) return; // 已被更新的请求取代
+      setDashboard(data);
+      setFallback(false);
+    } catch {
+      if (seq !== dashboardRequestSeq.current) return;
+      const selected = projects.find((item) => item.id === id);
+      const baseRuns = freshRuns ?? runs;
+      const basePrompts = freshPrompts ?? prompts;
+      const scopedRuns = promptId ? baseRuns.filter((run) => run.prompt_id === promptId) : baseRuns;
+      const scopedPrompts = promptId ? basePrompts.filter((item) => item.id === promptId) : basePrompts;
+      const successful = scopedRuns.filter((run) => run.status === "success" || run.status === "partial_success");
+      const nextDetails = (await Promise.all(successful.slice(0, 40).map((run) => api.getBrowserAuditRun(run.id).catch(() => null))))
+        .filter((item): item is BrowserMonitorRunDetail => Boolean(item));
+      if (seq !== dashboardRequestSeq.current) return;
+      if (selected) setDashboard(deriveDashboard(selected, scopedPrompts, scopedRuns, nextDetails));
+      setFallback(true);
+    }
+  }
+
+  async function loadProject(id: number, opts?: { keepPromptContext?: boolean }) {
+    const keep = opts?.keepPromptContext ?? true;
+    const promptFilter = keep && typeof promptContext === "number" ? promptContext : null;
+    if (!keep) setPromptContext(null);
     setLoading(true);
     try {
       const [nextPrompts, nextRuns, nextQueue, nextTopics, nextClusters] = await Promise.all([
@@ -716,45 +790,28 @@ export default function App() {
       setQueue(nextQueue);
       setTopics(nextTopics);
       setClusters(nextClusters);
-      // 加载分析工作流状态：后端直接返回机器分析进度最好的 Prompt
-      try {
-        const def = await (await fetch(`/api/optimization/workflow/${id}/default-prompt`)).json();
-        if (def.prompt_id) {
-          const wf = await (await fetch(`/api/optimization/workflow/${id}/${def.prompt_id}/status`)).json();
-          setWorkflowData(wf);
-          // 同步加载执行策略上下文
-          try {
-            const channels = await (await fetch(`/api/optimization/workflow/${id}/${def.prompt_id}/channels`)).json();
-            setChannelOptions(channels);
-          } catch {}
-          try {
-            const exps = await (await fetch(`/api/optimization/workflow/${id}/${def.prompt_id}/experiments`)).json();
-            setStrategyExperiments(exps);
-          } catch {}
-          try {
-            const dm = await (await fetch(`/api/optimization/workflow/${id}/${def.prompt_id}/decision-market`)).json();
-            setDecisionMarketEntities(dm.entities || []);
-          } catch {}
-        }
-      } catch { /* 工作流数据加载失败不影响主页面 */ }
-      try {
-        setDashboard(await api.getValidationDashboard(id));
-        setFallback(false);
-      } catch {
-        const selected = projects.find((item) => item.id === id);
-        const successful = nextRuns.filter((run) => run.status === "success" || run.status === "partial_success");
-        const nextDetails = (await Promise.all(successful.slice(0, 40).map((run) => api.getBrowserAuditRun(run.id).catch(() => null))))
-          .filter((item): item is BrowserMonitorRunDetail => Boolean(item));
-        if (selected) setDashboard(deriveDashboard(selected, nextPrompts, nextRuns, nextDetails));
-        setFallback(true);
-      }
+      // 加载分析工作流状态：pid=null 时后端返回机器分析进度最好的 Prompt
+      await loadWorkflowForPrompt(promptFilter, id);
+      await loadDashboard(id, promptFilter, nextRuns, nextPrompts);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => { loadProjects().catch((error) => message.error(error.message)); }, []);
-  useEffect(() => { if (projectId) loadProject(projectId).catch((error) => message.error(error.message)); }, [projectId, projects.length]);
+  const prevProjectIdRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!projectId) return;
+    // 项目切换时回到项目视图；同项目刷新（如 projects.length 变化）保持当前 Prompt 上下文
+    const isSwitch = prevProjectIdRef.current !== undefined && prevProjectIdRef.current !== projectId;
+    prevProjectIdRef.current = projectId;
+    loadProject(projectId, { keepPromptContext: !isSwitch }).catch((error) => message.error(error.message));
+  }, [projectId, projects.length]);
+  // 切换 Prompt 上下文时重新拉取监测看板（"ALL"=项目视图）
+  useEffect(() => {
+    if (!projectId || promptContext === null) return;
+    loadDashboard(projectId, typeof promptContext === "number" ? promptContext : null).catch(() => {});
+  }, [promptContext]);
   useEffect(() => {
     setRecommendationPromptId(null);
     setRecommendationData(null);
@@ -764,9 +821,27 @@ export default function App() {
   }, [projectId]);
   useEffect(() => {
     if (page !== "recommendation" || !projectId || recommendationData || recommendationLoading || recommendationAutoLoadedProjectId === projectId) return;
+    if (typeof promptContext === "number") return; // 单 Prompt 视图由下方 promptContext 效果加载
     setRecommendationAutoLoadedProjectId(projectId);
     loadLatestRecommendation(projectId).catch((error) => message.error(error.message || "加载已有决策诊断失败"));
   }, [page, projectId, recommendationData, recommendationLoading, recommendationAutoLoadedProjectId]);
+  // 决策诊断跟随 Prompt 上下文：单 Prompt 加载该 Prompt 最新诊断；切回全部则回到项目视图
+  useEffect(() => {
+    if (!projectId || promptContext === null) return;
+    if (typeof promptContext === "number") {
+      if (page !== "recommendation" || recommendationPromptId === promptContext) return;
+      setRecommendationData(null);
+      loadRecommendationSnapshot(promptContext).catch(() => {
+        message.info("该问题还没有已生成的决策诊断，点击「生成诊断」创建第一版");
+      });
+    } else if (recommendationPromptId !== null) {
+      // 清掉单 Prompt 视图的残留数据；进入诊断页时自动加载项目最新
+      setRecommendationData(null);
+      setRecommendationPromptId(null);
+      setRecommendationSnapshots([]);
+      setRecommendationAutoLoadedProjectId(0);
+    }
+  }, [page, projectId, promptContext]);
   useEffect(() => {
     if (page !== "optimization" || !projectId) return;
     loadOptimizationIssues().catch((error) => message.error(error.message || "加载实验闭环失败"));
@@ -930,11 +1005,14 @@ export default function App() {
     }
   }
 
+  const recommendationLoadToken = useRef(0);
   async function loadRecommendationSnapshot(promptId: number, snapshotId?: number) {
     if (!projectId) return;
+    const token = ++recommendationLoadToken.current;
     setRecommendationLoading(true);
     try {
       const data = await api.getRecommendationLandscape(projectId, promptId, snapshotId);
+      if (token !== recommendationLoadToken.current) return; // 已被更新的加载取代
       setRecommendationPromptId(promptId);
       setRecommendationData(data);
       setRecommendationClaims(await api.listRecommendationClaims(data.id).catch(() => []));
@@ -1384,12 +1462,13 @@ export default function App() {
         <div><Title level={3}>{PAGE_META[page].title}</Title><Text type="secondary">{PAGE_META[page].subtitle}</Text></div>
         <Space>
           <Select className="project-select" value={projectId} placeholder="选择项目" onChange={setProjectId} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
-          {projectId && prompts.length>0 && <Select size="small" style={{minWidth:220}} placeholder="选择 Prompt"
-            value={workflowData?.prompt_id}
-            options={prompts.map((p:any)=>({label:`#${p.id} ${p.prompt_text}`,value:p.id}))}
-            onChange={async(pid)=>{
-              const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/status`)).json();
-              setWorkflowData(wf);
+          {projectId && prompts.length>0 && <Select size="small" style={{minWidth:240}} placeholder="选择 Prompt"
+            value={promptContext ?? "ALL"}
+            options={[{label:"全部 Prompt（项目视图）",value:"ALL"},...prompts.map((p:any)=>({label:`#${p.id} ${p.prompt_text}`,value:p.id}))]}
+            onChange={async(v)=>{
+              setPromptContext(v);
+              // "ALL"=项目视图：展示机器分析进度最好的 Prompt 的工作流；单 Prompt 则展示该 Prompt 的
+              await loadWorkflowForPrompt(typeof v === "number" ? v : null);
             }}
           />}
           <Button icon={<Plus size={16} />} onClick={() => openProjectModal()}>新建项目</Button>
@@ -1399,6 +1478,7 @@ export default function App() {
       </Header>
       <Content className="workspace">
         {!project || !dashboard ? <Card loading={loading}><Empty description="请选择包含采集数据的项目" /></Card> : page === "validation" ? <Space direction="vertical" size={16} className="page-stack">
+          {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下指标仅统计该 Prompt 的采集记录；切回「全部 Prompt」查看项目整体。" />}
           <Card size="small" className="audit-hero">
             <Row align="middle" justify="space-between" gutter={[16, 16]}>
               <Col><Space direction="vertical" size={4}><Space><Title level={4}>{project.name}</Title><Tag color="blue">{dashboard.sample_label || "验证样本"}</Tag></Space><Text type="secondary">{dashboard.environment_label || "单一采集环境，仅表示当前验证样本"}</Text></Space></Col>
@@ -1533,6 +1613,7 @@ export default function App() {
             </Row>
           </Card>
         </Space> : page === "recommendation" ? <Space direction="vertical" size={16} className="page-stack">
+          {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下仅展示该 Prompt 的决策诊断；切回「全部 Prompt」查看项目整体。" />}
           {projectId && workflowData && <Card size="small" title={<Space><Text strong>决策诊断主路径</Text><Tag>{workflowData.prompt_id ? `Prompt #${workflowData.prompt_id}` : ""}</Tag></Space>} extra={<Button size="small" onClick={()=>setWorkflowReviewOpen(true)}>进入审核</Button>}>
             <Space direction="vertical" size={8} style={{width:"100%"}}>
               {/* Section 1: Decision Market */}
@@ -1591,9 +1672,9 @@ export default function App() {
                     message.warning(error?.message || "该问题还没有已生成的决策诊断，请点击「生成诊断」创建第一版");
                   }
                 }}
-                options={prompts.map((prompt) => ({ value: prompt.id, label: `#${prompt.id} ${prompt.prompt_text}` }))}
+                options={(activePromptId ? prompts.filter((prompt) => prompt.id === activePromptId) : prompts).map((prompt) => ({ value: prompt.id, label: `#${prompt.id} ${prompt.prompt_text}` }))}
               />
-              <Button type="primary" loading={recommendationLoading} onClick={() => runRecommendationAnalysis()}>
+              <Button type="primary" loading={recommendationLoading} onClick={() => runRecommendationAnalysis(activePromptId ?? null)}>
                 生成诊断
               </Button>
               {recommendationData && <Button loading={recommendationLoading} onClick={() => runRecommendationAnalysis(recommendationData.prompt_id)}>
@@ -1610,7 +1691,7 @@ export default function App() {
                 }))}
               />}
             </Space>
-            {!recommendationData ? <Empty description="选择一个已有采集记录的问题，然后生成决策诊断" /> : <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            {!recommendationData ? <Empty description={activePromptId ? "该 Prompt 还没有决策诊断，点击「生成诊断」创建第一版" : "选择一个已有采集记录的问题，然后生成决策诊断"} /> : <Space direction="vertical" size={12} style={{ width: "100%" }}>
               <Alert
                 type={isLatestRecommendationSnapshot ? "success" : "warning"}
                 showIcon
@@ -2515,6 +2596,10 @@ export default function App() {
             </Space>}
           </Card>
         </Space> : page === "optimization" ? <Space direction="vertical" size={16} className="page-stack">
+          {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下仅展示该 Prompt 的执行策略；切回「全部 Prompt」查看项目整体。" />}
+          {projectId && !workflowData && <Alert type="info" showIcon
+            message={activePromptId ? `Prompt #${activePromptId} 暂无执行策略主路径数据` : "暂无执行策略主路径数据"}
+            description={activePromptId ? "该 Prompt 还没有完成机器分析（或尚未开始审核流程），请先在监测总览推进该 Prompt 的工作流。" : "项目还没有机器分析进度；选择具体 Prompt 或在监测总览推进工作流后，这里会展示对应内容。"} />}
           {projectId && workflowData && <Card size="small" title={<Space><ShieldCheck size={16}/><Text strong>执行策略主路径</Text><Tag>{workflowData.prompt_id ? `Prompt #${workflowData.prompt_id}` : "未选择"}</Tag></Space>}>
             <Space direction="vertical" size={8} style={{width:"100%"}}>
               {/* Confirmed Gap */}
@@ -2618,7 +2703,7 @@ export default function App() {
               onClose={() => setEvidencePackageNotice(null)}
             />}
             <Table size="small" rowKey="id" pagination={{pageSize:8}}
-              dataSource={[...prompts].sort((a,b)=>(b.id as number)-(a.id as number))}
+              dataSource={[...prompts].filter((p) => !activePromptId || p.id === activePromptId).sort((a,b)=>(b.id as number)-(a.id as number))}
               rowSelection={{
                 selectedRowKeys:selectedPrompts,
                 onChange:setSelectedPrompts,
@@ -2653,7 +2738,7 @@ export default function App() {
                 <Select placeholder="选证据" style={{width:360}} value={selectedPkgId}
                   onChange={(v)=>selectEvidencePackage(v)}
                   notFoundContent={evidencePackages?.length===0?"暂无证据，请先在上方生成":undefined}
-                  options={(evidencePackages||[]).map((p:any)=>({label:`证据 #${p.id} · ${formatDateTime(p.created_at)} ·「${p.prompt_text||'#'+(p.prompt_id||'?')}」· 版本 ${p.version}`,value:p.id}))}
+                  options={(evidencePackages||[]).filter((p:any)=>!activePromptId || p.prompt_id===activePromptId).map((p:any)=>({label:`证据 #${p.id} · ${formatDateTime(p.created_at)} ·「${p.prompt_text||'#'+(p.prompt_id||'?')}」· 版本 ${p.version}`,value:p.id}))}
                 />
                 <Button onClick={async()=>{try{await loadEvidencePackages(projectId!)}catch{}}}>刷新列表</Button>
                 <Button type="primary" loading={strategyLoading} disabled={!selectedPkgId}
@@ -2876,8 +2961,8 @@ export default function App() {
                   rowKey="id"
                   loading={optimizationLoading}
                   pagination={{ pageSize: 8 }}
-                  dataSource={optimizationIssues}
-                  locale={{ emptyText: "暂无实验草案。可先在决策诊断页点击「送入最终策略」生成草案。" }}
+                  dataSource={optimizationIssues.filter((i:any)=>!activePromptId || i.prompt_id===activePromptId)}
+                  locale={{ emptyText: activePromptId ? "该 Prompt 暂无实验草案。可先在决策诊断页点击「送入最终策略」生成草案。" : "暂无实验草案。可先在决策诊断页点击「送入最终策略」生成草案。" }}
                   columns={[
                     { title: "问题", dataIndex: "id", width: 70, render: (value) => <Tag>#{value}</Tag> },
                     { title: "状态", width: 90, render: (_, row: any) => <Tag>{issueStatusLabel(row.status)}</Tag> },
@@ -3426,8 +3511,10 @@ export default function App() {
               <Alert type="info" showIcon message={<span><strong>当前状态</strong>：规则分类结果仍需人工验证。引用正文证据和段落对齐需要按当前问题继续补齐；策略继续保持暂缓决策，待段落证据与品牌页面证据补齐后重新评估。</span>} />
             </Space>}
           </Card>
-        </Space> : <Card title="采集记录" extra={<Tag>每行是一次独立采样</Tag>}>
-          <Table rowKey="id" loading={loading} dataSource={runs} pagination={{ pageSize: 12 }} onRow={(row) => ({ onClick: () => openRun(row.id) })} columns={[
+        </Space> : <Space direction="vertical" size={16} className="page-stack">
+          {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下仅展示该 Prompt 的采集记录；切回「全部 Prompt」查看项目全部采样。" />}
+          <Card title="采集记录" extra={<Tag>{activePromptId ? `Prompt #${activePromptId} · 每行是一次独立采样` : "每行是一次独立采样"}</Tag>}>
+          <Table rowKey="id" loading={loading} dataSource={visibleRuns} locale={{ emptyText: activePromptId ? "该 Prompt 还没有采集记录" : "暂无采集记录" }} pagination={{ pageSize: 12 }} onRow={(row) => ({ onClick: () => openRun(row.id) })} columns={[
             { title: "编号", dataIndex: "id", width: 70, render: (id) => `#${id}` },
             { title: "采集时间", width: 150, render: (_, row: any) => formatDateTime(row.finished_at || row.started_at || row.created_at) },
             { title: "问题", dataIndex: "original_query", ellipsis: true },
@@ -3442,7 +3529,8 @@ export default function App() {
               )}
             </Space> }
           ]} />
-        </Card>}
+          </Card>
+        </Space>}
       </Content>
     </Layout>
     <Modal

@@ -14,12 +14,17 @@ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 def get_validation_dashboard(
     project_id: int,
     citation_limit: int = Query(default=10, ge=1, le=100),
+    prompt_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> ValidationDashboard:
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
-    return build_validation_dashboard(db, project, citation_limit)
+    if prompt_id is not None:
+        prompt = db.get(Prompt, prompt_id)
+        if not prompt or prompt.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Prompt 不存在")
+    return build_validation_dashboard(db, project, citation_limit, prompt_id)
 
 
 @router.get("/projects/{project_id}/prompt-daily-reports", response_model=list[PromptDailyReportRead])

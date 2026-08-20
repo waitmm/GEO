@@ -68,8 +68,8 @@ TIER_LABELS = {
 
 SORTING_RULE = "答案明确推荐上下文优先，其次选择理由上下文，再其次普通引用分布。"
 
-# 引用计分权重：品牌被明确推荐的答案中的引用，计分更高
-BRAND_RECOMMENDED_CITATION_WEIGHT = 2
+# 引用计分权重：答案中明确推荐了品牌（含自身品牌与竞品）的答案，其引用计分更高
+RECOMMENDED_ANSWER_CITATION_WEIGHT = 2
 
 CONTENT_DIRECTION_TEMPLATE = (
     "围绕「{topic}」制作操作教程、问答内容、视频教程、工具说明页，"
@@ -120,13 +120,9 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
             for key in _platform_hits(reason.get("normalized_reason", "")):
                 tier2.setdefault(key, []).append(reason.get("normalized_reason", ""))
 
-    # 品牌被明确推荐的答案 Run：其引用计分更高
-    brand_aliases = {project.brand_name, *loads(getattr(project, "brand_aliases_json", "[]"), [])}
-    brand_recommended_run_ids = {
-        e.run_id
-        for e in events
-        if e.speech_act == "INCLUDE_AS_OPTION"
-        and any(alias in (e.entity_text or "") for alias in brand_aliases)
+    # 明确推荐了品牌（含自身品牌与竞品）的答案 Run：其引用计分更高
+    recommended_answer_run_ids = {
+        e.run_id for e in events if e.speech_act == "INCLUDE_AS_OPTION"
     }
 
     # 普通引用分布（按域名归平台）
@@ -137,24 +133,24 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
     )
     citation_count: dict[str, int] = {}
     citation_runs: dict[str, set[int]] = {}
-    brand_recommended_citation_count: dict[str, int] = {}
+    recommended_answer_citation_count: dict[str, int] = {}
     for ref in references:
         domain = (ref.domain or "").strip().lower()
         for key, domains in PLATFORM_DOMAINS.items():
             if domain in domains:
                 citation_count[key] = citation_count.get(key, 0) + 1
                 citation_runs.setdefault(key, set()).add(ref.run_id)
-                if ref.run_id in brand_recommended_run_ids:
-                    brand_recommended_citation_count[key] = brand_recommended_citation_count.get(key, 0) + 1
+                if ref.run_id in recommended_answer_run_ids:
+                    recommended_answer_citation_count[key] = recommended_answer_citation_count.get(key, 0) + 1
                 break
 
     platforms = []
     for key in PLATFORM_LABELS:
         tier = 1 if tier1.get(key) else 2 if tier2.get(key) else 3
         total = citation_count.get(key, 0)
-        brand_rec = brand_recommended_citation_count.get(key, 0)
-        # 引用计分：品牌被推荐的答案中的引用加权（BRAND_RECOMMENDED_CITATION_WEIGHT 倍）
-        citation_score = brand_rec * BRAND_RECOMMENDED_CITATION_WEIGHT + (total - brand_rec)
+        rec = recommended_answer_citation_count.get(key, 0)
+        # 引用计分：答案中明确推荐了品牌（含自身与竞品）的引用加权
+        citation_score = rec * RECOMMENDED_ANSWER_CITATION_WEIGHT + (total - rec)
         platforms.append(
             {
                 "key": key,
@@ -165,7 +161,7 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
                 "tier2_signals": tier2.get(key, []),
                 "citation_count": total,
                 "citation_run_count": len(citation_runs.get(key, set())),
-                "brand_recommended_citation_count": brand_rec,
+                "recommended_answer_citation_count": rec,
                 "citation_score": citation_score,
                 "content_types": PLATFORM_CONTENT_TYPES[key],
             }
@@ -189,9 +185,9 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
         "combination": combination,
         "sorting_rule": SORTING_RULE,
         "citation_scoring_rule": (
-            f"普通引用分布内按引用计分排序：品牌被明确推荐的答案中的引用计分更高"
-            f"（权重 {BRAND_RECOMMENDED_CITATION_WEIGHT}），其余引用计 1。"
+            f"普通引用分布内按引用计分排序：答案中明确推荐了品牌（含自身品牌与竞品）"
+            f"的引用计分更高（权重 {RECOMMENDED_ANSWER_CITATION_WEIGHT}），其余引用计 1。"
         ),
-        "brand_recommended_run_count": len(brand_recommended_run_ids),
+        "recommended_answer_run_count": len(recommended_answer_run_ids),
         "notes": NOTES,
     }

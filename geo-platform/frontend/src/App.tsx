@@ -1567,7 +1567,7 @@ export default function App() {
                         <Text strong>{p.label}</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>适合发{p.content_types.join("、")}</Text>
                         {p.citation_count > 0 && <Text type="secondary" style={{ fontSize: 12 }}>(引用 {p.citation_count} 次 / {p.citation_run_count} 个 Run，计分 {p.citation_score})</Text>}
-                        {p.brand_recommended_citation_count > 0 && <Tag color="green" style={{ fontSize: 11 }}>含品牌推荐答案引用 {p.brand_recommended_citation_count} 次</Tag>}
+                        {p.recommended_answer_citation_count > 0 && <Tag color="green" style={{ fontSize: 11 }}>含推荐答案引用 {p.recommended_answer_citation_count} 次</Tag>}
                       </Space>
                     </div>)}
                     <Text strong>建议执行组合</Text>

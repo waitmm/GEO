@@ -1583,10 +1583,10 @@ export default function App() {
           </Card>}
           {fallback && <Alert type="warning" showIcon message="聚合接口尚未返回数据，当前看板由已有采集记录实时兼容汇总。" />}
           <Row gutter={[16, 16]}>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="配置问题数" value={dashboard.prompts.total} /></Card></Col>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="已采集" value={dashboard.prompts.executed} /></Card></Col>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="问题组" value={dashboard.prompts.clusters} /></Card></Col>
-            <Col xs={12} lg={4}><Card size="small"><Statistic title="成功采集" value={dashboard.prompts.valid_runs} /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title={activePromptId ? "当前问题" : "配置问题数"} value={dashboard.prompts.total} /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title="已采集的问题" value={dashboard.prompts.executed} suffix={`/ ${dashboard.prompts.total} 个`} /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title="问题组" value={activePromptId ? (scopedPrompt?.prompt_group || "未分组") : dashboard.prompts.clusters} /></Card></Col>
+            <Col xs={12} lg={4}><Card size="small"><Statistic title="成功采集" value={dashboard.prompts.valid_runs} suffix="次" /></Card></Col>
             <Col xs={12} lg={4}><Card size="small"><Statistic title="总采集次数" value={dashboard.prompts.sample_runs} suffix="次" /></Card></Col>
             <Col xs={12} lg={4}><Card size="small"><Statistic title="引用URL解析率" value={referenceResolution} suffix="%" precision={1} /></Card></Col>
           </Row>

@@ -3558,16 +3558,38 @@ export default function App() {
           <Button type="primary" loading={loading} onClick={async()=>{
             setLoading(true);
             try{
-              const r = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/run-analysis`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})})).json();
-              message.success(`机器分析完成：事件 ${r.layer1?.events_created||0} 条，Claims ${r.layer4?.claims_created||0} 条，对齐 ${r.layer5?.alignments_created||0} 条`);
-              // 重新加载队列
-              const q = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/review-queue`)).json();
-              setReviewQueue(q);
-              const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/status`)).json();
-              setWorkflowData(wf);
+              const pid = workflowData?.prompt_id;
+              const r = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/run-analysis`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})})).json();
+              if (r.started === false) {
+                message.info("该 Prompt 的机器分析已在后台运行中，稍后点击「加载待审核项」查看进度");
+                return;
+              }
+              message.info("机器分析已在后台开始（逐条 LLM 比对，约 2-10 分钟），完成后自动刷新");
+              // 轮询：事件产出后自动载入队列并刷新工作流状态（不阻塞页面）
+              (async()=>{
+                for (let i = 0; i < 120; i++) {
+                  await new Promise((res) => setTimeout(res, 5000));
+                  try {
+                    const q = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/review-queue`)).json();
+                    if (q.status && q.status !== "NOT_ANALYZED") {
+                      setReviewQueue(q);
+                      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/status`)).json();
+                      setWorkflowData(wf);
+                      message.success("机器分析已产出审核项，可开始审核；Claims 与对齐仍在后台继续");
+                      return;
+                    }
+                  } catch { /* 网络抖动继续轮询 */ }
+                }
+                try {
+                  const q = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/review-queue`)).json();
+                  if (!q.status || q.status === "NOT_ANALYZED") {
+                    message.warning("分析仍在后台进行（比对量大时较慢），稍后点击「加载待审核项」查看进度");
+                  }
+                } catch { /* 忽略 */ }
+              })();
             }catch(e:any){message.error(e.message)}
             finally{setLoading(false)}
-          }}>运行机器分析（约 1-2 分钟）</Button>
+          }}>运行机器分析（后台运行，约 2-10 分钟）</Button>
         </Space>}
         {reviewQueue && <Space direction="vertical" size={12} style={{width:"100%"}}>
           {/* 竞品候选确认 */}

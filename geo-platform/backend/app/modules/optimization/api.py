@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -1392,14 +1394,52 @@ def workflow_decision_market(project_id: int, prompt_id: int, db: Session = Depe
     }
 
 
-@router.post("/workflow/{project_id}/{prompt_id}/run-analysis")
-def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
-    """一键运行机器分析五层管道（Answer Semantic → Source Qualification → Retrieval → Source Claim → Alignment）。"""
-    from app.models import Project, Prompt, BrowserMonitorRun
+# (project_id, prompt_id) → 正在后台运行的机器分析任务（防止重复触发）
+_analysis_running: set[tuple[int, int]] = set()
+_analysis_lock = threading.Lock()
+
+
+def _run_analysis_pipeline(project_id: int, prompt_id: int, run_ids: list[int]) -> None:
+    """后台线程执行五层分析管道；结果落库，前端轮询 review-queue/status 感知进度。"""
+    import logging
+
+    from app.core.database import SessionLocal
+    from app.models import Project, Prompt
     from app.modules.optimization.answer_semantic import run_answer_semantic
     from app.modules.optimization.source_qualification import run_source_qualification
     from app.modules.optimization.source_claim import run_source_claim_extraction
     from app.modules.optimization.evidence_alignment import run_evidence_alignment
+
+    logger = logging.getLogger("uvicorn.error")
+    db = SessionLocal()
+    try:
+        project = db.get(Project, project_id)
+        prompt = db.get(Prompt, prompt_id)
+        if not project or not prompt:
+            return
+        layer1 = run_answer_semantic(db, project, prompt, run_ids)
+        run_source_qualification(db, project)
+        run_source_claim_extraction(db, project, prompt_id, run_ids)
+        run_evidence_alignment(db, project, prompt_id, run_ids)
+        logger.info(
+            "机器分析后台任务完成 project=%s prompt=%s layer1=%s",
+            project_id, prompt_id, layer1,
+        )
+    except Exception:
+        logger.exception("机器分析后台任务失败 project=%s prompt=%s", project_id, prompt_id)
+    finally:
+        db.close()
+        with _analysis_lock:
+            _analysis_running.discard((project_id, prompt_id))
+
+
+@router.post("/workflow/{project_id}/{prompt_id}/run-analysis")
+def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
+    """一键运行机器分析五层管道（Answer Semantic → Source Qualification → Retrieval → Source Claim → Alignment）。
+
+    分析耗时较长（逐条 LLM 比对），改为后台线程执行并立即返回；前端轮询 review-queue 感知进度。
+    """
+    from app.models import Project, Prompt, BrowserMonitorRun
 
     project = db.get(Project, project_id)
     prompt = db.get(Prompt, prompt_id)
@@ -1416,9 +1456,15 @@ def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Se
     if not run_ids:
         raise HTTPException(status_code=400, detail="该 Prompt 没有可用的采集 Run")
 
-    results = {}
-    results["layer1"] = run_answer_semantic(db, project, prompt, run_ids)
-    results["layer2"] = run_source_qualification(db, project)
-    results["layer4"] = run_source_claim_extraction(db, project, prompt_id, run_ids)
-    results["layer5"] = run_evidence_alignment(db, project, prompt_id, run_ids)
-    return results
+    with _analysis_lock:
+        if (project_id, prompt_id) in _analysis_running:
+            return {"started": False, "already_running": True, "message": "该 Prompt 的机器分析已在后台运行中"}
+        _analysis_running.add((project_id, prompt_id))
+
+    threading.Thread(
+        target=_run_analysis_pipeline,
+        args=(project_id, prompt_id, run_ids),
+        daemon=True,
+        name=f"analysis-{project_id}-{prompt_id}",
+    ).start()
+    return {"started": True, "project_id": project_id, "prompt_id": prompt_id, "run_ids": run_ids}

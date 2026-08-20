@@ -206,9 +206,22 @@ def run_answer_semantic(
     validation_failed = 0
     errors: list[str] = []
 
+    # 幂等：已有事件的 Run 跳过重建，重跑只补齐失败/遗漏项（避免重复事件行）
+    existing_run_ids = {
+        row[0]
+        for row in db.query(RecommendationEvent.run_id)
+        .filter(RecommendationEvent.run_id.in_([run.id for run in runs]))
+        .distinct()
+        .all()
+    }
+
     for run in runs:
         answer = run.answer_text or ""
         if not answer.strip():
+            continue
+        if run.id in existing_run_ids:
+            # 已分析过（含仅 VALIDATION_FAILED 的 Run）：保留原结果，不重复创建
+            runs_associated += 1
             continue
         ah = _answer_hash(answer)
         if ah not in cache:

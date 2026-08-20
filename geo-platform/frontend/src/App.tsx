@@ -1548,7 +1548,10 @@ export default function App() {
               {!workflowData.experimentDraft ? <Space direction="vertical" size={8} style={{width:"100%"}}>
                 <Text>选择发布渠道（人工业务决策，系统不代选）：</Text>
                 <Alert type="info" showIcon style={{marginBottom:4}}
-                  message="「策略」不是在这里先生成的：Gap 诊断 + Action 目标 + 渠道 + 实验验证就是主路径的策略。渠道决定内容发在哪——证据强化类干预优先选自有域名内容（AI 可引用的品牌证据页）。" />
+                  message="「策略」不是在这里先生成的：Gap 诊断 + Action 目标 + 渠道 + 实验验证就是主路径的策略。推荐标签是判断而非数据结论：官网自有域名页是品牌唯一可控、可核验事实的证据资产；外部平台用于放大，可多选组合。" />
+                <Text type="secondary" style={{fontSize:12}}>
+                  本项目 AI 答案高频引用域名：{(dashboard.top_domains||[]).slice(0,6).map((d:any)=>`${d.value}(${d.run_count}次)`).join("、") || "暂无引用数据"}
+                </Text>
                 <Space wrap align="start">
                   {[["OWNED_NEW_PAGE","官网新建教程页","自有域名新教程页，AI 可引用的品牌证据主阵地（推荐）"],["OWNED_UPDATE","官网更新现有页","已有相关页面时直接补充证据"],["ZHIHU","知乎","外部放大与背书，非自有证据主阵地"],["BAIJIAHAO","百家号","外部放大与背书，非自有证据主阵地"],["BILIBILI","B站视频","视频形态的补充渠道"]].map(([key,label,desc])=>
                     <Space key={key} direction="vertical" size={2}>

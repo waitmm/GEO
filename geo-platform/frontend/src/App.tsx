@@ -593,6 +593,7 @@ export default function App() {
   const [goldenData, setGoldenData] = useState<any>(null);
   const [workflowData, setWorkflowData] = useState<any>(null);
   const [promptContext, setPromptContext] = useState<number | "ALL" | null>(null); // null=未选, "ALL"=全部, number=具体 prompt
+  const [channelStrategy, setChannelStrategy] = useState<any>(null); // V3 平台×内容方向（数据分层推导）
   const [strategyPlan, setStrategyPlan] = useState<any>(null);
   const [channelOptions, setChannelOptions] = useState<any[]>([]);
   const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
@@ -820,6 +821,14 @@ export default function App() {
     if (!projectId || promptContext === null) return;
     loadDashboard(projectId, typeof promptContext === "number" ? promptContext : null).catch(() => {});
   }, [promptContext]);
+  // Action 确认后加载 V3 平台×内容方向分析（渠道选择数据参考）
+  useEffect(() => {
+    const actionDone = Boolean(workflowData?.steps?.find((s: any) => s.key === "action")?.done);
+    if (!projectId || !workflowData?.prompt_id || !actionDone) { setChannelStrategy(null); return; }
+    if (channelStrategy?.prompt_id === workflowData.prompt_id) return;
+    fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/channel-strategy`)
+      .then((r) => r.json()).then(setChannelStrategy).catch(() => { /* 分析失败不阻塞渠道选择 */ });
+  }, [projectId, workflowData]);
   useEffect(() => {
     setRecommendationPromptId(null);
     setRecommendationData(null);
@@ -1547,6 +1556,25 @@ export default function App() {
             {workflowData.steps.find((s:any)=>s.key==="action")?.done && <Card size="small" title="渠道选择与内容大纲">
               {!workflowData.experimentDraft ? <Space direction="vertical" size={8} style={{width:"100%"}}>
                 <Text>选择发布渠道（人工决策，系统不代选）：</Text>
+                {channelStrategy && <Card size="small" style={{ background: "#fafafa" }}>
+                  <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                    <Text strong>内容方向</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{channelStrategy.content_direction}</Text>
+                    <Text strong>平台方向（按信号分层排序）</Text>
+                    {channelStrategy.platforms.map((p: any) => <div key={p.key}>
+                      <Space size={4} wrap>
+                        <Tag color={p.tier === 1 ? "red" : p.tier === 2 ? "orange" : "blue"}>{p.tier_label}</Tag>
+                        <Text strong>{p.label}</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>适合发{p.content_types.join("、")}</Text>
+                        {p.citation_count > 0 && <Text type="secondary" style={{ fontSize: 12 }}>(引用 {p.citation_count} 次 / {p.citation_run_count} 个 Run)</Text>}
+                      </Space>
+                    </div>)}
+                    <Text strong>建议执行组合</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{channelStrategy.combination}</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>排序规则：{channelStrategy.sorting_rule}</Text>
+                    {(channelStrategy.notes || []).map((n: string, i: number) => <Text key={i} type="secondary" style={{ fontSize: 12 }}>· {n}</Text>)}
+                  </Space>
+                </Card>}
                 <Space wrap>
                   {[["OWNED_NEW_PAGE","官网新建教程页"],["OWNED_UPDATE","官网更新现有页"],["ZHIHU","知乎"],["BAIJIAHAO","百家号"],["BILIBILI","B站视频"]].map(([key,label])=>
                     <Button key={key} size="small" type="primary" ghost onClick={async()=>{

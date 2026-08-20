@@ -1099,6 +1099,18 @@ def workflow_confirm_decision(project_id: int, prompt_id: int, payload: dict, db
     return {"status": "OK", "step_key": step_key, "decision_status": decision}
 
 
+@router.get("/workflow/{project_id}/{prompt_id}/channel-strategy")
+def workflow_channel_strategy(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    """V3 平台×内容方向：基于当前答案信号分层（明确推荐上下文 → 选择理由上下文 → 普通引用分布）。"""
+    from app.models import Project
+    from app.modules.optimization.channel_strategy import channel_strategy
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return channel_strategy(db, project, prompt_id)
+
+
 @router.post("/workflow/{project_id}/{prompt_id}/select-channel")
 def workflow_select_channel(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
     """渠道选择 → 创建 Experiment 草案。"""

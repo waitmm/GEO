@@ -102,6 +102,10 @@ def main() -> None:
           f"gap={steps.get('gap', {}).get('detail')} action={steps.get('action', {}).get('detail')}")
 
     # 9. 选择渠道 → Experiment 草案
+    s, r = req(base, "GET", f"{wf}/channel-strategy")
+    ok_cs = s == 200 and isinstance(r, dict) and r.get("platforms") and r.get("content_direction") and r.get("combination")
+    check("9a. V3 平台×内容方向分析", ok_cs,
+          f"platforms={[(p.get('label'), p.get('tier')) for p in (r or {}).get('platforms', [])] if isinstance(r, dict) else r}")
     s, r = req(base, "POST", f"{wf}/select-channel", {"channel": "OWNED_NEW_PAGE"})
     ok = s == 200 and isinstance(r, dict) and r.get("experiment_id")
     check("9. 选择渠道创建实验草案", ok, f"experiment_id={(r or {}).get('experiment_id') if isinstance(r, dict) else r}")

@@ -1530,16 +1530,18 @@ export default function App() {
                   }}>确认此 Gap</Button>}
                 </Space>}
                 description={workflowData.continueResult.gap?.basis} />
-              <Alert type="info" showIcon
+              <Alert type={workflowData.continueResult.action?.intervention_goal==="UNRESOLVED" ? "warning" : "info"} showIcon
                 message={<Space><Text strong>Action：{workflowData.continueResult.action?.intervention_goal}</Text><Tag>{workflowData.continueResult.action?.asset_ownership}</Tag><Tag>{workflowData.continueResult.action?.target_platform}</Tag>
-                  {!workflowData.steps.find((s:any)=>s.key==="action")?.done && <Button size="small" type="primary" onClick={async()=>{
+                  {workflowData.continueResult.action?.intervention_goal!=="UNRESOLVED" && !workflowData.steps.find((s:any)=>s.key==="action")?.done && <Button size="small" type="primary" onClick={async()=>{
                     await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/confirm-decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step_key:"action",decision_status:"CONFIRMED"})});
                     message.success("Action 已确认");
                     const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
                     setWorkflowData({...wf, continueResult: workflowData.continueResult});
                   }}>确认此 Action</Button>}
                 </Space>}
-                description={workflowData.continueResult.action?.target_claim} />
+                description={workflowData.continueResult.action?.intervention_goal==="UNRESOLVED"
+                  ? "机器无法确定干预方向，无需人工确认。请补充采集数据（更多有效采样），或在「证据标注」页确认品牌能力后，重新点击「继续分析」推导。"
+                  : workflowData.continueResult.action?.target_claim} />
             </Space>}
             {/* 渠道选择 + 内容大纲（Action 确认后） */}
             {workflowData.steps.find((s:any)=>s.key==="action")?.done && <Card size="small" title="渠道选择与内容大纲">

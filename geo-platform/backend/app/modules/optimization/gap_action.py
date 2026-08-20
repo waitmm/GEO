@@ -67,29 +67,32 @@ def derive_gap(
     market_criterion_present = bool(competitor_events) and bool(supports)
 
     # Gap 判定
-    if not market_criterion_present:
-        gap_type = "UNRESOLVED"
-        basis = "当前答案未出现明确的方案选择证据链，无法判断品牌缺口类型。"
-        confidence = "LOW"
-    elif not supported_capabilities:
+    if not supported_capabilities:
+        # 品牌能力未经人工确认：禁止强行形成 Evidence Gap
         gap_type = "UNRESOLVED"
         basis = "PRODUCT_TRUTH_UNRESOLVED：目标品牌能力未人工确认，禁止强行形成 Evidence Gap。"
         confidence = "LOW"
     elif brand_events:
         # 品牌已在答案中出现 → 检查是否缺证据支撑
         gap_type = "EVIDENCE_GAP"
-        basis = f"品牌已在答案中出现（{len(brand_events)} 事件），但当前 SUPPORTS 证据链主要支撑竞品；目标品牌证据弱。"
-        confidence = "MEDIUM"
+        basis = (
+            f"品牌已在答案中出现（{len(brand_events)} 事件）；"
+            + (f"SUPPORTS 证据链 {len(supports)} 条，主要支撑竞品；" if supports else "无 SUPPORTS 证据链；")
+            + "目标品牌证据弱。"
+        )
+        confidence = "MEDIUM" if supports else "LOW"
     else:
-        # 品牌 0 出现，但 Product Truth 支持市场所需能力 → 能力真实但证据未进入答案
+        # 品牌 0 出现，但 Product Truth 支持市场所需能力 → 能力真实但证据未进入答案。
+        # 即使没有 SUPPORTS 证据链（无法核实市场选择标准），人工已确认的能力仍是
+        # 保守证据强化的充分依据，按 LOW 置信给出 EVIDENCE_GAP，不阻塞流程。
         gap_type = "EVIDENCE_GAP"
         basis = (
-            f"市场选择标准存在（{len(competitor_events)} 个竞品事件、{len(supports)} 条 SUPPORTS），"
+            f"{'市场选择标准存在（' + str(len(competitor_events)) + ' 个竞品事件、' + str(len(supports)) + ' 条 SUPPORTS）' if market_criterion_present else '答案未出现明确的方案选择证据链（0 条 SUPPORTS 对齐）'}；"
             f"目标品牌「{brand}」在 {total_runs} 次答案中 0 提及、0 候选、0 引用；"
-            f"但 Product Truth 已确认其支持：{', '.join(sorted(supported_capabilities))}。"
+            f"Product Truth 已确认其支持：{', '.join(sorted(supported_capabilities))}。"
             "能力真实存在而 AI 答案层证据缺失。"
         )
-        confidence = "MEDIUM"
+        confidence = "MEDIUM" if market_criterion_present else "LOW"
 
     return {
         "gap_type": gap_type,
@@ -136,12 +139,13 @@ def build_action_candidate(
             "note": gap["basis"],
         }
 
+    caps = "、".join(sorted(gap.get("supported_capabilities") or [])) or "品牌能力"
     return {
         "intervention_goal": "EVIDENCE_STRENGTHEN",
         "asset_ownership": "FIRST_PARTY",
         "target_platform": "UNRESOLVED",
         "target_entity": project.brand_name,
-        "target_claim": f"爱短链支持抖音跳转微信与短链生成（Product Truth SUPPORTED），但该能力证据未进入 AI 答案",
+        "target_claim": f"{project.brand_name} 支持{caps}（Product Truth SUPPORTED），但该能力证据未进入 AI 答案",
         "supporting_gap_ids": [],
         "supporting_reason_ids": supporting_reason_ids,
         "supporting_source_claim_ids": supporting_source_claim_ids,

@@ -751,6 +751,14 @@ export default function App() {
     }
   }
 
+  async function refreshWorkflowStatus() {
+    if (!projectId || !workflowData?.prompt_id) return;
+    try {
+      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
+      setWorkflowData(wf);
+    } catch { /* 状态刷新失败不影响当前页面 */ }
+  }
+
   const dashboardRequestSeq = useRef(0);
   async function loadDashboard(id: number, promptId: number | null, freshRuns?: BrowserMonitorRun[], freshPrompts?: Prompt[]) {
     const seq = ++dashboardRequestSeq.current;
@@ -3591,7 +3599,7 @@ export default function App() {
             finally{setLoading(false)}
           }}>运行机器分析（后台运行，约 2-10 分钟）</Button>
         </Space>}
-        {reviewQueue && <Space direction="vertical" size={12} style={{width:"100%"}}>
+        {reviewQueue && reviewQueue.status !== "NOT_ANALYZED" && <Space direction="vertical" size={12} style={{width:"100%"}}>
           {/* 竞品候选确认 */}
           {competitorCandidates.length>0 && <Card size="small" title={<Space><Tag color="volcano">待确认竞品</Tag><Text>发现 {competitorCandidates.length} 个潜在竞品</Text></Space>}>
             {competitorCandidates.map((c:any)=><Row key={c.entity} align="middle" style={{marginBottom:8}}>
@@ -3628,11 +3636,13 @@ export default function App() {
                 await fetch("/api/optimization/workflow/review/events/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
                 message.success("已确认 AI 说法无误");
                 setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
+                refreshWorkflowStatus();
               }}>AI 确实这样说了</Button>
               <Button size="small" onClick={async()=>{
                 await fetch("/api/optimization/workflow/review/events/reject-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
                 message.success("已标记错误");
                 setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
+                refreshWorkflowStatus();
               }}>判断有误</Button>
             </Space>
           </Card>)}
@@ -3648,16 +3658,19 @@ export default function App() {
                 await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"SUPPORTS"})});
                 message.success("已确认 SUPPORTS");
                 setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
+                refreshWorkflowStatus();
               }}>确认 SUPPORTS</Button>
               <Button size="small" onClick={async()=>{
                 await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"RELATED"})});
                 message.success("已改为 RELATED");
                 setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
+                refreshWorkflowStatus();
               }}>改为 RELATED</Button>
               <Button size="small" onClick={async()=>{
                 await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"NONE"})});
                 message.success("已改为 NONE");
                 setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
+                refreshWorkflowStatus();
               }}>NONE</Button>
             </Space>
           </Card>)}

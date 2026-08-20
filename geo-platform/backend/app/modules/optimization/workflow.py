@@ -135,9 +135,11 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     ).all()
     truths_pending = [t for t in truths if t.product_truth_status in {"UNKNOWN", ""}]
 
+    # 无 SUPPORTS 对齐时（机器判定 AI 理由没有来源证据支持）证据审核视为已通过——没有可审项，不阻塞流程
+    evidence_review_done = supports_reviewed >= len(supports)
     reviews_done = (
         bool(events) and events_reviewed >= len(unique_event_keys)
-        and bool(supports) and supports_reviewed >= len(supports)
+        and evidence_review_done
         and bool(truths) and not truths_pending
     )
 
@@ -177,14 +179,14 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         {"key": "collection", "label": "数据采集", "done": total_runs >= 1, "detail": f"{total_runs} Runs"},
         {"key": "answer_semantic", "label": "推荐行为分析", "done": len(unique_event_keys) >= 1, "detail": f"{len(unique_event_keys)} 组独特事件"},
         {"key": "event_review", "label": "推荐行为人工确认", "done": bool(events) and events_reviewed >= len(unique_event_keys), "detail": f"{min(events_reviewed, len(unique_event_keys))}/{len(unique_event_keys)} 组已审"},
-        {"key": "evidence", "label": "Evidence 分析", "done": bool(supports), "detail": f"{len(supports)} 条对齐"},
-        {"key": "evidence_review", "label": "Evidence 人工确认", "done": bool(supports) and supports_reviewed >= len(supports), "detail": f"{supports_reviewed}/{len(supports)} 条已审"},
+        {"key": "evidence", "label": "Evidence 分析", "done": bool(supports), "detail": f"{len(supports)} 条 SUPPORTS 对齐" if supports else "无 SUPPORTS 对齐（AI 理由无来源证据支持）"},
+        {"key": "evidence_review", "label": "Evidence 人工确认", "done": evidence_review_done, "detail": f"{supports_reviewed}/{len(supports)} 条已审" if supports else "无需审核"},
         {"key": "product_truth", "label": "目标品牌能力确认", "done": bool(truths) and not truths_pending, "detail": f"{len(truths)-len(truths_pending)}/{len(truths)} 条已确认" if truths else "0 条"},
         {"key": "gap", "label": "Gap Diagnosis", "done": gap_confirmed, "detail": "已人工确认" if gap_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成")},
         {"key": "action", "label": "Action Candidate", "done": action_confirmed, "detail": "已人工确认" if action_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待 Gap 后生成")},
         {"key": "experiment", "label": "实验", "done": experiment_done, "detail": experiment_detail},
     ]
-    pending = sum(1 for s in steps if not s["done"] and s["key"] not in {"gap", "action", "experiment"})
+    pending = sum(1 for s in steps if not s["done"] and s["key"] not in {"gap", "action", "experiment", "evidence"})
     return {
         "project_id": project.id,
         "prompt_id": prompt_id,
@@ -250,8 +252,18 @@ def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
             "run_ids": sorted({e.run_id for e in events})[:12],
         })
 
-    if not unique_events and not align_items and not events:
-        # 该 Prompt 尚未运行语义分析：明确告知，不要误报"全部审核完成"
+    # 「尚未分析」的判定依据是该 Prompt 是否存在任何语义事件记录，
+    # 而不是当前是否还有待审项（全部审完后待审项为空，不应误报未分析）
+    analyzed = (
+        db.query(RecommendationEvent.id)
+        .filter(
+            RecommendationEvent.project_id == project.id,
+            RecommendationEvent.prompt_id == prompt_id,
+        )
+        .first()
+        is not None
+    )
+    if not unique_events and not align_items and not analyzed:
         return {"status": "NOT_ANALYZED", "unique_events": [], "alignments": [], "message": "该 Prompt 尚未执行机器分析，请先运行分析。"}
 
     return {

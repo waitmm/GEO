@@ -1546,14 +1546,19 @@ export default function App() {
             {/* 渠道选择 + 内容大纲（Action 确认后） */}
             {workflowData.steps.find((s:any)=>s.key==="action")?.done && <Card size="small" title="渠道选择与内容大纲">
               {!workflowData.experimentDraft ? <Space direction="vertical" size={8} style={{width:"100%"}}>
-                <Text>选择发布渠道（人工决策，系统不代选）：</Text>
-                <Space wrap>
-                  {[["OWNED_NEW_PAGE","官网新建教程页"],["OWNED_UPDATE","官网更新现有页"],["ZHIHU","知乎"],["BAIJIAHAO","百家号"],["BILIBILI","B站视频"]].map(([key,label])=>
-                    <Button key={key} size="small" type="primary" ghost onClick={async()=>{
-                      const draft = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/select-channel`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:key})})).json();
-                      setWorkflowData({...workflowData, experimentDraft: draft, selectedChannel: key});
-                      message.success(`已选择${label}，Experiment 草案 #${draft.experiment_id} 已创建`);
-                    }}>{label}</Button>)}
+                <Text>选择发布渠道（人工业务决策，系统不代选）：</Text>
+                <Alert type="info" showIcon style={{marginBottom:4}}
+                  message="「策略」不是在这里先生成的：Gap 诊断 + Action 目标 + 渠道 + 实验验证就是主路径的策略。渠道决定内容发在哪——证据强化类干预优先选自有域名内容（AI 可引用的品牌证据页）。" />
+                <Space wrap align="start">
+                  {[["OWNED_NEW_PAGE","官网新建教程页","自有域名新教程页，AI 可引用的品牌证据主阵地（推荐）"],["OWNED_UPDATE","官网更新现有页","已有相关页面时直接补充证据"],["ZHIHU","知乎","外部放大与背书，非自有证据主阵地"],["BAIJIAHAO","百家号","外部放大与背书，非自有证据主阵地"],["BILIBILI","B站视频","视频形态的补充渠道"]].map(([key,label,desc])=>
+                    <Space key={key} direction="vertical" size={2}>
+                      <Button size="small" type={key==="OWNED_NEW_PAGE"?"primary":"primary"} ghost onClick={async()=>{
+                        const draft = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/select-channel`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:key})})).json();
+                        setWorkflowData({...workflowData, experimentDraft: draft, selectedChannel: key});
+                        message.success(`已选择${label}，Experiment 草案 #${draft.experiment_id} 已创建`);
+                      }}>{key==="OWNED_NEW_PAGE" ? <Space size={4}><Play size={10} />{label}<Tag color="green" style={{marginInlineEnd:0}}>推荐</Tag></Space> : label}</Button>
+                      <Text type="secondary" style={{fontSize:11, maxWidth:200}}>{desc}</Text>
+                    </Space>)}
                 </Space>
               </Space> : <Space direction="vertical" size={8} style={{width:"100%"}}>
                 <Alert type="success" showIcon message={<Space><Text strong>Experiment 草案 #{workflowData.experimentDraft.experiment_id}</Text><Tag>{workflowData.experimentDraft.channel}</Tag><Tag color="orange">blocked: 等待内容生产</Tag></Space>} />

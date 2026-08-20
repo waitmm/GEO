@@ -1075,20 +1075,27 @@ def workflow_continue_analysis(project_id: int, prompt_id: int, db: Session = De
 @router.post("/workflow/{project_id}/{prompt_id}/confirm-decision")
 def workflow_confirm_decision(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
     """确认/拒绝 Gap 或 Action 决策（step_key: gap / action）。"""
-    import sqlite3
+    from datetime import datetime
+
+    from app.models import WorkflowConfirmation
+
     step_key = payload.get("step_key")
     if step_key not in {"gap", "action"}:
         raise HTTPException(status_code=400, detail="step_key 仅支持 gap / action")
     decision = payload.get("decision_status", "CONFIRMED")
-    conn = sqlite3.connect('geo_v0.db')
-    conn.execute(
-        """INSERT OR REPLACE INTO workflow_confirmations
-           (project_id, prompt_id, step_key, decision_status, decision_note, reviewer, reviewed_at)
-           VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-        (project_id, prompt_id, step_key, decision, payload.get("note", ""), payload.get("reviewer", "human")),
-    )
-    conn.commit()
-    conn.close()
+    row = db.query(WorkflowConfirmation).filter(
+        WorkflowConfirmation.project_id == project_id,
+        WorkflowConfirmation.prompt_id == prompt_id,
+        WorkflowConfirmation.step_key == step_key,
+    ).first()
+    if row is None:
+        row = WorkflowConfirmation(project_id=project_id, prompt_id=prompt_id, step_key=step_key)
+        db.add(row)
+    row.decision_status = decision
+    row.decision_note = payload.get("note", "")
+    row.reviewer = payload.get("reviewer", "human")
+    row.reviewed_at = datetime.utcnow()
+    db.commit()
     return {"status": "OK", "step_key": step_key, "decision_status": decision}
 
 
@@ -1200,12 +1207,15 @@ def workflow_create_experiment(project_id: int, prompt_id: int, payload: dict, d
 @router.get("/workflow/{project_id}/{prompt_id}/experiments")
 def workflow_list_experiments(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
     from app.models import OptimizationExperiment
-    exps = db.query(OptimizationExperiment).filter(
-        OptimizationExperiment.intervention_plan_id.isnot(None),
-        OptimizationExperiment.target_prompt_scope_json.like(f'%{prompt_id}%'),
-    ).order_by(OptimizationExperiment.id.desc()).all()
+    from app.services.serialization import loads
+
+    exps = db.query(OptimizationExperiment).order_by(OptimizationExperiment.id.desc()).all()
     result = []
     for e in exps:
+        # 按 target_prompt_scope_json 精确匹配（含渠道选择创建的草案，plan 尚未建立时也要能列出）
+        scope = loads(e.target_prompt_scope_json or "", [])
+        if prompt_id not in scope:
+            continue
         result.append({
             "id": e.id, "channel": e.channel, "experiment_mode": e.experiment_mode,
             "hypothesis": e.hypothesis_text or e.hypothesis,
@@ -1219,21 +1229,33 @@ def workflow_list_experiments(project_id: int, prompt_id: int, db: Session = Dep
 
 @router.get("/workflow/experiments/{experiment_id}/benchmark")
 def workflow_benchmark_checklist(experiment_id: int, db: Session = Depends(get_db)):
-    from app.models import OptimizationExperiment, Project
+    from app.models import OptimizationAction, OptimizationExperiment, OptimizationIssue, Project
     from app.modules.optimization.intervention import generate_benchmark_checklist
+    from app.services.serialization import loads
+
     exp = db.get(OptimizationExperiment, experiment_id)
     if not exp:
         raise HTTPException(status_code=404, detail="Experiment not found")
+    # Prompt 从实验作用域反查（scope → action → issue）
+    prompt_id = None
+    scope = loads(exp.target_prompt_scope_json or "", [])
+    if scope:
+        prompt_id = scope[0]
+    else:
+        action = db.get(OptimizationAction, exp.action_id)
+        issue = db.get(OptimizationIssue, action.issue_id) if action else None
+        prompt_id = issue.prompt_id if issue else None
+    if not prompt_id:
+        raise HTTPException(status_code=404, detail="Prompt not found for experiment")
     project = db.get(Project, exp.project_id) if hasattr(exp, "project_id") else None
     if not project:
         # experiment 没有 project_id 字段（旧表），从 action 反查
-        from app.models import OptimizationAction, OptimizationIssue
         action = db.get(OptimizationAction, exp.action_id)
         issue = db.get(OptimizationIssue, action.issue_id) if action else None
         project = db.get(Project, issue.project_id) if issue else None
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return generate_benchmark_checklist(db, project, 19, experiment_id)
+    return generate_benchmark_checklist(db, project, prompt_id, experiment_id)
 
 
 @router.post("/workflow/experiments/{experiment_id}/release")

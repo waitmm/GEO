@@ -122,6 +122,47 @@ class CompetitorRejection(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class WorkflowConfirmation(Base):
+    """工作流 Gap/Action 人工确认记录。"""
+
+    __tablename__ = "workflow_confirmations"
+    __table_args__ = (
+        UniqueConstraint("project_id", "prompt_id", "step_key", name="uq_workflow_confirmation_project_prompt_step"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    prompt_id: Mapped[int] = mapped_column(Integer, index=True)
+    step_key: Mapped[str] = mapped_column(String(40))
+    decision_status: Mapped[str] = mapped_column(String(40), default="CONFIRMED")
+    decision_note: Mapped[str] = mapped_column(Text, default="")
+    reviewer: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class InterventionPlan(Base):
+    """干预执行计划（一个 Prompt 取最新一条）。"""
+
+    __tablename__ = "intervention_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    prompt_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(Text, default="")
+    objective: Mapped[str] = mapped_column(Text, default="")
+    target_brand_entity_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    gap_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    reason_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    intervention_goal: Mapped[str] = mapped_column(Text, default="UNRESOLVED")
+    status: Mapped[str] = mapped_column(Text, default="DRAFT")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by: Mapped[str] = mapped_column(Text, default="")
+    approved_by: Mapped[str] = mapped_column(Text, default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class Prompt(Base, TimestampMixin):
     __tablename__ = "prompts"
 

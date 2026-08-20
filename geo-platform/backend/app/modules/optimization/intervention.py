@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     EvidenceAlignment,
+    InterventionPlan,
     OptimizationExperiment,
     Project,
     Prompt,
@@ -43,10 +44,6 @@ class InterventionPlanService:
         self.project = project
         self.prompt = prompt
 
-    def _plan_table(self):
-        import sqlite3
-        return sqlite3.connect("geo_v0.db")
-
     def create_plan(self, run_ids: list[int], title: str = "") -> dict:
         """基于已确认 Gap 创建 Intervention Plan。"""
         context = _collect_evidence_context(self.db, self.project, self.prompt.id)
@@ -56,27 +53,39 @@ class InterventionPlanService:
             f"增强「{self.project.brand_name}」在 {', '.join(reasons[:3]) if reasons else '当前市场选择标准'} "
             "上的证据，提升品牌进入 AI 候选/推荐的概率"
         )
-        conn = self._plan_table()
-        cur = conn.execute(
-            """INSERT INTO intervention_plans
-               (project_id, prompt_id, title, objective, reason_ids_json, intervention_goal, status, created_by)
-               VALUES (?, ?, ?, ?, ?, 'EVIDENCE_STRENGTHEN', 'DRAFT', 'human')""",
-            (self.project.id, self.prompt.id, plan_title, objective, dumps(reasons)),
+        plan = InterventionPlan(
+            project_id=self.project.id,
+            prompt_id=self.prompt.id,
+            title=plan_title,
+            objective=objective,
+            reason_ids_json=dumps(reasons),
+            intervention_goal="EVIDENCE_STRENGTHEN",
+            status="DRAFT",
+            created_by="human",
         )
-        plan_id = cur.lastrowid
-        conn.commit()
-        conn.close()
-        return {"plan_id": plan_id, "title": plan_title, "objective": objective}
+        self.db.add(plan)
+        self.db.commit()
+        self.db.refresh(plan)
+        return {"plan_id": plan.id, "title": plan.title, "objective": plan.objective}
 
     def get_or_create_plan(self, run_ids: list[int]) -> dict:
-        conn = self._plan_table()
-        row = conn.execute(
-            "SELECT id, title, objective, status, reason_ids_json FROM intervention_plans WHERE project_id=? AND prompt_id=? ORDER BY id DESC LIMIT 1",
-            (self.project.id, self.prompt.id),
-        ).fetchone()
-        conn.close()
-        if row:
-            return {"plan_id": row[0], "title": row[1], "objective": row[2], "status": row[3], "reason_ids": loads(row[4], [])}
+        plan = (
+            self.db.query(InterventionPlan)
+            .filter(
+                InterventionPlan.project_id == self.project.id,
+                InterventionPlan.prompt_id == self.prompt.id,
+            )
+            .order_by(InterventionPlan.id.desc())
+            .first()
+        )
+        if plan:
+            return {
+                "plan_id": plan.id,
+                "title": plan.title,
+                "objective": plan.objective,
+                "status": plan.status,
+                "reason_ids": loads(plan.reason_ids_json, []),
+            }
         return self.create_plan(run_ids)
 
     def create_per_channel_experiment(self, plan_id: int, channel: str, run_ids: list[int]) -> dict:

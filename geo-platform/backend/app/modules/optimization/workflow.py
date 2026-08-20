@@ -14,11 +14,15 @@ from app.models import (
     Competitor,
     CompetitorRejection,
     EvidenceAlignment,
+    OptimizationAction,
+    OptimizationExperiment,
+    OptimizationIssue,
     Project,
     Prompt,
     RecommendationEvent,
     SourceClaim,
     TargetBrandCapabilityTruth,
+    WorkflowConfirmation,
 )
 from app.services.serialization import dumps, loads
 
@@ -138,17 +142,37 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     )
 
     # gap/action 的人工确认状态
-    import sqlite3
-    conn = sqlite3.connect('geo_v0.db')
     confirmed = {
-        r[0] for r in conn.execute(
-            "SELECT step_key FROM workflow_confirmations WHERE project_id=? AND prompt_id=? AND decision_status='CONFIRMED'",
-            (project.id, prompt_id),
-        ).fetchall()
+        row.step_key
+        for row in db.query(WorkflowConfirmation).filter(
+            WorkflowConfirmation.project_id == project.id,
+            WorkflowConfirmation.prompt_id == prompt_id,
+            WorkflowConfirmation.decision_status == "CONFIRMED",
+        ).all()
     }
-    conn.close()
     gap_confirmed = "gap" in confirmed
     action_confirmed = "action" in confirmed
+
+    # 实验状态：渠道选择创建 Experiment 草案（Issue→Action→Experiment 链路）
+    experiments = (
+        db.query(OptimizationExperiment)
+        .join(OptimizationAction, OptimizationAction.id == OptimizationExperiment.action_id)
+        .join(OptimizationIssue, OptimizationIssue.id == OptimizationAction.issue_id)
+        .filter(OptimizationIssue.project_id == project.id, OptimizationIssue.prompt_id == prompt_id)
+        .order_by(OptimizationExperiment.id.desc())
+        .all()
+    )
+    if experiments:
+        latest = experiments[0]
+        experiment_done = latest.status in {"RELEASED", "RETESTED", "CONCLUDED"}
+        experiment_detail = f"Experiment #{latest.id} · {latest.status}"
+    elif action_confirmed:
+        experiment_done = False
+        experiment_detail = "可创建 Experiment 草案（选择渠道）"
+    else:
+        experiment_done = False
+        experiment_detail = "待 Action 确认后进入"
+
     steps = [
         {"key": "collection", "label": "数据采集", "done": total_runs >= 1, "detail": f"{total_runs} Runs"},
         {"key": "answer_semantic", "label": "推荐行为分析", "done": len(unique_event_keys) >= 1, "detail": f"{len(unique_event_keys)} 组独特事件"},
@@ -158,7 +182,7 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         {"key": "product_truth", "label": "目标品牌能力确认", "done": bool(truths) and not truths_pending, "detail": f"{len(truths)-len(truths_pending)}/{len(truths)} 条已确认" if truths else "0 条"},
         {"key": "gap", "label": "Gap Diagnosis", "done": gap_confirmed, "detail": "已人工确认" if gap_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成")},
         {"key": "action", "label": "Action Candidate", "done": action_confirmed, "detail": "已人工确认" if action_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待 Gap 后生成")},
-        {"key": "experiment", "label": "实验", "done": False, "detail": "待 Action 确认后进入" if gap_confirmed and action_confirmed else "未开始"},
+        {"key": "experiment", "label": "实验", "done": experiment_done, "detail": experiment_detail},
     ]
     pending = sum(1 for s in steps if not s["done"] and s["key"] not in {"gap", "action", "experiment"})
     return {

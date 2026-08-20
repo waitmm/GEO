@@ -10,6 +10,7 @@ from app.models.db import (
     BrowserMonitorTask,
     Competitor,
     CompetitorRejection,
+    InterventionPlan,
     BrandCapabilityClaim,
     DecisionEvidenceAdoption,
     DecisionGapDiagnosis,
@@ -51,6 +52,7 @@ from app.models.db import (
     TargetBrandCapabilityTruth,
     Topic,
     User,
+    WorkflowConfirmation,
 )
 
 __all__ = [
@@ -63,6 +65,7 @@ __all__ = [
     "BrowserMonitorTask",
     "Competitor",
     "CompetitorRejection",
+    "InterventionPlan",
     "BrandCapabilityClaim",
     "DecisionEvidenceAdoption",
     "DecisionGapDiagnosis",
@@ -99,4 +102,5 @@ __all__ = [
     "TargetBrandCapabilityTruth",
     "Topic",
     "User",
+    "WorkflowConfirmation",
 ]

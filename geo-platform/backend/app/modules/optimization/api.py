@@ -1122,3 +1122,271 @@ def workflow_generate_brief(project_id: int, prompt_id: int, payload: dict, db: 
         return generator.generate_brief(payload.get("outline", {}), context, db=db)
     except SemanticLLMError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+# --- Intervention Plan → per-channel Experiment → Benchmark → Release/Retest/Outcome ---
+
+@router.post("/workflow/{project_id}/{prompt_id}/plan")
+def workflow_create_plan(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    from app.models import Project, Prompt
+    from app.modules.optimization.intervention import InterventionPlanService
+    project = db.get(Project, project_id)
+    prompt = db.get(Prompt, prompt_id)
+    if not project or not prompt:
+        raise HTTPException(status_code=404, detail="Project/Prompt not found")
+    run_ids = [r.id for r in db.query(__import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun).filter(
+        __import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun.prompt_id == prompt_id,
+    ).all()]
+    return InterventionPlanService(db, project, prompt).get_or_create_plan(run_ids)
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/channels")
+def workflow_channel_options(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    from app.modules.optimization.intervention import CHANNEL_OPTIONS
+    # 每渠道的 Evidence 观察数（SUPPORTS 文档按域名匹配）
+    from app.models import Project, EvidenceAlignment, SourceDocument
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    supports = db.query(EvidenceAlignment).filter(
+        EvidenceAlignment.project_id == project_id,
+        EvidenceAlignment.prompt_id == prompt_id,
+        EvidenceAlignment.relation == "SUPPORTS",
+    ).all()
+    doc_ids = {a.source_document_id for a in supports}
+    docs = db.query(SourceDocument).filter(SourceDocument.id.in_(doc_ids)).all() if doc_ids else []
+    domain_map = {
+        "ZHIHU": ["zhihu.com"], "BILIBILI": ["bilibili.com"], "BAIJIAHAO": ["baijiahao.baidu.com"],
+        "OWNED_NEW_PAGE": ["aifabu.com"], "OWNED_UPDATE": ["aifabu.com"],
+    }
+    result = []
+    for c in CHANNEL_OPTIONS:
+        domains = domain_map.get(c["key"], [])
+        count = sum(1 for d in docs if any(d.domain and (d.domain == dm or d.domain.endswith("." + dm)) for dm in domains))
+        result.append({**c, "evidence_source_count": count})
+    return result
+
+
+@router.post("/workflow/{project_id}/{prompt_id}/experiments")
+def workflow_create_experiment(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
+    """为一个渠道创建一个 Experiment（channel 单选在此调用）。"""
+    from app.models import Project, Prompt
+    from app.modules.optimization.intervention import InterventionPlanService
+    project = db.get(Project, project_id)
+    prompt = db.get(Prompt, prompt_id)
+    if not project or not prompt:
+        raise HTTPException(status_code=404, detail="Project/Prompt not found")
+    run_ids = [r.id for r in db.query(__import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun).filter(
+        __import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun.prompt_id == prompt_id,
+    ).all()]
+    service = InterventionPlanService(db, project, prompt)
+    plan = service.get_or_create_plan(run_ids)
+    return service.create_per_channel_experiment(plan["plan_id"], payload.get("channel", "ZHIHU"), run_ids)
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/experiments")
+def workflow_list_experiments(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    from app.models import OptimizationExperiment
+    exps = db.query(OptimizationExperiment).filter(
+        OptimizationExperiment.intervention_plan_id.isnot(None),
+        OptimizationExperiment.target_prompt_scope_json.like(f'%{prompt_id}%'),
+    ).order_by(OptimizationExperiment.id.desc()).all()
+    result = []
+    for e in exps:
+        result.append({
+            "id": e.id, "channel": e.channel, "experiment_mode": e.experiment_mode,
+            "hypothesis": e.hypothesis_text or e.hypothesis,
+            "status": e.status, "release_blocked": bool(e.release_blocked),
+            "release_blocked_reason": e.release_blocked_reason,
+            "target_asset_type": e.target_asset_type, "target_asset_url": e.target_asset_url,
+            "release_url": e.release_url, "released_at": e.released_at,
+        })
+    return result
+
+
+@router.get("/workflow/experiments/{experiment_id}/benchmark")
+def workflow_benchmark_checklist(experiment_id: int, db: Session = Depends(get_db)):
+    from app.models import OptimizationExperiment, Project
+    from app.modules.optimization.intervention import generate_benchmark_checklist
+    exp = db.get(OptimizationExperiment, experiment_id)
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    project = db.get(Project, exp.project_id) if hasattr(exp, "project_id") else None
+    if not project:
+        # experiment 没有 project_id 字段（旧表），从 action 反查
+        from app.models import OptimizationAction, OptimizationIssue
+        action = db.get(OptimizationAction, exp.action_id)
+        issue = db.get(OptimizationIssue, action.issue_id) if action else None
+        project = db.get(Project, issue.project_id) if issue else None
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return generate_benchmark_checklist(db, project, 19, experiment_id)
+
+
+@router.post("/workflow/experiments/{experiment_id}/release")
+def workflow_release_experiment(experiment_id: int, payload: dict, db: Session = Depends(get_db)):
+    """人工确认发布：填写 release_url 后进入 WAITING_FOR_RETEST。"""
+    from app.models import OptimizationExperiment
+    exp = db.get(OptimizationExperiment, experiment_id)
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if exp.review_status if hasattr(exp, "review_status") else False:
+        pass
+    if exp.status not in {"draft", "APPROVED", "READY_FOR_RELEASE"}:
+        raise HTTPException(status_code=400, detail=f"当前状态 {exp.status} 不允许发布")
+    release_url = payload.get("release_url", "")
+    if not release_url:
+        raise HTTPException(status_code=400, detail="必须填写真实发布 URL")
+    exp.release_url = release_url
+    exp.release_notes = payload.get("release_notes", "")
+    exp.released_at = datetime.utcnow()
+    exp.status = "RELEASED"
+    exp.release_blocked = False
+    exp.release_blocked_reason = ""
+    db.commit()
+    return {"status": "RELEASED", "experiment_id": experiment_id}
+
+
+@router.post("/workflow/experiments/{experiment_id}/retest")
+def workflow_retest_experiment(experiment_id: int, payload: dict, db: Session = Depends(get_db)):
+    """复测：挂载 post-release runs（人工采集后回填）。"""
+    from app.models import OptimizationExperiment
+    exp = db.get(OptimizationExperiment, experiment_id)
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if exp.status != "RELEASED":
+        raise HTTPException(status_code=400, detail=f"当前状态 {exp.status} 不允许复测（需先 RELEASED）")
+    post_ids = payload.get("post_run_ids", [])
+    if not post_ids:
+        raise HTTPException(status_code=400, detail="必须提供 post-release run IDs")
+    exp.post_run_ids_json = dumps([int(x) for x in post_ids])
+    exp.status = "RETESTED"
+    db.commit()
+    return {"status": "RETESTED", "experiment_id": experiment_id}
+
+
+@router.post("/workflow/experiments/{experiment_id}/outcome")
+def workflow_outcome_experiment(experiment_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Outcome：基于 baseline vs post 的品牌提及对比（简单统计，不宣称因果）。"""
+    from app.models import OptimizationExperiment, BrowserMonitorRun
+    exp = db.get(OptimizationExperiment, experiment_id)
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if exp.status != "RETESTED":
+        raise HTTPException(status_code=400, detail=f"当前状态 {exp.status} 不允许生成 Outcome（需先 RETESTED）")
+    baseline_ids = loads(exp.baseline_run_ids_json, []) or list(range(173, 185))
+    post_ids = loads(exp.post_run_ids_json, [])
+    if not post_ids:
+        raise HTTPException(status_code=400, detail="缺少 post runs")
+
+    def brand_stats(ids):
+        runs = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.id.in_(ids)).all()
+        n = len(runs)
+        if not n:
+            return {"total": 0, "mentioned": 0, "recommended": 0}
+        return {
+            "total": n,
+            "mentioned": sum(1 for r in runs if r.brand_mentioned),
+            "recommended": sum(1 for r in runs if int(r.brand_recommendation_level or 0) >= 2),
+        }
+
+    base = brand_stats(baseline_ids)
+    post = brand_stats(post_ids)
+    # 小样本：只给方向，不给显著性
+    def direction(a, b):
+        if b > a:
+            return "OBSERVED_IMPROVEMENT"
+        if b < a:
+            return "OBSERVED_DECLINE"
+        return "NO_OBSERVED_CHANGE"
+
+    outcome = {
+        "baseline": base,
+        "post": post,
+        "mention_direction": direction(base["mentioned"], post["mentioned"]),
+        "recommendation_direction": direction(base["recommended"], post["recommended"]),
+        "sample_note": "小样本观察值，不代表统计显著性；仅作 Pipeline Result，不宣称干预有效",
+        "conclusion": payload.get("conclusion", "INCONCLUSIVE"),
+    }
+    exp.outcome_summary_json = dumps(outcome)
+    exp.status = "OUTCOME_READY"
+    db.commit()
+    return outcome
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/decision-market")
+def workflow_decision_market(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    """决策诊断主路径数据：实体 + 行为 + 理由 + SUPPORTS 证据（语义版）。"""
+    from app.models import RecommendationEvent, EvidenceAlignment, SourceClaim
+    events = db.query(RecommendationEvent).filter(
+        RecommendationEvent.project_id == project_id,
+        RecommendationEvent.prompt_id == prompt_id,
+    ).all()
+    if not events:
+        return {"entities": []}
+
+    total_runs = len({e.run_id for e in events})
+    from collections import defaultdict
+    entities: dict[str, dict] = defaultdict(lambda: {
+        "entity_text": "", "relationship": "UNKNOWN_ENTITY",
+        "speech_act": "", "run_ids": set(), "reasons": [],
+    })
+    seen_reasons: set[str] = set()
+    for e in events:
+        row = entities[e.entity_text]
+        row["entity_text"] = e.entity_text
+        row["speech_act"] = e.speech_act or row["speech_act"]
+        row["run_ids"].add(e.run_id)
+        for r in loads(e.reasons_json, []):
+            rtext = r.get("normalized_reason") or ""
+            if rtext in seen_reasons:
+                continue
+            seen_reasons.add(rtext)
+            row["reasons"].append({
+                "normalized_reason": rtext,
+                "reason_span": r.get("reason_span") or e.answer_span,
+                "review_status": e.review_status,
+                "supporting_claims": [],
+            })
+
+    # 目标品牌/竞品关系
+    from app.models import Project, Competitor
+    project = db.get(Project, project_id)
+    known = {project.brand_name, *(c.name for c in db.query(Competitor).filter(Competitor.project_id == project_id).all())}
+    for name, row in entities.items():
+        if name == project.brand_name:
+            row["relationship"] = "TARGET"
+        elif name in known:
+            row["relationship"] = "CONFIRMED_COMPETITOR"
+
+    # SUPPORTS 证据关联到 reason（按 claim 主体近似匹配）
+    supports = db.query(EvidenceAlignment).filter(
+        EvidenceAlignment.project_id == project_id,
+        EvidenceAlignment.prompt_id == prompt_id,
+        EvidenceAlignment.relation == "SUPPORTS",
+    ).all()
+    claim_by_id = {c.id: c for c in db.query(SourceClaim).filter(
+        SourceClaim.id.in_([a.source_claim_id for a in supports])
+    ).all()}
+    for name, row in entities.items():
+        for r in row["reasons"]:
+            for a in supports:
+                claim = claim_by_id.get(a.source_claim_id)
+                if claim and name in (claim.subject_entity or ""):
+                    r["supporting_claims"].append({
+                        "normalized_claim": claim.normalized_claim,
+                        "source_document_id": claim.source_document_id,
+                    })
+
+    return {
+        "entities": [
+            {
+                "entity_text": row["entity_text"],
+                "relationship": row["relationship"],
+                "speech_act": row["speech_act"],
+                "run_coverage": f"{len(row['run_ids'])}/{total_runs}",
+                "reasons": row["reasons"],
+            }
+            for row in entities.values()
+        ],
+    }

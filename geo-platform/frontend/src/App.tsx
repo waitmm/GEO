@@ -18,7 +18,7 @@ type PageKey = "validation" | "recommendation" | "optimization" | "config" | "ru
 const PAGE_META: Record<PageKey, { title: string; subtitle: string }> = {
   validation: { title: "监测总览", subtitle: "看品牌当前表现，不在这里下最终策略" },
   recommendation: { title: "决策诊断", subtitle: "解释单个问题为什么没进入候选/推荐，并送入最终策略" },
-  optimization: { title: "最终策略", subtitle: "统一承接证据、策略、实验和人工确认" },
+  optimization: { title: "执行策略", subtitle: "知道为什么以后，具体怎么干" },
   config: { title: "问题配置", subtitle: "维护问题、主题、采样计划和项目基础信息" },
   runs: { title: "采集记录", subtitle: "查看每次采集、原答案、引用和检索候选" },
   ranking: { title: "引用资料", subtitle: "以最终引用资料为主分析来源结构和页面价值" },
@@ -586,6 +586,13 @@ export default function App() {
   const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null);
   const [goldenData, setGoldenData] = useState<any>(null);
   const [workflowData, setWorkflowData] = useState<any>(null);
+  const [strategyPlan, setStrategyPlan] = useState<any>(null);
+  const [channelOptions, setChannelOptions] = useState<any[]>([]);
+  const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
+  const [strategyExperiments, setStrategyExperiments] = useState<any[]>([]);
+  const [strategyBenchmarks, setStrategyBenchmarks] = useState<any>({});
+  const [strategyOutcomes, setStrategyOutcomes] = useState<any>({});
+  const [decisionMarketEntities, setDecisionMarketEntities] = useState<any[]>([]);
   const [workflowReviewOpen, setWorkflowReviewOpen] = useState(false);
   const [reviewQueue, setReviewQueue] = useState<any>(null);
   const [competitorCandidates, setCompetitorCandidates] = useState<any[]>([]);
@@ -715,6 +722,19 @@ export default function App() {
         if (def.prompt_id) {
           const wf = await (await fetch(`/api/optimization/workflow/${id}/${def.prompt_id}/status`)).json();
           setWorkflowData(wf);
+          // 同步加载执行策略上下文
+          try {
+            const channels = await (await fetch(`/api/optimization/workflow/${id}/${def.prompt_id}/channels`)).json();
+            setChannelOptions(channels);
+          } catch {}
+          try {
+            const exps = await (await fetch(`/api/optimization/workflow/${id}/${def.prompt_id}/experiments`)).json();
+            setStrategyExperiments(exps);
+          } catch {}
+          try {
+            const dm = await (await fetch(`/api/optimization/workflow/${id}/${def.prompt_id}/decision-market`)).json();
+            setDecisionMarketEntities(dm.entities || []);
+          } catch {}
         }
       } catch { /* 工作流数据加载失败不影响主页面 */ }
       try {
@@ -1247,7 +1267,7 @@ export default function App() {
       const result = await api.createDecisionExperimentDraft(recommendationData.id, { owner: "待分配" });
       const candidateId = result.strategy_candidate?.id;
       message.success(candidateId
-        ? `已生成待审核策略候选 #${candidateId}，请到「最终策略」完成人工审核`
+        ? `已生成待审核策略候选 #${candidateId}，请到「执行策略」完成人工审核`
         : result.status_label || "已生成待审核策略候选");
     } catch (error: any) {
       message.error(error.message || "生成实验草案失败");
@@ -1347,7 +1367,7 @@ export default function App() {
         { type: "group", label: "业务闭环", children: [
           { key: "validation", icon: <BarChart3 size={18} />, label: "监测总览" },
           { key: "recommendation", icon: <ShieldCheck size={18} />, label: "决策诊断" },
-          { key: "optimization", icon: <ShieldCheck size={18} />, label: "最终策略" },
+          { key: "optimization", icon: <ShieldCheck size={18} />, label: "执行策略" },
         ] },
         { type: "group", label: "证据工作台", children: [
           { key: "ranking", icon: <BarChart3 size={18} />, label: "引用资料" },
@@ -1364,6 +1384,14 @@ export default function App() {
         <div><Title level={3}>{PAGE_META[page].title}</Title><Text type="secondary">{PAGE_META[page].subtitle}</Text></div>
         <Space>
           <Select className="project-select" value={projectId} placeholder="选择项目" onChange={setProjectId} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
+          {projectId && prompts.length>0 && <Select size="small" style={{minWidth:220}} placeholder="选择 Prompt"
+            value={workflowData?.prompt_id}
+            options={prompts.map((p:any)=>({label:`#${p.id} ${p.prompt_text}`,value:p.id}))}
+            onChange={async(pid)=>{
+              const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/status`)).json();
+              setWorkflowData(wf);
+            }}
+          />}
           <Button icon={<Plus size={16} />} onClick={() => openProjectModal()}>新建项目</Button>
           <Button icon={<Settings size={16} />} onClick={() => projectId && openProjectModal(projectId)} disabled={!projectId}>编辑项目</Button>
           <Button icon={<RefreshCw size={16} />} loading={loading} onClick={() => projectId && loadProject(projectId)}>刷新</Button>
@@ -1377,22 +1405,23 @@ export default function App() {
               <Col><Alert type="info" showIcon message="以下为验证样本观察值，不代表总体品牌曝光概率。" /></Col>
             </Row>
           </Card>
-          {projectId && workflowData && <Card size="small" title={<Space><ShieldCheck size={18} />Prompt #{workflowData.prompt_id} 分析工作流</Space>} extra={
-            workflowData.all_reviews_done
+          {projectId && workflowData && <Card size="small" title={<Space><ShieldCheck size={18} />GEO 工作台 · Prompt #{workflowData.prompt_id}</Space>} extra={<Space>
+            <Button size="small" onClick={()=>setPage("recommendation")}>决策诊断</Button>
+            <Button size="small" onClick={()=>setPage("optimization")}>执行策略</Button>
+            {workflowData.all_reviews_done
               ? <Button type="primary" size="small" loading={loading} onClick={async()=>{
                   setLoading(true);
                   try{
                     const result = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/continue`,{method:"POST"})).json();
                     setWorkflowData({...workflowData, continueResult: result});
                     message.success("Gap 与 Action 已生成");
-                    // 刷新工作流状态
                     const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
                     setWorkflowData({...wf, continueResult: result});
                   }catch(e:any){message.error(e.message||"继续分析失败，请确认审核已全部完成")}
                   finally{setLoading(false)}
                 }}>继续分析</Button>
-              : <Button type="primary" size="small" danger onClick={()=>setWorkflowReviewOpen(true)}>开始审核（{workflowData.pending_review_steps} 步待处理）</Button>
-          }>
+              : <Button type="primary" size="small" danger onClick={()=>setWorkflowReviewOpen(true)}>开始审核（{workflowData.pending_review_steps} 步待处理）</Button>}
+          </Space>}>
             <Row gutter={[8,8]}>
               {workflowData.steps.map((s:any)=><Col key={s.key} xs={12} md={8} lg={4}>
                 <Space size={4}>
@@ -1504,7 +1533,35 @@ export default function App() {
             </Row>
           </Card>
         </Space> : page === "recommendation" ? <Space direction="vertical" size={16} className="page-stack">
-          <Card title="决策诊断工作台" extra={<Tag color="blue">诊断，不是最终策略</Tag>}>
+          {projectId && workflowData && <Card size="small" title={<Space><Text strong>决策诊断主路径</Text><Tag>{workflowData.prompt_id ? `Prompt #${workflowData.prompt_id}` : ""}</Tag></Space>} extra={<Button size="small" onClick={()=>setWorkflowReviewOpen(true)}>进入审核</Button>}>
+            <Space direction="vertical" size={8} style={{width:"100%"}}>
+              {/* Section 1: Decision Market */}
+              <Text strong>Decision Market（AI 真实决策）</Text>
+              <Table size="small" rowKey="entity" pagination={false}
+                dataSource={decisionMarketEntities}
+                columns={[
+                  {title:"实体",dataIndex:"entity_text",width:120,render:(v:string)=><Text strong>{v}</Text>},
+                  {title:"关系",width:120,render:(_:any,r:any)=><Tag color={r.relationship==="TARGET"?"blue":r.relationship==="CONFIRMED_COMPETITOR"?"volcano":"default"}>{r.relationship==="TARGET"?"目标品牌":r.relationship==="CONFIRMED_COMPETITOR"?"已确认竞品":"未知实体"}</Tag>},
+                  {title:"行为",width:120,render:(_:any,r:any)=><Tag>{r.speech_act}</Tag>},
+                  {title:"覆盖",width:80,render:(_:any,r:any)=><Text>{r.run_coverage}</Text>},
+                  {title:"理由数",width:70,render:(_:any,r:any)=><Text>{r.reasons.length}</Text>},
+                ]} />
+              {/* Section 2/3: Winning Reasons + Evidence */}
+              {decisionMarketEntities.filter((e:any)=>e.reasons.length>0).map((e:any)=><Card key={e.entity_text} size="small" title={<Space><Text strong>{e.entity_text} 为什么进入答案？</Text><Tag>{e.speech_act}</Tag></Space>}>
+                {e.reasons.map((r:any,ri:number)=><div key={ri} style={{marginBottom:8}}>
+                  <Space><Text strong>R{ri+1}：{r.normalized_reason}</Text><Tag color={r.review_status==="HUMAN_CONFIRMED"?"green":"orange"}>{r.review_status==="HUMAN_CONFIRMED"?"已确认":"待审"}</Tag></Space>
+                  <Text type="secondary" style={{display:"block",fontSize:12}}>原文：{r.reason_span}</Text>
+                  <Space wrap>{(r.supporting_claims||[]).map((sc:any,i:number)=><Tag key={i} color="green" style={{fontSize:11}}>SUPPORTS: {sc.normalized_claim?.slice(0,40)}</Tag>)}</Space>
+                </div>)}
+              </Card>)}
+              {/* Section 4: Target Gap */}
+              {workflowData.continueResult?.gap && <Alert type="warning" showIcon
+                message={<Space><Text strong>Target Gap</Text><Tag>{workflowData.continueResult.gap.gap_type}</Tag><Tag>{workflowData.continueResult.gap.confidence}</Tag></Space>}
+                description={workflowData.continueResult.gap.basis} />}
+              <Button size="small" type="primary" onClick={()=>setPage("optimization")}>查看执行策略</Button>
+            </Space>
+          </Card>}
+          <Card title="历史分析（V1 规则版）" extra={<Tag color="default">只读 · 已弃用于当前决策</Tag>}>
             <Alert
               type="info"
               showIcon
@@ -2458,7 +2515,96 @@ export default function App() {
             </Space>}
           </Card>
         </Space> : page === "optimization" ? <Space direction="vertical" size={16} className="page-stack">
-          <Card size="small" title="生成证据" extra={<Space>
+          {projectId && workflowData && <Card size="small" title={<Space><ShieldCheck size={16}/><Text strong>执行策略主路径</Text><Tag>{workflowData.prompt_id ? `Prompt #${workflowData.prompt_id}` : "未选择"}</Tag></Space>}>
+            <Space direction="vertical" size={8} style={{width:"100%"}}>
+              {/* Confirmed Gap */}
+              {workflowData.continueResult?.gap && <Alert type="warning" showIcon
+                message={<Space><Text strong>已确认 Gap：{workflowData.continueResult.gap.gap_type}</Text><Tag>{workflowData.continueResult.gap.confidence}</Tag></Space>}
+                description={workflowData.continueResult.gap.basis} />}
+              {/* Intervention Plan */}
+              {!strategyPlan ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
+                setLoading(true);
+                try{
+                  const plan = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/plan`,{method:"POST"})).json();
+                  setStrategyPlan(plan);
+                  message.success("Intervention Plan 已创建");
+                }catch(e:any){message.error(e.message)}
+                finally{setLoading(false)}
+              }}>创建执行计划</Button> : <Space direction="vertical" size={8} style={{width:"100%"}}>
+                <Alert type="info" showIcon message={<Text strong>执行计划</Text>} description={strategyPlan.objective} />
+                {/* 渠道多选 */}
+                <Text>选择干预渠道（可多选，每个渠道生成独立 Experiment）：</Text>
+                <Space wrap>
+                  {channelOptions.map((c:any)=><Button key={c.key} size="small"
+                    type={selectedChannels.includes(c.key)?"primary":"default"}
+                    onClick={()=>{
+                      setSelectedChannels(prev=>prev.includes(c.key)?prev.filter((x:string)=>x!==c.key):[...prev,c.key]);
+                    }}>
+                    {c.label}（证据 {c.evidence_source_count}）
+                  </Button>)}
+                </Space>
+                {selectedChannels.length>0 && <Button size="small" type="primary" loading={loading} onClick={async()=>{
+                  setLoading(true);
+                  try{
+                    for (const ch of selectedChannels) {
+                      await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/experiments`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:ch})});
+                    }
+                    const exps = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/experiments`)).json();
+                    setStrategyExperiments(exps);
+                    message.success(`已为 ${selectedChannels.length} 个渠道创建 Experiment`);
+                  }catch(e:any){message.error(e.message)}
+                  finally{setLoading(false)}
+                }}>为选中渠道创建 Experiment（{selectedChannels.length}）</Button>}
+              </Space>}
+              {/* Experiments 列表 */}
+              {strategyExperiments.length>0 && <Space direction="vertical" size={8} style={{width:"100%"}}>
+                <Text strong>Experiments（一个渠道一个）</Text>
+                {strategyExperiments.map((e:any)=><Card key={e.id} size="small" title={<Space><Tag color="geekblue">{e.channel}</Tag><Text>Experiment #{e.id}</Text><Tag color={e.status==="RELEASED"?"green":"orange"}>{e.status}</Tag></Space>} extra={<Space>
+                  <Button size="small" onClick={async()=>{
+                    const bm = await (await fetch(`/api/optimization/workflow/experiments/${e.id}/benchmark`)).json();
+                    setStrategyBenchmarks({...strategyBenchmarks, [e.id]: bm});
+                  }}>对标内容</Button>
+                  {e.status==="draft" && <Button size="small" type="primary" onClick={async()=>{
+                    const r = await (await fetch(`/api/optimization/workflow/experiments/${e.id}/release`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({release_url:prompt("请填写真实发布 URL：")||""})})).json();
+                    if (r.status) {
+                      const exps = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/experiments`)).json();
+                      setStrategyExperiments(exps);
+                      message.success("已确认发布，进入复测阶段");
+                    }
+                  }}>确认已发布</Button>}
+                  {e.status==="RELEASED" && <Button size="small" type="primary" onClick={async()=>{
+                    const raw = prompt("请填写复测 Run IDs（逗号分隔）：")||"";
+                    const ids = raw.split(",").map((s:string)=>Number(s.trim())).filter(Boolean);
+                    const r = await (await fetch(`/api/optimization/workflow/experiments/${e.id}/retest`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({post_run_ids:ids})})).json();
+                    if (r.status) {
+                      const exps = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/experiments`)).json();
+                      setStrategyExperiments(exps);
+                      message.success("复测 Runs 已挂载");
+                    }
+                  }}>挂载复测 Runs</Button>}
+                  {e.status==="RETESTED" && <Button size="small" type="primary" onClick={async()=>{
+                    const o = await (await fetch(`/api/optimization/workflow/experiments/${e.id}/outcome`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})})).json();
+                    setStrategyOutcomes({...strategyOutcomes, [e.id]: o});
+                    message.success("Outcome 已生成");
+                  }}>生成 Outcome</Button>}
+                </Space>}>
+                  <Text type="secondary" style={{display:"block"}}>{e.hypothesis}</Text>
+                  {strategyBenchmarks[e.id] && <Space direction="vertical" size={4} style={{marginTop:8, width:"100%"}}>
+                    <Text strong>对标内容（定性 Checklist，不评分）：</Text>
+                    <Text type="secondary">已覆盖：{(strategyBenchmarks[e.id].benchmark_covered||[]).map((x:any)=>x.text).join("；")}</Text>
+                    <Text type="secondary">观察到不足：{(strategyBenchmarks[e.id].observed_gaps||[]).map((x:any)=>x.text).join("；")}</Text>
+                    <Text type="secondary">爱短链真实增量：{(strategyBenchmarks[e.id].product_truth_advantages||[]).map((x:any)=>x.text).join("；")}</Text>
+                    <Text strong>Brief 要求：</Text>
+                    {(strategyBenchmarks[e.id].brief_requirements||[]).map((x:any,i:number)=><Text key={i} type="secondary">[ ] {x.text}</Text>)}
+                  </Space>}
+                  {strategyOutcomes[e.id] && <Alert type="success" showIcon style={{marginTop:8}}
+                    message={<Space><Text strong>Outcome</Text><Tag>{strategyOutcomes[e.id].mention_direction}</Tag><Tag>{strategyOutcomes[e.id].recommendation_direction}</Tag></Space>}
+                    description={`基线 提及 ${strategyOutcomes[e.id].baseline.mentioned}/${strategyOutcomes[e.id].baseline.total} → 复测 ${strategyOutcomes[e.id].post.mentioned}/${strategyOutcomes[e.id].post.total}。${strategyOutcomes[e.id].sample_note}`} />}
+                </Card>)}
+              </Space>}
+            </Space>
+          </Card>}
+          <Card size="small" title={<Space><Text strong>历史策略与证据（高级）</Text><Tag color="default">只读</Tag></Space>} extra={<Space>
             <Button size="small" onClick={async()=>{try{await loadEvidencePackages(projectId!);message.success("列表已刷新")}catch(e:any){message.error(e.message)}}}>刷新列表</Button>
             {selectedPrompts.length>0 && <Button type="primary" size="small" loading={loading} onClick={createEvidencePackagesForSelectedPrompts}>生成选中证据 ({selectedPrompts.length})</Button>}
           </Space>}>

@@ -934,6 +934,22 @@ class OptimizationExperiment(Base, TimestampMixin):
     conclusion: Mapped[str] = mapped_column(Text, default="")
     conclusion_reason: Mapped[str] = mapped_column(Text, default="")
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Intervention Plan V2 扩展字段（per-channel experiment）
+    intervention_plan_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(80), default="")
+    experiment_mode: Mapped[str] = mapped_column(String(40), default="PER_CHANNEL")
+    primary_benchmark_source_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    benchmark_source_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    target_reason_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    target_gap_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    hypothesis_text: Mapped[str] = mapped_column(Text, default="")
+    brief_json: Mapped[str] = mapped_column(Text, default="{}")
+    target_asset_type: Mapped[str] = mapped_column(String(80), default="TBD")
+    target_asset_url: Mapped[str] = mapped_column(String(1200), default="")
+    release_url: Mapped[str] = mapped_column(String(1200), default="")
+    release_notes: Mapped[str] = mapped_column(Text, default="")
+    post_run_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    outcome_summary_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
 # ---------------------------------------------------------------------------

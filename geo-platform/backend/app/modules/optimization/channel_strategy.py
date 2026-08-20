@@ -2,13 +2,13 @@
 
 分层排序规则（由高到低）：
   1. 答案明确推荐上下文（INCLUDE_AS_OPTION 事件中出现的平台信号）
-  2. 选择理由上下文（事件理由中出现的平台信号）
-  3. 普通引用分布（引用来源域名）
+  2. 普通引用分布（引用来源域名）
 
 平台 → 内容类型（固定映射）：
   抖音: 视频教程、操作教程
   百家号: 操作教程、问答内容
   知乎: 问答内容、操作教程
+  B站: 视频教程
 
 前置条件：三方平台账号可新注册，不以历史内容或账号存量作为前置条件；
 最终平台、账号和 target_url 仍需人工审核确认。
@@ -62,11 +62,10 @@ PLATFORM_COMBINATION_TEXT = {
 
 TIER_LABELS = {
     1: "答案明确推荐上下文",
-    2: "选择理由上下文",
     3: "普通引用分布",
 }
 
-SORTING_RULE = "答案明确推荐上下文优先，其次选择理由上下文，再其次普通引用分布。"
+SORTING_RULE = "答案明确推荐上下文优先，其次普通引用分布。"
 
 # 引用计分权重：答案中明确推荐了品牌（含自身品牌与竞品）的答案，其引用计分更高
 RECOMMENDED_ANSWER_CITATION_WEIGHT = 2
@@ -111,17 +110,13 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
         RecommendationEvent.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
     ).all()
 
-    # 分层信号
+    # 分层信号（两级：答案明确推荐上下文 > 普通引用分布）
     tier1: dict[str, list[str]] = {}  # 答案明确推荐上下文
-    tier2: dict[str, list[str]] = {}  # 选择理由上下文
     for e in events:
         context_text = " ".join(filter(None, [e.entity_text, e.answer_span]))
         if e.speech_act == "INCLUDE_AS_OPTION":
             for key in _platform_hits(context_text):
                 tier1.setdefault(key, []).append(e.entity_text or "")
-        for reason in loads(e.reasons_json, []):
-            for key in _platform_hits(reason.get("normalized_reason", "")):
-                tier2.setdefault(key, []).append(reason.get("normalized_reason", ""))
 
     # 明确推荐了品牌（含自身品牌与竞品）的答案 Run：其引用计分更高
     recommended_answer_run_ids = {
@@ -162,7 +157,7 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
 
     platforms = []
     for key in PLATFORM_LABELS:
-        tier = 1 if tier1.get(key) else 2 if tier2.get(key) else 3
+        tier = 1 if tier1.get(key) else 3
         total = citation_count.get(key, 0)
         rec = recommended_answer_citation_count.get(key, 0)
         # 引用计分：答案中明确推荐了品牌（含自身与竞品）的引用加权
@@ -174,7 +169,6 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
                 "tier": tier,
                 "tier_label": TIER_LABELS[tier],
                 "tier1_signals": tier1.get(key, []),
-                "tier2_signals": tier2.get(key, []),
                 "citation_count": total,
                 "citation_run_count": len(citation_runs.get(key, set())),
                 "recommended_answer_citation_count": rec,
@@ -194,7 +188,6 @@ def channel_strategy(db: Session, project: Project, prompt_id: int) -> dict:
                 "tier": 3,
                 "tier_label": TIER_LABELS[3],
                 "tier1_signals": [],
-                "tier2_signals": [],
                 "citation_count": total,
                 "citation_run_count": len(domain_runs.get(domain, set())),
                 "recommended_answer_citation_count": rec,

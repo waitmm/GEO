@@ -1454,6 +1454,7 @@ def _run_analysis_pipeline(project_id: int, prompt_id: int, run_ids: list[int]) 
     from app.modules.optimization.source_qualification import run_source_qualification
     from app.modules.optimization.source_claim import run_source_claim_extraction
     from app.modules.optimization.evidence_alignment import run_evidence_alignment
+    from app.modules.optimization.passage_service import acquire_cited_sources, segment_all_documents
 
     logger = logging.getLogger("uvicorn.error")
     db = SessionLocal()
@@ -1464,6 +1465,14 @@ def _run_analysis_pipeline(project_id: int, prompt_id: int, run_ids: list[int]) 
             return
         layer1 = run_answer_semantic(db, project, prompt, run_ids)
         run_source_qualification(db, project)
+        # 补齐所有引用资料的原文内容（老流程必备步骤）：抓取缺失的引用页原文并分段，
+        # 保证 Layer 3 检索、Layer 4 Claim 与 Layer 5 对齐基于完整原文
+        acquisition = acquire_cited_sources(db, run_ids)
+        segment_all_documents(db)
+        logger.info(
+            "机器分析引用原文补齐 project=%s prompt=%s acquisition=%s",
+            project_id, prompt_id, acquisition,
+        )
         run_source_claim_extraction(db, project, prompt_id, run_ids)
         run_evidence_alignment(db, project, prompt_id, run_ids)
         logger.info(

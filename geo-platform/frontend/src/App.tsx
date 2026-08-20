@@ -1566,12 +1566,14 @@ export default function App() {
                         <Tag color={p.tier === 1 ? "red" : p.tier === 2 ? "orange" : "blue"}>{p.tier_label}</Tag>
                         <Text strong>{p.label}</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>适合发{p.content_types.join("、")}</Text>
-                        {p.citation_count > 0 && <Text type="secondary" style={{ fontSize: 12 }}>(引用 {p.citation_count} 次 / {p.citation_run_count} 个 Run)</Text>}
+                        {p.citation_count > 0 && <Text type="secondary" style={{ fontSize: 12 }}>(引用 {p.citation_count} 次 / {p.citation_run_count} 个 Run，计分 {p.citation_score})</Text>}
+                        {p.brand_recommended_citation_count > 0 && <Tag color="green" style={{ fontSize: 11 }}>含品牌推荐答案引用 {p.brand_recommended_citation_count} 次</Tag>}
                       </Space>
                     </div>)}
                     <Text strong>建议执行组合</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>{channelStrategy.combination}</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>排序规则：{channelStrategy.sorting_rule}</Text>
+                    {channelStrategy.citation_scoring_rule && <Text type="secondary" style={{ fontSize: 12 }}>{channelStrategy.citation_scoring_rule}</Text>}
                     {(channelStrategy.notes || []).map((n: string, i: number) => <Text key={i} type="secondary" style={{ fontSize: 12 }}>· {n}</Text>)}
                   </Space>
                 </Card>}

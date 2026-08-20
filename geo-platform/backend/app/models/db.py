@@ -108,6 +108,20 @@ class Competitor(Base):
     project: Mapped[Project] = relationship(back_populates="competitors")
 
 
+class CompetitorRejection(Base):
+    """人工判定「不是竞品」的实体，避免竞品候选反复出现。"""
+
+    __tablename__ = "competitor_rejections"
+    __table_args__ = (
+        UniqueConstraint("project_id", "entity_name", name="uq_competitor_rejection_project_entity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    entity_name: Mapped[str] = mapped_column(String(240), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Prompt(Base, TimestampMixin):
     __tablename__ = "prompts"
 

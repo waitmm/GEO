@@ -3606,7 +3606,13 @@ export default function App() {
                   message.success(`已确认竞品：${c.entity}`);
                   setCompetitorCandidates(competitorCandidates.filter((x:any)=>x.entity!==c.entity));
                 }}>确认竞品</Button>
-                <Button size="small" onClick={()=>setCompetitorCandidates(competitorCandidates.filter((x:any)=>x.entity!==c.entity))}>不是</Button>
+                <Button size="small" onClick={async()=>{
+                  try {
+                    await fetch(`/api/optimization/workflow/${projectId}/competitor-candidates/reject`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:c.entity})});
+                  } catch (e:any) { message.error(e.message || "记录失败"); return; }
+                  message.success(`已记录「不是竞品」：${c.entity}，之后不会再出现`);
+                  setCompetitorCandidates(competitorCandidates.filter((x:any)=>x.entity!==c.entity));
+                }}>不是</Button>
               </Space></Col>
             </Row>)}
           </Card>}

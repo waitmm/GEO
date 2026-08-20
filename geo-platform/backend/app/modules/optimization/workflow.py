@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     BrowserMonitorRun,
     Competitor,
+    CompetitorRejection,
     EvidenceAlignment,
     Project,
     Prompt,
@@ -40,6 +41,11 @@ def discover_competitor_candidates(db: Session, project: Project, prompt_id: int
     known = {project.brand_name, *(c.name for c in db.query(Competitor).filter(Competitor.project_id == project.id).all())}
     # 目标品牌别名也算已知
     known |= set(loads(project.brand_aliases_json, []))
+    # 人工已判定「不是竞品」的实体不再反复出现
+    known |= {
+        r.entity_name
+        for r in db.query(CompetitorRejection).filter(CompetitorRejection.project_id == project.id).all()
+    }
 
     seen: dict[str, dict] = {}
     for e in events:
@@ -73,6 +79,23 @@ def confirm_competitor(db: Session, project: Project, name: str, website_url: st
     db.commit()
     db.refresh(comp)
     return {"status": "CONFIRMED", "id": comp.id}
+
+
+def reject_competitor(db: Session, project: Project, name: str) -> dict:
+    """人工判定「不是竞品」→ 记录拒绝，候选发现时排除（幂等）。"""
+    name = (name or "").strip()
+    if not name:
+        return {"status": "EMPTY_NAME"}
+    existing = db.query(CompetitorRejection).filter(
+        CompetitorRejection.project_id == project.id, CompetitorRejection.entity_name == name,
+    ).first()
+    if existing:
+        return {"status": "EXISTS", "id": existing.id}
+    row = CompetitorRejection(project_id=project.id, entity_name=name)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"status": "REJECTED", "id": row.id}
 
 
 # ---------------------------------------------------------------------------

@@ -979,6 +979,17 @@ def competitor_confirm_endpoint(project_id: int, payload: dict, db: Session = De
     return confirm_competitor(db, project, payload.get("name", ""), payload.get("website_url", ""))
 
 
+@router.post("/workflow/{project_id}/competitor-candidates/reject")
+def competitor_reject_endpoint(project_id: int, payload: dict, db: Session = Depends(get_db)):
+    """人工判定「不是竞品」→ 持久化拒绝，后续候选发现不再返回该实体。"""
+    from app.models import Project
+    from app.modules.optimization.workflow import reject_competitor
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return reject_competitor(db, project, payload.get("name", ""))
+
+
 @router.post("/workflow/review/events/confirm-batch")
 def batch_confirm_events_endpoint(payload: dict, db: Session = Depends(get_db)):
     from app.modules.optimization.workflow import batch_confirm_events

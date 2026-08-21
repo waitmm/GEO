@@ -31,6 +31,11 @@ const emptyQueue: BrowserQueueSummary = {
   latest_status: "", latest_stage: "", latest_error_type: ""
 };
 
+const CHANNEL_BUTTONS: [string, string][] = [
+  ["OWNED_NEW_PAGE", "官网新建教程页"], ["OWNED_UPDATE", "官网更新现有页"],
+  ["ZHIHU", "知乎"], ["BAIJIAHAO", "百家号"], ["BILIBILI", "B站视频"], ["DOUYIN", "抖音"],
+];
+
 function statusTag(status: string) {
   const labels: Record<string, string> = {
     success: "成功", partial_success: "部分成功", failed: "采集失败",
@@ -596,6 +601,7 @@ export default function App() {
   const [channelStrategy, setChannelStrategy] = useState<any>(null); // V3 平台×内容方向（数据分层推导）
   const [resolveGoal, setResolveGoal] = useState<string>("EVIDENCE_STRENGTHEN"); // UNRESOLVED 人工指定方向
   const [resolveReason, setResolveReason] = useState<string>(""); // UNRESOLVED 人工理由
+  const [draftChannels, setDraftChannels] = useState<string[]>([]); // 渠道多选（待确认）
   const [promptOverview, setPromptOverview] = useState<any>(null); // 项目视图的 Prompt 概览统计
   const [strategyPlan, setStrategyPlan] = useState<any>(null);
   const [channelOptions, setChannelOptions] = useState<any[]>([]);
@@ -731,6 +737,7 @@ export default function App() {
     setChannelOptions([]);
     setStrategyExperiments([]);
     setDecisionMarketEntities([]);
+    setDraftChannels([]);
     try {
       // pid 为 null 时由后端返回机器分析进度最好的 Prompt（项目视图默认）
       const target = pid ?? (await (await fetch(`/api/optimization/workflow/${targetProjectId}/default-prompt`)).json())?.prompt_id;
@@ -1608,8 +1615,8 @@ export default function App() {
               </Space>} />}
             {/* 渠道选择 + 内容大纲（Action 确认后） */}
             {workflowData.steps.find((s:any)=>s.key==="action")?.done && <Card size="small" title="渠道选择与内容大纲">
-              {!workflowData.experimentDraft ? <Space direction="vertical" size={8} style={{width:"100%"}}>
-                <Text>选择发布渠道（人工决策，系统不代选）：</Text>
+              {!workflowData.channelDrafts ? <Space direction="vertical" size={8} style={{width:"100%"}}>
+                <Text>选择发布渠道（可多选，人工决策，系统不代选）：</Text>
                 {channelStrategy && <Card size="small" style={{ background: "#fafafa" }}>
                   <Space direction="vertical" size={6} style={{ width: "100%" }}>
                     <Text strong>内容方向</Text>
@@ -1632,46 +1639,57 @@ export default function App() {
                   </Space>
                 </Card>}
                 <Space wrap>
-                  {[["OWNED_NEW_PAGE","官网新建教程页"],["OWNED_UPDATE","官网更新现有页"],["ZHIHU","知乎"],["BAIJIAHAO","百家号"],["BILIBILI","B站视频"],["DOUYIN","抖音"]].map(([key,label])=>
-                    <Button key={key} size="small" type="primary" ghost onClick={async()=>{
-                      const draft = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/select-channel`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:key})})).json();
-                      setWorkflowData({...workflowData, experimentDraft: draft, selectedChannel: key});
-                      message.success(`已选择${label}，Experiment 草案 #${draft.experiment_id} 已创建`);
-                    }}>{label}</Button>)}
+                  {CHANNEL_BUTTONS.map(([key,label]) =>
+                    <Checkbox key={key} checked={draftChannels.includes(key)}
+                      onChange={(e)=>setDraftChannels((prev)=>e.target.checked ? [...prev,key] : prev.filter((x:string)=>x!==key))}>
+                      {label}
+                    </Checkbox>)}
                 </Space>
-              </Space> : <Space direction="vertical" size={8} style={{width:"100%"}}>
-                <Alert type="success" showIcon message={<Space><Text strong>Experiment 草案 #{workflowData.experimentDraft.experiment_id}</Text><Tag>{workflowData.experimentDraft.channel}</Tag><Tag color="orange">blocked: 等待内容生产</Tag></Space>} />
-                {!workflowData.outline ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
+                <Button size="small" type="primary" disabled={draftChannels.length===0} loading={loading} onClick={async()=>{
                   setLoading(true);
                   try{
-                    const outline = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/generate-outline`,{method:"POST"})).json();
-                    setWorkflowData({...workflowData, outline});
+                    const r = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/select-channels`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channels:draftChannels})})).json();
+                    const labelMap = Object.fromEntries(CHANNEL_BUTTONS);
+                    setWorkflowData({...workflowData, channelDrafts: (r.drafts||[]).map((d:any)=>({...d, channelLabel: labelMap[d.channel] || d.channel}))});
+                    message.success(`已为 ${r.drafts?.length||0} 个渠道创建 Experiment 草案，逐平台生成内容`);
                   }catch(e:any){message.error(e.message)}
                   finally{setLoading(false)}
-                }}>生成内容大纲</Button> : <Space direction="vertical" size={4} style={{width:"100%"}}>
-                  <Alert type="success" showIcon message={<Space><Text strong>内容大纲</Text><Tag>{workflowData.outline.title}</Tag></Space>} />
-                  {(workflowData.outline.outline||[]).map((sec:any,i:number)=><div key={i}>
-                    <Text strong>{i+1}. {sec.section}</Text>
-                    <Text type="secondary" style={{display:"block",fontSize:12}}>依据：{sec.evidence_basis}</Text>
-                    <Space wrap>{(sec.key_points||[]).map((kp:string,ki:number)=><Tag key={ki} style={{fontSize:11}}>{kp}</Tag>)}</Space>
-                  </div>)}
-                  {!workflowData.brief ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
+                }}>确认选择（{draftChannels.length} 个渠道）</Button>
+              </Space> : <Space direction="vertical" size={8} style={{width:"100%"}}>
+                {workflowData.channelDrafts.map((d:any)=> <Card key={d.experiment_id} size="small"
+                  title={<Space><Tag color="geekblue">{d.channelLabel || d.channel}</Tag><Text strong>Experiment 草案 #{d.experiment_id}</Text><Tag color="orange">blocked: 等待内容生产</Tag></Space>}>
+                  {!d.outline ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
                     setLoading(true);
                     try{
-                      const brief = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/generate-brief`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({outline:workflowData.outline})})).json();
-                      setWorkflowData({...workflowData, brief});
+                      const outline = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/generate-outline`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:d.channel})})).json();
+                      setWorkflowData({...workflowData, channelDrafts: workflowData.channelDrafts.map((x:any)=>x.experiment_id===d.experiment_id ? {...x, outline} : x)});
                     }catch(e:any){message.error(e.message)}
                     finally{setLoading(false)}
-                  }}>生成详细内容 Brief</Button> : <Space direction="vertical" size={4} style={{width:"100%"}}>
-                    <Alert type="success" showIcon message={<Text strong>详细内容 Brief</Text>} />
-                    {(workflowData.brief.sections||[]).map((sec:any,i:number)=><Card key={i} size="small" title={sec.section}>
-                      <Text type="secondary" style={{display:"block"}}>写作要求：{sec.writing_requirements}</Text>
-                      <Text type="secondary" style={{display:"block"}}>可核验事实：{(sec.facts_to_include||[]).join("；")}</Text>
-                      <Text type="secondary" style={{display:"block"}}>事实来源：{sec.facts_source}</Text>
-                      {sec.competitor_reference_only && <Tag color="orange" style={{marginTop:4}}>竞品参照（仅市场参照）：{sec.competitor_reference_only}</Tag>}
-                    </Card>)}
+                  }}>生成内容大纲</Button> : <Space direction="vertical" size={4} style={{width:"100%"}}>
+                    <Alert type="success" showIcon message={<Space><Text strong>内容大纲</Text><Tag>{d.outline.title}</Tag></Space>} />
+                    {(d.outline.outline||[]).map((sec:any,i:number)=><div key={i}>
+                      <Text strong>{i+1}. {sec.section}</Text>
+                      <Text type="secondary" style={{display:"block",fontSize:12}}>依据：{sec.evidence_basis}</Text>
+                      <Space wrap>{(sec.key_points||[]).map((kp:string,ki:number)=><Tag key={ki} style={{fontSize:11}}>{kp}</Tag>)}</Space>
+                    </div>)}
+                    {!d.brief ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
+                      setLoading(true);
+                      try{
+                        const brief = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/generate-brief`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:d.channel,outline:d.outline})})).json();
+                        setWorkflowData({...workflowData, channelDrafts: workflowData.channelDrafts.map((x:any)=>x.experiment_id===d.experiment_id ? {...x, brief} : x)});
+                      }catch(e:any){message.error(e.message)}
+                      finally{setLoading(false)}
+                    }}>生成详细内容 Brief</Button> : <Space direction="vertical" size={4} style={{width:"100%"}}>
+                      <Alert type="success" showIcon message={<Text strong>详细内容 Brief</Text>} />
+                      {(d.brief.sections||[]).map((sec:any,i:number)=><Card key={i} size="small" title={sec.section}>
+                        <Text type="secondary" style={{display:"block"}}>写作要求：{sec.writing_requirements}</Text>
+                        <Text type="secondary" style={{display:"block"}}>可核验事实：{(sec.facts_to_include||[]).join("；")}</Text>
+                        <Text type="secondary" style={{display:"block"}}>事实来源：{sec.facts_source}</Text>
+                        {sec.competitor_reference_only && <Tag color="orange" style={{marginTop:4}}>竞品参照（仅市场参照）：{sec.competitor_reference_only}</Tag>}
+                      </Card>)}
+                    </Space>}
                   </Space>}
-                </Space>}
+                </Card>)}
               </Space>}
             </Card>}
           </Card>}

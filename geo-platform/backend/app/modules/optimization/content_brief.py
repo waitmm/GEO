@@ -37,7 +37,10 @@ OUTLINE_SYSTEM = """你是一个 GEO 内容策略助手。基于给定证据链�
 3. 竞品能力描述不得直接复制，只能作为"市场需要什么"的参照。
 4. 大纲必须可追溯到证据：每节标注依据来源。
 5. 大纲必须覆盖：定义、适用场景、操作步骤、风险限制、常见失败原因。
-6. 输出纯 JSON 对象。
+6. 按目标平台的内容类型组织结构（视频教程按分镜/步骤推进，问答内容按问题-答案展开，操作教程按步骤展开）。
+7. 对标同平台被 AI 引用的内容（见 evidence_context.platform_cited_samples）：
+   写得比它们更全、更准、更可核验，目标是把它们从 AI 引用位置挤下来。
+8. 输出纯 JSON 对象。
 
 输出格式：
 {
@@ -77,8 +80,8 @@ BRIEF_SYSTEM = """你是一个 GEO 内容策略助手。基于已确认的大纲
 """
 
 
-def _collect_evidence_context(db: Session, project: Project, prompt_id: int) -> dict:
-    """汇总已确认的证据链上下文。"""
+def _collect_evidence_context(db: Session, project: Project, prompt_id: int, channel: str | None = None) -> dict:
+    """汇总已确认的证据链上下文（可按目标渠道注入平台内容类型与被引用内容对标样本）。"""
     # 市场标准（Reason，人工确认的事件）
     events = db.query(RecommendationEvent).filter(
         RecommendationEvent.project_id == project.id,
@@ -112,6 +115,48 @@ def _collect_evidence_context(db: Session, project: Project, prompt_id: int) -> 
         TargetBrandCapabilityTruth.product_truth_status == "SUPPORTED",
     ).all()
 
+    # 渠道相关：平台内容类型 + 该平台上被 AI 引用的内容对标样本
+    from app.modules.optimization.channel_strategy import (
+        CHANNEL_CONTENT_TYPES,
+        PLATFORM_DOMAINS,
+    )
+
+    platform_content_types = CHANNEL_CONTENT_TYPES.get(channel, []) if channel else []
+    cited_samples: list[dict] = []
+    if channel:
+        domains = PLATFORM_DOMAINS.get(channel, set())
+        run_ids = [
+            r.id
+            for r in db.query(__import__("app.models", fromlist=["BrowserMonitorRun"]).BrowserMonitorRun).filter(
+                __import__("app.models", fromlist=["BrowserMonitorRun"]).BrowserMonitorRun.project_id == project.id,
+                __import__("app.models", fromlist=["BrowserMonitorRun"]).BrowserMonitorRun.prompt_id == prompt_id,
+            ).all()
+        ]
+        if domains and run_ids:
+            from app.models import ReferenceSource
+
+            samples = (
+                db.query(ReferenceSource)
+                .filter(
+                    ReferenceSource.run_id.in_(run_ids),
+                    ReferenceSource.domain.in_(domains),
+                )
+                .order_by(ReferenceSource.id.desc())
+                .limit(8)
+                .all()
+            )
+            seen: set[str] = set()
+            for s in samples:
+                key = (s.canonical_url or s.url or "").strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                cited_samples.append({
+                    "title": s.display_title or s.matched_title or "",
+                    "url": key,
+                    "domain": s.domain or "",
+                })
+
     return {
         "prompt": prompt_id,
         "brand": project.brand_name,
@@ -119,6 +164,9 @@ def _collect_evidence_context(db: Session, project: Project, prompt_id: int) -> 
         "competitor_evidence_reference": competitor_claims[:8],
         "brand_product_truth": [t.capability_key for t in truths],
         "brand_first_party_evidence": [],
+        "platform_channel": channel,
+        "platform_content_types": platform_content_types,
+        "platform_cited_samples": cited_samples,
     }
 
 

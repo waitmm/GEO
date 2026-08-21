@@ -36,6 +36,13 @@ PLATFORM_LABELS = {
     "BILIBILI": "B站",
 }
 
+# 渠道（含自有渠道）→ 内容类型（大纲/Brief 生成用）
+CHANNEL_CONTENT_TYPES = {
+    **PLATFORM_CONTENT_TYPES,
+    "OWNED_NEW_PAGE": ["操作教程", "工具说明页"],
+    "OWNED_UPDATE": ["操作教程", "工具说明页"],
+}
+
 # 平台关键词（事件/理由文本匹配）
 PLATFORM_KEYWORDS = {
     "DOUYIN": ("抖音", "douyin"),

@@ -1170,9 +1170,32 @@ def workflow_resolve_unresolved(project_id: int, prompt_id: int, payload: dict, 
     raise HTTPException(status_code=400, detail="decision 仅支持 OVERRIDE / SHELVE")
 
 
+@router.post("/workflow/{project_id}/{prompt_id}/select-channels")
+def workflow_select_channels(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
+    """多选渠道 → 每个渠道创建一个 Experiment 草案（后续按平台分组生产内容）。"""
+    from app.models import Project, Prompt
+    from app.modules.optimization.content_brief import create_experiment_draft
+
+    project = db.get(Project, project_id)
+    prompt = db.get(Prompt, prompt_id)
+    if not project or not prompt:
+        raise HTTPException(status_code=404, detail="Project/Prompt not found")
+    channels = payload.get("channels") or []
+    if not channels:
+        raise HTTPException(status_code=400, detail="至少选择一个渠道")
+    run_ids = [r.id for r in db.query(__import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun).filter(
+        __import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun.prompt_id == prompt_id,
+    ).all()]
+    drafts = [
+        create_experiment_draft(db, project, prompt, run_ids, channel, payload.get("target_url", ""))
+        for channel in channels
+    ]
+    return {"drafts": drafts}
+
+
 @router.post("/workflow/{project_id}/{prompt_id}/select-channel")
 def workflow_select_channel(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
-    """渠道选择 → 创建 Experiment 草案。"""
+    """渠道选择（单渠道，兼容保留）→ 创建 Experiment 草案。"""
     from app.models import Project, Prompt
     from app.modules.optimization.content_brief import create_experiment_draft
     project = db.get(Project, project_id)
@@ -1186,13 +1209,14 @@ def workflow_select_channel(project_id: int, prompt_id: int, payload: dict, db: 
 
 
 @router.post("/workflow/{project_id}/{prompt_id}/generate-outline")
-def workflow_generate_outline(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+def workflow_generate_outline(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
     from app.models import Project
     from app.modules.optimization.content_brief import ContentBriefGenerator, _collect_evidence_context
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    context = _collect_evidence_context(db, project, prompt_id)
+    channel = payload.get("channel") if payload else None
+    context = _collect_evidence_context(db, project, prompt_id, channel)
     generator = ContentBriefGenerator()
     try:
         return generator.generate_outline(context, db=db)
@@ -1207,7 +1231,8 @@ def workflow_generate_brief(project_id: int, prompt_id: int, payload: dict, db: 
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    context = _collect_evidence_context(db, project, prompt_id)
+    channel = payload.get("channel") if payload else None
+    context = _collect_evidence_context(db, project, prompt_id, channel)
     generator = ContentBriefGenerator()
     try:
         return generator.generate_brief(payload.get("outline", {}), context, db=db)

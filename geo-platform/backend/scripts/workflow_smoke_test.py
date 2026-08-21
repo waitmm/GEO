@@ -106,19 +106,21 @@ def main() -> None:
     ok_cs = s == 200 and isinstance(r, dict) and r.get("platforms") and r.get("content_direction") and r.get("combination")
     check("9a. V3 平台×内容方向分析", ok_cs,
           f"platforms={[(p.get('label'), p.get('tier')) for p in (r or {}).get('platforms', [])] if isinstance(r, dict) else r}")
-    s, r = req(base, "POST", f"{wf}/select-channel", {"channel": "OWNED_NEW_PAGE"})
-    ok = s == 200 and isinstance(r, dict) and r.get("experiment_id")
-    check("9. 选择渠道创建实验草案", ok, f"experiment_id={(r or {}).get('experiment_id') if isinstance(r, dict) else r}")
-    exp_id = (r or {}).get("experiment_id") if isinstance(r, dict) else None
+    s, r = req(base, "POST", f"{wf}/select-channels", {"channels": ["OWNED_NEW_PAGE"]})
+    drafts = (r or {}).get("drafts", []) if isinstance(r, dict) else []
+    ok = s == 200 and len(drafts) >= 1 and drafts[0].get("experiment_id")
+    check("9. 多选渠道创建实验草案", ok, f"drafts={[d.get('channel') for d in drafts] if isinstance(r, dict) else r}")
+    exp_id = drafts[0].get("experiment_id") if drafts else None
+    channel = drafts[0].get("channel") if drafts else "OWNED_NEW_PAGE"
 
-    # 10. 生成内容大纲
-    s, r = req(base, "POST", f"{wf}/generate-outline", {})
+    # 10. 生成内容大纲（按渠道内容类型与对标样本）
+    s, r = req(base, "POST", f"{wf}/generate-outline", {"channel": channel})
     ok = s == 200 and isinstance(r, dict) and (r.get("outline") or r.get("sections"))
-    check("10. 生成内容大纲", ok, f"title={(r or {}).get('title') if isinstance(r, dict) else r}")
+    check("10. 生成内容大纲（渠道定制）", ok, f"title={(r or {}).get('title') if isinstance(r, dict) else r}")
 
     # 11. 生成详细 Brief
     if ok:
-        s, r = req(base, "POST", f"{wf}/generate-brief", {"outline": r})
+        s, r = req(base, "POST", f"{wf}/generate-brief", {"channel": channel, "outline": r})
         ok2 = s == 200 and isinstance(r, dict) and (r.get("sections") or r.get("brief"))
         check("11. 生成详细 Brief", ok2, f"sections={len((r or {}).get('sections') or []) if isinstance(r, dict) else r}")
     else:

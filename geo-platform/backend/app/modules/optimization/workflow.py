@@ -196,6 +196,62 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     }
 
 
+def project_prompt_overview(db: Session, project: Project) -> dict:
+    """项目级 Prompt 概览（项目视图用）：纯统计，不展示单个 Prompt 工作流。"""
+    prompts = db.query(Prompt).filter(Prompt.project_id == project.id).all()
+
+    run_rows = (
+        db.query(BrowserMonitorRun.prompt_id, BrowserMonitorRun.brand_mentioned)
+        .filter(BrowserMonitorRun.project_id == project.id)
+        .all()
+    )
+    prompts_with_runs = {pid for pid, _ in run_rows}
+    brand_mentioned_prompts = {pid for pid, mentioned in run_rows if mentioned}
+
+    brand_aliases = {project.brand_name, *loads(getattr(project, "brand_aliases_json", "[]"), [])}
+
+    event_rows = (
+        db.query(
+            RecommendationEvent.prompt_id,
+            RecommendationEvent.entity_text,
+            RecommendationEvent.speech_act,
+        )
+        .filter(RecommendationEvent.project_id == project.id)
+        .all()
+    )
+    analyzed_prompts = {pid for pid, _, _ in event_rows}
+    any_recommended_prompts = {
+        pid for pid, _, speech_act in event_rows if speech_act == "INCLUDE_AS_OPTION"
+    }
+    brand_recommended_prompts = {
+        pid
+        for pid, entity_text, speech_act in event_rows
+        if speech_act == "INCLUDE_AS_OPTION"
+        and any(alias in (entity_text or "") for alias in brand_aliases)
+    }
+
+    reviews_done_count = 0
+    for p in prompts:
+        if p.id not in analyzed_prompts:
+            continue
+        try:
+            if workflow_status(db, project, p.id).get("all_reviews_done"):
+                reviews_done_count += 1
+        except Exception:
+            continue
+
+    return {
+        "project_id": project.id,
+        "total_prompts": len(prompts),
+        "prompts_with_runs": len(prompts_with_runs),
+        "prompts_analyzed": len(analyzed_prompts),
+        "prompts_brand_recommended": len(brand_recommended_prompts),
+        "prompts_any_recommended": len(any_recommended_prompts),
+        "prompts_brand_mentioned": len(brand_mentioned_prompts),
+        "prompts_reviews_done": reviews_done_count,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 审核队列（去重：相同 answer_hash 只审一次）
 # ---------------------------------------------------------------------------

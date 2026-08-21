@@ -594,6 +594,7 @@ export default function App() {
   const [workflowData, setWorkflowData] = useState<any>(null);
   const [promptContext, setPromptContext] = useState<number | "ALL" | null>(null); // null=未选, "ALL"=全部, number=具体 prompt
   const [channelStrategy, setChannelStrategy] = useState<any>(null); // V3 平台×内容方向（数据分层推导）
+  const [promptOverview, setPromptOverview] = useState<any>(null); // 项目视图的 Prompt 概览统计
   const [strategyPlan, setStrategyPlan] = useState<any>(null);
   const [channelOptions, setChannelOptions] = useState<any[]>([]);
   const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
@@ -829,6 +830,12 @@ export default function App() {
     fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/channel-strategy`)
       .then((r) => r.json()).then(setChannelStrategy).catch(() => { /* 分析失败不阻塞渠道选择 */ });
   }, [projectId, workflowData]);
+  // 项目视图加载 Prompt 概览（单 Prompt 视图不显示概览）
+  useEffect(() => {
+    if (!projectId || activePromptId) { setPromptOverview(null); return; }
+    fetch(`/api/optimization/workflow/${projectId}/prompt-overview`)
+      .then((r) => r.json()).then(setPromptOverview).catch(() => { /* 概览失败不影响页面 */ });
+  }, [projectId, activePromptId, workflowData]);
   useEffect(() => {
     setRecommendationPromptId(null);
     setRecommendationData(null);
@@ -1502,7 +1509,18 @@ export default function App() {
               <Col><Alert type="info" showIcon message="以下为验证样本观察值，不代表总体品牌曝光概率。" /></Col>
             </Row>
           </Card>
-          {projectId && workflowData && <Card size="small" title={<Space><ShieldCheck size={18} />GEO 工作台 · Prompt #{workflowData.prompt_id}</Space>} extra={<Space>
+          {projectId && !activePromptId && promptOverview && <Card size="small" title={<Space><ShieldCheck size={18} />GEO 工作台 · Prompt 概览（项目视图）</Space>} extra={<Text type="secondary">选择单个 Prompt 查看其工作流</Text>}>
+            <Row gutter={[16, 16]}>
+              <Col xs={12} md={8} lg={4}><Statistic title="Prompt 总数" value={promptOverview.total_prompts} /></Col>
+              <Col xs={12} md={8} lg={4}><Statistic title="已采集" value={promptOverview.prompts_with_runs} suffix="个" /></Col>
+              <Col xs={12} md={8} lg={4}><Statistic title="已机器分析" value={promptOverview.prompts_analyzed} suffix="个" /></Col>
+              <Col xs={12} md={8} lg={4}><Statistic title="品牌被推荐" value={promptOverview.prompts_brand_recommended} suffix="个" /></Col>
+              <Col xs={12} md={8} lg={4}><Statistic title="答案含推荐（任意品牌）" value={promptOverview.prompts_any_recommended} suffix="个" /></Col>
+              <Col xs={12} md={8} lg={4}><Statistic title="品牌被提及" value={promptOverview.prompts_brand_mentioned} suffix="个" /></Col>
+              <Col xs={12} md={8} lg={4}><Statistic title="已审核完成" value={promptOverview.prompts_reviews_done} suffix="个" /></Col>
+            </Row>
+          </Card>}
+          {projectId && activePromptId && workflowData && <Card size="small" title={<Space><ShieldCheck size={18} />GEO 工作台 · Prompt #{workflowData.prompt_id}</Space>} extra={<Space>
             <Button size="small" onClick={()=>setPage("recommendation")}>决策诊断</Button>
             <Button size="small" onClick={()=>setPage("optimization")}>执行策略</Button>
             {workflowData.all_reviews_done

@@ -1099,6 +1099,18 @@ def workflow_confirm_decision(project_id: int, prompt_id: int, payload: dict, db
     return {"status": "OK", "step_key": step_key, "decision_status": decision}
 
 
+@router.get("/workflow/{project_id}/prompt-overview")
+def workflow_prompt_overview(project_id: int, db: Session = Depends(get_db)):
+    """项目级 Prompt 概览（项目视图的 GEO 工作台用）。"""
+    from app.models import Project
+    from app.modules.optimization.workflow import project_prompt_overview
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project_prompt_overview(db, project)
+
+
 @router.get("/workflow/{project_id}/{prompt_id}/channel-strategy")
 def workflow_channel_strategy(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
     """V3 平台×内容方向：基于当前答案信号分层（明确推荐上下文 → 选择理由上下文 → 普通引用分布）。"""

@@ -1123,6 +1123,53 @@ def workflow_channel_strategy(project_id: int, prompt_id: int, db: Session = Dep
     return channel_strategy(db, project, prompt_id)
 
 
+@router.post("/workflow/{project_id}/{prompt_id}/resolve-unresolved")
+def workflow_resolve_unresolved(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
+    """机器 Gap/Action 为 UNRESOLVED 时的人工决策：
+    - decision=OVERRIDE：人工指定干预方向继续流程（记录理由）
+    - decision=SHELVE：标记搁置并结束该 Prompt 的工作流
+    """
+    from datetime import datetime
+
+    from app.models import Project, WorkflowConfirmation
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    decision = payload.get("decision")
+    reason = (payload.get("reason") or "").strip()
+
+    def _upsert(step_key: str, status: str, note: str) -> None:
+        row = db.query(WorkflowConfirmation).filter(
+            WorkflowConfirmation.project_id == project_id,
+            WorkflowConfirmation.prompt_id == prompt_id,
+            WorkflowConfirmation.step_key == step_key,
+        ).first()
+        if row is None:
+            row = WorkflowConfirmation(project_id=project_id, prompt_id=prompt_id, step_key=step_key)
+            db.add(row)
+        row.decision_status = status
+        row.decision_note = note
+        row.reviewer = payload.get("reviewer", "human")
+        row.reviewed_at = datetime.utcnow()
+
+    if decision == "OVERRIDE":
+        goal = payload.get("intervention_goal") or "EVIDENCE_STRENGTHEN"
+        if not reason:
+            raise HTTPException(status_code=400, detail="人工指定方向必须填写理由")
+        note = f"人工指定方向（机器 UNRESOLVED）：{goal}。理由：{reason}"
+        _upsert("gap", "CONFIRMED", note)
+        _upsert("action", "CONFIRMED", note)
+        db.commit()
+        return {"status": "OVERRIDDEN", "intervention_goal": goal, "reason": reason}
+    if decision == "SHELVE":
+        _upsert("gap", "SHELVED", reason or "机器无法确定缺口类型，人工搁置")
+        db.commit()
+        return {"status": "SHELVED", "reason": reason}
+    raise HTTPException(status_code=400, detail="decision 仅支持 OVERRIDE / SHELVE")
+
+
 @router.post("/workflow/{project_id}/{prompt_id}/select-channel")
 def workflow_select_channel(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
     """渠道选择 → 创建 Experiment 草案。"""

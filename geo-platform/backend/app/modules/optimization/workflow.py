@@ -171,6 +171,20 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     gap_confirmed = "gap" in confirmed
     action_confirmed = "action" in confirmed
 
+    # 人工搁置（机器 UNRESOLVED 且人工选择搁置结束）
+    shelved_row = (
+        db.query(WorkflowConfirmation)
+        .filter(
+            WorkflowConfirmation.project_id == project.id,
+            WorkflowConfirmation.prompt_id == prompt_id,
+            WorkflowConfirmation.step_key == "gap",
+            WorkflowConfirmation.decision_status == "SHELVED",
+        )
+        .first()
+    )
+    shelved = shelved_row is not None
+    shelved_note = shelved_row.decision_note if shelved_row else ""
+
     # 实验状态：渠道选择创建 Experiment 草案（Issue→Action→Experiment 链路）
     experiments = (
         db.query(OptimizationExperiment)
@@ -198,8 +212,8 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         {"key": "evidence", "label": "Evidence 分析", "done": bool(supports), "detail": f"{len(supports)} 条 SUPPORTS 对齐" if supports else "无 SUPPORTS 对齐（AI 理由无来源证据支持）"},
         {"key": "evidence_review", "label": "Evidence 人工确认", "done": evidence_review_done, "detail": f"{supports_reviewed}/{len(supports)} 条已审" if supports else "无需审核"},
         {"key": "product_truth", "label": "目标品牌能力确认", "done": bool(truths) and not truths_pending, "detail": f"{len(truths)-len(truths_pending)}/{len(truths)} 条已确认" if truths else "0 条"},
-        {"key": "gap", "label": "Gap Diagnosis", "done": gap_confirmed, "detail": "已人工确认" if gap_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成")},
-        {"key": "action", "label": "Action Candidate", "done": action_confirmed, "detail": "已人工确认" if action_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待 Gap 后生成")},
+        {"key": "gap", "label": "Gap Diagnosis", "done": gap_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if gap_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成"))},
+        {"key": "action", "label": "Action Candidate", "done": action_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if action_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待 Gap 后生成"))},
         {"key": "experiment", "label": "实验", "done": experiment_done, "detail": experiment_detail},
     ]
     pending = sum(1 for s in steps if not s["done"] and s["key"] not in {"gap", "action", "experiment", "evidence", "answer_semantic"})
@@ -208,6 +222,8 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         "prompt_id": prompt_id,
         "steps": steps,
         "pending_review_steps": pending,
+        "shelved": shelved,
+        "shelved_note": shelved_note,
         "all_reviews_done": pending == 0,
     }
 

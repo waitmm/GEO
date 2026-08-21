@@ -594,6 +594,8 @@ export default function App() {
   const [workflowData, setWorkflowData] = useState<any>(null);
   const [promptContext, setPromptContext] = useState<number | "ALL" | null>(null); // null=未选, "ALL"=全部, number=具体 prompt
   const [channelStrategy, setChannelStrategy] = useState<any>(null); // V3 平台×内容方向（数据分层推导）
+  const [resolveGoal, setResolveGoal] = useState<string>("EVIDENCE_STRENGTHEN"); // UNRESOLVED 人工指定方向
+  const [resolveReason, setResolveReason] = useState<string>(""); // UNRESOLVED 人工理由
   const [promptOverview, setPromptOverview] = useState<any>(null); // 项目视图的 Prompt 概览统计
   const [strategyPlan, setStrategyPlan] = useState<any>(null);
   const [channelOptions, setChannelOptions] = useState<any[]>([]);
@@ -1523,19 +1525,21 @@ export default function App() {
           {projectId && activePromptId && workflowData && <Card size="small" title={<Space><ShieldCheck size={18} />GEO 工作台 · Prompt #{workflowData.prompt_id}</Space>} extra={<Space>
             <Button size="small" onClick={()=>setPage("recommendation")}>决策诊断</Button>
             <Button size="small" onClick={()=>setPage("optimization")}>执行策略</Button>
-            {workflowData.all_reviews_done
-              ? <Button type="primary" size="small" loading={loading} onClick={async()=>{
-                  setLoading(true);
-                  try{
-                    const result = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/continue`,{method:"POST"})).json();
-                    setWorkflowData({...workflowData, continueResult: result});
-                    message.success("Gap 与 Action 已生成");
-                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
-                    setWorkflowData({...wf, continueResult: result});
-                  }catch(e:any){message.error(e.message||"继续分析失败，请确认审核已全部完成")}
-                  finally{setLoading(false)}
-                }}>继续分析</Button>
-              : <Button type="primary" size="small" danger onClick={()=>setWorkflowReviewOpen(true)}>开始审核（{workflowData.pending_review_steps} 步待处理）</Button>}
+            {workflowData.shelved
+              ? <Tag color="volcano">已人工搁置</Tag>
+              : workflowData.all_reviews_done
+                ? <Button type="primary" size="small" loading={loading} onClick={async()=>{
+                    setLoading(true);
+                    try{
+                      const result = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/continue`,{method:"POST"})).json();
+                      setWorkflowData({...workflowData, continueResult: result});
+                      message.success("Gap 与 Action 已生成");
+                      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
+                      setWorkflowData({...wf, continueResult: result});
+                    }catch(e:any){message.error(e.message||"继续分析失败，请确认审核已全部完成")}
+                    finally{setLoading(false)}
+                  }}>继续分析</Button>
+                : <Button type="primary" size="small" danger onClick={()=>setWorkflowReviewOpen(true)}>开始审核（{workflowData.pending_review_steps} 步待处理）</Button>}
           </Space>}>
             <Row gutter={[8,8]}>
               {workflowData.steps.map((s:any)=><Col key={s.key} xs={12} md={8} lg={4}>
@@ -1570,6 +1574,38 @@ export default function App() {
                   ? (workflowData.continueResult.action?.note || "")
                   : workflowData.continueResult.action?.target_claim} />
             </Space>}
+            {workflowData.shelved && <Alert type="warning" showIcon
+              message={`该 Prompt 已人工搁置：${workflowData.shelved_note || "机器无法确定缺口类型"}`}
+              description="补充采集数据后可重新运行机器分析。" />}
+            {workflowData.continueResult?.action?.intervention_goal==="UNRESOLVED" && !workflowData.shelved && <Alert type="warning" showIcon
+              message="人工决策：机器无法确定干预方向"
+              description={<Space direction="vertical" size={4} style={{width:"100%"}}>
+                <Space wrap>
+                  <Text>干预方向：</Text>
+                  <Select size="small" style={{minWidth:220}} value={resolveGoal} onChange={setResolveGoal}
+                    options={[{value:"EVIDENCE_STRENGTHEN",label:"证据强化 (EVIDENCE_STRENGTHEN)"}]} />
+                  <Input size="small" style={{width:320}} placeholder="理由（必填，记录在案）" value={resolveReason} onChange={(e)=>setResolveReason(e.target.value)} />
+                </Space>
+                <Space>
+                  <Button size="small" type="primary" onClick={async()=>{
+                    if (!resolveReason.trim()) { message.warning("请填写人工指定方向的理由"); return; }
+                    try {
+                      await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/resolve-unresolved`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"OVERRIDE",intervention_goal:resolveGoal,reason:resolveReason.trim()})});
+                      message.success(`已按人工指定方向「${resolveGoal}」继续`);
+                      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
+                      setWorkflowData({...wf, continueResult: {...workflowData.continueResult, action: {...workflowData.continueResult.action, intervention_goal: resolveGoal, target_claim: `人工指定方向：${resolveGoal}。理由：${resolveReason.trim()}`}}});
+                    } catch(e:any) { message.error(e.message || "操作失败"); }
+                  }}>按此方向继续</Button>
+                  <Button size="small" onClick={async()=>{
+                    try {
+                      await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/resolve-unresolved`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"SHELVE",reason:resolveReason.trim()})});
+                      message.success("已标记搁置");
+                      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
+                      setWorkflowData({...wf, continueResult: workflowData.continueResult});
+                    } catch(e:any) { message.error(e.message || "操作失败"); }
+                  }}>标记搁置并结束</Button>
+                </Space>
+              </Space>} />}
             {/* 渠道选择 + 内容大纲（Action 确认后） */}
             {workflowData.steps.find((s:any)=>s.key==="action")?.done && <Card size="small" title="渠道选择与内容大纲">
               {!workflowData.experimentDraft ? <Space direction="vertical" size={8} style={{width:"100%"}}>

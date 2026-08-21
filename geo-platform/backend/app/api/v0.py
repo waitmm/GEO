@@ -381,19 +381,86 @@ def update_prompt(project_id: int, prompt_id: int, payload: PromptUpdate, db: Se
     return prompt
 
 
+def _cascade_delete_prompt(db: Session, prompt: Prompt) -> dict:
+    """级联删除 Prompt 及其全部关联数据（采集 Run、引用、事件、对齐、诊断、实验等）。"""
+    from app.models import (
+        AnswerClaim, AnswerSemanticFact, AtomicClaim, BrandCapabilityClaim, BrandMention,
+        DecisionEvidenceAdoption, DecisionGapDiagnosis, DecisionSelectionCriterion,
+        EvidenceAlignment, InterventionPlan, OptimizationAction, OptimizationEvidencePackage,
+        OptimizationExperiment, OptimizationHypothesis, OptimizationIssue, OptimizationIssueRun,
+        OptimizationStrategyCandidate, PageSnapshot, PassageAlignment, PromptAnalysisRun,
+        PromptDailyReport, RecommendationClaim, RecommendationEvent, RecommendationEvidenceLink,
+        RecommendationIntelligenceSnapshot, RecommendationReasonClaim, ReferenceSource,
+        ReleaseAuditRecord, RetrievalCandidate, RunArtifact, WorkflowConfirmation,
+    )
+
+    pid = prompt.id
+    run_ids = [r[0] for r in db.query(BrowserMonitorRun.id).filter(BrowserMonitorRun.prompt_id == pid).all()]
+    snapshot_ids = [r[0] for r in db.query(RecommendationIntelligenceSnapshot.id).filter(RecommendationIntelligenceSnapshot.prompt_id == pid).all()]
+    issue_ids = [r[0] for r in db.query(OptimizationIssue.id).filter(OptimizationIssue.prompt_id == pid).all()]
+    action_ids = [r[0] for r in db.query(OptimizationAction.id).filter(OptimizationAction.issue_id.in_(issue_ids)).all()] if issue_ids else []
+    experiment_ids = [r[0] for r in db.query(OptimizationExperiment.id).filter(OptimizationExperiment.action_id.in_(action_ids)).all()] if action_ids else []
+    package_ids = [r[0] for r in db.query(OptimizationEvidencePackage.id).filter(OptimizationEvidencePackage.prompt_id == pid).all()]
+
+    # 1. run 级关联（先于 run 删除）
+    if run_ids:
+        for model in (ReferenceSource, RetrievalCandidate, RunArtifact, BrandMention,
+                      AnswerClaim, AtomicClaim, PassageAlignment):
+            db.query(model).filter(model.run_id.in_(run_ids)).delete(synchronize_session=False)
+        db.query(OptimizationIssueRun).filter(OptimizationIssueRun.run_id.in_(run_ids)).delete(synchronize_session=False)
+        db.query(Observation).filter(Observation.run_id.in_(run_ids)).delete(synchronize_session=False)
+    # 2. prompt 级分析数据
+    for model in (AnswerSemanticFact, BrandCapabilityClaim, RecommendationClaim, RecommendationReasonClaim,
+                  DecisionEvidenceAdoption, DecisionSelectionCriterion, DecisionGapDiagnosis,
+                  RecommendationIntelligenceSnapshot, RecommendationEvent, EvidenceAlignment,
+                  WorkflowConfirmation, PromptAnalysisRun, PromptDailyReport, InterventionPlan):
+        db.query(model).filter(model.prompt_id == pid).delete(synchronize_session=False)
+    # 3. snapshot 级关联
+    if snapshot_ids:
+        db.query(RecommendationEvidenceLink).filter(RecommendationEvidenceLink.snapshot_id.in_(snapshot_ids)).delete(synchronize_session=False)
+    # 4. 策略/假设（先于 package/experiment 删除）
+    from sqlalchemy import or_
+    if package_ids or experiment_ids:
+        db.query(OptimizationStrategyCandidate).filter(or_(
+            OptimizationStrategyCandidate.evidence_package_id.in_(package_ids or [-1]),
+            OptimizationStrategyCandidate.source_package_id.in_(package_ids or [-1]),
+            OptimizationStrategyCandidate.experiment_id.in_(experiment_ids or [-1]),
+        )).delete(synchronize_session=False)
+    if issue_ids or package_ids or experiment_ids:
+        db.query(OptimizationHypothesis).filter(or_(
+            OptimizationHypothesis.issue_id.in_(issue_ids or [-1]),
+            OptimizationHypothesis.evidence_package_id.in_(package_ids or [-1]),
+            OptimizationHypothesis.experiment_id.in_(experiment_ids or [-1]),
+        )).delete(synchronize_session=False)
+    # 5. 实验链（先于 action/issue 删除）
+    if experiment_ids:
+        db.query(PageSnapshot).filter(PageSnapshot.experiment_id.in_(experiment_ids)).delete(synchronize_session=False)
+        db.query(ReleaseAuditRecord).filter(ReleaseAuditRecord.experiment_id.in_(experiment_ids)).delete(synchronize_session=False)
+        db.query(OptimizationExperiment).filter(OptimizationExperiment.id.in_(experiment_ids)).delete(synchronize_session=False)
+    if action_ids:
+        db.query(OptimizationAction).filter(OptimizationAction.id.in_(action_ids)).delete(synchronize_session=False)
+    if issue_ids:
+        db.query(OptimizationIssueRun).filter(OptimizationIssueRun.issue_id.in_(issue_ids)).delete(synchronize_session=False)
+        db.query(OptimizationIssue).filter(OptimizationIssue.id.in_(issue_ids)).delete(synchronize_session=False)
+    if package_ids:
+        db.query(OptimizationEvidencePackage).filter(OptimizationEvidencePackage.id.in_(package_ids)).delete(synchronize_session=False)
+    # 6. 采集 Run 与观测
+    if run_ids:
+        db.query(BrowserMonitorRun).filter(BrowserMonitorRun.id.in_(run_ids)).delete(synchronize_session=False)
+    db.query(Observation).filter(Observation.prompt_id == pid).delete(synchronize_session=False)
+    # 7. Prompt 本身
+    db.delete(prompt)
+    db.commit()
+    return {"id": pid, "runs_deleted": len(run_ids), "snapshots_deleted": len(snapshot_ids), "experiments_deleted": len(experiment_ids)}
+
+
 @router.delete("/projects/{project_id}/prompts/{prompt_id}")
 def delete_prompt(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
     prompt = db.get(Prompt, prompt_id)
     if not prompt or prompt.project_id != project_id:
         raise HTTPException(status_code=404, detail="Prompt not found")
-    # Check dependencies
-    run_count = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.prompt_id == prompt_id).count()
-    obs_count = db.query(Observation).filter(Observation.prompt_id == prompt_id).count()
-    if run_count > 0 or obs_count > 0:
-        raise HTTPException(status_code=400, detail=f"无法删除：该 Prompt 有 {run_count} 个采集 Run 和 {obs_count} 个观测记录，请先删除关联数据")
-    db.delete(prompt)
-    db.commit()
-    return {"deleted": True, "id": prompt_id}
+    result = _cascade_delete_prompt(db, prompt)
+    return {"deleted": True, **result}
 
 
 @router.post("/projects/{project_id}/prompts/batch-delete")
@@ -401,27 +468,13 @@ def batch_delete_prompts(project_id: int, payload: dict, db: Session = Depends(g
     prompt_ids = payload.get("ids", [])
     if not prompt_ids:
         raise HTTPException(status_code=400, detail="请提供要删除的 Prompt ID 列表")
-    # Preflight: check ALL prompts before deleting any
-    blocked = []
+    deleted = []
     for pid in prompt_ids:
         prompt = db.get(Prompt, pid)
         if not prompt or prompt.project_id != project_id:
-            blocked.append(f"#{pid}: 不存在或不属于该项目")
             continue
-        runs = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.prompt_id == pid).count()
-        obs = db.query(Observation).filter(Observation.prompt_id == pid).count()
-        if runs > 0 or obs > 0:
-            blocked.append(f"#{pid}: 有 {runs} 个采集 Run / {obs} 个观测记录")
-    if blocked:
-        raise HTTPException(
-            status_code=400,
-            detail=f"批量删除失败，以下 Prompt 无法删除：{'；'.join(blocked)}。请先清理关联数据后再试。",
-        )
-    # All clear — delete all
-    for pid in prompt_ids:
-        db.delete(db.get(Prompt, pid))
-    db.commit()
-    return {"deleted": len(prompt_ids)}
+        deleted.append(_cascade_delete_prompt(db, prompt))
+    return {"deleted": deleted}
 
 
 @router.get("/platforms")

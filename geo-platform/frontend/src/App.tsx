@@ -3599,7 +3599,7 @@ export default function App() {
       width={820}
     >
       <Space direction="vertical" size={12} style={{width:"100%"}}>
-        <Alert type="info" showIcon message="机器分析已完成，请逐项人工确认。相同答案只审核一次，确认后自动应用到全部 Run。" />
+        {reviewQueue?.status !== "NOT_ANALYZED" && <Alert type="info" showIcon message="机器分析已完成，请逐项人工确认。相同答案只审核一次，确认后自动应用到全部 Run。" />}
         {!reviewQueue && <Button type="primary" loading={loading} onClick={async()=>{
           setLoading(true);
           try{
@@ -3633,7 +3633,11 @@ export default function App() {
                       setReviewQueue(q);
                       const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/status`)).json();
                       setWorkflowData(wf);
-                      message.success("机器分析已产出审核项，可开始审核；Claims 与对齐仍在后台继续");
+                      if ((q.unique_events || []).length === 0 && (q.alignments || []).length === 0) {
+                        message.info("机器分析完成：该 Prompt 的答案中没有推荐内容，无审核项；Claims 与对齐仍在后台继续");
+                      } else {
+                        message.success("机器分析已产出审核项，可开始审核；Claims 与对齐仍在后台继续");
+                      }
                       return;
                     }
                   } catch { /* 网络抖动继续轮询 */ }

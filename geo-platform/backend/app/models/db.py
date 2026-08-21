@@ -141,6 +141,21 @@ class WorkflowConfirmation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class PromptAnalysisRun(Base):
+    """机器分析运行记录：区分「分析过但 0 事件」与「从未分析」。"""
+
+    __tablename__ = "prompt_analysis_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    prompt_id: Mapped[int] = mapped_column(Integer, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="COMPLETED")
+    events_created: Mapped[int] = mapped_column(Integer, default=0)
+    runs_associated: Mapped[int] = mapped_column(Integer, default=0)
+    errors_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class InterventionPlan(Base):
     """干预执行计划（一个 Prompt 取最新一条）。"""
 

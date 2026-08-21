@@ -1487,6 +1487,19 @@ def _run_analysis_pipeline(project_id: int, prompt_id: int, run_ids: list[int]) 
         )
         run_source_claim_extraction(db, project, prompt_id, run_ids)
         run_evidence_alignment(db, project, prompt_id, run_ids)
+        # 落分析运行记录：区分「分析过但 0 事件」与「从未分析」
+        from app.models import PromptAnalysisRun
+        from app.services.serialization import dumps as _dumps
+
+        db.add(PromptAnalysisRun(
+            project_id=project_id,
+            prompt_id=prompt_id,
+            status="COMPLETED",
+            events_created=layer1.get("events_created", 0),
+            runs_associated=layer1.get("runs_associated", 0),
+            errors_json=_dumps(layer1.get("errors", [])),
+        ))
+        db.commit()
         logger.info(
             "机器分析后台任务完成 project=%s prompt=%s layer1=%s",
             project_id, prompt_id, layer1,

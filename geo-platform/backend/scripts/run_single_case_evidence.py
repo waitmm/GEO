@@ -43,10 +43,21 @@ def main() -> int:
     parser.add_argument("--run-ids", type=str, required=True)
     parser.add_argument("--provider", default="deepseek")
     parser.add_argument("--stage", default="all", choices=["1", "2", "3", "4", "5", "gap", "all"])
+    parser.add_argument(
+        "--use-answer-binding-v1-1",
+        action="store_true",
+        help="Phase 1 小范围切换：正式 Evidence Chain 消费 AnswerUnit/AnswerDecisionBinding reason 输入。",
+    )
+    parser.add_argument(
+        "--doc-id-filter",
+        default="",
+        help="仅对指定 SourceDocument IDs 跑 SourceClaim/Alignment，逗号分隔；用于小范围 smoke。",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     run_ids = [int(x.strip()) for x in args.run_ids.split(",") if x.strip()]
+    doc_id_filter = [int(x.strip()) for x in args.doc_id_filter.split(",") if x.strip()]
     engine.dispose()
     db = SessionLocal()
     project = db.get(Project, args.project_id)
@@ -63,6 +74,8 @@ def main() -> int:
         "provider": args.provider,
         "dry_run": args.dry_run,
         "stage": args.stage,
+        "use_answer_binding_v1_1": args.use_answer_binding_v1_1,
+        "doc_id_filter": doc_id_filter,
         "generated_at": datetime.utcnow().isoformat(),
     }
     print(f"Plan: {plan}")
@@ -85,7 +98,14 @@ def main() -> int:
         _dump_artifact(out_dir / "source_quality.json", r)
 
     if stage in {"3", "all"}:
-        r = run_reason_driven_retrieval(db, project, args.prompt_id, run_ids)
+        r = run_reason_driven_retrieval(
+            db,
+            project,
+            args.prompt_id,
+            run_ids,
+            doc_id_filter=doc_id_filter or None,
+            include_answer_binding_reasons=args.use_answer_binding_v1_1,
+        )
         results["layer3_retrieval"] = {
             "status": r["status"], "unique_reasons": r["unique_reasons"],
             "passages_retrieved": r["passages_retrieved"],
@@ -94,13 +114,27 @@ def main() -> int:
         _dump_artifact(out_dir / "source_selection.json", r)
 
     if stage in {"4", "all"}:
-        r = run_source_claim_extraction(db, project, args.prompt_id, run_ids)
+        r = run_source_claim_extraction(
+            db,
+            project,
+            args.prompt_id,
+            run_ids,
+            include_answer_binding_reasons=args.use_answer_binding_v1_1,
+            doc_id_filter=doc_id_filter or None,
+        )
         results["layer4_source_claims"] = r
         print(f"Layer4: {r}")
         _dump_artifact(out_dir / "source_claims.json", r)
 
     if stage in {"5", "all"}:
-        r = run_evidence_alignment(db, project, args.prompt_id, run_ids)
+        r = run_evidence_alignment(
+            db,
+            project,
+            args.prompt_id,
+            run_ids,
+            include_answer_binding_reasons=args.use_answer_binding_v1_1,
+            doc_id_filter=doc_id_filter or None,
+        )
         results["layer5_alignments"] = r
         print(f"Layer5: {r}")
         _dump_artifact(out_dir / "evidence_alignments.json", r)

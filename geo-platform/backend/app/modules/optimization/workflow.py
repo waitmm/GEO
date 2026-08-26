@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,22 @@ from app.models import (
     WorkflowConfirmation,
 )
 from app.services.serialization import dumps, loads
+
+REVIEWABLE_RECOMMENDATION_EVENT_STATUSES = {
+    "MACHINE_GROUNDED",
+    "MACHINE_CANDIDATE",
+    "HUMAN_CONFIRMED",
+    "HUMAN_REJECTED",
+}
+PENDING_RECOMMENDATION_EVENT_STATUSES = {
+    "MACHINE_GROUNDED",
+    "MACHINE_CANDIDATE",
+}
+VALID_DECISION_EVENT_STATUSES = {
+    "MACHINE_GROUNDED",
+    "MACHINE_CANDIDATE",
+    "HUMAN_CONFIRMED",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +120,68 @@ def reject_competitor(db: Session, project: Project, name: str) -> dict:
     return {"status": "REJECTED", "id": row.id}
 
 
+def resolve_decision_market_entity(
+    db: Session,
+    project: Project,
+    prompt_id: int,
+    entity_text: str,
+    resolution: str,
+    reviewer: str = "human",
+) -> dict:
+    """人工修正答案决策识别中的未知对象。
+
+    这是第 2 步「答案决策识别」的修正入口：把机器校验失败但答案里
+    确实出现的推荐对象，明确为目标品牌、竞品，或排除出决策对象。
+    """
+    entity = (entity_text or "").strip()
+    normalized_resolution = (resolution or "").strip().upper()
+    if not entity:
+        return {"status": "EMPTY_ENTITY", "updated_events": 0}
+    if normalized_resolution not in {"TARGET_BRAND", "CONFIRMED_COMPETITOR", "REJECTED"}:
+        return {"status": "INVALID_RESOLUTION", "updated_events": 0}
+
+    if normalized_resolution == "TARGET_BRAND":
+        aliases = loads(project.brand_aliases_json, [])
+        if entity != project.brand_name and entity not in aliases:
+            aliases.append(entity)
+            project.brand_aliases_json = dumps(aliases)
+    elif normalized_resolution == "CONFIRMED_COMPETITOR":
+        db.query(CompetitorRejection).filter(
+            CompetitorRejection.project_id == project.id,
+            CompetitorRejection.entity_name == entity,
+        ).delete()
+        if not db.query(Competitor).filter(
+            Competitor.project_id == project.id,
+            Competitor.name == entity,
+        ).first():
+            db.add(Competitor(project_id=project.id, name=entity, aliases_json="[]", website_url=""))
+    else:
+        reject_competitor(db, project, entity)
+
+    events = db.query(RecommendationEvent).filter(
+        RecommendationEvent.project_id == project.id,
+        RecommendationEvent.prompt_id == prompt_id,
+        RecommendationEvent.entity_text == entity,
+    ).all()
+    next_status = "HUMAN_REJECTED" if normalized_resolution == "REJECTED" else "HUMAN_CONFIRMED"
+    now = datetime.utcnow()
+    for event in events:
+        event.review_status = next_status
+        event.reviewer = reviewer
+        event.reviewed_at = now
+        event.entity_type = "BRAND" if normalized_resolution != "REJECTED" else event.entity_type
+        payload = loads(event.human_payload_json, {})
+        payload["decision_entity_resolution"] = normalized_resolution
+        event.human_payload_json = dumps(payload)
+
+    db.commit()
+    return {
+        "status": normalized_resolution,
+        "entity_text": entity,
+        "updated_events": len(events),
+    }
+
+
 # ---------------------------------------------------------------------------
 # 工作流状态
 # ---------------------------------------------------------------------------
@@ -117,12 +196,27 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     ]
     total_runs = len(run_ids) or 1
 
-    events = db.query(RecommendationEvent).filter(
+    all_events = db.query(RecommendationEvent).filter(
         RecommendationEvent.project_id == project.id,
         RecommendationEvent.prompt_id == prompt_id,
     ).all()
-    unique_event_keys = {(e.answer_hash, e.entity_text, e.speech_act) for e in events}
-    events_reviewed = sum(1 for e in events if e.review_status in {"HUMAN_CONFIRMED", "HUMAN_REJECTED"})
+    reviewable_events = [
+        e for e in all_events
+        if e.review_status in REVIEWABLE_RECOMMENDATION_EVENT_STATUSES
+    ]
+    valid_decision_events = [
+        e for e in all_events
+        if e.review_status in VALID_DECISION_EVENT_STATUSES
+    ]
+    unique_event_keys = {(e.answer_hash, e.entity_text, e.speech_act) for e in valid_decision_events}
+    answer_semantic_done = len(unique_event_keys) >= 1
+    reviewable_event_keys = {(e.answer_hash, e.entity_text, e.speech_act) for e in reviewable_events}
+    reviewed_event_keys = {
+        (e.answer_hash, e.entity_text, e.speech_act)
+        for e in reviewable_events
+        if e.review_status in {"HUMAN_CONFIRMED", "HUMAN_REJECTED"}
+    }
+    validation_failed_events = [e for e in all_events if e.review_status == "VALIDATION_FAILED"]
 
     supports = db.query(EvidenceAlignment).filter(
         EvidenceAlignment.project_id == project.id,
@@ -146,14 +240,17 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         .order_by(PromptAnalysisRun.id.desc())
         .first()
     )
-    analyzed = bool(events) or analysis_run is not None
+    analyzed = bool(all_events) or analysis_run is not None
 
     # 无 SUPPORTS 对齐时证据审核视为已通过（没有可审项，不阻塞流程）
     evidence_review_done = supports_reviewed >= len(supports)
-    # 0 事件（答案中无推荐）时事件审核视为已通过（没有可审项，不阻塞流程）
-    event_review_done = bool(events) and events_reviewed >= len(unique_event_keys) or analyzed and not events
+    # 只有可人工审核的事件才进入审核分母；VALIDATION_FAILED 等机器失败事件不能造成空队列死循环。
+    event_review_done = (
+        bool(reviewable_events) and len(reviewed_event_keys) >= len(reviewable_event_keys)
+    ) or (analyzed and not reviewable_events)
     reviews_done = (
         analyzed
+        and answer_semantic_done
         and event_review_done
         and evidence_review_done
         and bool(truths) and not truths_pending
@@ -197,23 +294,23 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     if experiments:
         latest = experiments[0]
         experiment_done = latest.status in {"RELEASED", "RETESTED", "CONCLUDED"}
-        experiment_detail = f"Experiment #{latest.id} · {latest.status}"
+        experiment_detail = f"实验 #{latest.id} · {latest.status}"
     elif action_confirmed:
         experiment_done = False
-        experiment_detail = "可创建 Experiment 草案（选择渠道）"
+        experiment_detail = "可创建实验草案（选择渠道）"
     else:
         experiment_done = False
-        experiment_detail = "待 Action 确认后进入"
+        experiment_detail = "待动作确认后进入"
 
     steps = [
         {"key": "collection", "label": "数据采集", "done": total_runs >= 1, "detail": f"{total_runs} Runs"},
-        {"key": "answer_semantic", "label": "推荐行为分析", "done": len(unique_event_keys) >= 1, "detail": f"{len(unique_event_keys)} 组独特事件" if events else (f"已分析：0 组独特事件（答案中无推荐）" if analysis_run else "未分析")},
-        {"key": "event_review", "label": "推荐行为人工确认", "done": event_review_done, "detail": f"{min(events_reviewed, len(unique_event_keys))}/{len(unique_event_keys)} 组已审" if events else ("0 组事件，无需审核" if analysis_run else "待分析")},
-        {"key": "evidence", "label": "Evidence 分析", "done": bool(supports), "detail": f"{len(supports)} 条 SUPPORTS 对齐" if supports else "无 SUPPORTS 对齐（AI 理由无来源证据支持）"},
-        {"key": "evidence_review", "label": "Evidence 人工确认", "done": evidence_review_done, "detail": f"{supports_reviewed}/{len(supports)} 条已审" if supports else "无需审核"},
+        {"key": "answer_semantic", "label": "推荐行为分析", "done": answer_semantic_done, "detail": f"{len(unique_event_keys)} 组有效选择事件" if unique_event_keys else (f"已分析：0 组有效选择事件（{len(validation_failed_events)} 条机器校验未通过）" if validation_failed_events else (f"已分析：0 组有效选择事件（答案中无推荐或已被人工排除）" if analyzed else "未分析"))},
+        {"key": "event_review", "label": "推荐行为人工确认", "done": event_review_done, "detail": f"{min(len(reviewed_event_keys), len(reviewable_event_keys))}/{len(reviewable_event_keys)} 组已审" if reviewable_events else ("无可审核事件，无需审核" if analyzed else "待分析")},
+        {"key": "evidence", "label": "证据分析", "done": bool(supports), "detail": f"{len(supports)} 条支持对齐" if supports else "无支持对齐（AI 理由无来源证据支持）"},
+        {"key": "evidence_review", "label": "证据人工确认", "done": evidence_review_done, "detail": f"{supports_reviewed}/{len(supports)} 条已审" if supports else "无需审核"},
         {"key": "product_truth", "label": "目标品牌能力确认", "done": bool(truths) and not truths_pending, "detail": f"{len(truths)-len(truths_pending)}/{len(truths)} 条已确认" if truths else "0 条"},
-        {"key": "gap", "label": "Gap Diagnosis", "done": gap_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if gap_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成"))},
-        {"key": "action", "label": "Action Candidate", "done": action_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if action_confirmed else ("可生成（点「继续分析」）" if reviews_done else "待 Gap 后生成"))},
+        {"key": "gap", "label": "缺口诊断", "done": gap_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if gap_confirmed else ("待答案决策识别修正" if analyzed and not answer_semantic_done else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成")))},
+        {"key": "action", "label": "动作候选", "done": action_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if action_confirmed else ("待答案决策识别修正" if analyzed and not answer_semantic_done else ("可生成（点「继续分析」）" if reviews_done else "待缺口后生成")))},
         {"key": "experiment", "label": "实验", "done": experiment_done, "detail": experiment_detail},
     ]
     pending = sum(1 for s in steps if not s["done"] and s["key"] not in {"gap", "action", "experiment", "evidence", "answer_semantic"})
@@ -225,6 +322,131 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         "shelved": shelved,
         "shelved_note": shelved_note,
         "all_reviews_done": pending == 0,
+        "answer_semantic_done": answer_semantic_done,
+        "ready_to_continue": reviews_done,
+    }
+
+
+def build_continue_review_context(
+    db: Session,
+    project: Project,
+    prompt_id: int,
+    run_ids: list[int],
+    *,
+    limit: int = 12,
+) -> dict:
+    """Return raw answer context for human verification before overriding an unresolved decision."""
+    runs = (
+        db.query(BrowserMonitorRun)
+        .filter(
+            BrowserMonitorRun.project_id == project.id,
+            BrowserMonitorRun.prompt_id == prompt_id,
+            BrowserMonitorRun.id.in_(run_ids),
+        )
+        .order_by(BrowserMonitorRun.sample_index.asc(), BrowserMonitorRun.id.asc())
+        .all()
+    )
+    events = (
+        db.query(RecommendationEvent)
+        .filter(
+            RecommendationEvent.project_id == project.id,
+            RecommendationEvent.prompt_id == prompt_id,
+            RecommendationEvent.run_id.in_(run_ids),
+        )
+        .order_by(RecommendationEvent.run_id.asc(), RecommendationEvent.id.asc())
+        .all()
+    )
+    status_counts = Counter(event.review_status or "UNKNOWN" for event in events)
+    target_aliases = {
+        item.strip()
+        for item in [project.brand_name, *loads(project.brand_aliases_json, [])]
+        if item and item.strip()
+    }
+    competitors = db.query(Competitor).filter(Competitor.project_id == project.id).all()
+    competitor_aliases: dict[str, str] = {}
+    for competitor in competitors:
+        names = [competitor.name, *loads(competitor.aliases_json, [])]
+        for name in names:
+            if name and name.strip():
+                competitor_aliases[name.strip()] = competitor.name
+
+    entities_by_run: dict[int, dict[str, dict]] = defaultdict(dict)
+    for event in events:
+        entity = (event.entity_text or "").strip()
+        if not entity:
+            continue
+        if any(alias and alias in entity for alias in target_aliases):
+            relation = "TARGET_BRAND"
+            relation_label = "目标品牌"
+        else:
+            matched_competitor = next(
+                (canonical for alias, canonical in competitor_aliases.items() if alias and alias in entity),
+                "",
+            )
+            if matched_competitor:
+                relation = "CONFIRMED_COMPETITOR"
+                relation_label = "已确认竞品"
+                entity = matched_competitor
+            else:
+                relation = "UNCONFIRMED_ENTITY"
+                relation_label = "待确认对象"
+        row = entities_by_run[event.run_id].setdefault(entity, {
+            "entity_text": entity,
+            "relation": relation,
+            "relation_label": relation_label,
+            "speech_acts": set(),
+            "review_statuses": set(),
+        })
+        row["speech_acts"].add(event.speech_act)
+        row["review_statuses"].add(event.review_status or "UNKNOWN")
+
+    answer_samples = []
+    for run in runs[:limit]:
+        answer_text = (run.answer_text or "").strip()
+        detected_entities = []
+        for entity_row in entities_by_run.get(run.id, {}).values():
+            detected_entities.append({
+                "entity_text": entity_row["entity_text"],
+                "relation": entity_row["relation"],
+                "relation_label": entity_row["relation_label"],
+                "speech_acts": sorted(entity_row["speech_acts"]),
+                "review_statuses": sorted(entity_row["review_statuses"]),
+            })
+        answer_samples.append({
+            "run_id": run.id,
+            "sample_index": run.sample_index,
+            "run_sequence": run.run_sequence,
+            "status": run.status,
+            "question": run.original_query or run.page_query or "",
+            "brand_mentioned": bool(run.brand_mentioned),
+            "brand_recommendation_level": run.brand_recommendation_level,
+            "detected_entities": detected_entities,
+            "answer_excerpt": answer_text[:1200],
+            "answer_char_count": len(answer_text),
+        })
+
+    event_diagnostics = []
+    for event in events[: limit * 3]:
+        event_diagnostics.append({
+            "event_id": event.id,
+            "run_id": event.run_id,
+            "entity_text": event.entity_text,
+            "speech_act": event.speech_act,
+            "recommendation_strength": event.recommendation_strength,
+            "polarity": event.polarity,
+            "review_status": event.review_status,
+            "answer_span": event.answer_span,
+            "reasons": loads(event.reasons_json, []),
+        })
+
+    return {
+        "answer_samples": answer_samples,
+        "event_diagnostics": event_diagnostics,
+        "event_status_counts": dict(status_counts),
+        "review_instruction": (
+            "请先核对答案样本：如果答案确实没有品牌/方案选择事件，可以搁置或人工指定方向；"
+            "如果答案里有推荐但机器没有识别，应先回到决策诊断修正推荐事件，而不是盲目确认缺口。"
+        ),
     }
 
 
@@ -293,7 +515,7 @@ def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
     events = db.query(RecommendationEvent).filter(
         RecommendationEvent.project_id == project.id,
         RecommendationEvent.prompt_id == prompt_id,
-        RecommendationEvent.review_status.in_(["MACHINE_GROUNDED", "MACHINE_CANDIDATE"]),
+        RecommendationEvent.review_status.in_(PENDING_RECOMMENDATION_EVENT_STATUSES),
     ).all()
 
     # 按 answer_hash 去重事件

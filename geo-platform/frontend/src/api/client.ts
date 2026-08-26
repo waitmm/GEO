@@ -39,6 +39,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(message);
   }
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const detail = await response.text();
+    const looksLikeFrontend = detail.includes("<!doctype html") || detail.includes("<div id=\"root\"");
+    throw new Error(looksLikeFrontend
+      ? "后端接口没有返回 JSON，可能服务未重启到最新版本或请求被前端兜底页面接管。请重启本地服务后重试。"
+      : "后端接口返回格式不是 JSON，请检查服务状态。");
+  }
   return response.json() as Promise<T>;
 }
 
@@ -119,6 +127,10 @@ export const api = {
     request<StrategyCandidate[]>(`/api/optimization/projects/${projectId}/strategy-candidates/generate`, { method: "POST", body: JSON.stringify(payload) }),
   generateStrategyCandidatesV2: (projectId: number, payload: unknown) =>
     request<any>(`/api/optimization/projects/${projectId}/strategy-candidates/generate-v2`, { method: "POST", body: JSON.stringify(payload) }),
+  getCitationDecisionV1: (projectId: number, promptId: number, evidencePackageId?: number) =>
+    request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/citation-decision-v1${evidencePackageId ? `?evidence_package_id=${evidencePackageId}` : ""}`),
+  confirmCitationDecisionV1: (projectId: number, promptId: number, payload: unknown) =>
+    request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/citation-decision-v1/confirm`, { method: "POST", body: JSON.stringify(payload) }),
   generateRecommendationAnalysis: (projectId: number, payload: unknown) =>
     request<any>(`/api/optimization/projects/${projectId}/recommendation-analysis`, { method: "POST", body: JSON.stringify(payload) }),
   getRecommendationLandscape: (projectId: number, promptId: number, snapshotId?: number) =>

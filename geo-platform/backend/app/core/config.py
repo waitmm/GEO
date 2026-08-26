@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     deepseek_timeout_seconds: int = 120
     semantic_case_max_calls: int = 200
     semantic_case_max_tokens: int = 2_000_000
+    # Citation Decision V1.1 Phase 1：默认关闭。仅在显式开启时，正式
+    # Evidence Chain 才会消费已审计的 AnswerUnit / AnswerDecisionBinding。
+    citation_decision_v1_1_formal_input_enabled: bool = False
 
     class Config:
         env_file = ".env"

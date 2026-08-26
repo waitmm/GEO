@@ -11,8 +11,11 @@ from datetime import datetime
 import hashlib
 import html as _html
 import json
+import os
+import platform
 import re
 import urllib.request
+from pathlib import Path
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -25,6 +28,7 @@ from app.models import (
     RetrievalCandidate,
     SourceDocument,
 )
+from app.modules.monitoring.collectors.wenxin.url_normalizer import canonicalize_url, domain_from_url
 from app.modules.optimization.service import _infer_platform_from_domain, DOMAIN_PLATFORM_MAP
 from app.services.serialization import dumps, loads
 
@@ -52,17 +56,110 @@ def _normalize_url_for_fetch(url: str) -> str:
         u = "https://" + u[7:]
     parsed = urlparse(u)
     domain = parsed.netloc.lower()
-    # Add www for known domains that need it
-    www_domains = {"bilibili.com", "zhihu.com", "douyin.com", "sohu.com",
-                   "baidu.com", "jingyan.baidu.com", "haokan.baidu.com",
-                   "shangjiajia.com", "molelink.cn", "jp-soft.cn"}
-    if not domain.startswith("www."):
-        for known in www_domains:
-            if domain == known or domain.endswith("." + known):
-                if not domain.startswith("www."):
-                    domain = "www." + domain
-                break
     return f"https://{domain}{parsed.path}{'?'+parsed.query if parsed.query else ''}"
+
+
+def _canonicalize_acquired_url(url: str) -> str:
+    """Canonical URL used for source analysis; raw observed URL stays in original_url."""
+    return canonicalize_url(url)
+
+
+def _find_browser_executable_for_fetch() -> str | None:
+    candidates: list[str] = []
+    env_path = os.environ.get("CHROMIUM_EXECUTABLE_PATH")
+    if env_path:
+        candidates.append(env_path)
+
+    system = platform.system()
+    pw_cache_dir = "~/Library/Caches/ms-playwright" if system == "Darwin" else (
+        "~/.cache/ms-playwright" if system == "Linux" else "~/AppData/Local/ms-playwright"
+    )
+    pw_cache = Path(os.path.expanduser(pw_cache_dir))
+    if pw_cache.exists():
+        for d in sorted(pw_cache.iterdir(), reverse=True):
+            if d.is_dir() and "chromium" in d.name and "headless" not in d.name:
+                if system == "Darwin":
+                    candidates.append(str(d / "chrome-mac-x64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"))
+                elif system == "Linux":
+                    candidates.append(str(d / "chrome-linux64" / "chrome"))
+                else:
+                    candidates.append(str(d / "chrome-win" / "chrome.exe"))
+
+    if system == "Darwin":
+        candidates.extend([
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ])
+    elif system == "Linux":
+        candidates.extend(["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"])
+    elif system == "Windows":
+        candidates.extend([
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ])
+
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _clean_text_from_html(html: str) -> str:
+    clean = _SCRIPT_STYLE.sub(" ", html)
+    clean = _HTML_TAG.sub(" ", clean)
+    clean = _html.unescape(clean)
+    clean = _MULTI_SP.sub(" ", clean)
+    clean = _MULTI_NL.sub("\n\n", clean)
+    return clean.strip()[:200000]
+
+
+def _with_browser_fallback_reason(browser_reason: str, fallback_result: dict) -> dict:
+    fallback_result["fetch_method"] = "HTTP兜底抓取"
+    if fallback_result.get("fetch_status") == "FETCH_FAILED":
+        fallback_reason = fallback_result.get("failure_reason") or "未返回具体错误"
+        fallback_result["failure_reason"] = f"浏览器抓取失败：{browser_reason[:120]}；HTTP兜底失败：{fallback_reason[:120]}"
+    return fallback_result
+
+
+def _launch_browser_context_for_fetch(playwright):
+    executable_path = _find_browser_executable_for_fetch()
+    base_context_options = {
+        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "locale": "zh-CN",
+        "viewport": {"width": 1440, "height": 900},
+        "ignore_https_errors": True,
+        "extra_http_headers": {
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+        },
+    }
+    launch_options = {
+        "headless": True,
+        "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+    }
+    if executable_path:
+        launch_options["executable_path"] = executable_path
+    try:
+        browser = playwright.chromium.launch(**launch_options)
+        return browser, browser.new_context(**base_context_options), "后台浏览器抓取"
+    except Exception as headless_exc:
+        from app.core.config import get_settings
+
+        profile_dir = Path(get_settings().wenxin_profile_dir).parent / "source-fetch-profile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        persistent_options = {
+            **base_context_options,
+            "user_data_dir": str(profile_dir),
+            "headless": False,
+            "timezone_id": "Asia/Shanghai",
+            "args": ["--no-first-run", "--disable-dev-shm-usage"],
+        }
+        if executable_path:
+            persistent_options["executable_path"] = executable_path
+        try:
+            context = playwright.chromium.launch_persistent_context(**persistent_options)
+            return None, context, "可见浏览器抓取"
+        except Exception as persistent_exc:
+            raise RuntimeError(f"headless启动失败: {headless_exc}; 持久浏览器启动失败: {persistent_exc}") from persistent_exc
 
 
 def _extract_baidu_redirect_target(html: str) -> str | None:
@@ -85,36 +182,43 @@ def fetch_page_playwright(urls: list[str]) -> list[dict]:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             try:
-                browser = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-blink-features=AutomationControlled"])
-            except Exception:
-                return [fetch_page(url) for url in urls]
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                locale="zh-CN",
-                viewport={"width": 1440, "height": 900},
-            )
+                browser, context, fetch_method = _launch_browser_context_for_fetch(p)
+            except Exception as exc:
+                return [_with_browser_fallback_reason(str(exc), fetch_page(url)) for url in urls]
             page = context.new_page()
             for url in urls:
                 normalized = _normalize_url_for_fetch(url)
                 result = {
-                    "url": url, "canonical_url": normalized, "domain": urlparse(normalized).netloc.lower(),
+                    "url": url,
+                    "canonical_url": _canonicalize_acquired_url(normalized),
+                    "domain": domain_from_url(normalized),
                     "fetch_status": "pending", "failure_reason": "", "title": "",
                     "raw_html": "", "clean_text": "", "fetch_time": datetime.utcnow(),
+                    "fetch_method": fetch_method,
                 }
                 for attempt in range(2):  # Retry once
                     try:
-                        page.goto(normalized, wait_until="networkidle", timeout=20000)
+                        page.goto(normalized, wait_until="domcontentloaded", timeout=25000)
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=5000)
+                        except Exception:
+                            pass
                         # Scroll to load lazy content
                         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                         page.wait_for_timeout(500)
                         page.evaluate("window.scrollTo(0, 0)")
                         page.wait_for_timeout(300)
                         html = page.content()
+                        final_url = page.url or normalized
                         title = page.title() or ""
                         # Get all visible text
                         body = page.inner_text("body") if page.locator("body").count() > 0 else ""
                         clean = _MULTI_NL.sub("\n\n", body.strip())[:200000]
+                        if len(clean) < 50:
+                            clean = _clean_text_from_html(html)
                         result["raw_html"] = html[:500000]
+                        result["canonical_url"] = _canonicalize_acquired_url(final_url)
+                        result["domain"] = domain_from_url(final_url)
                         result["title"] = title
                         result["clean_text"] = clean
                         result["fetch_status"] = "SUCCESS" if len(clean) > 200 else "PARTIAL"
@@ -124,21 +228,23 @@ def fetch_page_playwright(urls: list[str]) -> list[dict]:
                             result["fetch_status"] = "FETCH_FAILED"
                             result["failure_reason"] = str(e)[:200]
                 results.append(result)
-            browser.close()
+            context.close()
+            if browser is not None:
+                browser.close()
     except ImportError:
         for url in urls:
-            results.append(fetch_page(url))
+            results.append(_with_browser_fallback_reason("未安装 Playwright", fetch_page(url)))
     return results
 
 
 def fetch_page(url: str, follow_baidu_redirect: bool = True) -> dict:
     """Fetch a URL and extract clean text."""
     normalized = _normalize_url_for_fetch(url)
-    domain = urlparse(normalized).netloc.lower()
+    domain = domain_from_url(normalized)
     result = {
-        "url": url, "canonical_url": normalized, "domain": domain,
+        "url": url, "canonical_url": _canonicalize_acquired_url(normalized), "domain": domain,
         "fetch_status": "pending", "failure_reason": "", "title": "",
-        "raw_html": "", "clean_text": "", "fetch_time": datetime.utcnow(),
+        "raw_html": "", "clean_text": "", "fetch_time": datetime.utcnow(), "fetch_method": "HTTP兜底抓取",
     }
     try:
         req = urllib.request.Request(normalized, headers={
@@ -159,7 +265,8 @@ def fetch_page(url: str, follow_baidu_redirect: bool = True) -> dict:
                     html = raw.decode("latin-1", errors="replace")
 
             result["raw_html"] = html[:500000]
-            result["canonical_url"] = final_url
+            result["canonical_url"] = _canonicalize_acquired_url(final_url)
+            result["domain"] = domain_from_url(final_url)
 
             # Try Baidu redirect extraction
             if follow_baidu_redirect and ("baidu.com" in domain or "mbd.baidu" in domain):
@@ -173,12 +280,7 @@ def fetch_page(url: str, follow_baidu_redirect: bool = True) -> dict:
             tm = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
             if tm:
                 result["title"] = _html.unescape(tm.group(1).strip())
-            clean = _SCRIPT_STYLE.sub(" ", html)
-            clean = _HTML_TAG.sub(" ", clean)
-            clean = _html.unescape(clean)
-            clean = _MULTI_SP.sub(" ", clean)
-            clean = _MULTI_NL.sub("\n\n", clean)
-            result["clean_text"] = clean.strip()[:200000]
+            result["clean_text"] = _clean_text_from_html(html)
             result["fetch_status"] = "SUCCESS" if len(result["clean_text"]) > 100 else "PARTIAL"
     except urllib.error.HTTPError as e:
         result["fetch_status"] = "FETCH_FAILED"

@@ -288,8 +288,138 @@ claim to know the model's hidden ranking algorithm.
 
 ## Citation Score Strategy
 
-`source_score` is an answer-citation contribution score, not a generic webpage
-quality score. Sort citation analysis rows by `source_score` descending.
+`source_score` is a legacy answer-citation contribution score, not a generic
+webpage quality score and not a V1 decision signal. New citation analysis rows
+must expose `citation_prominence_level`, computed only from observable citation
+behavior: run coverage, citation frequency, citation position, and cross-run
+stability. Sort V1 citation analysis rows by citation prominence and citation
+behavior, not by `source_score`.
+
+## Citation Decision Support And Benchmark Tier
+
+V1 source analysis also exposes deterministic read-model fields:
+
+- `decision_support_level`: `RECOMMENDATION_REASON`, `CANDIDATE_OR_EVALUATION`,
+  `FACT_ONLY`, or `NONE`.
+- `has_contradiction`: independent boolean derived from valid
+  `EvidenceAlignment.relation = CONTRADICTS`.
+- `benchmark_tier`: `PRIMARY_BENCHMARK`, `SECONDARY_BENCHMARK`,
+  `REFERENCE_ONLY`, or `NOT_EVALUABLE`.
+
+Only V1 `EvidenceAlignment` rows with `SUPPORTS` can create decision support.
+Legacy `RELATED` is excluded and must not be upgraded to partial support.
+
+`benchmark_tier` is determined by content status, relevance, and decision
+support. `citation_prominence_level` is only a same-tier sort signal and cannot
+upgrade an unsupported or unavailable source into a benchmark. The system must
+allow `PRIMARY_BENCHMARK = 0` when no valid support evidence exists.
+
+## Source Gap V1
+
+Step 4B-1 adds source-level gap analysis as a deterministic read model only. It
+does not create Priority, Action Route, StrategyCandidate, or Experiment output.
+
+Inputs are limited to:
+
+- Benchmark Evidence from Primary/Secondary benchmark source rows.
+- `TargetBrandCapabilityTruth`.
+- Existing Brand Asset evidence from successful `PageSnapshot` content.
+
+Allowed `source_gap_type` values:
+
+- `CONTENT_GAP`
+- `EVIDENCE_GAP`
+- `PRODUCT_GAP`
+- `NO_GAP`
+- `UNKNOWN`
+- `null`
+
+If no Primary/Secondary Benchmark exists, source gap analysis must stop with
+`source_gap_type = null` and
+`source_gap_precondition = NO_ELIGIBLE_BENCHMARK`. `UNKNOWN` is reserved for
+sources that entered gap analysis but lack reliable Product Truth, Brand Asset,
+or Benchmark Evidence. `REFERENCE_ONLY` sources must not be used to force a
+competitive gap.
+
+## Priority And Action Route V1
+
+Step 4B-2 adds deterministic `priority_level` and `action_route` fields. It
+does not by itself execute changes. The V1 vertical slice may consume these
+fields to build reviewed StrategyCandidate and Experiment draft payloads.
+
+Allowed `priority_level` values:
+
+- `PRIORITY_HIGH`
+- `PRIORITY_MEDIUM`
+- `NOT_PRIORITY`
+- `UNRESOLVED`
+- `null`
+
+Allowed `action_route` values:
+
+- `CONTENT`
+- `EVIDENCE`
+- `PRODUCT`
+- `NO_ACTION`
+- `UNRESOLVED`
+- `null`
+
+Mapping:
+
+- `PRIMARY_BENCHMARK + CONTENT_GAP/EVIDENCE_GAP/PRODUCT_GAP` ->
+  `PRIORITY_HIGH`.
+- `SECONDARY_BENCHMARK + CONTENT_GAP/EVIDENCE_GAP/PRODUCT_GAP` ->
+  `PRIORITY_MEDIUM`.
+- `NO_GAP` -> `NOT_PRIORITY + NO_ACTION`.
+- `PRIMARY/SECONDARY + UNKNOWN` -> `UNRESOLVED + UNRESOLVED`.
+- `REFERENCE_ONLY + source_gap_type = null` -> `NOT_PRIORITY + null`.
+- `NOT_EVALUABLE + source_gap_type = null` -> `null + null`.
+
+Citation Prominence is only a same-priority sort signal and must not change the
+priority tier.
+
+## Citation Decision Vertical Slice V1
+
+After Priority and Action Route are available, the system can generate a
+minimal vertical proposal:
+
+```text
+Source Analysis
+-> Recommended Action
+-> Channel Opportunity
+-> Human Confirmation
+-> StrategyCandidate
+-> InterventionPlan
+-> Experiment Draft
+-> Fixed Retest / Recommendation Outcome
+```
+
+The proposal is derived from existing entities only. It does not introduce a
+parallel Evidence, Benchmark, Opportunity, or Experiment model.
+
+Hard boundaries:
+
+- `recommended_action` is proposal-only until human confirmation.
+- Only `CONTENT` and `EVIDENCE` routes can be materialized into content/channel
+  experiments.
+- `PRODUCT_GAP` remains a high-value product finding, but it must not create
+  external content claims until Product Truth changes.
+- `REFERENCE_ONLY`, `NOT_EVALUABLE`, `LEGACY_RELATED`, and Citation Prominence
+  alone must not generate StrategyCandidate or Experiment output.
+- Human-confirmed proposals reuse the existing `StrategyCandidate` review and
+  `effective_payload` execution gate.
+- Experiments remain drafts until baseline, release confirmation, cooling,
+  validation runs, analysis, and human conclusion are completed.
+
+Recommendation Outcome compares fixed baseline and validation runs across:
+
+- candidate before/after;
+- recommendation before/after;
+- target reason before/after;
+- citation before/after.
+
+The outcome is an observation summary only. It must not automatically mark the
+experiment effective.
 
 Primary scoring factors:
 

@@ -133,3 +133,20 @@ def test_add_manual_document_supports_empty_page_marker(db):
     assert refreshed.failure_reason == "页面已删除或无可用正文（人工标记）"
     assert refreshed.clean_text == ""
     assert refreshed.content_blocks_json == "[]"
+
+
+def test_add_manual_document_rejects_blank_success_payload(db):
+    with pytest.raises(HTTPException) as exc_info:
+        api.add_manual_document(
+            {
+                "url": "https://example.com/blank",
+                "source_type": "CITED",
+                "clean_text": "",
+                "raw_html": "",
+                "is_empty_page": False,
+            },
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "请补录正文" in str(exc_info.value.detail)

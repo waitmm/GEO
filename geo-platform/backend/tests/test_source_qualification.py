@@ -8,8 +8,11 @@ from app.models import Base, Competitor, Project, SourceDocument
 from app.modules.optimization.source_qualification import (
     _content_hash,
     assess_quality,
+    derive_content_status,
     resolve_ownership,
 )
+from app.modules.optimization.api import _find_source_document_by_url, _source_document_read
+from app.modules.optimization.passage_service import _canonicalize_acquired_url, _normalize_url_for_fetch
 
 
 @pytest.fixture()
@@ -33,6 +36,43 @@ def _project(db) -> Project:
     ])
     db.commit()
     return p
+
+
+# ---------------------------------------------------------------------------
+# Source URL acquisition normalization
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_normalization_does_not_prefix_www_to_platform_subdomains():
+    assert _normalize_url_for_fetch("zhuanlan.zhihu.com/p/123") == "https://zhuanlan.zhihu.com/p/123"
+    assert _normalize_url_for_fetch("baijiahao.baidu.com/s?id=1") == "https://baijiahao.baidu.com/s?id=1"
+    assert _normalize_url_for_fetch("jingyan.baidu.com/article/1.html") == "https://jingyan.baidu.com/article/1.html"
+
+
+def test_fetch_normalization_preserves_explicit_official_www():
+    assert _normalize_url_for_fetch("http://www.aifabu.com/card") == "https://www.aifabu.com/card"
+
+
+def test_acquired_canonical_url_strips_leading_www_without_touching_inner_www():
+    assert _canonicalize_acquired_url("https://www.zhihu.com/question/1") == "https://zhihu.com/question/1"
+    assert _canonicalize_acquired_url("https://gjzwfw.www.gov.cn/fwmh/ifam/qrcode.do") == "https://gjzwfw.www.gov.cn/fwmh/ifam/qrcode.do"
+
+
+def test_source_document_action_url_normalizes_legacy_synthetic_www(db):
+    doc = SourceDocument(
+        url="https://www.zhuanlan.zhihu.com/p/123",
+        original_url="https://zhuanlan.zhihu.com/p/123",
+        domain="www.zhuanlan.zhihu.com",
+        source_type="CITED",
+        fetch_status="FETCH_FAILED",
+        failure_reason="ERR_NAME_NOT_RESOLVED",
+    )
+    db.add(doc)
+    db.commit()
+
+    payload = _source_document_read(doc)
+    assert payload["action_url"] == "https://zhuanlan.zhihu.com/p/123"
+    assert _find_source_document_by_url(db, "https://zhuanlan.zhihu.com/p/123").id == doc.id
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +147,16 @@ def test_quality_fetch_failed_keeps_fetch_status(db):
     assert q.content_quality_status == "FETCH_FAILED"
     # 不改写 fetch_status 本身
     assert doc.fetch_status == "FETCH_FAILED"
+
+
+def test_content_status_distinguishes_pending_from_unavailable():
+    empty_success = _doc("", fetch_status="SUCCESS")
+    manual_empty = _doc("", fetch_status="MANUAL_EMPTY")
+    failed = _doc("", fetch_status="FETCH_FAILED")
+
+    assert derive_content_status(empty_success)["content_status"] == "CONTENT_PENDING"
+    assert derive_content_status(manual_empty)["content_status"] == "CONTENT_UNAVAILABLE"
+    assert derive_content_status(failed)["content_status"] == "CONTENT_UNAVAILABLE"
 
 
 def test_quality_binds_hash_and_version(db):

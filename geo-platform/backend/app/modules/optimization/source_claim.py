@@ -119,13 +119,21 @@ def run_source_claim_extraction(
     run_ids: list[int],
     top_k: int = 5,
     doc_id_filter: list[int] | None = None,
+    include_answer_binding_reasons: bool = False,
 ) -> dict:
     """Layer 4 主流程：Layer 3 检索出的 Passage → 盲评 → source_claims。
 
     - 相同 passage_text 按 cache 去重（DeepSeekClient 内部 input_hash 缓存）；
     - subject_entity 从 Judge 输出 + Ownership 共同决定（owner 作 provenance）。
     """
-    retrieval = run_reason_driven_retrieval(db, project, prompt_id, run_ids, top_k)
+    retrieval = run_reason_driven_retrieval(
+        db,
+        project,
+        prompt_id,
+        run_ids,
+        top_k,
+        include_answer_binding_reasons=include_answer_binding_reasons,
+    )
     by_reason = retrieval.get("by_reason") or {}
 
     # 收集去重的 passage（同一 doc:passage 只评一次）
@@ -203,6 +211,13 @@ def run_source_claim_extraction(
     db.commit()
     return {
         "status": "OK",
+        "include_answer_binding_reasons": include_answer_binding_reasons,
+        "retrieval_reason_summary": {
+            "unique_reasons": retrieval.get("unique_reasons", 0),
+            "legacy_event_reasons": retrieval.get("legacy_event_reasons", 0),
+            "answer_binding_reasons": retrieval.get("answer_binding_reasons", 0),
+            "answer_binding_candidates": retrieval.get("answer_binding_candidates", 0),
+        },
         "unique_passages": len(seen_passages),
         "claims_created": created,
         "validation_failed": validation_failed,

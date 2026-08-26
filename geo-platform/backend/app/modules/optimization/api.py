@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import threading
+import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.modules.optimization.schemas import (
     ActionReleasePayload,
@@ -39,7 +41,9 @@ from app.modules.optimization.service import (
     analyze_experiment,
     attach_validation_runs,
     capture_page_snapshot,
+    citation_decision_vertical_slice,
     confirm_conclusion,
+    confirm_citation_decision_vertical_slice,
     confirm_experiment_release,
     confirm_issue,
     create_action,
@@ -72,6 +76,11 @@ from app.modules.optimization.service import (
     update_action,
 )
 from app.modules.optimization.ranking import run_citation_evidence_ranking_v0
+from app.modules.optimization.answer_evidence_shadow import (
+    latest_answer_evidence_shadow_run,
+    run_answer_evidence_shadow_chain,
+    shadow_run_to_read,
+)
 from app.modules.optimization.recommendation import (
     create_decision_market_experiment_draft,
     get_recommendation_landscape,
@@ -268,6 +277,79 @@ def citation_evidence_ranking_endpoint(package_id: int, db: Session = Depends(ge
     return run_citation_evidence_ranking_v0(db, package_id)
 
 
+@router.get("/projects/{project_id}/prompts/{prompt_id}/citation-decision-v1")
+def citation_decision_vertical_slice_endpoint(
+    project_id: int,
+    prompt_id: int,
+    evidence_package_id: int | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    return citation_decision_vertical_slice(db, project_id, prompt_id, evidence_package_id)
+
+
+@router.post("/projects/{project_id}/prompts/{prompt_id}/citation-decision-v1/confirm")
+def confirm_citation_decision_vertical_slice_endpoint(
+    project_id: int,
+    prompt_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+) -> dict:
+    return confirm_citation_decision_vertical_slice(db, project_id, prompt_id, payload)
+
+
+@router.post("/projects/{project_id}/prompts/{prompt_id}/answer-evidence-shadow/run")
+def run_answer_evidence_shadow_endpoint(
+    project_id: int,
+    prompt_id: int,
+    payload: dict | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    payload = payload or {}
+    try:
+        return run_answer_evidence_shadow_chain(
+            db,
+            project_id,
+            prompt_id,
+            evidence_package_id=payload.get("evidence_package_id"),
+            run_ids=payload.get("run_ids"),
+            top_k=int(payload.get("top_k") or 3),
+            use_llm_binding=bool(payload.get("use_llm_binding", True)),
+            entity_filter=(payload.get("entity_filter") or "").strip() or None,
+            max_bindings=int(payload["max_bindings"]) if payload.get("max_bindings") else None,
+            include_procedural_context=bool(payload.get("include_procedural_context", False)),
+            include_unbound_answer_units=bool(payload.get("include_unbound_answer_units", False)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/projects/{project_id}/prompts/{prompt_id}/answer-evidence-shadow/latest")
+def latest_answer_evidence_shadow_endpoint(
+    project_id: int,
+    prompt_id: int,
+    evidence_package_id: int | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    shadow_run = latest_answer_evidence_shadow_run(db, project_id, prompt_id, evidence_package_id)
+    if not shadow_run:
+        return {
+            "status": "not_started",
+            "project_id": project_id,
+            "prompt_id": prompt_id,
+            "evidence_package_id": evidence_package_id,
+            "pipeline_version": "citation_decision_v1_1_shadow",
+            "formal_output_impact": "NONE",
+            "summary": {
+                "answer_unit_count": 0,
+                "binding_count": 0,
+                "shadow_result_count": 0,
+                "boundary_note": "尚未运行 Phase 0 Shadow；正式 Citation Decision V1 输出未改变。",
+            },
+            "results": [],
+        }
+    return shadow_run_to_read(db, shadow_run)
+
+
 # --- Recommendation Market Intelligence V1 ---
 
 @router.post("/projects/{project_id}/recommendation-analysis")
@@ -425,10 +507,11 @@ from app.modules.optimization.passage_service import (
     generate_answer_need_map,
     analyze_brand_information_gap,
 )
+from app.modules.optimization.source_qualification import derive_content_status
+from app.modules.monitoring.collectors.wenxin.url_normalizer import canonicalize_url, domain_from_url
 from app.models import AnswerClaim, PassageAlignment, ReferenceSource, RetrievalCandidate, SourceDocument
 from app.services.serialization import dumps, loads
 from datetime import datetime
-import hashlib
 import html as _html
 import re
 from urllib.parse import urlparse
@@ -621,10 +704,30 @@ def golden_case_documents(run_ids: str = "", db: Session = Depends(get_db)):
         docs = _source_document_query_for_runs(db, ids)
     else:
         docs = db.query(SourceDocument).order_by(SourceDocument.fetch_status, SourceDocument.id).all()
-    return [{"id": d.id, "url": d.url or d.original_url, "domain": d.domain, "source_type": d.source_type,
-             "fetch_status": d.fetch_status, "title": d.title, "clean_text_len": len(d.clean_text or ""),
-             "blocks_count": len(loads(d.content_blocks_json, [])),
-             "failure_reason": d.failure_reason} for d in docs]
+    return [_source_document_read(d) for d in docs]
+
+
+def _source_document_read(doc: SourceDocument) -> dict:
+    raw_url = doc.url or doc.original_url
+    canonical = doc.canonical_url or canonicalize_url(raw_url)
+    domain = doc.domain or domain_from_url(canonical or raw_url)
+    return {
+        **{
+            "id": doc.id,
+            "url": raw_url,
+            "original_url": doc.original_url,
+            "canonical_url": canonical,
+            "action_url": canonical or raw_url,
+            "domain": domain,
+            "source_type": doc.source_type,
+            "fetch_status": doc.fetch_status,
+            "title": doc.title,
+            "clean_text_len": len(doc.clean_text or ""),
+            "blocks_count": len(loads(doc.content_blocks_json, [])),
+            "failure_reason": doc.failure_reason,
+        },
+        **derive_content_status(doc),
+    }
 
 
 @router.get("/golden-case/need-map")
@@ -728,27 +831,84 @@ def golden_case_refetch(payload: dict, db: Session = Depends(get_db)):
     from app.modules.optimization.passage_service import fetch_page_playwright
     results = fetch_page_playwright(urls)
     for r in results:
-        existing = db.query(SourceDocument).filter(
-            (SourceDocument.original_url == r["url"]) | (SourceDocument.url == r["url"])
-        ).first()
+        existing = _find_source_document_by_url(db, r["url"])
         if existing:
+            existing.url = r.get("canonical_url", r["url"])
+            existing.canonical_url = r.get("canonical_url", "")
+            existing.domain = r.get("domain", existing.domain)
             existing.clean_text = r["clean_text"][:200000]
             existing.raw_html = r.get("raw_html", "")[:500000]
             existing.title = r["title"] or existing.title
             existing.fetch_status = r["fetch_status"]
             existing.failure_reason = r.get("failure_reason", "")
+            existing.clean_text_hash = hashlib.sha256((r.get("clean_text") or "").encode()).hexdigest()[:16]
+            existing.fetch_time = r.get("fetch_time")
         elif r["fetch_status"] == "SUCCESS" and len(r["clean_text"]) > 50:
             doc = SourceDocument(
                 url=r.get("canonical_url", r["url"]), original_url=r["url"],
-                domain=r["domain"], source_type="CITED",
+                canonical_url=r.get("canonical_url", ""), domain=r["domain"], source_type="CITED",
                 fetch_status=r["fetch_status"], title=r["title"],
                 raw_html=r.get("raw_html", "")[:500000],
                 clean_text=r["clean_text"][:200000],
-                clean_text_hash="", fetch_time=r["fetch_time"],
+                clean_text_hash=hashlib.sha256((r.get("clean_text") or "").encode()).hexdigest()[:16], fetch_time=r["fetch_time"],
             )
             db.add(doc)
     db.commit()
-    return {"refetched": len(urls), "results": [{"url": r["url"], "status": r["fetch_status"]} for r in results]}
+    return {
+        "refetched": len(urls),
+        "results": [
+            {
+                "url": r["url"],
+                "canonical_url": r.get("canonical_url", r["url"]),
+                "domain": r.get("domain", ""),
+                "status": r["fetch_status"],
+                "fetch_method": r.get("fetch_method", ""),
+                "failure_reason": r.get("failure_reason", ""),
+                "failure_summary": _fetch_failure_summary(r),
+                "clean_text_len": len(r.get("clean_text") or ""),
+            }
+            for r in results
+        ],
+    }
+
+
+def _find_source_document_by_url(db: Session, url: str) -> SourceDocument | None:
+    exact = db.query(SourceDocument).filter(
+        (SourceDocument.original_url == url) | (SourceDocument.url == url) | (SourceDocument.canonical_url == url)
+    ).first()
+    if exact:
+        return exact
+    target_key = canonicalize_url(url)
+    if not target_key:
+        return None
+    for doc in db.query(SourceDocument).all():
+        if target_key in {
+            canonicalize_url(doc.url or ""),
+            canonicalize_url(doc.original_url or ""),
+            canonicalize_url(doc.canonical_url or ""),
+        }:
+            return doc
+    return None
+
+
+def _fetch_failure_summary(result: dict) -> str:
+    status = result.get("fetch_status")
+    if status == "SUCCESS":
+        return "抓取成功，已获得可分析正文。"
+    if status == "PARTIAL":
+        return f"只抓到较短正文（{len(result.get('clean_text') or '')} 字），可能是登录墙、验证页或页面主体未渲染。"
+    reason = result.get("failure_reason") or ""
+    if "403" in reason:
+        return "站点返回 403，通常是反爬、权限或访问策略限制。"
+    if "404" in reason:
+        return "站点返回 404，页面可能已删除或链接失效。"
+    if "timeout" in reason.lower() or "timed out" in reason.lower():
+        return "请求超时，可能是站点响应慢、网络不稳定或浏览器渲染等待失败。"
+    if "ERR_NAME_NOT_RESOLVED" in reason or "nodename" in reason.lower():
+        return "域名解析失败，可能是 URL 写错或域名不可访问。"
+    if reason:
+        return f"自动抓取失败：{reason}"
+    return "自动抓取失败，未返回具体错误；建议打开原链接确认是否需要人工补录或稍后重抓。"
 
 
 @router.get("/golden-case/summary")
@@ -859,6 +1019,8 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
         text = ""
         if not title:
             title = "页面已删除或无可用正文"
+    elif not (text or "").strip():
+        raise HTTPException(status_code=400, detail="请补录正文，或明确标记为空页")
     if not title:
         title = payload.get("title", url)
 
@@ -990,6 +1152,28 @@ def competitor_reject_endpoint(project_id: int, payload: dict, db: Session = Dep
     return reject_competitor(db, project, payload.get("name", ""))
 
 
+@router.post("/workflow/{project_id}/{prompt_id}/decision-market/entities/resolve")
+def decision_market_entity_resolve_endpoint(project_id: int, prompt_id: int, payload: dict, db: Session = Depends(get_db)):
+    """修正答案决策识别里的未知对象：目标品牌 / 竞品 / 不进入决策。"""
+    from app.models import Project
+    from app.modules.optimization.workflow import resolve_decision_market_entity
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    result = resolve_decision_market_entity(
+        db,
+        project,
+        prompt_id,
+        payload.get("entity_text", ""),
+        payload.get("resolution", ""),
+        payload.get("reviewer", "human"),
+    )
+    if result["status"] in {"EMPTY_ENTITY", "INVALID_RESOLUTION"}:
+        raise HTTPException(status_code=400, detail=result["status"])
+    return result
+
+
 @router.post("/workflow/review/events/confirm-batch")
 def batch_confirm_events_endpoint(payload: dict, db: Session = Depends(get_db)):
     from app.modules.optimization.workflow import batch_confirm_events
@@ -1046,30 +1230,36 @@ def workflow_continue_analysis(project_id: int, prompt_id: int, db: Session = De
 
     前置检查：事件与 SUPPORTS 对齐必须已全部人工审核。
     """
-    from app.models import Project, RecommendationEvent, EvidenceAlignment
+    from app.models import BrowserMonitorRun, Project
     from app.modules.optimization.gap_action import derive_gap, build_action_candidate
-    from app.modules.optimization.workflow import workflow_status
+    from app.modules.optimization.workflow import build_continue_review_context, workflow_status
 
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     status = workflow_status(db, project, prompt_id)
-    if not status["all_reviews_done"]:
+    if not status.get("answer_semantic_done"):
+        raise HTTPException(
+            status_code=400,
+            detail="答案决策识别尚未修正：当前没有有效的品牌/方案选择事件，不能继续生成缺口和动作",
+        )
+    if not status.get("ready_to_continue"):
         raise HTTPException(
             status_code=400,
             detail=f"审核尚未完成（{status['pending_review_steps']} 步待处理），不能继续分析",
         )
 
     run_ids = [
-        r.id for r in db.query(__import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun).filter(
-            __import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun.project_id == project_id,
-            __import__('app.models', fromlist=['BrowserMonitorRun']).BrowserMonitorRun.prompt_id == prompt_id,
+        r.id for r in db.query(BrowserMonitorRun).filter(
+            BrowserMonitorRun.project_id == project_id,
+            BrowserMonitorRun.prompt_id == prompt_id,
         ).all()
     ]
     gap = derive_gap(db, project, prompt_id, run_ids)
     action = build_action_candidate(db, project, prompt_id, run_ids, gap)
-    return {"gap": gap, "action": action}
+    review_context = build_continue_review_context(db, project, prompt_id, run_ids)
+    return {"gap": gap, "action": action, "review_context": review_context}
 
 
 @router.post("/workflow/{project_id}/{prompt_id}/confirm-decision")
@@ -1449,6 +1639,7 @@ def workflow_outcome_experiment(experiment_id: int, payload: dict, db: Session =
 def workflow_decision_market(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
     """决策诊断主路径数据：实体 + 行为 + 理由 + SUPPORTS 证据（语义版）。"""
     from app.models import RecommendationEvent, EvidenceAlignment, SourceClaim
+    from collections import Counter
     events = db.query(RecommendationEvent).filter(
         RecommendationEvent.project_id == project_id,
         RecommendationEvent.prompt_id == prompt_id,
@@ -1460,7 +1651,7 @@ def workflow_decision_market(project_id: int, prompt_id: int, db: Session = Depe
     from collections import defaultdict
     entities: dict[str, dict] = defaultdict(lambda: {
         "entity_text": "", "relationship": "UNKNOWN_ENTITY",
-        "speech_act": "", "run_ids": set(), "reasons": [],
+        "speech_act": "", "run_ids": set(), "reasons": [], "review_statuses": [],
     })
     seen_reasons: set[str] = set()
     for e in events:
@@ -1468,6 +1659,7 @@ def workflow_decision_market(project_id: int, prompt_id: int, db: Session = Depe
         row["entity_text"] = e.entity_text
         row["speech_act"] = e.speech_act or row["speech_act"]
         row["run_ids"].add(e.run_id)
+        row["review_statuses"].append(e.review_status or "UNKNOWN")
         for r in loads(e.reasons_json, []):
             rtext = r.get("normalized_reason") or ""
             if rtext in seen_reasons:
@@ -1483,10 +1675,11 @@ def workflow_decision_market(project_id: int, prompt_id: int, db: Session = Depe
     # 目标品牌/竞品关系
     from app.models import Project, Competitor
     project = db.get(Project, project_id)
-    known = {project.brand_name, *(c.name for c in db.query(Competitor).filter(Competitor.project_id == project_id).all())}
+    target_names = {project.brand_name, *loads(project.brand_aliases_json, [])}
+    known = {*(c.name for c in db.query(Competitor).filter(Competitor.project_id == project_id).all())}
     for name, row in entities.items():
-        if name == project.brand_name:
-            row["relationship"] = "TARGET"
+        if name in target_names:
+            row["relationship"] = "TARGET_BRAND"
         elif name in known:
             row["relationship"] = "CONFIRMED_COMPETITOR"
 
@@ -1514,8 +1707,23 @@ def workflow_decision_market(project_id: int, prompt_id: int, db: Session = Depe
             {
                 "entity_text": row["entity_text"],
                 "relationship": row["relationship"],
+                "relationship_label": {
+                    "TARGET_BRAND": "目标品牌",
+                    "CONFIRMED_COMPETITOR": "已确认竞品",
+                    "UNKNOWN_ENTITY": "待确认对象",
+                }.get(row["relationship"], "待确认对象"),
                 "speech_act": row["speech_act"],
+                "speech_act_label": {
+                    "ASSERTION": "陈述",
+                    "INSTRUCTION": "指令",
+                    "RECOMMENDATION": "推荐",
+                    "RECOMMEND": "推荐",
+                    "INCLUDE_AS_OPTION": "纳入候选",
+                    "COMPARE": "对比",
+                    "WARNING": "风险提醒",
+                }.get(row["speech_act"], row["speech_act"] or "-"),
                 "run_coverage": f"{len(row['run_ids'])}/{total_runs}",
+                "review_status_counts": dict(Counter(row["review_statuses"])),
                 "reasons": row["reasons"],
             }
             for row in entities.values()
@@ -1528,7 +1736,12 @@ _analysis_running: set[tuple[int, int]] = set()
 _analysis_lock = threading.Lock()
 
 
-def _run_analysis_pipeline(project_id: int, prompt_id: int, run_ids: list[int]) -> None:
+def _run_analysis_pipeline(
+    project_id: int,
+    prompt_id: int,
+    run_ids: list[int],
+    use_answer_binding_v1_1: bool = False,
+) -> None:
     """后台线程执行五层分析管道；结果落库，前端轮询 review-queue/status 感知进度。"""
     import logging
 
@@ -1557,8 +1770,20 @@ def _run_analysis_pipeline(project_id: int, prompt_id: int, run_ids: list[int]) 
             "机器分析引用原文补齐 project=%s prompt=%s acquisition=%s",
             project_id, prompt_id, acquisition,
         )
-        run_source_claim_extraction(db, project, prompt_id, run_ids)
-        run_evidence_alignment(db, project, prompt_id, run_ids)
+        run_source_claim_extraction(
+            db,
+            project,
+            prompt_id,
+            run_ids,
+            include_answer_binding_reasons=use_answer_binding_v1_1,
+        )
+        run_evidence_alignment(
+            db,
+            project,
+            prompt_id,
+            run_ids,
+            include_answer_binding_reasons=use_answer_binding_v1_1,
+        )
         # 落分析运行记录：区分「分析过但 0 事件」与「从未分析」
         from app.models import PromptAnalysisRun
         from app.services.serialization import dumps as _dumps
@@ -1573,8 +1798,8 @@ def _run_analysis_pipeline(project_id: int, prompt_id: int, run_ids: list[int]) 
         ))
         db.commit()
         logger.info(
-            "机器分析后台任务完成 project=%s prompt=%s layer1=%s",
-            project_id, prompt_id, layer1,
+            "机器分析后台任务完成 project=%s prompt=%s v1_1_formal_input=%s layer1=%s",
+            project_id, prompt_id, use_answer_binding_v1_1, layer1,
         )
     except Exception:
         logger.exception("机器分析后台任务失败 project=%s prompt=%s", project_id, prompt_id)
@@ -1612,10 +1837,22 @@ def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Se
             return {"started": False, "already_running": True, "message": "该 Prompt 的机器分析已在后台运行中"}
         _analysis_running.add((project_id, prompt_id))
 
+    settings = get_settings()
+    use_answer_binding_v1_1 = bool(
+        payload.get("use_answer_binding_v1_1")
+        or settings.citation_decision_v1_1_formal_input_enabled
+    )
+
     threading.Thread(
         target=_run_analysis_pipeline,
-        args=(project_id, prompt_id, run_ids),
+        args=(project_id, prompt_id, run_ids, use_answer_binding_v1_1),
         daemon=True,
         name=f"analysis-{project_id}-{prompt_id}",
     ).start()
-    return {"started": True, "project_id": project_id, "prompt_id": prompt_id, "run_ids": run_ids}
+    return {
+        "started": True,
+        "project_id": project_id,
+        "prompt_id": prompt_id,
+        "run_ids": run_ids,
+        "use_answer_binding_v1_1": use_answer_binding_v1_1,
+    }

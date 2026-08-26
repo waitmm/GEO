@@ -1,0 +1,702 @@
+# 09 Product Iteration Log
+
+Status: ACTIVE
+
+## 2026-08-26 Phase 1 Formal Result Audit Gate
+
+### Product Finding
+
+Prompt `#40` proves that Citation Decision V1.1 can formally consume
+`AnswerUnit + AnswerDecisionBinding` without lowering the V1 evidence gate.
+
+Current result:
+
+```text
+READY_FOR_HUMAN_CONFIRM
+1 个核心对标来源
+1 个推荐动作
+1 个渠道机会
+```
+
+The promotion is evidence-based:
+
+```text
+formal EvidenceAlignment.relation = SUPPORTS
+reason_source = ANSWER_DECISION_BINDING
+formal_input_version = citation_decision_v1_1_formal_input.v1
+```
+
+It is not based on:
+
+```text
+引用显著性
+标题同名
+Shadow SUPPORTS
+LEGACY_RELATED
+```
+
+### Product Gate
+
+Do not approve full production switch yet.
+
+The audit found three product-level risks:
+
+```text
+1. 6 条正式 SUPPORTS 当前全部来自 Run #238，
+   不能表述为 6 个采集样本均完成正式证据支撑。
+
+2. 当前 feature flag 是“生成输入开关”，不是“结果读取回滚开关”。
+   已写入的 V1.1 EvidenceAlignment 仍会被 Citation Decision 读取。
+
+3. 推荐动作聚焦到了更细的能力点，
+   但 Product Truth 仍是较粗的“短链生成”。
+```
+
+### Next Product Requirement
+
+Before expanding to 3-5 additional Prompts, finish:
+
+```text
+run-level coverage integrity
+formal V1.1 read-path isolation or rollback
+fine-grained Product Truth matching
+single-case runner Layer3 doc_id_filter consistency
+```
+
+Current state:
+
+```text
+PHASE_1_FORMAL_INPUT_PROVEN_ON_PROMPT_40
+READY_FOR_FULL_PRODUCTION_SWITCH = false
+```
+
+## 2026-08-26 Recommendation Explanation Scope Calibration
+
+### Product Decision
+
+Recommendation Binding is no longer limited to explicit `因为/所以` style
+reasons. In a real recommendation answer, the explanation scope around the
+recommended brand matters.
+
+```text
+推荐语境下，被推荐品牌说明作用域内的能力、优势、价格、效果、适用场景等，
+默认视为推荐支撑主张；不要求答案显式出现“因为/所以”。
+
+但默认 Binding 不等于无条件 Binding，
+必须排除操作步骤、普通背景事实、其他品牌内容、限制性内容，
+以及已经脱离推荐说明作用域的主张。
+```
+
+### Product Boundary
+
+`DIRECT_REASON` remains stricter than `SUPPORTING_REASON`:
+
+```text
+SUPPORTING_REASON:
+推荐品牌说明作用域内的能力、优势、价格、效果、适用场景等支撑说明。
+
+DIRECT_REASON:
+明确选择条件、明确因果、明确比较依据或需求匹配。
+```
+
+Evidence Chain 的长期触发点应从 `Recommendation Reason` 扩展到所有有分析价值的 `AnswerUnit`：
+
+```text
+AnswerDecisionBinding 判断“是不是推荐证据”
+EvidenceAlignment 判断“引用正文有没有真正支撑它”
+```
+
+没有 Recommendation Binding 的 AnswerUnit 仍可在 Shadow 中形成：
+
+```text
+BRAND_CAPABILITY_EVIDENCE
+PROCEDURAL_EVIDENCE
+FACTUAL_EVIDENCE
+```
+
+但它们不能被误计为 Recommendation Evidence，不能进入正式 Benchmark。
+
+### Prompt 40 Result
+
+Prompt `#40` 已按新语义重跑 `ShadowRun #7`：
+
+```text
+Binding = 30
+DIRECT_REASON = 0
+SUPPORTING_REASON = 30
+SUPPORTS = 18
+recommendation_evidence_eligible = 18
+formal_output_impact = NONE
+```
+
+这说明系统保留了 5 个推荐说明作用域内的能力 Binding，同时不再把缺少明确选择依据的能力描述升级为 `DIRECT_REASON`。
+
+### Phase Boundary
+
+This remains Phase 0 Shadow only:
+
+```text
+正式 Benchmark 不变
+正式 Gap 不变
+正式 Priority 不变
+正式 Action 不变
+正式 Strategy / Experiment 不变
+READY_FOR_PRODUCTION_SWITCH = false
+```
+
+Phase 0 不再要求人工逐条审计 30 条同结构 Binding。只需要对代表
+Run 做轻量 sanity check，并确认自动回归 Case 持续通过：
+
+```text
+Procedure Case
+Brand-directed Case
+Other-brand Scope Case
+Implicit Reason Case
+Limitation Case
+```
+
+Phase 1 小范围切换仍需要单独批准。
+
+## 2026-08-26 Prompt 40 Shadow Audit Review Handoff
+
+### Product Finding
+
+Prompt `#40` has now completed a real V1.1 Phase 0 Shadow audit for the
+recommended entity `小码短链接` across six Runs.
+
+The Shadow chain proved that answer-side capability text can bridge the prior
+V1 false negative:
+
+```text
+AnswerClaim
+-> AnswerUnit
+-> AnswerDecisionBinding
+-> Retrieved Passage
+-> Shadow SourceClaim
+-> Shadow EvidenceAlignment
+```
+
+### Historical Audit Result
+
+`ShadowRun #6` is the first positive Shadow audit. It is now superseded by
+`ShadowRun #7` for Phase 1 gate review.
+
+```text
+SUPPORTS = 18
+NO_SUPPORT = 234
+CONTRADICTS = 0
+recommendation_evidence_eligible_count = 18
+```
+
+The grounded SUPPORTS evidence is concentrated on the valid Xiaoma Zhihu source
+`SourceDocument #345`, especially:
+
+```text
+答案能力：小码短链接自带点击统计
+来源主张：小码短链接可以在“我的链接”页面查看每个链接的访问量、点击次数等数据
+
+答案能力：小码短链接自带自定义分享标题
+来源主张：小码短链接提供自定义分享功能
+来源主张：小码短链接的自定义分享功能支持设置标题和描述
+```
+
+### Product Boundary
+
+This remains Phase 0 only:
+
+```text
+正式 Benchmark 不变
+正式 Gap 不变
+正式 Priority 不变
+正式 Action 不变
+正式 Strategy / Experiment 不变
+```
+
+Do not switch Phase 1 based on `ShadowRun #6`; use the `ShadowRun #7`
+sanity-check gate above.
+
+## 2026-08-26 Prompt 40 Binding Precision Gate
+
+### Product Finding
+
+`ShadowRun #6` proved the positive evidence path works, but it also showed why
+the Binding semantics needed a scope calibration before Phase 1:
+
+```text
+30 Bindings / 6 Runs = 每 Run 5 个 Binding
+```
+
+The machine currently binds all five Xiaoma answer capability units:
+
+```text
+快速缩短
+点击统计
+二维码生成
+自定义分享标题
+营销场景
+```
+
+Only two units receive source SUPPORTS:
+
+```text
+点击统计
+自定义分享标题
+```
+
+### Superseded Gate
+
+This manual 30-row review gate has been superseded by `ShadowRun #7`.
+The current Phase 1 gate no longer requires row-by-row review of all 30
+same-structure Bindings. It requires:
+
+```text
+Representative Run sanity check
+Procedure Case
+Brand-directed Case
+Other-brand Scope Case
+Implicit Reason Case
+Limitation Case
+Formal V1 zero-pollution
+```
+
+The review artifact is:
+
+```text
+docs/PROMPT_40_SHADOW_RUN_7_BINDING_REVIEW.md
+```
+
+### Reverse Case Status
+
+The historical deterministic reverse cases passed:
+
+```text
+Procedure Case: passed
+Neutral Feature Case: passed
+Implicit Reason Case: passed
+```
+
+Procedure evidence is allowed as `PROCEDURAL_EVIDENCE`, but it is not counted
+as recommendation evidence and must not enter Benchmark eligibility.
+
+## 2026-08-26 Citation Decision V1.1 Phase 0 Shadow Implementation
+
+### Product Decision
+
+Phase 0 is implemented as an audit-only Shadow chain, not as a formal workflow
+state change.
+
+The Shadow chain can test whether answer-side capability text can bridge an
+empty `RecommendationEvent.reasons_json` into source passage retrieval and
+semantic evidence alignment:
+
+```text
+AnswerClaim
+-> AnswerUnit
+-> AnswerDecisionBinding
+-> Shadow Passage Retrieval
+-> Shadow SourceClaim
+-> Shadow EvidenceAlignment
+-> Shadow Audit
+```
+
+### Product Boundary
+
+Phase 0 must not change any user-facing formal decision result:
+
+```text
+formal Benchmark = unchanged
+formal Gap = unchanged
+formal Priority = unchanged
+formal Action = unchanged
+formal Strategy / Experiment = unchanged
+```
+
+Shadow evidence can be used for review and later Phase 1 evaluation only. It
+cannot be used to upgrade a source into Benchmark support until Phase 1 is
+explicitly approved.
+
+## 2026-08-26 Recommendation Reason Alignment Bridge
+
+### Product Finding
+
+Prompt `#40` shows a valid V1 false-negative case:
+
+```text
+答案明确推荐竞品
+引用来源中存在同实体文章
+引用正文已经可用
+但系统仍无法产生 Benchmark
+```
+
+This must not be solved by relaxing Benchmark gates. The correct interpretation
+is:
+
+```text
+同实体引用 = 候选线索
+正文可用 = 可进入语义分析
+SUPPORTS EvidenceAlignment = 才能进入 Benchmark
+```
+
+### Product Decision
+
+When a recommendation event has no extracted reasons, the product should allow
+the system to derive candidate recommendation reasons from same-run answer
+claims or the event answer span, then continue through the existing V1 evidence
+path:
+
+```text
+AnswerClaim / answer_span
+-> answer-derived Recommendation Reason
+-> Reason-driven Passage Retrieval
+-> Blind SourceClaimJudge
+-> EvidenceAlignmentJudge
+-> Benchmark
+```
+
+The derived reason is still answer-side evidence. It does not prove the source
+supports the answer until a new V1 EvidenceAlignment says so.
+
+### Phase 0 Shadow Boundary
+
+Phase 0 must be an end-to-end Shadow Evidence Chain, not only an answer-binding
+experiment:
+
+```text
+AnswerClaim
+-> AnswerUnit
+-> AnswerDecisionBinding
+-> Shadow Passage Retrieval
+-> Shadow SourceClaim
+-> Shadow EvidenceAlignment
+-> Shadow Evidence Classification
+-> Shadow Audit
+```
+
+The current production chain remains unchanged:
+
+```text
+RecommendationEvent.reasons_json
+-> current V1 Evidence Chain
+-> current Citation Decision
+```
+
+Shadow results are only allowed to prove whether the new bridge works. They
+must not change formal Benchmark, Gap, Priority, Action, Strategy, or Experiment
+outputs during Phase 0.
+
+### Product Boundary
+
+Do not treat any of the following as Benchmark support:
+
+```text
+Citation Prominence HIGH
+同名标题 / 同实体引用
+历史 RELATED
+Golden Case L5_UNRESOLVED
+```
+
+Product Truth continues to confirm only the target brand's real capabilities,
+not whether a competitor article or competitor product has that capability.
+
+## 2026-08-25 Single Prompt Evidence State Sync
+
+### Product Decision
+
+The single Prompt main workflow must recognize the latest Evidence Package and
+Citation Decision result for the current Prompt on both `监测总览` and
+execution-detail surfaces.
+
+If the current Prompt already has a valid Evidence Package, step 4 `引用证据`
+must not continue to show:
+
+```text
+待生成证据包
+```
+
+It should load or rerun Citation Decision V1 for the current context and then
+show the real downstream state, including the valid zero-result case:
+
+```text
+0 个可信对标
+0 个推荐动作
+```
+
+### Product Boundary
+
+This is a state-integrity correction only. It does not change the main chain
+order, does not create a new module, and does not make Citation Prominence or
+legacy `RELATED` drive strategy generation.
+
+## 2026-08-25 Browser-first Citation Body Refetch
+
+### Product Decision
+
+In `证据标注`, row-level `重抓` should use a browser-first acquisition path.
+
+The operator expectation is:
+
+```text
+如果人工浏览器可以打开页面
+-> 系统应优先尝试用真实浏览器抓取页面源码和正文
+-> 只有浏览器抓取失败或正文仍不可用时，才提示人工补录
+```
+
+HTTP-only fetching is now a fallback, not the primary behavior for manual
+refetch. When both browser and HTTP fetching fail, the UI should preserve the
+combined failure reason so operators can decide whether to retry or supplement
+manually.
+
+## 2026-08-25 Citation Evidence Workflow Entry
+
+### Product Decision
+
+Single Prompt main workflow step 4, `引用证据`, must route to `证据标注`.
+
+The operator job at this step is:
+
+```text
+抓取引用正文
+-> 人工补录缺失正文
+-> 查看正文状态
+-> 建立或核对证据对齐
+```
+
+`引用资料` remains a source ranking / source structure page. It may be used as a
+detail page for inspection, but it must not be the primary operation entry for
+the main workflow's citation evidence step.
+
+### Product Boundary
+
+Changing a main workflow card from `证据标注` back to `引用资料`, or changing
+`引用证据` into a ranking-first step, is a product-level workflow change and must
+be explicitly recorded before implementation.
+
+## 2026-08-25 Workflow State Integrity
+
+### Product Decision
+
+Single Prompt workflow must be one integrated product chain, not a set of
+parallel modules:
+
+```text
+采集样本
+-> 答案决策识别
+-> 目标品牌事实
+-> 引用证据
+-> 对标来源
+-> 缺口诊断
+-> 推荐动作
+-> 实验草案
+```
+
+Citation Optimization Decision V1 belongs inside this chain. It may have a
+detail page for inspection and operations, but it must not appear as a separate
+homepage module competing with the main workflow.
+
+### State Ownership Rule
+
+Each workflow card has exactly one primary fact source:
+
+| 阶段 | 唯一主状态源 |
+| --- | --- |
+| 采集样本 | 当前 Prompt Runs |
+| 答案决策识别 | RecommendationEvent / Answer Semantic |
+| 目标品牌事实 | Product Truth |
+| 引用证据 | 当前 Prompt Evidence Package + SourceDocument / EvidenceAlignment |
+| 对标来源 | Citation Decision V1 Benchmark derived state |
+| 缺口诊断 | Source Gap derived state |
+| 推荐动作 | Current Gap -> Proposal |
+| 实验草案 | Current human-confirmed Strategy / Plan / Experiment |
+
+Legacy workflow outputs such as `continueResult` may be displayed as historical
+execution context, but they must not mark the current Citation V1 chain as
+complete.
+
+### Context Identity Rule
+
+Decision data must be bound to the current analysis context:
+
+```text
+project_id
+prompt_id
+evidence_package_id
+analysis_version
+```
+
+The frontend must discard decision results whose `prompt_id` does not match the
+current Prompt. Prompt switching must clear Prompt-scoped Citation Decision,
+benchmark, proposal, channel, action, and experiment state before reloading.
+
+### Change Warning Rule
+
+Any future change that alters the main chain order, creates a new top-level
+module, or changes a card's primary state source must be treated as a product
+level change. It requires an explicit development-log entry and product
+iteration-log entry before implementation.
+
+### Answer Decision Repair Rule
+
+The second workflow step, `答案决策识别`, must be repairable from the decision
+diagnosis detail page when machine-recognized answer objects are blocked by
+validation failure or unknown entity relationship.
+
+The repair surface is not the generic empty review queue. It must show the
+actual answer-decision objects and let the operator choose:
+
+```text
+确认为竞品
+设为目标品牌
+不进入决策
+```
+
+Only confirmed target-brand or competitor objects can count as valid
+answer-decision events. Rejected objects are audit records, not valid choice
+events, and must not advance Product Truth, Citation Evidence, Gap, Action, or
+Experiment.
+
+The workflow must distinguish:
+
+```text
+all_reviews_done
+= 当前审核队列已清空
+
+ready_to_continue
+= 可以继续生成缺口和动作
+```
+
+A Prompt can have `all_reviews_done = true` while `ready_to_continue = false`
+when the only detected answer objects are validation-failed or rejected. In that
+case the UI must route the operator to answer-decision repair, not to Gap /
+Action generation.
+
+## 2026-08-25 Citation URL Display Normalization
+
+引用资料页面和相关证据表格展示来源时，必须使用规范化 URL / 域名视角，避免把
+`www.zhihu.com`、`www.baidu.com` 这类展示噪音当作独立来源。
+
+采集和审计边界保持不变：
+
+```text
+original_url
+= 原始观测 / 可点击审计链接
+
+canonical_url / domain
+= 引用资料分析、去重、Benchmark 和 Gap 使用的规范化来源身份
+
+action_url
+= 默认点击、人工补录和重抓使用的规范化操作链接
+```
+
+系统不得为了抓取成功率盲目给已存在的平台子域添加 `www.`。例如：
+
+```text
+zhuanlan.zhihu.com
+baijiahao.baidu.com
+jingyan.baidu.com
+```
+
+都不能被改写成：
+
+```text
+www.zhuanlan.zhihu.com
+www.baijiahao.baidu.com
+www.jingyan.baidu.com
+```
+
+但真实域名中间包含 `www` 的来源，例如 `gjzwfw.www.gov.cn`，不能被错误改写。
+
+## 2026-08-25 Citation Refetch Feedback Contract
+
+证据标注里的来源重抓不要求操作者看到浏览器窗口。只要后台浏览器抓取和可见浏览器抓取的最终效果一致，V1 默认以状态反馈为准：
+
+```text
+点击重抓
+-> 当前行立即显示重抓中
+-> 后端返回抓取方式 / 正文字数 / 成功或失败原因
+-> 当前行保留本次结果
+```
+
+该交互用于避免“点了没反应”的误判。可见浏览器只应作为后续人工登录、验证码或复杂页面排障能力，不进入当前主链路默认动作。
+
+## 2026-08-25 Single Prompt Citation Evidence Entry Contract
+
+单 Prompt 主链第 4 步 `引用证据` 的默认动作必须能推进当前链路，不能只跳到正文补录详情页。
+
+```text
+没有 Evidence Package
+-> 显示「待生成证据包」
+-> 主按钮为「生成证据包」
+-> 使用当前 Prompt 的有效 Runs 创建/复用证据包
+-> 运行 Citation Decision V1
+```
+
+```text
+已有 Citation Decision V1 结果
+-> 显示「已完成」
+-> 主按钮为「查看证据正文」
+-> 进入证据标注详情页做补录、重抓和人工审计
+```
+
+这不是新增模块，也不改变主链顺序；它只是补齐第 4 步从“正文补录完成”到“证据包/引用证据链路运行”的操作口。
+
+## 2026-08-26 Citation Decision V1.1 Phase 1 Input Contract
+
+Phase 1 只批准“小范围正式 Evidence 输入切换”，不批准全量切换，也不改变单
+Prompt 主链顺序。
+
+允许的变化：
+
+```text
+正式 Passage Retrieval / EvidenceAlignment
+可以在显式开关开启时读取
+AnswerUnit + AnswerDecisionBinding
+作为答案侧推荐理由输入
+```
+
+不允许的变化：
+
+```text
+Shadow SUPPORTS
+-> 直接升级正式 Benchmark
+```
+
+```text
+Citation Prominence / 标题同名 / legacy RELATED
+-> 直接升级 SUPPORTS
+```
+
+```text
+Phase 1 输入切换
+-> 改变 Product Truth / Gap / Action / Strategy / Experiment 规则
+```
+
+正式链仍必须等新的正式 `EvidenceAlignment.relation = SUPPORTS` 形成后，
+Benchmark / Gap / Action 才能自然消费该结果。所有 Phase 1-derived
+alignment 必须保留 provenance，便于审计和回滚。
+
+Prompt `#40` 小范围实跑结果已证明该合同成立：
+
+```text
+AnswerDecisionBinding
+-> 正式 Passage Retrieval
+-> 正式 SourceClaim
+-> 正式 EvidenceAlignment
+-> 对标来源
+-> 推荐动作
+```
+
+推进原因必须解释为：
+
+```text
+正式 SUPPORTS 已形成
+```
+
+而不是：
+
+```text
+引用显著性高
+标题包含同名实体
+Shadow SUPPORTS 存在
+```
+
+本轮没有改变主链步骤，也没有新增独立入口模块。

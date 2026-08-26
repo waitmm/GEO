@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, SourceClaim
 from app.modules.optimization.evidence_alignment import (
+    decision_support_level_from_relation,
     entity_scope_precheck,
 )
 
@@ -66,3 +67,10 @@ def test_alignment_system_prompt_has_relation_constraints():
     assert "RELATED" in ALIGNMENT_SYSTEM
     assert "把 RELATED 当成 SUPPORTS" in ALIGNMENT_SYSTEM
     assert "JSON" in ALIGNMENT_SYSTEM
+
+
+def test_legacy_related_is_not_partial_support():
+    assert decision_support_level_from_relation("SUPPORTS") == "SUPPORTS"
+    assert decision_support_level_from_relation("CONTRADICTS") == "CONTRADICTS"
+    assert decision_support_level_from_relation("NONE") == "NO_SUPPORT"
+    assert decision_support_level_from_relation("RELATED") == "LEGACY_RELATED"

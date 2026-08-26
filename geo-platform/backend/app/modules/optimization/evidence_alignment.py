@@ -12,7 +12,14 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import EvidenceAlignment, Project, RecommendationEvent, SourceClaim
+from app.models import EvidenceAlignment, Project, RecommendationEvent, SourceClaim, SourceDocument
+from app.modules.optimization.passage_retrieval import (
+    ANSWER_BINDING_REASON_SOURCE,
+    EVENT_REASON_SOURCE,
+    FORMAL_V1_1_INPUT_VERSION,
+    _cited_document_ids_for_runs,
+    answer_binding_reason_inputs,
+)
 from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import DeepSeekClient
 from app.services.serialization import dumps, loads
@@ -115,7 +122,26 @@ def entity_scope_precheck(reason_scope: str, reason_entity: str, claim: SourceCl
     return "COMPETITOR_CONTEXT"
 
 
-def run_evidence_alignment(db: Session, project: Project, prompt_id: int, run_ids: list[int]) -> dict:
+def decision_support_level_from_relation(relation: str) -> str:
+    """Compatibility mapping from legacy alignment relation to V1 support level."""
+    normalized = (relation or "").upper()
+    if normalized == "SUPPORTS":
+        return "SUPPORTS"
+    if normalized == "CONTRADICTS":
+        return "CONTRADICTS"
+    if normalized == "RELATED":
+        return "LEGACY_RELATED"
+    return "NO_SUPPORT"
+
+
+def run_evidence_alignment(
+    db: Session,
+    project: Project,
+    prompt_id: int,
+    run_ids: list[int],
+    include_answer_binding_reasons: bool = False,
+    doc_id_filter: list[int] | None = None,
+) -> dict:
     """Layer 5 主流程：Reason × SourceClaim → relation。"""
     # 幂等：清理该 prompt 的历史 alignment 后重跑（不累积爆炸）
     db.query(EvidenceAlignment).filter(
@@ -130,13 +156,24 @@ def run_evidence_alignment(db: Session, project: Project, prompt_id: int, run_id
         RecommendationEvent.run_id.in_(run_ids),
         RecommendationEvent.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
     ).all()
-    claims = db.query(SourceClaim).filter(
+    claims_query = db.query(SourceClaim).filter(
         SourceClaim.project_id == project.id,
         SourceClaim.review_status == "MACHINE_GROUNDED",
-    ).all()
+    )
+    cited_doc_ids: set[int] = set()
+    if include_answer_binding_reasons:
+        docs = db.query(SourceDocument).all()
+        cited_doc_ids = _cited_document_ids_for_runs(db, run_ids, docs)
+        if cited_doc_ids:
+            claims_query = claims_query.filter(SourceClaim.source_document_id.in_(cited_doc_ids))
+    if doc_id_filter:
+        claims_query = claims_query.filter(SourceClaim.source_document_id.in_([int(item) for item in doc_id_filter]))
+    claims = claims_query.all()
 
     # 去重：按 unique (reason_text, reason_scope, reason_entity) 遍历，而非 12 个重复 event
     unique_reasons: dict[tuple, dict] = {}
+    legacy_reasons_added = 0
+    binding_reasons_added = 0
     for event in events:
         for reason in loads(event.reasons_json, []):
             reason_text = reason.get("normalized_reason") or ""
@@ -152,7 +189,35 @@ def run_evidence_alignment(db: Session, project: Project, prompt_id: int, run_id
                     "entity": reason_entity,
                     "event_id": event.id,
                     "run_id": event.run_id,
+                    "reason_id": f"reason:{reason_text[:60]}",
+                    "reason_source": EVENT_REASON_SOURCE,
                 }
+                legacy_reasons_added += 1
+
+    binding_reasons = answer_binding_reason_inputs(db, project, prompt_id, run_ids) if include_answer_binding_reasons else []
+    for reason in binding_reasons:
+        reason_text = reason.get("text") or ""
+        if not reason_text:
+            continue
+        reason_scope = reason.get("scope") or "ENTITY_SPECIFIC"
+        reason_entity = reason.get("entity") or ""
+        key = (reason_text, reason_scope, reason_entity)
+        if key not in unique_reasons:
+            unique_reasons[key] = {
+                "text": reason_text,
+                "scope": reason_scope,
+                "entity": reason_entity,
+                "event_id": reason["event_id"],
+                "run_id": reason["run_id"],
+                "reason_id": reason.get("reason_id") or f"answer_unit:{reason_text[:40]}",
+                "reason_source": ANSWER_BINDING_REASON_SOURCE,
+                "decision_role": reason.get("decision_role"),
+                "binding_strength": reason.get("binding_strength"),
+                "shadow_run_id": reason.get("shadow_run_id"),
+                "answer_unit_id": reason.get("answer_unit_id"),
+                "decision_binding_id": reason.get("decision_binding_id"),
+            }
+            binding_reasons_added += 1
 
     judge = EvidenceAlignmentJudge()
     created = 0
@@ -162,6 +227,17 @@ def run_evidence_alignment(db: Session, project: Project, prompt_id: int, run_id
 
     for key, reason in unique_reasons.items():
         reason_text, reason_scope, reason_entity = key
+        reason_id = str(reason.get("reason_id") or f"reason:{reason_text[:60]}")[:120]
+        reason_payload = {
+            "reason_source": reason.get("reason_source"),
+            "formal_input_version": FORMAL_V1_1_INPUT_VERSION
+            if reason.get("reason_source") == ANSWER_BINDING_REASON_SOURCE else "",
+            "answer_unit_id": reason.get("answer_unit_id"),
+            "decision_binding_id": reason.get("decision_binding_id"),
+            "decision_role": reason.get("decision_role"),
+            "binding_strength": reason.get("binding_strength"),
+            "shadow_run_id": reason.get("shadow_run_id"),
+        }
         for claim in claims:
             # subject UNKNOWN 的 claim 无法判断实体关系 → 跳过（不制造噪声记录）
             if claim.subject_entity in {"", "UNKNOWN"}:
@@ -173,7 +249,7 @@ def run_evidence_alignment(db: Session, project: Project, prompt_id: int, run_id
                 db.add(EvidenceAlignment(
                     project_id=project.id, prompt_id=prompt_id, run_id=reason["run_id"],
                     recommendation_event_id=reason["event_id"],
-                    recommendation_reason_id=f"reason:{reason_text[:60]}",
+                    recommendation_reason_id=reason_id,
                     source_document_id=claim.source_document_id,
                     source_claim_id=claim.id,
                     relation="RELATED",
@@ -182,7 +258,7 @@ def run_evidence_alignment(db: Session, project: Project, prompt_id: int, run_id
                     model="scope_precheck",
                     prompt_version="entity_scope_precheck.v1",
                     schema_version="v1",
-                    machine_payload_json=dumps({"precheck": precheck}),
+                    machine_payload_json=dumps({"precheck": precheck, **reason_payload}),
                     review_status="MACHINE_GROUNDED",
                 ))
                 competitor_context += 1
@@ -198,7 +274,7 @@ def run_evidence_alignment(db: Session, project: Project, prompt_id: int, run_id
             db.add(EvidenceAlignment(
                 project_id=project.id, prompt_id=prompt_id, run_id=reason["run_id"],
                 recommendation_event_id=reason["event_id"],
-                recommendation_reason_id=f"reason:{reason_text[:60]}",
+                recommendation_reason_id=reason_id,
                 source_document_id=claim.source_document_id,
                 source_claim_id=claim.id,
                 relation=relation,
@@ -207,7 +283,7 @@ def run_evidence_alignment(db: Session, project: Project, prompt_id: int, run_id
                 model=judge.settings.deepseek_model,
                 prompt_version=ALIGNMENT_PROMPT_VERSION,
                 schema_version=ALIGNMENT_SCHEMA_VERSION,
-                machine_payload_json=dumps(result or {}),
+                machine_payload_json=dumps({**(result or {}), **reason_payload}),
                 review_status="MACHINE_GROUNDED",
             ))
             created += 1
@@ -216,6 +292,12 @@ def run_evidence_alignment(db: Session, project: Project, prompt_id: int, run_id
     return {
         "status": "OK",
         "unique_reasons": len(unique_reasons),
+        "legacy_event_reasons": legacy_reasons_added,
+        "answer_binding_reasons": binding_reasons_added,
+        "answer_binding_candidates": len(binding_reasons) if include_answer_binding_reasons else 0,
+        "include_answer_binding_reasons": include_answer_binding_reasons,
+        "phase1_cited_source_claim_scope": len(cited_doc_ids) if include_answer_binding_reasons else 0,
+        "doc_id_filter": doc_id_filter or [],
         "alignments_created": created,
         "competitor_context": competitor_context,
         "skipped_unknown_subject": skipped_unknown,

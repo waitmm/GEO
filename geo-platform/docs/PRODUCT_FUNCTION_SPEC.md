@@ -157,6 +157,38 @@ Decision Market
   - 问题配置
 ```
 
+### 4.1 单 Prompt 工作台主链路
+
+监测总览中的单 Prompt 工作台必须是一条集成主链路，不能把 Citation Optimization Decision V1 再做成独立首页模块。
+
+主链路顺序固定为：
+
+```text
+采集样本
+-> 答案决策识别
+-> 目标品牌事实
+-> 引用证据
+-> 对标来源
+-> 缺口诊断
+-> 推荐动作
+-> 实验草案
+```
+
+每个卡片只能有一个主状态来源：
+
+- 采集样本：当前 Prompt Runs。
+- 答案决策识别：RecommendationEvent / Answer Semantic。
+- 目标品牌事实：Product Truth。
+- 引用证据：当前 Prompt 的 Evidence Package + SourceDocument / EvidenceAlignment。
+- 对标来源：Citation Decision V1 Benchmark 派生结果。
+- 缺口诊断：Source Gap 派生结果。
+- 推荐动作：当前 Gap -> Proposal。
+- 实验草案：当前人工确认后的 Strategy / Plan / Experiment。
+
+历史 `continueResult`、历史 Experiment 或旧执行记录可以展示为历史上下文，但不能反向点亮当前 Citation V1 主链状态。
+
+任何会改变主链路顺序、增加新的首页级模块、或改变卡片主状态来源的开发，都属于产品级变更，必须先写入开发记录和产品迭代记录，并向操作者明确预警。
+
 ## 5. 系统配置：问题配置
 
 问题配置负责建立产品分析对象和采集任务的基础结构。
@@ -259,15 +291,34 @@ single_continuous
 - 分析内容形态：教程、FAQ、对比、文档、新闻、文章、首页等。
 - 分析平台来源：百度百家号、知乎、微信公众号、抖音、小红书、B 站、普通网页等。
 - 展示 prompt match、freshness、authority、account identity、risk flags。
-- 输出 `source_score`，用于解释该来源在当前回答样本中的引用贡献。
+- 输出 `citation_prominence_level`，用于解释该来源在当前回答样本中的引用显著性。
+- 输出 `decision_support_level`、`has_contradiction` 和 `benchmark_tier`，用于说明该来源是否真正支撑了回答中的推荐理由、候选或事实。
+- 在存在 Primary/Secondary Benchmark 时，输出来源级 `source_gap_type`，用于判断目标品牌和可信 Benchmark 的差距。
+- 基于 `benchmark_tier` 和 `source_gap_type` 输出 `priority_level` 和 `action_route`，只表达优先级与处理路径，不生成具体执行动作。
+- 在人工确认前，基于 `priority_level` 和 `action_route` 生成 proposal-only 的 `recommended_action` 与 `channel_opportunity`。
+- 人工确认后，可复用 StrategyCandidate / effective_payload / InterventionPlan / Experiment 草案链路，形成“一个渠道一个 Experiment”的最小闭环。
+- 复测后输出 Recommendation Outcome，对比候选、推荐、目标理由和引用的 before/after 观察变化。
 
-source_score 是回答引用贡献分，不是通用网页质量分。
+`citation_prominence_level` 只基于可观测引用行为计算，包括 Run 覆盖、引用频次、引用位置和跨样本稳定性。
+
+旧 `source_score` 仅作为历史兼容字段保留，不再作为 Benchmark、Priority、Strategy 或 Experiment 的决策依据。
+
+`benchmark_tier` 只由正文状态、V1 EvidenceAlignment 和 Decision Support 规则决定。Citation Prominence 只能用于同 Tier 内排序，不能把缺正文或无支持对齐的来源升级为 Benchmark。
 
 核心边界：
 
 - 引用资料模块解释可见来源结构，不声称知道模型隐藏排序机制。
 - 检索候选可能不完整，不能被当作最终引用全集分母。
 - 对第三方平台或缺失 URL 的页面，负样本判断必须谨慎。
+- 当有效正文和 V1 EvidenceAlignment 不足时，系统允许 `PRIMARY_BENCHMARK = 0`，不能为了展示结果强行选择 Benchmark。
+- 没有 Primary/Secondary Benchmark 时，Source Gap 前置状态为 `NO_ELIGIBLE_BENCHMARK`，`source_gap_type = null`，不能拿 `REFERENCE_ONLY` 强行生成差距。
+- `UNKNOWN` 只表示已经进入 Source Gap 分析但 Product Truth、品牌资产或 Benchmark Evidence 等关键事实不足。
+- Source Gap 只回答 `CONTENT_GAP / EVIDENCE_GAP / PRODUCT_GAP / NO_GAP / UNKNOWN / null`，不直接生成 Strategy 或 Experiment。
+- `priority_level` 只允许 `PRIORITY_HIGH / PRIORITY_MEDIUM / NOT_PRIORITY / UNRESOLVED / null`，Citation Prominence 不能改变 Priority 档位。
+- `action_route` 只允许 `CONTENT / EVIDENCE / PRODUCT / NO_ACTION / UNRESOLVED / null`，`null` 表示该来源未进入处理路径判断。
+- `recommended_action` 只能由 Primary/Secondary Benchmark 且存在可解释 Source Gap 的来源产生；`REFERENCE_ONLY`、`NOT_EVALUABLE` 和历史 `RELATED` 不能生成执行建议。
+- `PRODUCT_GAP` 可以是高优先级发现，但在 Product Truth 更新前不能生成对外内容宣称或发布实验。
+- Recommendation Outcome 只记录固定复测前后观察变化，最终有效性仍必须人工结论确认。
 
 ## 9. 证据标注：主张、正文和段落对齐
 

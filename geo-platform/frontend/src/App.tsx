@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "react";
 import {
   Alert, Button, Card, Checkbox, Col, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
-  Layout, Menu, Modal, Popconfirm, Progress, Row, Select, Space, Statistic, Table, Tag, Typography, message
+  Layout, Menu, Modal, Popconfirm, Progress, Row, Select, Space, Statistic, Steps, Table, Tag, Typography, message
 } from "antd";
 import { BarChart3, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
 import { api } from "./api/client";
@@ -77,6 +77,34 @@ function formatMetric(metric?: { numerator?: number; denominator?: number; value
   return `${metric.numerator ?? 0}/${metric.denominator ?? 0}${value}`;
 }
 
+function displaySourceUrl(url?: string, canonicalUrl?: string) {
+  const raw = String(canonicalUrl || url || "").trim();
+  if (!raw) return "";
+  return raw.replace(/^([a-z][a-z0-9+.-]*:\/\/)?www\./i, "$1");
+}
+
+function sourceActionUrl(url?: string, canonicalUrl?: string, actionUrl?: string) {
+  return displaySourceUrl(actionUrl || canonicalUrl || url);
+}
+
+function displaySourceDomain(domain?: string, url?: string, canonicalUrl?: string) {
+  const raw = String(domain || canonicalUrl || url || "").trim();
+  if (!raw) return "";
+  const withoutScheme = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  const host = withoutScheme.split(/[/?#]/)[0];
+  return host.replace(/^www\./i, "");
+}
+
+function sourceFailureSummary(row: any) {
+  return row?.content_status_reason || row?.failure_summary || row?.failure_reason || "";
+}
+
+function citationDecisionBelongsToPrompt(data: any, promptId?: number | null) {
+  if (!data || !promptId) return false;
+  const identity = data.context_identity || data;
+  return Number(identity.prompt_id) === Number(promptId);
+}
+
 function reviewStatusLabel(status?: string) {
   const labels: Record<string, string> = {
     UNREVIEWED: "待审核",
@@ -90,6 +118,11 @@ function reviewStatusLabel(status?: string) {
     REJECTED: "已拒绝",
     MISLABELED: "分类错误",
     AMBIGUOUS: "存在歧义",
+    MACHINE_GROUNDED: "机器待确认",
+    MACHINE_CANDIDATE: "机器候选",
+    HUMAN_CONFIRMED: "人工已确认",
+    HUMAN_REJECTED: "人工已拒绝",
+    VALIDATION_FAILED: "机器校验未通过",
   };
   return labels[status || ""] || status || "待审核";
 }
@@ -101,6 +134,38 @@ function evidenceStatusLabel(status?: string, fallback?: string) {
     UNLINKED: "未关联引用",
   };
   return fallback || labels[status || ""] || status || "未判断";
+}
+
+function semanticRelationLabel(status?: string) {
+  const labels: Record<string, string> = {
+    SUPPORTS: "支持",
+    PARTIAL_SUPPORT: "部分支持",
+    CONTRADICTS: "矛盾",
+    NO_SUPPORT: "不支持",
+    RELATED: "历史相关",
+    NONE: "无支持",
+  };
+  return labels[status || ""] || status || "未判断";
+}
+
+function decisionEntityRelationshipLabel(status?: string) {
+  const labels: Record<string, string> = {
+    TARGET: "目标品牌",
+    TARGET_BRAND: "目标品牌",
+    CONFIRMED_COMPETITOR: "已确认竞品",
+    UNKNOWN_ENTITY: "待确认对象",
+  };
+  return labels[status || ""] || status || "待确认对象";
+}
+
+function decisionEntityRelationshipColor(status?: string) {
+  const colors: Record<string, string> = {
+    TARGET: "blue",
+    TARGET_BRAND: "blue",
+    CONFIRMED_COMPETITOR: "volcano",
+    UNKNOWN_ENTITY: "gold",
+  };
+  return colors[status || ""] || "default";
 }
 
 function passageAlignmentColor(status?: string) {
@@ -145,6 +210,191 @@ function truthStatusLabel(status?: string) {
     UNKNOWN: "未知，待人工确认",
   };
   return labels[status || ""] || status || "未知，待人工确认";
+}
+
+function citationDecisionStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    READY_FOR_HUMAN_CONFIRM: "可人工确认",
+    NO_EXECUTABLE_RECOMMENDATION: "暂无可执行动作",
+  };
+  return labels[status || ""] || status || "未加载";
+}
+
+function decisionSupportLabel(value?: string) {
+  const labels: Record<string, string> = {
+    RECOMMENDATION_REASON: "推荐理由支撑",
+    CANDIDATE_OR_EVALUATION: "候选/评价支撑",
+    FACT_ONLY: "事实信息",
+    NONE: "未形成决策支撑",
+  };
+  return labels[value || ""] || value || "-";
+}
+
+function benchmarkTierLabel(value?: string) {
+  const labels: Record<string, string> = {
+    PRIMARY_BENCHMARK: "核心对标",
+    SECONDARY_BENCHMARK: "辅助对标",
+    REFERENCE_ONLY: "仅引用参考",
+    NOT_EVALUABLE: "不可评估",
+  };
+  return labels[value || ""] || value || "-";
+}
+
+function gapPreconditionLabel(value?: string) {
+  const labels: Record<string, string> = {
+    READY: "可分析",
+    NO_ELIGIBLE_BENCHMARK: "未进入缺口分析",
+    PRODUCT_TRUTH_UNKNOWN: "产品事实未匹配/未确认",
+    BRAND_ASSET_INCOMPLETE: "品牌资产不完整",
+    BENCHMARK_EVIDENCE_INSUFFICIENT: "对标证据不足",
+  };
+  return labels[value || ""] || value || "-";
+}
+
+function sourceGapLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    CONTENT_GAP: "内容缺口",
+    EVIDENCE_GAP: "证据缺口",
+    PRODUCT_GAP: "产品缺口",
+    NO_GAP: "暂无缺口",
+    UNKNOWN: "已进入分析但无法判断",
+  };
+  return value ? labels[value] || value : "未进入缺口分析";
+}
+
+function priorityLevelLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    PRIORITY_HIGH: "高优先级",
+    PRIORITY_MEDIUM: "中优先级",
+    NOT_PRIORITY: "非优先",
+    UNRESOLVED: "待人工补充",
+  };
+  return value ? labels[value] || value : "不进入队列";
+}
+
+function actionRouteLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    CONTENT: "内容动作",
+    EVIDENCE: "证据动作",
+    PRODUCT: "产品评估",
+    NO_ACTION: "无需动作",
+    UNRESOLVED: "待人工补充",
+  };
+  return value ? labels[value] || value : "不生成动作";
+}
+
+function contentStatusLabel(value?: string) {
+  const labels: Record<string, string> = {
+    CONTENT_VALID: "正文可用",
+    CONTENT_UNAVAILABLE: "正文不可用",
+    CONTENT_EMPTY: "空正文",
+    CONTENT_PENDING: "待补正文",
+  };
+  return labels[value || ""] || value || "-";
+}
+
+function citationProminenceLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    HIGH: "高",
+    MEDIUM: "中",
+    LOW: "低",
+  };
+  return value ? labels[value] || value : "-";
+}
+
+function existingAssetStatusLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    AVAILABLE: "已有可用品牌资产",
+    INCOMPLETE: "品牌资产不完整",
+    UNKNOWN: "未知",
+  };
+  return value ? labels[value] || value : "-";
+}
+
+function existingAssetCoverageLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    MISSING: "未覆盖",
+    CLAIM_ONLY: "只声明，缺少证明",
+    SUFFICIENT: "覆盖充分",
+    NOT_APPLICABLE: "不适用",
+    UNKNOWN: "未知",
+  };
+  return value ? labels[value] || value : "-";
+}
+
+function citationDecisionStatusColor(status?: string) {
+  if (status === "READY_FOR_HUMAN_CONFIRM") return "green";
+  if (status === "NO_EXECUTABLE_RECOMMENDATION") return "orange";
+  return "default";
+}
+
+function productTruthMatchLabel(status?: string) {
+  const labels: Record<string, string> = {
+    TRUE: "已匹配支持",
+    FALSE: "已匹配不支持",
+    UNKNOWN: "未匹配/未知",
+  };
+  return labels[status || ""] || status || "未匹配/未知";
+}
+
+function entityRelationTag(relation?: string, label?: string) {
+  const colors: Record<string, string> = {
+    TARGET_BRAND: "blue",
+    CONFIRMED_COMPETITOR: "volcano",
+    UNCONFIRMED_ENTITY: "gold",
+  };
+  const labels: Record<string, string> = {
+    TARGET_BRAND: "目标品牌",
+    CONFIRMED_COMPETITOR: "已确认竞品",
+    UNCONFIRMED_ENTITY: "待确认对象",
+  };
+  return <Tag color={colors[relation || ""] || "default"}>{label || labels[relation || ""] || "未知对象"}</Tag>;
+}
+
+function decisionDisplayText(value?: string) {
+  const replacements: [string, string][] = [
+    ["Citation Prominence", "引用显著性"],
+    ["LEGACY_RELATED", "历史相关标记"],
+    ["Product Truth", "产品事实"],
+    ["Benchmark Evidence", "对标证据"],
+    ["Primary/Secondary Benchmark", "核心/辅助对标来源"],
+    ["Decision Support", "决策支撑"],
+    ["Source Gap", "来源缺口"],
+    ["Primary", "核心"],
+    ["Secondary", "辅助"],
+    ["Benchmark", "对标来源"],
+    ["Content/Evidence Action", "内容/证据动作"],
+    ["Citation", "引用"],
+    ["Gap", "缺口"],
+    ["Action", "动作"],
+    ["Experiment", "实验"],
+    ["EVIDENCE_STRENGTHEN", "证据强化"],
+    ["CONTENT_GAP", "内容缺口"],
+    ["EVIDENCE_GAP", "证据缺口"],
+    ["PRODUCT_GAP", "产品缺口"],
+    ["NO_GAP", "暂无缺口"],
+    ["UNRESOLVED", "待确认"],
+    ["UNKNOWN", "未知"],
+    ["HIGH", "高置信"],
+    ["MEDIUM", "中置信"],
+    ["LOW", "低置信"],
+  ];
+  return replacements.reduce((text, [from, to]) => text.split(from).join(to), value || "");
+}
+
+function citationCapabilityDraftFromRow(row: any) {
+  const serverSuggestion = String(row?.suggested_capability_label || "").trim();
+  if (serverSuggestion) return serverSuggestion;
+  const rawTitle = String(row?.title || row?.url || "").trim();
+  const withoutBrandSuffix = rawTitle
+    .replace(/[-_｜|].*$/, "")
+    .replace(/商加加外链工具/g, "")
+    .replace(/20\d{2}\s*版?/g, "")
+    .replace(/(教程|手把手教学流程|零技术入门|三种方法|完整教程)/g, "")
+    .replace(/[：:，,。；;、（）()【】\[\]"'“”]+/g, " ")
+    .trim();
+  const compact = withoutBrandSuffix.split(/\s+/).filter(Boolean).join("");
+  return (compact || "请改成目标品牌真实能力").slice(0, 36);
 }
 
 function entityRoleLabel(role?: string) {
@@ -247,6 +497,8 @@ function experimentStatusLabel(status?: string) {
     validating: "复测中",
     analyzing: "分析中",
     completed: "已完成",
+    RELEASED: "已发布",
+    DRAFT: "草案",
   };
   return labels[status || ""] || status || "未知";
 }
@@ -471,6 +723,9 @@ function speechActLabel(act?: string) {
     ASSERTION: "陈述",
     INSTRUCTION: "指令",
     RECOMMENDATION: "推荐",
+    RECOMMEND: "推荐",
+    INCLUDE_AS_OPTION: "纳入候选",
+    COMPARE: "对比",
     WARNING: "警告",
   };
   return labels[act || ""] || act || "-";
@@ -546,7 +801,7 @@ function PresenceTable({ data }: { data: ValidationPresence[] }) {
 
 function SourceTable({ data, url }: { data: ValidationSource[]; url?: boolean }) {
   return <Table size="small" rowKey="value" pagination={false} dataSource={data} locale={{ emptyText: "尚无可聚合的引用数据" }} columns={[
-    { title: url ? "引用页面" : "域名", render: (_, row) => url ? <Space direction="vertical" size={0}><Text>{row.title || row.value}</Text><Link href={row.value} target="_blank" ellipsis><ExternalLink size={12} /> {row.domain || row.value}</Link></Space> : <Text>{row.value}</Text> },
+    { title: url ? "引用页面" : "域名", render: (_, row) => url ? <Space direction="vertical" size={0}><Text>{row.title || displaySourceUrl(row.value)}</Text><Link href={sourceActionUrl(row.value)} target="_blank" ellipsis><ExternalLink size={12} /> {displaySourceDomain(row.domain, row.value) || displaySourceUrl(row.value)}</Link></Space> : <Text>{displaySourceDomain(row.value)}</Text> },
     { title: "出现次数", dataIndex: "run_count", width: 100, render: (value) => <Tag>{value} 次</Tag> }
   ]} />;
 }
@@ -596,6 +851,8 @@ export default function App() {
   const [selectedPkgId, setSelectedPkgId] = useState<number | null>(null);
   const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null);
   const [goldenData, setGoldenData] = useState<any>(null);
+  const [refetchingSourceUrls, setRefetchingSourceUrls] = useState<Set<string>>(new Set());
+  const [sourceRefetchResults, setSourceRefetchResults] = useState<Record<string, any>>({});
   const [workflowData, setWorkflowData] = useState<any>(null);
   const [promptContext, setPromptContext] = useState<number | "ALL" | null>(null); // null=未选, "ALL"=全部, number=具体 prompt
   const [channelStrategy, setChannelStrategy] = useState<any>(null); // V3 平台×内容方向（数据分层推导）
@@ -609,8 +866,14 @@ export default function App() {
   const [strategyExperiments, setStrategyExperiments] = useState<any[]>([]);
   const [strategyBenchmarks, setStrategyBenchmarks] = useState<any>({});
   const [strategyOutcomes, setStrategyOutcomes] = useState<any>({});
+  const [citationDecisionData, setCitationDecisionData] = useState<any>(null);
+  const [citationDecisionLoading, setCitationDecisionLoading] = useState(false);
+  const [citationDecisionError, setCitationDecisionError] = useState<string | null>(null);
+  const citationDecisionRequestSeq = useRef(0);
   const [decisionMarketEntities, setDecisionMarketEntities] = useState<any[]>([]);
   const [workflowReviewOpen, setWorkflowReviewOpen] = useState(false);
+  const [workflowEvidenceDrawerOpen, setWorkflowEvidenceDrawerOpen] = useState(false);
+  const [workflowEvidenceDrawerFocus, setWorkflowEvidenceDrawerFocus] = useState<"gap" | "action" | "review">("gap");
   const [reviewQueue, setReviewQueue] = useState<any>(null);
   const [competitorCandidates, setCompetitorCandidates] = useState<any[]>([]);
   const [goldenLoading, setGoldenLoading] = useState(false);
@@ -649,12 +912,38 @@ export default function App() {
     setGoldenData(data);
     return data;
   }
+
+  async function openGoldenCaseWorkspaceForPrompt(promptId?: number | null) {
+    if (!promptId) {
+      message.warning("请先选择一个具体问题");
+      return;
+    }
+    setSelectedPromptId(promptId);
+    setPage("golden");
+    setGoldenLoading(true);
+    try {
+      message.loading({ content: "正在进入证据标注，准备引用正文和证据对齐...", duration: 0, key: "golden-workflow-entry" });
+      const prepared = await prepareGoldenCaseWorkspace(promptId);
+      message.destroy("golden-workflow-entry");
+      if (prepared?.prepare?.manual_todos?.length) {
+        message.warning("已准备证据标注数据；仍缺正文的来源请在表格中补录或重抓。");
+      } else {
+        message.success("已进入证据标注工作台");
+      }
+    } catch (error: any) {
+      message.destroy("golden-workflow-entry");
+      message.error(error.message || "证据标注数据准备失败");
+    } finally {
+      setGoldenLoading(false);
+    }
+  }
   const [loading, setLoading] = useState(false);
   const [retryingRuns, setRetryingRuns] = useState<Set<number>>(new Set());
   const [fallback, setFallback] = useState(false);
   const [promptForm] = Form.useForm();
   const [auditForm] = Form.useForm();
   const [projectForm] = Form.useForm();
+  const [citationTruthForm] = Form.useForm();
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<number | null>(null);
   const project = projects.find((item) => item.id === projectId);
@@ -662,6 +951,22 @@ export default function App() {
   const activePromptId = typeof promptContext === "number" ? promptContext : null;
   const scopedPrompt = activePromptId ? prompts.find((item) => item.id === activePromptId) : undefined;
   const visibleRuns = activePromptId ? runs.filter((item) => item.prompt_id === activePromptId) : runs;
+
+  function resetPromptScopedAnalysisState() {
+    citationDecisionRequestSeq.current += 1;
+    setStrategyPlan(null);
+    setSelectedChannels([]);
+    setStrategyBenchmarks({});
+    setStrategyOutcomes({});
+    setChannelOptions([]);
+    setStrategyExperiments([]);
+    setCitationDecisionData(null);
+    setCitationDecisionError(null);
+    setDecisionMarketEntities([]);
+    setDraftChannels([]);
+    setRefetchingSourceUrls(new Set());
+    setSourceRefetchResults({});
+  }
 
   function openProjectModal(id?: number) {
     if (id) {
@@ -730,14 +1035,8 @@ export default function App() {
     if (!targetProjectId) return;
     const seq = ++workflowRequestSeq.current;
     // 切换 Prompt 上下文时重置该 Prompt 专属的执行策略状态
-    setStrategyPlan(null);
-    setSelectedChannels([]);
-    setStrategyBenchmarks({});
-    setStrategyOutcomes({});
-    setChannelOptions([]);
-    setStrategyExperiments([]);
-    setDecisionMarketEntities([]);
-    setDraftChannels([]);
+    setWorkflowData(null);
+    resetPromptScopedAnalysisState();
     try {
       // pid 为 null 时由后端返回机器分析进度最好的 Prompt（项目视图默认）
       const target = pid ?? (await (await fetch(`/api/optimization/workflow/${targetProjectId}/default-prompt`)).json())?.prompt_id;
@@ -768,6 +1067,28 @@ export default function App() {
       const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
       setWorkflowData(wf);
     } catch { /* 状态刷新失败不影响当前页面 */ }
+  }
+
+  async function resolveDecisionMarketEntity(entityText: string, resolution: "CONFIRMED_COMPETITOR" | "TARGET_BRAND" | "REJECTED") {
+    const pid = currentWorkflowData?.prompt_id;
+    if (!projectId || !pid || !entityText) return;
+    const label = resolution === "CONFIRMED_COMPETITOR" ? "竞品" : resolution === "TARGET_BRAND" ? "目标品牌/别名" : "不进入决策";
+    setLoading(true);
+    try {
+      const resp = await fetch(`/api/optimization/workflow/${projectId}/${pid}/decision-market/entities/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entity_text: entityText, resolution }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const result = await resp.json();
+      message.success(`已把「${entityText}」标记为${label}，更新 ${result.updated_events || 0} 条答案事件`);
+      await loadWorkflowForPrompt(pid, projectId);
+    } catch (e: any) {
+      message.error(e.message || "修正失败");
+    } finally {
+      setLoading(false);
+    }
   }
 
   const dashboardRequestSeq = useRef(0);
@@ -876,10 +1197,28 @@ export default function App() {
     }
   }, [page, projectId, promptContext]);
   useEffect(() => {
-    if (page !== "optimization" || !projectId) return;
+    if ((page !== "optimization" && page !== "validation") || !projectId) return;
     loadOptimizationIssues().catch((error) => message.error(error.message || "加载实验闭环失败"));
     loadEvidencePackages(projectId).catch((error) => message.error(error.message || "加载证据失败"));
   }, [page, projectId]);
+  useEffect(() => {
+    if ((page !== "optimization" && page !== "validation") || !projectId) return;
+    const targetPromptId = activePromptId || workflowData?.prompt_id;
+    if (!targetPromptId) {
+      setCitationDecisionData(null);
+      return;
+    }
+    if (
+      workflowData &&
+      Number(workflowData.prompt_id) === Number(targetPromptId) &&
+      !workflowData.steps?.some((step: any) => step.key === "answer_semantic" && step.done)
+    ) {
+      setCitationDecisionData(null);
+      setCitationDecisionError(null);
+      return;
+    }
+    loadCitationDecisionV1(targetPromptId, true).catch(() => {});
+  }, [page, projectId, activePromptId, workflowData]);
 
   async function openRun(id: number) {
     setArtifact(undefined);
@@ -1128,6 +1467,206 @@ export default function App() {
       setStrategyData(null);
     }
     return packages;
+  }
+
+  function currentCitationDecisionPromptId() {
+    return activePromptId || workflowData?.prompt_id || null;
+  }
+
+  async function loadCitationDecisionV1(promptId?: number | null, silent = true) {
+    const targetPromptId = promptId || currentCitationDecisionPromptId();
+    if (!projectId || !targetPromptId) {
+      setCitationDecisionData(null);
+      setCitationDecisionError(null);
+      return null;
+    }
+    const seq = ++citationDecisionRequestSeq.current;
+    setCitationDecisionLoading(true);
+    setCitationDecisionError(null);
+    setCitationDecisionData(null);
+    try {
+      const data = await api.getCitationDecisionV1(projectId, targetPromptId);
+      if (seq !== citationDecisionRequestSeq.current) return null;
+      if (!citationDecisionBelongsToPrompt(data, targetPromptId)) {
+        throw new Error("引用资料优化决策返回的 Prompt 与当前页面不一致，已丢弃旧结果");
+      }
+      setCitationDecisionData(data);
+      if (!silent) message.success("引用资料优化决策已重新运行");
+      return data;
+    } catch (error: any) {
+      if (seq !== citationDecisionRequestSeq.current) return null;
+      const errorMessage = error.message || "引用资料优化决策运行失败";
+      setCitationDecisionData(null);
+      setCitationDecisionError(errorMessage);
+      if (!silent) message.error(errorMessage);
+      return null;
+    } finally {
+      if (seq === citationDecisionRequestSeq.current) setCitationDecisionLoading(false);
+    }
+  }
+
+  async function runCitationEvidenceForPrompt(promptId?: number | null) {
+    const targetPromptId = promptId || currentCitationDecisionPromptId();
+    if (!projectId || !targetPromptId) {
+      message.warning("请先选择一个具体问题");
+      return null;
+    }
+    const promptRuns = runs.filter((run: any) =>
+      Number(run.prompt_id) === Number(targetPromptId) &&
+      ["success", "partial_success"].includes(run.status)
+    );
+    if (!promptRuns.length) {
+      message.warning("当前问题没有可用于生成证据包的采集样本");
+      return null;
+    }
+    const runIds = promptRuns.map((run: any) => run.id);
+    setCitationDecisionLoading(true);
+    setCitationDecisionError(null);
+    try {
+      message.loading({ content: "正在生成证据包并运行引用证据链路...", duration: 0, key: "citation-evidence-run" });
+      const evidencePackage = await api.createEvidencePackage(projectId, {
+        prompt_id: targetPromptId,
+        run_ids: runIds,
+        source_note: "单 Prompt 主链路生成",
+      });
+      setSelectedPkgId(evidencePackage.id);
+      await loadEvidencePackages(projectId).catch(() => []);
+      const data = await api.getCitationDecisionV1(projectId, targetPromptId, evidencePackage.id);
+      if (!citationDecisionBelongsToPrompt(data, targetPromptId)) {
+        throw new Error("引用证据结果与当前 Prompt 不一致，已阻止渲染");
+      }
+      await loadWorkflowForPrompt(targetPromptId, projectId);
+      setCitationDecisionData(data);
+      message.destroy("citation-evidence-run");
+      message.success(`已生成证据包 #${evidencePackage.id}，引用证据链路已运行`);
+      return data;
+    } catch (error: any) {
+      message.destroy("citation-evidence-run");
+      const errorMessage = error.message || "引用证据链路运行失败";
+      setCitationDecisionData(null);
+      setCitationDecisionError(errorMessage);
+      message.error(errorMessage);
+      return null;
+    } finally {
+      setCitationDecisionLoading(false);
+    }
+  }
+
+  async function submitCitationProductTruth(values: any) {
+    if (!projectId) return;
+    const targetPromptId = currentCitationDecisionPromptId();
+    setCitationDecisionLoading(true);
+    try {
+      await api.upsertTargetBrandCapabilityTruth(projectId, {
+        capability_label: values.capability_label,
+        product_truth_status: values.product_truth_status,
+        truth_source: "MANUAL_CONFIRMED",
+        source_reference: values.source_reference || "",
+        note: values.note || "",
+        reviewed_by: "human",
+      });
+      citationTruthForm.resetFields(["capability_label", "source_reference", "note"]);
+      message.success("产品事实已补充，正在重新运行引用资料优化决策");
+      await loadCitationDecisionV1(targetPromptId, true);
+      if (recommendationData?.prompt_id === targetPromptId) {
+        await reloadRecommendationSnapshot().catch(() => {});
+      }
+    } catch (error: any) {
+      message.error(error.message || "产品事实补充失败");
+    } finally {
+      setCitationDecisionLoading(false);
+    }
+  }
+
+  async function confirmCitationRowProductTruth(row: any, productTruthStatus: string) {
+    if (!projectId) return;
+    const targetPromptId = currentCitationDecisionPromptId();
+    const capabilityLabel = citationCapabilityDraftFromRow(row);
+    const brandName = project?.brand_name || "目标品牌";
+    setCitationDecisionLoading(true);
+    try {
+      await api.upsertTargetBrandCapabilityTruth(projectId, {
+        capability_label: capabilityLabel,
+        product_truth_status: productTruthStatus,
+        truth_source: "MANUAL_CONFIRMED",
+        source_reference: "",
+        note: `行内人工确认：确认对象是${brandName}，不是对标文章或竞品。触发来源：${row.url || row.title || "未知来源"}`,
+        reviewed_by: "human",
+      });
+      message.success(`已记录${brandName}产品事实，正在重新运行链路`);
+      await loadCitationDecisionV1(targetPromptId, true);
+      if (recommendationData?.prompt_id === targetPromptId) {
+        await reloadRecommendationSnapshot().catch(() => {});
+      }
+    } catch (error: any) {
+      message.error(error.message || "目标品牌产品事实确认失败");
+    } finally {
+      setCitationDecisionLoading(false);
+    }
+  }
+
+  async function confirmCitationDecisionV1() {
+    const targetPromptId = currentCitationDecisionPromptId();
+    if (!projectId || !targetPromptId) {
+      message.warning("请先选择一个 Prompt");
+      return;
+    }
+    setCitationDecisionLoading(true);
+    try {
+      const latest = await loadCitationDecisionV1(targetPromptId, true);
+      if (!latest) return;
+      const actionKeys = (latest.recommended_actions || [])
+        .filter((item: any) => item.route === "CONTENT" || item.route === "EVIDENCE")
+        .map((item: any) => item.action_key)
+        .filter(Boolean);
+      if (actionKeys.length === 0) {
+        const blockedCount = (latest.source_analysis || []).filter((row: any) =>
+          (row.benchmark_tier === "PRIMARY_BENCHMARK" || row.benchmark_tier === "SECONDARY_BENCHMARK") &&
+          row.source_gap_precondition === "PRODUCT_TRUTH_UNKNOWN"
+        ).length;
+        message.warning(blockedCount > 0
+          ? `还有 ${blockedCount} 条对标来源缺少目标品牌产品事实，暂不能创建实验草案`
+          : "当前没有可确认的内容/证据动作；可能没有真实缺口，或只剩产品评估/不需要动作");
+        return;
+      }
+      const result = await api.confirmCitationDecisionV1(projectId, targetPromptId, {
+        evidence_package_id: latest.evidence_package_id,
+        action_keys: actionKeys,
+        create_experiments: true,
+        reviewer: "human",
+        review_note: "前端确认引用资料优化决策推荐动作",
+      });
+      message.success(`已确认 ${result.action_count || actionKeys.length} 个动作并创建实验草案`);
+      await Promise.all([
+        loadCitationDecisionV1(targetPromptId, true),
+        loadOptimizationIssues(),
+      ]);
+    } catch (error: any) {
+      message.error(error.message || "确认引用资料优化决策失败");
+    } finally {
+      setCitationDecisionLoading(false);
+    }
+  }
+
+  async function continueWorkflowAnalysis() {
+    if (!projectId || !workflowData?.prompt_id) {
+      message.warning("请先选择一个 Prompt");
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/continue`, { method: "POST" });
+      if (!response.ok) throw new Error(await response.text());
+      const result = await response.json();
+      setWorkflowData({ ...workflowData, continueResult: result });
+      message.success("缺口与动作已生成");
+      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
+      setWorkflowData({ ...wf, continueResult: result });
+    } catch (error: any) {
+      message.error(error.message || "继续分析失败，请确认审核已全部完成");
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function selectEvidencePackage(packageId: number, silent = false) {
@@ -1470,6 +2009,168 @@ export default function App() {
       value: `candidate:${candidate.id}`,
     })),
   ];
+  const citationTargetPromptId = currentCitationDecisionPromptId();
+  const currentWorkflowData = workflowData && (!citationTargetPromptId || Number(workflowData.prompt_id) === Number(citationTargetPromptId))
+    ? workflowData
+    : null;
+  const currentCitationDecisionData = citationDecisionBelongsToPrompt(citationDecisionData, citationTargetPromptId)
+    ? citationDecisionData
+    : null;
+  const citationRows = currentCitationDecisionData?.source_analysis || [];
+  const citationSummary = currentCitationDecisionData?.summary || {};
+  const citationBenchmarkRows = citationRows.filter((row: any) => row.benchmark_tier === "PRIMARY_BENCHMARK" || row.benchmark_tier === "SECONDARY_BENCHMARK");
+  const citationProductTruthBlockedRows = citationBenchmarkRows.filter((row: any) => row.source_gap_precondition === "PRODUCT_TRUTH_UNKNOWN");
+  const citationRecommendedActions = currentCitationDecisionData?.recommended_actions || [];
+  const citationConfirmableActions = citationRecommendedActions.filter((item: any) => item.route === "CONTENT" || item.route === "EVIDENCE");
+  const citationChannelOpportunities = currentCitationDecisionData?.channel_opportunities || [];
+  const citationCanConfirm = citationConfirmableActions.length > 0;
+  const citationLoaded = Boolean(currentCitationDecisionData);
+  const citationNeedsEvidencePackage = Boolean(citationDecisionError?.includes("尚无 Evidence Package") || citationDecisionError?.includes("尚无证据包"));
+  const eligibleBenchmarkCount = (citationSummary.primary_benchmark_count || 0) + (citationSummary.secondary_benchmark_count || 0);
+  const unknownGapCount = citationRows.filter((row: any) => row.source_gap_type === "UNKNOWN").length;
+  const currentContinueResult = citationLoaded ? currentWorkflowData?.continueResult : null;
+  const legacyContinueResult = !citationLoaded ? currentWorkflowData?.continueResult : null;
+  const citationStepItems = [
+    {
+      title: "引用来源",
+      description: citationLoaded ? `${citationSummary.source_count ?? 0} 个来源` : "等待加载",
+      status: citationLoaded ? "finish" : citationDecisionError ? "error" : "wait",
+    },
+    {
+      title: "对标来源",
+      description: citationLoaded ? `核心 ${citationSummary.primary_benchmark_count ?? 0} / 辅助 ${citationSummary.secondary_benchmark_count ?? 0}` : "等待来源资格判断",
+      status: citationLoaded ? ((citationSummary.primary_benchmark_count || citationSummary.secondary_benchmark_count) ? "finish" : "process") : "wait",
+    },
+    {
+      title: "缺口",
+      description: citationProductTruthBlockedRows.length ? `${citationProductTruthBlockedRows.length} 条卡在产品事实` : citationLoaded ? "已完成资格判断" : "等待对标结果",
+      status: citationProductTruthBlockedRows.length ? "error" : currentCitationDecisionData ? "finish" : "wait",
+    },
+    {
+      title: "动作",
+      description: citationLoaded ? `${citationSummary.recommended_action_count ?? 0} 个动作` : "等待缺口判断",
+      status: citationCanConfirm ? "finish" : currentCitationDecisionData ? "process" : "wait",
+    },
+    {
+      title: "实验",
+      description: citationCanConfirm ? "待人工确认创建草案" : "等待动作闸门",
+      status: citationCanConfirm ? "process" : "wait",
+    },
+  ] as any[];
+  const collectedRunCount = visibleRuns.filter((run: any) => ["success", "partial_success"].includes(run.status)).length;
+  const workflowStepByKey = (key: string) => currentWorkflowData?.steps?.find((step: any) => step.key === key);
+  const answerSemanticStep = workflowStepByKey("answer_semantic");
+  const eventReviewStep = workflowStepByKey("event_review");
+  const answerStepDone = Boolean(answerSemanticStep?.done);
+  const answerReviewDone = Boolean(eventReviewStep?.done);
+  const answerStepBlocked = Boolean(currentWorkflowData && !answerStepDone && answerReviewDone);
+  const productTruthStep = workflowStepByKey("product_truth");
+  const productTruthDone = Boolean(answerStepDone && productTruthStep?.done);
+  const currentCitationLoaded = Boolean(answerStepDone && citationLoaded);
+  const currentCitationNeedsEvidencePackage = Boolean(answerStepDone && citationNeedsEvidencePackage);
+  const unresolvedAction = currentContinueResult?.action?.intervention_goal === "UNRESOLVED";
+  const mainWorkflowSteps = [
+    {
+      key: "collect",
+      label: "采集样本",
+      statusText: collectedRunCount > 0 ? "已完成" : "待采集",
+      detail: collectedRunCount > 0 ? `${collectedRunCount} 次可观察采集` : "等待采集",
+      tone: collectedRunCount > 0 ? "done" : "pending",
+      actionLabel: "查看采集",
+      onAction: () => setPage("runs"),
+    },
+    {
+      key: "answer",
+      label: "答案决策识别",
+      statusText: answerStepDone ? "已完成" : answerStepBlocked ? "需修正识别" : currentWorkflowData ? "待审核" : "待分析",
+      detail: answerStepDone ? (answerSemanticStep?.detail || "已识别答案里的品牌/方案选择事件") : answerStepBlocked ? (answerSemanticStep?.detail || "没有有效选择事件，不能进入后续链路") : currentWorkflowData ? `${currentWorkflowData.pending_review_steps || 0} 步待审核` : "进入详情生成机器诊断",
+      tone: answerStepDone ? "done" : answerStepBlocked ? "warning" : currentWorkflowData ? "current" : "pending",
+      actionLabel: !currentWorkflowData ? "进入诊断" : answerStepDone ? "查看依据" : answerStepBlocked ? "去修正诊断" : "开始审核",
+      onAction: !currentWorkflowData
+        ? () => setPage("recommendation")
+        : answerStepDone
+          ? () => { setWorkflowEvidenceDrawerFocus("review"); setWorkflowEvidenceDrawerOpen(true); }
+          : answerStepBlocked
+            ? () => setPage("recommendation")
+            : () => setWorkflowReviewOpen(true),
+    },
+    {
+      key: "truth",
+      label: "目标品牌事实",
+      statusText: !answerStepDone ? "等待识别" : citationProductTruthBlockedRows.length ? "待补充" : productTruthDone ? "已完成" : "可补充",
+      detail: citationProductTruthBlockedRows.length
+        ? `${citationProductTruthBlockedRows.length} 条目标品牌能力待确认`
+        : productTruthDone
+          ? "已有目标品牌事实，可后续增量补充"
+          : answerStepDone
+            ? "先确认目标品牌真实能力，后续对标可追加"
+            : "先完成答案决策识别",
+      tone: !answerStepDone ? "pending" : citationProductTruthBlockedRows.length || !productTruthDone ? "current" : "done",
+      actionLabel: answerStepDone ? (citationProductTruthBlockedRows.length ? "补充事实" : "查看事实") : "",
+      onAction: answerStepDone ? () => setPage("optimization") : undefined,
+    },
+    {
+      key: "citation",
+      label: "引用证据",
+      statusText: !answerStepDone ? "未开始" : currentCitationLoaded ? "已完成" : citationDecisionLoading ? "运行中" : currentCitationNeedsEvidencePackage ? "待生成证据包" : citationDecisionError ? "待重试" : "待运行",
+      detail: !answerStepDone ? "先完成答案决策识别" : currentCitationLoaded ? `${citationSummary.source_count ?? 0} 个当前来源，去补正文和证据对齐` : currentCitationNeedsEvidencePackage ? "当前问题尚无证据包；正文已补齐后可直接生成并运行" : citationDecisionError ? "当前链路运行失败，可重试或核对引用正文" : "生成当前问题的证据包，并运行引用正文和证据对齐",
+      tone: currentCitationLoaded ? "done" : answerStepDone && citationDecisionLoading ? "current" : "pending",
+      actionLabel: answerStepDone ? (currentCitationLoaded ? "查看证据正文" : currentCitationNeedsEvidencePackage || citationDecisionError ? "生成证据包" : "运行引用证据") : "",
+      onAction: answerStepDone
+        ? currentCitationLoaded
+          ? () => openGoldenCaseWorkspaceForPrompt(citationTargetPromptId)
+          : () => runCitationEvidenceForPrompt(citationTargetPromptId)
+        : undefined,
+    },
+    {
+      key: "benchmark",
+      label: "对标来源",
+      statusText: currentCitationLoaded ? "已判断" : "未开始",
+      detail: currentCitationLoaded ? (eligibleBenchmarkCount > 0 ? `核心 ${citationSummary.primary_benchmark_count ?? 0} / 辅助 ${citationSummary.secondary_benchmark_count ?? 0}` : "0 个可信对标（允许）") : "等待引用证据",
+      tone: currentCitationLoaded ? "done" : "pending",
+      actionLabel: currentCitationLoaded ? "查看对标" : "",
+      onAction: currentCitationLoaded ? () => setPage("optimization") : undefined,
+    },
+    {
+      key: "gap",
+      label: "缺口诊断",
+      statusText: !currentCitationLoaded ? "未开始" : eligibleBenchmarkCount === 0 ? "暂无缺口" : unknownGapCount > 0 ? "待人工判断" : "已完成",
+      detail: !currentCitationLoaded ? "等待对标来源" : eligibleBenchmarkCount === 0 ? "暂无可分析 Benchmark，不生成竞争缺口" : unknownGapCount > 0 ? `${unknownGapCount} 条缺口需要人工判断` : "已基于对标来源完成缺口判断",
+      tone: !currentCitationLoaded ? "pending" : unknownGapCount > 0 ? "current" : "done",
+      actionLabel: currentCitationLoaded ? "查看缺口" : "",
+      onAction: currentCitationLoaded ? () => setPage("optimization") : undefined,
+    },
+    {
+      key: "action",
+      label: "推荐动作",
+      statusText: citationCanConfirm ? "待确认" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : currentCitationLoaded ? "无动作" : "未开始",
+      detail: citationCanConfirm ? `${citationConfirmableActions.length} 个当前动作可确认` : unresolvedAction || unknownGapCount > 0 ? "请查看依据后人工判断，不自动生成动作" : currentCitationLoaded ? "没有可执行内容/证据动作" : "等待缺口诊断",
+      tone: citationCanConfirm || unresolvedAction ? "current" : currentCitationLoaded ? "done" : "pending",
+      actionLabel: citationCanConfirm ? "确认动作" : unresolvedAction ? "查看依据" : "",
+      onAction: citationCanConfirm ? confirmCitationDecisionV1 : unresolvedAction ? () => { setWorkflowEvidenceDrawerFocus("action"); setWorkflowEvidenceDrawerOpen(true); } : undefined,
+    },
+    {
+      key: "experiment",
+      label: "实验草案",
+      statusText: citationCanConfirm ? "待创建" : currentCitationLoaded ? "未创建" : "未开始",
+      detail: citationCanConfirm ? "确认当前动作后创建草案" : currentCitationLoaded ? "当前无可创建草案的动作" : "等待推荐动作",
+      tone: citationCanConfirm ? "current" : "pending",
+      actionLabel: citationCanConfirm ? "确认并创建" : "",
+      onAction: citationCanConfirm ? confirmCitationDecisionV1 : undefined,
+    },
+  ];
+  const workflowToneMeta: Record<string, { color: string; text: string; className: string }> = {
+    done: { color: "green", text: "完成", className: "done" },
+    current: { color: "blue", text: "当前", className: "current" },
+    warning: { color: "gold", text: "待补", className: "warning" },
+    error: { color: "red", text: "异常", className: "error" },
+    pending: { color: "default", text: "等待", className: "pending" },
+  };
+  const unresolvedReviewContext = currentContinueResult?.review_context || {};
+  const unresolvedAnswerSamples = unresolvedReviewContext.answer_samples || [];
+  const unresolvedEventDiagnostics = unresolvedReviewContext.event_diagnostics || [];
+  const unresolvedEventStatusCounts = unresolvedReviewContext.event_status_counts || {};
+  const decisionMarketUnknownEntities = decisionMarketEntities.filter((item: any) => item.relationship === "UNKNOWN_ENTITY");
 
   return <Layout className="app-shell">
     <Sider width={228} className="side-nav">
@@ -1529,92 +2230,121 @@ export default function App() {
               <Col xs={12} md={8} lg={4}><Statistic title="已审核完成" value={promptOverview.prompts_reviews_done} suffix="个" /></Col>
             </Row>
           </Card>}
-          {projectId && activePromptId && workflowData && <Card size="small" title={<Space><ShieldCheck size={18} />GEO 工作台 · Prompt #{workflowData.prompt_id}</Space>} extra={<Space>
-            <Button size="small" onClick={()=>setPage("recommendation")}>决策诊断</Button>
-            <Button size="small" onClick={()=>setPage("optimization")}>执行策略</Button>
-            {workflowData.shelved
+          {projectId && activePromptId && <Card size="small" title={<Space><ShieldCheck size={18} />GEO 工作台 · Prompt #{currentWorkflowData?.prompt_id || activePromptId}</Space>} extra={<Space>
+            <Button size="small" onClick={()=>setPage("recommendation")}>决策诊断详情</Button>
+            <Button size="small" onClick={()=>setPage("optimization")}>执行策略详情</Button>
+            {currentWorkflowData ? (currentWorkflowData.shelved
               ? <Tag color="volcano">已人工搁置</Tag>
-              : workflowData.all_reviews_done
-                ? <Button type="primary" size="small" loading={loading} onClick={async()=>{
-                    setLoading(true);
-                    try{
-                      const result = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/continue`,{method:"POST"})).json();
-                      setWorkflowData({...workflowData, continueResult: result});
-                      message.success("Gap 与 Action 已生成");
-                      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
-                      setWorkflowData({...wf, continueResult: result});
-                    }catch(e:any){message.error(e.message||"继续分析失败，请确认审核已全部完成")}
-                    finally{setLoading(false)}
-                  }}>继续分析</Button>
-                : <Button type="primary" size="small" danger onClick={()=>setWorkflowReviewOpen(true)}>开始审核（{workflowData.pending_review_steps} 步待处理）</Button>}
+              : currentWorkflowData.ready_to_continue
+                ? <Tag color="green">答案识别已完成</Tag>
+                : answerStepBlocked
+                  ? <Tag color="gold">答案识别需修正</Tag>
+                : <Button type="primary" size="small" danger onClick={()=>setWorkflowReviewOpen(true)}>开始审核（{currentWorkflowData.pending_review_steps} 步待处理）</Button>)
+              : <Tag color="blue">等待当前 Prompt 状态</Tag>}
           </Space>}>
-            <Row gutter={[8,8]}>
-              {workflowData.steps.map((s:any)=><Col key={s.key} xs={12} md={8} lg={4}>
-                <Space size={4}>
-                  <Tag color={s.done ? "green" : s.key==="gap"||s.key==="action"||s.key==="experiment" ? "default" : "orange"}>{s.done ? "✓" : s.key==="gap"||s.key==="action"||s.key==="experiment" ? "·" : "!"}</Tag>
-                  <Text type={s.done ? undefined : "secondary"} style={{fontSize:12}}>{s.label}</Text>
-                </Space>
-                <div style={{fontSize:11, color:"#999", marginLeft:24}}>{s.detail}</div>
-              </Col>)}
-            </Row>
-            {workflowData.continueResult && <Space direction="vertical" size={4} style={{width:"100%", marginTop:8}}>
-              <Alert type={workflowData.continueResult.gap?.gap_type==="UNRESOLVED" ? "warning" : "success"} showIcon
-                message={<Space><Text strong>Gap：{workflowData.continueResult.gap?.gap_type}</Text><Tag>{workflowData.continueResult.gap?.confidence}</Tag>
-                  {!workflowData.steps.find((s:any)=>s.key==="gap")?.done && <Button size="small" type="primary" onClick={async()=>{
-                    await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/confirm-decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step_key:"gap",decision_status:"CONFIRMED"})});
-                    message.success("Gap 已确认");
-                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
-                    setWorkflowData({...wf, continueResult: workflowData.continueResult});
-                  }}>确认此 Gap</Button>}
+            <div className="single-prompt-flow">
+              {mainWorkflowSteps.map((step: any, index: number) => {
+                const tone = workflowToneMeta[step.tone] || workflowToneMeta.pending;
+                return <div key={step.key} className={`workflow-step-card ${tone.className}`}>
+                  <div className="workflow-step-head">
+                    <span className="workflow-step-index">{index + 1}</span>
+                    <Space size={6} wrap>
+                      <Text strong>{step.label}</Text>
+                      <Tag color={tone.color}>{step.statusText || tone.text}</Tag>
+                    </Space>
+                  </div>
+                  <Text type="secondary" className="workflow-step-detail">{step.detail}</Text>
+                  {step.actionLabel && <Button
+                    size="small"
+                    type={step.tone === "current" ? "primary" : "default"}
+                    loading={(step.key === "citation" || step.key === "action" || step.key === "experiment") && citationDecisionLoading}
+                    onClick={step.onAction}
+                  >
+                    {step.actionLabel}
+                  </Button>}
+                </div>;
+              })}
+            </div>
+            <Space wrap style={{ marginTop: 12 }}>
+              <Tag color={citationDecisionStatusColor(currentCitationDecisionData?.status)}>{citationDecisionStatusLabel(currentCitationDecisionData?.status)}</Tag>
+              {answerStepDone && citationDecisionError && <Tag color="red">引用链路异常</Tag>}
+              <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>刷新主链路</Button>
+              <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>确认推荐动作</Button>
+              <Button size="small" onClick={() => setPage("optimization")}>{citationProductTruthBlockedRows.length ? "补目标品牌事实" : "执行策略详情"}</Button>
+              {citationProductTruthBlockedRows.length > 0 && <Text type="secondary">这里确认的是{project?.brand_name || "目标品牌"}自己的能力，不是竞品或对标文章的能力。</Text>}
+              {legacyContinueResult && <Tag color="default">存在历史缺口/动作结果，不计入当前引用决策进度</Tag>}
+            </Space>
+            {currentWorkflowData && currentContinueResult && <Space direction="vertical" size={4} style={{width:"100%", marginTop:8}}>
+              <Alert type={currentContinueResult.gap?.gap_type==="UNRESOLVED" ? "warning" : "success"} showIcon
+                message={<Space wrap><Text strong>缺口：{decisionDisplayText(currentContinueResult.gap?.gap_type)}</Text><Tag>{decisionDisplayText(currentContinueResult.gap?.confidence)}</Tag>
+                  <Button size="small" onClick={() => { setWorkflowEvidenceDrawerFocus("gap"); setWorkflowEvidenceDrawerOpen(true); }}>查看依据</Button>
+                  {!currentWorkflowData.steps.find((s:any)=>s.key==="gap")?.done && <Button size="small" type="primary" onClick={async()=>{
+                    await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/confirm-decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step_key:"gap",decision_status:"CONFIRMED"})});
+                    message.success("缺口已确认");
+                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/status`)).json();
+                    setWorkflowData({...wf, continueResult: currentContinueResult});
+                  }}>确认此缺口</Button>}
                 </Space>}
-                description={workflowData.continueResult.gap?.basis} />
-              <Alert type={workflowData.continueResult.action?.intervention_goal==="UNRESOLVED" ? "warning" : "info"} showIcon
-                message={<Space><Text strong>Action：{workflowData.continueResult.action?.intervention_goal}</Text><Tag>{workflowData.continueResult.action?.asset_ownership}</Tag><Tag>{workflowData.continueResult.action?.target_platform}</Tag>
-                  {workflowData.continueResult.action?.intervention_goal!=="UNRESOLVED" && !workflowData.steps.find((s:any)=>s.key==="action")?.done && <Button size="small" type="primary" onClick={async()=>{
-                    await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/confirm-decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step_key:"action",decision_status:"CONFIRMED"})});
-                    message.success("Action 已确认");
-                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
-                    setWorkflowData({...wf, continueResult: workflowData.continueResult});
-                  }}>确认此 Action</Button>}
+                description={currentContinueResult.gap?.basis} />
+              <Alert type={currentContinueResult.action?.intervention_goal==="UNRESOLVED" ? "warning" : "info"} showIcon
+                message={<Space wrap><Text strong>动作：{decisionDisplayText(currentContinueResult.action?.intervention_goal)}</Text><Tag>{decisionDisplayText(currentContinueResult.action?.asset_ownership)}</Tag><Tag>{decisionDisplayText(currentContinueResult.action?.target_platform)}</Tag>
+                  <Button size="small" onClick={() => { setWorkflowEvidenceDrawerFocus("action"); setWorkflowEvidenceDrawerOpen(true); }}>查看依据</Button>
+                  {currentContinueResult.action?.intervention_goal!=="UNRESOLVED" && !currentWorkflowData.steps.find((s:any)=>s.key==="action")?.done && <Button size="small" type="primary" onClick={async()=>{
+                    await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/confirm-decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step_key:"action",decision_status:"CONFIRMED"})});
+                    message.success("动作已确认");
+                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/status`)).json();
+                    setWorkflowData({...wf, continueResult: currentContinueResult});
+                  }}>确认此动作</Button>}
                 </Space>}
-                description={workflowData.continueResult.action?.intervention_goal==="UNRESOLVED"
-                  ? (workflowData.continueResult.action?.note || "")
-                  : workflowData.continueResult.action?.target_claim} />
+                description={currentContinueResult.action?.intervention_goal==="UNRESOLVED"
+                  ? (currentContinueResult.action?.note || "")
+                  : currentContinueResult.action?.target_claim} />
             </Space>}
-            {workflowData.shelved && <Alert type="warning" showIcon
-              message={`该 Prompt 已人工搁置：${workflowData.shelved_note || "机器无法确定缺口类型"}`}
+            {currentWorkflowData?.shelved && <Alert type="warning" showIcon
+              message={`该 Prompt 已人工搁置：${currentWorkflowData.shelved_note || "机器无法确定缺口类型"}`}
               description="补充采集数据后可重新运行机器分析。" />}
-            {workflowData.continueResult?.action?.intervention_goal==="UNRESOLVED" && !workflowData.shelved && <Alert type="warning" showIcon
-              message="人工决策：机器无法确定干预方向"
-              description={<Space direction="vertical" size={4} style={{width:"100%"}}>
-                <Space wrap>
-                  <Text>干预方向：</Text>
-                  <Select size="small" style={{minWidth:220}} value={resolveGoal} onChange={setResolveGoal}
-                    options={[{value:"EVIDENCE_STRENGTHEN",label:"证据强化 (EVIDENCE_STRENGTHEN)"}]} />
-                  <Input size="small" style={{width:320}} placeholder="理由（必填，记录在案）" value={resolveReason} onChange={(e)=>setResolveReason(e.target.value)} />
+            {currentContinueResult?.action?.intervention_goal==="UNRESOLVED" && !currentWorkflowData?.shelved && <Space direction="vertical" size={8} style={{ width: "100%", marginTop: 8 }}>
+              <Alert
+                type="warning"
+                showIcon
+                message="人工决策：机器无法确定干预方向"
+                description={<Space direction="vertical" size={6}>
+                  <Text>{unresolvedReviewContext.review_instruction || "请先核对答案样本，再决定是否人工指定方向或搁置。"}</Text>
+                  <Button size="small" onClick={() => { setWorkflowEvidenceDrawerFocus("review"); setWorkflowEvidenceDrawerOpen(true); }}>查看答案和机器识别依据</Button>
+                </Space>}
+              />
+              <Card size="small" title="人工决策入口">
+                <Space direction="vertical" size={8} style={{width:"100%"}}>
+                  <Space wrap>
+                    <Text>干预方向：</Text>
+                    <Select size="small" style={{minWidth:220}} value={resolveGoal} onChange={setResolveGoal}
+                      options={[{value:"EVIDENCE_STRENGTHEN",label:"证据强化"}]} />
+                    <Input size="small" style={{width:320}} placeholder="理由（必填，记录在案）" value={resolveReason} onChange={(e)=>setResolveReason(e.target.value)} />
+                  </Space>
+                  <Space>
+                    <Button size="small" type="primary" onClick={async()=>{
+                      if (!resolveReason.trim()) { message.warning("请填写人工指定方向的理由"); return; }
+                      try {
+                        await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/resolve-unresolved`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"OVERRIDE",intervention_goal:resolveGoal,reason:resolveReason.trim()})});
+                        message.success(`已按人工指定方向「${decisionDisplayText(resolveGoal)}」继续`);
+                        const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/status`)).json();
+                        setWorkflowData({...wf, continueResult: {...currentContinueResult, action: {...currentContinueResult.action, intervention_goal: resolveGoal, target_claim: `人工指定方向：${resolveGoal}。理由：${resolveReason.trim()}`}}});
+                      } catch(e:any) { message.error(e.message || "操作失败"); }
+                    }}>按此方向继续</Button>
+                    <Button size="small" onClick={async()=>{
+                      try {
+                        await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/resolve-unresolved`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"SHELVE",reason:resolveReason.trim()})});
+                        message.success("已标记搁置");
+                        const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/status`)).json();
+                        setWorkflowData({...wf, continueResult: currentContinueResult});
+                      } catch(e:any) { message.error(e.message || "操作失败"); }
+                    }}>标记搁置并结束</Button>
+                  </Space>
                 </Space>
-                <Space>
-                  <Button size="small" type="primary" onClick={async()=>{
-                    if (!resolveReason.trim()) { message.warning("请填写人工指定方向的理由"); return; }
-                    try {
-                      await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/resolve-unresolved`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"OVERRIDE",intervention_goal:resolveGoal,reason:resolveReason.trim()})});
-                      message.success(`已按人工指定方向「${resolveGoal}」继续`);
-                      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
-                      setWorkflowData({...wf, continueResult: {...workflowData.continueResult, action: {...workflowData.continueResult.action, intervention_goal: resolveGoal, target_claim: `人工指定方向：${resolveGoal}。理由：${resolveReason.trim()}`}}});
-                    } catch(e:any) { message.error(e.message || "操作失败"); }
-                  }}>按此方向继续</Button>
-                  <Button size="small" onClick={async()=>{
-                    try {
-                      await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/resolve-unresolved`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"SHELVE",reason:resolveReason.trim()})});
-                      message.success("已标记搁置");
-                      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
-                      setWorkflowData({...wf, continueResult: workflowData.continueResult});
-                    } catch(e:any) { message.error(e.message || "操作失败"); }
-                  }}>标记搁置并结束</Button>
-                </Space>
-              </Space>} />}
+              </Card>
+            </Space>}
             {/* 渠道选择 + 内容大纲（Action 确认后） */}
-            {workflowData.steps.find((s:any)=>s.key==="action")?.done && <Card size="small" title="渠道选择与内容大纲">
+            {currentWorkflowData?.steps.find((s:any)=>s.key==="action")?.done && currentContinueResult && <Card size="small" title="渠道选择与内容大纲">
               {!workflowData.channelDrafts ? <Space direction="vertical" size={8} style={{width:"100%"}}>
                 <Text>选择发布渠道（可多选，人工决策，系统不代选）：</Text>
                 {channelStrategy && <Card size="small" style={{ background: "#fafafa" }}>
@@ -1648,20 +2378,20 @@ export default function App() {
                 <Button size="small" type="primary" disabled={draftChannels.length===0} loading={loading} onClick={async()=>{
                   setLoading(true);
                   try{
-                    const r = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/select-channels`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channels:draftChannels})})).json();
+                    const r = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/select-channels`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channels:draftChannels})})).json();
                     const labelMap = Object.fromEntries(CHANNEL_BUTTONS);
                     setWorkflowData({...workflowData, channelDrafts: (r.drafts||[]).map((d:any)=>({...d, channelLabel: labelMap[d.channel] || d.channel}))});
-                    message.success(`已为 ${r.drafts?.length||0} 个渠道创建 Experiment 草案，逐平台生成内容`);
+                  message.success(`已为 ${r.drafts?.length||0} 个渠道创建实验草案，逐平台生成内容`);
                   }catch(e:any){message.error(e.message)}
                   finally{setLoading(false)}
                 }}>确认选择（{draftChannels.length} 个渠道）</Button>
               </Space> : <Space direction="vertical" size={8} style={{width:"100%"}}>
                 {workflowData.channelDrafts.map((d:any)=> <Card key={d.experiment_id} size="small"
-                  title={<Space><Tag color="geekblue">{d.channelLabel || d.channel}</Tag><Text strong>Experiment 草案 #{d.experiment_id}</Text><Tag color="orange">blocked: 等待内容生产</Tag></Space>}>
+                  title={<Space><Tag color="geekblue">{d.channelLabel || d.channel}</Tag><Text strong>实验草案 #{d.experiment_id}</Text><Tag color="orange">等待内容生产</Tag></Space>}>
                   {!d.outline ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
                     setLoading(true);
                     try{
-                      const outline = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/generate-outline`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:d.channel})})).json();
+                      const outline = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/generate-outline`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:d.channel})})).json();
                       setWorkflowData({...workflowData, channelDrafts: workflowData.channelDrafts.map((x:any)=>x.experiment_id===d.experiment_id ? {...x, outline} : x)});
                     }catch(e:any){message.error(e.message)}
                     finally{setLoading(false)}
@@ -1675,7 +2405,7 @@ export default function App() {
                     {!d.brief ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
                       setLoading(true);
                       try{
-                        const brief = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/generate-brief`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:d.channel,outline:d.outline})})).json();
+                        const brief = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/generate-brief`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:d.channel,outline:d.outline})})).json();
                         setWorkflowData({...workflowData, channelDrafts: workflowData.channelDrafts.map((x:any)=>x.experiment_id===d.experiment_id ? {...x, brief} : x)});
                       }catch(e:any){message.error(e.message)}
                       finally{setLoading(false)}
@@ -1726,21 +2456,39 @@ export default function App() {
           </Card>
         </Space> : page === "recommendation" ? <Space direction="vertical" size={16} className="page-stack">
           {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下仅展示该 Prompt 的决策诊断；切回「全部 Prompt」查看项目整体。" />}
-          {projectId && workflowData && <Card size="small" title={<Space><Text strong>决策诊断主路径</Text><Tag>{workflowData.prompt_id ? `Prompt #${workflowData.prompt_id}` : ""}</Tag></Space>} extra={<Button size="small" onClick={()=>setWorkflowReviewOpen(true)}>进入审核</Button>}>
+          {projectId && currentWorkflowData && <Card size="small" title={<Space><Text strong>决策诊断主路径</Text><Tag>{currentWorkflowData.prompt_id ? `Prompt #${currentWorkflowData.prompt_id}` : ""}</Tag></Space>} extra={answerStepBlocked ? <Tag color="gold">需要先修正识别对象</Tag> : <Button size="small" onClick={()=>setWorkflowReviewOpen(true)}>进入审核</Button>}>
             <Space direction="vertical" size={8} style={{width:"100%"}}>
+              {answerStepBlocked && <Alert
+                type="warning"
+                showIcon
+                message="答案里有推荐对象，但机器没有形成有效的答案决策识别"
+                description="请先在下方确认这些对象是目标品牌、竞品，还是不进入决策。确认后系统会刷新当前 Prompt 的主链路；不要再进入空审核工作台。"
+              />}
               {/* Section 1: Decision Market */}
-              <Text strong>Decision Market（AI 真实决策）</Text>
-              <Table size="small" rowKey="entity" pagination={false}
+              <Text strong>答案决策对象</Text>
+              {decisionMarketUnknownEntities.length > 0 && <Alert
+                type="info"
+                showIcon
+                message={`有 ${decisionMarketUnknownEntities.length} 个推荐对象待确认`}
+                description="一般先确认竞品/候选品牌；如果是你自己的品牌或别名，选择「设为目标品牌」；明显不是品牌或方案对象时选择「不进入决策」。"
+              />}
+              <Table size="small" rowKey="entity_text" pagination={false}
                 dataSource={decisionMarketEntities}
                 columns={[
                   {title:"实体",dataIndex:"entity_text",width:120,render:(v:string)=><Text strong>{v}</Text>},
-                  {title:"关系",width:120,render:(_:any,r:any)=><Tag color={r.relationship==="TARGET"?"blue":r.relationship==="CONFIRMED_COMPETITOR"?"volcano":"default"}>{r.relationship==="TARGET"?"目标品牌":r.relationship==="CONFIRMED_COMPETITOR"?"已确认竞品":"未知实体"}</Tag>},
-                  {title:"行为",width:120,render:(_:any,r:any)=><Tag>{r.speech_act}</Tag>},
+                  {title:"关系",width:130,render:(_:any,r:any)=><Tag color={decisionEntityRelationshipColor(r.relationship)}>{r.relationship_label || decisionEntityRelationshipLabel(r.relationship)}</Tag>},
+                  {title:"行为",width:120,render:(_:any,r:any)=><Tag>{r.speech_act_label || speechActLabel(r.speech_act)}</Tag>},
                   {title:"覆盖",width:80,render:(_:any,r:any)=><Text>{r.run_coverage}</Text>},
+                  {title:"机器状态",width:190,render:(_:any,r:any)=><Space wrap size={4}>{Object.entries(r.review_status_counts || {}).map(([status,count]:any)=><Tag key={status}>{reviewStatusLabel(status)}：{count}</Tag>)}</Space>},
                   {title:"理由数",width:70,render:(_:any,r:any)=><Text>{r.reasons.length}</Text>},
+                  {title:"修正",width:260,render:(_:any,r:any)=>(r.relationship==="UNKNOWN_ENTITY" || answerStepBlocked) ? <Space wrap size={4}>
+                    <Button size="small" type="primary" loading={loading} onClick={()=>resolveDecisionMarketEntity(r.entity_text, "CONFIRMED_COMPETITOR")}>确认为竞品</Button>
+                    <Button size="small" loading={loading} onClick={()=>resolveDecisionMarketEntity(r.entity_text, "TARGET_BRAND")}>设为目标品牌</Button>
+                    <Button size="small" danger loading={loading} onClick={()=>resolveDecisionMarketEntity(r.entity_text, "REJECTED")}>不进入决策</Button>
+                  </Space> : <Text type="secondary">已确认</Text>},
                 ]} />
               {/* Section 2/3: Winning Reasons + Evidence */}
-              {decisionMarketEntities.filter((e:any)=>e.reasons.length>0).map((e:any)=><Card key={e.entity_text} size="small" title={<Space><Text strong>{e.entity_text} 为什么进入答案？</Text><Tag>{e.speech_act}</Tag></Space>}>
+              {decisionMarketEntities.filter((e:any)=>e.reasons.length>0).map((e:any)=><Card key={e.entity_text} size="small" title={<Space><Text strong>{e.entity_text} 为什么进入答案？</Text><Tag>{e.speech_act_label || speechActLabel(e.speech_act)}</Tag></Space>}>
                 {e.reasons.map((r:any,ri:number)=><div key={ri} style={{marginBottom:8}}>
                   <Space><Text strong>R{ri+1}：{r.normalized_reason}</Text><Tag color={r.review_status==="HUMAN_CONFIRMED"?"green":"orange"}>{r.review_status==="HUMAN_CONFIRMED"?"已确认":"待审"}</Tag></Space>
                   <Text type="secondary" style={{display:"block",fontSize:12}}>原文：{r.reason_span}</Text>
@@ -1748,9 +2496,9 @@ export default function App() {
                 </div>)}
               </Card>)}
               {/* Section 4: Target Gap */}
-              {workflowData.continueResult?.gap && <Alert type="warning" showIcon
-                message={<Space><Text strong>Target Gap</Text><Tag>{workflowData.continueResult.gap.gap_type}</Tag><Tag>{workflowData.continueResult.gap.confidence}</Tag></Space>}
-                description={workflowData.continueResult.gap.basis} />}
+              {currentContinueResult?.gap && <Alert type="warning" showIcon
+                message={<Space wrap><Text strong>目标品牌缺口</Text><Tag>{decisionDisplayText(currentContinueResult.gap.gap_type)}</Tag><Tag>{decisionDisplayText(currentContinueResult.gap.confidence)}</Tag><Button size="small" onClick={() => { setWorkflowEvidenceDrawerFocus("gap"); setWorkflowEvidenceDrawerOpen(true); }}>查看依据</Button></Space>}
+                description={currentContinueResult.gap.basis} />}
               <Button size="small" type="primary" onClick={()=>setPage("optimization")}>查看执行策略</Button>
             </Space>
           </Card>}
@@ -1864,7 +2612,7 @@ export default function App() {
                       <Descriptions.Item label="品牌候选">{formatMetric(decisionSpace.metrics?.brand_candidate_rate)}</Descriptions.Item>
                       <Descriptions.Item label="明确推荐">{formatMetric(decisionSpace.metrics?.explicit_recommendation_rate)}</Descriptions.Item>
                       <Descriptions.Item label="目标品牌阶段"><Tag color={targetBrandPosition.status === "ABSENT" ? "red" : "blue"}>{targetBrandPosition.status_label || brandStageLabel(targetBrandPosition.status)}</Tag></Descriptions.Item>
-                      <Descriptions.Item label="Primary Gap">{targetBrandPosition.primary_gap?.gap_type_label || decisionMarket.primary_gap?.gap_type_label || "-"}</Descriptions.Item>
+                      <Descriptions.Item label="主要缺口">{targetBrandPosition.primary_gap?.gap_type_label || decisionMarket.primary_gap?.gap_type_label || "-"}</Descriptions.Item>
                       <Descriptions.Item label="已具备信号">{(targetBrandPosition.strengths || []).length > 0 ? <Space wrap>{targetBrandPosition.strengths.map((item: string) => <Tag key={item} color="green">{item}</Tag>)}</Space> : <Text type="secondary">暂无稳定目标品牌信号</Text>}</Descriptions.Item>
                     </Descriptions>
                   </Card>
@@ -2103,7 +2851,7 @@ export default function App() {
                         { title: "用于选择", width: 120, render: (_, row: any) => formatMetric(row.used_for_selection) },
                         { title: "目标品牌", width: 120, render: (_, row: any) => formatMetric(row.target_brand_observed) },
                         { title: "竞品", width: 120, render: (_, row: any) => formatMetric(row.competitor_observed) },
-                        { title: "Product Truth", width: 150, render: (_, row: any) => <Tag color={row.product_truth_status === "SUPPORTED" ? "green" : row.product_truth_status === "NOT_SUPPORTED" ? "red" : "gold"}>{row.product_truth_status_label || truthStatusLabel(row.product_truth_status)}</Tag> },
+                        { title: "产品事实", width: 150, render: (_, row: any) => <Tag color={row.product_truth_status === "SUPPORTED" ? "green" : row.product_truth_status === "NOT_SUPPORTED" ? "red" : "gold"}>{row.product_truth_status_label || truthStatusLabel(row.product_truth_status)}</Tag> },
                         { title: "诊断信号", dataIndex: "diagnostic_signal", width: 235, render: (value) => <Tag style={{ whiteSpace: "nowrap" }}>{value || "-"}</Tag> },
                       ]}
                       expandable={{
@@ -2141,7 +2889,7 @@ export default function App() {
                       ]}
                       expandable={{
                         expandedRowRender: (row: any) => <Space direction="vertical" size={4} style={{ width: "100%" }}>
-                          {(row.representative_sources || []).map((source: any) => <a key={source.reference_id} href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>)}
+                          {(row.representative_sources || []).map((source: any) => <a key={source.reference_id} href={sourceActionUrl(source.url, source.canonical_url, source.action_url)} target="_blank" rel="noreferrer">{source.title || displaySourceUrl(source.url, source.canonical_url)}</a>)}
                         </Space>
                       }}
                     />
@@ -2173,8 +2921,8 @@ export default function App() {
                   style={{ marginBottom: 8 }}
                   message="这张表把原答案里的品牌信号、推荐/候选理由、伴随引用资料和下一步动作放在一起；引用上下文只代表外显来源伴随出现，不代表来源已经支撑该理由。"
                   description={decisionMarket.primary_gap
-                    ? `当前 Primary Gap：${decisionMarket.primary_gap.gap_type_label || decisionMarket.primary_gap.gap_type}。${decisionMarket.primary_gap.diagnosis_text || ""}`
-                    : "若没有 Primary Gap，说明当前品牌选择空间或产品事实还不足以支持明确策略判断。"}
+                    ? `当前主要缺口：${decisionMarket.primary_gap.gap_type_label || decisionMarket.primary_gap.gap_type}。${decisionMarket.primary_gap.diagnosis_text || ""}`
+                    : "若没有主要缺口，说明当前品牌选择空间或产品事实还不足以支持明确策略判断。"}
                 />
                 {decisionAuditRows.length === 0
                   ? <Empty description="当前没有可审计的品牌候选或推荐记录" />
@@ -2193,8 +2941,8 @@ export default function App() {
                           : <Text type="secondary">未抽取到明确理由</Text> },
                         { title: "伴随引用资料", width: 260, render: (_, row: any) => row.citation_contexts?.length > 0
                           ? <Space direction="vertical" size={2}>{row.citation_contexts.slice(0, 2).map((item: any) => <Space key={item.id} direction="vertical" size={0}>
-                              <a href={item.source_url} target="_blank" rel="noreferrer">{item.source_title || item.source_url || "未知来源"}</a>
-                              <Space size={4}><Tag color={item.evidence_status === "LINKED" ? "green" : item.evidence_status === "UNLINKED" ? "red" : "gold"}>{evidenceStatusLabel(item.evidence_status, item.evidence_status_label)}</Tag><Text type="secondary">{item.source_domain}</Text></Space>
+                              <a href={sourceActionUrl(item.source_url, item.source_canonical_url, item.source_action_url)} target="_blank" rel="noreferrer">{item.source_title || displaySourceUrl(item.source_url, item.source_canonical_url) || "未知来源"}</a>
+                              <Space size={4}><Tag color={item.evidence_status === "LINKED" ? "green" : item.evidence_status === "UNLINKED" ? "red" : "gold"}>{evidenceStatusLabel(item.evidence_status, item.evidence_status_label)}</Tag><Text type="secondary">{displaySourceDomain(item.source_domain, item.source_url, item.source_canonical_url)}</Text></Space>
                             </Space>)}</Space>
                           : <Text type="secondary">当前无可关联外显引用</Text> },
                         { title: "下一步", width: 220, render: (_, row: any) => <Space direction="vertical" size={2}><Text>{row.recommended_action}</Text><Text type="secondary">验证指标：{metricLabel(row.validation_metric)}</Text></Space> },
@@ -2304,7 +3052,7 @@ export default function App() {
                       dataSource={decisionMarket.citation_source_analysis?.top_sources || []}
                       locale={{ emptyText: "当前没有引用资料" }}
                       columns={[
-                        { title: "引用页面", render: (_, row: any) => <Space direction="vertical" size={0}><a href={row.url} target="_blank" rel="noreferrer">{row.title || row.url}</a><Text type="secondary">{row.domain}</Text></Space> },
+                        { title: "引用页面", render: (_, row: any) => <Space direction="vertical" size={0}><a href={sourceActionUrl(row.url, row.canonical_url, row.action_url)} target="_blank" rel="noreferrer">{row.title || displaySourceUrl(row.url, row.canonical_url)}</a><Text type="secondary">{displaySourceDomain(row.domain, row.url, row.canonical_url)}</Text></Space> },
                         { title: "覆盖采样", width: 90, render: (_, row: any) => <Tag>{row.run_count} 次</Tag> },
                         { title: "出现", width: 70, render: (_, row: any) => <Tag>{row.occurrence_count}</Tag> },
                         { title: "检索重合", width: 90, render: (_, row: any) => <Tag>{row.retrieval_overlap_run_count} 次</Tag> },
@@ -2322,7 +3070,7 @@ export default function App() {
                       dataSource={decisionMarket.citation_context?.adoptions || []}
                       locale={{ emptyText: "当前还没有可审计的引用上下文" }}
                       columns={[
-                        { title: "来源", width: 220, render: (_, row: any) => <Space direction="vertical" size={0}><a href={row.source_url} target="_blank" rel="noreferrer">{row.source_title || row.source_url || "未知来源"}</a><Text type="secondary">{row.source_domain}</Text></Space> },
+                        { title: "来源", width: 220, render: (_, row: any) => <Space direction="vertical" size={0}><a href={sourceActionUrl(row.source_url, row.source_canonical_url, row.source_action_url)} target="_blank" rel="noreferrer">{row.source_title || displaySourceUrl(row.source_url, row.source_canonical_url) || "未知来源"}</a><Text type="secondary">{displaySourceDomain(row.source_domain, row.source_url, row.source_canonical_url)}</Text></Space> },
                         { title: "状态", width: 120, render: (_, row: any) => <Tag color={row.evidence_status === "LINKED" ? "green" : row.evidence_status === "UNLINKED" ? "red" : "gold"}>{evidenceStatusLabel(row.evidence_status, row.evidence_status_label)}</Tag> },
                         { title: "关系", width: 130, render: (_, row: any) => <Tag>{row.support_role_label}</Tag> },
                         { title: "回答片段", dataIndex: "answer_span", ellipsis: true },
@@ -2368,7 +3116,7 @@ export default function App() {
                           { title: "采集", dataIndex: "run_id", width: 70, render: (value) => <Tag>#{value}</Tag> },
                           { title: "回答主张", dataIndex: "claim_text", ellipsis: true },
                           { title: "对齐状态", width: 130, render: (_, row: any) => <Tag color={passageAlignmentColor(row.alignment_status)}>{row.alignment_status_label}</Tag> },
-                          { title: "来源", width: 260, render: (_, row: any) => row.source_url ? <Space direction="vertical" size={0}><a href={row.source_url} target="_blank" rel="noreferrer">{row.source_title || row.source_url}</a><Text type="secondary">{row.source_domain}</Text></Space> : <Text type="secondary">暂无来源段落</Text> },
+                          { title: "来源", width: 260, render: (_, row: any) => row.source_url ? <Space direction="vertical" size={0}><a href={sourceActionUrl(row.source_url, row.source_canonical_url, row.source_action_url)} target="_blank" rel="noreferrer">{row.source_title || displaySourceUrl(row.source_url, row.source_canonical_url)}</a><Text type="secondary">{displaySourceDomain(row.source_domain, row.source_url, row.source_canonical_url)}</Text></Space> : <Text type="secondary">暂无来源段落</Text> },
                           { title: "证据", dataIndex: "evidence", ellipsis: true },
                         ]}
                         expandable={{
@@ -2455,7 +3203,7 @@ export default function App() {
                   showIcon
                   style={{ marginBottom: 8 }}
                   message="推荐理由必须绑定到具体品牌和具体推荐判断，不能只看答案级理由词池。"
-                  description="确认理由前，系统只把它作为规则抽取结果；确认后才能更稳妥地用于 Product Truth 核对和策略路由。"
+                  description="确认理由前，系统只把它作为规则抽取结果；确认后才能更稳妥地用于产品事实核对和策略路由。"
                 />
                 {reasonMarketRows.length === 0
                   ? <Empty description="当前没有抽取到品牌级推荐理由" />
@@ -2554,7 +3302,7 @@ export default function App() {
                       pagination={{ pageSize: 8 }}
                       dataSource={recommendationData.citation_sources || []}
                       columns={[
-                        { title: "来源", width: 260, render: (_, row: any) => <Space direction="vertical" size={2}><a href={row.url} target="_blank" rel="noreferrer">{row.title || row.url}</a><Text type="secondary">{row.domain}</Text></Space> },
+                        { title: "来源", width: 260, render: (_, row: any) => <Space direction="vertical" size={2}><a href={sourceActionUrl(row.url, row.canonical_url, row.action_url)} target="_blank" rel="noreferrer">{row.title || displaySourceUrl(row.url, row.canonical_url)}</a><Text type="secondary">{displaySourceDomain(row.domain, row.url, row.canonical_url)}</Text></Space> },
                         { title: "角色", width: 110, render: (_, row: any) => <Tag color="green">{row.evidence_role_label}</Tag> },
                         { title: "关联对象", dataIndex: "related_entity", width: 100, render: (value) => value ? <Tag>{value}</Tag> : <Text type="secondary">待判断</Text> },
                         { title: "为什么重要", dataIndex: "why_matters", width: 220 },
@@ -2569,13 +3317,13 @@ export default function App() {
                         type={interventionFeasibility.status === "READY_FOR_HUMAN_REVIEW" ? "success" : "warning"}
                         showIcon
                         message={<Space wrap><Tag color={feasibilityColor(interventionFeasibility.status)}>{interventionFeasibility.status_label || "待人工审核"}</Tag><Text>{(interventionFeasibility.reasons || [])[0] || "只能生成待审核策略候选。"}</Text></Space>}
-                        description={interventionFeasibility.boundary_note || "干预候选不是执行命令；只有人工审核后的 effective_payload=VALIDATED 才能物化 Action/Experiment。"}
+                        description={interventionFeasibility.boundary_note || "干预候选不是执行命令；只有人工审核后的有效执行内容通过校验，才能物化为动作和实验。"}
                       />
                       <Descriptions size="small" column={1}>
                         <Descriptions.Item label="机会类型">{decisionMarket.action_package.opportunity_type_label}</Descriptions.Item>
                         <Descriptions.Item label="资产决策">{decisionMarket.action_package.asset_decision_label}</Descriptions.Item>
                         <Descriptions.Item label="推荐干预">{promptInterventionCandidates[0]
-                          ? `${interventionTypeLabel(promptInterventionCandidates[0].intervention_type)}，执行字段：${promptInterventionCandidates[0].target_platform || "UNRESOLVED"} / ${promptInterventionCandidates[0].target_asset || "UNRESOLVED"}`
+                          ? `${interventionTypeLabel(promptInterventionCandidates[0].intervention_type)}，执行字段：${decisionDisplayText(promptInterventionCandidates[0].target_platform) || "待确认"} / ${decisionDisplayText(promptInterventionCandidates[0].target_asset) || "待确认"}`
                           : "暂无干预候选"}</Descriptions.Item>
                         <Descriptions.Item label="必须回答">{(decisionMarket.action_package.must_answer || []).map((item: string, index: number) => <div key={index}>问题{index + 1}：{item}</div>)}</Descriptions.Item>
                         <Descriptions.Item label="选择理由缺口">{decisionMarket.action_package.selection_reason_gap}</Descriptions.Item>
@@ -2590,7 +3338,7 @@ export default function App() {
                           草案阶段默认为「上下文不足」，不能声称环境完全不变；结论页只能表达当前观察窗口内是否发现显著已知混杂因素。
                         </Descriptions.Item>
                       </Descriptions>
-                      <Alert type="warning" showIcon message="这里不产出最终策略。点击下方按钮只会生成待审核 StrategyCandidate；不会直接创建 Action / Experiment。" />
+                      <Alert type="warning" showIcon message="这里不产出最终策略。点击下方按钮只会生成待审核策略候选；不会直接创建动作或实验。" />
                       <Button type="primary" loading={recommendationLoading} onClick={createDecisionExperimentDraft}>送入最终策略：生成待审核策略候选</Button>
                     </Space>
                   : !recommendationData.action_brief
@@ -2667,13 +3415,13 @@ export default function App() {
                       <Descriptions size="small" column={1}>
                         <Descriptions.Item label="干预类型"><Tag color={item.intervention_type === "NO_ACTION" ? "default" : "blue"}>{item.intervention_type_label || interventionTypeLabel(item.intervention_type)}</Tag></Descriptions.Item>
                         <Descriptions.Item label="可行性"><Tag color={feasibilityColor(item.feasibility_status)}>{interventionFeasibility.status_label || item.feasibility_status || "-"}</Tag></Descriptions.Item>
-                        <Descriptions.Item label="Primary Gap">{item.primary_gap_type_label || item.competitive_gap_type_label || "-"}</Descriptions.Item>
+                        <Descriptions.Item label="主要缺口">{item.primary_gap_type_label || item.competitive_gap_type_label || "-"}</Descriptions.Item>
                         <Descriptions.Item label="当前问题">{item.observed_problem || item.observed_market_problem || "-"}</Descriptions.Item>
                         <Descriptions.Item label="建议方向">{item.recommended_direction || item.target_decision_position || "-"}</Descriptions.Item>
-                        <Descriptions.Item label="执行字段">平台：{item.target_platform || "UNRESOLVED"}；资产：{item.target_asset || "UNRESOLVED"}；URL：{item.target_url || "未确认"}</Descriptions.Item>
+                        <Descriptions.Item label="执行字段">平台：{decisionDisplayText(item.target_platform) || "待确认"}；资产：{decisionDisplayText(item.target_asset) || "待确认"}；URL：{item.target_url || "未确认"}</Descriptions.Item>
                         <Descriptions.Item label="候选 URL">{item.suggested_target_url ? `${item.suggested_target_url}（${item.suggested_target_url_note || "仅供人工审核"}）` : "待人工确认"}</Descriptions.Item>
                         <Descriptions.Item label="证据前提">{(item.evidence_prerequisites || item.required_evidence || []).join("；") || "待补充"}</Descriptions.Item>
-                        <Descriptions.Item label="执行边界">{item.execution_boundary || "StrategyCandidate -> 人工审核 -> effective_payload=VALIDATED -> Action -> Experiment"}</Descriptions.Item>
+                        <Descriptions.Item label="执行边界">{decisionDisplayText(item.execution_boundary) || "策略候选 -> 人工审核 -> 有效执行内容通过校验 -> 动作 -> 实验"}</Descriptions.Item>
                       </Descriptions>
                     </Card>)}
                   </Space>}
@@ -2709,20 +3457,223 @@ export default function App() {
           </Card>
         </Space> : page === "optimization" ? <Space direction="vertical" size={16} className="page-stack">
           {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下仅展示该 Prompt 的执行策略；切回「全部 Prompt」查看项目整体。" />}
-          {projectId && !workflowData && <Alert type="info" showIcon
+          {projectId && citationTargetPromptId && <Card
+            size="small"
+            title={<Space wrap><ShieldCheck size={16} /><Text strong>引用资料决策详情</Text><Tag>问题 #{citationTargetPromptId}</Tag>{currentCitationDecisionData?.evidence_package_id && <Tag color="blue">证据 #{currentCitationDecisionData.evidence_package_id}</Tag>}</Space>}
+            extra={<Space wrap>
+              <Tag color={citationDecisionStatusColor(currentCitationDecisionData?.status)}>{citationDecisionStatusLabel(currentCitationDecisionData?.status)}</Tag>
+              <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>重新运行链路</Button>
+              <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>确认推荐动作</Button>
+            </Space>}
+          >
+            <Space direction="vertical" size={12} style={{ width: "100%" }}>
+              {!answerStepDone && <Alert
+                type={answerStepBlocked ? "warning" : "info"}
+                showIcon
+                message={answerStepBlocked ? "请先修正答案决策识别" : "请先完成答案决策识别"}
+                description={answerStepBlocked
+                  ? (answerSemanticStep?.detail || "当前 Prompt 没有形成有效的品牌/方案选择事件，不能继续进入引用证据、对标来源、缺口和动作。")
+                  : "引用证据链路必须基于当前 Prompt 已成立的答案决策识别结果运行。"}
+              />}
+              <Alert
+                type={citationProductTruthBlockedRows.length ? "warning" : citationCanConfirm ? "success" : "info"}
+                showIcon
+                message={citationProductTruthBlockedRows.length
+                  ? "链路已跑到对标来源，但产品事实未匹配，暂不生成动作"
+                  : citationCanConfirm
+                    ? "已有可人工确认的内容/证据动作"
+                    : "当前没有可执行动作，系统不会用引用显著性或历史相关标记强行生成策略"}
+                description={decisionDisplayText(citationSummary.boundary_note) || "这里展示 引用来源 → 对标来源 → 缺口 → 动作 → 实验 的纵向链路；目标品牌事实未确认前只允许人工补事实，不允许自动出执行策略。"}
+              />
+              {citationDecisionError && <Alert
+                type="error"
+                showIcon
+                message="引用资料优化决策未能加载"
+                description={citationDecisionError}
+              />}
+              <Steps size="small" current={citationCanConfirm ? 4 : citationProductTruthBlockedRows.length ? 2 : currentCitationDecisionData ? 3 : 0} items={citationStepItems} />
+              <Row gutter={[12, 12]}>
+                <Col xs={12} md={6}><Statistic title="来源数" value={citationLoaded ? citationSummary.source_count ?? 0 : "-"} /></Col>
+                <Col xs={12} md={6}><Statistic title="核心对标" value={citationLoaded ? citationSummary.primary_benchmark_count ?? 0 : "-"} /></Col>
+                <Col xs={12} md={6}><Statistic title="推荐动作" value={citationLoaded ? citationSummary.recommended_action_count ?? 0 : "-"} /></Col>
+                <Col xs={12} md={6}><Statistic title="渠道机会" value={citationLoaded ? citationSummary.channel_opportunity_count ?? 0 : "-"} /></Col>
+              </Row>
+              <Card
+                size="small"
+                title={<Space wrap><Text strong>操作台</Text>{citationProductTruthBlockedRows.length > 0 && <Tag color="gold">{citationProductTruthBlockedRows.length} 条需要产品事实</Tag>}</Space>}
+                extra={<Space wrap>
+                  <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>重新运行</Button>
+                  <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>确认推荐动作</Button>
+                </Space>}
+              >
+                <Alert
+                  type={citationProductTruthBlockedRows.length > 0 ? "warning" : citationCanConfirm ? "success" : "info"}
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={citationProductTruthBlockedRows.length > 0
+                    ? `下一步：确认${project?.brand_name || "目标品牌"}是否真实具备同等能力`
+                    : citationCanConfirm
+                      ? "下一步：确认推荐动作"
+                      : "当前没有可执行动作，可补产品事实后重新运行"}
+                  description={`这里确认的是${project?.brand_name || "目标品牌"}自己的产品能力，不是确认对标文章或竞品是否具备能力。若事实来源需要写官网/文档 URL，请用下方表单补充；补完后系统会自动重跑链路。`}
+                />
+                <Form
+                  form={citationTruthForm}
+                  layout="vertical"
+                  onFinish={submitCitationProductTruth}
+                  initialValues={{ product_truth_status: "SUPPORTED" }}
+                >
+                  <Row gutter={[12, 0]}>
+                    <Col xs={24} md={8}>
+                      <Form.Item name="capability_label" label="目标品牌真实能力" rules={[{ required: true, message: "请填写真实能力名称" }]}>
+                        <Input placeholder={`例如：${project?.brand_name || "目标品牌"}支持抖音跳转微信完整路径搭建`} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} md={5}>
+                      <Form.Item name="product_truth_status" label="支持状态" rules={[{ required: true }]}>
+                        <Select options={[
+                          { label: "真实支持", value: "SUPPORTED" },
+                          { label: "部分支持", value: "PARTIALLY_SUPPORTED" },
+                          { label: "不支持", value: "NOT_SUPPORTED" },
+                          { label: "未知，待确认", value: "UNKNOWN" },
+                        ]} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} md={6}>
+                      <Form.Item name="source_reference" label="事实来源">
+                        <Input placeholder="官网 URL / 文档 / 人工说明" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} md={5}>
+                      <Form.Item name="note" label="备注">
+                        <Input placeholder="可选" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24}>
+                      <Space wrap>
+                        <Button type="primary" htmlType="submit" loading={citationDecisionLoading}>补充产品事实并重跑</Button>
+                        <Button onClick={() => citationTruthForm.resetFields(["capability_label", "source_reference", "note"])}>清空表单</Button>
+                        <Text type="secondary">也可以在下方对标来源表格点「带入表单」先填草稿，或直接点行内按钮确认。</Text>
+                      </Space>
+                    </Col>
+                  </Row>
+                </Form>
+              </Card>
+              <Table
+                size="small"
+                rowKey={(row: any) => `${row.url || row.title}-${row.benchmark_tier}`}
+                loading={citationDecisionLoading}
+                pagination={{ pageSize: 5 }}
+                dataSource={citationBenchmarkRows}
+                locale={{ emptyText: currentCitationDecisionData ? "当前没有核心/辅助对标来源；这是允许的，不会强行挑选来源。" : "当前 Prompt 尚未加载引用资料优化决策，或缺少 Evidence Package" }}
+                columns={[
+                  { title: "对标来源", render: (_, row: any) => <Space direction="vertical" size={0}><a href={sourceActionUrl(row.url, row.canonical_url, row.action_url)} target="_blank" rel="noreferrer">{row.title || displaySourceUrl(row.url, row.canonical_url) || "未知来源"}</a><Text type="secondary">{displaySourceDomain(row.domain, row.url, row.canonical_url)}</Text></Space> },
+                  { title: "待确认能力", width: 180, render: (_, row: any) => <Text>{citationCapabilityDraftFromRow(row)}</Text> },
+                  { title: "层级", width: 110, render: (_, row: any) => <Tag color={row.benchmark_tier === "PRIMARY_BENCHMARK" ? "green" : "blue"}>{benchmarkTierLabel(row.benchmark_tier)}</Tag> },
+                  { title: "决策支撑", width: 140, render: (_, row: any) => <Tag>{decisionSupportLabel(row.decision_support_level)}</Tag> },
+                  { title: "缺口状态", width: 180, render: (_, row: any) => <Space direction="vertical" size={0}><Tag color={row.gap_analysis_status === "BLOCKED" ? "orange" : row.source_gap_type ? "blue" : "default"}>{sourceGapLabel(row.source_gap_type)}</Tag><Text type="secondary">{gapPreconditionLabel(row.source_gap_precondition)}</Text></Space> },
+                  { title: "目标品牌事实", width: 135, render: (_, row: any) => <Tag color={row.matched_product_truth_status === "TRUE" ? "green" : row.matched_product_truth_status === "FALSE" ? "red" : "gold"}>{productTruthMatchLabel(row.matched_product_truth_status)}</Tag> },
+                  { title: "优先级", width: 115, render: (_, row: any) => <Tag color={row.priority_level === "PRIORITY_HIGH" ? "red" : row.priority_level === "PRIORITY_MEDIUM" ? "orange" : row.priority_level === "UNRESOLVED" ? "gold" : "default"}>{priorityLevelLabel(row.priority_level)}</Tag> },
+                  { title: "动作路径", width: 115, render: (_, row: any) => <Tag>{actionRouteLabel(row.action_route)}</Tag> },
+                  { title: "确认目标品牌", width: 330, render: (_, row: any) => {
+                    const capabilityLabel = citationCapabilityDraftFromRow(row);
+                    const matchedStatus = row.matched_product_truth_status;
+                    const fillForm = (status?: string) => {
+                      citationTruthForm.setFieldsValue({
+                        capability_label: capabilityLabel,
+                        product_truth_status: status || (row.source_gap_type === "PRODUCT_GAP" ? "NOT_SUPPORTED" : "SUPPORTED"),
+                        source_reference: "",
+                        note: `由对标来源带入，请人工改成${project?.brand_name || "目标品牌"}真实能力后提交。触发来源：${row.url || row.title || "未知来源"}`,
+                      });
+                      message.info(`已带入表单，请确认这是${project?.brand_name || "目标品牌"}真实能力后再提交`);
+                    };
+                    if (matchedStatus === "TRUE" || matchedStatus === "FALSE") {
+                      return <Space wrap size={4}>
+                        <Tag color={matchedStatus === "TRUE" ? "green" : "red"}>{matchedStatus === "TRUE" ? "已确认支持" : "已确认不支持"}</Tag>
+                        <Button size="small" onClick={() => fillForm(matchedStatus === "TRUE" ? "SUPPORTED" : "NOT_SUPPORTED")}>修改事实</Button>
+                      </Space>;
+                    }
+                    return <Space wrap size={4}>
+                      <Button size="small" onClick={() => fillForm()}>带入表单</Button>
+                      <Popconfirm
+                        title={`确认${project?.brand_name || "目标品牌"}真实支持这项能力？`}
+                        description={`将写入目标品牌事实：${capabilityLabel}。如需补事实来源，请先点「带入表单」。`}
+                        okText="确认支持"
+                        cancelText="取消"
+                        onConfirm={() => confirmCitationRowProductTruth(row, "SUPPORTED")}
+                      >
+                        <Button size="small" type="primary">支持</Button>
+                      </Popconfirm>
+                      <Popconfirm
+                        title={`确认${project?.brand_name || "目标品牌"}只部分支持这项能力？`}
+                        description={`将写入目标品牌事实：${capabilityLabel}。`}
+                        okText="确认部分支持"
+                        cancelText="取消"
+                        onConfirm={() => confirmCitationRowProductTruth(row, "PARTIALLY_SUPPORTED")}
+                      >
+                        <Button size="small">部分支持</Button>
+                      </Popconfirm>
+                      <Popconfirm
+                        title={`确认${project?.brand_name || "目标品牌"}不支持这项能力？`}
+                        description={`将写入目标品牌事实：${capabilityLabel}。产品缺口后续会走产品评估，不会生成虚假内容。`}
+                        okText="确认不支持"
+                        cancelText="取消"
+                        onConfirm={() => confirmCitationRowProductTruth(row, "NOT_SUPPORTED")}
+                      >
+                        <Button size="small" danger>不支持</Button>
+                      </Popconfirm>
+                    </Space>;
+                  } },
+                ]}
+                expandable={{
+                  expandedRowRender: (row: any) => <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                    <Descriptions size="small" column={{ xs: 1, md: 2 }}>
+                      <Descriptions.Item label="待确认能力">{citationCapabilityDraftFromRow(row)}</Descriptions.Item>
+                      <Descriptions.Item label="正文状态">{contentStatusLabel(row.content_status)}</Descriptions.Item>
+                      <Descriptions.Item label="引用显著性">{citationProminenceLabel(row.citation_prominence_level)}</Descriptions.Item>
+                      <Descriptions.Item label="支撑对齐记录">{(row.supporting_alignment_ids || []).join("，") || "-"}</Descriptions.Item>
+                      <Descriptions.Item label="矛盾证据">{row.has_contradiction ? "存在" : "未发现"}</Descriptions.Item>
+                      <Descriptions.Item label="品牌资产状态">{existingAssetStatusLabel(row.existing_asset_status)}</Descriptions.Item>
+                      <Descriptions.Item label="品牌资产覆盖">{existingAssetCoverageLabel(row.existing_asset_coverage)}</Descriptions.Item>
+                    </Descriptions>
+                    {row.source_gap_reason && <Alert type="info" showIcon message="缺口说明" description={decisionDisplayText(row.source_gap_reason)} />}
+                    {(row.decision_support_basis || []).length > 0 && <Text type="secondary">决策支撑依据：{row.decision_support_basis.map((item: string) => decisionDisplayText(item)).join("；")}</Text>}
+                    {(row.benchmark_basis || []).length > 0 && <Text type="secondary">对标依据：{row.benchmark_basis.map((item: string) => decisionDisplayText(item)).join("；")}</Text>}
+                  </Space>
+                }}
+              />
+              {citationRecommendedActions.length > 0 && <Card size="small" title="待人工确认的推荐动作">
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  {citationRecommendedActions.map((action: any) => <Alert
+                    key={action.action_key || action.summary}
+                    type={action.route === "CONTENT" || action.route === "EVIDENCE" ? "success" : "warning"}
+                    showIcon
+                    message={<Space wrap><Tag>{actionRouteLabel(action.route)}</Tag><Text strong>{decisionDisplayText(action.summary)}</Text></Space>}
+                    description={<Space direction="vertical" size={2}><Text>{decisionDisplayText(action.rationale)}</Text><Text type="secondary">内容要求：{(action.content_requirements || []).map((item: string) => decisionDisplayText(item)).join("；") || "-"}</Text></Space>}
+                  />)}
+                </Space>
+              </Card>}
+              {citationChannelOpportunities.length > 0 && <Card size="small" title="渠道机会（证据 shortlist）">
+                <Space wrap>
+                  {citationChannelOpportunities.map((item: any) => <Tag key={item.platform || item.channel || item.label} color="blue">{item.platform_label || item.platform || item.channel || item.label}</Tag>)}
+                </Space>
+              </Card>}
+            </Space>
+          </Card>}
+          {projectId && !currentWorkflowData && <Alert type="info" showIcon
             message={activePromptId ? `Prompt #${activePromptId} 暂无执行策略主路径数据` : "暂无执行策略主路径数据"}
             description={activePromptId ? "该 Prompt 还没有完成机器分析（或尚未开始审核流程），请先在监测总览推进该 Prompt 的工作流。" : "项目还没有机器分析进度；选择具体 Prompt 或在监测总览推进工作流后，这里会展示对应内容。"} />}
-          {projectId && workflowData && <Card size="small" title={<Space><ShieldCheck size={16}/><Text strong>执行策略主路径</Text><Tag>{workflowData.prompt_id ? `Prompt #${workflowData.prompt_id}` : "未选择"}</Tag></Space>}>
+          {projectId && currentWorkflowData && <Card size="small" title={<Space><ShieldCheck size={16}/><Text strong>历史执行记录</Text><Tag>{currentWorkflowData.prompt_id ? `Prompt #${currentWorkflowData.prompt_id}` : "未选择"}</Tag><Tag color="default">不计入当前 Citation V1 进度</Tag></Space>}>
             <Space direction="vertical" size={8} style={{width:"100%"}}>
               {/* Confirmed Gap */}
-              {workflowData.continueResult?.gap && <Alert type="warning" showIcon
-                message={<Space><Text strong>已确认 Gap：{workflowData.continueResult.gap.gap_type}</Text><Tag>{workflowData.continueResult.gap.confidence}</Tag></Space>}
-                description={workflowData.continueResult.gap.basis} />}
+              {currentWorkflowData.continueResult?.gap && <Alert type="warning" showIcon
+                message={<Space wrap><Text strong>历史缺口：{decisionDisplayText(currentWorkflowData.continueResult.gap.gap_type)}</Text><Tag>{decisionDisplayText(currentWorkflowData.continueResult.gap.confidence)}</Tag><Button size="small" onClick={() => { setWorkflowEvidenceDrawerFocus("gap"); setWorkflowEvidenceDrawerOpen(true); }}>查看依据</Button></Space>}
+                description={currentWorkflowData.continueResult.gap.basis} />}
               {/* Intervention Plan */}
               {!strategyPlan ? <Button size="small" type="primary" loading={loading} onClick={async()=>{
                 setLoading(true);
                 try{
-                  const plan = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/plan`,{method:"POST"})).json();
+                  const plan = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/plan`,{method:"POST"})).json();
                   setStrategyPlan(plan);
                   message.success("Intervention Plan 已创建");
                 }catch(e:any){message.error(e.message)}
@@ -2730,7 +3681,7 @@ export default function App() {
               }}>创建执行计划</Button> : <Space direction="vertical" size={8} style={{width:"100%"}}>
                 <Alert type="info" showIcon message={<Text strong>执行计划</Text>} description={strategyPlan.objective} />
                 {/* 渠道多选 */}
-                <Text>选择干预渠道（可多选，每个渠道生成独立 Experiment）：</Text>
+                <Text>选择干预渠道（可多选，每个渠道生成独立实验）：</Text>
                 <Space wrap>
                   {channelOptions.map((c:any)=><Button key={c.key} size="small"
                     type={selectedChannels.includes(c.key)?"primary":"default"}
@@ -2744,19 +3695,19 @@ export default function App() {
                   setLoading(true);
                   try{
                     for (const ch of selectedChannels) {
-                      await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/experiments`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:ch})});
+                      await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/experiments`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel:ch})});
                     }
-                    const exps = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/experiments`)).json();
+                    const exps = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/experiments`)).json();
                     setStrategyExperiments(exps);
-                    message.success(`已为 ${selectedChannels.length} 个渠道创建 Experiment`);
+                    message.success(`已为 ${selectedChannels.length} 个渠道创建实验`);
                   }catch(e:any){message.error(e.message)}
                   finally{setLoading(false)}
-                }}>为选中渠道创建 Experiment（{selectedChannels.length}）</Button>}
+                }}>为选中渠道创建实验（{selectedChannels.length}）</Button>}
               </Space>}
               {/* Experiments 列表 */}
               {strategyExperiments.length>0 && <Space direction="vertical" size={8} style={{width:"100%"}}>
-                <Text strong>Experiments（一个渠道一个）</Text>
-                {strategyExperiments.map((e:any)=><Card key={e.id} size="small" title={<Space><Tag color="geekblue">{e.channel}</Tag><Text>Experiment #{e.id}</Text><Tag color={e.status==="RELEASED"?"green":"orange"}>{e.status}</Tag></Space>} extra={<Space>
+                <Text strong>实验列表（一个渠道一个）</Text>
+                {strategyExperiments.map((e:any)=><Card key={e.id} size="small" title={<Space><Tag color="geekblue">{e.channel}</Tag><Text>实验 #{e.id}</Text><Tag color={e.status==="RELEASED"?"green":"orange"}>{experimentStatusLabel(e.status)}</Tag></Space>} extra={<Space>
                   <Button size="small" onClick={async()=>{
                     const bm = await (await fetch(`/api/optimization/workflow/experiments/${e.id}/benchmark`)).json();
                     setStrategyBenchmarks({...strategyBenchmarks, [e.id]: bm});
@@ -2764,7 +3715,7 @@ export default function App() {
                   {e.status==="draft" && <Button size="small" type="primary" onClick={async()=>{
                     const r = await (await fetch(`/api/optimization/workflow/experiments/${e.id}/release`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({release_url:prompt("请填写真实发布 URL：")||""})})).json();
                     if (r.status) {
-                      const exps = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/experiments`)).json();
+                      const exps = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/experiments`)).json();
                       setStrategyExperiments(exps);
                       message.success("已确认发布，进入复测阶段");
                     }
@@ -2774,7 +3725,7 @@ export default function App() {
                     const ids = raw.split(",").map((s:string)=>Number(s.trim())).filter(Boolean);
                     const r = await (await fetch(`/api/optimization/workflow/experiments/${e.id}/retest`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({post_run_ids:ids})})).json();
                     if (r.status) {
-                      const exps = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/experiments`)).json();
+                      const exps = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/experiments`)).json();
                       setStrategyExperiments(exps);
                       message.success("复测 Runs 已挂载");
                     }
@@ -2790,7 +3741,7 @@ export default function App() {
                     <Text strong>对标内容（定性 Checklist，不评分）：</Text>
                     <Text type="secondary">已覆盖：{(strategyBenchmarks[e.id].benchmark_covered||[]).map((x:any)=>x.text).join("；")}</Text>
                     <Text type="secondary">观察到不足：{(strategyBenchmarks[e.id].observed_gaps||[]).map((x:any)=>x.text).join("；")}</Text>
-                    <Text type="secondary">爱短链真实增量：{(strategyBenchmarks[e.id].product_truth_advantages||[]).map((x:any)=>x.text).join("；")}</Text>
+                    <Text type="secondary">目标品牌真实增量：{(strategyBenchmarks[e.id].product_truth_advantages||[]).map((x:any)=>x.text).join("；")}</Text>
                     <Text strong>Brief 要求：</Text>
                     {(strategyBenchmarks[e.id].brief_requirements||[]).map((x:any,i:number)=><Text key={i} type="secondary">[ ] {x.text}</Text>)}
                   </Space>}
@@ -3040,7 +3991,7 @@ export default function App() {
                         type={plan.readiness_status === "BLOCKED" || strategyView.executionGate?.blocked_materialization ? "warning" : "info"}
                         showIcon
                         style={{marginTop:8}}
-                        message={strategyView.executionGate?.blocked_materialization ? "待人工审核：当前只是 StrategyCandidate，不能直接生成 Action / Experiment。" : plan.comparability_note || "复采结论只能说明当前观察窗口内的变化，不能声称黑盒 AI 环境严格不变。"}
+                        message={strategyView.executionGate?.blocked_materialization ? "待人工审核：当前只是策略候选，不能直接生成动作或实验。" : plan.comparability_note || "复采结论只能说明当前观察窗口内的变化，不能声称黑盒 AI 环境严格不变。"}
                         description={
                           <Space direction="vertical" size={2}>
                             <Text type="secondary">环境审计：模型版本变化 {audit.model_version_known_changed ? "是" : "否"}；引用格局变化 {audit.citation_landscape_changed ? "是" : "否"}；竞品来源变化 {audit.competitor_source_changed ? "是" : "否"}；品牌市场变化 {audit.brand_market_changed ? "是" : "否"}。</Text>
@@ -3085,7 +4036,7 @@ export default function App() {
               </Col>
               <Col xs={24} xl={15}>
                 {!optimizationChain
-                  ? <Empty description="选择左侧问题后查看 Action / Experiment / Retest 链路" />
+                  ? <Empty description="选择左侧问题后查看动作、实验和复测链路" />
                   : <Space direction="vertical" size={12} style={{ width: "100%" }}>
                       <Descriptions size="small" bordered column={1}>
                         <Descriptions.Item label="问题">{optimizationChain.issue?.diagnosis_summary || "-"}</Descriptions.Item>
@@ -3305,9 +4256,9 @@ export default function App() {
             </Col>
           </Row>
         </Space> : page === "ranking" ? <Space direction="vertical" size={16} className="page-stack">
-          <Card title={<Space>引用资料分析<Tag color="blue">引用评分规则</Tag></Space>} extra={<Text type="secondary">证据 #{rankingData?.package_id} · 规则指纹 {rankingData?.scoring_spec_fingerprint?.slice(0,8)}</Text>}>
+          <Card title={<Space>引用资料分析<Tag color="gold">V0 旧诊断分</Tag></Space>} extra={<Text type="secondary">证据 #{rankingData?.package_id} · 规则指纹 {rankingData?.scoring_spec_fingerprint?.slice(0,8)}</Text>}>
             <Alert type="info" showIcon style={{marginBottom:12}}
-              message={<span><strong>引用资料分析</strong>展示当前证据内各域名/平台的相对引用信号强度。<strong>不代表</strong>平台有效性、成功概率或因果关系，分数仅在同一份证据内可比较。</span>}
+              message={<span><strong>引用资料分析</strong>展示当前证据内各域名/平台的历史诊断分。<strong>不代表</strong>平台有效性、成功概率或因果关系，也不作为新版策略决策信号。</span>}
             />
             <Space style={{marginBottom:12}}>
               <Button type="primary" loading={rankingLoading} onClick={()=>{
@@ -3326,9 +4277,9 @@ export default function App() {
                 <Table size="small" rowKey="source_domain" pagination={{pageSize:10}} dataSource={rankingData.domain_ranking||[]}
                   columns={[
                     {title:"排名",dataIndex:"evidence_rank_raw",width:55},
-                    {title:"域名",dataIndex:"source_domain",width:170},
+                    {title:"域名",width:170,render:(_:any,r:any)=><Text>{displaySourceDomain(r.source_domain)}</Text>},
                     {title:"平台",width:90,render:(_:any,r:any)=><Tag>{r.inferred_platform}</Tag>},
-                    {title:"分数",width:65,render:(_:any,r:any)=>(r.raw_evidence_score as number)?.toFixed(1)},
+                    {title:"旧分",width:65,render:(_:any,r:any)=>(r.raw_evidence_score as number)?.toFixed(1)},
                     {title:"置信度",width:60,render:(_:any,r:any)=><Tag color={r.confidence==="HIGH"?"green":r.confidence==="MEDIUM"?"gold":"orange"}>{r.confidence_zh||r.confidence}</Tag>},
                     {title:"次数",dataIndex:"citation_occurrence_count",width:55},
                     {title:"独立URL",dataIndex:"unique_citation_urls",width:50},
@@ -3358,13 +4309,13 @@ export default function App() {
                   columns={[
                     {title:"排名",dataIndex:"platform_rank",width:55},
                     {title:"平台",dataIndex:"inferred_platform",width:100},
-                    {title:"分数",width:65,render:(_:any,r:any)=>(r.avg_raw_evidence_score as number)?.toFixed(1)},
+                    {title:"旧分",width:65,render:(_:any,r:any)=>(r.avg_raw_evidence_score as number)?.toFixed(1)},
                     {title:"域名数",dataIndex:"domain_count",width:65},
                     {title:"引用次数",dataIndex:"total_citation_occurrences",width:90},
                   ]}
                   expandable={{expandedRowRender:(row:any)=><Space direction="vertical" size={4}>
                     <Text strong>构成域名</Text>
-                    {(row.domains as string[])?.map((d:string)=><Tag key={d} color="blue">{d}</Tag>)}
+                    {(row.domains as string[])?.map((d:string)=><Tag key={d} color="blue">{displaySourceDomain(d)}</Tag>)}
                   </Space>}}
                 />
               </Card>
@@ -3452,32 +4403,82 @@ export default function App() {
                   catch(e:any){message.error(e.message)}
                 }}>刷新</Button>
               </Space>}>
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 8 }}
+                  message="抓取规则：批量抓取只补抓尚未入库的引用页面；单行「重抓」会重新请求该失败来源并更新失败原因。"
+                />
                 <Row gutter={12} style={{marginBottom:8}}>
-                  <Col span={6}><Tag color="green">成功: {goldenData?.docs?.filter((d:any)=>d.fetch_status==="SUCCESS").length||0}</Tag></Col>
-                  <Col span={6}><Tag color="gold">部分: {goldenData?.docs?.filter((d:any)=>d.fetch_status==="PARTIAL").length||0}</Tag></Col>
-                  <Col span={6}><Tag color="blue">空页: {goldenData?.docs?.filter((d:any)=>d.fetch_status==="MANUAL_EMPTY").length||0}</Tag></Col>
-                  <Col span={6}><Tag color="red">待补: {goldenData?.docs?.filter((d:any)=>!["SUCCESS","PARTIAL","MANUAL_EMPTY"].includes(d.fetch_status)).length||0}</Tag></Col>
+                  <Col span={6}><Tag color="green">正文可用: {goldenData?.docs?.filter((d:any)=>(d.content_status||"")==="CONTENT_VALID").length||0}</Tag></Col>
+                  <Col span={6}><Tag color="gold">待补正文: {goldenData?.docs?.filter((d:any)=>(d.content_status||"")==="CONTENT_PENDING").length||0}</Tag></Col>
+                  <Col span={6}><Tag color="blue">正文不可用: {goldenData?.docs?.filter((d:any)=>(d.content_status||"")==="CONTENT_UNAVAILABLE").length||0}</Tag></Col>
+                  <Col span={6}><Tag color="red">质量不足: {goldenData?.docs?.filter((d:any)=>(d.content_status||"")==="CONTENT_INVALID").length||0}</Tag></Col>
                 </Row>
                 {goldenData.docs && <Table size="small" rowKey="id" pagination={{pageSize:8}} dataSource={goldenData.docs} columns={[
-                  {title:"状态",width:70,render:(_,r:any)=><Tag color={r.fetch_status==="SUCCESS"?"green":r.fetch_status==="PARTIAL"?"gold":r.fetch_status==="MANUAL_EMPTY"?"blue":"red"}>{r.fetch_status==="SUCCESS"?"成功":r.fetch_status==="PARTIAL"?"部分":r.fetch_status==="MANUAL_EMPTY"?"空页":"失败"}</Tag>},
-                  {title:"域名",dataIndex:"domain",width:100},
-                  {title:"链接 / 标题",ellipsis:true,render:(_,r:any)=><a href={r.url} target="_blank" rel="noreferrer" style={{fontSize:12}}>{r.title||r.url}</a>},
+                  {title:"正文状态",width:95,render:(_,r:any)=>{
+                    const actionUrl = sourceActionUrl(r.url, r.canonical_url, r.action_url);
+                    if (refetchingSourceUrls.has(actionUrl)) return <Tag color="processing">重抓中</Tag>;
+                    return <Tag color={r.content_status==="CONTENT_VALID"?"green":r.content_status==="CONTENT_PENDING"?"gold":r.content_status==="CONTENT_UNAVAILABLE"?"blue":"red"}>{r.content_status_label || (r.fetch_status==="SUCCESS"?"成功":r.fetch_status==="PARTIAL"?"部分":r.fetch_status==="MANUAL_EMPTY"?"空页":"失败")}</Tag>;
+                  }},
+                  {title:"域名",width:100,render:(_,r:any)=><Text>{displaySourceDomain(r.domain, r.url, r.canonical_url)}</Text>},
+                  {title:"链接 / 标题",ellipsis:true,render:(_,r:any)=><a href={sourceActionUrl(r.url, r.canonical_url, r.action_url)} target="_blank" rel="noreferrer" style={{fontSize:12}}>{r.title||displaySourceUrl(r.url, r.canonical_url)}</a>},
                   {title:"字数",width:60,render:(_,r:any)=><Tag>{r.clean_text_len||0}</Tag>},
-                  {title:"操作",width:120,render:(_,r:any)=><Space size={2}>
-                    {r.fetch_status!=="SUCCESS"&&<Button size="small" onClick={()=>{
-                      setManualUrl(r.url);
+                  {title:"抓取结果",width:260,render:(_,r:any)=>{
+                    const actionUrl = sourceActionUrl(r.url, r.canonical_url, r.action_url);
+                    const reason = sourceFailureSummary(r);
+                    const latest = sourceRefetchResults[actionUrl];
+                    const latestStatus = latest?.status;
+                    const latestText = latestStatus === "RUNNING"
+                      ? "正在后台浏览器重抓，请稍候..."
+                      : latest
+                        ? `${latest.fetch_method || "后台抓取"}：${latest.failure_summary || latest.failure_reason || "已完成"}${typeof latest.clean_text_len === "number" ? `（正文 ${latest.clean_text_len} 字）` : ""}`
+                        : reason;
+                    if (!latestText) return <Text type="secondary">-</Text>;
+                    return <Space direction="vertical" size={2}>
+                      {reason && latest ? <Text type="secondary" ellipsis={{ tooltip: reason }}>上次：{reason}</Text> : null}
+                      <Tag color={latestStatus === "SUCCESS" ? "green" : latestStatus === "RUNNING" ? "processing" : latest ? "gold" : "default"}>
+                        {latestStatus === "SUCCESS" ? "本次成功" : latestStatus === "RUNNING" ? "本次进行中" : latest ? "本次结果" : "当前原因"}
+                      </Tag>
+                      <Text type="secondary" ellipsis={{ tooltip: latestText }}>{latestText}</Text>
+                    </Space>;
+                  }},
+                  {title:"操作",width:140,render:(_,r:any)=>{
+                    const actionUrl = sourceActionUrl(r.url, r.canonical_url, r.action_url);
+                    const canRefetch = r.content_status !== "CONTENT_VALID" && r.fetch_status !== "MANUAL_EMPTY";
+                    const isRefetching = refetchingSourceUrls.has(actionUrl);
+                    return <Space size={2}>
+                    {r.content_status!=="CONTENT_VALID"&&<Button size="small" onClick={()=>{
+                      setManualUrl(sourceActionUrl(r.url, r.canonical_url, r.action_url));
                       setManualEmptyPage(r.fetch_status==="MANUAL_EMPTY");
                     }}>{r.fetch_status==="MANUAL_EMPTY" ? "修改" : "补录"}</Button>}
-                    {r.fetch_status==="FETCH_FAILED"&&<Button size="small" danger onClick={async()=>{
-                      message.loading({content:"重新抓取中...",duration:0,key:"refetch"});
+                    {canRefetch&&<Button size="small" danger loading={isRefetching} disabled={isRefetching} onClick={async()=>{
+                      setRefetchingSourceUrls((prev) => new Set(prev).add(actionUrl));
+                      setSourceRefetchResults((prev) => ({...prev, [actionUrl]: {status:"RUNNING", failure_summary:"正在后台浏览器重抓，请稍候..."}}));
                       try{
-                        await fetch("/api/optimization/golden-case/refetch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({urls:[r.url]})});
-                        message.destroy("refetch");
+                        const response = await fetch("/api/optimization/golden-case/refetch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({urls:[actionUrl]})});
+                        const payload = await response.json();
+                        if (!response.ok) throw new Error(payload?.detail || "重抓失败");
+                        const first = payload?.results?.[0];
+                        setSourceRefetchResults((prev) => ({...prev, [actionUrl]: first || {status:"UNKNOWN", failure_summary:"重抓完成，但没有返回明细"}}));
                         if(goldenData?.promptId){ await prepareGoldenCaseWorkspace(goldenData.promptId, { skipAcquire: true }); }
-                        message.success("已重新抓取");
-                      }catch(e:any){message.destroy("refetch");message.error(e.message)}
+                        if (first?.status === "SUCCESS") {
+                          message.success(first.failure_summary || "已重新抓取并获得正文");
+                        } else {
+                          message.warning(first?.failure_summary || "已重新抓取，但仍未获得可分析正文");
+                        }
+                      }catch(e:any){
+                        setSourceRefetchResults((prev) => ({...prev, [actionUrl]: {status:"ERROR", failure_summary:e.message || "重抓请求失败"}}));
+                        message.error(e.message);
+                      }finally{
+                        setRefetchingSourceUrls((prev) => {
+                          const next = new Set(prev);
+                          next.delete(actionUrl);
+                          return next;
+                        });
+                      }
                     }}>重抓</Button>}
-                  </Space>},
+                  </Space>}},
                 ]} />}
                 <Divider />
                 <Input placeholder="页面链接" value={manualUrl} onChange={e=>setManualUrl(e.target.value)} style={{width:"100%",marginBottom:6}}/>
@@ -3526,7 +4527,7 @@ export default function App() {
                         columns={[
                           {title:"级别",width:60,render:(_:any,r:any)=><Tag color={r.alignment_level==="L1_EXACT_OVERLAP"?"green":"blue"}>{r.alignment_level==="L1_EXACT_OVERLAP"?"精确匹配":"近重复"}</Tag>},
                           {title:"回答主张",ellipsis:true,render:(_:any,r:any)=><Text style={{fontSize:12}}>{r.claim_text}</Text>},
-                          {title:"引用来源",width:150,render:(_:any,r:any)=><a href={r.doc_url} target="_blank" style={{fontSize:11}}>{r.doc_title||r.doc_url}</a>},
+                          {title:"引用来源",width:150,render:(_:any,r:any)=><a href={sourceActionUrl(r.doc_url, r.doc_canonical_url, r.doc_action_url)} target="_blank" style={{fontSize:11}}>{r.doc_title||displaySourceUrl(r.doc_url, r.doc_canonical_url)}</a>},
                           {title:"证据",ellipsis:true,render:(_:any,r:any)=><Text type="secondary" style={{fontSize:11}}>{r.evidence}</Text>},
                         ]}
                       />}
@@ -3653,15 +4654,22 @@ export default function App() {
       width={820}
     >
       <Space direction="vertical" size={12} style={{width:"100%"}}>
-        {reviewQueue?.status !== "NOT_ANALYZED" && <Alert type="info" showIcon message="机器分析已完成，请逐项人工确认。相同答案只审核一次，确认后自动应用到全部 Run。" />}
+        {reviewQueue?.status !== "NOT_ANALYZED" && <Alert type="info" showIcon message="机器分析已完成，请按顺序人工确认：先确认答案中的竞品/候选对象，再校验 AI 说法和证据关系。相同答案只审核一次，确认后自动应用到全部采集样本。" />}
         {!reviewQueue && <Button type="primary" loading={loading} onClick={async()=>{
           setLoading(true);
           try{
             const [q, cc] = await Promise.all([
-              (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/review-queue`)).json(),
-              (await fetch(`/api/optimization/workflow/${projectId}/${workflowData?.prompt_id}/competitor-candidates`)).json(),
+              (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData?.prompt_id}/review-queue`)).json(),
+              (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData?.prompt_id}/competitor-candidates`)).json(),
             ]);
             setReviewQueue(q); setCompetitorCandidates(cc);
+            if (q?.status !== "NOT_ANALYZED" && (q?.unique_events || []).length === 0 && (q?.alignments || []).length === 0 && (cc || []).length === 0) {
+              await refreshWorkflowStatus();
+              message.info("当前没有待审核项，主链路状态已刷新");
+              setWorkflowReviewOpen(false);
+              setReviewQueue(null);
+              setCompetitorCandidates([]);
+            }
           }catch(e:any){message.error(e.message)}
           finally{setLoading(false)}
         }}>加载待审核项</Button>}
@@ -3670,7 +4678,7 @@ export default function App() {
           <Button type="primary" loading={loading} onClick={async()=>{
             setLoading(true);
             try{
-              const pid = workflowData?.prompt_id;
+              const pid = currentWorkflowData?.prompt_id;
               const r = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/run-analysis`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})})).json();
               if (r.started === false) {
                 message.info("该 Prompt 的机器分析已在后台运行中，稍后点击「加载待审核项」查看进度");
@@ -3760,29 +4768,29 @@ export default function App() {
             <Text strong>AI 选择理由：</Text><Text>{a.reason_text}</Text>
             <Divider style={{margin:6}}/>
             <Text strong>来源原文：</Text><Alert type="info" message={a.claim_span || a.claim_text} style={{marginTop:4}}/>
-            <Text type="secondary" style={{display:"block",marginTop:4}}>机器判断：<Tag color={a.relation==="SUPPORTS"?"green":"gold"}>{a.relation}</Tag></Text>
+            <Text type="secondary" style={{display:"block",marginTop:4}}>机器判断：<Tag color={a.relation==="SUPPORTS"?"green":"gold"}>{semanticRelationLabel(a.relation)}</Tag></Text>
             <Space style={{marginTop:8}}>
               <Button size="small" type="primary" onClick={async()=>{
                 await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"SUPPORTS"})});
-                message.success("已确认 SUPPORTS");
+                message.success("已确认支持");
                 setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
                 refreshWorkflowStatus();
-              }}>确认 SUPPORTS</Button>
+              }}>确认支持</Button>
               <Button size="small" onClick={async()=>{
                 await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"RELATED"})});
-                message.success("已改为 RELATED");
+                message.success("已改为历史相关");
                 setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
                 refreshWorkflowStatus();
-              }}>改为 RELATED</Button>
+              }}>改为历史相关</Button>
               <Button size="small" onClick={async()=>{
                 await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"NONE"})});
-                message.success("已改为 NONE");
+                message.success("已改为无支持");
                 setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
                 refreshWorkflowStatus();
-              }}>NONE</Button>
+              }}>改为无支持</Button>
             </Space>
           </Card>)}
-          {reviewQueue.unique_events.length===0 && reviewQueue.alignments.length===0 && <Alert type="success" showIcon message="全部审核完成！关闭窗口后点「继续分析」生成 Gap 与 Action。" />}
+          {reviewQueue.unique_events.length===0 && reviewQueue.alignments.length===0 && competitorCandidates.length===0 && <Alert type="success" showIcon message="全部审核完成！关闭窗口后点「继续分析」生成缺口与动作。" />}
         </Space>}
       </Space>
     </Modal>
@@ -3832,6 +4840,75 @@ export default function App() {
         </Space>
       </Form>
     </Modal>
+    <Drawer
+      width={920}
+      open={workflowEvidenceDrawerOpen}
+      onClose={() => setWorkflowEvidenceDrawerOpen(false)}
+      title={workflowEvidenceDrawerFocus === "action" ? "动作依据" : workflowEvidenceDrawerFocus === "review" ? "人工决策依据" : "缺口依据"}
+    >
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Alert
+          type="info"
+          showIcon
+          message="先看答案，再决定是否确认"
+          description={unresolvedReviewContext.review_instruction || "这里展示当前 Prompt 的答案样本和机器识别事件，用于判断机器结论是否可信。"}
+        />
+        {currentContinueResult && <Descriptions bordered size="small" column={2} items={[
+          { key: "gap", label: "缺口结论", children: <Space wrap><Tag>{decisionDisplayText(currentContinueResult.gap?.gap_type)}</Tag><Tag>{decisionDisplayText(currentContinueResult.gap?.confidence)}</Tag></Space> },
+          { key: "gap_basis", label: "缺口说明", children: currentContinueResult.gap?.basis || "暂无说明" },
+          { key: "action", label: "动作结论", children: <Space wrap><Tag>{decisionDisplayText(currentContinueResult.action?.intervention_goal)}</Tag><Tag>{decisionDisplayText(currentContinueResult.action?.asset_ownership)}</Tag><Tag>{decisionDisplayText(currentContinueResult.action?.target_platform)}</Tag></Space> },
+          { key: "action_basis", label: "动作说明", children: currentContinueResult.action?.note || currentContinueResult.action?.target_claim || "暂无说明" },
+        ]} />}
+        <Card
+          size="small"
+          title={<Space wrap><Text strong>答案样本</Text><Tag>{unresolvedAnswerSamples.length} 条</Tag></Space>}
+        >
+          <Table
+            size="small"
+            rowKey="run_id"
+            pagination={{ pageSize: 6 }}
+            dataSource={unresolvedAnswerSamples}
+            locale={{ emptyText: "当前没有可展示的答案样本，请先检查采集记录。" }}
+            columns={[
+              { title: "采集样本", width: 120, render: (_, row: any) => <Space direction="vertical" size={0}><Text>采集 #{row.run_id}</Text><Text type="secondary">第 {row.sample_index || row.run_sequence || "-"} 样本</Text></Space> },
+              { title: "采集状态", width: 100, render: (_, row: any) => statusTag(row.status) },
+              { title: "目标品牌出现", width: 110, render: (_, row: any) => row.brand_mentioned ? <Tag color="green">有</Tag> : <Tag>无</Tag> },
+              { title: "答案对象线索", width: 220, render: (_, row: any) => {
+                const entities = row.detected_entities || [];
+                if (!entities.length) return <Text type="secondary">未识别到品牌/候选对象</Text>;
+                return <Space direction="vertical" size={2}>
+                  {entities.slice(0, 6).map((item: any) => <Space key={`${item.entity_text}-${item.relation}`} size={2} wrap>
+                    {entityRelationTag(item.relation, item.relation_label)}
+                    <Text>{item.entity_text}</Text>
+                  </Space>)}
+                  {entities.length > 6 && <Text type="secondary">另有 {entities.length - 6} 个对象</Text>}
+                </Space>;
+              } },
+              { title: "答案摘录", render: (_, row: any) => <pre className="content-preview">{row.answer_excerpt || "无回答正文"}</pre> },
+            ]}
+          />
+        </Card>
+        <Card
+          size="small"
+          title={<Space wrap><Text strong>机器识别事件</Text><Tag>{unresolvedEventDiagnostics.length} 条</Tag>{Object.entries(unresolvedEventStatusCounts).map(([status, count]: any) => <Tag key={status}>{reviewStatusLabel(status)}：{count}</Tag>)}</Space>}
+        >
+          <Table
+            size="small"
+            rowKey="event_id"
+            pagination={{ pageSize: 6 }}
+            dataSource={unresolvedEventDiagnostics}
+            locale={{ emptyText: "当前没有机器识别出的可核对推荐事件。" }}
+            columns={[
+              { title: "采集", dataIndex: "run_id", width: 90, render: (value: number) => `采集 #${value}` },
+              { title: "状态", width: 130, render: (_, row: any) => <Tag color={row.review_status === "VALIDATION_FAILED" ? "red" : "blue"}>{reviewStatusLabel(row.review_status)}</Tag> },
+              { title: "对象", dataIndex: "entity_text", width: 140, render: (value: string) => value || "-" },
+              { title: "行为", width: 140, render: (_, row: any) => speechActLabel(row.speech_act) },
+              { title: "答案片段", dataIndex: "answer_span", render: (value: string) => value || "-" },
+            ]}
+          />
+        </Card>
+      </Space>
+    </Drawer>
     <Drawer width={760} open={Boolean(detail)} onClose={() => { setDetail(undefined); setArtifact(undefined); }} title={detail ? `采样详情 #${detail.id}` : ""}>
       {detail && <Space direction="vertical" className="page-stack" size={16}>
         <Descriptions bordered size="small" column={2} items={[
@@ -3847,7 +4924,7 @@ export default function App() {
         <Card size="small" title="回答正文"><pre className="content-preview">{detail.answer_text || "无回答正文"}</pre></Card>
         <Card size="small" title="引用详情"><Table size="small" rowKey="id" pagination={{ pageSize: 8 }} dataSource={detail.references} columns={[
           { title: "#", dataIndex: "reference_index", width: 50 }, { title: "标题", dataIndex: "display_title" },
-          { title: "域名", dataIndex: "domain", width: 150 }, { title: "链接", width: 70, render: (_, row) => row.url ? <Link href={row.url} target="_blank"><ExternalLink size={15} /></Link> : <Tag color="gold">未解析</Tag> }
+          { title: "域名", width: 150, render: (_, row) => <Text>{displaySourceDomain(row.domain, row.url)}</Text> }, { title: "链接", width: 70, render: (_, row) => row.url ? <Link href={sourceActionUrl(row.url)} target="_blank"><ExternalLink size={15} /></Link> : <Tag color="gold">未解析</Tag> }
         ]} /></Card>
         <Card size="small" title="证据"><Table size="small" rowKey="id" pagination={false} dataSource={detail.artifacts} columns={[
           { title: "证据类型", dataIndex: "artifact_type", render: (value) => <Space><FileText size={15} />{value}</Space> },

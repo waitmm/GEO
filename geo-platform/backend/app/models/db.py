@@ -1067,6 +1067,128 @@ class AnswerClaim(Base, TimestampMixin):
     answer_position: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class AnswerUnit(Base, TimestampMixin):
+    """V1.1 Shadow: grounded atomic answer unit derived from AnswerClaim."""
+
+    __tablename__ = "answer_units"
+    __table_args__ = (
+        Index("ix_answer_units_shadow_run", "shadow_run_id"),
+        Index("ix_answer_units_project_prompt", "project_id", "prompt_id"),
+        Index("ix_answer_units_claim", "answer_claim_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    shadow_run_id: Mapped[Optional[int]] = mapped_column(ForeignKey("answer_evidence_shadow_runs.id"), nullable=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+    answer_claim_id: Mapped[int] = mapped_column(ForeignKey("answer_claims.id"), index=True)
+    unit_index: Mapped[int] = mapped_column(Integer, default=0)
+    unit_text_original: Mapped[str] = mapped_column(Text, default="")
+    unit_text_normalized: Mapped[str] = mapped_column(Text, default="")
+    source_span: Mapped[str] = mapped_column(Text, default="")
+    raw_start: Mapped[int] = mapped_column(Integer, default=-1)
+    raw_end: Mapped[int] = mapped_column(Integer, default=-1)
+    semantic_type: Mapped[str] = mapped_column(String(40), default="GENERAL_FACT", index=True)
+    entity_hint: Mapped[str] = mapped_column(String(240), default="")
+    extraction_method: Mapped[str] = mapped_column(String(80), default="RULE_ATOMICIZE")
+    extraction_version: Mapped[str] = mapped_column(String(80), default="answer_unit.v1_1_shadow")
+    machine_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    human_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    review_status: Mapped[str] = mapped_column(String(40), default="MACHINE_GROUNDED", index=True)
+    reviewer: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AnswerDecisionBinding(Base, TimestampMixin):
+    """V1.1 Shadow: binds an AnswerUnit to a RecommendationEvent decision role."""
+
+    __tablename__ = "answer_decision_bindings"
+    __table_args__ = (
+        Index("ix_answer_decision_bindings_shadow_run", "shadow_run_id"),
+        Index("ix_answer_decision_bindings_event", "recommendation_event_id"),
+        Index("ix_answer_decision_bindings_unit", "answer_unit_id"),
+        Index("ix_answer_decision_bindings_project_prompt", "project_id", "prompt_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    shadow_run_id: Mapped[Optional[int]] = mapped_column(ForeignKey("answer_evidence_shadow_runs.id"), nullable=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+    recommendation_event_id: Mapped[int] = mapped_column(ForeignKey("recommendation_events.id"), index=True)
+    answer_unit_id: Mapped[int] = mapped_column(ForeignKey("answer_units.id"), index=True)
+    decision_role: Mapped[str] = mapped_column(String(40), default="SUPPORTING_REASON", index=True)
+    binding_strength: Mapped[str] = mapped_column(String(40), default="MEDIUM")
+    scope_type: Mapped[str] = mapped_column(String(40), default="SAME_PARAGRAPH", index=True)
+    scope_reason: Mapped[str] = mapped_column(Text, default="")
+    binding_method: Mapped[str] = mapped_column(String(80), default="RULE_SHADOW_CANDIDATE")
+    pipeline_version: Mapped[str] = mapped_column(String(80), default="citation_decision_v1_1_shadow", index=True)
+    judge_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    review_status: Mapped[str] = mapped_column(String(40), default="MACHINE_GROUNDED", index=True)
+    reviewer: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AnswerEvidenceShadowRun(Base, TimestampMixin):
+    """V1.1 Phase 0 audit run. It must not affect formal Citation Decision V1."""
+
+    __tablename__ = "answer_evidence_shadow_runs"
+    __table_args__ = (
+        Index("ix_answer_evidence_shadow_runs_project_prompt", "project_id", "prompt_id"),
+        Index("ix_answer_evidence_shadow_runs_package", "evidence_package_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    evidence_package_id: Mapped[Optional[int]] = mapped_column(ForeignKey("optimization_evidence_packages.id"), nullable=True, index=True)
+    source_run_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    pipeline_version: Mapped[str] = mapped_column(String(80), default="citation_decision_v1_1_shadow", index=True)
+    status: Mapped[str] = mapped_column(String(40), default="running", index=True)
+    formal_output_impact: Mapped[str] = mapped_column(String(40), default="NONE")
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+
+
+class AnswerEvidenceShadowResult(Base, TimestampMixin):
+    """V1.1 Phase 0 source/alignment result stored as audit-only JSON."""
+
+    __tablename__ = "answer_evidence_shadow_results"
+    __table_args__ = (
+        Index("ix_answer_evidence_shadow_results_run", "shadow_run_id"),
+        Index("ix_answer_evidence_shadow_results_event", "recommendation_event_id"),
+        Index("ix_answer_evidence_shadow_results_document", "source_document_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    shadow_run_id: Mapped[int] = mapped_column(ForeignKey("answer_evidence_shadow_runs.id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+    evidence_package_id: Mapped[Optional[int]] = mapped_column(ForeignKey("optimization_evidence_packages.id"), nullable=True, index=True)
+    recommendation_event_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recommendation_events.id"), nullable=True, index=True)
+    answer_unit_id: Mapped[int] = mapped_column(ForeignKey("answer_units.id"), index=True)
+    decision_binding_id: Mapped[Optional[int]] = mapped_column(ForeignKey("answer_decision_bindings.id"), nullable=True, index=True)
+    reference_source_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reference_sources.id"), nullable=True, index=True)
+    source_document_id: Mapped[Optional[int]] = mapped_column(ForeignKey("source_documents.id"), nullable=True, index=True)
+    passage_id: Mapped[str] = mapped_column(String(120), default="")
+    passage_text: Mapped[str] = mapped_column(Text, default="")
+    retrieval_score: Mapped[float] = mapped_column(Float, default=0)
+    source_claim_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    source_claim_text: Mapped[str] = mapped_column(Text, default="")
+    source_claim_subject: Mapped[str] = mapped_column(String(240), default="UNKNOWN")
+    source_claim_review_status: Mapped[str] = mapped_column(String(40), default="MACHINE_CANDIDATE")
+    alignment_relation: Mapped[str] = mapped_column(String(40), default="NO_SUPPORT", index=True)
+    alignment_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    evidence_classification: Mapped[str] = mapped_column(String(60), default="NO_RECOMMENDATION_EVIDENCE", index=True)
+    pipeline_version: Mapped[str] = mapped_column(String(80), default="citation_decision_v1_1_shadow", index=True)
+    formal_output_impact: Mapped[str] = mapped_column(String(40), default="NONE")
+    review_status: Mapped[str] = mapped_column(String(40), default="MACHINE_GROUNDED", index=True)
+
+
 # ---------------------------------------------------------------------------
 # Answer Intelligence — Claim Extraction + Atomic Claim
 # ---------------------------------------------------------------------------

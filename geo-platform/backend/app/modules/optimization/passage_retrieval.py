@@ -11,13 +11,29 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy.orm import Session
 
-from app.models import Project, RecommendationEvent, SourceDocument, SourceQuality
+from app.models import (
+    AnswerDecisionBinding,
+    AnswerEvidenceShadowRun,
+    AnswerUnit,
+    Project,
+    RecommendationEvent,
+    ReferenceSource,
+    SourceDocument,
+    SourceQuality,
+)
 from app.services.serialization import loads
 
 RETRIEVAL_VERSION = "passage_retrieval.v1_bm25"
+FORMAL_V1_1_INPUT_VERSION = "citation_decision_v1_1_formal_input.v1"
+ANSWER_BINDING_REASON_SOURCE = "ANSWER_DECISION_BINDING"
+EVENT_REASON_SOURCE = "RECOMMENDATION_EVENT_REASONS_JSON"
+SHADOW_INPUT_PIPELINE_VERSION = "citation_decision_v1_1_shadow"
+_FORMAL_REASON_BINDING_ROLES = {"DIRECT_REASON", "SUPPORTING_REASON"}
+_INVISIBLE_CHARS = re.compile(r"[\u200b\u200c\u200d\ufeff]")
 
 
 def tokenize_zh(text: str) -> list[str]:
@@ -31,6 +47,24 @@ def tokenize_zh(text: str) -> list[str]:
         else:
             tokens.extend(part[i:i + 2] for i in range(len(part) - 1))
     return tokens
+
+
+def _clean_reason_text(text: str) -> str:
+    return _INVISIBLE_CHARS.sub("", text or "").strip()
+
+
+def _normalize_url_key(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return url.strip().lower()
+    host = (parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = parsed.path.rstrip("/") or "/"
+    return urlunsplit((parsed.scheme.lower() or "https", host, path, "", ""))
 
 
 class BM25:
@@ -107,12 +141,127 @@ def retrieve_passages_for_reason(
     return scored[:top_k]
 
 
+def _latest_completed_shadow_run(
+    db: Session,
+    project_id: int,
+    prompt_id: int,
+    run_ids: list[int],
+) -> AnswerEvidenceShadowRun | None:
+    expected = {int(run_id) for run_id in run_ids}
+    rows = (
+        db.query(AnswerEvidenceShadowRun)
+        .filter(
+            AnswerEvidenceShadowRun.project_id == project_id,
+            AnswerEvidenceShadowRun.prompt_id == prompt_id,
+            AnswerEvidenceShadowRun.pipeline_version == SHADOW_INPUT_PIPELINE_VERSION,
+            AnswerEvidenceShadowRun.status.in_(["completed", "completed_with_warnings"]),
+            AnswerEvidenceShadowRun.formal_output_impact == "NONE",
+        )
+        .order_by(AnswerEvidenceShadowRun.created_at.desc(), AnswerEvidenceShadowRun.id.desc())
+        .all()
+    )
+    for row in rows:
+        row_run_ids = {int(item) for item in loads(row.source_run_ids_json, [])}
+        if row_run_ids == expected:
+            return row
+    return None
+
+
+def answer_binding_reason_inputs(
+    db: Session,
+    project: Project,
+    prompt_id: int,
+    run_ids: list[int],
+) -> list[dict]:
+    """读取 Phase 0 已审计 Binding，作为 Phase 1 正式 reason 输入候选。
+
+    注意：这里不读取 Shadow Evidence Result，也不直接升级 Benchmark。
+    它只把 grounded AnswerUnit 暴露给正式 Passage Retrieval / Alignment。
+    """
+    shadow_run = _latest_completed_shadow_run(db, project.id, prompt_id, run_ids)
+    if not shadow_run:
+        return []
+    rows = (
+        db.query(AnswerDecisionBinding, AnswerUnit, RecommendationEvent)
+        .join(AnswerUnit, AnswerUnit.id == AnswerDecisionBinding.answer_unit_id)
+        .join(RecommendationEvent, RecommendationEvent.id == AnswerDecisionBinding.recommendation_event_id)
+        .filter(
+            AnswerDecisionBinding.shadow_run_id == shadow_run.id,
+            AnswerDecisionBinding.project_id == project.id,
+            AnswerDecisionBinding.prompt_id == prompt_id,
+            AnswerDecisionBinding.run_id.in_(run_ids),
+            AnswerDecisionBinding.pipeline_version == SHADOW_INPUT_PIPELINE_VERSION,
+            AnswerDecisionBinding.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
+            AnswerDecisionBinding.decision_role.in_(_FORMAL_REASON_BINDING_ROLES),
+            AnswerUnit.review_status == "MACHINE_GROUNDED",
+            RecommendationEvent.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
+        )
+        .order_by(AnswerDecisionBinding.run_id, AnswerDecisionBinding.id)
+        .all()
+    )
+    result: list[dict] = []
+    for binding, unit, event in rows:
+        reason_text = _clean_reason_text(unit.unit_text_normalized or unit.unit_text_original or "")
+        if not reason_text:
+            continue
+        result.append({
+            "text": reason_text,
+            "scope": "ENTITY_SPECIFIC",
+            "entity": event.entity_text or "",
+            "event_id": event.id,
+            "run_id": event.run_id,
+            "reason_id": f"answer_unit:{unit.id}:binding:{binding.id}",
+            "reason_source": ANSWER_BINDING_REASON_SOURCE,
+            "decision_role": binding.decision_role,
+            "binding_strength": binding.binding_strength,
+            "scope_type": binding.scope_type,
+            "shadow_run_id": shadow_run.id,
+            "answer_unit_id": unit.id,
+            "decision_binding_id": binding.id,
+        })
+    return result
+
+
+def _cited_document_ids_for_runs(db: Session, run_ids: list[int], docs: list[SourceDocument]) -> set[int]:
+    refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(run_ids)).all()
+    doc_by_key: dict[str, int] = {}
+    for doc in docs:
+        for url in {doc.url, doc.original_url, doc.canonical_url}:
+            key = _normalize_url_key(url or "")
+            if key:
+                doc_by_key[key] = doc.id
+    cited: set[int] = set()
+    for ref in refs:
+        for url in {ref.canonical_url, ref.url}:
+            key = _normalize_url_key(url or "")
+            if key in doc_by_key:
+                cited.add(doc_by_key[key])
+    return cited
+
+
+def _passage_mentions_entity(passage: dict, entity: str, docs_by_id: dict[int, SourceDocument]) -> bool:
+    if not entity:
+        return False
+    doc = docs_by_id.get(passage["doc_id"])
+    haystack = f"{passage.get('text') or ''} {doc.title if doc else ''} {doc.url if doc else ''}"
+    return entity in haystack
+
+
+def _merge_ranked_passages(*ranked_groups: list[dict], top_k: int) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for group in ranked_groups:
+        for passage in group:
+            merged.setdefault(passage["passage_id"], passage)
+    return sorted(merged.values(), key=lambda x: -x["bm25_score"])[:top_k]
+
+
 def run_reason_driven_retrieval(
     db: Session,
     project: Project,
     prompt_id: int,
     run_ids: list[int],
     top_k: int = 5,
+    include_answer_binding_reasons: bool = False,
 ) -> dict:
     """主流程：Reason → 有效 Source → Passage 检索。
 
@@ -126,24 +275,34 @@ def run_reason_driven_retrieval(
         RecommendationEvent.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
     ).all()
 
-    # 2. 只取 CONTENT_VALID 的 Source（Content Quality Gate）
-    valid_doc_ids = {
-        q.source_document_id
-        for q in db.query(SourceQuality).filter(
-            SourceQuality.content_quality_status == "CONTENT_VALID"
-        ).all()
-    }
-    docs = db.query(SourceDocument).filter(SourceDocument.id.in_(valid_doc_ids)).all() if valid_doc_ids else []
+    # 2. 只取 CONTENT_VALID 的 Source（Content Quality Gate）。
+    # 有些补录/重抓来源有正文但尚未生成 SourceQuality 行，统一使用
+    # derive_content_status 兜底，避免可用正文被正式检索误排除。
+    from app.modules.optimization.source_qualification import derive_content_status
+
+    quality_by_doc_id: dict[int, SourceQuality] = {}
+    for quality in db.query(SourceQuality).order_by(SourceQuality.id.desc()).all():
+        quality_by_doc_id.setdefault(quality.source_document_id, quality)
+    docs = [
+        doc
+        for doc in db.query(SourceDocument).all()
+        if derive_content_status(doc, quality_by_doc_id.get(doc.id)).get("content_status") == "CONTENT_VALID"
+    ]
     doc_passages: dict[int, list[dict]] = {}
     for doc in docs:
         doc_passages[doc.id] = _split_document_passages(doc)
 
     all_passages = [p for passages in doc_passages.values() for p in passages]
+    docs_by_id = {doc.id: doc for doc in docs}
+    cited_doc_ids = _cited_document_ids_for_runs(db, run_ids, docs) if include_answer_binding_reasons else set()
+    cited_passages = [p for p in all_passages if p["doc_id"] in cited_doc_ids]
 
     # 3. 按 Reason 去重（相同 normalized_reason 只检索一次）
     seen_reasons: set[str] = set()
     result: dict[str, dict] = {}
     total_pages = 0
+    legacy_reasons_added = 0
+    binding_reasons_added = 0
     # ownership → docs 映射（Reason 实体的第一方页面优先候选）
     ownership_map: dict[str, list[int]] = {}
     for doc in docs:
@@ -156,12 +315,16 @@ def run_reason_driven_retrieval(
     for event in events:
         for reason in loads(event.reasons_json, []):
             rtext = reason.get("normalized_reason") or ""
-            if not rtext or rtext in seen_reasons:
+            rtext = _clean_reason_text(rtext)
+            reason_scope = reason.get("reason_scope") or "ENTITY_SPECIFIC"
+            reason_entity = event.entity_text if reason_scope == "ENTITY_SPECIFIC" else ""
+            seen_key = f"{reason_scope}|{reason_entity}|{rtext}"
+            if not rtext or seen_key in seen_reasons:
                 continue
-            seen_reasons.add(rtext)
+            seen_reasons.add(seen_key)
             hits = retrieve_passages_for_reason(rtext, all_passages, top_k)
             # Reason-driven 增强：ENTITY_SPECIFIC reason 的实体第一方页面优先
-            if reason.get("reason_scope") == "ENTITY_SPECIFIC":
+            if reason_scope == "ENTITY_SPECIFIC":
                 owner_doc_ids = ownership_map.get(event.entity_text, [])
                 owner_hits = [p for p in all_passages if p["doc_id"] in owner_doc_ids]
                 owner_scored = retrieve_passages_for_reason(rtext, owner_hits, top_k)
@@ -172,18 +335,71 @@ def run_reason_driven_retrieval(
                 hits = sorted(merged.values(), key=lambda x: -x["bm25_score"])[:top_k]
             result[rtext] = {
                 "reason_text": rtext,
-                "reason_scope": reason.get("reason_scope"),
-                "reason_entity": event.entity_text,
+                "reason_scope": reason_scope,
+                "reason_entity": reason_entity,
                 "event_ids": [event.id],
+                "reason_source": EVENT_REASON_SOURCE,
+                "reason_id": f"reason:{rtext[:60]}",
                 "passages": hits,
             }
             total_pages += len(hits)
+            legacy_reasons_added += 1
+
+    binding_reasons = answer_binding_reason_inputs(db, project, prompt_id, run_ids) if include_answer_binding_reasons else []
+    for reason in binding_reasons:
+        rtext = reason["text"]
+        reason_entity = reason.get("entity") or ""
+        reason_scope = reason.get("scope") or "ENTITY_SPECIFIC"
+        seen_key = f"{reason_scope}|{reason_entity}|{rtext}"
+        if not rtext or seen_key in seen_reasons:
+            continue
+        seen_reasons.add(seen_key)
+        hits = retrieve_passages_for_reason(rtext, all_passages, top_k)
+        if reason_scope == "ENTITY_SPECIFIC":
+            owner_doc_ids = ownership_map.get(reason_entity, [])
+            owner_hits = [p for p in all_passages if p["doc_id"] in owner_doc_ids]
+            owner_scored = retrieve_passages_for_reason(rtext, owner_hits, top_k)
+            same_entity_cited = [
+                p for p in cited_passages
+                if _passage_mentions_entity(p, reason_entity, docs_by_id)
+            ]
+            same_entity_cited_scored = retrieve_passages_for_reason(rtext, same_entity_cited, top_k)
+            cited_scored = retrieve_passages_for_reason(rtext, cited_passages, top_k)
+            hits = _merge_ranked_passages(
+                same_entity_cited_scored,
+                owner_scored,
+                cited_scored,
+                hits,
+                top_k=top_k,
+            )
+        result_key = f"{ANSWER_BINDING_REASON_SOURCE}:{reason.get('reason_id')}:{rtext[:40]}"
+        result[result_key] = {
+            "reason_text": rtext,
+            "reason_scope": reason_scope,
+            "reason_entity": reason_entity,
+            "event_ids": [reason["event_id"]],
+            "reason_source": ANSWER_BINDING_REASON_SOURCE,
+            "reason_id": reason.get("reason_id"),
+            "decision_role": reason.get("decision_role"),
+            "binding_strength": reason.get("binding_strength"),
+            "shadow_run_id": reason.get("shadow_run_id"),
+            "answer_unit_id": reason.get("answer_unit_id"),
+            "decision_binding_id": reason.get("decision_binding_id"),
+            "passages": hits,
+        }
+        total_pages += len(hits)
+        binding_reasons_added += 1
 
     return {
         "status": "OK",
         "unique_reasons": len(result),
+        "legacy_event_reasons": legacy_reasons_added,
+        "answer_binding_reasons": binding_reasons_added,
+        "answer_binding_candidates": len(binding_reasons) if include_answer_binding_reasons else 0,
+        "include_answer_binding_reasons": include_answer_binding_reasons,
         "valid_documents": len(docs),
         "passages_retrieved": total_pages,
         "by_reason": result,
         "version": RETRIEVAL_VERSION,
+        "formal_input_version": FORMAL_V1_1_INPUT_VERSION if include_answer_binding_reasons else "",
     }

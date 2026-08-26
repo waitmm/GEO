@@ -84,6 +84,48 @@ _CHALLENGE_KEYWORDS = ["验证码", "安全验证", "请点击", "访问异常",
 _NAV_KEYWORDS = ["首页", "登录", "注册", "导航", "更多好文", "相关阅读", "为你推荐"]
 
 
+def derive_content_status(doc: SourceDocument, quality: SourceQuality | None = None) -> dict:
+    """Map technical fetch/quality states to the V1 product content status."""
+    fetch_status = (doc.fetch_status or "").upper()
+    text = (doc.clean_text or "").strip()
+    quality_status = (quality.content_quality_status if quality else "").upper()
+
+    if fetch_status == "MANUAL_EMPTY":
+        return {
+            "content_status": "CONTENT_UNAVAILABLE",
+            "content_status_label": "正文不可用",
+            "content_status_reason": "页面已删除或无可用正文，且已由人工确认。",
+            "blocks_alignment": False,
+        }
+    if fetch_status == "FETCH_FAILED":
+        return {
+            "content_status": "CONTENT_UNAVAILABLE",
+            "content_status_label": "抓取失败",
+            "content_status_reason": doc.failure_reason or "自动抓取失败，当前没有可分析正文。",
+            "blocks_alignment": False,
+        }
+    if not text:
+        return {
+            "content_status": "CONTENT_PENDING",
+            "content_status_label": "待补正文",
+            "content_status_reason": "当前正文为空，需要人工补录正文，或明确标记为空页。",
+            "blocks_alignment": True,
+        }
+    if quality_status in {"NOISY", "EMPTY"}:
+        return {
+            "content_status": "CONTENT_INVALID",
+            "content_status_label": "正文质量不足",
+            "content_status_reason": quality.quality_reason if quality else "正文过短或疑似噪声页面。",
+            "blocks_alignment": True,
+        }
+    return {
+        "content_status": "CONTENT_VALID",
+        "content_status_label": "正文可用",
+        "content_status_reason": "已有可用于段落检索和证据对齐的正文。",
+        "blocks_alignment": False,
+    }
+
+
 def _content_hash(clean_text: str) -> str:
     import hashlib
     return hashlib.sha256((clean_text or "").encode("utf-8")).hexdigest()

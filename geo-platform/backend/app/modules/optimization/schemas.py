@@ -474,6 +474,8 @@ class OptimizationExperimentRead(BaseModel):
     controlled_intervention: dict[str, Any] = Field(default_factory=dict)
     conclusion: str = ""
     conclusion_reason: str = ""
+    post_run_ids: list[int] = Field(default_factory=list)
+    outcome_summary: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None
@@ -544,8 +546,47 @@ class SourceAnalysisRead(BaseModel):
     author_name: str = ""
     published_date: str = ""
     source_score: int = 0
+    legacy_source_score: int = 0
+    source_score_deprecated: bool = True
     score_breakdown: dict[str, Any] = Field(default_factory=dict)
     score_explanation: list[str] = Field(default_factory=list)
+    citation_prominence_level: str = "LOW"
+    citation_prominence_basis: list[str] = Field(default_factory=list)
+    citation_prominence_breakdown: dict[str, Any] = Field(default_factory=dict)
+    source_document_id: Optional[int] = None
+    content_status: str = "CONTENT_PENDING"
+    content_status_label: str = "待补正文"
+    content_status_reason: str = ""
+    blocks_alignment: bool = True
+    decision_support_level: str = "NONE"
+    has_contradiction: bool = False
+    benchmark_relevance: str = "TANGENTIAL"
+    benchmark_tier: str = "NOT_EVALUABLE"
+    benchmark_basis: list[str] = Field(default_factory=list)
+    supporting_alignment_ids: list[int] = Field(default_factory=list)
+    contradicting_alignment_ids: list[int] = Field(default_factory=list)
+    decision_support_basis: list[str] = Field(default_factory=list)
+    suggested_capability_label: str = ""
+    source_gap_type: Optional[str] = None
+    source_gap_label: str = ""
+    source_gap_reason: str = ""
+    source_gap_basis: list[str] = Field(default_factory=list)
+    source_gap_precondition: str = "NO_ELIGIBLE_BENCHMARK"
+    gap_analysis_status: str = "NOT_ELIGIBLE"
+    matched_product_truth_ids: list[int] = Field(default_factory=list)
+    matched_product_truth_status: str = "UNKNOWN"
+    existing_asset_status: str = "UNKNOWN"
+    existing_asset_snapshot_id: Optional[int] = None
+    existing_asset_coverage: str = "UNKNOWN"
+    priority_level: Optional[str] = None
+    priority_label: str = ""
+    priority_reason: str = ""
+    priority_basis: list[str] = Field(default_factory=list)
+    action_route: Optional[str] = None
+    action_route_label: str = ""
+    action_route_reason: str = ""
+    recommended_action: Optional[dict[str, Any]] = None
+    channel_opportunity: Optional[dict[str, Any]] = None
     citation_occurrence_count: int = 0
     cited_run_count: int = 0
     answer_citation_rate: float = 0

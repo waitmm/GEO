@@ -2,6 +2,390 @@
 
 Status: ACTIVE
 
+## 2026-08-26 Prompt 40 Phase 1 Formal Result Audit
+
+- Audited the first small-scope formal Citation Decision V1.1 input switch on
+  Prompt `#40`.
+- Added the review artifact:
+  `docs/PROMPT_40_PHASE1_FORMAL_RESULT_AUDIT.md`.
+- Confirmed that Prompt `#40` moved from the previous false-negative shape to:
+
+```text
+status = READY_FOR_HUMAN_CONFIRM
+primary_benchmark_count = 1
+recommended_action_count = 1
+channel_opportunity_count = 1
+```
+
+- Confirmed the formal `SUPPORTS` rows came from:
+
+```text
+reason_source = ANSWER_DECISION_BINDING
+formal_input_version = citation_decision_v1_1_formal_input.v1
+```
+
+- Confirmed the result did not come from:
+
+```text
+RecommendationEvent.reasons_json
+Shadow Evidence Result
+Citation Prominence
+title/entity string match
+LEGACY_RELATED
+```
+
+- Found a Phase 2 blocker: the six formal `SUPPORTS` rows are all attached to
+  Run `#238`, not spread across all six source Runs. The current formal
+  alignment logic deduplicates answer-derived reasons by semantic text, scope,
+  and entity, which collapses run-level coverage.
+- Found a rollback-boundary blocker: `use_answer_binding_v1_1` currently
+  controls generation input only. Once V1.1 formal `EvidenceAlignment` rows are
+  written, the Citation Decision read path still consumes them even if the
+  generation flag is later false.
+- Found a Product Truth granularity risk: the current action focuses on
+  `数据统计功能 / 自定义分享标题 / 营销场景`, while matched Product Truth is still
+  the broader `短链生成` capability.
+- Found a small toolchain drift: `run_single_case_evidence.py` passes
+  `doc_id_filter` into Layer 3, but `run_reason_driven_retrieval` does not
+  currently accept that parameter.
+- Current phase status:
+
+```text
+PHASE_1_FORMAL_INPUT_PROVEN_ON_PROMPT_40
+READY_FOR_FULL_PRODUCTION_SWITCH = false
+```
+
+- No main workflow order change was made in this audit.
+
+## 2026-08-26 Prompt 40 Shadow Binding Scope Calibration
+
+- Calibrated the V1.1 Phase 0 Shadow Binding semantics from strict explicit
+  reason detection to Recommendation Explanation Scope detection.
+- Added Shadow audit fields on `AnswerDecisionBinding`:
+  - `scope_type`
+  - `scope_reason`
+- Updated Binding rules so recommended-brand capability, benefit, price,
+  result, use-case, and comparative-advantage AnswerUnits inside the
+  recommendation explanation scope default to `SUPPORTING_REASON`.
+- Kept `DIRECT_REASON` reserved for explicit selection conditions, explicit
+  causality, explicit comparison, or demand-fit language.
+- Preserved exclusions for procedure steps, general background facts, other
+  brands, limitations/counter facts, and content outside the recommendation
+  explanation scope.
+- Extended the Shadow-only evidence path so valuable unbound AnswerUnits can be
+  audited as `BRAND_CAPABILITY_EVIDENCE`, `PROCEDURAL_EVIDENCE`, or
+  `FACTUAL_EVIDENCE` without creating Recommendation Evidence.
+- Added a SQLite compatibility migration for the Shadow-only
+  `answer_evidence_shadow_results` table so `recommendation_event_id` and
+  `decision_binding_id` can be null for unbound AnswerUnit evidence.
+- Re-ran Prompt `#40` six-Run Shadow audit as `ShadowRun #7`.
+
+Prompt `#40` ShadowRun `#7` result:
+
+```text
+answer_unit_count = 216
+grounded_answer_unit_count = 216
+binding_count = 30
+direct_reason_count = 0
+supporting_reason_count = 30
+shadow_result_count = 252
+shadow_source_claim_count = 222
+SUPPORTS = 18
+NO_SUPPORT = 234
+CONTRADICTS = 0
+recommendation_evidence_eligible_count = 18
+```
+
+Formal V1 zero-pollution check:
+
+```text
+formal SourceClaim: 545 -> 545
+formal EvidenceAlignment for Prompt #40: 0 -> 0
+PRIMARY_BENCHMARK: 0 -> 0
+SECONDARY_BENCHMARK: 0 -> 0
+recommended_action_count: 0 -> 0
+channel_opportunity_count: 0 -> 0
+formal_output_impact = NONE
+```
+
+Review artifact:
+
+```text
+docs/PROMPT_40_SHADOW_RUN_7_BINDING_REVIEW.md
+```
+
+Validation performed:
+
+- Existing local SQLite Shadow result table was migrated without dropping
+  `ShadowRun #7`; `answer_evidence_shadow_results` kept 787 rows.
+- `.venv/bin/python -m pytest tests/test_answer_evidence_shadow.py` passed:
+  11 tests.
+
+## 2026-08-26 Prompt 40 Shadow Audit Run
+
+- Executed the real V1.1 Phase 0 Shadow Evidence Chain for Prompt `#40`
+  across the six evidence-package Runs:
+  `238, 239, 240, 253, 254, 255`.
+- Added audit controls for focused Shadow runs:
+  - `entity_filter`
+  - `max_bindings`
+- The controls only limit Shadow audit scope. They do not change the formal
+  Citation Decision V1 chain or any formal Benchmark / Gap / Action output.
+- Fixed Shadow summary formal-count scope so formal SourceClaim counts are
+  project-scoped and formal EvidenceAlignment counts are project + prompt
+  scoped.
+- Added a regression test proving `entity_filter=小码短链接` does not bind other
+  recommended entities in the same run.
+
+Prompt `#40` ShadowRun `#6` result:
+
+```text
+answer_unit_count = 216
+binding_count = 30
+shadow_result_count = 252
+shadow_source_claim_count = 222
+SUPPORTS = 18
+NO_SUPPORT = 234
+CONTRADICTS = 0
+recommendation_evidence_eligible_count = 18
+```
+
+Formal V1 zero-pollution check:
+
+```text
+formal SourceClaim: 545 -> 545
+formal EvidenceAlignment for Prompt #40: 0 -> 0
+PRIMARY_BENCHMARK: 0 -> 0
+SECONDARY_BENCHMARK: 0 -> 0
+recommended_action_count: 0 -> 0
+channel_opportunity_count: 0 -> 0
+```
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_answer_evidence_shadow.py` passed:
+  6 tests.
+
+## 2026-08-26 Prompt 40 Binding Review Gate
+
+- Added a reusable Markdown export script for Shadow Binding review:
+  `backend/scripts/export_answer_binding_review.py`.
+- Exported `ShadowRun #6` into
+  `docs/PROMPT_40_SHADOW_RUN_6_BINDING_REVIEW.md`.
+- The review table keeps all 30 machine Binding rows as `待人工审计`; it does
+  not pretend machine output is human-approved.
+- Added Shadow-only `PROCEDURAL_CONTEXT` so procedure AnswerUnits can be audited
+  as procedural source evidence without becoming recommendation reasons.
+- Procedure evidence is classified as `PROCEDURAL_EVIDENCE` and does not count
+  toward `recommendation_evidence_eligible_count`.
+
+Gate observations:
+
+```text
+小码短链接支持长链接快速缩短: Binding 6/6, SUPPORTS 0/6
+小码短链接自带点击统计: Binding 6/6, SUPPORTS 6/6
+小码短链接自带二维码生成: Binding 6/6, SUPPORTS 0/6
+小码短链接自带自定义分享标题: Binding 6/6, SUPPORTS 6/6
+小码短链接适合营销场景使用: Binding 6/6, SUPPORTS 0/6
+```
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_answer_evidence_shadow.py` passed:
+  7 tests.
+
+## 2026-08-26 Citation Decision V1.1 Phase 0 Shadow Chain
+
+- Added an audit-only V1.1 Shadow Evidence Chain for recommendation reason
+  bridging:
+  `AnswerClaim -> AnswerUnit -> AnswerDecisionBinding -> Shadow Passage
+  Retrieval -> Shadow SourceClaimJudge -> Shadow EvidenceAlignmentJudge ->
+  Shadow Evidence Classification`.
+- Added isolated Shadow data models:
+  - `AnswerUnit`
+  - `AnswerDecisionBinding`
+  - `AnswerEvidenceShadowRun`
+  - `AnswerEvidenceShadowResult`
+- Added backend endpoints:
+  - `POST /api/optimization/projects/{project_id}/prompts/{prompt_id}/answer-evidence-shadow/run`
+  - `GET /api/optimization/projects/{project_id}/prompts/{prompt_id}/answer-evidence-shadow/latest`
+- Preserved the formal production chain. Phase 0 writes no formal
+  `SourceClaim` / `EvidenceAlignment` rows and does not change formal
+  Benchmark, Source Gap, Priority, Action Route, StrategyCandidate, or
+  Experiment output.
+- Added rule-based answer-unit atomicization so answer claims such as
+  `小码短链接：支持长链接快速缩短，自带点击统计、二维码生成、自定义分享标题...`
+  become entity-specific ability units instead of a copied full title.
+- Added a guarded binding fallback for empty `RecommendationEvent.reasons_json`:
+  same-run answer units can become Shadow `DIRECT_REASON` /
+  `SUPPORTING_REASON`, while procedure-only units are not treated as
+  recommendation reasons.
+
+Validation performed:
+
+- `.venv/bin/python -m compileall app` passed.
+- `.venv/bin/python -m pytest tests/test_answer_evidence_shadow.py` passed:
+  5 tests.
+- The new tests verify:
+  - answer-claim ability extraction for the Prompt `#40` pattern;
+  - Shadow SUPPORTS can be recorded through the isolated chain;
+  - formal `source_claims` and `evidence_alignments` counts remain unchanged;
+  - procedure-style answer units do not bind as recommendation reasons.
+  - neutral feature mentions do not bind without a recommendation event;
+  - implicit use-case reasons can bind as Shadow supporting reasons.
+
+## 2026-08-26 Prompt 40 Citation Reason Alignment Audit
+
+- Added a handoff audit section to
+  `docs/CITATION_OPTIMIZATION_DECISION_V1_AUDIT.md` for Prompt `#40`.
+- Documented the current false-negative shape:
+  - Decision Market recognizes `小码短链接` as a confirmed competitor
+    recommendation across `6/6` Runs;
+  - the matching Zhihu source is fetched and marked `CONTENT_VALID`;
+  - Golden Case answer claims contain the concrete capability text;
+  - but `RecommendationEvent.reasons_json = []`, so reason-driven passage
+    retrieval does not create SourceClaims or EvidenceAlignments for that
+    source.
+- Clarified that `0 Primary / 0 Secondary Benchmark` is mechanically correct
+  under the current V1 gates, but product-wise incomplete because answer-claim
+  capability text is not bridged back into Recommendation Reasons.
+- Recorded the safe fix direction:
+  derive missing entity-specific recommendation reasons from same-run
+  `AnswerClaim` / `answer_span`, mark them as answer-derived, then rerun the
+  existing blind SourceClaim and EvidenceAlignment path.
+- Preserved current hard boundaries:
+  Citation Prominence, title/entity matching, and legacy `RELATED` must not
+  directly upgrade a source into Benchmark support.
+- Refined the implementation boundary for V1.1 Phase 0:
+  Shadow Run must cover the full isolated evidence path
+  `AnswerUnit -> AnswerDecisionBinding -> Shadow Passage Retrieval -> Shadow
+  SourceClaimJudge -> Shadow EvidenceAlignmentJudge -> Shadow Audit`, not only
+  answer binding.
+- Recorded the data-impact boundary:
+  Phase 0 must not change any formal Benchmark, Source Gap, Priority, Action
+  Route, StrategyCandidate, or Experiment output. Shadow SourceClaims and
+  Shadow EvidenceAlignments must be version-isolated, for example with
+  `pipeline_version = citation_decision_v1_1_shadow` or an equivalent shadow
+  run marker.
+
+Validation performed:
+
+- Read-only local API smoke for Prompt `#40`.
+- Read-only local database spot-check for SourceDocument `#345`.
+- Documentation-only change; no code path changed.
+
+## 2026-08-25 Single Prompt Citation State Sync
+
+- Fixed a single Prompt `GEO 工作台` state-sync gap where Prompt `#40` could
+  already have an Evidence Package and Citation Decision V1 result, while the
+  frontend step 4 still displayed `待生成证据包`.
+- The `validation` page now loads Evidence Packages just like the execution
+  detail page, so the main workflow can see current Prompt package state.
+- Citation Decision V1 auto-loading now reacts to the refreshed workflow object,
+  not only to `prompt_id` changes. This prevents stale "no package" state from
+  surviving after operators generate or supplement evidence for the same Prompt.
+- Preserved the existing product chain order:
+  `采集样本 -> 答案决策识别 -> 目标品牌事实 -> 引用证据 -> 对标来源 -> 缺口诊断 -> 推荐动作 -> 实验草案`.
+
+Validation performed:
+
+- Prompt `#40` has active Evidence Packages `#15` and `#14`.
+- Prompt `#40` Citation Decision V1 resolves to Package `#15` and returns
+  `source_count = 68`, `primary_benchmark_count = 0`,
+  `secondary_benchmark_count = 0`, and `recommended_action_count = 0`.
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+- `git diff --check` passed.
+
+## 2026-08-25 Browser-first Citation Refetch
+
+- Upgraded Golden Case citation document refetch from "Playwright if the default
+  browser exists, otherwise urllib" to a browser-first acquisition path.
+- Source refetch now searches for the same local Chrome / Chromium executables
+  used by browser collection instead of depending only on Playwright's default
+  headless-shell path.
+- Added a persistent visible-browser fallback for evidence refetch when
+  headless launch fails on macOS. This matches the collection-side behavior more
+  closely and avoids silently falling back to Python DNS / SSL behavior.
+- Browser refetch now uses:
+  - real Chrome user agent;
+  - `ignore_https_errors = true`;
+  - `domcontentloaded` as the primary wait condition;
+  - best-effort `networkidle`;
+  - HTML-to-text fallback when visible body text is too short.
+- Failure reasons now preserve both browser failure and HTTP fallback failure
+  when both paths fail.
+- Live validation against `https://m.suolink.cn/` changed from Python DNS
+  failure to browser success:
+  - `fetch_status = SUCCESS`;
+  - title captured;
+  - clean text length = 1328.
+
+Validation performed:
+
+- `.venv/bin/python -m compileall app` passed.
+- `.venv/bin/python -m pytest tests/test_source_qualification.py` passed.
+- Live browser refetch smoke for `https://m.suolink.cn/` passed.
+- `git diff --check` passed.
+
+## 2026-08-25 Single Prompt Citation Evidence Entry
+
+- Corrected the single Prompt `GEO 工作台` step 4 entry:
+  `引用证据` now routes operators to `证据标注`, where they can acquire
+  citation page bodies, manually supplement missing body text, and inspect
+  evidence alignment.
+- Kept `引用资料` as a ranking / source-structure inspection page only. It is
+  no longer the primary operation target for the main workflow citation
+  evidence step.
+- Preserved the integrated main chain order:
+  `采集样本 -> 答案决策识别 -> 目标品牌事实 -> 引用证据 -> 对标来源 -> 缺口诊断 -> 推荐动作 -> 实验草案`.
+- Localized the step-4 operator copy so the card describes the actual work:
+  `查看/补录正文`, not generic source ranking.
+
+Validation performed:
+
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+- `git diff --check` passed.
+
+## 2026-08-25 Workflow State Integrity Guard
+
+- Added a strict context identity to Citation Optimization Decision V1 responses:
+  `project_id`, `prompt_id`, `evidence_package_id`,
+  `analysis_version`, and `source_run_ids`.
+- Hardened the single Prompt frontend workflow so Citation Decision data is only
+  consumed when it belongs to the current Prompt; stale responses are discarded
+  and Prompt switches clear Prompt-scoped proposal, benchmark, channel, action,
+  experiment, and Citation Decision state before reloading.
+- Corrected the answer-decision gate:
+  `event_review = done` only means there are no pending human review items; it
+  does not mean the Prompt has valid answer decision semantics. The workflow now
+  requires `answer_semantic.done = true` before Product Truth, Citation
+  Evidence, Benchmark, Gap, Action, or Experiment can advance.
+- Reordered the single Prompt `GEO 工作台` into the product chain:
+  `采集样本 -> 答案决策识别 -> 目标品牌事实 -> 引用证据 -> 对标来源 -> 缺口诊断 -> 推荐动作 -> 实验草案`.
+- Separated current Citation V1 analysis from historical execution records:
+  legacy `continueResult` may be shown as history, but it no longer marks
+  current Citation Evidence, Benchmark, Gap, Action, or Experiment steps as
+  completed.
+- Preserved zero-result semantics:
+  no Evidence Package stays `待生成证据包`; zero Primary/Secondary Benchmark is a
+  valid completed benchmark judgment; `UNKNOWN` gaps require human judgment and
+  do not become confirmable actions.
+
+Validation performed:
+
+- `.venv/bin/python -m compileall app` passed.
+- `.venv/bin/python -m pytest tests/test_workflow_review_queue.py` passed.
+- `.venv/bin/python -m pytest tests/test_source_gap_v1.py tests/test_citation_prominence_v1.py tests/test_gap_action.py`
+  passed: 31 tests.
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+- `git diff --check` passed.
+- Live API smoke:
+  - Prompt `#40` workflow status still belongs to Prompt `#40`;
+  - Prompt `#40` Citation Decision fails closed with
+    `当前 Prompt 尚无 Evidence Package，不能生成纵向闭环 Proposal`;
+  - Prompt `#19` Citation Decision returns `context_identity` bound to Prompt
+    `#19` and Evidence Package `#12`.
+
 ## 2026-08-05
 
 - Added `AGENTS.md` guidance and numbered project docs.
@@ -263,3 +647,486 @@ Validation performed:
 - `.venv/bin/python scripts/optimization_loop_smoke.py` passed.
 - `npm run build` passed with the existing Vite chunk-size warning.
 - `curl -s http://127.0.0.1:8000/api/health` returned `{"status":"ok"}`.
+
+## 2026-08-24 Citation Optimization Decision V1 Step 0/1
+
+- Added `docs/CITATION_OPTIMIZATION_DECISION_V1_AUDIT.md` as the pre-implementation
+  entity/API reuse map.
+- Locked the V1 constraints before code changes:
+  - `SourceClaimJudge` remains blind; answer reasons can guide passage retrieval
+    but cannot define source truth;
+  - legacy `RELATED` must not be upgraded to `PARTIAL_SUPPORT` without re-judge;
+  - legacy `source_score` remains compatibility-only and must not drive new
+    benchmark, priority, strategy, or experiment decisions.
+- Added `citation_prominence_level` to source analysis output.
+- Source analysis sorting now uses citation prominence, citation coverage,
+  citation frequency, and reference position before legacy score.
+- Kept `source_score` as a deprecated compatibility field and exposed
+  `legacy_source_score` plus `source_score_deprecated`.
+- Updated the Citation Ranking V0 frontend copy to label raw scores as legacy
+  diagnostic scores, not strategy decision signals.
+- Added V1 content status mapping on existing `SourceDocument` data:
+  - `CONTENT_VALID`;
+  - `CONTENT_PENDING`;
+  - `CONTENT_UNAVAILABLE`;
+  - `CONTENT_INVALID`.
+- Golden Case document API now returns content status labels/reasons.
+- Manual document capture now rejects blank non-empty-page submissions; empty
+  pages must be explicitly marked as `MANUAL_EMPTY`.
+- Added compatibility mapping for evidence alignment relations:
+  legacy `RELATED` maps to `LEGACY_RELATED`, not `PARTIAL_SUPPORT`.
+- Ran Step 0-3 live acceptance on Project `#3` / Prompt `#43`:
+  - source analysis returned 83 rows sorted by citation prominence;
+  - sampled prominence breakdowns only included citation behavior fields;
+  - Prompt `#43` had both `CONTENT_VALID` and `CONTENT_UNAVAILABLE` source
+    documents, and analysis remained available for valid documents;
+  - EvidenceAlignment rows for Prompt `#43` all mapped `RELATED` to
+    `LEGACY_RELATED`, with no `PARTIAL_SUPPORT` upgrade.
+- Representative source payload now includes `citation_prominence_level` and
+  keeps legacy score fields explicitly marked as deprecated.
+- Updated product and loop specs so `source_score` is no longer documented as
+  the V1 source analysis sort or decision signal.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_citation_prominence_v1.py tests/test_gap_action.py`
+  passed: 4 tests.
+- `.venv/bin/python -m pytest tests/test_source_qualification.py tests/test_golden_case_api.py tests/test_citation_prominence_v1.py`
+  passed: 19 tests.
+- `.venv/bin/python -m pytest tests/test_evidence_alignment.py` passed: 7 tests.
+- Live smoke for blank manual document capture rejected empty non-empty-page
+  payloads with HTTP 400.
+- Live smoke for manual empty page produced `MANUAL_EMPTY`,
+  `CONTENT_UNAVAILABLE`, zero blocks, zero SourceClaims, and zero Alignments;
+  temporary smoke data was removed.
+
+## 2026-08-24 Citation Optimization Decision V1 Step 4A
+
+- Froze Step 0-3 as the Foundation Semantic Layer.
+- Added Step 4A derived fields to source analysis without creating new tables:
+  - `decision_support_level`;
+  - `has_contradiction`;
+  - `benchmark_tier`;
+  - supporting / contradicting alignment ids and basis fields.
+- Decision Support aggregation only reads V1 `EvidenceAlignment` rows with
+  `SUPPORTS` / `CONTRADICTS`; historical `RELATED` stays excluded and cannot
+  become support semantics.
+- Benchmark Tier rules are deterministic:
+  - invalid or unavailable content -> `NOT_EVALUABLE`;
+  - direct support for recommendation/candidate decision -> `PRIMARY_BENCHMARK`;
+  - fact-only or partial decision support -> `SECONDARY_BENCHMARK`;
+  - valid but unsupported/tangential sources -> `REFERENCE_ONLY`.
+- `citation_prominence_level` is now only a same-tier sort signal and cannot
+  upgrade a source to Benchmark.
+- Step 4B remains explicitly not started: no Source Gap, Priority, Action Route,
+  StrategyCandidate, or Experiment behavior was added.
+- Prompt `#43` live smoke after Step 4A:
+  - 6 runs, 204 references, 284 retrieval candidates, 83 source rows;
+  - existing alignments were `RELATED x 1440`;
+  - output was `REFERENCE_ONLY x 2`, `NOT_EVALUABLE x 81`;
+  - all rows had `decision_support_level = NONE`;
+  - `PRIMARY_BENCHMARK = 0`, which is accepted as the correct result.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_citation_prominence_v1.py` passed:
+  8 tests.
+- `.venv/bin/python -m pytest tests/test_citation_prominence_v1.py tests/test_source_qualification.py tests/test_evidence_alignment.py tests/test_golden_case_api.py tests/test_recommendation_intelligence.py tests/test_gap_action.py`
+  passed: 63 tests.
+
+## 2026-08-25 Citation Optimization Decision V1 Step 4B-1
+
+- Froze Step 4A as the Benchmark Decision Layer.
+- Added Source Gap as source-analysis derived fields only:
+  - `source_gap_type`;
+  - `source_gap_precondition`;
+  - `matched_product_truth_status`;
+  - `existing_asset_status`;
+  - `existing_asset_coverage`.
+- Source Gap inputs are strictly limited to:
+  - Primary/Secondary Benchmark Evidence;
+  - `TargetBrandCapabilityTruth`;
+  - existing brand asset content from successful `PageSnapshot` rows.
+- Source Gap outputs are limited to:
+  - `CONTENT_GAP`;
+  - `EVIDENCE_GAP`;
+  - `PRODUCT_GAP`;
+  - `NO_GAP`;
+  - `UNKNOWN`.
+- Kept Step 4B-3 out of scope: no Recommended Action, Channel Opportunity,
+  StrategyCandidate, or Experiment behavior was added.
+- Prompt `#43` live smoke after Step 4B-1:
+  - 83 source rows;
+  - `PRIMARY_BENCHMARK = 0`;
+  - eligible benchmark count = 0;
+  - all rows returned `source_gap_type = null`;
+  - all rows returned `source_gap_precondition = NO_ELIGIBLE_BENCHMARK`.
+- Corrected the source gap semantics so "not eligible for Gap Analysis" is not
+  represented as `UNKNOWN`. `UNKNOWN` is now reserved for eligible benchmark
+  rows whose Product Truth, Brand Asset, or Benchmark Evidence is insufficient.
+- Added deterministic Step 4B-2 `priority_level` and `action_route` fields:
+  - Primary + actionable gap -> `PRIORITY_HIGH`;
+  - Secondary + actionable gap -> `PRIORITY_MEDIUM`;
+  - `NO_GAP` -> `NOT_PRIORITY + NO_ACTION`;
+  - eligible Benchmark + `UNKNOWN` -> `UNRESOLVED + UNRESOLVED`;
+  - `REFERENCE_ONLY` -> `NOT_PRIORITY + null`;
+  - `NOT_EVALUABLE` -> `null + null`.
+- Prompt `#43` live smoke after Step 4B-2:
+  - `priority_level = NOT_PRIORITY x 2, null x 81`;
+  - `action_route = null x 83`;
+  - no `PRIORITY_HIGH` / `PRIORITY_MEDIUM`;
+  - no CONTENT / EVIDENCE / PRODUCT route.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_source_gap_v1.py` passed: 15 tests.
+
+## 2026-08-25 Citation Optimization Decision V1 Vertical Slice
+
+- Switched from step-by-step field discussion to the V1 vertical slice:
+  `Source Analysis -> Recommended Action -> Channel Opportunity -> Human
+  Confirmation -> StrategyCandidate -> InterventionPlan -> Experiment Draft ->
+  Fixed Retest / Recommendation Outcome`.
+- Added proposal-only row fields:
+  - `recommended_action`;
+  - `channel_opportunity`.
+- Added read/confirm service and API endpoints:
+  - `GET /api/optimization/projects/{project_id}/prompts/{prompt_id}/citation-decision-v1`;
+  - `POST /api/optimization/projects/{project_id}/prompts/{prompt_id}/citation-decision-v1/confirm`.
+- Confirmation records a workflow confirmation, creates/updates an
+  `InterventionPlan`, creates validated `StrategyCandidate` rows, and reuses
+  the existing `strategy_to_experiment_plan()` materialization path.
+- Kept hard strategy boundaries:
+  - `REFERENCE_ONLY`, `NOT_EVALUABLE`, `LEGACY_RELATED`, and Citation
+    Prominence alone do not generate actions;
+  - `PRODUCT_GAP` remains a product finding and does not create external
+    content experiments;
+  - release/retest/conclusion gates remain unchanged.
+- Added Recommendation Outcome to experiment analysis:
+  candidate, recommendation, target reason, and citation before/after.
+- Real DB read-only smoke:
+  - Prompt `#43` has no Evidence Package and fails closed.
+  - Prompt `#9` / Package `#13`: 0 Primary Benchmark, 0 actions.
+  - Prompt `#19` / Package `#12`: 2 Primary Benchmarks, 0 actions because
+    downstream Product Truth / Brand Asset / Source Gap gates still block.
+  - Prompt `#16` / Package `#11`: 0 Primary Benchmark, 0 actions.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_source_gap_v1.py` passed: 17 tests.
+- `.venv/bin/python -m pytest tests/test_source_gap_v1.py tests/test_citation_prominence_v1.py tests/test_source_qualification.py tests/test_evidence_alignment.py tests/test_golden_case_api.py tests/test_recommendation_intelligence.py tests/test_gap_action.py`
+  passed: 80 tests.
+
+## 2026-08-25 Single Prompt Main Workflow Integration Correction
+
+- Corrected a frontend regression where Citation Decision V1 was rendered as a
+  separate module-like panel inside the single Prompt monitoring page.
+- Removed that standalone monitoring-page panel and folded its state into the
+  single `GEO 工作台` workflow row:
+  `采集样本 -> 决策诊断 -> 引用证据 -> 对标来源 -> 目标品牌事实 -> 推荐动作 -> 实验草案`.
+- Kept detailed source analysis, product-fact supplementation, and action
+  confirmation in the execution-strategy detail page, instead of creating a
+  competing homepage module.
+- Localized the affected user-facing labels and workflow actions so operators
+  see Chinese wording rather than internal enum terms.
+- Clarified the main-page action button behavior: when no confirmable
+  recommendation action exists, the button is disabled and the user is routed to
+  the detail page to supplement target-brand facts or inspect strategy details.
+
+Validation performed:
+
+- Frontend `npm run build` passed.
+- `git diff --check` passed.
+
+## 2026-08-25 Prompt 40 Review Queue Dead-Loop Fix
+
+- Fixed a workflow review dead loop reproduced on Prompt `#40`:
+  - `/workflow/3/40/status` reported `pending_review_steps = 1`;
+  - `/workflow/3/40/review-queue` returned no `unique_events` and no
+    `alignments`;
+  - the frontend therefore kept showing "开始审核" while the review modal only
+    showed "全部审核完成".
+- Root cause:
+  - workflow status counted all `RecommendationEvent` rows in the review
+    denominator;
+  - review queue only returned pending machine-reviewable events;
+  - Prompt `#40` had 24 `RecommendationEvent` rows with
+    `review_status = VALIDATION_FAILED`, which should not enter human review.
+- Corrected the backend review denominator:
+  - only `MACHINE_GROUNDED`, `MACHINE_CANDIDATE`, `HUMAN_CONFIRMED`, and
+    `HUMAN_REJECTED` events are counted as reviewable;
+  - `VALIDATION_FAILED` events remain analysis diagnostics and no longer block
+    the workflow.
+- Added a frontend guard so an empty ready review queue refreshes the main
+  workflow status and closes the review modal instead of trapping the operator
+  in an empty audit loop.
+- Localized the workflow status step labels/details touched by this path:
+  `证据分析`, `证据人工确认`, `缺口诊断`, `动作候选`, and experiment-entry copy.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_workflow_review_queue.py` passed.
+- `.venv/bin/python -m compileall app` passed.
+- Live API smoke for Prompt `#40` returned `pending_review_steps = 0` and
+  `all_reviews_done = true`; `/continue` no longer blocked on review.
+
+## 2026-08-25 Unresolved Decision Evidence Review Context
+
+- Added explicit human-verification context when workflow continuation returns
+  `UNRESOLVED` Gap / Action.
+- `/workflow/{project_id}/{prompt_id}/continue` now returns `review_context`
+  with:
+  - sampled raw answer excerpts by Run / Sample;
+  - machine event diagnostics, including validation-failed recommendation
+    events;
+  - event review-status counts;
+  - an instruction telling operators to fix missed recommendation events in
+    diagnosis before overriding the decision.
+- Updated the single Prompt workflow UI so the manual decision area lists the
+  answer samples and machine event diagnostics before showing "按此方向继续" or
+  "标记搁置并结束".
+- Kept the action override path human-only; the added context is audit evidence,
+  not an automatic strategy decision.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_workflow_review_queue.py tests/test_gap_action.py`
+  passed.
+- `.venv/bin/python -m compileall app` passed.
+- Frontend `npm run build` passed.
+- `git diff --check` passed.
+
+## 2026-08-25 Workflow Conclusion Evidence Drawer
+
+- Refined the single Prompt workflow interaction for `UNRESOLVED` Gap / Action:
+  evidence is now attached to each conclusion through a Chinese "查看依据"
+  button instead of being rendered as a large inline debug block.
+- Added a right-side evidence drawer that shows:
+  - the current Gap and Action conclusions;
+  - raw answer samples for manual verification;
+  - machine-recognized recommendation events and their Chinese review-status
+    labels.
+- Kept the manual decision controls in the main workflow, but made the required
+  verification path explicit: operators can inspect answers first, then decide
+  whether to override, shelve, or return to diagnosis to correct missed events.
+- Preserved the product boundary that Citation Decision V1 belongs inside the
+  single Prompt main workflow, not as a standalone homepage module.
+- Localized the affected Gap / Action / confidence tags so users see labels
+  such as "待确认" and "低置信" instead of raw enum values.
+
+Validation performed:
+
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+
+## 2026-08-25 Competitor-First Review Evidence Clarification
+
+- Clarified the single Prompt evidence wording:
+  - "目标品牌出现" means the project brand itself appeared in the answer;
+  - competitor and other answer entities are shown separately as answer object
+    clues.
+- Extended `/workflow/{project_id}/{prompt_id}/continue` review context so each
+  answer sample can carry detected entities classified as:
+  - target brand;
+  - confirmed competitor;
+  - unconfirmed object.
+- Fixed the human review modal load behavior:
+  - competitor candidates are now treated as pending review items;
+  - the modal no longer auto-closes as "no pending review" when the event and
+    alignment queues are empty but competitor candidates still need review.
+- Updated the review instruction order to tell operators to confirm competitor /
+  candidate objects before reviewing AI statements and evidence relations.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_workflow_review_queue.py` passed.
+- `.venv/bin/python -m compileall app` passed.
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+
+## 2026-08-25 Single Prompt Workflow Card UX
+
+- Reworked the single Prompt `GEO 工作台` workflow from a compact status-label
+  row into actionable workflow cards.
+- Each step now shows:
+  - Chinese step status;
+  - business detail for the current Prompt;
+  - the next available operation, such as viewing runs, starting review,
+    continuing analysis, running citation evidence, supplementing product
+    truth, viewing evidence, or confirming actions.
+- Corrected the citation step semantics:
+  - not-yet-run citation evidence now appears as "待运行" / "运行引用证据";
+  - a failed run is shown as a retryable current step instead of mixing
+    "异常" with "等待运行".
+- Kept Citation Decision V1 inside the single Prompt workflow and preserved
+  detail pages only for deeper inspection.
+
+Validation performed:
+
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+- `git diff --check` passed.
+
+## 2026-08-25 Decision Recognition Repair Entry
+
+- Fixed the Prompt `#40` correction dead end where "去修正诊断" led to the
+  decision diagnosis page, but "进入审核" opened an empty review queue and
+  immediately closed as "全部审核完成".
+- Added a dedicated answer-decision repair action for Decision Market entities:
+  operators can mark an unknown answer object as target brand, confirmed
+  competitor, or not part of the decision.
+- Repairing an entity updates the matching `RecommendationEvent` rows:
+  - target brand / confirmed competitor -> `HUMAN_CONFIRMED`;
+  - rejected object -> `HUMAN_REJECTED`.
+- Tightened workflow semantics so `HUMAN_REJECTED` events no longer count as
+  valid answer-decision events. This prevents "not a brand/object" corrections
+  from advancing Product Truth, Citation Evidence, Gap, Action, or Experiment.
+- Split the workflow gates explicitly:
+  - `all_reviews_done` means the current human review queue is empty;
+  - `ready_to_continue` means answer decision recognition and downstream
+    prerequisites are valid enough to generate Gap / Action.
+- Localized the Decision Market table labels and actions in the single Prompt
+  decision diagnosis page; raw enum values such as `RECOMMENDATION` and
+  `UNKNOWN_ENTITY` are no longer the primary operator-facing labels.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_workflow_review_queue.py` passed.
+- `.venv/bin/python -m compileall app` passed.
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+
+## 2026-08-25 Citation URL WWW Normalization
+
+- Removed the legacy source acquisition rule that blindly prefixed `www.` to
+  known platform domains before fetching citation documents.
+- Preserved explicit `www.` when it is already present in the URL, but no longer
+  turns platform subdomains such as `zhuanlan.zhihu.com`,
+  `baijiahao.baidu.com`, or `jingyan.baidu.com` into invalid
+  `www.<subdomain>` hosts.
+- Canonicalized acquired source URLs for analysis storage while keeping raw
+  observed URLs available as `original_url`.
+- Updated citation-facing frontend tables to display normalized source URLs /
+  domains and keep the original href for audit-safe clicking.
+- Clarified Golden Case citation acquisition UX:
+  - batch "抓取引用资料" only acquires citation pages that have not yet been
+    stored;
+  - row-level "重抓" always re-fetches the selected failed source and updates
+    its status, canonical URL, domain, fetch time, content hash, and failure
+    reason.
+- Added frontend failure reason summaries so operators can decide whether a
+  failed source should be retried or manually supplemented.
+- Added `action_url` to Golden Case source document reads and switched citation
+  links, manual supplementation defaults, and row-level refetch payloads to use
+  normalized action URLs instead of raw `url` values. Raw URL remains available
+  for audit, but it no longer drives default operator actions.
+- Added regression tests for platform subdomain handling and inner-`www`
+  domains such as `gjzwfw.www.gov.cn`.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_source_qualification.py` passed.
+- `.venv/bin/python -m compileall app` passed.
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+
+## 2026-08-25 Citation Refetch Row Status Feedback
+
+- Kept Golden Case source refetch as a background browser-first operation
+  instead of relying on a visible browser window as the operator feedback.
+- Added backend `fetch_method` to row-level refetch responses so the frontend
+  can explain whether the latest attempt used browser capture or HTTP fallback.
+- Added row-level frontend feedback for citation source refetch:
+  - the selected row immediately shows `重抓中`;
+  - the button enters loading state and is disabled during the request;
+  - the row records the latest refetch result,正文长度,抓取方式, and failure
+    summary after completion.
+- Extended the row-level `重抓` entry to all non-valid source documents except
+  manually marked empty pages, so `PARTIAL` / invalid short-body sources can be
+  retried without manual API calls.
+- This is an interaction-state fix only. It does not alter the single Prompt
+  main workflow order or create a new Citation module.
+
+Validation performed:
+
+- `.venv/bin/python -m compileall app` passed.
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+- `git diff --check` passed.
+
+## 2026-08-25 Single Prompt Citation Evidence Run Entry
+
+- Fixed the single Prompt workflow card getting stuck at step 4 (`引用证据`)
+  after citation bodies had already been captured or manually supplemented.
+- Root cause:
+  - Citation Decision V1 correctly failed closed when Prompt `#40` had no
+    `OptimizationEvidencePackage`;
+  - the step 4 card only routed operators to `证据标注` for body capture and did
+    not expose the next required operation: creating the current Prompt evidence
+    package and running the citation decision chain.
+- Added a dedicated frontend action for step 4:
+  - current Prompt valid Runs -> create/reuse `OptimizationEvidencePackage`;
+  - run Citation Decision V1 against that package;
+  - refresh the workflow and keep the Citation Decision result bound to the
+    current Prompt.
+- Updated the step 4 copy:
+  - no package -> `待生成证据包` / `生成证据包`;
+  - loaded Citation Decision -> `已完成` / `查看证据正文`;
+  - failed chain -> retry by regenerating/rerunning citation evidence.
+- This keeps the existing 8-step single Prompt chain unchanged and only fixes a
+  missing operation entry inside step 4.
+
+Validation performed:
+
+- Frontend `npm run build` passed with the existing Vite chunk-size warning.
+- `git diff --check` passed.
+- Prompt `#40` live smoke:
+  - created Evidence Package `#15` from Runs `238,239,240,253,254,255`;
+  - Citation Decision V1 returned `evidence_package_id = 15`;
+  - summary returned `source_count = 68`, `primary_benchmark_count = 0`,
+    `secondary_benchmark_count = 0`, and `recommended_action_count = 0`.
+
+## 2026-08-26 Citation Decision V1.1 Phase 1 Formal Input Switch
+
+- Added a guarded Phase 1 input switch for the formal Evidence Chain.
+- Default remains off:
+  - `citation_decision_v1_1_formal_input_enabled = false`
+  - workflow/API callers must explicitly pass `use_answer_binding_v1_1 = true`
+    or enable the env setting for a small-scope run.
+- When enabled, formal Passage Retrieval and EvidenceAlignment can consume
+  Phase 0 audited `AnswerUnit + AnswerDecisionBinding` rows as answer-derived
+  recommendation reason inputs.
+- The formal chain still does not consume `AnswerEvidenceShadowResult`
+  directly. Shadow SUPPORTS cannot be promoted into Benchmark by itself.
+- The old `RecommendationEvent.reasons_json` path remains active as fallback.
+- Formal `EvidenceAlignment.machine_payload_json` now records reason
+  provenance for Phase 1-derived rows:
+  - `reason_source = ANSWER_DECISION_BINDING`
+  - `formal_input_version = citation_decision_v1_1_formal_input.v1`
+  - `answer_unit_id`
+  - `decision_binding_id`
+- This change does not alter the single Prompt workflow order, Product Truth
+  gate, Benchmark rules, Gap rules, Action rules, StrategyCandidate creation,
+  or Experiment creation.
+
+Validation performed:
+
+- `.venv/bin/python -m compileall app` passed.
+- `.venv/bin/python -m pytest tests/test_answer_evidence_shadow.py tests/test_evidence_alignment.py tests/test_source_claim.py` passed:
+  `24 passed`.
+- Prompt `#40` Phase 1 smoke:
+  - Stage 3 with `--use-answer-binding-v1-1` read `ShadowRun #7`
+    `AnswerDecisionBinding` rows and produced `5` unique answer-derived
+    reasons from `30` binding candidates.
+  - Fixed the formal content gate so sources with valid captured body but no
+    `SourceQuality` row can still be treated through `derive_content_status`;
+    this allowed SourceDocument `#345` to enter retrieval candidates.
+  - Stage 4 created `32` formal `SourceClaim` rows from `13` unique passages;
+    `4` passages failed due DeepSeek network `ConnectError`, while successful
+    grounded claims were committed.
+  - Stage 5 was rerun with `--doc-id-filter 345` after fixing the script
+    parameter pass-through. It created `110` formal alignments for SourceDocument
+    `#345`: `6 SUPPORTS`, `5 NONE`, `99 RELATED`.
+  - `Citation Decision V1` for Prompt `#40` / Evidence Package `#15` naturally
+    advanced to `READY_FOR_HUMAN_CONFIRM` with `1` Primary Benchmark and `1`
+    recommended action.
+  - The recommended action exists only because formal
+    `EvidenceAlignment.relation = SUPPORTS` was written; Shadow SUPPORTS was
+    not consumed directly.
+- Replaced user-facing `Benchmark` copy in the activated action/gap path with
+  Chinese labels such as `对标来源` / `对标证据`; internal enum names remain
+  unchanged.

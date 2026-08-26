@@ -25,6 +25,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     if settings.database_url.startswith("sqlite"):
         _ensure_sqlite_columns()
+        _ensure_sqlite_shadow_result_nullable_columns()
         _ensure_sqlite_indexes()
 
 
@@ -59,6 +60,41 @@ def _ensure_sqlite_columns() -> None:
                     elif isinstance(value, (int, float)):
                         default = f" DEFAULT {value}"
                 connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column.name} {column_type}{default}{nullable}"))
+
+
+def _ensure_sqlite_shadow_result_nullable_columns() -> None:
+    """Relax legacy Shadow-only result columns so unbound AnswerUnit evidence can be audited."""
+
+    table_name = "answer_evidence_shadow_results"
+    nullable_columns = {"recommendation_event_id", "decision_binding_id"}
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        if table_name not in set(inspector.get_table_names()):
+            return
+        columns = inspector.get_columns(table_name)
+        needs_rebuild = any(
+            column["name"] in nullable_columns and not column.get("nullable", True)
+            for column in columns
+        )
+        if not needs_rebuild:
+            return
+
+        temp_table = f"__tmp_{table_name}_nullable"
+        for index in inspector.get_indexes(table_name):
+            index_name = index.get("name")
+            if index_name:
+                connection.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
+        connection.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+        connection.execute(text(f"ALTER TABLE {table_name} RENAME TO {temp_table}"))
+
+        metadata_table = Base.metadata.tables[table_name]
+        metadata_table.create(bind=connection, checkfirst=False)
+        new_columns = {column.name for column in metadata_table.columns}
+        old_columns = {column["name"] for column in columns}
+        common_columns = [column.name for column in metadata_table.columns if column.name in old_columns and column.name in new_columns]
+        column_sql = ", ".join(common_columns)
+        connection.execute(text(f"INSERT INTO {table_name} ({column_sql}) SELECT {column_sql} FROM {temp_table}"))
+        connection.execute(text(f"DROP TABLE {temp_table}"))
 
 
 def _ensure_sqlite_indexes() -> None:

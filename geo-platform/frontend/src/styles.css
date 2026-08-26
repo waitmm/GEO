@@ -82,6 +82,85 @@ body {
   margin: 0;
 }
 
+.single-prompt-flow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.workflow-step-card {
+  min-height: 132px;
+  padding: 12px;
+  border: 1px solid #e5ebf3;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workflow-step-card.done {
+  border-color: #b7eb8f;
+  background: linear-gradient(180deg, #ffffff 0%, #f6ffed 100%);
+}
+
+.workflow-step-card.current {
+  border-color: #91caff;
+  background: linear-gradient(180deg, #ffffff 0%, #e6f4ff 100%);
+  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.08);
+}
+
+.workflow-step-card.warning {
+  border-color: #ffe58f;
+  background: linear-gradient(180deg, #ffffff 0%, #fffbe6 100%);
+}
+
+.workflow-step-card.error {
+  border-color: #ffa39e;
+  background: linear-gradient(180deg, #ffffff 0%, #fff1f0 100%);
+}
+
+.workflow-step-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+}
+
+.workflow-step-index {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #edf2f7;
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workflow-step-card.done .workflow-step-index {
+  background: #d9f7be;
+  color: #237804;
+}
+
+.workflow-step-card.current .workflow-step-index {
+  background: #1677ff;
+  color: #ffffff;
+}
+
+.workflow-step-detail {
+  display: block;
+  min-height: 38px;
+  line-height: 1.55;
+}
+
+.workflow-step-card .ant-btn {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
 .ant-drawer-body {
   background: #f5f7fa;
 }

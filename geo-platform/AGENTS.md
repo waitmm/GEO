@@ -7,10 +7,11 @@ Use this order when project facts conflict:
 1. Latest user instruction in the active thread.
 2. `docs/01_PRODUCT_DIRECTION.md` if marked `ACTIVE`.
 3. `docs/07_DECISION_LOG.md`.
-4. `docs/05_OPTIMIZATION_LOOP_SPEC.md`.
-5. `docs/02_CURRENT_STATUS.md`.
-6. Current code and SQLite data.
-7. Older implementation logs.
+4. `docs/09_PRODUCT_ITERATION_LOG.md`.
+5. `docs/05_OPTIMIZATION_LOOP_SPEC.md`.
+6. `docs/02_CURRENT_STATUS.md`.
+7. Current code and SQLite data.
+8. Older implementation logs.
 
 ## Current Product Focus
 
@@ -71,3 +72,8 @@ in recent local run notes.
   actions must use Chinese. Stable English enum values may remain in storage or
   API payloads, but UI/API responses used directly by the frontend must provide
   Chinese labels.
+- Any future change that alters the single Prompt main workflow order, adds a
+  new top-level workflow module, or changes a workflow card's primary state
+  source is a product-level change. Record it in both
+  `docs/08_DEVELOPMENT_LOG.md` and `docs/09_PRODUCT_ITERATION_LOG.md`, and give
+  the user a strong warning before implementation.

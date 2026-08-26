@@ -47,9 +47,15 @@ def derive_gap(
         RecommendationEvent.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
     ).all()
 
-    total_runs = len(set(e.run_id for e in events)) or len(run_ids)
-    brand_events = [e for e in events if brand in (e.entity_text or "")]
-    competitor_events = [e for e in events if brand not in (e.entity_text or "")]
+    total_runs = len(set(run_ids)) or len(set(e.run_id for e in events))
+    event_run_count = len(set(e.run_id for e in events))
+    choice_speech_acts = {"RECOMMEND", "INCLUDE_AS_OPTION", "PRAISE", "COMPARE"}
+    choice_events = [
+        e for e in events
+        if e.speech_act in choice_speech_acts and e.polarity != "NEGATIVE"
+    ]
+    brand_events = [e for e in choice_events if brand in (e.entity_text or "")]
+    competitor_events = [e for e in choice_events if brand not in (e.entity_text or "")]
 
     truths = db.query(TargetBrandCapabilityTruth).filter(
         TargetBrandCapabilityTruth.project_id == project.id,
@@ -63,13 +69,14 @@ def derive_gap(
         EvidenceAlignment.relation == "SUPPORTS",
     ).all()
 
-    # 市场选择标准存在性：竞品事件 + SUPPORTS 证据链
-    market_criterion_present = bool(competitor_events) and bool(supports)
+    # 市场选择空间首先来自答案里的推荐/候选/对比事件。
+    # SUPPORTS 只说明引用原文是否支撑理由，不能反过来否定答案里已经发生的推荐行为。
+    market_choice_present = bool(competitor_events or brand_events)
 
     # Gap 判定
-    if not market_criterion_present:
+    if not market_choice_present:
         gap_type = "UNRESOLVED"
-        basis = "当前答案未出现明确的方案选择证据链，无法判断品牌缺口类型。"
+        basis = "当前答案未出现明确的品牌/方案选择事件，无法判断品牌缺口类型。"
         confidence = "LOW"
     elif not supported_capabilities:
         gap_type = "UNRESOLVED"
@@ -78,16 +85,24 @@ def derive_gap(
     elif brand_events:
         # 品牌已在答案中出现 → 检查是否缺证据支撑
         gap_type = "EVIDENCE_GAP"
-        basis = f"品牌已在答案中出现（{len(brand_events)} 事件），但当前 SUPPORTS 证据链主要支撑竞品；目标品牌证据弱。"
+        basis = (
+            f"目标品牌已在答案选择事件中出现（{len(brand_events)} 事件），"
+            f"但当前 SUPPORTS 证据链数量为 {len(supports)}；目标品牌仍需补强可被引用、可对齐的证据。"
+        )
         confidence = "MEDIUM"
     else:
         # 品牌 0 出现，但 Product Truth 支持市场所需能力 → 能力真实但证据未进入答案
         gap_type = "EVIDENCE_GAP"
+        support_note = (
+            f"当前还有 {len(supports)} 条 SUPPORTS 证据链可反查；"
+            if supports
+            else "当前引用原文尚未形成 SUPPORTS 对齐，但答案层已经出现竞品/候选推荐；"
+        )
         basis = (
-            f"市场选择标准存在（{len(competitor_events)} 个竞品事件、{len(supports)} 条 SUPPORTS），"
+            f"答案已出现 {len(competitor_events)} 个竞品/候选推荐事件，"
             f"目标品牌「{brand}」在 {total_runs} 次答案中 0 提及、0 候选、0 引用；"
             f"但 Product Truth 已确认其支持：{', '.join(sorted(supported_capabilities))}。"
-            "能力真实存在而 AI 答案层证据缺失。"
+            f"{support_note}能力真实存在而 AI 答案层证据缺失。"
         )
         confidence = "MEDIUM"
 
@@ -96,8 +111,10 @@ def derive_gap(
         "confidence": confidence,
         "basis": basis,
         "total_runs": total_runs,
+        "event_run_count": event_run_count,
         "brand_events": len(brand_events),
         "competitor_events": len(competitor_events),
+        "choice_events": len(choice_events),
         "supported_capabilities": sorted(supported_capabilities),
         "supports_count": len(supports),
         "product_truth_status": "CONFIRMED" if supported_capabilities else "PRODUCT_TRUTH_UNRESOLVED",

@@ -77,3 +77,8 @@ in recent local run notes.
   source is a product-level change. Record it in both
   `docs/08_DEVELOPMENT_LOG.md` and `docs/09_PRODUCT_ITERATION_LOG.md`, and give
   the user a strong warning before implementation.
+- Product iteration, development iteration, known pitfalls, and `产品纲要.md`
+  maintenance are governed by `docs/12_DOCUMENTATION_GOVERNANCE.md`. If a
+  change touches product semantics or a previously encountered pitfall, update
+  the corresponding documentation in the same checkpoint instead of leaving the
+  decision only in chat.

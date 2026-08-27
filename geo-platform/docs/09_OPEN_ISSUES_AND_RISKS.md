@@ -2,6 +2,37 @@
 
 Status: ACTIVE
 
+## Single Prompt V1 Known Pitfalls
+
+- Workflow state can be misleading if a card mixes stale `continueResult`,
+  historical Citation Decision data, or historical Experiment state with the
+  current Prompt context. Every workflow card must use its own primary fact
+  source and must verify current `prompt_id`, evidence package, and analysis
+  context before rendering progress.
+- Citation Prominence, source title similarity, same-entity citation hints, and
+  historical `RELATED` alignments can create false confidence if they are used
+  as formal SUPPORTS evidence. They may explain visibility or audit clues, but
+  only eligible V1 EvidenceAlignment may feed Benchmark, Gap, Strategy, Action,
+  or Experiment.
+- Missing or unavailable source正文 must degrade at source level, not block the
+  entire Prompt and not become `CONTENT_VALID`. A source without valid正文 must
+  not generate new SourceClaim or formal EvidenceAlignment.
+- Product Truth confirmation is only about the target brand's real capability.
+  It is not confirmation that a competitor article is true, and it must not be
+  inferred from Benchmark evidence.
+- StrategyCandidate, Action, and Experiment are different stages. A confirmed
+  Strategy is not an Experiment; Experiment draft creation requires Step 8
+  channel/asset/operation confirmation and frozen snapshots.
+- Benchmark channel is not execution channel. A Primary Benchmark from Zhihu
+  must not automatically mean "publish on Zhihu"; channel selection belongs to
+  Step 8.
+- User-facing workflow labels, empty states, and action buttons must be Chinese.
+  English enums may remain in storage/API internals only when Chinese labels are
+  also provided to the frontend.
+- If a main-chain button opens the wrong module or a standalone module is added
+  instead of being integrated into the single Prompt workflow, treat it as a
+  product navigation bug rather than a cosmetic issue.
+
 - No Alembic migration history. SQLite additive sync is acceptable for Alpha but
   not enough for production.
 - `httpx` is not installed in the current backend venv, so FastAPI TestClient

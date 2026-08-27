@@ -2,6 +2,51 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Documentation Governance
+
+### Product Decision
+
+产品迭代、开发迭代、踩坑记录和 `产品纲要.md` 必须进入仓库文档管理，不能只存在于聊天记录中。
+
+新增治理文档：
+
+```text
+docs/12_DOCUMENTATION_GOVERNANCE.md
+```
+
+### Scope
+
+本次只改变文档治理规则，不改变单 Prompt GEO V1 1-8 主链。
+
+同步确认：
+
+```text
+SINGLE_PROMPT_GEO_V1_FROZEN
+STEP_9_NOT_STARTED
+```
+
+### Documentation Rules
+
+以后每轮开发后至少检查：
+
+```text
+产品语义变化 -> docs/09_PRODUCT_ITERATION_LOG.md
+开发实现变化 -> docs/08_DEVELOPMENT_LOG.md
+踩坑/风险/遗留项 -> docs/09_OPEN_ISSUES_AND_RISKS.md
+核心链路或定位变化 -> 产品纲要.md
+```
+
+以下变化必须开发前强预警：
+
+```text
+改变单 Prompt 主链顺序
+新增顶层模块
+改变 workflow 卡片事实来源
+让 Citation Prominence / 历史 RELATED 进入正式决策
+绕过 Product Truth 或 Strategy 人工确认
+进入 Step 9 或 V2 能力
+```
+
 ## 2026-08-27 Single Prompt GEO V1 Final Acceptance
 
 ### Product Decision

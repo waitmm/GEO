@@ -2,6 +2,29 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Documentation Governance
+
+- Added repository-level documentation governance for product iteration,
+  development iteration, known pitfalls, and `产品纲要.md` maintenance:
+
+```text
+docs/12_DOCUMENTATION_GOVERNANCE.md
+```
+
+- Updated `geo-platform/AGENTS.md` so future work must update documentation when
+  product semantics, workflow state sources, or previously encountered pitfalls
+  are touched.
+- Updated root `产品纲要.md` from the older broad flow to the current frozen
+  single Prompt GEO V1 Step 1-8 chain.
+- No business code, data model, API, frontend workflow, scoring formula,
+  Strategy, Action, Experiment, or Step 9 behavior was changed.
+
+Validation:
+
+```text
+git diff --check
+```
+
 ## 2026-08-27 Single Prompt GEO V1 Final Acceptance
 
 - Completed final acceptance for the single Prompt GEO V1 Step 1-8 main chain

@@ -19,6 +19,7 @@ Status: ACTIVE
 不新增 Citation Decision 独立模块
 不绕过 Product Truth
 不因 Benchmark 存在直接生成动作
+单 Prompt 首页不直接提交动作确认，只跳转到执行策略详情
 ```
 
 ### Expected #40 State

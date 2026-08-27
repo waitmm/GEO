@@ -2158,8 +2158,8 @@ export default function App() {
       statusText: citationCanConfirm ? "待确认" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : currentCitationLoaded ? "无动作" : "未开始",
       detail: citationCanConfirm ? `${citationConfirmableActions.length} 个当前动作可确认` : unresolvedAction || unknownGapCount > 0 ? "请查看依据后人工判断，不自动生成动作" : currentCitationLoaded ? "没有可执行内容/证据动作" : "等待缺口诊断",
       tone: citationCanConfirm || unresolvedAction ? "current" : currentCitationLoaded ? "done" : "pending",
-      actionLabel: citationCanConfirm ? "确认动作" : unresolvedAction ? "查看依据" : "",
-      onAction: citationCanConfirm ? confirmCitationDecisionV1 : unresolvedAction ? () => { setWorkflowEvidenceDrawerFocus("action"); setWorkflowEvidenceDrawerOpen(true); } : undefined,
+      actionLabel: citationCanConfirm ? "查看并确认" : unresolvedAction ? "查看依据" : "",
+      onAction: citationCanConfirm ? () => setPage("optimization") : unresolvedAction ? () => { setWorkflowEvidenceDrawerFocus("action"); setWorkflowEvidenceDrawerOpen(true); } : undefined,
     },
     {
       key: "experiment",
@@ -2167,8 +2167,8 @@ export default function App() {
       statusText: citationCanConfirm ? "待创建" : currentCitationLoaded ? "未创建" : "未开始",
       detail: citationCanConfirm ? "确认当前动作后创建草案" : currentCitationLoaded ? "当前无可创建草案的动作" : "等待推荐动作",
       tone: citationCanConfirm ? "current" : "pending",
-      actionLabel: citationCanConfirm ? "确认并创建" : "",
-      onAction: citationCanConfirm ? confirmCitationDecisionV1 : undefined,
+      actionLabel: citationCanConfirm ? "去创建草案" : "",
+      onAction: citationCanConfirm ? () => setPage("optimization") : undefined,
     },
   ];
   const workflowToneMeta: Record<string, { color: string; text: string; className: string }> = {
@@ -2281,7 +2281,7 @@ export default function App() {
               <Tag color={citationDecisionStatusColor(currentCitationDecisionData?.status)}>{citationDecisionStatusLabel(currentCitationDecisionData?.status)}</Tag>
               {answerStepDone && citationDecisionError && <Tag color="red">引用链路异常</Tag>}
               <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>刷新主链路</Button>
-              <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>确认推荐动作</Button>
+              <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={() => setPage("optimization")}>查看推荐动作</Button>
               <Button size="small" onClick={() => setPage("optimization")}>{citationProductTruthBlockedRows.length ? "补目标品牌事实" : "执行策略详情"}</Button>
               {citationProductTruthBlockedRows.length > 0 && <Text type="secondary">这里确认的是{project?.brand_name || "目标品牌"}自己的能力，不是竞品或对标文章的能力。</Text>}
               {legacyContinueResult && <Tag color="default">存在历史缺口/动作结果，不计入当前引用决策进度</Tag>}

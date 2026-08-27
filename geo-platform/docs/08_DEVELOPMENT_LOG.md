@@ -1381,3 +1381,71 @@ Validation performed:
   - Evidence Adoption context is `NOT_ADOPTED`;
   - formal `SourceClaim` stayed `577 -> 577`;
   - Prompt `#40` formal `EvidenceAlignment` stayed `660 -> 660`.
+
+## 2026-08-27 Citation Decision V1.1 Phase 3 StrategyCandidate Gate
+
+- Entered Phase 3 after Phase 2B checkpoint approval. Scope was limited to
+  Step 7: `StrategyCandidate + Human Strategy Review`.
+- Audited current Gap scope:
+  - `source_gap_type` remains a source-analysis compatibility/display field;
+  - formal Step 7 consumption now uses derived `capability_gap_items`, so a
+    Benchmark Source with multiple capability/reason gaps does not collapse
+    into one natural-language source-level conclusion.
+- Reused existing `OptimizationStrategyCandidate` and `effective_payload`
+  infrastructure; no parallel Strategy table was added.
+- Changed `confirm_citation_decision_vertical_slice` behavior:
+  - creates pending `OptimizationStrategyCandidate` rows only;
+  - ignores legacy `create_experiments=true` for this path;
+  - no longer creates `InterventionPlan`, `OptimizationAction`, or
+    `OptimizationExperiment`.
+- Changed machine-generated vertical StrategyCandidates:
+  - `review_status = PENDING_REVIEW`;
+  - `effective_payload = {}`;
+  - `effective_validation_status = PENDING`;
+  - `experiment_id = null`.
+- Added capability/reason-level Strategy payload fields:
+  - `gap_item_ids`, `target_capability_or_reason`, `target_capabilities`;
+  - `benchmark_evidence_ids`, `product_truth_refs`,
+    `relevant_asset_refs`, `observed_run_ids`;
+  - `proposed_direction`, `mechanism`, `why_candidate`, `blockers`,
+    `validation_metric`;
+  - `benchmark_channel_boundary` and `effective_payload_snapshot_policy`.
+- Prevented Benchmark Channel leakage:
+  - a `PRIMARY_BENCHMARK` from Zhihu no longer auto-fills
+    `target_platform=ZHIHU`;
+  - `target_platform`, `target_asset`, and `target_content_type` remain
+    `UNRESOLVED` until the execution-planning phase.
+- Updated human review handling:
+  - accepted/edited candidates write `effective_payload`;
+  - if execution fields remain unresolved, the status becomes
+    `PENDING_HUMAN_CHANNEL_REVIEW`, not `VALIDATED`;
+  - `strategy_to_experiment_plan` remains fail-closed before Step 8.
+- Added `backend/scripts/audit_prompt40_phase3_strategy.py`.
+- Added checkpoint/audit docs:
+  - `docs/CITATION_DECISION_V1_1_PHASE3_STRATEGY_CHECKPOINT.md`
+  - `docs/PROMPT_40_PHASE3_STRATEGY_AUDIT.md`
+- No migration is required.
+- Phase 3 explicitly did not develop Step 8, Action, Experiment, Baseline Lock,
+  platform selection, content task creation, Decision Stability, or Citation /
+  Benchmark / Gap scoring changes.
+
+Validation performed:
+
+- `.venv/bin/python -m compileall -q app scripts/audit_prompt40_phase3_strategy.py`
+  passed.
+- `.venv/bin/python -m pytest -q tests/test_source_gap_v1.py tests/test_evidence_lineage_v1.py`
+  passed: `35 passed`.
+- `.venv/bin/python scripts/audit_prompt40_phase3_strategy.py --output ../docs/PROMPT_40_PHASE3_STRATEGY_AUDIT.md`
+  passed.
+- Prompt `#40` Phase 3 audit:
+  - created `StrategyCandidate #40`;
+  - capability Gap items: `点击统计`, `自定义分享标题`, `营销场景使用`;
+  - each item keeps `CONTENT_GAP / RELEVANT_ASSET_EXPRESSION` and observed
+    Runs `[238, 239, 240, 253, 254, 255]`;
+  - before review: `PENDING_REVIEW`, `effective_validation_status=PENDING`;
+  - after human edit/review: `ACCEPTED_WITH_EDITS`,
+    `effective_validation_status=PENDING_HUMAN_CHANNEL_REVIEW`;
+  - `OptimizationAction` stayed `16 -> 16`;
+  - `OptimizationExperiment` stayed `16 -> 16`;
+  - `strategy_to_experiment_plan` was rejected both before review and after
+    review because Step 8 execution fields remain unresolved.

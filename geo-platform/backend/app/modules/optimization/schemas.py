@@ -263,6 +263,10 @@ class StrategyCandidateRead(BaseModel):
     original_llm_payload: dict[str, Any] = Field(default_factory=dict)
     structured_payload: dict[str, Any] = Field(default_factory=dict)
     human_edited_payload: dict[str, Any] = Field(default_factory=dict)
+    effective_payload: dict[str, Any] = Field(default_factory=dict)
+    effective_payload_version: str = ""
+    effective_validation_status: str = "PENDING"
+    effective_validated_at: Optional[datetime] = None
     evidence_validation_status: str
     evidence_validation_errors: list[str] = Field(default_factory=list)
     evidence_validation_warnings: list[str] = Field(default_factory=list)
@@ -575,6 +579,7 @@ class SourceAnalysisRead(BaseModel):
     gap_analysis_status: str = "NOT_ELIGIBLE"
     capability_gap_layer: str = ""
     capability_gap_diagnosis: dict[str, Any] = Field(default_factory=dict)
+    capability_gap_items: list[dict[str, Any]] = Field(default_factory=list)
     matched_product_truth_ids: list[int] = Field(default_factory=list)
     matched_product_truth_status: str = "UNKNOWN"
     existing_asset_status: str = "UNKNOWN"

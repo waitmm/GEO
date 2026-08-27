@@ -891,8 +891,7 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
                 candidate.hypothesis_validation_status = hypothesis_result["status"]
                 candidate.hypothesis_validation_errors_json = dumps(hypothesis_result["errors"])
                 candidate.hypothesis_validation_warnings_json = dumps(hypothesis_result["warnings"])
-                candidate.effective_validation_status = "VALIDATED"
-                candidate.effective_validated_at = datetime.utcnow()
+                _set_effective_payload_review_status(candidate, effective)
             else:
                 candidate.effective_validation_status = "BACKFILLED_UNVERIFIED"
         # Save the effective payload as single executable truth
@@ -901,14 +900,26 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
         candidate.human_edited_payload_json = dumps(edited)
     elif status == "ACCEPTED":
         # No human edits — effective = structured
-        candidate.effective_payload_json = candidate.structured_payload_json
+        effective = loads(candidate.structured_payload_json, {})
+        candidate.effective_payload_json = dumps(effective)
         candidate.effective_payload_version = EFFECTIVE_PAYLOAD_VERSION
-        candidate.effective_validation_status = candidate.evidence_validation_status
-        if candidate.evidence_validation_status == "VALIDATED":
-            candidate.effective_validated_at = datetime.utcnow()
+        _set_effective_payload_review_status(candidate, effective)
     db.commit()
     db.refresh(candidate)
     return strategy_candidate_to_read(candidate)
+
+
+def _set_effective_payload_review_status(candidate: OptimizationStrategyCandidate, effective: dict) -> None:
+    if candidate.evidence_validation_status != "VALIDATED" or candidate.hypothesis_validation_status != "VALIDATED":
+        candidate.effective_validation_status = "VALIDATION_FAILED"
+        candidate.effective_validated_at = None
+        return
+    if _unresolved_strategy_execution_fields(effective):
+        candidate.effective_validation_status = "PENDING_HUMAN_CHANNEL_REVIEW"
+        candidate.effective_validated_at = None
+        return
+    candidate.effective_validation_status = "VALIDATED"
+    candidate.effective_validated_at = datetime.utcnow()
 
 
 def _ensure_product_truth_gate_allows_strategy_execution(candidate: OptimizationStrategyCandidate) -> None:
@@ -2021,7 +2032,6 @@ def confirm_citation_decision_vertical_slice(
 ) -> dict:
     reviewer = str(payload.get("reviewer") or "human")
     selected_keys = set(payload.get("action_keys") or [])
-    create_experiments = bool(payload.get("create_experiments", True))
     proposal = citation_decision_vertical_slice(
         db,
         project_id,
@@ -2035,7 +2045,7 @@ def confirm_citation_decision_vertical_slice(
         actions = [action for action in actions if action.get("action_key") in selected_keys]
     actions = [action for action in actions if action.get("route") in {"CONTENT", "EVIDENCE"}]
     if not actions:
-        raise HTTPException(status_code=400, detail="没有可确认并进入实验草案的 Content/Evidence Action。Product/Unresolved 需要先人工补充 Product Truth 或资产信息。")
+        raise HTTPException(status_code=400, detail="没有可生成策略候选的 Content/Evidence Gap。Product/Unresolved 需要先人工补充 Product Truth 或资产信息。")
 
     project = db.get(Project, project_id)
     prompt = db.get(Prompt, prompt_id)
@@ -2047,43 +2057,30 @@ def confirm_citation_decision_vertical_slice(
         db,
         project_id,
         prompt_id,
-        "citation_decision",
-        "CONFIRMED",
-        payload.get("review_note") or f"确认 {len(actions)} 个 Citation Decision V1 推荐动作。",
+        "strategy_candidate",
+        "PENDING_REVIEW",
+        payload.get("review_note") or f"已生成 {len(actions)} 个待审核策略候选。",
         reviewer,
     )
 
-    plan = _get_or_create_vertical_intervention_plan(db, project, prompt, actions, reviewer)
     created = []
     for action in actions:
         strategy_payload = _strategy_payload_from_vertical_action(project, prompt, package, action, payload)
         strategy = _create_vertical_strategy_candidate(db, project, package, strategy_payload, reviewer)
-        materialized = None
-        if create_experiments and strategy.review_status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"}:
-            materialized = strategy_to_experiment_plan(db, strategy.id)
-            if materialized.get("experiment_id"):
-                experiment = db.get(OptimizationExperiment, materialized["experiment_id"])
-                if experiment:
-                    _attach_vertical_plan_to_experiment(experiment, plan.id, action)
-                    db.commit()
         created.append({
             "action_key": action["action_key"],
             "strategy_candidate": strategy_candidate_to_read(strategy),
-            "experiment_plan": materialized,
+            "experiment_plan": None,
         })
     return {
-        "status": "CONFIRMED",
+        "status": "STRATEGY_CANDIDATES_CREATED",
         "version": VERTICAL_SLICE_VERSION,
         "project_id": project_id,
         "prompt_id": prompt_id,
         "evidence_package_id": package.id,
-        "intervention_plan": {
-            "id": plan.id,
-            "title": plan.title,
-            "status": plan.status,
-        },
+        "intervention_plan": None,
         "created": created,
-        "boundary_note": "已复用 StrategyCandidate 人工确认与 effective_payload 执行闸门；发布、复测和最终结论仍走原有 Release/Retest/Human Conclusion Gate。",
+        "boundary_note": "Step 7 只生成待审核 StrategyCandidate；人工审核形成 effective_payload 后才具有正式 Strategy 语义。本阶段不创建 Action/Experiment，不进入 Step 8。",
     }
 
 
@@ -2291,11 +2288,7 @@ def _create_vertical_strategy_candidate(
 ) -> OptimizationStrategyCandidate:
     evidence_result = validate_strategy_evidence(package, None, payload)
     hypothesis_result = validate_strategy_hypothesis(payload, evidence_result)
-    review_status = (
-        "ACCEPTED"
-        if evidence_result["status"] == "VALIDATED" and hypothesis_result["status"] == "VALIDATED"
-        else "VALIDATION_FAILED"
-    )
+    validators_ready = evidence_result["status"] == "VALIDATED" and hypothesis_result["status"] == "VALIDATED"
     candidate = OptimizationStrategyCandidate(
         project_id=project.id,
         experiment_id=None,
@@ -2316,9 +2309,9 @@ def _create_vertical_strategy_candidate(
         original_llm_payload_json=dumps(payload),
         structured_payload_json=dumps(payload),
         human_edited_payload_json=dumps({}),
-        effective_payload_json=dumps(payload),
-        effective_payload_version=EFFECTIVE_PAYLOAD_VERSION,
-        effective_validation_status="VALIDATED" if review_status == "ACCEPTED" else "VALIDATION_FAILED",
+        effective_payload_json=dumps({}),
+        effective_payload_version="",
+        effective_validation_status="PENDING" if validators_ready else "VALIDATION_FAILED",
         evidence_validation_status=evidence_result["status"],
         evidence_validation_errors_json=dumps(evidence_result["errors"]),
         evidence_validation_warnings_json=dumps(evidence_result["warnings"]),
@@ -2329,10 +2322,10 @@ def _create_vertical_strategy_candidate(
         hypothesis_validation_warnings_json=dumps(hypothesis_result["warnings"]),
         hypothesis_validated_at=hypothesis_result["validated_at"],
         hypothesis_validator_version=HYPOTHESIS_VALIDATOR_VERSION,
-        review_status=review_status,
-        reviewed_by=reviewer if review_status == "ACCEPTED" else "",
-        reviewed_at=datetime.utcnow() if review_status == "ACCEPTED" else None,
-        review_note="Citation Decision V1 人工确认生成" if review_status == "ACCEPTED" else "校验失败，未进入实验计划",
+        review_status="PENDING_REVIEW" if validators_ready else "VALIDATION_FAILED",
+        reviewed_by="",
+        reviewed_at=None,
+        review_note="机器生成待审核策略候选；未人工确认前不得进入 Action/Experiment。" if validators_ready else "校验失败，未进入策略审核",
     )
     db.add(candidate)
     db.commit()
@@ -2348,42 +2341,98 @@ def _strategy_payload_from_vertical_action(
     confirm_payload: dict,
 ) -> dict:
     benchmark = action.get("benchmark_source") or {}
-    channel = str(confirm_payload.get("target_platform") or benchmark.get("platform") or "").lower()
-    intervention_type = _intervention_type_for_vertical_action(action, channel)
-    target_content_type = _target_content_type_for_vertical_payload(action, channel)
+    channel = str(confirm_payload.get("target_platform") or "").lower()
+    intervention_type = str(confirm_payload.get("intervention_type") or "UNRESOLVED")
+    target_content_type = str(confirm_payload.get("target_content_type") or "UNRESOLVED")
     target_metric = _target_metric_for_vertical_action(action)
     baseline_value = _baseline_value_for_metric(package, target_metric)
     product_truth_status = action.get("product_truth_status") or "UNKNOWN"
     gate_status = "READY_FOR_STRATEGY_REVIEW" if product_truth_status == "TRUE" else "NEEDS_HUMAN_CONFIRMATION"
+    gap_items = action.get("gap_items") or []
+    gap_item_ids = [item.get("gap_item_id") for item in gap_items if item.get("gap_item_id")]
+    capability_labels = _capability_label_for_strategy_items(gap_items)
+    evidence_run_ids = sorted({
+        int(run_id)
+        for item in gap_items
+        for run_id in item.get("observed_run_ids", [])
+        if run_id
+    }) or loads(package.source_run_ids_json, [])
+    benchmark_evidence_ids = sorted({
+        int(alignment_id)
+        for item in gap_items
+        for alignment_id in item.get("benchmark_evidence_ids", [])
+        if alignment_id
+    })
+    mechanism = (
+        "如果目标品牌已真实具备这些能力，但当前相关资产没有形成可被引用和摘录的能力表达，"
+        "则补齐能力说明、适用场景和证据表达，可能提高后续 AI 回答中目标品牌进入候选/推荐理由的机会。"
+    )
     return {
+        "strategy_phase": "PHASE_3_STRATEGY_CANDIDATE",
+        "prompt_id": prompt.id,
+        "gap_item_ids": gap_item_ids,
+        "target_capability_or_reason": capability_labels,
+        "target_capabilities": [
+            {
+                "gap_item_id": item.get("gap_item_id"),
+                "capability_label": item.get("capability_label"),
+                "gap_type": item.get("gap_type"),
+                "gap_layer": item.get("gap_layer"),
+                "observed_run_ids": item.get("observed_run_ids", []),
+                "benchmark_evidence_ids": item.get("benchmark_evidence_ids", []),
+            }
+            for item in gap_items
+        ],
         "observed_problem": f"Prompt #{prompt.id} 的对标来源显示 {action.get('gap_label') or action.get('gap_type')}。",
         "hypothesized_cause": (
             f"可能因为当前品牌资产未充分覆盖对标来源中影响推荐选择的证据：{action.get('summary', '')}"
         ),
-        "core_mechanism": (
-            "用已确认目标品牌事实补齐可摘录内容或证据，使 AI 回答在候选/推荐理由中更容易识别目标品牌。"
+        "core_mechanism": mechanism,
+        "mechanism": mechanism,
+        "why_candidate": (
+            "该候选只来自已完成的 capability-level Gap、Phase 2A eligible Benchmark Evidence、"
+            "Product Truth 和冻结的 Relevant Asset Snapshot；Step 7 不重新执行 Citation/Evidence/Gap 推理。"
         ),
         "intervention_type": intervention_type,
         "target_platform": channel.upper() if channel else "UNRESOLVED",
-        "target_object": "EXTERNAL_ACCOUNT_CONTENT" if intervention_type in {"EXTERNAL_PLATFORM_ARTICLE", "EXTERNAL_PLATFORM_QA", "VIDEO_CONTENT"} else "OWNED_CONTENT",
-        "target_asset": confirm_payload.get("target_asset") or f"{source_platform_label(channel)}内容资产",
+        "target_object": confirm_payload.get("target_object") or "UNRESOLVED",
+        "target_asset": confirm_payload.get("target_asset") or "UNRESOLVED",
         "target_content_type": target_content_type,
         "target_url": confirm_payload.get("target_url") or "",
         "target_metric": target_metric,
+        "validation_metric": target_metric,
         "baseline_value": baseline_value,
-        "recommended_action": action.get("planned_change") or action.get("summary") or "",
+        "proposed_direction": action.get("route"),
+        "recommended_action": action.get("summary") or "",
+        "recommended_action_boundary": "这不是发布平台或内容任务；平台、资产和执行方式属于 Step 8。",
         "changed_features": _changed_features_for_vertical_action(action),
         "controlled_variables": ["collection_prompt", "wenxin_entry", "account_profile", "product_capabilities", "single_channel_scope"],
         "recommended_outline": action.get("content_requirements", []),
         "required_sections": action.get("content_requirements", []),
-        "evidence_run_ids": loads(package.source_run_ids_json, []),
+        "evidence_run_ids": evidence_run_ids,
         "evidence_citation_ids": [],
+        "benchmark_evidence_ids": benchmark_evidence_ids,
         "evidence_summary": {
             "benchmark_source": benchmark,
             "priority_level": action.get("priority_level"),
             "gap_type": action.get("gap_type"),
+            "gap_items": gap_items,
             "decision_support_level": action.get("decision_support_level"),
         },
+        "product_truth_refs": {
+            "status": product_truth_status,
+            "ids": action.get("product_truth_ids", []),
+        },
+        "relevant_asset_refs": [
+            item.get("relevant_asset_snapshot") for item in gap_items if item.get("relevant_asset_snapshot")
+        ],
+        "observed_run_ids": evidence_run_ids,
+        "run_coverage_count": len(evidence_run_ids),
+        "blockers": [
+            "待人工确认 Strategy 机制和范围",
+            "Step 8 前不得选择发布平台或创建执行任务",
+            "target_platform / target_asset / target_content_type 仍为 UNRESOLVED 时不得物化 Action/Experiment",
+        ],
         "expected_direction": "increase",
         "priority": action.get("priority_level", "PRIORITY_MEDIUM"),
         "validation_plan": {
@@ -2397,8 +2446,10 @@ def _strategy_payload_from_vertical_action(
             "matched_product_truth_ids": action.get("product_truth_ids", []),
             "matched_product_truth_status": product_truth_status,
         },
+        "effective_payload_snapshot_policy": "未来 Experiment 必须绑定创建时已确认的 effective_payload 快照，不得读取候选后续修改作为历史依据。",
         "source_action_key": action.get("action_key"),
-        "channel_opportunity": action.get("channel_opportunity"),
+        "benchmark_channel_boundary": "Benchmark 来源平台不能自动成为 Strategy 执行平台；平台和资产选择属于 Step 8。",
+        "channel_opportunity": None,
     }
 
 
@@ -3815,6 +3866,7 @@ def source_analysis(
         include_answer_binding_v1_1=include_answer_binding_v1_1,
     )
     rows = _attach_source_gap_analysis(db, project, rows, prompt=prompt, retrievals=retrievals, references=references)
+    rows = _attach_capability_gap_items(rows)
     rows = _attach_priority_action_routes(rows)
     rows = _attach_channel_opportunities(rows)
     rows = _attach_recommended_actions(rows, project, prompt)
@@ -3933,6 +3985,7 @@ def _source_analysis_row(
         "gap_analysis_status": "NOT_ELIGIBLE",
         "capability_gap_layer": "",
         "capability_gap_diagnosis": {},
+        "capability_gap_items": [],
         "matched_product_truth_ids": [],
         "matched_product_truth_status": "UNKNOWN",
         "capability_truth_targets": [],
@@ -5324,6 +5377,7 @@ def _not_eligible_source_gap_payload(precondition: str, reason: str) -> dict:
         "gap_analysis_status": "NOT_ELIGIBLE",
         "capability_gap_layer": "",
         "capability_gap_diagnosis": {},
+        "capability_gap_items": [],
         "matched_product_truth_ids": [],
         "matched_product_truth_status": "UNKNOWN",
         "capability_truth_targets": [],
@@ -5347,6 +5401,7 @@ def _blocked_source_gap_payload(precondition: str, reason: str) -> dict:
         "gap_analysis_status": "BLOCKED",
         "capability_gap_layer": "",
         "capability_gap_diagnosis": {},
+        "capability_gap_items": [],
         "matched_product_truth_ids": [],
         "matched_product_truth_status": "UNKNOWN",
         "capability_truth_targets": [],
@@ -5394,6 +5449,78 @@ def _source_gap_label(gap_type: str) -> str:
         "NO_GAP": "暂无缺口",
         "UNKNOWN": "无法判断",
     }.get(gap_type, gap_type)
+
+
+def _attach_capability_gap_items(rows: list[dict]) -> list[dict]:
+    for row in rows:
+        row["capability_gap_items"] = _capability_gap_items_for_row(row)
+    return rows
+
+
+def _capability_gap_items_for_row(row: dict) -> list[dict]:
+    gap_type = row.get("source_gap_type")
+    tier = row.get("benchmark_tier")
+    if not gap_type or tier not in {"PRIMARY_BENCHMARK", "SECONDARY_BENCHMARK"}:
+        return []
+    targets = row.get("capability_truth_targets") or []
+    if not targets:
+        targets = [{
+            "label": row.get("suggested_capability_label") or _truth_label_for_row(row) or "未命名能力",
+            "source": "SOURCE_GAP_DERIVED",
+            "alignment_ids": row.get("supporting_alignment_ids", []),
+            "observed_run_ids": row.get("observed_run_ids", []),
+        }]
+    diagnosis = row.get("capability_gap_diagnosis") or {}
+    lineage = diagnosis.get("eligible_evidence_lineage") or {}
+    benchmark_source = _benchmark_source_for_row(row)
+    items: list[dict] = []
+    for target in targets:
+        label = str(target.get("label") or "").strip()
+        if not label:
+            continue
+        alignment_ids = sorted({
+            int(value)
+            for value in (target.get("alignment_ids") or [target.get("alignment_id")] or [])
+            if value
+        })
+        if not alignment_ids:
+            alignment_ids = [int(value) for value in lineage.get("supporting_alignment_ids", []) if value]
+        observed_run_ids = sorted({
+            int(value)
+            for value in (target.get("observed_run_ids") or lineage.get("observed_run_ids") or [])
+            if value
+        })
+        raw_key = "|".join(str(part or "") for part in [
+            row.get("source_document_id"),
+            label,
+            gap_type,
+            row.get("capability_gap_layer"),
+            ",".join(str(item) for item in alignment_ids),
+        ])
+        items.append({
+            "gap_item_id": hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16],
+            "source_document_id": row.get("source_document_id"),
+            "capability_label": label,
+            "capability_source": target.get("source") or "UNKNOWN",
+            "answer_unit_id": target.get("answer_unit_id"),
+            "gap_type": gap_type,
+            "gap_label": row.get("source_gap_label") or _source_gap_label(str(gap_type)),
+            "gap_precondition": row.get("source_gap_precondition"),
+            "gap_layer": row.get("capability_gap_layer") or diagnosis.get("failure_layer") or "",
+            "benchmark_tier": tier,
+            "decision_support_level": row.get("decision_support_level"),
+            "benchmark_evidence_ids": alignment_ids,
+            "benchmark_source": benchmark_source,
+            "product_truth_ids": row.get("matched_product_truth_ids", []),
+            "product_truth_status": row.get("matched_product_truth_status", "UNKNOWN"),
+            "relevant_asset_snapshot": row.get("relevant_asset_snapshot") or {},
+            "retrieval_candidate_context": row.get("retrieval_candidate_context") or {},
+            "evidence_adoption_context": row.get("evidence_adoption_context") or {},
+            "observed_run_ids": observed_run_ids,
+            "run_coverage_count": len(observed_run_ids),
+            "lineage_source": "PHASE2A_ELIGIBLE_ALIGNMENT",
+        })
+    return items
 
 
 def _attach_priority_action_routes(rows: list[dict]) -> list[dict]:
@@ -5519,7 +5646,8 @@ def _recommended_action_for_row(row: dict, project: Project, prompt: Prompt | No
 
     prompt_text = (prompt.prompt_text if prompt else "") or "当前 Prompt"
     benchmark_title = row.get("title") or row.get("domain") or "对标来源"
-    truth_label = _truth_label_for_row(row) or "已确认能力"
+    gap_items = row.get("capability_gap_items") or []
+    truth_label = _capability_label_for_strategy_items(gap_items) or _truth_label_for_row(row) or "已确认能力"
     proof_focus = _proof_focus_for_row(row)
     action_key = _stable_action_key(row)
 
@@ -5558,6 +5686,8 @@ def _recommended_action_for_row(row: dict, project: Project, prompt: Prompt | No
         "summary": summary,
         "planned_change": planned_change,
         "content_requirements": content_requirements,
+        "gap_items": gap_items,
+        "gap_item_ids": [item.get("gap_item_id") for item in gap_items if item.get("gap_item_id")],
         "benchmark_source": _benchmark_source_for_row(row),
         "benchmark_basis": row.get("benchmark_basis", []),
         "decision_support_level": row.get("decision_support_level", "NONE"),
@@ -5624,13 +5754,28 @@ def _channel_opportunity_payload(channel_key: str, rows: list[dict]) -> dict:
 
 
 def _stable_action_key(row: dict) -> str:
+    gap_item_ids = ",".join(sorted(
+        str(item.get("gap_item_id"))
+        for item in row.get("capability_gap_items", [])
+        if item.get("gap_item_id")
+    ))
     raw = "|".join(str(part or "") for part in [
         row.get("source_document_id"),
         row.get("url"),
         row.get("source_gap_type"),
         row.get("action_route"),
+        gap_item_ids,
     ])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _capability_label_for_strategy_items(items: list[dict]) -> str:
+    labels = []
+    for item in items:
+        label = str(item.get("capability_label") or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    return "、".join(labels[:4])
 
 
 def _truth_label_for_row(row: dict) -> str:

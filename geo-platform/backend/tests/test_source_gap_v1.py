@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -35,6 +36,8 @@ from app.modules.optimization.service import (
     citation_decision_vertical_slice,
     confirm_citation_decision_vertical_slice,
     create_evidence_package,
+    review_strategy_candidate,
+    strategy_to_experiment_plan,
 )
 from app.modules.optimization.schemas import EvidencePackageCreate
 from app.services.serialization import dumps, loads
@@ -781,7 +784,7 @@ def _vertical_slice_v1_1_only_fixture(db):
     return project, prompt, package
 
 
-def test_vertical_slice_proposes_action_channel_and_experiment():
+def test_vertical_slice_creates_pending_strategy_candidate_without_experiment():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
@@ -795,6 +798,8 @@ def test_vertical_slice_proposes_action_channel_and_experiment():
         assert proposal["recommended_actions"][0]["route"] == "EVIDENCE"
         assert proposal["channel_opportunities"][0]["channel"] == "zhihu"
 
+        action_count_before = db.query(OptimizationAction).count()
+        experiment_count_before = db.query(OptimizationExperiment).count()
         confirmed = confirm_citation_decision_vertical_slice(
             db,
             project.id,
@@ -809,12 +814,50 @@ def test_vertical_slice_proposes_action_channel_and_experiment():
             )
 
         created = confirmed["created"][0]
-        assert created["strategy_candidate"]["review_status"] == "ACCEPTED"
-        assert created["experiment_plan"]["experiment_id"] is not None
-        experiment = db.get(OptimizationExperiment, created["experiment_plan"]["experiment_id"])
-        assert experiment.channel == "ZHIHU"
-        assert experiment.experiment_mode == "PER_CHANNEL"
-        assert experiment.release_blocked is True
+        assert confirmed["status"] == "STRATEGY_CANDIDATES_CREATED"
+        assert confirmed["intervention_plan"] is None
+        assert created["strategy_candidate"]["review_status"] == "PENDING_REVIEW"
+        assert created["strategy_candidate"]["effective_payload"] == {}
+        assert created["strategy_candidate"]["effective_validation_status"] == "PENDING"
+        assert created["strategy_candidate"]["experiment_id"] is None
+        assert created["experiment_plan"] is None
+        assert db.query(OptimizationAction).count() == action_count_before
+        assert db.query(OptimizationExperiment).count() == experiment_count_before
+
+        structured = created["strategy_candidate"]["structured_payload"]
+        assert structured["gap_item_ids"]
+        assert structured["target_capabilities"][0]["capability_label"]
+        assert structured["target_capabilities"][0]["gap_item_id"] in structured["gap_item_ids"]
+        assert structured["benchmark_evidence_ids"]
+        assert structured["product_truth_refs"]["status"] == "TRUE"
+        assert structured["target_platform"] == "UNRESOLVED"
+        assert structured["benchmark_channel_boundary"].startswith("Benchmark 来源平台不能自动成为 Strategy 执行平台")
+
+        with pytest.raises(Exception):
+            strategy_to_experiment_plan(db, created["strategy_candidate"]["id"])
+
+        reviewed = review_strategy_candidate(
+            db,
+            created["strategy_candidate"]["id"],
+            type(
+                "Payload",
+                (),
+                {
+                    "review_status": "ACCEPTED_WITH_EDITS",
+                    "reviewed_by": "human",
+                    "review_note": "确认策略机制，不进入执行。",
+                    "human_edited_payload": {"review_summary": "能力表达缺口成立"},
+                },
+            )(),
+        )
+        assert reviewed["review_status"] == "ACCEPTED_WITH_EDITS"
+        assert reviewed["effective_payload"]["review_summary"] == "能力表达缺口成立"
+        assert reviewed["effective_validation_status"] == "PENDING_HUMAN_CHANNEL_REVIEW"
+        assert db.query(OptimizationAction).count() == action_count_before
+        assert db.query(OptimizationExperiment).count() == experiment_count_before
+
+        with pytest.raises(Exception):
+            strategy_to_experiment_plan(db, created["strategy_candidate"]["id"])
     finally:
         db.close()
 

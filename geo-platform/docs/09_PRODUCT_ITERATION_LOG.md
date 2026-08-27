@@ -1041,3 +1041,130 @@ PHASE_2B_CAPABILITY_GAP_READY_FOR_REVIEW
 STEP_7_NOT_STARTED
 STEP_8_NOT_STARTED
 ```
+
+## 2026-08-27 Citation Decision V1.1 Phase 3 StrategyCandidate
+
+### Product Decision
+
+Phase 3 正式进入主链第 7 步，但第 7 步不是“确认推荐动作”。
+
+第 7 步定义为：
+
+```text
+已完成缺口诊断
+-> 生成 StrategyCandidate
+-> 人工审核 / 编辑
+-> 写入 effective_payload
+-> Confirmed Strategy
+```
+
+第 8 步才处理：
+
+```text
+执行平台
+目标资产
+内容类型
+Action
+Experiment
+Baseline / 发布 / 复测
+```
+
+### Capability-Level Strategy Input
+
+策略候选不能直接消费一个 source-level `source_gap_type` 作为唯一真值。
+
+正式输入是：
+
+```text
+capability_gap_items
+```
+
+每个 item 必须保留：
+
+```text
+能力/理由
+Gap 类型
+最早失败层
+Benchmark Evidence
+Product Truth
+Relevant Asset
+observed_run_ids / run coverage
+```
+
+这样多个能力缺口可以合并成一个候选策略，但合并后不能丢失每个能力的
+证据链。
+
+### Human Confirmation Meaning
+
+人工确认的是：
+
+```text
+这个 Strategy 机制是否成立；
+这些 capability/reason Gap 是否应该作为后续执行方案输入。
+```
+
+人工确认的不是：
+
+```text
+立刻创建 Action；
+立刻创建 Experiment；
+选择知乎/官网/百家号等发布平台；
+生成正式内容任务。
+```
+
+如果 `effective_payload` 里仍有：
+
+```text
+target_platform = UNRESOLVED
+target_asset = UNRESOLVED
+target_content_type = UNRESOLVED
+```
+
+则状态保持：
+
+```text
+PENDING_HUMAN_CHANNEL_REVIEW
+```
+
+这表示 Strategy 已确认，但执行信息留给 Step 8。
+
+### Prompt #40 Regression
+
+真实回归结果：
+
+```text
+StrategyCandidate #40
+
+Gap items:
+  点击统计           CONTENT_GAP / RELEVANT_ASSET_EXPRESSION / 6 Runs
+  自定义分享标题     CONTENT_GAP / RELEVANT_ASSET_EXPRESSION / 6 Runs
+  营销场景使用       CONTENT_GAP / RELEVANT_ASSET_EXPRESSION / 6 Runs
+
+review_status_before = PENDING_REVIEW
+review_status_after = ACCEPTED_WITH_EDITS
+effective_validation_status_after = PENDING_HUMAN_CHANNEL_REVIEW
+```
+
+执行对象没有被创建：
+
+```text
+OptimizationAction: 16 -> 16
+OptimizationExperiment: 16 -> 16
+```
+
+### Hard Boundary
+
+```text
+PRIMARY_BENCHMARK 来自知乎
+≠
+Strategy 自动选择知乎发布
+```
+
+Benchmark Channel 只说明证据来源，不决定 Strategy Channel。
+
+当前状态：
+
+```text
+PHASE_3_STRATEGY_CANDIDATE_READY_FOR_REVIEW
+STEP_8_NOT_STARTED
+```

@@ -33,6 +33,7 @@ from app.modules.optimization.schemas import (
     ReleaseConfirmationPayload,
     StrategyCandidateRead,
     StrategyCandidateReviewPayload,
+    StrategyExecutionPlanPayload,
     StrategyGenerationCreate,
     ExperimentPlanRead,
 )
@@ -72,6 +73,7 @@ from app.modules.optimization.service import (
     release_action,
     review_strategy_candidate,
     start_validation,
+    confirm_strategy_execution_plan,
     strategy_to_experiment_plan,
     update_action,
 )
@@ -154,6 +156,15 @@ def review_strategy_candidate_endpoint(candidate_id: int, payload: StrategyCandi
 @router.post("/strategy-candidates/{candidate_id}/experiment-plan", response_model=ExperimentPlanRead)
 def strategy_to_experiment_plan_endpoint(candidate_id: int, db: Session = Depends(get_db)) -> dict:
     return strategy_to_experiment_plan(db, candidate_id)
+
+
+@router.post("/strategy-candidates/{candidate_id}/execution-plan", response_model=ExperimentPlanRead)
+def confirm_strategy_execution_plan_endpoint(
+    candidate_id: int,
+    payload: StrategyExecutionPlanPayload,
+    db: Session = Depends(get_db),
+) -> dict:
+    return confirm_strategy_execution_plan(db, candidate_id, payload)
 
 
 @router.get("/evidence-packages/{package_id}", response_model=EvidencePackageRead)

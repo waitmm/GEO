@@ -1112,6 +1112,593 @@ def strategy_to_experiment_plan(db: Session, candidate_id: int) -> dict:
     }
 
 
+STEP8_CHANNELS = {
+    "OFFICIAL_SITE",
+    "PRODUCT_DOCS",
+    "ZHIHU",
+    "BAIJIAHAO",
+    "THIRD_PARTY_MEDIA",
+    "OTHER",
+}
+STEP8_ASSET_OPERATIONS = {"UPDATE_EXISTING", "CREATE_NEW"}
+
+
+def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> dict:
+    """Step 8: confirm channel/asset execution plan and create a draft experiment.
+
+    Step 7 confirmation and Step 8 execution planning are intentionally
+    separate: ACCEPTED + PENDING_HUMAN_CHANNEL_REVIEW means the strategy is
+    confirmed, but its executable channel/asset fields still need this human
+    review before Action/Experiment materialization.
+    """
+    candidate = db.get(OptimizationStrategyCandidate, candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="策略候选不存在")
+    package = db.get(OptimizationEvidencePackage, candidate.evidence_package_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="Evidence Package 不存在")
+    project = db.get(Project, candidate.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project 不存在")
+    prompt = db.get(Prompt, package.prompt_id) if package.prompt_id else None
+    _ensure_strategy_candidate_can_enter_step8(candidate)
+
+    if candidate.experiment_id:
+        experiment = db.get(OptimizationExperiment, candidate.experiment_id)
+        if experiment:
+            return {
+                "strategy_candidate_id": candidate.id,
+                "readiness_status": "DRAFT_ALREADY_EXISTS",
+                "readiness_errors": [],
+                "readiness_warnings": ["该策略候选已创建实验草案，本次未重复创建。"],
+                "experiment_id": experiment.id,
+                "action_id": experiment.action_id,
+                "hypothesis_id": candidate.converted_hypothesis_id,
+                "plan_payload": loads(candidate.experiment_plan_json, {}),
+            }
+
+    channel = _normalize_step8_channel(_payload_value(payload, "channel", ""))
+    asset_operation = _normalize_step8_asset_operation(_payload_value(payload, "asset_operation", ""))
+    baseline_run_ids = _normalize_int_list(_payload_value(payload, "baseline_run_ids", []))
+    if not baseline_run_ids:
+        raise HTTPException(status_code=400, detail="Step 8 必须显式传入固定 baseline_run_ids，不能按 prompt_id 动态读取最新采集。")
+    package_run_ids = set(loads(package.source_run_ids_json, []))
+    if any(run_id not in package_run_ids for run_id in baseline_run_ids):
+        raise HTTPException(status_code=400, detail="baseline_run_ids 必须来自当前 Evidence Package 的固定 Run 集。")
+
+    selected_asset_ref = _resolve_selected_asset_ref(db, project, payload, channel, asset_operation)
+    effective = deterministic_merge(loads(candidate.effective_payload_json, {}), {
+        "strategy_phase": "PHASE_4_EXECUTION_PLAN_CONFIRMED",
+        "target_platform": channel,
+        "asset_operation": asset_operation,
+        "selected_asset_ref": selected_asset_ref,
+        "target_asset": _selected_asset_identity(selected_asset_ref),
+        "target_url": selected_asset_ref.get("canonical_url") or selected_asset_ref.get("url") or "",
+        "target_content_type": _payload_value(payload, "target_content_type", "") or selected_asset_ref.get("asset_type") or "ARTICLE",
+        "target_object": _payload_value(payload, "target_object", "") or selected_asset_ref.get("asset_type") or "CONTENT_ASSET",
+        "intervention_type": _intervention_type_for_step8(channel, asset_operation, {"effective_payload": loads(candidate.effective_payload_json, {})}),
+        "step8_confirmation": {
+            "confirmed_by": _payload_value(payload, "confirmed_by", "human"),
+            "confirmed_at": datetime.utcnow().isoformat(),
+            "confirmation_note": _payload_value(payload, "confirmation_note", ""),
+        },
+    })
+
+    candidate.effective_payload_json = dumps(effective)
+    candidate.effective_payload_version = EFFECTIVE_PAYLOAD_VERSION
+    candidate.intervention_type = effective.get("intervention_type")
+    candidate.target_platform = channel
+    candidate.target_asset = effective.get("target_asset")
+    candidate.target_content_type = effective.get("target_content_type")
+    _set_effective_payload_review_status(candidate, effective)
+    if candidate.effective_validation_status != "VALIDATED":
+        raise HTTPException(status_code=400, detail="Step 8 执行方案仍有未解决字段，不能创建实验草案。")
+
+    strategy_snapshot = _strategy_snapshot_for_experiment(candidate, package)
+    runs = _runs_by_ids(db, baseline_run_ids, candidate.project_id)
+    if len(runs) != len(baseline_run_ids):
+        raise HTTPException(status_code=400, detail="部分 baseline_run_ids 不存在或不属于当前项目。")
+    baseline_metrics = baseline_metrics_for_fixed_runs(db, project, runs, effective, selected_asset_ref)
+    issue = _get_or_create_step8_issue(db, candidate, package, prompt, strategy_snapshot, baseline_run_ids)
+    action = _create_step8_action(db, issue, effective, selected_asset_ref, strategy_snapshot)
+    experiment = _create_step8_experiment(
+        db,
+        candidate,
+        package,
+        prompt,
+        action,
+        effective,
+        strategy_snapshot,
+        selected_asset_ref,
+        baseline_run_ids,
+        baseline_metrics,
+    )
+
+    candidate.experiment_id = experiment.id
+    plan_payload = {
+        "readiness_status": "DRAFT_CREATED",
+        "phase": "PHASE_4_EXECUTION_PLAN",
+        "strategy_candidate_id": candidate.id,
+        "evidence_package_id": package.id,
+        "channel": channel,
+        "asset_operation": asset_operation,
+        "selected_asset_ref": selected_asset_ref,
+        "strategy_snapshot": strategy_snapshot,
+        "baseline_run_ids": baseline_run_ids,
+        "baseline_metrics": baseline_metrics,
+        "action_snapshot": _action_snapshot(action),
+        "experiment_id": experiment.id,
+        "action_id": action.id,
+        "release_gate": "这里只创建实验草案；真实发布仍需 Release Audit 人工确认。",
+    }
+    candidate.experiment_plan_json = dumps(plan_payload)
+    db.commit()
+    db.refresh(candidate)
+    db.refresh(action)
+    db.refresh(experiment)
+    return {
+        "strategy_candidate_id": candidate.id,
+        "readiness_status": "DRAFT_CREATED",
+        "readiness_errors": [],
+        "readiness_warnings": [],
+        "experiment_id": experiment.id,
+        "action_id": action.id,
+        "hypothesis_id": candidate.converted_hypothesis_id,
+        "plan_payload": plan_payload,
+    }
+
+
+def _ensure_strategy_candidate_can_enter_step8(candidate: OptimizationStrategyCandidate) -> None:
+    if candidate.review_status not in {"ACCEPTED", "ACCEPTED_WITH_EDITS"}:
+        raise HTTPException(status_code=400, detail="Strategy 尚未人工确认，不能进入 Step 8。")
+    if candidate.effective_validation_status not in {"PENDING_HUMAN_CHANNEL_REVIEW", "VALIDATED"}:
+        raise HTTPException(status_code=400, detail="当前 Strategy 状态不能进入 Step 8。")
+
+
+def _normalize_step8_channel(value: str) -> str:
+    channel = str(value or "").strip().upper()
+    if channel not in STEP8_CHANNELS:
+        raise HTTPException(status_code=400, detail=f"未知执行渠道: {value}")
+    return channel
+
+
+def _normalize_step8_asset_operation(value: str) -> str:
+    operation = str(value or "").strip().upper()
+    if operation not in STEP8_ASSET_OPERATIONS:
+        raise HTTPException(status_code=400, detail=f"未知资产操作: {value}")
+    return operation
+
+
+def _resolve_selected_asset_ref(db: Session, project: Project, payload, channel: str, asset_operation: str) -> dict:
+    asset_type = str(_payload_value(payload, "selected_asset_type", "") or _payload_value(payload, "target_content_type", "") or "ARTICLE").strip().upper()
+    if asset_operation == "UPDATE_EXISTING":
+        snapshot_id = _payload_value(payload, "selected_asset_id", None)
+        if not snapshot_id:
+            raise HTTPException(status_code=400, detail="更新已有资产必须绑定真实 PageSnapshot ID，不能用自由文本 URL 冒充已有资产。")
+        snapshot = db.get(PageSnapshot, int(snapshot_id))
+        if not snapshot or snapshot.project_id != project.id:
+            raise HTTPException(status_code=404, detail="选定资产快照不存在或不属于当前项目")
+        canonical_url = snapshot.canonical_url or snapshot.final_url or snapshot.url or snapshot.target_url
+        return {
+            "asset_ref_type": "PAGE_SNAPSHOT",
+            "asset_id": snapshot.id,
+            "snapshot_id": snapshot.id,
+            "canonical_url": canonical_url,
+            "url": snapshot.url or snapshot.target_url or canonical_url,
+            "asset_type": asset_type,
+            "snapshot_type": snapshot.snapshot_type,
+            "capture_status": snapshot.capture_status,
+            "title": snapshot.title or snapshot.h1 or "",
+            "channel": channel,
+            "asset_operation": asset_operation,
+        }
+    proposal = _payload_value(payload, "new_asset_proposal", {}) or {}
+    if not isinstance(proposal, dict) or not proposal:
+        raise HTTPException(status_code=400, detail="新建资产必须提供 NEW_ASSET proposal。")
+    return {
+        "asset_ref_type": "NEW_ASSET",
+        "asset_id": None,
+        "canonical_url": proposal.get("canonical_url") or proposal.get("url") or "",
+        "url": proposal.get("url") or proposal.get("canonical_url") or "",
+        "asset_type": asset_type,
+        "title": proposal.get("title") or "",
+        "proposal": proposal,
+        "channel": channel,
+        "asset_operation": asset_operation,
+    }
+
+
+def _selected_asset_identity(selected_asset_ref: dict) -> str:
+    if selected_asset_ref.get("asset_ref_type") == "PAGE_SNAPSHOT":
+        return f"PAGE_SNAPSHOT:{selected_asset_ref.get('asset_id')}"
+    return "NEW_ASSET"
+
+
+def _intervention_type_for_step8(channel: str, asset_operation: str, strategy_snapshot: dict) -> str:
+    if asset_operation == "UPDATE_EXISTING":
+        return "OFFICIAL_PAGE_UPDATE" if channel in {"OFFICIAL_SITE", "PRODUCT_DOCS"} else "CONTENT_REFRESH"
+    if channel in {"OFFICIAL_SITE", "PRODUCT_DOCS"}:
+        return "OFFICIAL_NEW_PAGE"
+    if channel == "ZHIHU":
+        return "EXTERNAL_PLATFORM_QA"
+    if channel in {"BAIJIAHAO", "THIRD_PARTY_MEDIA", "OTHER"}:
+        return "EXTERNAL_PLATFORM_ARTICLE"
+    return strategy_snapshot.get("effective_payload", {}).get("intervention_type") or "UNRESOLVED"
+
+
+def _strategy_snapshot_for_experiment(candidate: OptimizationStrategyCandidate, package: OptimizationEvidencePackage) -> dict:
+    return {
+        "snapshot_version": "strategy_snapshot.phase4.v1",
+        "strategy_candidate_id": candidate.id,
+        "review_status": candidate.review_status,
+        "reviewed_by": candidate.reviewed_by,
+        "reviewed_at": candidate.reviewed_at.isoformat() if candidate.reviewed_at else None,
+        "effective_payload_version": candidate.effective_payload_version,
+        "effective_validation_status": candidate.effective_validation_status,
+        "effective_payload": loads(candidate.effective_payload_json, {}),
+        "structured_payload": loads(candidate.structured_payload_json, {}),
+        "human_edited_payload": loads(candidate.human_edited_payload_json, {}),
+        "evidence_package_id": package.id,
+        "prompt_id": package.prompt_id,
+        "frozen_at": datetime.utcnow().isoformat(),
+    }
+
+
+def baseline_metrics_for_fixed_runs(
+    db: Session,
+    project: Project,
+    runs: list[BrowserMonitorRun],
+    strategy_payload: dict,
+    selected_asset_ref: dict,
+) -> dict:
+    run_ids = [run.id for run in runs]
+    if not run_ids:
+        raise HTTPException(status_code=400, detail="Baseline Metrics Calculator 必须接收固定 run_ids。")
+    answer_run_ids = [run.id for run in runs if run.status in VALID_RUN_STATUSES]
+    refs = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(answer_run_ids)).all() if answer_run_ids else []
+    retrievals = db.query(RetrievalCandidate).filter(RetrievalCandidate.run_id.in_(answer_run_ids)).all() if answer_run_ids else []
+    events = db.query(RecommendationEvent).filter(RecommendationEvent.run_id.in_(answer_run_ids)).all() if answer_run_ids else []
+    aliases = [project.brand_name, *loads(project.brand_aliases_json, [])]
+    candidate_speech_acts = {"INCLUDE_AS_OPTION", "COMPARE", "RECOMMEND"}
+    candidate_run_ids = {
+        event.run_id for event in events
+        if _event_matches_brand(event, aliases) and (event.speech_act or "").upper() in candidate_speech_acts
+    }
+    recommendation_run_ids = {
+        event.run_id for event in events
+        if _event_matches_brand(event, aliases) and (event.speech_act or "").upper() == "RECOMMEND"
+    }
+    capability_labels = _target_capability_labels_from_strategy(strategy_payload)
+    target_reason_run_ids = _target_brand_reason_adoption_run_ids(db, events, aliases, capability_labels)
+    brand_retrieval_run_ids = {
+        item.run_id for item in retrievals if _source_matches_project_brand(project, item.url, item.canonical_url, item.domain, item.title)
+    }
+    brand_citation_run_ids = {
+        ref.run_id for ref in refs if _source_matches_project_brand(project, ref.url, ref.canonical_url, ref.domain, ref.display_title or ref.matched_title)
+    }
+    asset_retrieval_run_ids = {
+        item.run_id for item in retrievals if _source_matches_selected_asset_ref(selected_asset_ref, item.url, item.canonical_url, item.domain, item.title)
+    }
+    asset_citation_run_ids = {
+        ref.run_id for ref in refs if _source_matches_selected_asset_ref(selected_asset_ref, ref.url, ref.canonical_url, ref.domain, ref.display_title or ref.matched_title)
+    }
+    denominator = len(answer_run_ids)
+    brand_mention_row = _baseline_metric_row("brand_mention", [run.id for run in runs if run.id in answer_run_ids and run.brand_mentioned], denominator)
+    brand_candidate_row = _baseline_metric_row("brand_candidate", sorted(candidate_run_ids), denominator)
+    brand_recommendation_row = _baseline_metric_row("brand_recommendation", sorted(recommendation_run_ids), denominator)
+    target_reason_row = _baseline_metric_row("target_reason_adoption", sorted(target_reason_run_ids), denominator)
+    brand_retrieval_row = _baseline_metric_row("brand_retrieval_presence", sorted(brand_retrieval_run_ids), denominator, level="brand_level")
+    brand_citation_row = _baseline_metric_row("brand_citation_presence", sorted(brand_citation_run_ids), denominator, level="brand_level")
+    asset_retrieval_row = _baseline_metric_row("selected_asset_retrieval_presence", sorted(asset_retrieval_run_ids), denominator, level="selected_asset_level")
+    asset_citation_row = _baseline_metric_row("selected_asset_citation_presence", sorted(asset_citation_run_ids), denominator, level="selected_asset_level")
+    return {
+        "calculator_version": "baseline_metrics.phase4.v1",
+        "fixed_run_ids": run_ids,
+        "eligible_run_ids": answer_run_ids,
+        "calculation_status": "ok" if denominator else "no_valid_runs",
+        "target_capabilities": capability_labels,
+        "metrics": {
+            "brand_mention": brand_mention_row,
+            "brand_mention_rate": {**brand_mention_row, "metric_name": "brand_mention_rate"},
+            "brand_candidate": brand_candidate_row,
+            "brand_candidate_rate": {**brand_candidate_row, "metric_name": "brand_candidate_rate"},
+            "brand_recommendation": brand_recommendation_row,
+            "brand_recommendation_rate": {**brand_recommendation_row, "metric_name": "brand_recommendation_rate"},
+            "target_reason_adoption": target_reason_row,
+            "target_reason_adoption_rate": {**target_reason_row, "metric_name": "target_reason_adoption_rate"},
+            "brand_retrieval_presence": brand_retrieval_row,
+            "brand_citation_presence": brand_citation_row,
+            "selected_asset_retrieval_presence": asset_retrieval_row,
+            "selected_asset_citation_presence": asset_citation_row,
+        },
+        "boundary_note": "Baseline 只由显式固定 run_ids 计算，属于 Experiment；不会按 prompt_id 动态读取最新 Runs。",
+    }
+
+
+def _baseline_metric_row(name: str, source_run_ids: list[int], denominator: int, level: str = "brand_level") -> dict:
+    numerator = len(set(source_run_ids))
+    return {
+        "metric_name": name,
+        "level": level,
+        "numerator": numerator,
+        "denominator": denominator,
+        "value": _rate(numerator, denominator),
+        "source_run_ids": sorted(set(source_run_ids)),
+        "calculation_status": "ok" if denominator else "no_valid_runs",
+    }
+
+
+def _target_capability_labels_from_strategy(strategy_payload: dict) -> list[str]:
+    labels: list[str] = []
+    for item in strategy_payload.get("target_capabilities") or []:
+        if isinstance(item, dict) and item.get("capability_label"):
+            labels.append(str(item["capability_label"]))
+    if strategy_payload.get("target_capability_or_reason"):
+        labels.extend(str(strategy_payload["target_capability_or_reason"]).split("/"))
+    return [label.strip() for label in labels if label and label.strip()]
+
+
+def _target_brand_reason_adoption_run_ids(
+    db: Session,
+    events: list[RecommendationEvent],
+    aliases: list[str],
+    capability_labels: list[str],
+) -> set[int]:
+    label_keys = [_compact_key(label) for label in capability_labels if _compact_key(label)]
+    if not label_keys:
+        return set()
+    brand_events = [event for event in events if _event_matches_brand(event, aliases)]
+    event_ids = [event.id for event in brand_events]
+    units_by_event: dict[int, list[AnswerUnit]] = defaultdict(list)
+    if event_ids:
+        bindings = db.query(AnswerDecisionBinding).filter(AnswerDecisionBinding.recommendation_event_id.in_(event_ids)).all()
+        unit_ids = [binding.answer_unit_id for binding in bindings]
+        units = db.query(AnswerUnit).filter(AnswerUnit.id.in_(unit_ids)).all() if unit_ids else []
+        unit_by_id = {unit.id: unit for unit in units}
+        for binding in bindings:
+            unit = unit_by_id.get(binding.answer_unit_id)
+            if unit:
+                units_by_event[binding.recommendation_event_id].append(unit)
+    matched_run_ids: set[int] = set()
+    for event in brand_events:
+        texts = [event.answer_span or ""]
+        texts.extend(str(item.get("normalized_reason") or item.get("text") or item) for item in loads(event.reasons_json, []))
+        texts.extend(unit.unit_text_normalized or unit.unit_text_original or "" for unit in units_by_event.get(event.id, []))
+        haystack = _compact_key(" ".join(texts))
+        if any(label_key and label_key in haystack for label_key in label_keys):
+            matched_run_ids.add(event.run_id)
+    return matched_run_ids
+
+
+def _source_matches_project_brand(project: Project, url: str, canonical_url: str, domain: str, title: str) -> bool:
+    brand_domain = (host_from_url(project.website_url) if project.website_url else "").lower().removeprefix("www.")
+    source_domain = (domain or host_from_url(url or canonical_url or "") or "").lower().removeprefix("www.")
+    if brand_domain and source_domain == brand_domain:
+        return True
+    text = _compact_key(" ".join([url or "", canonical_url or "", title or ""]))
+    return any(_compact_key(alias) and _compact_key(alias) in text for alias in [project.brand_name, *loads(project.brand_aliases_json, [])])
+
+
+def _source_matches_selected_asset_ref(selected_asset_ref: dict, url: str, canonical_url: str, domain: str, title: str) -> bool:
+    if selected_asset_ref.get("asset_ref_type") != "PAGE_SNAPSHOT":
+        return False
+    targets = {
+        _normalize_source_url(selected_asset_ref.get("canonical_url") or ""),
+        _normalize_source_url(selected_asset_ref.get("url") or ""),
+    }
+    candidate_urls = {_normalize_source_url(url or ""), _normalize_source_url(canonical_url or "")}
+    if any(target and target in candidate_urls for target in targets):
+        return True
+    asset_domain = host_from_url(selected_asset_ref.get("canonical_url") or selected_asset_ref.get("url") or "").lower().removeprefix("www.")
+    source_domain = (domain or host_from_url(url or canonical_url or "") or "").lower().removeprefix("www.")
+    if asset_domain and source_domain == asset_domain:
+        text = _compact_key(" ".join([url or "", canonical_url or "", title or ""]))
+        title_key = _compact_key(selected_asset_ref.get("title") or "")
+        return bool(title_key and title_key in text)
+    return False
+
+
+def _get_or_create_step8_issue(
+    db: Session,
+    candidate: OptimizationStrategyCandidate,
+    package: OptimizationEvidencePackage,
+    prompt: Prompt | None,
+    strategy_snapshot: dict,
+    baseline_run_ids: list[int],
+) -> OptimizationIssue:
+    issue = OptimizationIssue(
+        project_id=candidate.project_id,
+        prompt_id=package.prompt_id,
+        issue_type="citation_strategy_execution_plan",
+        status="in_action",
+        severity=3,
+        confidence_level="medium",
+        analyzable_sample_count=len(baseline_run_ids),
+        observed_facts_json=dumps({
+            "strategy_candidate_id": candidate.id,
+            "evidence_package_id": package.id,
+            "prompt_text": prompt.prompt_text if prompt else "",
+            "gap_item_ids": (strategy_snapshot.get("effective_payload") or {}).get("gap_item_ids", []),
+        }),
+        possible_causes_json=dumps([(strategy_snapshot.get("effective_payload") or {}).get("hypothesized_cause", "")]),
+        diagnosis_summary=f"StrategyCandidate #{candidate.id} 已确认，进入 Step 8 实验方案草案。",
+        confirmed_at=datetime.utcnow(),
+    )
+    db.add(issue)
+    db.flush()
+    for run_id in baseline_run_ids:
+        db.add(OptimizationIssueRun(issue_id=issue.id, run_id=run_id, evidence_role="baseline"))
+    db.flush()
+    return issue
+
+
+def _create_step8_action(
+    db: Session,
+    issue: OptimizationIssue,
+    effective: dict,
+    selected_asset_ref: dict,
+    strategy_snapshot: dict,
+) -> OptimizationAction:
+    action_type = "content_update" if selected_asset_ref.get("asset_operation") == "UPDATE_EXISTING" else "content_create"
+    if (effective.get("proposed_direction") or "").upper() == "PRODUCT":
+        action_type = "product_review"
+    target_type = "owned_content" if selected_asset_ref.get("channel") in {"OFFICIAL_SITE", "PRODUCT_DOCS"} else "external_platform"
+    action = OptimizationAction(
+        issue_id=issue.id,
+        action_type=action_type,
+        target_type=target_type,
+        target_url=selected_asset_ref.get("canonical_url") or selected_asset_ref.get("url") or "",
+        status="PLANNED",
+        priority=2 if effective.get("priority") == "PRIORITY_HIGH" else 3,
+        owner="human",
+        action_summary=effective.get("recommended_action") or "已确认策略执行方案",
+        action_detail=effective.get("mechanism") or effective.get("core_mechanism") or "",
+        content_feature_changes_json=dumps(_normalize_feature_changes(effective.get("changed_features", []))),
+        planned_at=datetime.utcnow(),
+        release_evidence_json=dumps({
+            "strategy_candidate_id": strategy_snapshot.get("strategy_candidate_id"),
+            "selected_asset_ref": selected_asset_ref,
+            "step": "PHASE_4_EXECUTION_PLAN_DRAFT",
+        }),
+    )
+    db.add(action)
+    db.flush()
+    return action
+
+
+def _create_step8_experiment(
+    db: Session,
+    candidate: OptimizationStrategyCandidate,
+    package: OptimizationEvidencePackage,
+    prompt: Prompt | None,
+    action: OptimizationAction,
+    effective: dict,
+    strategy_snapshot: dict,
+    selected_asset_ref: dict,
+    baseline_run_ids: list[int],
+    baseline_metrics: dict,
+) -> OptimizationExperiment:
+    primary_metric = effective.get("target_metric") or effective.get("validation_metric") or "brand_recommendation_rate"
+    metric = (baseline_metrics.get("metrics") or {}).get(primary_metric) or {}
+    intervention_variables = {
+        "strategy_candidate_id": candidate.id,
+        "strategy_snapshot": json.loads(json.dumps(strategy_snapshot, ensure_ascii=False)),
+        "selected_asset_ref": json.loads(json.dumps(selected_asset_ref, ensure_ascii=False)),
+        "gap_diagnosis_refs": {
+            "gap_item_ids": effective.get("gap_item_ids", []),
+            "benchmark_evidence_ids": effective.get("benchmark_evidence_ids", []),
+            "product_truth_refs": effective.get("product_truth_refs", {}),
+            "relevant_asset_refs": effective.get("relevant_asset_refs", []),
+        },
+        "action_snapshot": _action_snapshot(action),
+    }
+    experiment = OptimizationExperiment(
+        action_id=action.id,
+        status="draft",
+        hypothesis=(effective.get("hypothesized_cause") or effective.get("observed_problem") or "")[:500],
+        hypothesis_type="strategy_execution_plan",
+        mechanism=(effective.get("mechanism") or effective.get("core_mechanism") or "")[:500],
+        intervention_family=effective.get("intervention_type") or "",
+        intervention_variables_json=dumps(intervention_variables),
+        allowed_changes_json=dumps(_normalize_feature_changes(effective.get("changed_features", []))),
+        forbidden_changes_json=dumps(["未完成人工 Release Audit 前不得标记已发布", "不得自动发布外部平台内容"]),
+        target_prompt_scope_json=dumps([prompt.id] if prompt else []),
+        control_prompt_scope_json=dumps([]),
+        sentinel_prompt_scope_json=dumps([]),
+        environment_scope_json=dumps({"platform": "wenxin", "source_type": "browser_audit"}),
+        sample_plan_json=dumps({"baseline_run_ids": baseline_run_ids, "validation_samples": 3, "collection_mode": "single_independent"}),
+        primary_metric=primary_metric,
+        secondary_metrics_json=dumps(["brand_candidate", "brand_recommendation", "target_reason_adoption", "selected_asset_retrieval_presence", "selected_asset_citation_presence"]),
+        baseline_numerator=metric.get("numerator"),
+        baseline_denominator=metric.get("denominator"),
+        baseline_metric_value=metric.get("value"),
+        target_prompt_ids_json=dumps([prompt.id] if prompt else []),
+        target_asset_ids_json=dumps([selected_asset_ref.get("asset_id")] if selected_asset_ref.get("asset_id") else []),
+        baseline_run_ids_json=dumps(baseline_run_ids),
+        baseline_metrics_json=dumps(baseline_metrics),
+        release_blocked=True,
+        release_blocked_reason="WAITING_FOR_RELEASE_AUDIT",
+        controlled_intervention_json=dumps({
+            "strategy_snapshot": strategy_snapshot,
+            "selected_asset_ref": selected_asset_ref,
+            "action_snapshot": _action_snapshot(action),
+            "baseline_run_ids": baseline_run_ids,
+            "baseline_metrics": baseline_metrics,
+        }),
+        channel=selected_asset_ref.get("channel", ""),
+        experiment_mode="PER_CHANNEL",
+        primary_benchmark_source_id=_primary_benchmark_source_id_from_strategy(effective),
+        benchmark_source_ids_json=dumps(_benchmark_source_ids_from_strategy(effective)),
+        target_reason_ids_json=dumps(effective.get("benchmark_evidence_ids", [])),
+        target_gap_ids_json=dumps(effective.get("gap_item_ids", [])),
+        hypothesis_text=(effective.get("mechanism") or effective.get("core_mechanism") or ""),
+        brief_json=dumps({
+            "strategy_candidate_id": candidate.id,
+            "selected_asset_ref": selected_asset_ref,
+            "strategy_snapshot": strategy_snapshot,
+            "baseline_metrics": baseline_metrics,
+        }),
+        target_asset_type=selected_asset_ref.get("asset_type", "TBD"),
+        target_asset_url=selected_asset_ref.get("canonical_url") or selected_asset_ref.get("url") or "",
+    )
+    db.add(experiment)
+    db.flush()
+    return experiment
+
+
+def _primary_benchmark_source_id_from_strategy(effective: dict) -> int | None:
+    source_ids = _benchmark_source_ids_from_strategy(effective)
+    return source_ids[0] if source_ids else None
+
+
+def _benchmark_source_ids_from_strategy(effective: dict) -> list[int]:
+    ids = []
+    for item in effective.get("target_capabilities") or []:
+        benchmark = item.get("benchmark_source") if isinstance(item, dict) else None
+        if isinstance(benchmark, dict) and benchmark.get("source_document_id"):
+            ids.append(int(benchmark["source_document_id"]))
+    for item in effective.get("relevant_asset_refs") or []:
+        if isinstance(item, dict) and item.get("source_document_id"):
+            ids.append(int(item["source_document_id"]))
+    summary = effective.get("evidence_summary") or {}
+    benchmark = summary.get("benchmark_source") if isinstance(summary, dict) else None
+    if isinstance(benchmark, dict) and benchmark.get("source_document_id"):
+        ids.append(int(benchmark["source_document_id"]))
+    return sorted(set(ids))
+
+
+def _action_snapshot(action: OptimizationAction) -> dict:
+    return {
+        "action_id": action.id,
+        "action_type": action.action_type,
+        "target_type": action.target_type,
+        "target_url": action.target_url,
+        "status": action.status,
+        "priority": action.priority,
+        "action_summary": action.action_summary,
+        "action_detail": action.action_detail,
+        "content_feature_changes": loads(action.content_feature_changes_json, []),
+        "snapshot_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _payload_value(payload, key: str, default=None):
+    if isinstance(payload, dict):
+        return payload.get(key, default)
+    return getattr(payload, key, default)
+
+
+def _normalize_int_list(value) -> list[int]:
+    result: list[int] = []
+    for item in value or []:
+        if item is None:
+            continue
+        number = int(item)
+        if number not in result:
+            result.append(number)
+    return result
+
+
 class LLMStrategyProvider:
     def __init__(self) -> None:
         settings = get_settings()

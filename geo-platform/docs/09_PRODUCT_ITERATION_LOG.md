@@ -2,6 +2,133 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Citation Decision V1.1 Phase 4 Execution Plan
+
+### Product Decision
+
+单 Prompt GEO 主链 V1 进入 Step 8 最小闭环：
+
+```text
+策略候选 + 策略确认
+-> 人工确认执行渠道与资产
+-> 创建实验草案
+```
+
+本次没有新增独立模块，也没有改变 8 步主链顺序。第 8 步仍属于：
+
+```text
+实验方案落地
+```
+
+### Preflight Result
+
+现有模型可以承载 V1 最小需求：
+
+```text
+PageSnapshot
+-> 已有品牌资产引用
+
+OptimizationStrategyCandidate.effective_payload_json
+-> Strategy 确认后的执行真值
+
+OptimizationExperiment.intervention_variables_json
+-> strategy_snapshot / selected_asset_ref / gap refs / action_snapshot
+
+OptimizationExperiment.baseline_run_ids_json
+OptimizationExperiment.baseline_metrics_json
+-> 固定 Baseline
+```
+
+因此本阶段不新增 `BrandAssetInventory` 大体系，不新增平行 Strategy 表。
+
+### Step 8 Semantics
+
+正式拆分：
+
+```text
+channel = 在哪里
+asset_operation = 更新已有资产或创建新资产
+selected_asset = 已有 PageSnapshot 资产引用或 NEW_ASSET proposal
+```
+
+不是：
+
+```text
+官网已有页面 / 官网新页面 = 两个 channel
+```
+
+### Gate
+
+后端锁死：
+
+```text
+ACCEPTED / ACCEPTED_WITH_EDITS
+= Strategy 已确认
+
+PENDING_HUMAN_CHANNEL_REVIEW
+= Strategy 已确认，但 Step 8 执行方案待人工确认
+```
+
+所以：
+
+```text
+ACCEPTED_WITH_EDITS + PENDING_HUMAN_CHANNEL_REVIEW
+-> 允许进入 Step 8
+
+PENDING_REVIEW
+-> 不允许进入 Step 8
+```
+
+Step 8 确认后才允许创建：
+
+```text
+OptimizationAction
+OptimizationExperiment draft
+```
+
+仍不允许自动发布、自动复采或宣称实验有效。
+
+### Prompt #40 Result
+
+真实回归：
+
+```text
+strategy_candidate_id = 41
+selected_asset_ref = PAGE_SNAPSHOT:3
+channel = OFFICIAL_SITE
+asset_operation = UPDATE_EXISTING
+baseline_run_ids = [238, 239, 240, 253, 254, 255]
+action_id = 30
+experiment_id = 30
+experiment_status = draft
+release_blocked_reason = WAITING_FOR_RELEASE_AUDIT
+```
+
+Baseline 属于 Experiment，不绑定到 Action：
+
+```text
+brand_mention = 0/6
+brand_candidate = 0/6
+brand_recommendation = 0/6
+target_reason_adoption = 0/6
+brand_retrieval_presence = 6/6
+brand_citation_presence = 0/6
+selected_asset_retrieval_presence = 0/6
+selected_asset_citation_presence = 0/6
+```
+
+### Current Boundary
+
+当前状态：
+
+```text
+PHASE_4_EXECUTION_PLAN_CHECKPOINT_READY
+STEP_9_NOT_STARTED
+```
+
+下一步若继续，应先把前端第 8 步接入新的 `execution-plan` API；不要再使用旧
+`experiment-plan` 自动转换入口表达 Step 8。
+
 ## 2026-08-27 Single Prompt GEO V1 Phase 0/1 Handoff
 
 ### Product Decision

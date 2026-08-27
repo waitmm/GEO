@@ -2,6 +2,81 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Citation Decision V1.1 Phase 4 Execution Plan
+
+- Completed the Phase 4 Preflight Audit inside the same product phase; no
+  additional product phase was introduced.
+- Reused existing objects instead of adding a parallel asset or strategy system:
+  - `PageSnapshot` as the stable existing asset reference.
+  - `OptimizationStrategyCandidate.effective_payload_json` as the Strategy
+    confirmation payload.
+  - `OptimizationAction` and `OptimizationExperiment` for Step 8 draft
+    materialization.
+  - `OptimizationExperiment.intervention_variables_json`,
+    `baseline_run_ids_json`, and `baseline_metrics_json` for frozen snapshots
+    and baseline state.
+- Added the Step 8 service/API:
+
+```text
+POST /optimization/strategy-candidates/{candidate_id}/execution-plan
+```
+
+- Added `StrategyExecutionPlanPayload` with separated execution semantics:
+
+```text
+channel = OFFICIAL_SITE / PRODUCT_DOCS / ZHIHU / BAIJIAHAO / THIRD_PARTY_MEDIA / OTHER
+asset_operation = UPDATE_EXISTING / CREATE_NEW
+selected_asset = PAGE_SNAPSHOT:<id> or NEW_ASSET proposal
+baseline_run_ids = explicit fixed Run IDs
+```
+
+- Locked the Step 7 -> Step 8 gate in backend code and tests:
+  - `ACCEPTED_WITH_EDITS + PENDING_HUMAN_CHANNEL_REVIEW` can enter Step 8.
+  - `PENDING_REVIEW` cannot enter Step 8.
+- Added `baseline_metrics_for_fixed_runs`; it requires explicit Run IDs and
+  separates brand-level from selected-asset-level retrieval/citation metrics.
+- Experiment draft creation now freezes the confirmed Step 8
+  `effective_payload` snapshot, selected asset reference, gap refs, action
+  snapshot, baseline Run IDs, and baseline metrics.
+- Added Prompt `#40` Phase 4 audit output:
+
+```text
+docs/PROMPT_40_PHASE4_EXECUTION_PLAN_AUDIT.md
+```
+
+- Added Phase 4 checkpoint:
+
+```text
+docs/CITATION_DECISION_V1_1_PHASE4_EXECUTION_PLAN_CHECKPOINT.md
+```
+
+- Prompt `#40` real regression created a draft experiment:
+
+```text
+strategy_candidate_id = 41
+action_id = 30
+experiment_id = 30
+experiment_status = draft
+release_blocked_reason = WAITING_FOR_RELEASE_AUDIT
+baseline_run_ids = [238, 239, 240, 253, 254, 255]
+```
+
+- Validation:
+
+```text
+.venv/bin/python -m compileall -q app scripts/audit_prompt40_phase4_execution_plan.py
+.venv/bin/python -m pytest -q tests/test_source_gap_v1.py tests/test_evidence_lineage_v1.py
+39 passed
+git diff --check passed
+```
+
+- Phase status:
+
+```text
+PHASE_4_EXECUTION_PLAN_CHECKPOINT_READY
+STEP_9_NOT_STARTED
+```
+
 ## 2026-08-27 Single Prompt GEO V1 Phase 0/1 Handoff
 
 - Added the review-only handoff document:

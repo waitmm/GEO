@@ -248,6 +248,19 @@ class StrategyCandidateReviewPayload(BaseModel):
     human_edited_payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class StrategyExecutionPlanPayload(BaseModel):
+    channel: str
+    asset_operation: str
+    baseline_run_ids: list[int]
+    confirmed_by: str = "human"
+    confirmation_note: str = ""
+    selected_asset_id: Optional[int] = None
+    selected_asset_type: str = "ARTICLE"
+    new_asset_proposal: dict[str, Any] = Field(default_factory=dict)
+    target_content_type: str = "ARTICLE"
+    target_object: str = ""
+
+
 class StrategyCandidateRead(BaseModel):
     id: int
     project_id: int

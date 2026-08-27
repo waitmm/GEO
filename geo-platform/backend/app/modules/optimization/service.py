@@ -31,6 +31,7 @@ from app.models import (
     PageSnapshot,
     Project,
     Prompt,
+    AnswerUnit,
     EvidenceAlignment,
     RecommendationClaim,
     RecommendationEvent,
@@ -49,6 +50,7 @@ from app.core.config import get_settings
 from app.modules.monitoring.enums import BROWSER_AUDIT_ENTRY_TYPE, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER
 from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.services import create_browser_task, update_task_status_from_runs
+from app.modules.optimization.passage_retrieval import ANSWER_BINDING_REASON_SOURCE, FORMAL_V1_1_INPUT_VERSION
 from app.modules.optimization.source_qualification import derive_content_status
 from app.services.serialization import dumps, loads
 
@@ -1960,13 +1962,19 @@ def citation_decision_vertical_slice(
     prompt_id: int,
     evidence_package_id: int | None = None,
     max_actions: int = 5,
+    use_answer_binding_v1_1: bool | None = None,
 ) -> dict:
     project = db.get(Project, project_id)
     prompt = db.get(Prompt, prompt_id)
     if not project or not prompt or prompt.project_id != project_id:
         raise HTTPException(status_code=404, detail="Project/Prompt 不存在")
+    use_v1_1 = (
+        get_settings().citation_decision_v1_1_formal_input_enabled
+        if use_answer_binding_v1_1 is None
+        else bool(use_answer_binding_v1_1)
+    )
     package = _resolve_vertical_slice_package(db, project_id, prompt_id, evidence_package_id)
-    rows = _source_analysis_for_package(db, project, prompt, package)
+    rows = _source_analysis_for_package(db, project, prompt, package, include_answer_binding_v1_1=use_v1_1)
     recommended_actions = [
         row["recommended_action"]
         for row in rows
@@ -1984,11 +1992,13 @@ def citation_decision_vertical_slice(
         "project_id": project_id,
         "prompt_id": prompt_id,
         "evidence_package_id": package.id,
+        "use_answer_binding_v1_1": use_v1_1,
         "context_identity": {
             "project_id": project_id,
             "prompt_id": prompt_id,
             "evidence_package_id": package.id,
             "analysis_version": VERTICAL_SLICE_VERSION,
+            "citation_decision_v1_1_formal_input": use_v1_1,
             "source_run_ids": loads(package.source_run_ids_json, []),
         },
         "status": "READY_FOR_HUMAN_CONFIRM" if recommended_actions else "NO_EXECUTABLE_RECOMMENDATION",
@@ -2017,6 +2027,7 @@ def confirm_citation_decision_vertical_slice(
         prompt_id,
         payload.get("evidence_package_id"),
         max_actions=int(payload.get("max_actions") or 5),
+        use_answer_binding_v1_1=payload.get("use_answer_binding_v1_1"),
     )
     actions = proposal["recommended_actions"]
     if selected_keys:
@@ -2106,13 +2117,22 @@ def _source_analysis_for_package(
     project: Project,
     prompt: Prompt,
     package: OptimizationEvidencePackage,
+    include_answer_binding_v1_1: bool = False,
 ) -> list[dict]:
     run_ids = loads(package.source_run_ids_json, [])
     runs = _runs_by_ids(db, run_ids, project.id)
     valid_run_ids = [run.id for run in runs if run.status in VALID_RUN_STATUSES]
     references = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(valid_run_ids)).all() if valid_run_ids else []
     retrievals = db.query(RetrievalCandidate).filter(RetrievalCandidate.run_id.in_(valid_run_ids)).all() if valid_run_ids else []
-    return source_analysis(db, project, prompt, runs, references, retrievals)
+    return source_analysis(
+        db,
+        project,
+        prompt,
+        runs,
+        references,
+        retrievals,
+        include_answer_binding_v1_1=include_answer_binding_v1_1,
+    )
 
 
 def _dedupe_channel_opportunities(rows: list[dict]) -> list[dict]:
@@ -2131,15 +2151,24 @@ def _dedupe_channel_opportunities(rows: list[dict]) -> list[dict]:
 
 
 def _vertical_slice_summary(rows: list[dict], actions: list[dict], channels: list[dict]) -> dict:
+    primary_count = sum(1 for row in rows if row.get("benchmark_tier") == "PRIMARY_BENCHMARK")
+    secondary_count = sum(1 for row in rows if row.get("benchmark_tier") == "SECONDARY_BENCHMARK")
+    benchmark_count = primary_count + secondary_count
+    if benchmark_count == 0:
+        boundary_note = "没有核心/辅助对标来源时允许 0 个推荐动作；不会用引用显著性或历史 RELATED 强行生成策略。"
+    elif not actions:
+        boundary_note = "已有核心/辅助对标来源，但 Product Truth、品牌资产或缺口判断未满足执行闸门，暂不生成推荐动作。"
+    else:
+        boundary_note = "推荐动作来自核心/辅助对标来源、具体 Product Truth 和缺口判断；仍需人工确认后才能进入实验草案。"
     return {
         "source_count": len(rows),
-        "primary_benchmark_count": sum(1 for row in rows if row.get("benchmark_tier") == "PRIMARY_BENCHMARK"),
-        "secondary_benchmark_count": sum(1 for row in rows if row.get("benchmark_tier") == "SECONDARY_BENCHMARK"),
+        "primary_benchmark_count": primary_count,
+        "secondary_benchmark_count": secondary_count,
         "priority_high_count": sum(1 for row in rows if row.get("priority_level") == "PRIORITY_HIGH"),
         "priority_medium_count": sum(1 for row in rows if row.get("priority_level") == "PRIORITY_MEDIUM"),
         "recommended_action_count": len(actions),
         "channel_opportunity_count": len(channels),
-        "boundary_note": "没有核心/辅助对标来源时允许 0 个推荐动作；不会用引用显著性或历史 RELATED 强行生成策略。",
+        "boundary_note": boundary_note,
     }
 
 
@@ -3707,6 +3736,7 @@ def source_analysis(
     runs: list[BrowserMonitorRun],
     references: list[ReferenceSource],
     retrievals: list[RetrievalCandidate],
+    include_answer_binding_v1_1: bool = False,
 ) -> list[dict]:
     prompt_text = (prompt.prompt_text if prompt else "") or " ".join(run.original_query for run in runs[:3])
     run_by_id = {run.id: run for run in runs}
@@ -3773,7 +3803,13 @@ def source_analysis(
         ))
     rows = _dedupe_source_analysis_rows(rows)
     rows = _enrich_source_rows_with_metadata(db, rows)
-    rows = _attach_decision_support_benchmarks(db, project, prompt, rows)
+    rows = _attach_decision_support_benchmarks(
+        db,
+        project,
+        prompt,
+        rows,
+        include_answer_binding_v1_1=include_answer_binding_v1_1,
+    )
     rows = _attach_source_gap_analysis(db, project, rows)
     rows = _attach_priority_action_routes(rows)
     rows = _attach_channel_opportunities(rows)
@@ -3893,6 +3929,8 @@ def _source_analysis_row(
         "gap_analysis_status": "NOT_ELIGIBLE",
         "matched_product_truth_ids": [],
         "matched_product_truth_status": "UNKNOWN",
+        "capability_truth_targets": [],
+        "unmatched_capability_truth_targets": [],
         "existing_asset_status": "UNKNOWN",
         "existing_asset_snapshot_id": None,
         "existing_asset_coverage": "UNKNOWN",
@@ -4004,6 +4042,7 @@ def _attach_decision_support_benchmarks(
     project: Project,
     prompt: Prompt | None,
     rows: list[dict],
+    include_answer_binding_v1_1: bool = False,
 ) -> list[dict]:
     if not rows or not prompt:
         return rows
@@ -4015,7 +4054,13 @@ def _attach_decision_support_benchmarks(
         return rows
 
     quality_by_doc_id = _latest_source_quality_by_doc_id(db, doc_ids)
-    support_by_doc_id = _decision_support_by_doc_id(db, project.id, prompt.id, doc_ids)
+    support_by_doc_id = _decision_support_by_doc_id(
+        db,
+        project.id,
+        prompt.id,
+        doc_ids,
+        include_answer_binding_v1_1=include_answer_binding_v1_1,
+    )
     for row in rows:
         doc = _source_document_for_row(row, doc_by_key)
         if not doc:
@@ -4079,6 +4124,7 @@ def _decision_support_by_doc_id(
     project_id: int,
     prompt_id: int,
     doc_ids: set[int],
+    include_answer_binding_v1_1: bool = False,
 ) -> dict[int, dict]:
     alignments = db.query(EvidenceAlignment).filter(
         EvidenceAlignment.project_id == project_id,
@@ -4086,6 +4132,12 @@ def _decision_support_by_doc_id(
         EvidenceAlignment.source_document_id.in_(doc_ids),
         EvidenceAlignment.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
     ).all()
+    if not include_answer_binding_v1_1:
+        alignments = [
+            alignment
+            for alignment in alignments
+            if not _is_answer_binding_v1_1_alignment(alignment)
+        ]
     event_ids = {alignment.recommendation_event_id for alignment in alignments if alignment.recommendation_event_id}
     events = db.query(RecommendationEvent).filter(RecommendationEvent.id.in_(event_ids)).all() if event_ids else []
     event_by_id = {event.id: event for event in events}
@@ -4135,6 +4187,14 @@ def _decision_support_from_alignments(items: list[tuple[EvidenceAlignment, Recom
         "contradicting_alignment_ids": [alignment.id for alignment in contradictions],
         "decision_support_basis": sorted(set(support_notes))[:8],
     }
+
+
+def _is_answer_binding_v1_1_alignment(alignment: EvidenceAlignment) -> bool:
+    payload = loads(alignment.machine_payload_json, {})
+    return (
+        payload.get("reason_source") == ANSWER_BINDING_REASON_SOURCE
+        or payload.get("formal_input_version") == FORMAL_V1_1_INPUT_VERSION
+    )
 
 
 def _decision_support_level_for_event(event: RecommendationEvent | None) -> str:
@@ -4260,18 +4320,30 @@ def _benchmark_evidence_by_alignment_id(db: Session, support_ids: set[int]) -> d
     alignments = db.query(EvidenceAlignment).filter(EvidenceAlignment.id.in_(support_ids)).all()
     claim_ids = {alignment.source_claim_id for alignment in alignments if alignment.source_claim_id}
     event_ids = {alignment.recommendation_event_id for alignment in alignments if alignment.recommendation_event_id}
+    payload_by_alignment_id = {alignment.id: loads(alignment.machine_payload_json, {}) for alignment in alignments}
+    answer_unit_ids = {
+        int(payload.get("answer_unit_id"))
+        for payload in payload_by_alignment_id.values()
+        if payload.get("answer_unit_id")
+    }
     claims = db.query(SourceClaim).filter(SourceClaim.id.in_(claim_ids)).all() if claim_ids else []
     events = db.query(RecommendationEvent).filter(RecommendationEvent.id.in_(event_ids)).all() if event_ids else []
+    units = db.query(AnswerUnit).filter(AnswerUnit.id.in_(answer_unit_ids)).all() if answer_unit_ids else []
     claim_by_id = {claim.id: claim for claim in claims}
     event_by_id = {event.id: event for event in events}
+    unit_by_id = {unit.id: unit for unit in units}
     result: dict[int, dict] = {}
     for alignment in alignments:
         claim = claim_by_id.get(alignment.source_claim_id)
         event = event_by_id.get(alignment.recommendation_event_id)
+        payload = payload_by_alignment_id.get(alignment.id, {})
+        answer_unit_id = int(payload.get("answer_unit_id") or 0)
+        unit = unit_by_id.get(answer_unit_id)
         result[alignment.id] = {
             "alignment_id": alignment.id,
             "source_claim_id": alignment.source_claim_id,
             "recommendation_event_id": alignment.recommendation_event_id,
+            "run_id": alignment.run_id,
             "claim_text": claim.normalized_claim if claim else "",
             "source_span": claim.source_span if claim else "",
             "claim_subject": claim.subject_entity if claim else "",
@@ -4280,6 +4352,14 @@ def _benchmark_evidence_by_alignment_id(db: Session, support_ids: set[int]) -> d
             "event_entity": event.entity_text if event else "",
             "event_answer_span": event.answer_span if event else "",
             "event_reasons": loads(event.reasons_json, []) if event else [],
+            "answer_unit_id": answer_unit_id or None,
+            "answer_unit_text": (unit.unit_text_normalized or unit.unit_text_original) if unit else "",
+            "decision_binding_id": payload.get("decision_binding_id"),
+            "reason_source": payload.get("reason_source"),
+            "formal_input_version": payload.get("formal_input_version"),
+            "observed_run_ids": payload.get("observed_run_ids") or [alignment.run_id],
+            "run_coverage_count": payload.get("run_coverage_count") or 1,
+            "run_coverage_denominator": payload.get("run_coverage_denominator") or 1,
         }
     return result
 
@@ -4337,15 +4417,37 @@ def _source_gap_for_benchmark(
     truths: list[TargetBrandCapabilityTruth],
     asset: dict,
 ) -> dict:
+    capability_targets = _benchmark_capability_targets(benchmark_items)
     suggested_capability_label = _suggested_capability_label_for_benchmark(benchmark_items)
     benchmark_text = _benchmark_evidence_text(benchmark_items)
     if not benchmark_text:
         return {
             **_blocked_source_gap_payload("BENCHMARK_EVIDENCE_INSUFFICIENT", "对标来源缺少可解释的支持文本，暂不生成缺口。"),
             "suggested_capability_label": suggested_capability_label,
+            "capability_truth_targets": capability_targets,
+            "unmatched_capability_truth_targets": [],
         }
 
-    matched_truths = _match_product_truths(benchmark_text, truths)
+    if capability_targets:
+        matched_truths, unmatched_targets = _match_product_truths_for_capability_targets(capability_targets, truths)
+    else:
+        matched_truths = _match_product_truths(benchmark_text, truths)
+        unmatched_targets = []
+    if unmatched_targets:
+        return {
+            **_source_gap_payload(
+            gap_type="UNKNOWN",
+            precondition="PRODUCT_TRUTH_UNKNOWN",
+            reason="对标证据中的具体能力尚未匹配到同粒度目标品牌事实，不能生成推荐动作。",
+            basis=[f"待确认目标品牌事实: {target}" for target in unmatched_targets[:6]],
+            truths=matched_truths,
+            asset=asset,
+            coverage="UNKNOWN",
+            ),
+            "suggested_capability_label": suggested_capability_label,
+            "capability_truth_targets": capability_targets,
+            "unmatched_capability_truth_targets": unmatched_targets,
+        }
     if not matched_truths:
         return {
             **_source_gap_payload(
@@ -4358,6 +4460,8 @@ def _source_gap_for_benchmark(
             coverage="UNKNOWN",
             ),
             "suggested_capability_label": suggested_capability_label,
+            "capability_truth_targets": capability_targets,
+            "unmatched_capability_truth_targets": [],
         }
     status = _combined_product_truth_status(matched_truths)
     if status == "FALSE":
@@ -4372,6 +4476,8 @@ def _source_gap_for_benchmark(
             coverage="NOT_APPLICABLE",
             ),
             "suggested_capability_label": suggested_capability_label,
+            "capability_truth_targets": capability_targets,
+            "unmatched_capability_truth_targets": [],
         }
     if status == "UNKNOWN":
         return {
@@ -4385,6 +4491,8 @@ def _source_gap_for_benchmark(
             coverage="UNKNOWN",
             ),
             "suggested_capability_label": suggested_capability_label,
+            "capability_truth_targets": capability_targets,
+            "unmatched_capability_truth_targets": [],
         }
     if asset.get("status") != "AVAILABLE":
         return {
@@ -4398,6 +4506,8 @@ def _source_gap_for_benchmark(
             coverage="UNKNOWN",
             ),
             "suggested_capability_label": suggested_capability_label,
+            "capability_truth_targets": capability_targets,
+            "unmatched_capability_truth_targets": [],
         }
 
     coverage = _existing_asset_coverage(asset.get("text", ""), benchmark_text, matched_truths)
@@ -4413,6 +4523,8 @@ def _source_gap_for_benchmark(
             coverage=coverage,
             ),
             "suggested_capability_label": suggested_capability_label,
+            "capability_truth_targets": capability_targets,
+            "unmatched_capability_truth_targets": [],
         }
     if coverage == "CLAIM_ONLY":
         return {
@@ -4426,6 +4538,8 @@ def _source_gap_for_benchmark(
             coverage=coverage,
             ),
             "suggested_capability_label": suggested_capability_label,
+            "capability_truth_targets": capability_targets,
+            "unmatched_capability_truth_targets": [],
         }
     return {
         **_source_gap_payload(
@@ -4438,6 +4552,8 @@ def _source_gap_for_benchmark(
             coverage=coverage,
         ),
         "suggested_capability_label": suggested_capability_label,
+        "capability_truth_targets": capability_targets,
+        "unmatched_capability_truth_targets": [],
     }
 
 
@@ -4455,8 +4571,40 @@ def _benchmark_evidence_text(items: list[dict]) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def _benchmark_capability_targets(items: list[dict]) -> list[dict]:
+    targets: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        candidates = [
+            (item.get("answer_unit_text", ""), "ANSWER_UNIT"),
+            *[(text, "RECOMMENDATION_REASON") for text in _relevant_event_reason_texts(item)],
+            (item.get("claim_object", ""), "SOURCE_CLAIM_OBJECT"),
+        ]
+        for candidate, source in candidates:
+            label = _compact_capability_label(candidate, items)
+            key = _compact_key(label)
+            if not key:
+                continue
+            if key not in seen:
+                seen.add(key)
+                targets.append({
+                    "label": label,
+                    "source": source,
+                    "answer_unit_id": item.get("answer_unit_id"),
+                    "alignment_id": item.get("alignment_id"),
+                    "observed_run_ids": item.get("observed_run_ids") or [],
+                    "run_coverage_count": item.get("run_coverage_count") or 1,
+                })
+            break
+    return targets[:8]
+
+
 def _suggested_capability_label_for_benchmark(items: list[dict]) -> str:
     labels: list[str] = []
+    for target in _benchmark_capability_targets(items):
+        label = target.get("label")
+        if label and label not in labels:
+            labels.append(label)
     for item in items:
         relevant_reasons = _relevant_event_reason_texts(item)
         candidates = relevant_reasons or [
@@ -4530,7 +4678,7 @@ _CAPABILITY_MATCH_TOKENS = [
 
 
 def _compact_capability_label(text: str, items: list[dict]) -> str:
-    value = (text or "").strip()
+    value = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text or "").strip()
     if not value:
         return ""
     for item in items:
@@ -4542,7 +4690,7 @@ def _compact_capability_label(text: str, items: list[dict]) -> str:
     value = re.sub(r"(已服务|服务)\s*\d+\s*(家|个|位)?客户?", "", value)
     value = re.sub(r"成功率\s*\d+[%％]", "", value)
     value = re.sub(r"\d+\s*(家|个|次|天|小时|分钟|秒|%|％)", "", value)
-    value = re.sub(r"(支持|具备|提供|可以|能够|实现|适合|并有|显示|证明)", "", value)
+    value = re.sub(r"(支持|具备|提供|可以|能够|实现|适合|并有|显示|证明|自带)", "", value)
     value = re.sub(r"[：:，,。；;、（）()【】\\[\\]\"'“”]+", " ", value)
     words = [word.strip() for word in value.split() if word.strip()]
     compact = "".join(words)
@@ -4563,6 +4711,43 @@ def _match_product_truths(benchmark_text: str, truths: list[TargetBrandCapabilit
         ):
             matches.append(truth)
     return matches
+
+
+def _match_product_truths_for_capability_targets(
+    targets: list[dict],
+    truths: list[TargetBrandCapabilityTruth],
+) -> tuple[list[TargetBrandCapabilityTruth], list[str]]:
+    matches: list[TargetBrandCapabilityTruth] = []
+    unmatched: list[str] = []
+    seen_truth_ids: set[int] = set()
+    for target in targets:
+        label = str(target.get("label") or "")
+        target_matches = [
+            truth
+            for truth in truths
+            if _product_truth_matches_capability_label(label, truth)
+        ]
+        if not target_matches:
+            unmatched.append(label)
+            continue
+        for truth in target_matches:
+            if truth.id not in seen_truth_ids:
+                seen_truth_ids.add(truth.id)
+                matches.append(truth)
+    return matches, unmatched
+
+
+def _product_truth_matches_capability_label(label: str, truth: TargetBrandCapabilityTruth) -> bool:
+    target_key = _compact_key(label)
+    if not target_key:
+        return False
+    needles = [_compact_key(truth.capability_label), _compact_key(truth.capability_key)]
+    for needle in needles:
+        if not needle:
+            continue
+        if needle in target_key or target_key in needle:
+            return True
+    return False
 
 
 def _capability_token_match(needle: str, haystack: str) -> bool:
@@ -4613,7 +4798,8 @@ def _has_evidence_strength_signal(text: str) -> bool:
 
 
 def _compact_key(value: str) -> str:
-    return re.sub(r"[\s\W_]+", "", (value or "").lower())
+    cleaned = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", value or "")
+    return re.sub(r"[\s\W_]+", "", cleaned.lower())
 
 
 def _not_eligible_source_gap_payload(precondition: str, reason: str) -> dict:
@@ -4626,6 +4812,8 @@ def _not_eligible_source_gap_payload(precondition: str, reason: str) -> dict:
         "gap_analysis_status": "NOT_ELIGIBLE",
         "matched_product_truth_ids": [],
         "matched_product_truth_status": "UNKNOWN",
+        "capability_truth_targets": [],
+        "unmatched_capability_truth_targets": [],
         "existing_asset_status": "UNKNOWN",
         "existing_asset_snapshot_id": None,
         "existing_asset_coverage": "UNKNOWN",
@@ -4642,6 +4830,8 @@ def _blocked_source_gap_payload(precondition: str, reason: str) -> dict:
         "gap_analysis_status": "BLOCKED",
         "matched_product_truth_ids": [],
         "matched_product_truth_status": "UNKNOWN",
+        "capability_truth_targets": [],
+        "unmatched_capability_truth_targets": [],
         "existing_asset_status": "UNKNOWN",
         "existing_asset_snapshot_id": None,
         "existing_asset_coverage": "UNKNOWN",

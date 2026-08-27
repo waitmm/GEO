@@ -1130,3 +1130,67 @@ Validation performed:
 - Replaced user-facing `Benchmark` copy in the activated action/gap path with
   Chinese labels such as `对标来源` / `对标证据`; internal enum names remain
   unchanged.
+
+## 2026-08-27 Citation Decision V1.1 Phase 1.1 Closure
+
+- Closed the Phase 1.1 blockers before any Phase 2 multi-Prompt expansion.
+- Fixed formal multi-Run evidence preservation:
+  - formal `EvidenceAlignment` still deduplicates semantic reason judging for
+    efficiency;
+  - each Run/Binding observation is now written as an explicit formal alignment
+    row;
+  - V1.1-derived alignment payload records `observed_run_ids`,
+    `observed_event_ids`, `observed_answer_unit_ids`,
+    `observed_decision_binding_ids`, `run_coverage_count`, and
+    `run_coverage_denominator`.
+- Upgraded `use_answer_binding_v1_1` into a true read/write isolation switch:
+  - when disabled, formal generation does not consume Answer Binding inputs;
+  - Citation Decision read path also ignores existing formal rows marked
+    `reason_source = ANSWER_DECISION_BINDING` or
+    `formal_input_version = citation_decision_v1_1_formal_input.v1`;
+  - existing DB rows are kept for audit and rollback.
+- Fixed the runner/Layer3 interface drift:
+  - `run_reason_driven_retrieval(..., doc_id_filter=...)` is now a real
+    supported parameter;
+  - `run_source_claim_extraction` and `run_evidence_alignment` pass the same
+    document scope through the chain.
+- Added capability-level Product Truth gating for action generation:
+  - Benchmark evidence from `AnswerUnit` now produces concrete
+    `capability_truth_targets`;
+  - broad facts such as `短链生成` no longer allow actions for finer abilities
+    such as `点击统计` or `自定义分享标题`;
+  - unmatched concrete abilities keep Source Gap at `UNKNOWN`, Priority at
+    `UNRESOLVED`, and block recommended actions.
+- Updated Citation Decision summary copy so it distinguishes:
+  - no eligible Benchmark;
+  - eligible Benchmark present but execution gates are not satisfied;
+  - recommended actions available for human confirmation.
+- This change does not alter the single Prompt workflow order and does not
+  start Phase 2.
+
+Validation performed:
+
+- `.venv/bin/python -m compileall -q app` passed.
+- `.venv/bin/python -m pytest -q tests/test_answer_evidence_shadow.py tests/test_source_gap_v1.py` passed:
+  `39 passed`.
+- `.venv/bin/python -m pytest -q tests/test_evidence_alignment.py tests/test_source_claim.py` passed:
+  `11 passed`.
+- Prompt `#40` Phase 1.1 formal rerun:
+  - command:
+    `.venv/bin/python scripts/run_single_case_evidence.py --project-id 3 --prompt-id 40 --run-ids 238,239,240,253,254,255 --stage 5 --use-answer-binding-v1-1 --doc-id-filter 345`
+  - `unique_reasons = 5`
+  - `reason_observations = 30`
+  - `answer_binding_candidates = 30`
+  - `alignments_created = 300`
+  - `judge_calls = 50`
+  - `errors = []`
+- Prompt `#40` post-rerun audit:
+  - formal `EvidenceAlignment` for Prompt `#40` = `660`;
+  - `SUPPORTS = 36`, distributed evenly across Runs
+    `238,239,240,253,254,255`;
+  - V1.1 OFF -> `0` Primary Benchmark and `0` recommended actions;
+  - V1.1 ON -> `1` Primary Benchmark and `0` recommended actions because
+    concrete Product Truth is missing for `点击统计`, `自定义分享标题`,
+    and `营销场景使用`;
+  - V1.1 OFF again -> restored to `0` Primary Benchmark and `0` recommended
+    actions without deleting DB rows.

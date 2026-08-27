@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Organization, Project, TargetBrandCapabilityTruth
 from app.models import (
+    AnswerUnit,
     BrowserMonitorRun,
     BrowserMonitorTask,
     EvidenceAlignment,
@@ -19,6 +20,7 @@ from app.models import (
     SourceDocument,
     SourceQuality,
 )
+from app.modules.optimization.passage_retrieval import ANSWER_BINDING_REASON_SOURCE, FORMAL_V1_1_INPUT_VERSION
 from app.modules.optimization.service import (
     _attach_priority_action_routes,
     _attach_source_gap_analysis,
@@ -122,6 +124,40 @@ def test_source_gap_no_gap_when_truth_and_asset_cover_key_evidence():
 
     assert payload["source_gap_type"] == "NO_GAP"
     assert payload["existing_asset_coverage"] == "SUFFICIENT"
+
+
+def test_source_gap_requires_capability_level_product_truth_for_answer_unit():
+    payload = _source_gap_for_benchmark(
+        [{
+            **_benchmark("点击统计")[0],
+            "event_entity": "小码短链接",
+            "answer_unit_id": 101,
+            "answer_unit_text": "小码短链接自带点击统计",
+        }],
+        [_truth("SUPPORTED", "短链生成")],
+        _asset("爱短链支持短链生成。"),
+    )
+
+    assert payload["source_gap_type"] == "UNKNOWN"
+    assert payload["source_gap_precondition"] == "PRODUCT_TRUTH_UNKNOWN"
+    assert payload["matched_product_truth_ids"] == []
+    assert payload["unmatched_capability_truth_targets"] == ["点击统计"]
+
+
+def test_source_gap_accepts_exact_capability_level_product_truth_for_answer_unit():
+    payload = _source_gap_for_benchmark(
+        [{
+            **_benchmark("点击统计")[0],
+            "event_entity": "小码短链接",
+            "answer_unit_id": 101,
+            "answer_unit_text": "小码短链接自带点击统计",
+        }],
+        [_truth("SUPPORTED", "点击统计")],
+        _asset("爱短链官网介绍品牌服务。"),
+    )
+
+    assert payload["source_gap_type"] == "CONTENT_GAP"
+    assert payload["matched_product_truth_ids"] == [1]
 
 
 def test_benchmark_suggests_compact_capability_label_not_full_title():
@@ -447,6 +483,157 @@ def _vertical_slice_fixture(db):
     return project, prompt, package
 
 
+def _vertical_slice_v1_1_only_fixture(db):
+    project = Project(
+        id=12,
+        organization_id=1,
+        name="爱短链品牌监测",
+        brand_name="爱短链",
+        website_url="https://www.aifabu.com",
+    )
+    prompt = Prompt(id=45, project_id=12, prompt_text="短链工具推荐", title="短链工具推荐")
+    task = BrowserMonitorTask(id=2, project_id=12, question_ids_json="[45]", status="completed")
+    run = BrowserMonitorRun(
+        id=102,
+        task_id=2,
+        project_id=12,
+        prompt_id=45,
+        status="success",
+        original_query=prompt.prompt_text,
+        answer_text="推荐 ToolX，它自带点击统计。",
+        reference_complete=True,
+        parsed_reference_count=1,
+        ui_declared_count=1,
+    )
+    ref = ReferenceSource(
+        id=202,
+        run_id=102,
+        reference_index=1,
+        display_title="知乎短链工具推荐",
+        url="https://zhuanlan.zhihu.com/p/test",
+        canonical_url="https://zhuanlan.zhihu.com/p/test",
+        domain="zhuanlan.zhihu.com",
+    )
+    doc = SourceDocument(
+        id=302,
+        url=ref.url,
+        canonical_url=ref.canonical_url,
+        domain=ref.domain,
+        fetch_status="success",
+        title=ref.display_title,
+        clean_text="ToolX 可以查看每个链接的访问量、点击次数等数据。",
+    )
+    quality = SourceQuality(
+        id=402,
+        source_document_id=302,
+        content_quality_status="CONTENT_VALID",
+        clean_text_hash="h2",
+        extractor_version="test",
+    )
+    event = RecommendationEvent(
+        id=502,
+        project_id=12,
+        prompt_id=45,
+        run_id=102,
+        answer_hash="answer-2",
+        entity_text="ToolX",
+        speech_act="RECOMMEND",
+        recommendation_strength="STRONG",
+        polarity="POSITIVE",
+        answer_span="推荐 ToolX，它自带点击统计。",
+        reasons_json=dumps([]),
+        review_status="MACHINE_GROUNDED",
+    )
+    unit = AnswerUnit(
+        id=602,
+        shadow_run_id=1,
+        project_id=12,
+        prompt_id=45,
+        run_id=102,
+        answer_claim_id=1,
+        unit_text_original="ToolX 自带点击统计",
+        unit_text_normalized="ToolX 自带点击统计",
+        source_span="ToolX 自带点击统计",
+        entity_hint="ToolX",
+    )
+    claim = SourceClaim(
+        id=603,
+        project_id=12,
+        source_document_id=302,
+        subject_entity="ToolX",
+        normalized_claim="ToolX 可以查看每个链接的访问量、点击次数等数据。",
+        predicate="支持",
+        object_text="点击统计",
+        source_span="可以查看每个链接的访问量、点击次数等数据。",
+        review_status="MACHINE_GROUNDED",
+    )
+    alignment = EvidenceAlignment(
+        id=702,
+        project_id=12,
+        prompt_id=45,
+        run_id=102,
+        recommendation_event_id=502,
+        recommendation_reason_id="answer_unit:602",
+        source_document_id=302,
+        source_claim_id=603,
+        relation="SUPPORTS",
+        scope_relation="PASS",
+        review_status="MACHINE_GROUNDED",
+        machine_payload_json=dumps({
+            "reason_source": ANSWER_BINDING_REASON_SOURCE,
+            "formal_input_version": FORMAL_V1_1_INPUT_VERSION,
+            "answer_unit_id": 602,
+            "observed_run_ids": [102],
+            "run_coverage_count": 1,
+            "run_coverage_denominator": 1,
+        }),
+    )
+    truth = TargetBrandCapabilityTruth(
+        id=802,
+        project_id=12,
+        capability_key="点击统计",
+        capability_label="点击统计",
+        product_truth_status="SUPPORTED",
+    )
+    asset = PageSnapshot(
+        id=902,
+        project_id=12,
+        target_url="https://www.aifabu.com",
+        url="https://www.aifabu.com",
+        final_url="https://www.aifabu.com",
+        canonical_url="https://www.aifabu.com",
+        capture_status="success",
+        snapshot_type="PRE_RELEASE",
+        raw_html="<html>爱短链官网</html>",
+        title="爱短链",
+        h1="爱短链",
+        main_text="爱短链官网介绍短链接管理、推广落地页、访问分析入口和品牌联系方式，暂未覆盖该对标能力。",
+    )
+    db.add_all([
+        Organization(id=1, name="测试组织"),
+        project,
+        prompt,
+        task,
+        run,
+        ref,
+        doc,
+        quality,
+        event,
+        unit,
+        claim,
+        alignment,
+        truth,
+        asset,
+    ])
+    db.commit()
+    package = create_evidence_package(
+        db,
+        project.id,
+        EvidencePackageCreate(prompt_id=prompt.id, run_ids=[run.id], target_page_urls=[]),
+    )
+    return project, prompt, package
+
+
 def test_vertical_slice_proposes_action_channel_and_experiment():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
@@ -480,6 +667,37 @@ def test_vertical_slice_proposes_action_channel_and_experiment():
         assert experiment.channel == "ZHIHU"
         assert experiment.experiment_mode == "PER_CHANNEL"
         assert experiment.release_blocked is True
+    finally:
+        db.close()
+
+
+def test_vertical_slice_feature_flag_controls_v1_1_read_path():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _vertical_slice_v1_1_only_fixture(db)
+
+        off = citation_decision_vertical_slice(
+            db,
+            project.id,
+            prompt.id,
+            package.id,
+            use_answer_binding_v1_1=False,
+        )
+        on = citation_decision_vertical_slice(
+            db,
+            project.id,
+            prompt.id,
+            package.id,
+            use_answer_binding_v1_1=True,
+        )
+
+        assert off["summary"]["primary_benchmark_count"] == 0
+        assert off["recommended_actions"] == []
+        assert on["summary"]["primary_benchmark_count"] == 1
+        assert on["recommended_actions"][0]["route"] == "CONTENT"
+        assert on["source_analysis"][0]["capability_truth_targets"][0]["label"] == "点击统计"
     finally:
         db.close()
 

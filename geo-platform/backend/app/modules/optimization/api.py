@@ -282,9 +282,16 @@ def citation_decision_vertical_slice_endpoint(
     project_id: int,
     prompt_id: int,
     evidence_package_id: int | None = None,
+    use_answer_binding_v1_1: bool | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
-    return citation_decision_vertical_slice(db, project_id, prompt_id, evidence_package_id)
+    return citation_decision_vertical_slice(
+        db,
+        project_id,
+        prompt_id,
+        evidence_package_id,
+        use_answer_binding_v1_1=use_answer_binding_v1_1,
+    )
 
 
 @router.post("/projects/{project_id}/prompts/{prompt_id}/citation-decision-v1/confirm")

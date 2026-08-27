@@ -1,7 +1,12 @@
 # Prompt #40 Citation Decision V1.1 Phase 1 正式结果审计
 
-状态：待评审
-日期：2026-08-26
+状态：Phase 1.1 已收口，待评审
+日期：2026-08-27
+
+> 2026-08-27 更新：本文第 2-11 节保留 2026-08-26 首次 Phase 1 审计发现，
+> 其中 `SUPPORTS 全来自 Run #238`、`feature flag 只控生成不控读取`、`Product Truth
+> 粒度偏粗仍放行动作`、`doc_id_filter 接口漂移` 已在 Phase 1.1 修复。新的当前结论以
+> 第 12 节为准。
 
 ## 1. 审计边界
 
@@ -420,3 +425,223 @@ Product Truth 粒度与动作粒度一致
 Layer3 doc_id_filter 接口漂移
 ```
 
+## 12. Phase 1.1 收口审计
+
+日期：2026-08-27
+
+本节审计 Phase 1.1 的修复结果，目标是先收口：
+
+```text
+多 Run 证据稳定性
+正式链可回滚性
+Product Truth 到 Action 的能力级闭环
+Layer3 doc_id_filter 接口一致性
+```
+
+本轮没有改变单 Prompt 主链顺序，没有进入 Phase 2，也没有批准全量历史重跑。
+
+### 12.1 本轮修复内容
+
+```text
+1. 正式 EvidenceAlignment 保留 semantic reason 去重，但按 observation 写入每个 Run。
+2. EvidenceAlignment payload 增加 observed_run_ids / run_coverage_count / observed_binding_ids。
+3. use_answer_binding_v1_1 同时控制正式生成路径和 Citation Decision 读取路径。
+4. run_reason_driven_retrieval 正式接收 doc_id_filter，并传递到 SourceClaim / Alignment runner。
+5. 推荐动作前增加 capability-level Product Truth Gate。
+6. Citation Decision summary 文案区分：
+   0 Benchmark
+   vs
+   有 Benchmark 但 Product Truth / 资产 / 缺口未满足执行闸门。
+```
+
+### 12.2 Prompt #40 正式重跑
+
+执行命令：
+
+```bash
+.venv/bin/python scripts/run_single_case_evidence.py \
+  --project-id 3 \
+  --prompt-id 40 \
+  --run-ids 238,239,240,253,254,255 \
+  --stage 5 \
+  --use-answer-binding-v1-1 \
+  --doc-id-filter 345
+```
+
+运行结果：
+
+```text
+unique_reasons = 5
+reason_observations = 30
+legacy_event_reasons = 0
+answer_binding_reasons = 5
+answer_binding_candidates = 30
+phase1_cited_source_claim_scope = 26
+doc_id_filter = [345]
+alignments_created = 300
+judge_calls = 50
+competitor_context = 360
+errors = []
+```
+
+解释：
+
+```text
+语义理由仍按 5 个 AnswerUnit 去重判断；
+30 个 Binding observation 全部保留；
+LLM Judge 对同一语义理由 x 同一 SourceClaim 只判断一次；
+写入时按 6 个 Run 的 observation 展开正式 EvidenceAlignment。
+```
+
+### 12.3 正式 EvidenceAlignment 当前状态
+
+```text
+formal EvidenceAlignment for Prompt #40 = 660
+RELATED = 594
+NONE = 30
+SUPPORTS = 36
+```
+
+SUPPORTS Run 覆盖：
+
+```text
+Run #238: 6
+Run #239: 6
+Run #240: 6
+Run #253: 6
+Run #254: 6
+Run #255: 6
+```
+
+这修复了首次 Phase 1 的错误状态：
+
+```text
+之前：SUPPORTS = 6，全部来自 Run #238
+现在：SUPPORTS = 36，6 个 Run 均有正式 SUPPORTS observation
+```
+
+### 12.4 语义证据矩阵
+
+| AnswerUnit | SUPPORTS 行数 | 覆盖 Run | SourceClaim 数 | 代表来源主张 |
+| --- | ---: | ---: | ---: | --- |
+| 小码短链接自带点击统计 | 12 | 6/6 | 2 | 小码短链接自带数据统计功能 |
+| 小码短链接自带自定义分享标题 | 6 | 6/6 | 1 | 小码短链接的自定义分享功能支持设置标题和描述 |
+| 小码短链接适合营销场景使用 | 18 | 6/6 | 3 | 小码短链接的自定义分享功能能增加用户点击兴趣 |
+
+重要解释：
+
+```text
+36 条 SUPPORTS 不是 36 个独立策略理由。
+它表达的是 3 个答案能力单元，在 6/6 Run 中稳定出现，并分别被 1-3 个 grounded SourceClaim 支撑。
+```
+
+### 12.5 Feature Flag 读写隔离审计
+
+当前 `use_answer_binding_v1_1` 已升级为真正的读写隔离开关。
+
+OFF：
+
+```text
+status = NO_EXECUTABLE_RECOMMENDATION
+primary_benchmark_count = 0
+secondary_benchmark_count = 0
+recommended_action_count = 0
+```
+
+ON：
+
+```text
+status = NO_EXECUTABLE_RECOMMENDATION
+primary_benchmark_count = 1
+secondary_benchmark_count = 0
+recommended_action_count = 0
+```
+
+再次 OFF：
+
+```text
+status = NO_EXECUTABLE_RECOMMENDATION
+primary_benchmark_count = 0
+secondary_benchmark_count = 0
+recommended_action_count = 0
+```
+
+结论：
+
+```text
+OFF 不删除 V1.1 正式 EvidenceAlignment；
+但 Citation Decision 读取路径会忽略
+reason_source = ANSWER_DECISION_BINDING
+或 formal_input_version = citation_decision_v1_1_formal_input.v1
+的正式对齐结果。
+```
+
+### 12.6 Product Truth 能力级动作闸门
+
+V1.1 ON 时，Prompt #40 当前得到 1 个核心对标来源：
+
+```text
+source_document_id = 345
+title = 如何将长链接缩短-小码至营
+decision_support_level = RECOMMENDATION_REASON
+benchmark_tier = PRIMARY_BENCHMARK
+```
+
+但没有推荐动作，因为对标证据暴露出的具体能力未被目标品牌事实覆盖：
+
+```text
+待确认能力:
+- 点击统计
+- 自定义分享标题
+- 营销场景使用
+```
+
+当前目标品牌事实只有：
+
+```text
+抖音跳转微信 = SUPPORTED
+短链生成 = SUPPORTED
+加粉数据回传优化投放效果 = SUPPORTED
+```
+
+因此 Source Gap 保守输出：
+
+```text
+source_gap_type = UNKNOWN
+source_gap_precondition = PRODUCT_TRUTH_UNKNOWN
+priority_level = UNRESOLVED
+action_route = UNRESOLVED
+recommended_action_count = 0
+```
+
+这修复了首次 Phase 1 的动作偏差：
+
+```text
+之前：短链生成 这个宽泛 Product Truth 放行了 点击统计/自定义分享标题 的内容动作。
+现在：只有同粒度 Product Truth 才能放行动作；否则先要求人工补事实。
+```
+
+### 12.7 当前结论
+
+```text
+PHASE_1_1_FORMAL_CHAIN_ROLLBACK_AND_CAPABILITY_GATE_READY = true
+READY_FOR_PHASE_2_MULTI_PROMPT = false
+```
+
+可以确认：
+
+```text
+1. #40 正式 Evidence 的 run coverage 已解释清楚并修复。
+2. V1.1 flag 可以真实 ON/OFF 回滚正式 Citation Decision 输出。
+3. runner / Layer3 doc_id_filter 接口已一致。
+4. Product Truth 已按具体能力约束推荐动作。
+5. #40 重跑稳定得到 1 个核心对标，但因 Product Truth 缺失不生成动作。
+```
+
+进入 Phase 2 前仍需：
+
+```text
+1. 由人工补齐或确认 #40 暴露的目标品牌具体能力事实。
+2. 再次重跑 #40，验证 Product Truth 补齐后 Gap / Action 是否合理。
+3. 创建 checkpoint commit 后，再选择 3-5 个不同类型 Prompt 做泛化验证。
+```

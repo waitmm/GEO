@@ -8,6 +8,7 @@ from app.models import (
     AnswerClaim,
     AnswerDecisionBinding,
     AnswerEvidenceShadowResult,
+    AnswerEvidenceShadowRun,
     AnswerUnit,
     Base,
     BrowserMonitorRun,
@@ -251,6 +252,41 @@ def test_phase1_retrieval_uses_answer_binding_only_when_enabled(db):
     )
 
 
+def test_reason_retrieval_respects_doc_id_filter(db):
+    project, _, _, _ = _seed_project_prompt(db)
+    _seed_xiaoma_claim_event_and_source(db)
+    event = db.get(RecommendationEvent, 601)
+    event.reasons_json = dumps([{"normalized_reason": "点击统计"}])
+    db.add(SourceDocument(
+        id=346,
+        url="https://zhuanlan.zhihu.com/p/other",
+        original_url="https://zhuanlan.zhihu.com/p/other",
+        canonical_url="https://zhuanlan.zhihu.com/p/other",
+        domain="zhuanlan.zhihu.com",
+        fetch_status="SUCCESS",
+        title="其他短链文章",
+        clean_text="另一篇文章也提到了点击统计能力，并说明可以查看链接访问量和点击次数。",
+        content_blocks_json=dumps([{"block_index": 1, "block_type": "PARAGRAPH", "text": "另一篇文章也提到了点击统计能力，并说明可以查看链接访问量和点击次数。"}]),
+    ))
+    db.add(SourceQuality(
+        source_document_id=346,
+        content_quality_status="CONTENT_VALID",
+        quality_reason="fixture",
+    ))
+    db.commit()
+
+    result = run_reason_driven_retrieval(db, project, 40, [238], doc_id_filter=[346])
+
+    assert result["doc_id_filter"] == [346]
+    passages = [
+        passage
+        for item in result["by_reason"].values()
+        for passage in item.get("passages", [])
+    ]
+    assert passages
+    assert {passage["doc_id"] for passage in passages} == {346}
+
+
 def test_phase1_alignment_writes_formal_rows_with_binding_provenance(db, monkeypatch):
     import app.modules.optimization.evidence_alignment as evidence_alignment_module
 
@@ -297,6 +333,142 @@ def test_phase1_alignment_writes_formal_rows_with_binding_provenance(db, monkeyp
     assert payload["formal_input_version"] == "citation_decision_v1_1_formal_input.v1"
     assert payload["answer_unit_id"]
     assert payload["decision_binding_id"]
+
+
+def test_phase1_alignment_preserves_run_observations_for_semantic_dedupe(db, monkeypatch):
+    import app.modules.optimization.evidence_alignment as evidence_alignment_module
+
+    project, _, _, package = _seed_project_prompt(db)
+    package.source_run_ids_json = dumps([238, 239])
+    _seed_xiaoma_claim_event_and_source(db)
+    db.add(BrowserMonitorRun(
+        id=239,
+        task_id=10,
+        project_id=3,
+        prompt_id=40,
+        status="success",
+        answer_text="小码短链接：自带点击统计。",
+    ))
+    db.add(AnswerClaim(
+        id=502,
+        run_id=239,
+        claim_index=1,
+        raw_text="小码短链接：自带点击统计",
+        provenance="RULE_DERIVED",
+        review_status="PENDING",
+    ))
+    db.add(RecommendationEvent(
+        id=602,
+        project_id=3,
+        prompt_id=40,
+        run_id=239,
+        entity_text="小码短链接",
+        entity_type="BRAND",
+        speech_act="RECOMMEND",
+        recommendation_strength="HIGH",
+        answer_span="小码短链接：自带点击统计。",
+        reasons_json=dumps([]),
+        review_status="HUMAN_CONFIRMED",
+    ))
+    db.add(AnswerEvidenceShadowRun(
+        id=901,
+        project_id=3,
+        prompt_id=40,
+        evidence_package_id=15,
+        source_run_ids_json=dumps([238, 239]),
+        pipeline_version=SHADOW_PIPELINE_VERSION,
+        status="completed",
+        formal_output_impact="NONE",
+    ))
+    db.add_all([
+        AnswerUnit(
+            id=801,
+            shadow_run_id=901,
+            project_id=3,
+            prompt_id=40,
+            run_id=238,
+            answer_claim_id=501,
+            unit_text_original="小码短链接自带点击统计",
+            unit_text_normalized="小码短链接自带点击统计",
+            source_span="小码短链接自带点击统计",
+            entity_hint="小码短链接",
+        ),
+        AnswerUnit(
+            id=802,
+            shadow_run_id=901,
+            project_id=3,
+            prompt_id=40,
+            run_id=239,
+            answer_claim_id=502,
+            unit_text_original="小码短链接自带点击统计",
+            unit_text_normalized="小码短链接自带点击统计",
+            source_span="小码短链接自带点击统计",
+            entity_hint="小码短链接",
+        ),
+        AnswerDecisionBinding(
+            id=811,
+            shadow_run_id=901,
+            project_id=3,
+            prompt_id=40,
+            run_id=238,
+            recommendation_event_id=601,
+            answer_unit_id=801,
+            decision_role="SUPPORTING_REASON",
+            pipeline_version=SHADOW_PIPELINE_VERSION,
+            review_status="MACHINE_GROUNDED",
+        ),
+        AnswerDecisionBinding(
+            id=812,
+            shadow_run_id=901,
+            project_id=3,
+            prompt_id=40,
+            run_id=239,
+            recommendation_event_id=602,
+            answer_unit_id=802,
+            decision_role="SUPPORTING_REASON",
+            pipeline_version=SHADOW_PIPELINE_VERSION,
+            review_status="MACHINE_GROUNDED",
+        ),
+        SourceClaim(
+            project_id=3,
+            source_document_id=345,
+            passage_id="doc345:b1",
+            source_owner_entity="小码短链接",
+            source_role="COMPETITOR_FIRST_PARTY",
+            subject_entity="小码短链接",
+            normalized_claim="小码短链接支持点击统计",
+            subject_text="小码短链接",
+            predicate="支持",
+            object_text="点击统计",
+            claim_type="CAPABILITY",
+            polarity="POSITIVE",
+            source_span="小码短链接支持点击统计",
+            raw_start=0,
+            raw_end=10,
+            review_status="MACHINE_GROUNDED",
+        ),
+    ])
+    db.commit()
+    monkeypatch.setattr(evidence_alignment_module, "EvidenceAlignmentJudge", FakeFormalAlignmentJudge)
+
+    result = run_evidence_alignment(
+        db,
+        project,
+        40,
+        [238, 239],
+        include_answer_binding_reasons=True,
+        doc_id_filter=[345],
+    )
+
+    supports = db.query(EvidenceAlignment).filter(EvidenceAlignment.relation == "SUPPORTS").all()
+    assert result["judge_calls"] == 1
+    assert {alignment.run_id for alignment in supports} == {238, 239}
+    for alignment in supports:
+        payload = loads(alignment.machine_payload_json, {})
+        assert payload["observed_run_ids"] == [238, 239]
+        assert payload["run_coverage_count"] == 2
+        assert payload["run_coverage_denominator"] == 2
+        assert payload["reason_source"] == "ANSWER_DECISION_BINDING"
 
 
 def test_recommended_brand_feature_defaults_to_supporting_reason(db):

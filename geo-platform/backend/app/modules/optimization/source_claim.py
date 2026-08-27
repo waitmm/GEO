@@ -133,6 +133,7 @@ def run_source_claim_extraction(
         run_ids,
         top_k,
         include_answer_binding_reasons=include_answer_binding_reasons,
+        doc_id_filter=doc_id_filter,
     )
     by_reason = retrieval.get("by_reason") or {}
 

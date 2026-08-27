@@ -262,6 +262,7 @@ def run_reason_driven_retrieval(
     run_ids: list[int],
     top_k: int = 5,
     include_answer_binding_reasons: bool = False,
+    doc_id_filter: list[int] | None = None,
 ) -> dict:
     """主流程：Reason → 有效 Source → Passage 检索。
 
@@ -283,10 +284,12 @@ def run_reason_driven_retrieval(
     quality_by_doc_id: dict[int, SourceQuality] = {}
     for quality in db.query(SourceQuality).order_by(SourceQuality.id.desc()).all():
         quality_by_doc_id.setdefault(quality.source_document_id, quality)
+    allowed_doc_ids = {int(item) for item in doc_id_filter or []}
     docs = [
         doc
         for doc in db.query(SourceDocument).all()
         if derive_content_status(doc, quality_by_doc_id.get(doc.id)).get("content_status") == "CONTENT_VALID"
+        and (not allowed_doc_ids or doc.id in allowed_doc_ids)
     ]
     doc_passages: dict[int, list[dict]] = {}
     for doc in docs:
@@ -399,6 +402,7 @@ def run_reason_driven_retrieval(
         "include_answer_binding_reasons": include_answer_binding_reasons,
         "valid_documents": len(docs),
         "passages_retrieved": total_pages,
+        "doc_id_filter": sorted(allowed_doc_ids),
         "by_reason": result,
         "version": RETRIEVAL_VERSION,
         "formal_input_version": FORMAL_V1_1_INPUT_VERSION if include_answer_binding_reasons else "",

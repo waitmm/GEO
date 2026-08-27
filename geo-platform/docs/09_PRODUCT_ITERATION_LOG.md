@@ -4,6 +4,10 @@ Status: ACTIVE
 
 ## 2026-08-26 Phase 1 Formal Result Audit Gate
 
+> 2026-08-27 更新：本节记录的是首次 Phase 1 审计发现，已被后续
+> `Citation Decision V1.1 Phase 1.1 Product Boundary` 修正。最新状态是：
+> V1.1 ON 时 #40 有 1 个核心对标来源，但因缺少具体 Product Truth，推荐动作为 0。
+
 ### Product Finding
 
 Prompt `#40` proves that Citation Decision V1.1 can formally consume
@@ -700,3 +704,68 @@ Shadow SUPPORTS 存在
 ```
 
 本轮没有改变主链步骤，也没有新增独立入口模块。
+## 2026-08-27 Citation Decision V1.1 Phase 1.1 Product Boundary
+
+本轮产品目标不是新增主链模块，也不是进入多 Prompt Phase 2，而是收口
+`Citation Decision V1.1` 正式链的三个基础条件：
+
+```text
+多 Run 证据稳定性
+正式结果可回滚
+推荐动作可信
+```
+
+保持不变的主链顺序：
+
+```text
+采集样本
+-> 答案决策识别
+-> 目标品牌事实
+-> 引用证据
+-> 对标来源
+-> 缺口诊断
+-> 推荐动作
+-> 实验草案
+```
+
+本轮新增或强化的产品边界：
+
+```text
+1. 语义证据可以按能力去重，但必须保留 Run 覆盖。
+2. V1.1 开关必须同时控制生成和读取，关闭时不删除数据但不消费。
+3. 对标证据进入动作前，必须匹配具体 Product Truth。
+4. 宽泛 Product Truth 不能放行细能力动作。
+5. 有核心对标来源但 Product Truth 不足时，状态应显示“待补事实/待判断”，不能显示可执行动作。
+```
+
+Prompt `#40` 最新真实结论：
+
+```text
+V1.1 OFF:
+  核心对标 = 0
+  推荐动作 = 0
+
+V1.1 ON:
+  核心对标 = 1
+  推荐动作 = 0
+  阻塞原因 = 需要补齐目标品牌具体能力事实
+  待确认能力 = 点击统计 / 自定义分享标题 / 营销场景使用
+```
+
+这意味着：
+
+```text
+V1.1 正式输入链路成立；
+但 #40 目前还不能创建推荐动作或实验草案，
+因为 Product Truth 还没有覆盖 Benchmark 暴露出的具体能力。
+```
+
+进入 Phase 2 前的产品 Gate：
+
+```text
+1. 补齐或确认 #40 的具体 Product Truth。
+2. 重新运行 #40，验证 Gap / Action 是否来自具体 Product Truth。
+3. 保持 V1.1 OFF/ON 可回滚。
+4. 创建 checkpoint commit。
+5. 再选择 3-5 个不同类型 Prompt 做泛化验证。
+```

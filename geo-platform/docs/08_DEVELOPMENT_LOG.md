@@ -1252,3 +1252,69 @@ Validation performed:
     and `营销场景使用`;
   - V1.1 OFF again -> restored to `0` Primary Benchmark and `0` recommended
     actions without deleting DB rows.
+
+## 2026-08-27 Citation Decision V1.1 Phase 2A Lineage Eligibility
+
+- Entered Phase 2A after Phase 0/1 checkpoint approval. Scope was limited to
+  formal `EvidenceAlignment` Run lineage, consistency validation, and V1
+  consumption eligibility.
+- Corrected Source of Truth wording:
+  - `SourceDocument` and `SourceClaim` are document-level facts and can be
+    reused across Runs;
+  - Run lineage is proven through current Run `ReferenceSource` plus
+    `AnswerUnit` / `AnswerDecisionBinding` / `RecommendationEvent`;
+  - `SourceClaim` must not be forced to carry `run_id`, and
+    `EvidenceAlignment.run_id` alone is not sufficient.
+- Added centralized formal eligibility validation in
+  `app/modules/optimization/evidence_lineage.py`.
+  - validates package Run membership, AnswerUnit lineage,
+    AnswerDecisionBinding lineage, RecommendationEvent lineage,
+    SourceDocument/SourceClaim consistency, current Run ReferenceSource proof,
+    Legacy relation exclusion, and V1.1 feature-flag read gating;
+  - returns `eligible_for_v1`, `ineligibility_reasons`, and the proving
+    `reference_source_id`.
+- Connected eligibility to the formal
+  `source_analysis -> _attach_decision_support_benchmarks ->
+  _decision_support_by_doc_id` read path.
+  - only eligible alignments enter SUPPORTS/CONTRADICTS statistics,
+    Decision Support, Benchmark, Gap, Priority/Action, and StrategyCandidate
+    benchmark evidence;
+  - ineligible historical rows are kept and surfaced as
+    `ineligible_alignment_counts`.
+- Tightened `observed_run_ids` discipline:
+  - prompt-level evidence coverage is now derived from the unique `run_id` set
+    of eligible SUPPORTS rows;
+  - payload-provided `observed_run_ids` is not trusted for formal coverage.
+- Added `backend/tests/test_evidence_lineage_v1.py` covering:
+  - same SourceDocument cited by two Runs with one reusable SourceClaim;
+  - current Run not citing the document;
+  - AnswerUnit/RecommendationEvent cross-Run mismatch;
+  - non-empty `run_id` without matching ReferenceSource;
+  - Legacy Alignment exclusion;
+  - observed_run_ids derived only from eligible Runs;
+  - no duplicate SourceClaim required for Run lineage.
+- Added a reusable read-only audit script:
+  `backend/scripts/audit_prompt40_phase2a_lineage.py`.
+- Added checkpoint/audit docs:
+  - `docs/CITATION_DECISION_V1_1_PHASE2A_LINEAGE_CHECKPOINT.md`
+  - `docs/PROMPT_40_PHASE2A_LINEAGE_AUDIT.md`
+- No migration is required: all checks use existing DB columns and existing
+  V1.1 payload fields.
+- Phase 2A explicitly did not implement `DISCOVERABILITY_GAP`, Step 7, Step 8,
+  Decision Stability, frontend masking, or Citation/Benchmark scoring changes.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest -q tests/test_evidence_lineage_v1.py tests/test_citation_prominence_v1.py tests/test_source_gap_v1.py`
+  passed: `38 passed`.
+- `.venv/bin/python scripts/audit_prompt40_phase2a_lineage.py --output ../docs/PROMPT_40_PHASE2A_LINEAGE_AUDIT.md`
+  passed.
+- Prompt `#40` Phase 2A audit:
+  - `source_run_ids = [238, 239, 240, 253, 254, 255]`;
+  - formal `SourceClaim` count stayed `577 -> 577`;
+  - Prompt `#40` formal `EvidenceAlignment` count stayed `660 -> 660`;
+  - each Run has `6` eligible SUPPORTS and `5` eligible NO_SUPPORT;
+  - historical `RELATED` alignments are excluded as
+    `LEGACY_RELATION_ONLY = 594`;
+  - prompt-level observed run coverage is derived as
+    `[238, 239, 240, 253, 254, 255]`, `6/6`.

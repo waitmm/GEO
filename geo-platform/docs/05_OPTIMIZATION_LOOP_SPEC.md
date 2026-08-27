@@ -414,9 +414,11 @@ Phase 0/1 handoff clarification:
   Prompt and capability. Arbitrary project assets or the newest snapshot cannot
   prove discoverability.
 - Formal consumers of `EvidenceAlignment` must use a lineage-valid read model:
-  Prompt, Run, RecommendationEvent, AnswerUnit/Binding when applicable,
-  ReferenceSource/RetrievalCandidate, SourceDocument, SourceClaim, and
-  EvidenceAlignment must be consistent.
+  AnswerUnit, AnswerDecisionBinding, and RecommendationEvent must belong to the
+  same Run; that Run must have a ReferenceSource/CitationOccurrence pointing to
+  the reusable SourceDocument; SourceClaim belongs to that SourceDocument.
+  SourceDocument and SourceClaim are document-level facts and must not be
+  duplicated per Run just to establish lineage.
 
 Hard boundaries:
 

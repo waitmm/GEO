@@ -870,3 +870,91 @@ V1.1 正式输入链路成立；
 4. 创建 checkpoint commit。
 5. 再选择 3-5 个不同类型 Prompt 做泛化验证。
 ```
+
+## 2026-08-27 Phase 2A：EvidenceAlignment Run Lineage 归属规则
+
+本轮不改变单 Prompt GEO 主链顺序，不新增独立入口模块，也不进入
+DISCOVERABILITY_GAP、Step 7、Step 8 或 Decision Stability。
+
+本轮产品约束：
+
+```text
+SourceDocument / SourceClaim 是文档级事实，
+可以跨 Run 复用；
+
+EvidenceAlignment 是否能进入正式 V1 决策，
+必须由完整 Run lineage 判断，
+不能只看 run_id 非空。
+```
+
+正式 V1 消费资格必须同时证明：
+
+```text
+1. AnswerUnit 属于当前 Run。
+2. AnswerDecisionBinding 属于当前 Run。
+3. AnswerDecisionBinding 绑定的 RecommendationEvent 属于同一 Run。
+4. 当前 Run 真实引用了对应 SourceDocument。
+5. SourceClaim 属于该 SourceDocument。
+6. EvidenceAlignment 对齐的是上述 AnswerUnit 与 SourceClaim。
+```
+
+产品上必须区分：
+
+```text
+文档被多次引用
+≠
+每个 Run 都形成了真实 SUPPORTS
+
+payload 写了 observed_run_ids
+≠
+正式 Prompt 覆盖率
+```
+
+因此：
+
+```text
+observed_run_ids / run_coverage
+只能从 eligible SUPPORTS 的真实 run_id 去重集合推导。
+```
+
+历史数据处理：
+
+```text
+历史 RELATED / 无完整 lineage Alignment 继续保留；
+可用于 Legacy 查看；
+不能进入新的正式单 Prompt V1 Benchmark / Gap / StrategyCandidate 证据链。
+```
+
+Prompt `#40` Phase 2A 审计结果：
+
+```text
+Evidence Package #15
+Runs = [238, 239, 240, 253, 254, 255]
+
+每个 Run:
+  eligible SUPPORTS = 6
+  eligible NO_SUPPORT = 5
+
+历史 RELATED:
+  LEGACY_RELATION_ONLY = 594
+
+Prompt-level observed_run_ids:
+  [238, 239, 240, 253, 254, 255]
+  coverage = 6/6
+```
+
+这确认之前担心的情况已经被阻止：
+
+```text
+SUPPORTS 只实际落在一个 Run，
+但 Prompt 层被 payload 或 SourceDocument 出现情况补成多个 Runs。
+```
+
+后续 Phase 进入前仍需保持：
+
+```text
+不因 Citation Prominence 升级 Benchmark；
+不因标题同名直接 SUPPORTS；
+不让 Legacy RELATED 进入 V1 支撑语义；
+不把竞品 SourceClaim 自动升级成目标品牌 Product Truth。
+```

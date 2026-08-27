@@ -62,7 +62,7 @@ Gap / Proposal
 | 1. 采集样本 | 当前 Prompt Runs | `BrowserMonitorRun`, `ReferenceSource`, `RetrievalCandidate`, `RunArtifact` | 必须绑定当前 `prompt_id` 和当前 Run set。 |
 | 2. 答案决策识别 | 答案语义事件 | `RecommendationEvent`, `AnswerUnit`, `AnswerDecisionBinding` | 只表达答案里发生了什么，不读取引用来源来反推答案事件。 |
 | 3. 目标品牌事实 | 人工确认的 Product Truth | `TargetBrandCapabilityTruth` | 只确认目标品牌自己的真实能力，不确认竞品或引用文章能力。 |
-| 4. 引用证据 | 当前 Evidence Package + 正文/对齐 | `OptimizationEvidencePackage`, `SourceDocument`, `SourceClaim`, `EvidenceAlignment` | Citation 只是来源信号；只有正文和对齐能进入证据判断。 |
+| 4. 引用证据 | 当前 Evidence Package + 正文/对齐 | `OptimizationEvidencePackage`, `ReferenceSource`, `SourceDocument`, `SourceClaim`, `EvidenceAlignment` | Citation 只是来源信号；`SourceDocument` / `SourceClaim` 是可跨 Run 复用的文档级事实，Run lineage 由当前 Run 的引用实例指向文档建立。 |
 | 5. 对标来源 | Citation Decision V1 派生读模型 | source analysis row fields | `PRIMARY/SECONDARY` 只能由有效 EvidenceAlignment 支撑。 |
 | 6. 缺口诊断 | Benchmark + Product Truth + Brand Asset | source gap derived fields | Gap 是派生结论，不应写成不可追溯的孤立动作。 |
 | 7. 策略候选 + 策略确认 | `StrategyCandidate` + `effective_payload` | `OptimizationStrategyCandidate` | 人工确认前只能是 candidate/proposal，不能创建实验。 |
@@ -169,26 +169,32 @@ EvidenceAlignment.run_id is not null
 必须能追溯并一致：
 
 ```text
-Prompt
--> BrowserMonitorRun
--> RecommendationEvent
--> AnswerUnit
--> AnswerDecisionBinding
--> ReferenceSource / RetrievalCandidate
--> SourceDocument
--> SourceClaim
--> EvidenceAlignment
+Run
+├── Answer / RecommendationEvent / AnswerUnit / AnswerDecisionBinding
+└── ReferenceSource / CitationOccurrence
+        ↓
+    SourceDocument
+        ↓
+    SourceClaim
+        ↓
+    EvidenceAlignment
 ```
+
+其中 `SourceDocument` 和 `SourceClaim` 不是 Run 子对象，也不应该为了
+Run lineage 被重复创建。它们是文档级事实，可被多个 Run 的引用实例复用。
 
 最低校验：
 
 - 所有对象 `project_id`、`prompt_id` 一致。
 - `EvidenceAlignment.run_id` 属于当前 Evidence Package 的 `source_run_ids`。
-- `RecommendationEvent.run_id == EvidenceAlignment.run_id`，或 payload 中有显式
-  `observed_run_ids` 覆盖且可解释语义去重。
+- `AnswerUnit.run_id == EvidenceAlignment.run_id`。
 - `AnswerUnit.run_id` 和 `AnswerDecisionBinding.run_id` 与事件、Prompt 一致。
-- `SourceDocument` 必须能回到当前 Run 的 `ReferenceSource` 或
-  `RetrievalCandidate`；不能只靠 doc id 同项目。
+- `AnswerDecisionBinding.recommendation_event_id` 指向同 Run 的
+  `RecommendationEvent`。
+- 当前 Run 必须存在能通过 URL 或缺 URL 时的 domain/title 指向该
+  `SourceDocument` 的 `ReferenceSource` / CitationOccurrence。
+- `SourceClaim` 必须属于该 `SourceDocument`；但 `SourceClaim` 本身不需要、
+  也不应强制增加 `run_id`。
 - V1.1 正式输入必须有 `reason_source = ANSWER_DECISION_BINDING` 和
   `formal_input_version`，并受 feature flag 读写双向控制。
 
@@ -248,6 +254,16 @@ Benchmark capability
 
 任何正式 Benchmark、Gap、Priority、Action 输入都必须消费“lineage-valid
 alignment”，不能直接消费裸 `SUPPORTS`。
+
+Run lineage 由 AnswerUnit / DecisionBinding / RecommendationEvent 的同 Run
+关系，以及当前 Run 的引用实例指向可复用 `SourceDocument` 建立。禁止：
+
+```text
+按 Run 重复创建同一 SourceDocument
+按 Run 重复抽取同一 SourceClaim
+强制要求 SourceClaim 带 run_id
+从 Prompt 下所有 Run 复制 observed_run_ids
+```
 
 如果 lineage 缺失，输出应为：
 

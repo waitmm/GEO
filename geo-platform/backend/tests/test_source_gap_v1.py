@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Organization, Project, TargetBrandCapabilityTruth
 from app.models import (
+    AnswerDecisionBinding,
     AnswerUnit,
     BrowserMonitorRun,
     BrowserMonitorTask,
@@ -414,6 +415,29 @@ def _vertical_slice_fixture(db):
         reasons_json=dumps([{"normalized_reason": "批量短链生成 有客户案例和数据"}]),
         review_status="MACHINE_GROUNDED",
     )
+    unit = AnswerUnit(
+        id=551,
+        project_id=11,
+        prompt_id=43,
+        run_id=101,
+        answer_claim_id=551,
+        unit_text_original="ToolX 支持批量短链生成并有客户案例",
+        unit_text_normalized="ToolX 支持批量短链生成并有客户案例",
+        source_span="ToolX 支持批量短链生成并有客户案例",
+        entity_hint="ToolX",
+    )
+    binding = AnswerDecisionBinding(
+        id=561,
+        project_id=11,
+        prompt_id=43,
+        run_id=101,
+        recommendation_event_id=501,
+        answer_unit_id=551,
+        decision_role="SUPPORTING_REASON",
+        binding_strength="MEDIUM",
+        scope_type="SAME_PARAGRAPH",
+        review_status="MACHINE_GROUNDED",
+    )
     claim = SourceClaim(
         id=601,
         project_id=11,
@@ -431,12 +455,18 @@ def _vertical_slice_fixture(db):
         prompt_id=43,
         run_id=101,
         recommendation_event_id=501,
-        recommendation_reason_id="reason:批量短链生成 有客户案例和数据",
+        recommendation_reason_id="answer_unit:551:binding:561",
         source_document_id=301,
         source_claim_id=601,
         relation="SUPPORTS",
         scope_relation="PASS",
         review_status="MACHINE_GROUNDED",
+        machine_payload_json=dumps({
+            "reason_source": ANSWER_BINDING_REASON_SOURCE,
+            "formal_input_version": FORMAL_V1_1_INPUT_VERSION,
+            "answer_unit_id": 551,
+            "decision_binding_id": 561,
+        }),
     )
     truth = TargetBrandCapabilityTruth(
         id=801,
@@ -469,6 +499,8 @@ def _vertical_slice_fixture(db):
         doc,
         quality,
         event,
+        unit,
+        binding,
         claim,
         alignment,
         truth,
@@ -556,6 +588,18 @@ def _vertical_slice_v1_1_only_fixture(db):
         source_span="ToolX 自带点击统计",
         entity_hint="ToolX",
     )
+    binding = AnswerDecisionBinding(
+        id=612,
+        project_id=12,
+        prompt_id=45,
+        run_id=102,
+        recommendation_event_id=502,
+        answer_unit_id=602,
+        decision_role="SUPPORTING_REASON",
+        binding_strength="MEDIUM",
+        scope_type="SAME_PARAGRAPH",
+        review_status="MACHINE_GROUNDED",
+    )
     claim = SourceClaim(
         id=603,
         project_id=12,
@@ -583,6 +627,7 @@ def _vertical_slice_v1_1_only_fixture(db):
             "reason_source": ANSWER_BINDING_REASON_SOURCE,
             "formal_input_version": FORMAL_V1_1_INPUT_VERSION,
             "answer_unit_id": 602,
+            "decision_binding_id": 612,
             "observed_run_ids": [102],
             "run_coverage_count": 1,
             "run_coverage_denominator": 1,
@@ -620,6 +665,7 @@ def _vertical_slice_v1_1_only_fixture(db):
         quality,
         event,
         unit,
+        binding,
         claim,
         alignment,
         truth,
@@ -641,7 +687,7 @@ def test_vertical_slice_proposes_action_channel_and_experiment():
     try:
         project, prompt, package = _vertical_slice_fixture(db)
 
-        proposal = citation_decision_vertical_slice(db, project.id, prompt.id, package.id)
+        proposal = citation_decision_vertical_slice(db, project.id, prompt.id, package.id, use_answer_binding_v1_1=True)
 
         assert proposal["status"] == "READY_FOR_HUMAN_CONFIRM"
         assert proposal["summary"]["primary_benchmark_count"] == 1
@@ -652,13 +698,14 @@ def test_vertical_slice_proposes_action_channel_and_experiment():
             db,
             project.id,
             prompt.id,
-            {
-                "evidence_package_id": package.id,
-                "action_keys": [proposal["recommended_actions"][0]["action_key"]],
-                "reviewer": "human",
-                "create_experiments": True,
-            },
-        )
+                {
+                    "evidence_package_id": package.id,
+                    "action_keys": [proposal["recommended_actions"][0]["action_key"]],
+                    "reviewer": "human",
+                    "create_experiments": True,
+                    "use_answer_binding_v1_1": True,
+                },
+            )
 
         created = confirmed["created"][0]
         assert created["strategy_candidate"]["review_status"] == "ACCEPTED"

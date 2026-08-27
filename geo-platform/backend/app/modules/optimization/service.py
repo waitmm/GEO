@@ -50,6 +50,7 @@ from app.core.config import get_settings
 from app.modules.monitoring.enums import BROWSER_AUDIT_ENTRY_TYPE, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER
 from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.services import create_browser_task, update_task_status_from_runs
+from app.modules.optimization.evidence_lineage import eligible_evidence_alignments_for_v1
 from app.modules.optimization.passage_retrieval import ANSWER_BINDING_REASON_SOURCE, FORMAL_V1_1_INPUT_VERSION
 from app.modules.optimization.source_qualification import derive_content_status
 from app.services.serialization import dumps, loads
@@ -2131,6 +2132,7 @@ def _source_analysis_for_package(
         runs,
         references,
         retrievals,
+        valid_run_ids=valid_run_ids,
         include_answer_binding_v1_1=include_answer_binding_v1_1,
     )
 
@@ -3736,6 +3738,7 @@ def source_analysis(
     runs: list[BrowserMonitorRun],
     references: list[ReferenceSource],
     retrievals: list[RetrievalCandidate],
+    valid_run_ids: list[int] | None = None,
     include_answer_binding_v1_1: bool = False,
 ) -> list[dict]:
     prompt_text = (prompt.prompt_text if prompt else "") or " ".join(run.original_query for run in runs[:3])
@@ -3808,6 +3811,7 @@ def source_analysis(
         project,
         prompt,
         rows,
+        valid_run_ids=valid_run_ids or [run.id for run in runs],
         include_answer_binding_v1_1=include_answer_binding_v1_1,
     )
     rows = _attach_source_gap_analysis(db, project, rows)
@@ -4042,6 +4046,7 @@ def _attach_decision_support_benchmarks(
     project: Project,
     prompt: Prompt | None,
     rows: list[dict],
+    valid_run_ids: list[int] | None = None,
     include_answer_binding_v1_1: bool = False,
 ) -> list[dict]:
     if not rows or not prompt:
@@ -4059,6 +4064,7 @@ def _attach_decision_support_benchmarks(
         project.id,
         prompt.id,
         doc_ids,
+        allowed_run_ids=set(int(run_id) for run_id in (valid_run_ids or []) if run_id),
         include_answer_binding_v1_1=include_answer_binding_v1_1,
     )
     for row in rows:
@@ -4124,6 +4130,7 @@ def _decision_support_by_doc_id(
     project_id: int,
     prompt_id: int,
     doc_ids: set[int],
+    allowed_run_ids: set[int] | None = None,
     include_answer_binding_v1_1: bool = False,
 ) -> dict[int, dict]:
     alignments = db.query(EvidenceAlignment).filter(
@@ -4138,6 +4145,12 @@ def _decision_support_by_doc_id(
             for alignment in alignments
             if not _is_answer_binding_v1_1_alignment(alignment)
         ]
+    alignments, eligibility_by_id = eligible_evidence_alignments_for_v1(
+        db,
+        alignments,
+        allowed_run_ids=allowed_run_ids,
+        include_answer_binding_v1_1=include_answer_binding_v1_1,
+    )
     event_ids = {alignment.recommendation_event_id for alignment in alignments if alignment.recommendation_event_id}
     events = db.query(RecommendationEvent).filter(RecommendationEvent.id.in_(event_ids)).all() if event_ids else []
     event_by_id = {event.id: event for event in events}
@@ -4146,10 +4159,20 @@ def _decision_support_by_doc_id(
     for alignment in alignments:
         grouped[alignment.source_document_id].append((alignment, event_by_id.get(alignment.recommendation_event_id)))
 
-    return {
+    payload = {
         doc_id: _decision_support_from_alignments(items)
         for doc_id, items in grouped.items()
     }
+    ineligible_counts: dict[int, Counter] = defaultdict(Counter)
+    for alignment_id, eligibility in eligibility_by_id.items():
+        if eligibility.eligible_for_v1 or not eligibility.source_document_id:
+            continue
+        for reason in eligibility.ineligibility_reasons:
+            ineligible_counts[eligibility.source_document_id][reason] += 1
+    for doc_id, counts in ineligible_counts.items():
+        payload.setdefault(doc_id, _empty_decision_support_payload())
+        payload[doc_id]["ineligible_alignment_counts"] = dict(sorted(counts.items()))
+    return payload
 
 
 def _decision_support_from_alignments(items: list[tuple[EvidenceAlignment, RecommendationEvent | None]]) -> dict:
@@ -4186,6 +4209,8 @@ def _decision_support_from_alignments(items: list[tuple[EvidenceAlignment, Recom
         "supporting_alignment_ids": supporting_ids,
         "contradicting_alignment_ids": [alignment.id for alignment in contradictions],
         "decision_support_basis": sorted(set(support_notes))[:8],
+        "evidence_observed_run_ids": sorted({alignment.run_id for alignment, _ in supports if alignment.run_id}),
+        "evidence_run_coverage_count": len({alignment.run_id for alignment, _ in supports if alignment.run_id}),
     }
 
 
@@ -4250,6 +4275,9 @@ def _empty_decision_support_payload() -> dict:
         "supporting_alignment_ids": [],
         "contradicting_alignment_ids": [],
         "decision_support_basis": [],
+        "evidence_observed_run_ids": [],
+        "evidence_run_coverage_count": 0,
+        "ineligible_alignment_counts": {},
     }
 
 
@@ -4357,9 +4385,9 @@ def _benchmark_evidence_by_alignment_id(db: Session, support_ids: set[int]) -> d
             "decision_binding_id": payload.get("decision_binding_id"),
             "reason_source": payload.get("reason_source"),
             "formal_input_version": payload.get("formal_input_version"),
-            "observed_run_ids": payload.get("observed_run_ids") or [alignment.run_id],
-            "run_coverage_count": payload.get("run_coverage_count") or 1,
-            "run_coverage_denominator": payload.get("run_coverage_denominator") or 1,
+            "observed_run_ids": [alignment.run_id] if alignment.run_id else [],
+            "run_coverage_count": 1 if alignment.run_id else 0,
+            "run_coverage_denominator": 1,
         }
     return result
 

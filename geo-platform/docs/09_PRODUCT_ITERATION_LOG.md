@@ -2,6 +2,65 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Step 7 Strategy Confirmation UI Bugfix
+
+### Product Decision
+
+单 Prompt V1 第 7 步的用户可见名称统一为：
+
+```text
+策略确认
+```
+
+它表达的是：
+
+```text
+Gap / Evidence
+-> StrategyCandidate
+-> 人工审核/编辑
+-> effective_payload
+-> Confirmed Strategy
+```
+
+不是：
+
+```text
+确认推荐动作
+```
+
+也不是：
+
+```text
+创建实验草案
+```
+
+### Scope
+
+本次是 V1 bugfix，只修正第 7 步在单 Prompt 页面和引用决策详情页的名称、状态和操作入口。
+
+不改变：
+
+```text
+1-8 主链顺序
+Evidence / Benchmark / Gap 规则
+StrategyCandidate / effective_payload Gate
+Action / Experiment 创建规则
+Baseline / Release Gate
+Step 9
+```
+
+### User-Facing Rule
+
+第 7 步必须根据当前 Evidence Package 下真实 StrategyCandidate 状态显示：
+
+```text
+无候选 + 有可处理 Gap -> 生成策略候选
+有待审候选 -> 审核策略候选
+已有确认策略 -> 查看已确认策略
+```
+
+不得再把 `recommended_actions` 直接显示成“已确认动作”或“已创建实验草案”。
+
 ## 2026-08-27 Documentation Governance
 
 ### Product Decision

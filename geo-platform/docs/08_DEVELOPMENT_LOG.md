@@ -2,6 +2,35 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Step 7 Strategy Confirmation UI Bugfix
+
+- Fixed the single Prompt workflow Step 7 user-facing semantics after V1
+  freeze. The product meaning is `StrategyCandidate + 人工策略确认`, not
+  "推荐动作确认".
+- Updated frontend Step 7 state derivation so it reads current
+  Evidence-Package-scoped `StrategyCandidate` state:
+  - confirmed StrategyCandidate -> `策略确认 / 已确认`
+  - pending StrategyCandidate -> `策略确认 / 待审核`
+  - no candidate but eligible Content/Evidence Gap -> `可生成策略候选`
+- After generating StrategyCandidates from Citation Decision V1, the frontend
+  now reloads the current evidence package's strategy list and routes the user
+  to the strategy confirmation area.
+- Updated legacy visible labels in the citation decision detail page from
+  "推荐动作" to "策略候选 / 策略确认" where the action is actually Step 7
+  strategy generation/review.
+- Updated backend workflow label for the historical `step_key="action"` to
+  display as `策略确认`. The key remains unchanged for compatibility.
+- No data model, Citation/Benchmark/GAP formula, StrategyCandidate gate, Action,
+  Experiment, Baseline, or Step 9 behavior was changed.
+
+Validation:
+
+```text
+frontend npm run build
+backend compileall for workflow module
+git diff --check
+```
+
 ## 2026-08-27 Documentation Governance
 
 - Added repository-level documentation governance for product iteration,

@@ -4,6 +4,10 @@ Status: ACTIVE
 
 ## Single Prompt V1 Known Pitfalls
 
+- Step 7 must be shown as `策略确认`, not `推荐动作`. The underlying legacy
+  workflow key may remain `action` for compatibility, but user-facing state must
+  be derived from current Evidence-Package-scoped StrategyCandidate review
+  status whenever available.
 - Workflow state can be misleading if a card mixes stale `continueResult`,
   historical Citation Decision data, or historical Experiment state with the
   current Prompt context. Every workflow card must use its own primary fact

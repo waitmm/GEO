@@ -1518,6 +1518,9 @@ export default function App() {
         throw new Error("引用资料优化决策返回的 Prompt 与当前页面不一致，已丢弃旧结果");
       }
       setCitationDecisionData(data);
+      if (data.evidence_package_id) {
+        await selectEvidencePackage(data.evidence_package_id, true);
+      }
       if (!silent) message.success("引用资料优化决策已重新运行");
       return data;
     } catch (error: any) {
@@ -1567,6 +1570,7 @@ export default function App() {
       if (!citationDecisionBelongsToPrompt(data, targetPromptId)) {
         throw new Error("引用证据结果与当前 Prompt 不一致，已阻止渲染");
       }
+      await selectEvidencePackage(evidencePackage.id, true);
       await loadWorkflowForPrompt(targetPromptId, projectId);
       setCitationDecisionData(data);
       message.destroy("citation-evidence-run");
@@ -1657,24 +1661,31 @@ export default function App() {
           row.source_gap_precondition === "PRODUCT_TRUTH_UNKNOWN"
         ).length;
         message.warning(blockedCount > 0
-          ? `还有 ${blockedCount} 条对标来源缺少目标品牌产品事实，暂不能创建实验草案`
-          : "当前没有可确认的内容/证据动作；可能没有真实缺口，或只剩产品评估/不需要动作");
+          ? `还有 ${blockedCount} 条对标来源缺少目标品牌产品事实，暂不能生成策略候选`
+          : "当前没有可生成策略候选的内容/证据缺口；可能没有真实缺口，或只剩产品评估/不需要动作");
         return;
       }
       const result = await api.confirmCitationDecisionV1(projectId, targetPromptId, {
         evidence_package_id: latest.evidence_package_id,
         action_keys: actionKeys,
-        create_experiments: true,
         reviewer: "human",
-        review_note: "前端确认引用资料优化决策推荐动作",
+        review_note: "前端生成引用证据链路策略候选",
       });
-      message.success(`已确认 ${result.action_count || actionKeys.length} 个动作并创建实验草案`);
+      const createdIds = (result.created || [])
+        .map((item: any) => item.strategy_candidate?.id)
+        .filter(Boolean);
+      if (latest.evidence_package_id) {
+        await selectEvidencePackage(latest.evidence_package_id, true);
+      }
+      setPage("optimization");
+      message.success(`已生成 ${createdIds.length || actionKeys.length} 个待审核策略候选，请在下方审核确认`);
       await Promise.all([
         loadCitationDecisionV1(targetPromptId, true),
         loadOptimizationIssues(),
       ]);
+      setLatestGeneratedStrategyIds(createdIds);
     } catch (error: any) {
-      message.error(error.message || "确认引用资料优化决策失败");
+      message.error(error.message || "生成策略候选失败");
     } finally {
       setCitationDecisionLoading(false);
     }
@@ -2060,6 +2071,19 @@ export default function App() {
   const topRecommendationReason = decisionStability?.recommendation_reasons?.[0];
   const citationCanConfirm = citationConfirmableActions.length > 0;
   const citationLoaded = Boolean(currentCitationDecisionData);
+  const currentPackageStrategyCandidates =
+    currentCitationDecisionData?.evidence_package_id &&
+    Number(selectedPkgId) === Number(currentCitationDecisionData.evidence_package_id)
+      ? (strategyData?.candidates || [])
+      : [];
+  const sortedCurrentPackageStrategies = sortStrategyCandidatesByTime(currentPackageStrategyCandidates);
+  const confirmedStrategies = currentPackageStrategyCandidates.filter((item: any) => item.review_status === "ACCEPTED" || item.review_status === "ACCEPTED_WITH_EDITS");
+  const pendingStrategies = currentPackageStrategyCandidates.filter((item: any) => item.review_status === "PENDING_REVIEW");
+  const strategyCandidateCount = currentPackageStrategyCandidates.length;
+  const confirmedStrategyCount = confirmedStrategies.length;
+  const pendingStrategyCount = pendingStrategies.length;
+  const latestStrategyCandidate = sortedCurrentPackageStrategies[0];
+  const currentExperimentCount = strategyExperiments?.length || 0;
   const citationNeedsEvidencePackage = Boolean(citationDecisionError?.includes("尚无 Evidence Package") || citationDecisionError?.includes("尚无证据包"));
   const eligibleBenchmarkCount = (citationSummary.primary_benchmark_count || 0) + (citationSummary.secondary_benchmark_count || 0);
   const unknownGapCount = citationRows.filter((row: any) => row.source_gap_type === "UNKNOWN").length;
@@ -2082,14 +2106,18 @@ export default function App() {
       status: citationProductTruthBlockedRows.length ? "error" : currentCitationDecisionData ? "finish" : "wait",
     },
     {
-      title: "动作",
-      description: citationLoaded ? `${citationSummary.recommended_action_count ?? 0} 个动作` : "等待缺口判断",
-      status: citationCanConfirm ? "finish" : currentCitationDecisionData ? "process" : "wait",
+      title: "策略候选",
+      description: strategyCandidateCount
+        ? `${strategyCandidateCount} 个候选`
+        : citationLoaded
+          ? `${citationSummary.recommended_action_count ?? 0} 个可生成线索`
+          : "等待缺口判断",
+      status: confirmedStrategyCount || pendingStrategyCount || citationCanConfirm ? "finish" : currentCitationDecisionData ? "process" : "wait",
     },
     {
       title: "实验",
-      description: citationCanConfirm ? "待人工确认创建草案" : "等待动作闸门",
-      status: citationCanConfirm ? "process" : "wait",
+      description: currentExperimentCount ? `${currentExperimentCount} 个草案/实验` : confirmedStrategyCount ? "待创建实验草案" : "等待策略确认",
+      status: currentExperimentCount ? "finish" : confirmedStrategyCount ? "process" : "wait",
     },
   ] as any[];
   const collectedRunCount = visibleRuns.filter((run: any) => ["success", "partial_success"].includes(run.status)).length;
@@ -2177,21 +2205,37 @@ export default function App() {
     },
     {
       key: "action",
-      label: "推荐动作",
-      statusText: citationCanConfirm ? "待确认" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : currentCitationLoaded ? "无动作" : "未开始",
-      detail: citationCanConfirm ? `${citationConfirmableActions.length} 个当前动作可确认` : unresolvedAction || unknownGapCount > 0 ? "请查看依据后人工判断，不自动生成动作" : currentCitationLoaded ? "没有可执行内容/证据动作" : "等待缺口诊断",
-      tone: citationCanConfirm || unresolvedAction ? "current" : currentCitationLoaded ? "done" : "pending",
-      actionLabel: citationCanConfirm ? "查看并确认" : unresolvedAction ? "查看依据" : "",
-      onAction: citationCanConfirm ? () => setPage("optimization") : unresolvedAction ? () => { setWorkflowEvidenceDrawerFocus("action"); setWorkflowEvidenceDrawerOpen(true); } : undefined,
+      label: "策略确认",
+      statusText: confirmedStrategyCount ? "已确认" : pendingStrategyCount ? "待审核" : citationCanConfirm ? "可生成" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : currentCitationLoaded ? "无策略" : "未开始",
+      detail: confirmedStrategyCount
+        ? `已确认策略 #${confirmedStrategies[0]?.id || latestStrategyCandidate?.id}`
+        : pendingStrategyCount
+          ? `${pendingStrategyCount} 个策略候选待人工审核`
+          : citationCanConfirm
+            ? `${citationConfirmableActions.length} 个缺口可生成策略候选`
+            : unresolvedAction || unknownGapCount > 0
+              ? "请查看依据后人工判断，不自动生成策略"
+              : currentCitationLoaded
+                ? "没有可生成策略的内容/证据缺口"
+                : "等待缺口诊断",
+      tone: confirmedStrategyCount ? "done" : pendingStrategyCount || citationCanConfirm || unresolvedAction ? "current" : currentCitationLoaded ? "done" : "pending",
+      actionLabel: confirmedStrategyCount ? "查看已确认策略" : pendingStrategyCount ? "审核策略候选" : citationCanConfirm ? "生成策略候选" : unresolvedAction ? "查看依据" : "",
+      onAction: confirmedStrategyCount || pendingStrategyCount
+        ? () => setPage("optimization")
+        : citationCanConfirm
+          ? confirmCitationDecisionV1
+          : unresolvedAction
+            ? () => { setWorkflowEvidenceDrawerFocus("action"); setWorkflowEvidenceDrawerOpen(true); }
+            : undefined,
     },
     {
       key: "experiment",
       label: "实验草案",
-      statusText: citationCanConfirm ? "待创建" : currentCitationLoaded ? "未创建" : "未开始",
-      detail: citationCanConfirm ? "确认当前动作后创建草案" : currentCitationLoaded ? "当前无可创建草案的动作" : "等待推荐动作",
-      tone: citationCanConfirm ? "current" : "pending",
-      actionLabel: citationCanConfirm ? "去创建草案" : "",
-      onAction: citationCanConfirm ? () => setPage("optimization") : undefined,
+      statusText: currentExperimentCount ? "已创建" : confirmedStrategyCount ? "待创建" : currentCitationLoaded ? "未创建" : "未开始",
+      detail: currentExperimentCount ? `${currentExperimentCount} 个草案/实验，等待发布闸门` : confirmedStrategyCount ? "策略确认后，进入执行方案和实验草案" : currentCitationLoaded ? "等待策略确认" : "等待策略候选",
+      tone: currentExperimentCount ? "done" : confirmedStrategyCount ? "current" : "pending",
+      actionLabel: currentExperimentCount ? "查看实验草案" : confirmedStrategyCount ? "去创建草案" : "",
+      onAction: currentExperimentCount || confirmedStrategyCount ? () => setPage("optimization") : undefined,
     },
   ];
   const workflowToneMeta: Record<string, { color: string; text: string; className: string }> = {
@@ -2304,7 +2348,15 @@ export default function App() {
               <Tag color={citationDecisionStatusColor(currentCitationDecisionData?.status)}>{citationDecisionStatusLabel(currentCitationDecisionData?.status)}</Tag>
               {answerStepDone && citationDecisionError && <Tag color="red">引用链路异常</Tag>}
               <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>刷新主链路</Button>
-              <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={() => setPage("optimization")}>查看推荐动作</Button>
+              <Button
+                size="small"
+                type="primary"
+                disabled={!citationCanConfirm && !strategyCandidateCount}
+                loading={citationDecisionLoading}
+                onClick={strategyCandidateCount ? () => setPage("optimization") : confirmCitationDecisionV1}
+              >
+                {strategyCandidateCount ? "查看策略确认" : "生成策略候选"}
+              </Button>
               <Button size="small" onClick={() => setPage("optimization")}>{citationProductTruthBlockedRows.length ? "补目标品牌事实" : "执行策略详情"}</Button>
               {citationProductTruthBlockedRows.length > 0 && <Text type="secondary">这里确认的是{project?.brand_name || "目标品牌"}自己的能力，不是竞品或对标文章的能力。</Text>}
               {legacyContinueResult && <Tag color="default">存在历史缺口/动作结果，不计入当前引用决策进度</Tag>}
@@ -3507,11 +3559,11 @@ export default function App() {
           {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下仅展示该 Prompt 的执行策略；切回「全部 Prompt」查看项目整体。" />}
           {projectId && citationTargetPromptId && <Card
             size="small"
-            title={<Space wrap><ShieldCheck size={16} /><Text strong>引用资料决策详情</Text><Tag>问题 #{citationTargetPromptId}</Tag>{currentCitationDecisionData?.evidence_package_id && <Tag color="blue">证据 #{currentCitationDecisionData.evidence_package_id}</Tag>}</Space>}
+            title={<Space wrap><ShieldCheck size={16} /><Text strong>引用证据与策略确认详情</Text><Tag>问题 #{citationTargetPromptId}</Tag>{currentCitationDecisionData?.evidence_package_id && <Tag color="blue">证据 #{currentCitationDecisionData.evidence_package_id}</Tag>}</Space>}
             extra={<Space wrap>
               <Tag color={citationDecisionStatusColor(currentCitationDecisionData?.status)}>{citationDecisionStatusLabel(currentCitationDecisionData?.status)}</Tag>
               <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>重新运行链路</Button>
-              <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>确认推荐动作</Button>
+              <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>生成策略候选</Button>
             </Space>}
           >
             <Space direction="vertical" size={12} style={{ width: "100%" }}>
@@ -3527,11 +3579,11 @@ export default function App() {
                 type={citationProductTruthBlockedRows.length ? "warning" : citationCanConfirm ? "success" : "info"}
                 showIcon
                 message={citationProductTruthBlockedRows.length
-                  ? "链路已跑到对标来源，但产品事实未匹配，暂不生成动作"
+                  ? "链路已跑到对标来源，但产品事实未匹配，暂不生成策略候选"
                   : citationCanConfirm
-                    ? "已有可人工确认的内容/证据动作"
-                    : "当前没有可执行动作，系统不会用引用显著性或历史相关标记强行生成策略"}
-                description={decisionDisplayText(citationSummary.boundary_note) || "这里展示 引用来源 → 对标来源 → 缺口 → 动作 → 实验 的纵向链路；目标品牌事实未确认前只允许人工补事实，不允许自动出执行策略。"}
+                    ? "已有可生成策略候选的内容/证据缺口"
+                    : "当前没有可生成策略候选的缺口，系统不会用引用显著性或历史相关标记强行生成策略"}
+                description={decisionDisplayText(citationSummary.boundary_note) || "这里展示 引用来源 → 对标来源 → 缺口 → 策略确认 → 实验草案 的纵向链路；目标品牌事实未确认前只允许人工补事实，不允许自动出执行策略。"}
               />
               {citationDecisionError && <Alert
                 type="error"
@@ -3543,7 +3595,7 @@ export default function App() {
               <Row gutter={[12, 12]}>
                 <Col xs={12} md={6}><Statistic title="来源数" value={citationLoaded ? citationSummary.source_count ?? 0 : "-"} /></Col>
                 <Col xs={12} md={6}><Statistic title="核心对标" value={citationLoaded ? citationSummary.primary_benchmark_count ?? 0 : "-"} /></Col>
-                <Col xs={12} md={6}><Statistic title="推荐动作" value={citationLoaded ? citationSummary.recommended_action_count ?? 0 : "-"} /></Col>
+                <Col xs={12} md={6}><Statistic title="策略候选线索" value={citationLoaded ? citationSummary.recommended_action_count ?? 0 : "-"} /></Col>
                 <Col xs={12} md={6}><Statistic title="渠道机会" value={citationLoaded ? citationSummary.channel_opportunity_count ?? 0 : "-"} /></Col>
               </Row>
               {decisionStability && <Alert
@@ -3557,7 +3609,7 @@ export default function App() {
                 title={<Space wrap><Text strong>操作台</Text>{citationProductTruthBlockedRows.length > 0 && <Tag color="gold">{citationProductTruthBlockedRows.length} 条需要产品事实</Tag>}</Space>}
                 extra={<Space wrap>
                   <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>重新运行</Button>
-                  <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>确认推荐动作</Button>
+                  <Button size="small" type="primary" disabled={!citationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>生成策略候选</Button>
                 </Space>}
               >
                 <Alert
@@ -3567,8 +3619,8 @@ export default function App() {
                   message={citationProductTruthBlockedRows.length > 0
                     ? `下一步：确认${project?.brand_name || "目标品牌"}是否真实具备同等能力`
                     : citationCanConfirm
-                      ? "下一步：确认推荐动作"
-                      : "当前没有可执行动作，可补产品事实后重新运行"}
+                      ? "下一步：生成策略候选并人工审核"
+                      : "当前没有可生成策略候选的缺口，可补产品事实后重新运行"}
                   description={`这里确认的是${project?.brand_name || "目标品牌"}自己的产品能力，不是确认对标文章或竞品是否具备能力。若事实来源需要写官网/文档 URL，请用下方表单补充；补完后系统会自动重跑链路。`}
                 />
                 <Form
@@ -3696,7 +3748,7 @@ export default function App() {
                   </Space>
                 }}
               />
-              {citationRecommendedActions.length > 0 && <Card size="small" title="待人工确认的推荐动作">
+              {citationRecommendedActions.length > 0 && <Card size="small" title="可生成策略候选的干预线索">
                 <Space direction="vertical" size={8} style={{ width: "100%" }}>
                   {citationRecommendedActions.map((action: any) => <Alert
                     key={action.action_key || action.summary}

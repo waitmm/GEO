@@ -256,7 +256,8 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         and bool(truths) and not truths_pending
     )
 
-    # gap/action 的人工确认状态
+    # gap/strategy 的人工确认状态。step_key="action" 为历史兼容键，
+    # 用户可见语义必须展示为“策略确认”，不能再理解为已执行动作。
     confirmed = {
         row.step_key
         for row in db.query(WorkflowConfirmation).filter(
@@ -300,7 +301,7 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         experiment_detail = "可创建实验草案（选择渠道）"
     else:
         experiment_done = False
-        experiment_detail = "待动作确认后进入"
+        experiment_detail = "待策略确认后进入"
 
     steps = [
         {"key": "collection", "label": "数据采集", "done": total_runs >= 1, "detail": f"{total_runs} Runs"},
@@ -310,7 +311,7 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         {"key": "evidence_review", "label": "证据人工确认", "done": evidence_review_done, "detail": f"{supports_reviewed}/{len(supports)} 条已审" if supports else "无需审核"},
         {"key": "product_truth", "label": "目标品牌能力确认", "done": bool(truths) and not truths_pending, "detail": f"{len(truths)-len(truths_pending)}/{len(truths)} 条已确认" if truths else "0 条"},
         {"key": "gap", "label": "缺口诊断", "done": gap_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if gap_confirmed else ("待答案决策识别修正" if analyzed and not answer_semantic_done else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成")))},
-        {"key": "action", "label": "动作候选", "done": action_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if action_confirmed else ("待答案决策识别修正" if analyzed and not answer_semantic_done else ("可生成（点「继续分析」）" if reviews_done else "待缺口后生成")))},
+        {"key": "action", "label": "策略确认", "done": action_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认策略" if action_confirmed else ("待答案决策识别修正" if analyzed and not answer_semantic_done else ("可生成策略候选（点「继续分析」）" if reviews_done else "待缺口后生成策略候选")))},
         {"key": "experiment", "label": "实验", "done": experiment_done, "detail": experiment_detail},
     ]
     pending = sum(1 for s in steps if not s["done"] and s["key"] not in {"gap", "action", "experiment", "evidence", "answer_semantic"})

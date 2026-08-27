@@ -304,6 +304,22 @@ function citationProminenceLabel(value?: string | null) {
   return value ? labels[value] || value : "-";
 }
 
+function decisionStabilityLevelColor(value?: string | null) {
+  if (value === "HIGH_STABILITY") return "green";
+  if (value === "MIXED") return "gold";
+  if (value === "HIGH_VOLATILITY") return "red";
+  return "default";
+}
+
+function dominantOutcomeText(outcome?: any) {
+  if (!outcome) return "暂无";
+  if (outcome.outcome_type === "RECOMMENDATION_ENTITY") {
+    return outcome.entity_text || "未知推荐对象";
+  }
+  if (outcome.outcome_type === "NO_RECOMMENDATION") return "无明确推荐";
+  return "无有效样本";
+}
+
 function existingAssetStatusLabel(value?: string | null) {
   const labels: Record<string, string> = {
     AVAILABLE: "已有可用品牌资产",
@@ -2035,6 +2051,9 @@ export default function App() {
   const citationRecommendedActions = currentCitationDecisionData?.recommended_actions || [];
   const citationConfirmableActions = citationRecommendedActions.filter((item: any) => item.route === "CONTENT" || item.route === "EVIDENCE");
   const citationChannelOpportunities = currentCitationDecisionData?.channel_opportunities || [];
+  const decisionStability = currentCitationDecisionData?.decision_stability || null;
+  const topRecommendationEntity = decisionStability?.recommendation_entities?.[0];
+  const topRecommendationReason = decisionStability?.recommendation_reasons?.[0];
   const citationCanConfirm = citationConfirmableActions.length > 0;
   const citationLoaded = Boolean(currentCitationDecisionData);
   const citationNeedsEvidencePackage = Boolean(citationDecisionError?.includes("尚无 Evidence Package") || citationDecisionError?.includes("尚无证据包"));
@@ -2286,6 +2305,19 @@ export default function App() {
               {citationProductTruthBlockedRows.length > 0 && <Text type="secondary">这里确认的是{project?.brand_name || "目标品牌"}自己的能力，不是竞品或对标文章的能力。</Text>}
               {legacyContinueResult && <Tag color="default">存在历史缺口/动作结果，不计入当前引用决策进度</Tag>}
             </Space>
+            {decisionStability && <Card size="small" style={{ marginTop: 12 }} title={<Space wrap><Text strong>决策稳定性观察</Text><Tag color={decisionStabilityLevelColor(decisionStability.stability_level)}>{decisionStability.stability_level_label}</Tag><Tag>旁路指标</Tag></Space>}>
+              <Row gutter={[12, 12]}>
+                <Col xs={12} md={6}><Statistic title="有效样本" value={decisionStability.valid_run_count ?? 0} suffix="Runs" /></Col>
+                <Col xs={12} md={6}><Statistic title="品牌决策发生" value={`${decisionStability.brand_decision_run_count ?? 0}/${decisionStability.valid_run_count ?? 0}`} /></Col>
+                <Col xs={12} md={6}><Statistic title="主导推荐对象" value={dominantOutcomeText(decisionStability.dominant_recommendation_outcome)} /></Col>
+                <Col xs={12} md={6}><Statistic title="稳定性" value={decisionStability.decision_stability_score ?? 0} suffix="/100" /></Col>
+              </Row>
+              <Text type="secondary">
+                {topRecommendationEntity ? `Top 推荐覆盖：${topRecommendationEntity.entity_text} ${topRecommendationEntity.recommendation_run_count}/${topRecommendationEntity.denominator}。` : "当前没有明确推荐对象覆盖。"}
+                {topRecommendationReason ? ` Top 理由覆盖：${decisionDisplayText(topRecommendationReason.reason_text)} ${topRecommendationReason.reason_observed_run_count}/${topRecommendationReason.denominator}。` : ""}
+                {" "}该指标只描述多次采样里的推荐波动，不影响证据、对标、缺口、策略、动作或实验。
+              </Text>
+            </Card>}
             {currentWorkflowData && currentContinueResult && <Space direction="vertical" size={4} style={{width:"100%", marginTop:8}}>
               <Alert type={currentContinueResult.gap?.gap_type==="UNRESOLVED" ? "warning" : "success"} showIcon
                 message={<Space wrap><Text strong>缺口：{decisionDisplayText(currentContinueResult.gap?.gap_type)}</Text><Tag>{decisionDisplayText(currentContinueResult.gap?.confidence)}</Tag>
@@ -3510,6 +3542,12 @@ export default function App() {
                 <Col xs={12} md={6}><Statistic title="推荐动作" value={citationLoaded ? citationSummary.recommended_action_count ?? 0 : "-"} /></Col>
                 <Col xs={12} md={6}><Statistic title="渠道机会" value={citationLoaded ? citationSummary.channel_opportunity_count ?? 0 : "-"} /></Col>
               </Row>
+              {decisionStability && <Alert
+                type={decisionStability.stability_level === "HIGH_VOLATILITY" ? "warning" : "info"}
+                showIcon
+                message={<Space wrap><Text strong>决策稳定性：{decisionStability.decision_stability_score}/100</Text><Tag color={decisionStabilityLevelColor(decisionStability.stability_level)}>{decisionStability.stability_level_label}</Tag><Tag>只读观察</Tag></Space>}
+                description={`有效样本 ${decisionStability.valid_run_count} Runs；品牌决策发生 ${decisionStability.brand_decision_run_count}/${decisionStability.valid_run_count}；主导推荐对象：${dominantOutcomeText(decisionStability.dominant_recommendation_outcome)}。该指标不改变当前证据、对标、缺口、策略、动作或实验结果。`}
+              />}
               <Card
                 size="small"
                 title={<Space wrap><Text strong>操作台</Text>{citationProductTruthBlockedRows.length > 0 && <Tag color="gold">{citationProductTruthBlockedRows.length} 条需要产品事实</Tag>}</Space>}

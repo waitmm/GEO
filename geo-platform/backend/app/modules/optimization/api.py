@@ -52,6 +52,7 @@ from app.modules.optimization.service import (
     create_experiment,
     create_hypothesis,
     create_issue,
+    decision_stability_for_package,
     evidence_chain,
     evidence_package_to_read,
     experiment_to_read,
@@ -303,6 +304,16 @@ def citation_decision_vertical_slice_endpoint(
         evidence_package_id,
         use_answer_binding_v1_1=use_answer_binding_v1_1,
     )
+
+
+@router.get("/projects/{project_id}/prompts/{prompt_id}/decision-stability")
+def decision_stability_endpoint(
+    project_id: int,
+    prompt_id: int,
+    evidence_package_id: int | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    return decision_stability_for_package(db, project_id, prompt_id, evidence_package_id)
 
 
 @router.post("/projects/{project_id}/prompts/{prompt_id}/citation-decision-v1/confirm")

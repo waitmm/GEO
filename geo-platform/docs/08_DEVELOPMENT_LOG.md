@@ -2,6 +2,89 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Citation Decision V1.1 Phase 5 Decision Stability
+
+- Added Phase 5 Decision Stability as a read-only post-hoc metric for single
+  Prompt multi-Run recommendation variance.
+- No database migration was required. The metric is derived from existing:
+  - fixed Evidence Package `source_run_ids`
+  - valid `BrowserMonitorRun`
+  - `RecommendationEvent`
+  - `AnswerDecisionBinding`
+  - `AnswerUnit`
+- Added service/API support:
+
+```text
+GET /optimization/projects/{project_id}/prompts/{prompt_id}/decision-stability
+```
+
+- The `citation-decision-v1` response now includes `decision_stability` for
+  the current Prompt/package context.
+- Locked the calculation formula in code and docs:
+
+```text
+score = round(dominant_recommendation_outcome.run_count / valid_run_count * 100)
+```
+
+- Added fixed stability levels:
+
+```text
+HIGH_STABILITY: score >= 80
+MIXED: 50 <= score < 80
+HIGH_VOLATILITY: score < 50
+NO_VALID_RUNS: valid_run_count = 0
+```
+
+- Decision Stability remains isolated from all formal gates:
+
+```text
+Evidence / Benchmark / Gap / Strategy / Action / Experiment / Baseline
+```
+
+- Added frontend display on the single Prompt main chain and citation decision
+  detail page. The UI labels it as `只读观察` and explains that it does not
+  change main-chain outcomes.
+- Added Prompt `#40` Phase 5 audit output:
+
+```text
+docs/PROMPT_40_PHASE5_DECISION_STABILITY_AUDIT.md
+```
+
+- Added Phase 5 checkpoint:
+
+```text
+docs/CITATION_DECISION_V1_1_PHASE5_DECISION_STABILITY_CHECKPOINT.md
+```
+
+- Prompt `#40` result:
+
+```text
+valid_run_count = 6
+brand_decision_run_count = 6
+dominant_recommendation_outcome = Bitly
+decision_stability_score = 100
+stability_level = HIGH_STABILITY
+formal_output_impact = NONE
+```
+
+- Also added/kept Phase 4 regression coverage for Strategy gate, Step 8
+  execution-plan gate, strategy snapshot immutability, baseline freeze, required
+  selected asset/channel, and benchmark-channel isolation.
+- Validation:
+
+```text
+.venv/bin/python -m compileall -q app scripts/audit_prompt40_phase5_decision_stability.py
+.venv/bin/python -m pytest -q tests/test_source_gap_v1.py tests/test_evidence_lineage_v1.py
+48 passed
+```
+
+- Phase status:
+
+```text
+PHASE_5_DECISION_STABILITY_CHECKPOINT_READY
+STEP_9_NOT_STARTED
+```
+
 ## 2026-08-27 Citation Decision V1.1 Phase 4 Execution Plan
 
 - Completed the Phase 4 Preflight Audit inside the same product phase; no

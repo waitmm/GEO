@@ -132,6 +132,10 @@ export const api = {
       evidencePackageId ? `evidence_package_id=${evidencePackageId}` : "",
       typeof useAnswerBindingV11 === "boolean" ? `use_answer_binding_v1_1=${useAnswerBindingV11 ? "true" : "false"}` : "",
     ].filter(Boolean).join("&").replace(/^(.+)/, "?$1")}`),
+  getDecisionStability: (projectId: number, promptId: number, evidencePackageId?: number) =>
+    request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/decision-stability${[
+      evidencePackageId ? `evidence_package_id=${evidencePackageId}` : "",
+    ].filter(Boolean).join("&").replace(/^(.+)/, "?$1")}`),
   confirmCitationDecisionV1: (projectId: number, promptId: number, payload: unknown) =>
     request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/citation-decision-v1/confirm`, { method: "POST", body: JSON.stringify(payload) }),
   generateRecommendationAnalysis: (projectId: number, payload: unknown) =>

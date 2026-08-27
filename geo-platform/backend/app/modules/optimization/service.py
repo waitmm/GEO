@@ -16,6 +16,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AnswerDecisionBinding,
     AnswerSemanticFact,
     BrowserMonitorRun,
     Competitor,
@@ -1121,6 +1122,32 @@ STEP8_CHANNELS = {
     "OTHER",
 }
 STEP8_ASSET_OPERATIONS = {"UPDATE_EXISTING", "CREATE_NEW"}
+DECISION_STABILITY_VERSION = "decision_stability.phase5.v1"
+DECISION_STABILITY_EVENT_STATUSES = {"MACHINE_GROUNDED", "MACHINE_CANDIDATE", "HUMAN_CONFIRMED"}
+DECISION_STABILITY_DECISION_ACTS = {"RECOMMEND", "INCLUDE_AS_OPTION", "COMPARE"}
+DECISION_STABILITY_REASON_ROLES = {"DIRECT_REASON", "SUPPORTING_REASON"}
+DECISION_STABILITY_REASON_SEMANTIC_TYPES = {
+    "FEATURE",
+    "BENEFIT",
+    "PRICE",
+    "USE_CASE",
+    "RESULT_EFFECT",
+    "COMPARATIVE_ADVANTAGE",
+}
+DECISION_STABILITY_REASON_EXCLUDE_PHRASES = (
+    "打开官网",
+    "进入工具",
+    "完成注册",
+    "粘贴",
+    "输入框",
+    "点击生成",
+    "生成按钮",
+    "操作步骤",
+    "使用注意事项",
+    "需要我",
+    "帮你挑选",
+    "是将",
+)
 
 
 def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> dict:
@@ -2585,6 +2612,7 @@ def citation_decision_vertical_slice(
         for action in recommended_actions
         if action.get("route") in {"CONTENT", "EVIDENCE"}
     ]
+    decision_stability = _decision_stability_for_resolved_package(db, project, prompt, package)
     return {
         "version": VERTICAL_SLICE_VERSION,
         "analysis_version": VERTICAL_SLICE_VERSION,
@@ -2605,10 +2633,327 @@ def citation_decision_vertical_slice(
         "recommended_actions": recommended_actions,
         "channel_opportunities": channel_opportunities,
         "experiment_proposals": experiment_proposals,
+        "decision_stability": decision_stability,
         "resampling_plan": _vertical_resampling_plan(prompt, package),
         "outcome_plan": _vertical_outcome_plan(),
         "source_analysis": rows,
     }
+
+
+def decision_stability_for_package(
+    db: Session,
+    project_id: int,
+    prompt_id: int,
+    evidence_package_id: int | None = None,
+) -> dict:
+    """Phase 5: read-only post-hoc description of multi-Run decision variance.
+
+    This calculator must not feed Benchmark, Gap, Strategy, Action, Experiment,
+    or Baseline gates. It only reports how stable the already-observed
+    run-level recommendation decisions are for the fixed Evidence Package.
+    """
+    project = db.get(Project, project_id)
+    prompt = db.get(Prompt, prompt_id)
+    if not project or not prompt or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Project/Prompt 不存在")
+    package = _resolve_vertical_slice_package(db, project_id, prompt_id, evidence_package_id)
+    return _decision_stability_for_resolved_package(db, project, prompt, package)
+
+
+def _decision_stability_for_resolved_package(
+    db: Session,
+    project: Project,
+    prompt: Prompt,
+    package: OptimizationEvidencePackage,
+) -> dict:
+    run_ids = loads(package.source_run_ids_json, [])
+    runs = _runs_by_ids(db, run_ids, project.id)
+    valid_runs = [run for run in runs if run.status in VALID_RUN_STATUSES]
+    valid_run_ids = [run.id for run in valid_runs]
+    events = db.query(RecommendationEvent).filter(
+        RecommendationEvent.project_id == project.id,
+        RecommendationEvent.prompt_id == prompt.id,
+        RecommendationEvent.run_id.in_(valid_run_ids),
+        RecommendationEvent.review_status.in_(DECISION_STABILITY_EVENT_STATUSES),
+    ).all() if valid_run_ids else []
+    return _decision_stability_from_runs(db, project, prompt, package, valid_runs, events)
+
+
+def _decision_stability_from_runs(
+    db: Session,
+    project: Project,
+    prompt: Prompt,
+    package: OptimizationEvidencePackage,
+    valid_runs: list[BrowserMonitorRun],
+    events: list[RecommendationEvent],
+) -> dict:
+    valid_run_ids = [run.id for run in valid_runs]
+    valid_run_set = set(valid_run_ids)
+    denominator = len(valid_run_ids)
+    decision_events = [
+        event for event in events
+        if (event.speech_act or "").upper() in DECISION_STABILITY_DECISION_ACTS
+    ]
+    brand_decision_run_ids = sorted({
+        event.run_id for event in decision_events if event.run_id in valid_run_set
+    })
+    recommendation_events = [
+        event for event in events
+        if (event.speech_act or "").upper() == "RECOMMEND" and event.run_id in valid_run_set
+    ]
+    recommendation_run_ids = sorted({event.run_id for event in recommendation_events})
+    recommendation_entities = _decision_stability_recommendation_entities(recommendation_events, denominator)
+    no_recommendation_run_ids = sorted(valid_run_set - set(recommendation_run_ids))
+    dominant = _dominant_recommendation_outcome(recommendation_entities, no_recommendation_run_ids, denominator)
+    score = int(round((dominant["run_count"] / denominator) * 100)) if denominator else 0
+    level = _decision_stability_level(score, denominator)
+    return {
+        "version": DECISION_STABILITY_VERSION,
+        "project_id": project.id,
+        "prompt_id": prompt.id,
+        "evidence_package_id": package.id,
+        "metric_role": "POST_HOC_DESCRIPTIVE_ONLY",
+        "valid_run_ids": valid_run_ids,
+        "valid_run_count": denominator,
+        "brand_decision_run_count": len(brand_decision_run_ids),
+        "brand_decision_rate": _decision_stability_metric(
+            "brand_decision_run_count",
+            brand_decision_run_ids,
+            denominator,
+        ),
+        "recommendation_entities": recommendation_entities,
+        "dominant_recommendation_outcome": dominant,
+        "recommendation_reasons": _decision_stability_reasons(db, recommendation_events),
+        "decision_stability_score": score,
+        "stability_level": level,
+        "stability_level_label": _decision_stability_level_label(level),
+        "formula": "round(dominant_recommendation_outcome.run_count / valid_run_count * 100)",
+        "thresholds": {
+            "HIGH_STABILITY": "score >= 80",
+            "MIXED": "50 <= score < 80",
+            "HIGH_VOLATILITY": "score < 50",
+        },
+        "boundary_note": (
+            "Decision Stability 只描述多 Run 推荐结果分布；不参与 Evidence、Benchmark、Gap、"
+            "Strategy、Action、Experiment 或 Baseline 的任何 Gate。"
+        ),
+    }
+
+
+def _decision_stability_recommendation_entities(events: list[RecommendationEvent], denominator: int) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for event in events:
+        entity = (event.entity_text or "未知对象").strip() or "未知对象"
+        key = _compact_key(entity) or entity
+        row = grouped.setdefault(key, {
+            "entity_text": entity,
+            "recommendation_run_ids": set(),
+            "recommendation_event_ids": [],
+        })
+        row["recommendation_run_ids"].add(event.run_id)
+        row["recommendation_event_ids"].append(event.id)
+    result = []
+    for row in grouped.values():
+        run_ids = sorted(row["recommendation_run_ids"])
+        result.append({
+            "entity_text": row["entity_text"],
+            "recommendation_run_count": len(run_ids),
+            "denominator": denominator,
+            "value": _rate(len(run_ids), denominator),
+            "observed_run_ids": run_ids,
+            "recommendation_event_ids": sorted(set(row["recommendation_event_ids"])),
+        })
+    return sorted(result, key=lambda item: (-item["recommendation_run_count"], item["entity_text"]))
+
+
+def _dominant_recommendation_outcome(
+    recommendation_entities: list[dict],
+    no_recommendation_run_ids: list[int],
+    denominator: int,
+) -> dict:
+    candidates: list[dict] = []
+    for entity in recommendation_entities:
+        candidates.append({
+            "outcome_type": "RECOMMENDATION_ENTITY",
+            "entity_text": entity["entity_text"],
+            "run_count": entity["recommendation_run_count"],
+            "denominator": denominator,
+            "value": entity["value"],
+            "observed_run_ids": entity["observed_run_ids"],
+        })
+    candidates.append({
+        "outcome_type": "NO_RECOMMENDATION",
+        "entity_text": "",
+        "run_count": len(no_recommendation_run_ids),
+        "denominator": denominator,
+        "value": _rate(len(no_recommendation_run_ids), denominator),
+        "observed_run_ids": no_recommendation_run_ids,
+    })
+    return sorted(candidates, key=lambda item: (-item["run_count"], item["outcome_type"], item.get("entity_text") or ""))[0] if candidates else {
+        "outcome_type": "NO_VALID_RUNS",
+        "entity_text": "",
+        "run_count": 0,
+        "denominator": 0,
+        "value": 0,
+        "observed_run_ids": [],
+    }
+
+
+def _decision_stability_reasons(db: Session, recommendation_events: list[RecommendationEvent]) -> list[dict]:
+    if not recommendation_events:
+        return []
+    event_by_id = {event.id: event for event in recommendation_events}
+    event_run_denominators: dict[str, set[int]] = defaultdict(set)
+    event_entities_by_run: dict[int, dict[str, str]] = defaultdict(dict)
+    for event in recommendation_events:
+        entity = (event.entity_text or "未知对象").strip() or "未知对象"
+        entity_key = _compact_key(entity) or entity
+        event_run_denominators[entity_key].add(event.run_id)
+        event_entities_by_run[event.run_id][entity_key] = entity
+
+    bindings = db.query(AnswerDecisionBinding).filter(
+        AnswerDecisionBinding.recommendation_event_id.in_(list(event_by_id)),
+        AnswerDecisionBinding.decision_role.in_(DECISION_STABILITY_REASON_ROLES),
+        AnswerDecisionBinding.review_status != "HUMAN_REJECTED",
+    ).all()
+    unit_ids = [binding.answer_unit_id for binding in bindings if binding.answer_unit_id]
+    units = db.query(AnswerUnit).filter(AnswerUnit.id.in_(unit_ids)).all() if unit_ids else []
+    unit_by_id = {unit.id: unit for unit in units}
+    grouped: dict[tuple[str, str], dict] = {}
+
+    for binding in bindings:
+        event = event_by_id.get(binding.recommendation_event_id)
+        unit = unit_by_id.get(binding.answer_unit_id)
+        if not event or not unit:
+            continue
+        semantic_type = (unit.semantic_type or "GENERAL_FACT").upper()
+        reason_text = (unit.unit_text_normalized or unit.unit_text_original or "").strip()
+        if not reason_text:
+            continue
+        if not _decision_stability_is_reason_like_unit(unit, reason_text):
+            continue
+        entity = _decision_stability_reason_entity(event, unit, reason_text, event_entities_by_run)
+        role = (binding.decision_role or "SUPPORTING_REASON").upper()
+        key = (_compact_key(entity) or entity, _compact_key(reason_text) or reason_text)
+        row = grouped.setdefault(key, {
+            "entity_text": entity,
+            "reason_text": reason_text,
+            "decision_role": role,
+            "semantic_type": semantic_type,
+            "reason_source": "ANSWER_DECISION_BINDING",
+            "observed_run_ids": set(),
+            "answer_unit_ids": set(),
+            "decision_binding_ids": set(),
+        })
+        if row["decision_role"] != "DIRECT_REASON" and role == "DIRECT_REASON":
+            row["decision_role"] = "DIRECT_REASON"
+        row["observed_run_ids"].add(binding.run_id or unit.run_id or event.run_id)
+        row["answer_unit_ids"].add(unit.id)
+        row["decision_binding_ids"].add(binding.id)
+
+    bound_event_ids = {binding.recommendation_event_id for binding in bindings}
+    for event in recommendation_events:
+        if event.id in bound_event_ids:
+            continue
+        entity = (event.entity_text or "未知对象").strip() or "未知对象"
+        for raw_reason in loads(event.reasons_json, []):
+            reason_text = (
+                raw_reason.get("normalized_reason") or raw_reason.get("text") or raw_reason.get("reason")
+                if isinstance(raw_reason, dict)
+                else str(raw_reason)
+            )
+            reason_text = str(reason_text or "").strip()
+            if not reason_text:
+                continue
+            key = (_compact_key(entity) or entity, _compact_key(reason_text) or reason_text)
+            row = grouped.setdefault(key, {
+                "entity_text": entity,
+                "reason_text": reason_text,
+                "decision_role": "RECOMMENDATION_EVENT_REASON",
+                "semantic_type": "",
+                "reason_source": "RECOMMENDATION_EVENT_REASONS_JSON",
+                "observed_run_ids": set(),
+                "answer_unit_ids": set(),
+                "decision_binding_ids": set(),
+            })
+            row["observed_run_ids"].add(event.run_id)
+
+    result = []
+    for (entity_key, _), row in grouped.items():
+        denominator = len(event_run_denominators.get(entity_key, set()))
+        run_ids = sorted(row["observed_run_ids"])
+        result.append({
+            "entity_text": row["entity_text"],
+            "reason_text": row["reason_text"],
+            "decision_role": row["decision_role"],
+            "semantic_type": row.get("semantic_type", ""),
+            "reason_source": row["reason_source"],
+            "reason_observed_run_count": len(run_ids),
+            "denominator": denominator,
+            "value": _rate(len(run_ids), denominator),
+            "observed_run_ids": run_ids,
+            "answer_unit_ids": sorted(row["answer_unit_ids"]),
+            "decision_binding_ids": sorted(row["decision_binding_ids"]),
+        })
+    return sorted(result, key=lambda item: (-item["reason_observed_run_count"], item["entity_text"], item["reason_text"]))
+
+
+def _decision_stability_reason_entity(
+    event: RecommendationEvent,
+    unit: AnswerUnit,
+    reason_text: str,
+    event_entities_by_run: dict[int, dict[str, str]],
+) -> str:
+    event_entity = (event.entity_text or "未知对象").strip() or "未知对象"
+    same_run_entities = event_entities_by_run.get(event.run_id, {})
+
+    unit_hint = (unit.entity_hint or "").strip()
+    unit_hint_key = _compact_key(unit_hint) if unit_hint else ""
+    if unit_hint_key and unit_hint_key in same_run_entities:
+        return same_run_entities[unit_hint_key]
+
+    reason_key = _compact_key(reason_text)
+    for entity_key, entity_text in same_run_entities.items():
+        if entity_key and entity_key in reason_key:
+            return entity_text
+    return event_entity
+
+
+def _decision_stability_is_reason_like_unit(unit: AnswerUnit, reason_text: str) -> bool:
+    semantic_type = (unit.semantic_type or "GENERAL_FACT").upper()
+    if semantic_type not in DECISION_STABILITY_REASON_SEMANTIC_TYPES:
+        return False
+    text_key = _compact_key(reason_text)
+    return not any(_compact_key(phrase) in text_key for phrase in DECISION_STABILITY_REASON_EXCLUDE_PHRASES)
+
+
+def _decision_stability_metric(name: str, run_ids: list[int], denominator: int) -> dict:
+    return {
+        "metric_name": name,
+        "numerator": len(set(run_ids)),
+        "denominator": denominator,
+        "value": _rate(len(set(run_ids)), denominator),
+        "observed_run_ids": sorted(set(run_ids)),
+    }
+
+
+def _decision_stability_level(score: int, denominator: int) -> str:
+    if denominator <= 0:
+        return "NO_VALID_RUNS"
+    if score >= 80:
+        return "HIGH_STABILITY"
+    if score >= 50:
+        return "MIXED"
+    return "HIGH_VOLATILITY"
+
+
+def _decision_stability_level_label(level: str) -> str:
+    return {
+        "HIGH_STABILITY": "高稳定",
+        "MIXED": "混合波动",
+        "HIGH_VOLATILITY": "高波动",
+        "NO_VALID_RUNS": "无有效样本",
+    }.get(level, level)
 
 
 def confirm_citation_decision_vertical_slice(

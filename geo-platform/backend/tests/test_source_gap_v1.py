@@ -12,6 +12,7 @@ from app.models import (
     BrowserMonitorTask,
     EvidenceAlignment,
     OptimizationAction,
+    OptimizationEvidencePackage,
     OptimizationExperiment,
     OptimizationIssue,
     OptimizationStrategyCandidate,
@@ -38,6 +39,7 @@ from app.modules.optimization.service import (
     confirm_citation_decision_vertical_slice,
     confirm_strategy_execution_plan,
     create_evidence_package,
+    decision_stability_for_package,
     review_strategy_candidate,
     strategy_to_experiment_plan,
 )
@@ -1130,6 +1132,377 @@ def test_vertical_slice_feature_flag_controls_v1_1_read_path():
         assert on["summary"]["primary_benchmark_count"] == 1
         assert on["recommended_actions"][0]["route"] == "CONTENT"
         assert on["source_analysis"][0]["capability_truth_targets"][0]["label"] == "点击统计"
+    finally:
+        db.close()
+
+
+def _decision_stability_fixture(db, entity_by_run: list[str | None]) -> tuple[Project, Prompt, OptimizationEvidencePackage]:
+    project = Project(id=31, organization_id=1, name="爱短链品牌监测", brand_name="爱短链")
+    prompt = Prompt(id=61, project_id=31, prompt_text="短链工具推荐", title="短链工具推荐")
+    task = BrowserMonitorTask(id=31, project_id=31, question_ids_json="[61]", status="completed")
+    db.add_all([Organization(id=1, name="测试组织"), project, prompt, task])
+    runs = []
+    events = []
+    units = []
+    bindings = []
+    for index, entity in enumerate(entity_by_run, start=1):
+        run_id = 3100 + index
+        run = BrowserMonitorRun(
+            id=run_id,
+            task_id=31,
+            project_id=31,
+            prompt_id=61,
+            status="success",
+            original_query=prompt.prompt_text,
+            answer_text=f"推荐 {entity}，因为它自带点击统计。" if entity else "这些工具各有优劣。",
+        )
+        runs.append(run)
+        if not entity:
+            continue
+        event_id = 3200 + index
+        unit_id = 3300 + index
+        binding_id = 3400 + index
+        events.append(RecommendationEvent(
+            id=event_id,
+            project_id=31,
+            prompt_id=61,
+            run_id=run_id,
+            answer_hash=f"answer-{index}",
+            entity_text=entity,
+            speech_act="RECOMMEND",
+            recommendation_strength="STRONG",
+            polarity="POSITIVE",
+            answer_span=f"推荐 {entity}，因为它自带点击统计。",
+            reasons_json=dumps([]),
+            review_status="MACHINE_GROUNDED",
+        ))
+        units.append(AnswerUnit(
+            id=unit_id,
+            project_id=31,
+            prompt_id=61,
+            run_id=run_id,
+            answer_claim_id=unit_id,
+            unit_text_original=f"{entity} 自带点击统计",
+            unit_text_normalized=f"{entity} 自带点击统计",
+            source_span=f"{entity} 自带点击统计",
+            semantic_type="FEATURE",
+            entity_hint=entity,
+        ))
+        bindings.append(AnswerDecisionBinding(
+            id=binding_id,
+            project_id=31,
+            prompt_id=61,
+            run_id=run_id,
+            recommendation_event_id=event_id,
+            answer_unit_id=unit_id,
+            decision_role="SUPPORTING_REASON",
+            binding_strength="MEDIUM",
+            review_status="MACHINE_GROUNDED",
+        ))
+    package = OptimizationEvidencePackage(
+        id=3501,
+        project_id=31,
+        prompt_id=61,
+        version=1,
+        source_run_ids_json=dumps([run.id for run in runs]),
+        target_page_urls_json=dumps([]),
+        environment_snapshot_json=dumps({}),
+        package_payload_json=dumps({}),
+        package_hash="decision-stability-fixture",
+        status="active",
+    )
+    db.add_all([*runs, *events, *units, *bindings, package])
+    db.commit()
+    return project, prompt, package
+
+
+@pytest.mark.parametrize(
+    ("entity_by_run", "expected_score", "expected_level"),
+    [
+        (["ToolX", "ToolX", "ToolX", "ToolX", "ToolX", None], 83, "HIGH_STABILITY"),
+        (["ToolX", "ToolX", "ToolX", "ToolY", "ToolY", "ToolY"], 50, "MIXED"),
+        (["ToolX", "ToolX", "ToolY", "ToolY", "ToolZ", "ToolZ"], 33, "HIGH_VOLATILITY"),
+    ],
+)
+def test_decision_stability_reports_simple_run_distribution(entity_by_run, expected_score, expected_level):
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _decision_stability_fixture(db, entity_by_run)
+
+        result = decision_stability_for_package(db, project.id, prompt.id, package.id)
+
+        assert result["valid_run_count"] == 6
+        assert result["decision_stability_score"] == expected_score
+        assert result["stability_level"] == expected_level
+        assert result["formula"] == "round(dominant_recommendation_outcome.run_count / valid_run_count * 100)"
+        assert result["metric_role"] == "POST_HOC_DESCRIPTIVE_ONLY"
+        assert result["dominant_recommendation_outcome"]["observed_run_ids"]
+    finally:
+        db.close()
+
+
+def test_decision_stability_reason_coverage_uses_recommendation_entity_denominator():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _decision_stability_fixture(db, ["ToolX", "ToolX", "ToolX", "ToolY", None, None])
+
+        result = decision_stability_for_package(db, project.id, prompt.id, package.id)
+        toolx_reason = next(item for item in result["recommendation_reasons"] if item["entity_text"] == "ToolX")
+
+        assert toolx_reason["reason_observed_run_count"] == 3
+        assert toolx_reason["denominator"] == 3
+        assert toolx_reason["value"] == 1
+        assert toolx_reason["observed_run_ids"] == [3101, 3102, 3103]
+    finally:
+        db.close()
+
+
+def test_decision_stability_reason_attribution_uses_answer_unit_entity_scope():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _decision_stability_fixture(db, ["ToolX"])
+        tooly_event = RecommendationEvent(
+            id=3901,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3101,
+            answer_hash="answer-1",
+            entity_text="ToolY",
+            speech_act="RECOMMEND",
+            recommendation_strength="STRONG",
+            polarity="POSITIVE",
+            answer_span="同时推荐 ToolY。",
+            reasons_json=dumps([]),
+            review_status="MACHINE_GROUNDED",
+        )
+        overly_broad_binding = AnswerDecisionBinding(
+            id=3902,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3101,
+            recommendation_event_id=3901,
+            answer_unit_id=3301,
+            decision_role="SUPPORTING_REASON",
+            binding_strength="MEDIUM",
+            review_status="MACHINE_GROUNDED",
+        )
+        db.add_all([tooly_event, overly_broad_binding])
+        db.commit()
+
+        result = decision_stability_for_package(db, project.id, prompt.id, package.id)
+        toolx_reasons = [
+            item for item in result["recommendation_reasons"]
+            if item["reason_text"] == "ToolX 自带点击统计"
+        ]
+
+        assert toolx_reasons
+        assert {item["entity_text"] for item in toolx_reasons} == {"ToolX"}
+    finally:
+        db.close()
+
+
+def test_decision_stability_reason_coverage_excludes_procedure_units():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _decision_stability_fixture(db, ["ToolX"])
+        procedure_unit = AnswerUnit(
+            id=3903,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3101,
+            answer_claim_id=3903,
+            unit_text_original="打开官网并粘贴链接",
+            unit_text_normalized="打开官网并粘贴链接",
+            source_span="打开官网并粘贴链接",
+            semantic_type="FEATURE",
+            entity_hint="ToolX",
+        )
+        procedure_binding = AnswerDecisionBinding(
+            id=3904,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3101,
+            recommendation_event_id=3201,
+            answer_unit_id=3903,
+            decision_role="SUPPORTING_REASON",
+            binding_strength="MEDIUM",
+            review_status="MACHINE_GROUNDED",
+        )
+        db.add_all([procedure_unit, procedure_binding])
+        db.commit()
+
+        result = decision_stability_for_package(db, project.id, prompt.id, package.id)
+
+        assert all(
+            item["reason_text"] != "打开官网并粘贴链接"
+            for item in result["recommendation_reasons"]
+        )
+    finally:
+        db.close()
+
+
+def test_decision_stability_isolation_does_not_change_formal_chain_outputs():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _vertical_slice_fixture(db)
+        before = citation_decision_vertical_slice(db, project.id, prompt.id, package.id, use_answer_binding_v1_1=True)
+        before_counts = {
+            "strategy_candidates": db.query(OptimizationStrategyCandidate).count(),
+            "actions": db.query(OptimizationAction).count(),
+            "experiments": db.query(OptimizationExperiment).count(),
+            "alignments": db.query(EvidenceAlignment).count(),
+        }
+
+        stability = decision_stability_for_package(db, project.id, prompt.id, package.id)
+        after = citation_decision_vertical_slice(db, project.id, prompt.id, package.id, use_answer_binding_v1_1=True)
+        after_counts = {
+            "strategy_candidates": db.query(OptimizationStrategyCandidate).count(),
+            "actions": db.query(OptimizationAction).count(),
+            "experiments": db.query(OptimizationExperiment).count(),
+            "alignments": db.query(EvidenceAlignment).count(),
+        }
+
+        assert stability["metric_role"] == "POST_HOC_DESCRIPTIVE_ONLY"
+        assert after_counts == before_counts
+        assert after["summary"] == before["summary"]
+        assert after["status"] == before["status"]
+        assert after["recommended_actions"] == before["recommended_actions"]
+    finally:
+        db.close()
+
+
+def test_step8_baseline_snapshot_ignores_prompt_runs_added_after_experiment_creation():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _vertical_slice_fixture(db)
+        proposal = citation_decision_vertical_slice(db, project.id, prompt.id, package.id, use_answer_binding_v1_1=True)
+        confirmed = confirm_citation_decision_vertical_slice(
+            db,
+            project.id,
+            prompt.id,
+            {
+                "evidence_package_id": package.id,
+                "action_keys": [proposal["recommended_actions"][0]["action_key"]],
+                "reviewer": "human",
+                "use_answer_binding_v1_1": True,
+            },
+        )
+        candidate_id = confirmed["created"][0]["strategy_candidate"]["id"]
+        review_strategy_candidate(
+            db,
+            candidate_id,
+            type(
+                "Payload",
+                (),
+                {
+                    "review_status": "ACCEPTED_WITH_EDITS",
+                    "reviewed_by": "human",
+                    "review_note": "确认策略机制，待 Step 8 选择资产。",
+                    "human_edited_payload": {"review_summary": "能力表达缺口成立"},
+                },
+            )(),
+        )
+        result = confirm_strategy_execution_plan(
+            db,
+            candidate_id,
+            {
+                "channel": "OFFICIAL_SITE",
+                "asset_operation": "UPDATE_EXISTING",
+                "selected_asset_id": 901,
+                "selected_asset_type": "ARTICLE",
+                "target_content_type": "ARTICLE",
+                "target_object": "CONTENT_ASSET",
+                "baseline_run_ids": [101],
+            },
+        )
+        experiment = db.get(OptimizationExperiment, result["experiment_id"])
+        baseline_before = loads(experiment.baseline_metrics_json, {})
+        db.add(BrowserMonitorRun(
+            id=199,
+            task_id=1,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            status="success",
+            original_query=prompt.prompt_text,
+            answer_text="后来新增的采样不应改变已冻结 Baseline。",
+            brand_mentioned=True,
+        ))
+        db.commit()
+        db.refresh(experiment)
+
+        assert loads(experiment.baseline_run_ids_json, []) == [101]
+        assert loads(experiment.baseline_metrics_json, {}) == baseline_before
+        assert baseline_before["metrics"]["brand_mention"]["denominator"] == 1
+    finally:
+        db.close()
+
+
+def test_step8_benchmark_channel_does_not_auto_become_execution_channel():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _vertical_slice_fixture(db)
+        proposal = citation_decision_vertical_slice(db, project.id, prompt.id, package.id, use_answer_binding_v1_1=True)
+        assert proposal["channel_opportunities"][0]["channel"] == "zhihu"
+        confirmed = confirm_citation_decision_vertical_slice(
+            db,
+            project.id,
+            prompt.id,
+            {
+                "evidence_package_id": package.id,
+                "action_keys": [proposal["recommended_actions"][0]["action_key"]],
+                "reviewer": "human",
+                "use_answer_binding_v1_1": True,
+            },
+        )
+        candidate_id = confirmed["created"][0]["strategy_candidate"]["id"]
+        candidate = db.get(OptimizationStrategyCandidate, candidate_id)
+        assert loads(candidate.structured_payload_json, {})["target_platform"] == "UNRESOLVED"
+        review_strategy_candidate(
+            db,
+            candidate_id,
+            type(
+                "Payload",
+                (),
+                {
+                    "review_status": "ACCEPTED",
+                    "reviewed_by": "human",
+                    "review_note": "只确认策略机制，不从 Benchmark 平台继承执行渠道。",
+                    "human_edited_payload": {},
+                },
+            )(),
+        )
+
+        result = confirm_strategy_execution_plan(
+            db,
+            candidate_id,
+            {
+                "channel": "OFFICIAL_SITE",
+                "asset_operation": "UPDATE_EXISTING",
+                "selected_asset_id": 901,
+                "selected_asset_type": "ARTICLE",
+                "target_content_type": "ARTICLE",
+                "target_object": "CONTENT_ASSET",
+                "baseline_run_ids": [101],
+            },
+        )
+
+        assert result["plan_payload"]["channel"] == "OFFICIAL_SITE"
+        assert result["plan_payload"]["selected_asset_ref"]["channel"] == "OFFICIAL_SITE"
+        assert result["plan_payload"]["strategy_snapshot"]["effective_payload"]["target_platform"] == "OFFICIAL_SITE"
     finally:
         db.close()
 

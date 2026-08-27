@@ -2,6 +2,99 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Citation Decision V1.1 Phase 5 Decision Stability
+
+### Product Decision
+
+单 Prompt GEO V1 增加 Decision Stability 作为旁路观察指标。
+
+它只描述：
+
+```text
+同一 Prompt 多次独立采样时，AI 的品牌/方案推荐结果是否稳定。
+```
+
+它不参与：
+
+```text
+证据资格
+对标来源
+缺口诊断
+策略确认
+执行动作
+实验草案
+Baseline
+```
+
+### Product Semantics
+
+稳定性分数采用最简单透明的统计口径：
+
+```text
+主导推荐结果覆盖的 Run 数 / 有效 Run 数
+```
+
+并展示真实分子/分母：
+
+```text
+有效样本
+品牌决策发生
+推荐对象覆盖
+推荐理由覆盖
+observed_run_ids
+```
+
+它不是 LLM confidence，不是 Strategy confidence，也不是新的评分体系。
+
+### UI
+
+单 Prompt 主链页面和引用资料决策详情页展示：
+
+```text
+决策稳定性观察
+只读观察
+```
+
+页面文案明确说明：
+
+```text
+该指标只描述多次采样里的推荐波动，不影响证据、对标、缺口、策略、动作或实验。
+```
+
+本次没有新增独立模块，也没有改变 1-8 主链。
+
+### Prompt #40 Result
+
+```text
+valid_run_ids = [238, 239, 240, 253, 254, 255]
+valid_run_count = 6
+brand_decision_run_count = 6
+dominant_recommendation_outcome = Bitly
+decision_stability_score = 100 / 100
+stability_level = HIGH_STABILITY
+```
+
+主链零影响：
+
+```text
+PRIMARY_BENCHMARK: 1 -> 1
+CONTENT_GAP: 1 -> 1
+StrategyCandidate #41: unchanged
+Action #30: unchanged
+Experiment #30: unchanged
+```
+
+### Current Boundary
+
+当前状态：
+
+```text
+PHASE_5_DECISION_STABILITY_CHECKPOINT_READY
+STEP_9_NOT_STARTED
+```
+
+下一步不是继续加新功能，而是进行单 Prompt V1 1-8 最终验收。
+
 ## 2026-08-27 Citation Decision V1.1 Phase 4 Execution Plan
 
 ### Product Decision

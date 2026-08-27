@@ -1318,3 +1318,66 @@ Validation performed:
     `LEGACY_RELATION_ONLY = 594`;
   - prompt-level observed run coverage is derived as
     `[238, 239, 240, 253, 254, 255]`, `6/6`.
+
+## 2026-08-27 Citation Decision V1.1 Phase 2B Capability Gap Diagnosis
+
+- Entered Phase 2B after Phase 2A checkpoint. Scope was limited to
+  capability/reason-level Gap Diagnosis.
+- Implemented the deterministic earliest-failure decision tree:
+  `Product Truth -> Relevant Asset Expression -> RetrievalCandidate ->
+  Evidence Adoption`.
+  - Product Truth is checked at capability/reason granularity before any
+    asset, retrieval, or adoption logic can decide the Gap.
+  - Relevant Brand Asset is selected from existing `PageSnapshot` rows by
+    capability/prompt/benchmark relevance and records an audit snapshot
+    (`selected_snapshot_id`, URL, title, matched terms, candidate IDs).
+  - Discoverability only uses valid `RetrievalCandidate` rows from eligible
+    evidence observed Runs.
+  - Evidence Adoption only uses current package `ReferenceSource` plus existing
+    `DecisionEvidenceAdoption` context, and keeps the causal-boundary note.
+- Reused existing `source_gap_type`, `source_gap_precondition`,
+  Product Truth, `PageSnapshot`, `RetrievalCandidate`, and
+  `DecisionEvidenceAdoption` structures.
+  - Added only derived payload fields on source analysis:
+    `capability_gap_layer`, `capability_gap_diagnosis`,
+    `relevant_asset_snapshot`, `retrieval_candidate_context`, and
+    `evidence_adoption_context`.
+  - Added the minimal `source_gap_type` value `DISCOVERABILITY_GAP`; it is not
+    mapped to Step 7 in this phase.
+- Kept Phase 2A lineage as the evidence gate:
+  only eligible `EvidenceAlignment` rows can produce Benchmark Evidence for
+  this Gap layer.
+- Added/updated tests in `backend/tests/test_source_gap_v1.py` for:
+  - stopping at Product Truth before later layers;
+  - stopping at Relevant Asset Expression before retrieval/adoption;
+  - valid Retrieval-only Discoverability;
+  - retrieved-but-not-adopted Evidence Gap;
+  - `NO_GAP` requiring both retrieval and adoption context.
+- Added a read-only #40 regression script:
+  `backend/scripts/audit_prompt40_phase2b_gap.py`.
+- Added checkpoint/audit docs:
+  - `docs/CITATION_DECISION_V1_1_PHASE2B_GAP_CHECKPOINT.md`
+  - `docs/PROMPT_40_PHASE2B_CAPABILITY_GAP_AUDIT.md`
+- No migration is required: the new outputs are derived API payload fields.
+- Phase 2B explicitly did not develop Step 7, Step 8, Decision Stability,
+  frontend masking, or Citation/Benchmark scoring changes.
+
+Validation performed:
+
+- `.venv/bin/python -m compileall -q app scripts/audit_prompt40_phase2b_gap.py`
+  passed.
+- `.venv/bin/python -m pytest -q tests/test_source_gap_v1.py tests/test_evidence_lineage_v1.py`
+  passed: `35 passed`.
+- `.venv/bin/python scripts/audit_prompt40_phase2b_gap.py --output ../docs/PROMPT_40_PHASE2B_CAPABILITY_GAP_AUDIT.md`
+  passed.
+- Prompt `#40` Phase 2B audit:
+  - `PRIMARY_BENCHMARK = 1`, `SECONDARY_BENCHMARK = 0`;
+  - benchmark `SourceDocument #345` is diagnosed as `CONTENT_GAP`;
+  - earliest failure layer is `RELEVANT_ASSET_EXPRESSION`;
+  - matched Product Truth status is `TRUE`;
+  - relevant asset snapshot is `PageSnapshot #3`;
+  - asset coverage is `MISSING`;
+  - Retrieval context is `RETRIEVED`;
+  - Evidence Adoption context is `NOT_ADOPTED`;
+  - formal `SourceClaim` stayed `577 -> 577`;
+  - Prompt `#40` formal `EvidenceAlignment` stayed `660 -> 660`.

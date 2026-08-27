@@ -573,11 +573,16 @@ class SourceAnalysisRead(BaseModel):
     source_gap_basis: list[str] = Field(default_factory=list)
     source_gap_precondition: str = "NO_ELIGIBLE_BENCHMARK"
     gap_analysis_status: str = "NOT_ELIGIBLE"
+    capability_gap_layer: str = ""
+    capability_gap_diagnosis: dict[str, Any] = Field(default_factory=dict)
     matched_product_truth_ids: list[int] = Field(default_factory=list)
     matched_product_truth_status: str = "UNKNOWN"
     existing_asset_status: str = "UNKNOWN"
     existing_asset_snapshot_id: Optional[int] = None
     existing_asset_coverage: str = "UNKNOWN"
+    relevant_asset_snapshot: dict[str, Any] = Field(default_factory=dict)
+    retrieval_candidate_context: dict[str, Any] = Field(default_factory=dict)
+    evidence_adoption_context: dict[str, Any] = Field(default_factory=dict)
     priority_level: Optional[str] = None
     priority_label: str = ""
     priority_reason: str = ""

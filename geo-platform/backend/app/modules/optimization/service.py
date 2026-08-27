@@ -3814,7 +3814,7 @@ def source_analysis(
         valid_run_ids=valid_run_ids or [run.id for run in runs],
         include_answer_binding_v1_1=include_answer_binding_v1_1,
     )
-    rows = _attach_source_gap_analysis(db, project, rows)
+    rows = _attach_source_gap_analysis(db, project, rows, prompt=prompt, retrievals=retrievals, references=references)
     rows = _attach_priority_action_routes(rows)
     rows = _attach_channel_opportunities(rows)
     rows = _attach_recommended_actions(rows, project, prompt)
@@ -3931,6 +3931,8 @@ def _source_analysis_row(
         "source_gap_basis": [],
         "source_gap_precondition": "NO_ELIGIBLE_BENCHMARK",
         "gap_analysis_status": "NOT_ELIGIBLE",
+        "capability_gap_layer": "",
+        "capability_gap_diagnosis": {},
         "matched_product_truth_ids": [],
         "matched_product_truth_status": "UNKNOWN",
         "capability_truth_targets": [],
@@ -3938,6 +3940,9 @@ def _source_analysis_row(
         "existing_asset_status": "UNKNOWN",
         "existing_asset_snapshot_id": None,
         "existing_asset_coverage": "UNKNOWN",
+        "relevant_asset_snapshot": {},
+        "retrieval_candidate_context": {},
+        "evidence_adoption_context": {},
         "priority_level": None,
         "priority_label": "",
         "priority_reason": "该来源未进入优化优先级判断。",
@@ -4316,6 +4321,9 @@ def _attach_source_gap_analysis(
     db: Session,
     project: Project,
     rows: list[dict],
+    prompt: Prompt | None = None,
+    retrievals: list[RetrievalCandidate] | None = None,
+    references: list[ReferenceSource] | None = None,
 ) -> list[dict]:
     if not rows:
         return rows
@@ -4327,7 +4335,6 @@ def _attach_source_gap_analysis(
     }
     benchmark_by_row = _benchmark_evidence_by_alignment_id(db, support_ids)
     truths = db.query(TargetBrandCapabilityTruth).filter(TargetBrandCapabilityTruth.project_id == project.id).all()
-    asset = _brand_asset_context(db, project)
     for row in rows:
         tier = (row.get("benchmark_tier") or "").upper()
         if tier not in {"PRIMARY_BENCHMARK", "SECONDARY_BENCHMARK"}:
@@ -4338,7 +4345,16 @@ def _attach_source_gap_analysis(
             for alignment_id in row.get("supporting_alignment_ids", [])
             if alignment_id in benchmark_by_row
         ]
-        row.update(_source_gap_for_benchmark(benchmark_items, truths, asset))
+        row.update(_source_gap_for_benchmark(
+            benchmark_items,
+            truths,
+            None,
+            db=db,
+            project=project,
+            prompt=prompt,
+            retrievals=retrievals or [],
+            references=references or [],
+        ))
     return rows
 
 
@@ -4392,32 +4408,53 @@ def _benchmark_evidence_by_alignment_id(db: Session, support_ids: set[int]) -> d
     return result
 
 
-def _brand_asset_context(db: Session, project: Project) -> dict:
-    snapshot = _latest_brand_asset_snapshot(db, project)
+def _brand_asset_context(
+    db: Session,
+    project: Project,
+    capability_targets: list[dict] | None = None,
+    prompt: Prompt | None = None,
+    benchmark_text: str = "",
+) -> dict:
+    snapshot, audit = _latest_brand_asset_snapshot(db, project, capability_targets or [], prompt, benchmark_text)
     if not snapshot:
         return {
             "status": "INCOMPLETE",
             "snapshot_id": None,
             "text": "",
             "reason": "尚未找到可用的品牌资产页面快照。",
+            "relevance_status": "NO_SNAPSHOT",
+            "audit": audit,
         }
     text = " ".join([snapshot.title or "", snapshot.h1 or "", snapshot.meta_description or "", snapshot.main_text or ""]).strip()
     if len(text) < 30:
         return {
             "status": "INCOMPLETE",
             "snapshot_id": snapshot.id,
+            "url": snapshot.final_url or snapshot.url or snapshot.target_url or snapshot.canonical_url,
             "text": text,
             "reason": "品牌资产快照正文不足，不能可靠判断覆盖情况。",
+            "relevance_status": audit.get("relevance_status", "UNKNOWN"),
+            "audit": audit,
         }
     return {
         "status": "AVAILABLE",
         "snapshot_id": snapshot.id,
+        "url": snapshot.final_url or snapshot.url or snapshot.target_url or snapshot.canonical_url,
+        "title": snapshot.title or snapshot.h1 or "",
         "text": text,
         "reason": "已找到可用于判断的品牌资产快照。",
+        "relevance_status": audit.get("relevance_status", "UNKNOWN"),
+        "audit": audit,
     }
 
 
-def _latest_brand_asset_snapshot(db: Session, project: Project) -> PageSnapshot | None:
+def _latest_brand_asset_snapshot(
+    db: Session,
+    project: Project,
+    capability_targets: list[dict] | None = None,
+    prompt: Prompt | None = None,
+    benchmark_text: str = "",
+) -> tuple[PageSnapshot | None, dict]:
     rows = (
         db.query(PageSnapshot)
         .filter(PageSnapshot.project_id == project.id, PageSnapshot.capture_status == "success")
@@ -4426,34 +4463,113 @@ def _latest_brand_asset_snapshot(db: Session, project: Project) -> PageSnapshot 
         .all()
     )
     if not rows:
-        return None
+        return None, {"candidate_snapshot_ids": [], "selected_snapshot_id": None, "relevance_status": "NO_SNAPSHOT"}
+    scored = [
+        (_brand_asset_relevance_score(project, row, capability_targets or [], prompt, benchmark_text), row)
+        for row in rows
+    ]
+    scored.sort(key=lambda item: (-item[0]["score"], -int(item[1].id or 0)))
+    best_score, best_snapshot = scored[0]
+    audit = {
+        "candidate_snapshot_ids": [row.id for _score, row in scored[:10]],
+        "selected_snapshot_id": best_snapshot.id,
+        "selected_url": best_snapshot.final_url or best_snapshot.url or best_snapshot.target_url or best_snapshot.canonical_url,
+        "selected_title": best_snapshot.title or best_snapshot.h1 or "",
+        "relevance_score": best_score["score"],
+        "matched_terms": best_score["matched_terms"],
+        "relevance_status": "RELEVANT" if best_score["matched_terms"] else "LOW_RELEVANCE",
+        "selection_method": "CAPABILITY_PROMPT_RELEVANCE",
+    }
+    return best_snapshot, audit
+
+
+def _brand_asset_relevance_score(
+    project: Project,
+    snapshot: PageSnapshot,
+    capability_targets: list[dict],
+    prompt: Prompt | None,
+    benchmark_text: str,
+) -> dict:
+    text = " ".join([
+        snapshot.target_url or "",
+        snapshot.url or "",
+        snapshot.final_url or "",
+        snapshot.canonical_url or "",
+        snapshot.title or "",
+        snapshot.h1 or "",
+        snapshot.meta_description or "",
+        snapshot.main_text or "",
+    ])
+    text_key = _compact_key(text)
+    terms = []
+    for target in capability_targets or []:
+        label = str(target.get("label") or "")
+        if label:
+            terms.append(label)
+    terms.extend(_important_prompt_terms(prompt.prompt_text if prompt else ""))
+    terms.extend(_important_prompt_terms(benchmark_text))
+    matched_terms = []
+    score = 0
+    for term in terms:
+        key = _compact_key(term)
+        if not key or key in {_compact_key(project.brand_name or ""), "短链", "链接"}:
+            continue
+        if key in text_key:
+            score += 4 if any(key == _compact_key(str(target.get("label") or "")) for target in capability_targets or []) else 1
+            if term not in matched_terms:
+                matched_terms.append(term)
     target = _normalize_source_url(project.website_url or "")
     if target:
-        for row in rows:
-            if target in {
-                _normalize_source_url(row.target_url or ""),
-                _normalize_source_url(row.url or ""),
-                _normalize_source_url(row.final_url or ""),
-                _normalize_source_url(row.canonical_url or ""),
-            }:
-                return row
-    return rows[0]
+        if target in {
+            _normalize_source_url(snapshot.target_url or ""),
+            _normalize_source_url(snapshot.url or ""),
+            _normalize_source_url(snapshot.final_url or ""),
+            _normalize_source_url(snapshot.canonical_url or ""),
+        }:
+            score += 1
+    return {"score": score, "matched_terms": matched_terms[:8]}
+
+
+def _important_prompt_terms(text: str) -> list[str]:
+    cleaned = re.sub(r"[，。！？、；:：\s]+", " ", text or "")
+    return [
+        token
+        for token in cleaned.split()
+        if len(_compact_key(token)) >= 4
+    ][:8]
 
 
 def _source_gap_for_benchmark(
     benchmark_items: list[dict],
     truths: list[TargetBrandCapabilityTruth],
-    asset: dict,
+    asset: dict | None,
+    db: Session | None = None,
+    project: Project | None = None,
+    prompt: Prompt | None = None,
+    retrievals: list[RetrievalCandidate] | None = None,
+    references: list[ReferenceSource] | None = None,
 ) -> dict:
     capability_targets = _benchmark_capability_targets(benchmark_items)
     suggested_capability_label = _suggested_capability_label_for_benchmark(benchmark_items)
     benchmark_text = _benchmark_evidence_text(benchmark_items)
+    asset = asset or (_brand_asset_context(db, project, capability_targets, prompt, benchmark_text) if db and project else _empty_brand_asset_context())
+    retrieval_context = _brand_asset_retrieval_context(project, asset, capability_targets, retrievals, benchmark_items) if retrievals is not None else _unchecked_retrieval_context()
+    adoption_context = _brand_asset_evidence_adoption_context(db, project, prompt, asset, references, benchmark_items) if references is not None else _unchecked_adoption_context()
     if not benchmark_text:
         return {
             **_blocked_source_gap_payload("BENCHMARK_EVIDENCE_INSUFFICIENT", "对标来源缺少可解释的支持文本，暂不生成缺口。"),
+            **_capability_gap_context(
+                failure_layer="BENCHMARK_EVIDENCE",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=[],
+                unmatched_targets=[],
+                asset=asset,
+                coverage="UNKNOWN",
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
             "suggested_capability_label": suggested_capability_label,
-            "capability_truth_targets": capability_targets,
-            "unmatched_capability_truth_targets": [],
         }
 
     if capability_targets:
@@ -4472,9 +4588,18 @@ def _source_gap_for_benchmark(
             asset=asset,
             coverage="UNKNOWN",
             ),
+            **_capability_gap_context(
+                failure_layer="PRODUCT_TRUTH",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=matched_truths,
+                unmatched_targets=unmatched_targets,
+                asset=asset,
+                coverage="UNKNOWN",
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
             "suggested_capability_label": suggested_capability_label,
-            "capability_truth_targets": capability_targets,
-            "unmatched_capability_truth_targets": unmatched_targets,
         }
     if not matched_truths:
         return {
@@ -4487,9 +4612,18 @@ def _source_gap_for_benchmark(
             asset=asset,
             coverage="UNKNOWN",
             ),
+            **_capability_gap_context(
+                failure_layer="PRODUCT_TRUTH",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=[],
+                unmatched_targets=[],
+                asset=asset,
+                coverage="UNKNOWN",
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
             "suggested_capability_label": suggested_capability_label,
-            "capability_truth_targets": capability_targets,
-            "unmatched_capability_truth_targets": [],
         }
     status = _combined_product_truth_status(matched_truths)
     if status == "FALSE":
@@ -4503,9 +4637,18 @@ def _source_gap_for_benchmark(
             asset=asset,
             coverage="NOT_APPLICABLE",
             ),
+            **_capability_gap_context(
+                failure_layer="PRODUCT_TRUTH",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=matched_truths,
+                unmatched_targets=[],
+                asset=asset,
+                coverage="NOT_APPLICABLE",
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
             "suggested_capability_label": suggested_capability_label,
-            "capability_truth_targets": capability_targets,
-            "unmatched_capability_truth_targets": [],
         }
     if status == "UNKNOWN":
         return {
@@ -4518,9 +4661,18 @@ def _source_gap_for_benchmark(
             asset=asset,
             coverage="UNKNOWN",
             ),
+            **_capability_gap_context(
+                failure_layer="PRODUCT_TRUTH",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=matched_truths,
+                unmatched_targets=[],
+                asset=asset,
+                coverage="UNKNOWN",
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
             "suggested_capability_label": suggested_capability_label,
-            "capability_truth_targets": capability_targets,
-            "unmatched_capability_truth_targets": [],
         }
     if asset.get("status") != "AVAILABLE":
         return {
@@ -4533,9 +4685,18 @@ def _source_gap_for_benchmark(
             asset=asset,
             coverage="UNKNOWN",
             ),
+            **_capability_gap_context(
+                failure_layer="RELEVANT_ASSET_EXPRESSION",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=matched_truths,
+                unmatched_targets=[],
+                asset=asset,
+                coverage="UNKNOWN",
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
             "suggested_capability_label": suggested_capability_label,
-            "capability_truth_targets": capability_targets,
-            "unmatched_capability_truth_targets": [],
         }
 
     coverage = _existing_asset_coverage(asset.get("text", ""), benchmark_text, matched_truths)
@@ -4550,9 +4711,18 @@ def _source_gap_for_benchmark(
             asset=asset,
             coverage=coverage,
             ),
+            **_capability_gap_context(
+                failure_layer="RELEVANT_ASSET_EXPRESSION",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=matched_truths,
+                unmatched_targets=[],
+                asset=asset,
+                coverage=coverage,
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
             "suggested_capability_label": suggested_capability_label,
-            "capability_truth_targets": capability_targets,
-            "unmatched_capability_truth_targets": [],
         }
     if coverage == "CLAIM_ONLY":
         return {
@@ -4565,24 +4735,331 @@ def _source_gap_for_benchmark(
             asset=asset,
             coverage=coverage,
             ),
+            **_capability_gap_context(
+                failure_layer="RELEVANT_ASSET_EXPRESSION",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=matched_truths,
+                unmatched_targets=[],
+                asset=asset,
+                coverage=coverage,
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
             "suggested_capability_label": suggested_capability_label,
-            "capability_truth_targets": capability_targets,
-            "unmatched_capability_truth_targets": [],
+        }
+    if retrieval_context.get("status") != "NOT_CHECKED" and not retrieval_context.get("retrieved"):
+        return {
+            **_source_gap_payload(
+                gap_type="DISCOVERABILITY_GAP",
+                precondition="READY",
+                reason="目标品牌已有相关资产表达，但该资产未进入当前 Prompt 的有效检索候选。",
+                basis=["Discoverability 只基于当前证据包内有效 RetrievalCandidate 判断，不从任意品牌资产推断。"],
+                truths=matched_truths,
+                asset=asset,
+                coverage=coverage,
+            ),
+            **_capability_gap_context(
+                failure_layer="RETRIEVAL_CANDIDATE",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=matched_truths,
+                unmatched_targets=[],
+                asset=asset,
+                coverage=coverage,
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
+            "suggested_capability_label": suggested_capability_label,
+        }
+    if adoption_context.get("status") != "NOT_CHECKED" and not adoption_context.get("adopted"):
+        return {
+            **_source_gap_payload(
+                gap_type="EVIDENCE_GAP",
+                precondition="EVIDENCE_ADOPTION_MISSING",
+                reason="目标品牌相关资产已进入有效检索候选，但当前答案未形成引用或 Evidence Adoption 上下文。",
+                basis=["Evidence Adoption 层只描述当前样本中的引用/采纳上下文，不证明模型内部因果。"],
+                truths=matched_truths,
+                asset=asset,
+                coverage=coverage,
+            ),
+            **_capability_gap_context(
+                failure_layer="EVIDENCE_ADOPTION",
+                benchmark_items=benchmark_items,
+                capability_targets=capability_targets,
+                truths=matched_truths,
+                unmatched_targets=[],
+                asset=asset,
+                coverage=coverage,
+                retrieval_context=retrieval_context,
+                adoption_context=adoption_context,
+            ),
+            "suggested_capability_label": suggested_capability_label,
         }
     return {
         **_source_gap_payload(
             gap_type="NO_GAP",
             precondition="READY",
-            reason="Product Truth 已确认，现有品牌资产已充分覆盖关键 Evidence。",
-            basis=["目标品牌资产已覆盖对标来源关键能力与证据表达。"],
+            reason="Product Truth 已确认，现有品牌资产已充分覆盖关键 Evidence，且当前样本中已出现检索和引用/采纳上下文。",
+            basis=["目标品牌资产已覆盖对标来源关键能力与证据表达，并通过 RetrievalCandidate 与 Evidence Adoption 检查。"],
             truths=matched_truths,
             asset=asset,
             coverage=coverage,
         ),
+        **_capability_gap_context(
+            failure_layer="NONE",
+            benchmark_items=benchmark_items,
+            capability_targets=capability_targets,
+            truths=matched_truths,
+            unmatched_targets=[],
+            asset=asset,
+            coverage=coverage,
+            retrieval_context=retrieval_context,
+            adoption_context=adoption_context,
+        ),
         "suggested_capability_label": suggested_capability_label,
-        "capability_truth_targets": capability_targets,
-        "unmatched_capability_truth_targets": [],
     }
+
+
+def _empty_brand_asset_context() -> dict:
+    return {
+        "status": "INCOMPLETE",
+        "snapshot_id": None,
+        "url": "",
+        "title": "",
+        "text": "",
+        "reason": "未提供可审计品牌资产快照。",
+        "relevance_status": "NO_CONTEXT",
+        "audit": {"candidate_snapshot_ids": [], "selected_snapshot_id": None},
+    }
+
+
+def _unchecked_retrieval_context() -> dict:
+    return {"status": "NOT_CHECKED", "retrieved": None, "valid_retrieval_count": 0, "matched_retrievals": []}
+
+
+def _unchecked_adoption_context() -> dict:
+    return {"status": "NOT_CHECKED", "adopted": None, "matched_citations": [], "matched_adoptions": []}
+
+
+def _capability_gap_context(
+    failure_layer: str,
+    benchmark_items: list[dict],
+    capability_targets: list[dict],
+    truths: list[TargetBrandCapabilityTruth],
+    unmatched_targets: list[str],
+    asset: dict,
+    coverage: str,
+    retrieval_context: dict,
+    adoption_context: dict,
+) -> dict:
+    evidence_run_ids = sorted({
+        int(run_id)
+        for item in benchmark_items
+        for run_id in item.get("observed_run_ids", [])
+        if run_id
+    })
+    support_alignment_ids = sorted({
+        int(item.get("alignment_id"))
+        for item in benchmark_items
+        if item.get("alignment_id")
+    })
+    return {
+        "capability_gap_layer": failure_layer,
+        "capability_truth_targets": capability_targets,
+        "unmatched_capability_truth_targets": unmatched_targets,
+        "relevant_asset_snapshot": {
+            "status": asset.get("status", "UNKNOWN"),
+            "snapshot_id": asset.get("snapshot_id"),
+            "url": asset.get("url", ""),
+            "title": asset.get("title", ""),
+            "relevance_status": asset.get("relevance_status", "UNKNOWN"),
+            "coverage": coverage,
+            "reason": asset.get("reason", ""),
+            "audit": asset.get("audit", {}),
+        },
+        "retrieval_candidate_context": retrieval_context,
+        "evidence_adoption_context": adoption_context,
+        "capability_gap_diagnosis": {
+            "diagnosis_version": "capability_gap.phase2b.v1",
+            "failure_layer": failure_layer,
+            "decision_tree": [
+                "PRODUCT_TRUTH",
+                "RELEVANT_ASSET_EXPRESSION",
+                "RETRIEVAL_CANDIDATE",
+                "EVIDENCE_ADOPTION",
+            ],
+            "matched_product_truth_ids": [truth.id for truth in truths],
+            "matched_product_truth_status": _combined_product_truth_status(truths) if truths else "UNKNOWN",
+            "capability_truth_targets": capability_targets,
+            "unmatched_capability_truth_targets": unmatched_targets,
+            "relevant_asset_snapshot": {
+                "snapshot_id": asset.get("snapshot_id"),
+                "url": asset.get("url", ""),
+                "title": asset.get("title", ""),
+                "coverage": coverage,
+                "relevance_status": asset.get("relevance_status", "UNKNOWN"),
+                "audit": asset.get("audit", {}),
+            },
+            "retrieval_candidate_context": retrieval_context,
+            "evidence_adoption_context": adoption_context,
+            "eligible_evidence_lineage": {
+                "supporting_alignment_ids": support_alignment_ids,
+                "observed_run_ids": evidence_run_ids,
+            },
+        },
+    }
+
+
+def _brand_asset_retrieval_context(
+    project: Project | None,
+    asset: dict,
+    capability_targets: list[dict],
+    retrievals: list[RetrievalCandidate],
+    benchmark_items: list[dict],
+) -> dict:
+    observed_run_ids = _observed_run_ids_from_benchmark_items(benchmark_items)
+    valid_retrievals = [
+        item
+        for item in retrievals
+        if _valid_retrieval_candidate(item, observed_run_ids)
+    ]
+    matches = [
+        item
+        for item in valid_retrievals
+        if _source_matches_brand_asset(project, asset, capability_targets, item.url, item.canonical_url, item.domain, item.title)
+    ]
+    return {
+        "status": "RETRIEVED" if matches else "NOT_RETRIEVED",
+        "retrieved": bool(matches),
+        "valid_retrieval_count": len(valid_retrievals),
+        "observed_run_ids": sorted(observed_run_ids),
+        "matched_retrievals": [
+            {
+                "id": item.id,
+                "run_id": item.run_id,
+                "rank": item.rank,
+                "title": item.title or "",
+                "url": item.url or item.canonical_url or "",
+                "domain": item.domain or host_from_url(item.url or item.canonical_url or ""),
+            }
+            for item in matches[:10]
+        ],
+        "rule": "仅使用当前证据包 Run 内有 URL/域名/标题信号的有效 RetrievalCandidate。",
+    }
+
+
+def _brand_asset_evidence_adoption_context(
+    db: Session | None,
+    project: Project | None,
+    prompt: Prompt | None,
+    asset: dict,
+    references: list[ReferenceSource] | None,
+    benchmark_items: list[dict],
+) -> dict:
+    observed_run_ids = _observed_run_ids_from_benchmark_items(benchmark_items)
+    matched_refs = [
+        ref
+        for ref in (references or [])
+        if ref.run_id in observed_run_ids
+        and _source_matches_brand_asset(project, asset, [], ref.url, ref.canonical_url, ref.domain, ref.display_title or ref.matched_title)
+    ]
+    matched_adoptions: list[DecisionEvidenceAdoption] = []
+    if db and project and prompt and observed_run_ids:
+        adoption_rows = db.query(DecisionEvidenceAdoption).filter(
+            DecisionEvidenceAdoption.project_id == project.id,
+            DecisionEvidenceAdoption.prompt_id == prompt.id,
+            DecisionEvidenceAdoption.run_id.in_(observed_run_ids),
+        ).all()
+        matched_adoptions = [
+            row
+            for row in adoption_rows
+            if row.cited and _source_matches_brand_asset(project, asset, [], row.source_url, "", row.source_domain, row.source_title)
+        ]
+    adopted = bool(matched_refs or matched_adoptions)
+    return {
+        "status": "ADOPTED_OR_CITED" if adopted else "NOT_ADOPTED",
+        "adopted": adopted,
+        "observed_run_ids": sorted(observed_run_ids),
+        "matched_citations": [
+            {
+                "id": ref.id,
+                "run_id": ref.run_id,
+                "title": ref.display_title or ref.matched_title or "",
+                "url": ref.url or ref.canonical_url or "",
+                "domain": ref.domain or host_from_url(ref.url or ref.canonical_url or ""),
+            }
+            for ref in matched_refs[:10]
+        ],
+        "matched_adoptions": [
+            {
+                "id": row.id,
+                "run_id": row.run_id,
+                "evidence_status": row.evidence_status,
+                "support_role": row.support_role,
+                "source_title": row.source_title or "",
+                "source_url": row.source_url or "",
+            }
+            for row in matched_adoptions[:10]
+        ],
+        "boundary_note": "引用/采纳上下文不等于模型内部因果，只用于判断当前样本是否出现目标品牌资产采纳迹象。",
+    }
+
+
+def _observed_run_ids_from_benchmark_items(items: list[dict]) -> set[int]:
+    result: set[int] = set()
+    for item in items:
+        for run_id in item.get("observed_run_ids") or []:
+            if run_id:
+                result.add(int(run_id))
+        if item.get("run_id"):
+            result.add(int(item["run_id"]))
+    return result
+
+
+def _valid_retrieval_candidate(item: RetrievalCandidate, allowed_run_ids: set[int]) -> bool:
+    if allowed_run_ids and item.run_id not in allowed_run_ids:
+        return False
+    if not (item.url or item.canonical_url or item.domain or item.title):
+        return False
+    return item.rank is None or int(item.rank or 0) >= 0
+
+
+def _source_matches_brand_asset(
+    project: Project | None,
+    asset: dict,
+    capability_targets: list[dict],
+    url: str,
+    canonical_url: str,
+    domain: str,
+    title: str,
+) -> bool:
+    asset_url = _normalize_source_url(asset.get("url") or "")
+    source_urls = {
+        _normalize_source_url(url or ""),
+        _normalize_source_url(canonical_url or ""),
+    }
+    if asset_url and asset_url in source_urls:
+        return True
+    asset_domain = host_from_url(asset.get("url") or "") or ""
+    source_domain = (domain or host_from_url(url or canonical_url or "") or "").lower().removeprefix("www.")
+    brand_domain = host_from_url(project.website_url) if project and project.website_url else ""
+    domains_match = bool(source_domain and source_domain in {
+        asset_domain.lower().removeprefix("www."),
+        brand_domain.lower().removeprefix("www."),
+    })
+    if not domains_match:
+        return False
+    source_text = _compact_key(" ".join([url or "", canonical_url or "", title or ""]))
+    brand_key = _compact_key(project.brand_name if project else "")
+    if brand_key and brand_key in source_text:
+        return True
+    audit_terms = [
+        str(term)
+        for term in ((asset.get("audit") or {}).get("matched_terms") or [])
+    ]
+    target_terms = [str(target.get("label") or "") for target in capability_targets or []]
+    return any(_compact_key(term) and _compact_key(term) in source_text for term in [*audit_terms, *target_terms])
 
 
 def _benchmark_evidence_text(items: list[dict]) -> str:
@@ -4600,8 +5077,7 @@ def _benchmark_evidence_text(items: list[dict]) -> str:
 
 
 def _benchmark_capability_targets(items: list[dict]) -> list[dict]:
-    targets: list[dict] = []
-    seen: set[str] = set()
+    targets_by_key: dict[str, dict] = {}
     for item in items:
         candidates = [
             (item.get("answer_unit_text", ""), "ANSWER_UNIT"),
@@ -4613,18 +5089,26 @@ def _benchmark_capability_targets(items: list[dict]) -> list[dict]:
             key = _compact_key(label)
             if not key:
                 continue
-            if key not in seen:
-                seen.add(key)
-                targets.append({
+            run_ids = [int(run_id) for run_id in (item.get("observed_run_ids") or []) if run_id]
+            if item.get("run_id"):
+                run_ids.append(int(item["run_id"]))
+            if key not in targets_by_key:
+                targets_by_key[key] = {
                     "label": label,
                     "source": source,
                     "answer_unit_id": item.get("answer_unit_id"),
                     "alignment_id": item.get("alignment_id"),
-                    "observed_run_ids": item.get("observed_run_ids") or [],
-                    "run_coverage_count": item.get("run_coverage_count") or 1,
-                })
+                    "alignment_ids": [],
+                    "observed_run_ids": [],
+                    "run_coverage_count": 0,
+                }
+            target = targets_by_key[key]
+            if item.get("alignment_id") and int(item["alignment_id"]) not in target["alignment_ids"]:
+                target["alignment_ids"].append(int(item["alignment_id"]))
+            target["observed_run_ids"] = sorted({*target["observed_run_ids"], *run_ids})
+            target["run_coverage_count"] = len(target["observed_run_ids"])
             break
-    return targets[:8]
+    return list(targets_by_key.values())[:8]
 
 
 def _suggested_capability_label_for_benchmark(items: list[dict]) -> str:
@@ -4838,6 +5322,8 @@ def _not_eligible_source_gap_payload(precondition: str, reason: str) -> dict:
         "source_gap_basis": [],
         "source_gap_precondition": precondition,
         "gap_analysis_status": "NOT_ELIGIBLE",
+        "capability_gap_layer": "",
+        "capability_gap_diagnosis": {},
         "matched_product_truth_ids": [],
         "matched_product_truth_status": "UNKNOWN",
         "capability_truth_targets": [],
@@ -4845,6 +5331,9 @@ def _not_eligible_source_gap_payload(precondition: str, reason: str) -> dict:
         "existing_asset_status": "UNKNOWN",
         "existing_asset_snapshot_id": None,
         "existing_asset_coverage": "UNKNOWN",
+        "relevant_asset_snapshot": {},
+        "retrieval_candidate_context": {},
+        "evidence_adoption_context": {},
     }
 
 
@@ -4856,6 +5345,8 @@ def _blocked_source_gap_payload(precondition: str, reason: str) -> dict:
         "source_gap_basis": [reason],
         "source_gap_precondition": precondition,
         "gap_analysis_status": "BLOCKED",
+        "capability_gap_layer": "",
+        "capability_gap_diagnosis": {},
         "matched_product_truth_ids": [],
         "matched_product_truth_status": "UNKNOWN",
         "capability_truth_targets": [],
@@ -4863,6 +5354,9 @@ def _blocked_source_gap_payload(precondition: str, reason: str) -> dict:
         "existing_asset_status": "UNKNOWN",
         "existing_asset_snapshot_id": None,
         "existing_asset_coverage": "UNKNOWN",
+        "relevant_asset_snapshot": {},
+        "retrieval_candidate_context": {},
+        "evidence_adoption_context": {},
     }
 
 
@@ -4896,6 +5390,7 @@ def _source_gap_label(gap_type: str) -> str:
         "CONTENT_GAP": "内容缺口",
         "EVIDENCE_GAP": "证据缺口",
         "PRODUCT_GAP": "产品缺口",
+        "DISCOVERABILITY_GAP": "可发现性缺口",
         "NO_GAP": "暂无缺口",
         "UNKNOWN": "无法判断",
     }.get(gap_type, gap_type)

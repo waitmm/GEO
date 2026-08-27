@@ -17,6 +17,7 @@ from app.models import (
     Prompt,
     RecommendationEvent,
     ReferenceSource,
+    RetrievalCandidate,
     SourceClaim,
     SourceDocument,
     SourceQuality,
@@ -125,6 +126,106 @@ def test_source_gap_no_gap_when_truth_and_asset_cover_key_evidence():
 
     assert payload["source_gap_type"] == "NO_GAP"
     assert payload["existing_asset_coverage"] == "SUFFICIENT"
+
+
+def test_capability_gap_stops_at_product_truth_before_asset_retrieval_or_adoption():
+    payload = _source_gap_for_benchmark(
+        [{
+            **_benchmark("点击统计")[0],
+            "event_entity": "小码短链接",
+            "answer_unit_id": 101,
+            "answer_unit_text": "小码短链接自带点击统计",
+        }],
+        [_truth("SUPPORTED", "短链生成")],
+        _asset("爱短链支持点击统计，案例显示已服务 20 家客户。"),
+        retrievals=[],
+        references=[],
+    )
+
+    assert payload["source_gap_type"] == "UNKNOWN"
+    assert payload["capability_gap_layer"] == "PRODUCT_TRUTH"
+    assert payload["retrieval_candidate_context"]["status"] == "NOT_RETRIEVED"
+
+
+def test_capability_gap_stops_at_relevant_asset_expression_before_retrieval():
+    payload = _source_gap_for_benchmark(
+        _benchmark("点击统计"),
+        [_truth("SUPPORTED", "点击统计")],
+        _asset("爱短链官网介绍品牌服务和联系方式。"),
+        retrievals=[
+            RetrievalCandidate(id=1, run_id=101, rank=1, title="爱短链点击统计", url="https://www.aifabu.com", domain="aifabu.com")
+        ],
+        references=[
+            ReferenceSource(id=1, run_id=101, display_title="爱短链点击统计", url="https://www.aifabu.com", domain="aifabu.com")
+        ],
+    )
+
+    assert payload["source_gap_type"] == "CONTENT_GAP"
+    assert payload["capability_gap_layer"] == "RELEVANT_ASSET_EXPRESSION"
+
+
+def test_capability_gap_uses_only_valid_retrieval_for_discoverability():
+    payload = _source_gap_for_benchmark(
+        [{
+            **_benchmark("点击统计")[0],
+            "observed_run_ids": [101],
+        }],
+        [_truth("SUPPORTED", "点击统计")],
+        _asset("爱短链支持点击统计，案例显示服务 20 家客户，成功率 99%。"),
+        project=Project(id=3, organization_id=1, name="爱短链", brand_name="爱短链", website_url="https://www.aifabu.com"),
+        retrievals=[
+            RetrievalCandidate(id=1, run_id=999, rank=1, title="爱短链点击统计", url="https://www.aifabu.com", domain="aifabu.com"),
+            RetrievalCandidate(id=2, run_id=101, rank=1, title="", url="", domain=""),
+        ],
+        references=[],
+    )
+
+    assert payload["source_gap_type"] == "DISCOVERABILITY_GAP"
+    assert payload["capability_gap_layer"] == "RETRIEVAL_CANDIDATE"
+    assert payload["retrieval_candidate_context"]["valid_retrieval_count"] == 0
+
+
+def test_capability_gap_retrieved_but_not_adopted_is_evidence_gap():
+    payload = _source_gap_for_benchmark(
+        [{
+            **_benchmark("点击统计")[0],
+            "observed_run_ids": [101],
+        }],
+        [_truth("SUPPORTED", "点击统计")],
+        _asset("爱短链支持点击统计，案例显示服务 20 家客户，成功率 99%。"),
+        project=Project(id=3, organization_id=1, name="爱短链", brand_name="爱短链", website_url="https://www.aifabu.com"),
+        retrievals=[
+            RetrievalCandidate(id=1, run_id=101, rank=1, title="爱短链点击统计", url="https://www.aifabu.com", domain="aifabu.com")
+        ],
+        references=[],
+    )
+
+    assert payload["source_gap_type"] == "EVIDENCE_GAP"
+    assert payload["source_gap_precondition"] == "EVIDENCE_ADOPTION_MISSING"
+    assert payload["capability_gap_layer"] == "EVIDENCE_ADOPTION"
+
+
+def test_capability_gap_no_gap_requires_retrieval_and_adoption_context():
+    payload = _source_gap_for_benchmark(
+        [{
+            **_benchmark("点击统计")[0],
+            "observed_run_ids": [101],
+        }],
+        [_truth("SUPPORTED", "点击统计")],
+        _asset("爱短链支持点击统计，案例显示服务 20 家客户，成功率 99%。"),
+        project=Project(id=3, organization_id=1, name="爱短链", brand_name="爱短链", website_url="https://www.aifabu.com"),
+        retrievals=[
+            RetrievalCandidate(id=1, run_id=101, rank=1, title="爱短链点击统计", url="https://www.aifabu.com", domain="aifabu.com")
+        ],
+        references=[
+            ReferenceSource(id=1, run_id=101, display_title="爱短链点击统计", url="https://www.aifabu.com", domain="aifabu.com")
+        ],
+    )
+
+    assert payload["source_gap_type"] == "NO_GAP"
+    assert payload["capability_gap_layer"] == "NONE"
+    assert payload["capability_gap_diagnosis"]["retrieval_candidate_context"]["retrieved"] is True
+    assert payload["capability_gap_diagnosis"]["evidence_adoption_context"]["adopted"] is True
 
 
 def test_source_gap_requires_capability_level_product_truth_for_answer_unit():

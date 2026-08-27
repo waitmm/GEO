@@ -958,3 +958,86 @@ SUPPORTS 只实际落在一个 Run，
 不让 Legacy RELATED 进入 V1 支撑语义；
 不把竞品 SourceClaim 自动升级成目标品牌 Product Truth。
 ```
+
+## 2026-08-27 Citation Decision V1.1 Phase 2B Gap Diagnosis
+
+### Product Decision
+
+Phase 2B 只把第 6 步“缺口诊断”推进到 capability/reason-level，不进入
+第 7 步策略候选或第 8 步实验草案。
+
+缺口判断固定为最早失败层决策树：
+
+```text
+Product Truth
+-> Relevant Asset Expression
+-> RetrievalCandidate
+-> Evidence Adoption
+```
+
+### Meaning
+
+本阶段让系统能回答：
+
+```text
+对标来源支撑了哪些具体推荐理由？
+目标品牌是否真实支持这些能力？
+目标品牌相关资产是否已经表达这些能力？
+相关资产是否进入当前 Prompt 的有效检索候选？
+相关资产是否在当前答案中出现引用/采纳上下文？
+```
+
+最早失败层决定 Gap 类型：
+
+```text
+Product Truth 不支持        -> PRODUCT_GAP
+缺同粒度 Product Truth      -> UNKNOWN
+相关品牌资产表达缺失        -> CONTENT_GAP
+相关品牌资产只有声明无证据  -> EVIDENCE_GAP
+相关品牌资产未被有效检索    -> DISCOVERABILITY_GAP
+检索到了但未被引用/采纳     -> EVIDENCE_GAP
+检索和引用/采纳均具备       -> NO_GAP
+```
+
+### Hard Boundaries
+
+```text
+Evidence 只消费 Phase 2A eligible lineage；
+Discoverability 只消费当前证据包 Run 内有效 RetrievalCandidate；
+Relevant Brand Asset 必须可审计并冻结诊断快照；
+不建设强制人工白名单；
+不修改 Citation Prominence / Benchmark 评分公式；
+不新增平行 Strategy / Experiment；
+不开发 Step 7 / Step 8。
+```
+
+### Prompt #40 Regression
+
+真实回归结果：
+
+```text
+核心对标来源：SourceDocument #345
+缺口类型：CONTENT_GAP
+最早失败层：RELEVANT_ASSET_EXPRESSION
+Product Truth：TRUE
+相关资产快照：PageSnapshot #3
+资产覆盖：MISSING
+检索状态：RETRIEVED
+采纳状态：NOT_ADOPTED
+```
+
+解释：
+
+```text
+#40 当前不是 Product Truth 缺失；
+也不是品牌资产完全没进入检索；
+最早失败点是目标品牌相关资产没有覆盖对标来源暴露出的具体能力表达。
+```
+
+当前状态：
+
+```text
+PHASE_2B_CAPABILITY_GAP_READY_FOR_REVIEW
+STEP_7_NOT_STARTED
+STEP_8_NOT_STARTED
+```

@@ -2,6 +2,64 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Single Prompt GEO V1 Final Acceptance
+
+- Completed final acceptance for the single Prompt GEO V1 Step 1-8 main chain
+  using Prompt `#40` as the Golden Case.
+- Added the final acceptance audit artifact:
+
+```text
+docs/SINGLE_PROMPT_GEO_V1_FINAL_ACCEPTANCE.md
+```
+
+- Added the read-only audit helper:
+
+```text
+backend/scripts/audit_prompt40_final_acceptance.py
+```
+
+- Prompt `#40` final accepted state:
+
+```text
+valid_run_ids = [238, 239, 240, 253, 254, 255]
+evidence_package_id = 15
+PRIMARY_BENCHMARK = 1
+CONTENT_GAP = 3 capability-level items
+StrategyCandidate #41 = ACCEPTED_WITH_EDITS / VALIDATED
+Action #30 = PLANNED
+Experiment #30 = draft / WAITING_FOR_RELEASE_AUDIT
+Decision Stability = CO_DOMINANT / 100 / HIGH_STABILITY
+```
+
+- Applied one acceptance bugfix without changing the stability score formula or
+  any Step 1-8 gate: Decision Stability reason coverage now uses the current
+  formal-input `AnswerDecisionBinding` batch when V1.1 formal EvidenceAlignment
+  payloads identify one. Historical Shadow bindings remain preserved but no
+  longer pollute current reason coverage.
+- No new product phase, model, Gap type, Strategy type, scoring formula, Step 9,
+  validation run, monitoring loop, Prompt Cluster, Channel Intelligence, or
+  automatic content generation/publishing was added.
+- Validation:
+
+```text
+.venv/bin/python -m compileall -q app scripts/audit_prompt40_final_acceptance.py scripts/audit_prompt40_phase5_decision_stability.py
+.venv/bin/python -m pytest -q tests/test_answer_evidence_shadow.py tests/test_evidence_lineage_v1.py tests/test_source_gap_v1.py
+68 passed
+
+frontend npm run build
+passed
+
+git diff --check
+passed
+```
+
+- Phase status:
+
+```text
+SINGLE_PROMPT_GEO_V1_FROZEN
+STEP_9_NOT_STARTED
+```
+
 ## 2026-08-27 Citation Decision V1.1 Phase 5 Decision Stability
 
 - Added Phase 5 Decision Stability as a read-only post-hoc metric for single

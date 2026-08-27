@@ -1424,6 +1424,106 @@ def test_decision_stability_reason_coverage_uses_recommendation_entity_denominat
         db.close()
 
 
+def test_decision_stability_reason_coverage_uses_current_formal_input_batch():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _decision_stability_fixture(db, ["ToolX"])
+        current_unit = AnswerUnit(
+            id=3905,
+            shadow_run_id=2,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3101,
+            answer_claim_id=3905,
+            unit_text_original="ToolX 当前支持自定义短链",
+            unit_text_normalized="ToolX 当前支持自定义短链",
+            source_span="ToolX 当前支持自定义短链",
+            semantic_type="FEATURE",
+            entity_hint="ToolX",
+        )
+        stale_unit = AnswerUnit(
+            id=3906,
+            shadow_run_id=1,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3101,
+            answer_claim_id=3906,
+            unit_text_original="ToolX 历史错误理由",
+            unit_text_normalized="ToolX 历史错误理由",
+            source_span="ToolX 历史错误理由",
+            semantic_type="FEATURE",
+            entity_hint="ToolX",
+        )
+        current_binding = AnswerDecisionBinding(
+            id=3907,
+            shadow_run_id=2,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3101,
+            recommendation_event_id=3201,
+            answer_unit_id=3905,
+            decision_role="SUPPORTING_REASON",
+            binding_strength="MEDIUM",
+            review_status="MACHINE_GROUNDED",
+        )
+        stale_binding = AnswerDecisionBinding(
+            id=3908,
+            shadow_run_id=1,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3101,
+            recommendation_event_id=3201,
+            answer_unit_id=3906,
+            decision_role="SUPPORTING_REASON",
+            binding_strength="MEDIUM",
+            review_status="MACHINE_GROUNDED",
+        )
+        doc = SourceDocument(
+            id=3909,
+            url="https://example.com/toolx",
+            original_url="https://example.com/toolx",
+            canonical_url="https://example.com/toolx",
+            domain="example.com",
+            fetch_status="SUCCESS",
+            clean_text="ToolX 当前支持自定义短链",
+        )
+        claim = SourceClaim(
+            id=3910,
+            project_id=project.id,
+            source_document_id=3909,
+            normalized_claim="ToolX 当前支持自定义短链",
+            subject_entity="ToolX",
+        )
+        alignment = EvidenceAlignment(
+            id=3911,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3101,
+            recommendation_event_id=3201,
+            source_document_id=3909,
+            source_claim_id=3910,
+            relation="SUPPORTS",
+            machine_payload_json=dumps({
+                "reason_source": ANSWER_BINDING_REASON_SOURCE,
+                "formal_input_version": FORMAL_V1_1_INPUT_VERSION,
+                "shadow_run_id": 2,
+                "answer_unit_id": 3905,
+                "decision_binding_id": 3907,
+            }),
+        )
+        db.add_all([current_unit, stale_unit, current_binding, stale_binding, doc, claim, alignment])
+        db.commit()
+
+        result = decision_stability_for_package(db, project.id, prompt.id, package.id)
+        reason_texts = {item["reason_text"] for item in result["recommendation_reasons"]}
+
+        assert reason_texts == {"ToolX 当前支持自定义短链"}
+    finally:
+        db.close()
+
+
 def test_decision_stability_reason_attribution_uses_answer_unit_entity_scope():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)

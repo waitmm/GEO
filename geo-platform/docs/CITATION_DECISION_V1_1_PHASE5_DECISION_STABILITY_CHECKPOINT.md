@@ -94,7 +94,9 @@ NO_VALID_RUNS: valid_run_count = 0
 reason_observed_run_count / 对应推荐对象 recommendation_run_count
 ```
 
-推荐理由只消费已有 `AnswerDecisionBinding`，不重新调用 LLM。
+推荐理由只消费已有 `AnswerDecisionBinding`，不重新调用 LLM。有正式
+V1.1 input batch 时，只读取当前批次；历史 ShadowRun Binding 保留作审计，
+不污染当前 reason coverage。
 
 展示口径只保留适合作为推荐理由的 AnswerUnit 类型：
 

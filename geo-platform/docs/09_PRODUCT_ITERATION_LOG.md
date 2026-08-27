@@ -2,6 +2,94 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Single Prompt GEO V1 Final Acceptance
+
+### Product Decision
+
+单 Prompt GEO V1 的 Step 1-8 主链通过 Prompt `#40` 真实 Golden Case
+最终验收，并正式冻结为：
+
+```text
+SINGLE_PROMPT_GEO_V1_FROZEN
+```
+
+冻结含义：
+
+```text
+后续新增需求默认进入 V2；
+除非属于 V1 bugfix，不再扩大 V1 产品边界。
+```
+
+### Accepted Main Chain
+
+本次冻结的是单 Prompt 纵向闭环：
+
+```text
+1 采集样本
+2 答案决策识别
+3 目标品牌事实
+4 引用证据
+5 对标来源
+6 Capability-level Gap
+7 StrategyCandidate + 人工 Strategy 确认
+8 Execution Plan + Action + Experiment Draft + Baseline
+```
+
+Step 9 仍未启动。真实效果结论仍必须等待：
+
+```text
+人工发布确认
+-> 固定复采
+-> validation runs
+-> 指标对比
+-> 人工结论
+```
+
+### Prompt #40 Golden Case Result
+
+```text
+valid_run_ids = [238, 239, 240, 253, 254, 255]
+evidence_package_id = 15
+PRIMARY_BENCHMARK = 1
+CONTENT_GAP = 3 capability-level items
+StrategyCandidate #41 = ACCEPTED_WITH_EDITS / VALIDATED
+Action #30 = PLANNED
+Experiment #30 = draft / WAITING_FOR_RELEASE_AUDIT
+Decision Stability = CO_DOMINANT / 100 / HIGH_STABILITY
+```
+
+`Experiment #30 = draft + WAITING_FOR_RELEASE_AUDIT` 是正常发布 Gate，
+不是 Strategy 未确认，也不是实验已经发布。
+
+### Acceptance Boundary
+
+本轮只做了一个 V1 bugfix：
+
+```text
+Decision Stability reason coverage
+-> 使用当前正式 V1.1 input batch
+-> 不再混入历史 ShadowRun AnswerDecisionBinding
+```
+
+该修正不改变：
+
+```text
+stability score
+dominant tie 语义
+Evidence / Benchmark / Gap / Strategy / Action / Experiment / Baseline
+```
+
+本轮没有新增产品 Phase，没有新增新模型、新 Gap、新 Strategy、新评分公式，
+也没有进入 Step 9。
+
+### Final Audit
+
+最终验收报告：
+
+```text
+docs/SINGLE_PROMPT_GEO_V1_FINAL_ACCEPTANCE.md
+```
+
 ## 2026-08-27 Citation Decision V1.1 Phase 5 Decision Stability
 
 ### Product Decision

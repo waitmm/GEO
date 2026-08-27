@@ -2723,7 +2723,17 @@ def _decision_stability_from_runs(
         ),
         "recommendation_entities": recommendation_entities,
         "dominant_recommendation_outcome": dominant,
-        "recommendation_reasons": _decision_stability_reasons(db, recommendation_events),
+        "recommendation_reasons": _decision_stability_reasons(
+            db,
+            recommendation_events,
+            current_answer_binding_shadow_run_id=_current_answer_binding_shadow_run_id_for_stability(
+                db,
+                project,
+                prompt,
+                package,
+                valid_run_ids,
+            ),
+        ),
         "decision_stability_score": score,
         "stability_level": level,
         "stability_level_label": _decision_stability_level_label(level),
@@ -2849,7 +2859,54 @@ def _dominant_recommendation_outcome(
     }
 
 
-def _decision_stability_reasons(db: Session, recommendation_events: list[RecommendationEvent]) -> list[dict]:
+def _current_answer_binding_shadow_run_id_for_stability(
+    db: Session,
+    project: Project,
+    prompt: Prompt,
+    package: OptimizationEvidencePackage,
+    valid_run_ids: list[int],
+) -> int | None:
+    """Return the current formal-input AnswerDecisionBinding batch if present.
+
+    AnswerDecisionBinding keeps historical Shadow batches for audit. Decision
+    Stability is read-only, but its reason coverage should describe the current
+    formal V1.1 input batch when one exists, not every historical Shadow run.
+    """
+    if not valid_run_ids:
+        return None
+    alignments = db.query(EvidenceAlignment).filter(
+        EvidenceAlignment.project_id == project.id,
+        EvidenceAlignment.prompt_id == prompt.id,
+        EvidenceAlignment.run_id.in_(valid_run_ids),
+    ).all()
+    shadow_run_ids: set[int] = set()
+    for alignment in alignments:
+        payload = loads(alignment.machine_payload_json, {})
+        if (
+            payload.get("reason_source") != ANSWER_BINDING_REASON_SOURCE
+            and payload.get("formal_input_version") != FORMAL_V1_1_INPUT_VERSION
+        ):
+            continue
+        shadow_run_id = _safe_optional_int(payload.get("shadow_run_id"))
+        if shadow_run_id:
+            shadow_run_ids.add(shadow_run_id)
+    return max(shadow_run_ids) if shadow_run_ids else None
+
+
+def _safe_optional_int(value: object) -> int | None:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return None
+    return parsed or None
+
+
+def _decision_stability_reasons(
+    db: Session,
+    recommendation_events: list[RecommendationEvent],
+    *,
+    current_answer_binding_shadow_run_id: int | None = None,
+) -> list[dict]:
     if not recommendation_events:
         return []
     event_by_id = {event.id: event for event in recommendation_events}
@@ -2861,11 +2918,16 @@ def _decision_stability_reasons(db: Session, recommendation_events: list[Recomme
         event_run_denominators[entity_key].add(event.run_id)
         event_entities_by_run[event.run_id][entity_key] = entity
 
-    bindings = db.query(AnswerDecisionBinding).filter(
+    binding_query = db.query(AnswerDecisionBinding).filter(
         AnswerDecisionBinding.recommendation_event_id.in_(list(event_by_id)),
         AnswerDecisionBinding.decision_role.in_(DECISION_STABILITY_REASON_ROLES),
         AnswerDecisionBinding.review_status != "HUMAN_REJECTED",
-    ).all()
+    )
+    if current_answer_binding_shadow_run_id:
+        binding_query = binding_query.filter(
+            AnswerDecisionBinding.shadow_run_id == current_answer_binding_shadow_run_id,
+        )
+    bindings = binding_query.all()
     unit_ids = [binding.answer_unit_id for binding in bindings if binding.answer_unit_id]
     units = db.query(AnswerUnit).filter(AnswerUnit.id.in_(unit_ids)).all() if unit_ids else []
     unit_by_id = {unit.id: unit for unit in units}

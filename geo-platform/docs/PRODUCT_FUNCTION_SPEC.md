@@ -821,8 +821,12 @@ PassageAlignment
 当前主线状态：
 
 ```text
-SINGLE_PROMPT_LOOP_READY
+SINGLE_PROMPT_GEO_V1_FROZEN
 ```
+
+截至 2026-08-27，单 Prompt GEO V1 的 1-8 主链已经通过 Prompt #40
+真实 Golden Case 最终验收并冻结。后续新增需求默认进入 V2；除非属于
+V1 bugfix，不再扩大 V1 产品边界。
 
 系统已经具备完整的软件闭环能力：
 
@@ -841,7 +845,8 @@ SINGLE_PROMPT_LOOP_READY
 - Experiment Analysis。
 - Human Conclusion。
 
-但这不等于真实实验已经完成。
+但这不等于真实实验已经完成。当前冻结到 Experiment Draft 和 Release
+Audit Gate；Step 9 的固定复采、指标对比和人工效果结论仍属于 V2/后续阶段。
 
 PromptCluster / 集合级 Opportunity 仍未进入正式实现范围。下一阶段优先级是先跑通并验证单 Prompt 闭环，再扩展到多 Prompt 聚合。
 

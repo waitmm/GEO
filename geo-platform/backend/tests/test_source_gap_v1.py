@@ -1216,6 +1216,85 @@ def _decision_stability_fixture(db, entity_by_run: list[str | None]) -> tuple[Pr
     return project, prompt, package
 
 
+def _decision_stability_multi_entity_fixture(
+    db,
+    entities_by_run: list[list[str]],
+) -> tuple[Project, Prompt, OptimizationEvidencePackage]:
+    project = Project(id=32, organization_id=1, name="爱短链品牌监测", brand_name="爱短链")
+    prompt = Prompt(id=62, project_id=32, prompt_text="短链工具推荐", title="短链工具推荐")
+    task = BrowserMonitorTask(id=32, project_id=32, question_ids_json="[62]", status="completed")
+    db.add_all([Organization(id=1, name="测试组织"), project, prompt, task])
+    runs = []
+    events = []
+    units = []
+    bindings = []
+    for run_index, entities in enumerate(entities_by_run, start=1):
+        run_id = 4100 + run_index
+        runs.append(BrowserMonitorRun(
+            id=run_id,
+            task_id=32,
+            project_id=32,
+            prompt_id=62,
+            status="success",
+            original_query=prompt.prompt_text,
+            answer_text="；".join([f"推荐 {entity}，因为它自带点击统计" for entity in entities]) or "没有明确推荐。",
+        ))
+        for entity_index, entity in enumerate(entities, start=1):
+            base_id = 4200 + run_index * 10 + entity_index
+            events.append(RecommendationEvent(
+                id=base_id,
+                project_id=32,
+                prompt_id=62,
+                run_id=run_id,
+                answer_hash=f"answer-{run_index}",
+                entity_text=entity,
+                speech_act="RECOMMEND",
+                recommendation_strength="STRONG",
+                polarity="POSITIVE",
+                answer_span=f"推荐 {entity}，因为它自带点击统计。",
+                reasons_json=dumps([]),
+                review_status="MACHINE_GROUNDED",
+            ))
+            units.append(AnswerUnit(
+                id=base_id + 1000,
+                project_id=32,
+                prompt_id=62,
+                run_id=run_id,
+                answer_claim_id=base_id + 1000,
+                unit_text_original=f"{entity} 自带点击统计",
+                unit_text_normalized=f"{entity} 自带点击统计",
+                source_span=f"{entity} 自带点击统计",
+                semantic_type="FEATURE",
+                entity_hint=entity,
+            ))
+            bindings.append(AnswerDecisionBinding(
+                id=base_id + 2000,
+                project_id=32,
+                prompt_id=62,
+                run_id=run_id,
+                recommendation_event_id=base_id,
+                answer_unit_id=base_id + 1000,
+                decision_role="SUPPORTING_REASON",
+                binding_strength="MEDIUM",
+                review_status="MACHINE_GROUNDED",
+            ))
+    package = OptimizationEvidencePackage(
+        id=4501,
+        project_id=32,
+        prompt_id=62,
+        version=1,
+        source_run_ids_json=dumps([run.id for run in runs]),
+        target_page_urls_json=dumps([]),
+        environment_snapshot_json=dumps({}),
+        package_payload_json=dumps({}),
+        package_hash="decision-stability-multi-entity-fixture",
+        status="active",
+    )
+    db.add_all([*runs, *events, *units, *bindings, package])
+    db.commit()
+    return project, prompt, package
+
+
 @pytest.mark.parametrize(
     ("entity_by_run", "expected_score", "expected_level"),
     [
@@ -1239,6 +1318,90 @@ def test_decision_stability_reports_simple_run_distribution(entity_by_run, expec
         assert result["formula"] == "round(dominant_recommendation_outcome.run_count / valid_run_count * 100)"
         assert result["metric_role"] == "POST_HOC_DESCRIPTIVE_ONLY"
         assert result["dominant_recommendation_outcome"]["observed_run_ids"]
+    finally:
+        db.close()
+
+
+def test_decision_stability_single_top_entity_keeps_unique_dominant():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _decision_stability_fixture(db, ["ToolX", "ToolX", "ToolX", "ToolY", "ToolY", None])
+
+        result = decision_stability_for_package(db, project.id, prompt.id, package.id)
+        dominant = result["dominant_recommendation_outcome"]
+
+        assert dominant["outcome_type"] == "RECOMMENDATION_ENTITY"
+        assert dominant["entity_text"] == "ToolX"
+        assert dominant["run_count"] == 3
+        assert dominant["is_tie"] is False
+        assert result["decision_stability_score"] == 50
+    finally:
+        db.close()
+
+
+def test_decision_stability_reports_co_dominant_when_entities_fully_tie():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _decision_stability_multi_entity_fixture(
+            db,
+            [["Bitly", "小码短链接", "缩我短链接", "轻松短链接"] for _ in range(6)],
+        )
+
+        result = decision_stability_for_package(db, project.id, prompt.id, package.id)
+        dominant = result["dominant_recommendation_outcome"]
+
+        assert dominant["outcome_type"] == "CO_DOMINANT_RECOMMENDATION_ENTITIES"
+        assert dominant["entity_text"] == ""
+        assert dominant["run_count"] == 6
+        assert dominant["co_dominant_count"] == 4
+        assert {item["entity_text"] for item in dominant["co_dominant_entities"]} == {"Bitly", "小码短链接", "缩我短链接", "轻松短链接"}
+        assert result["decision_stability_score"] == 100
+        assert result["stability_level"] == "HIGH_STABILITY"
+    finally:
+        db.close()
+
+
+def test_decision_stability_reports_co_dominant_when_entities_partially_tie():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _decision_stability_multi_entity_fixture(
+            db,
+            [["ToolX", "ToolY"], ["ToolX", "ToolY"], ["ToolZ"]],
+        )
+
+        result = decision_stability_for_package(db, project.id, prompt.id, package.id)
+        dominant = result["dominant_recommendation_outcome"]
+
+        assert dominant["outcome_type"] == "CO_DOMINANT_RECOMMENDATION_ENTITIES"
+        assert dominant["run_count"] == 2
+        assert {item["entity_text"] for item in dominant["co_dominant_entities"]} == {"ToolX", "ToolY"}
+        assert result["decision_stability_score"] == 67
+    finally:
+        db.close()
+
+
+def test_decision_stability_tie_does_not_select_entity_by_name_sorting():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _decision_stability_multi_entity_fixture(
+            db,
+            [["Zeta", "Alpha"], ["Zeta", "Alpha"]],
+        )
+
+        result = decision_stability_for_package(db, project.id, prompt.id, package.id)
+        dominant = result["dominant_recommendation_outcome"]
+
+        assert dominant["outcome_type"] == "CO_DOMINANT_RECOMMENDATION_ENTITIES"
+        assert dominant["entity_text"] == ""
+        assert {item["entity_text"] for item in dominant["co_dominant_entities"]} == {"Alpha", "Zeta"}
     finally:
         db.close()
 

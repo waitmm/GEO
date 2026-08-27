@@ -69,10 +69,23 @@ observed_run_ids
 valid_run_ids = [238, 239, 240, 253, 254, 255]
 valid_run_count = 6
 brand_decision_run_count = 6
-dominant_recommendation_outcome = Bitly
+dominant_recommendation_outcome = CO_DOMINANT_RECOMMENDATION_ENTITIES
+co_dominant_entities = Bitly / 小码短链接 / 缩我短链接 / 轻松短链接
+unique_dominant_entity = none
 decision_stability_score = 100 / 100
 stability_level = HIGH_STABILITY
 ```
+
+产品语义修正：
+
+```text
+多个推荐对象同为最高覆盖
+-> 共同主导
+-> 不输出唯一 Top 推荐对象
+```
+
+共同主导不降低稳定性分数；Decision Stability 描述推荐结构是否稳定，
+Recommendation Dominance 描述是否存在唯一主导推荐对象，两者不混用。
 
 主链零影响：
 

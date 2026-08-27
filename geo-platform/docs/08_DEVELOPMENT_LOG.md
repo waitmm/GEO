@@ -61,11 +61,18 @@ docs/CITATION_DECISION_V1_1_PHASE5_DECISION_STABILITY_CHECKPOINT.md
 ```text
 valid_run_count = 6
 brand_decision_run_count = 6
-dominant_recommendation_outcome = Bitly
+dominant_recommendation_outcome = CO_DOMINANT_RECOMMENDATION_ENTITIES
+co_dominant_entities = Bitly / 小码短链接 / 缩我短链接 / 轻松短链接
+unique_dominant_entity = none
 decision_stability_score = 100
 stability_level = HIGH_STABILITY
 formal_output_impact = NONE
 ```
+
+- Added dominant tie semantics: when multiple recommendation entities share the
+  highest run coverage, Decision Stability returns `CO_DOMINANT` instead of
+  selecting one entity by deterministic name ordering. This does not change the
+  stability formula or any single Prompt V1 1-8 main-chain result.
 
 - Also added/kept Phase 4 regression coverage for Strategy gate, Step 8
   execution-plan gate, strategy snapshot immutability, baseline freeze, required

@@ -92,6 +92,20 @@ def _markdown_table(headers: list[str], rows: list[list[object]]) -> list[str]:
     return lines
 
 
+def _dominant_text(dominant: dict) -> str:
+    if dominant.get("outcome_type") == "CO_DOMINANT_RECOMMENDATION_ENTITIES":
+        names = [
+            str(item.get("entity_text"))
+            for item in dominant.get("co_dominant_entities") or []
+            if item.get("entity_text")
+        ]
+        return (
+            f"CO_DOMINANT {len(names)} 个并列，均为 "
+            f"{dominant.get('run_count')}/{dominant.get('denominator')}: {names}"
+        )
+    return f"{dominant.get('outcome_type')} {dominant.get('entity_text') or ''}".strip()
+
+
 def build_report() -> str:
     db = SessionLocal()
     try:
@@ -134,7 +148,9 @@ def build_report() -> str:
         lines.append(f"valid_run_ids = {stability.get('valid_run_ids')}")
         lines.append(f"valid_run_count = {stability.get('valid_run_count')}")
         lines.append(f"brand_decision_run_count = {stability.get('brand_decision_run_count')}")
-        lines.append(f"dominant_recommendation_outcome = {dominant.get('outcome_type')} {dominant.get('entity_text') or ''}")
+        lines.append(f"dominant_recommendation_outcome = {_dominant_text(dominant)}")
+        if dominant.get("outcome_type") == "CO_DOMINANT_RECOMMENDATION_ENTITIES":
+            lines.append("unique_dominant_entity = none")
         lines.append(f"dominant_observed_run_ids = {dominant.get('observed_run_ids')}")
         lines.append(f"decision_stability_score = {stability.get('decision_stability_score')} / 100")
         lines.append(f"stability_level = {stability.get('stability_level')} ({stability.get('stability_level_label')})")

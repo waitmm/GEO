@@ -2771,6 +2771,50 @@ def _dominant_recommendation_outcome(
     no_recommendation_run_ids: list[int],
     denominator: int,
 ) -> dict:
+    if not denominator:
+        return {
+            "outcome_type": "NO_VALID_RUNS",
+            "entity_text": "",
+            "run_count": 0,
+            "denominator": 0,
+            "value": 0,
+            "observed_run_ids": [],
+            "is_tie": False,
+            "co_dominant_entities": [],
+        }
+    if recommendation_entities:
+        top_entity_count = max(entity["recommendation_run_count"] for entity in recommendation_entities)
+        tied_entities = [
+            entity for entity in recommendation_entities
+            if entity["recommendation_run_count"] == top_entity_count
+        ]
+        no_recommendation_count = len(no_recommendation_run_ids)
+        if len(tied_entities) > 1 and top_entity_count >= no_recommendation_count:
+            observed_run_ids = sorted({
+                run_id
+                for entity in tied_entities
+                for run_id in entity.get("observed_run_ids", [])
+            })
+            return {
+                "outcome_type": "CO_DOMINANT_RECOMMENDATION_ENTITIES",
+                "entity_text": "",
+                "run_count": top_entity_count,
+                "denominator": denominator,
+                "value": _rate(top_entity_count, denominator),
+                "observed_run_ids": observed_run_ids,
+                "is_tie": True,
+                "co_dominant_count": len(tied_entities),
+                "co_dominant_entities": [
+                    {
+                        "entity_text": entity.get("entity_text"),
+                        "recommendation_run_count": entity.get("recommendation_run_count"),
+                        "denominator": entity.get("denominator"),
+                        "value": entity.get("value"),
+                        "observed_run_ids": entity.get("observed_run_ids", []),
+                    }
+                    for entity in tied_entities
+                ],
+            }
     candidates: list[dict] = []
     for entity in recommendation_entities:
         candidates.append({
@@ -2780,6 +2824,8 @@ def _dominant_recommendation_outcome(
             "denominator": denominator,
             "value": entity["value"],
             "observed_run_ids": entity["observed_run_ids"],
+            "is_tie": False,
+            "co_dominant_entities": [],
         })
     candidates.append({
         "outcome_type": "NO_RECOMMENDATION",
@@ -2788,6 +2834,8 @@ def _dominant_recommendation_outcome(
         "denominator": denominator,
         "value": _rate(len(no_recommendation_run_ids), denominator),
         "observed_run_ids": no_recommendation_run_ids,
+        "is_tie": False,
+        "co_dominant_entities": [],
     })
     return sorted(candidates, key=lambda item: (-item["run_count"], item["outcome_type"], item.get("entity_text") or ""))[0] if candidates else {
         "outcome_type": "NO_VALID_RUNS",
@@ -2796,6 +2844,8 @@ def _dominant_recommendation_outcome(
         "denominator": 0,
         "value": 0,
         "observed_run_ids": [],
+        "is_tie": False,
+        "co_dominant_entities": [],
     }
 
 

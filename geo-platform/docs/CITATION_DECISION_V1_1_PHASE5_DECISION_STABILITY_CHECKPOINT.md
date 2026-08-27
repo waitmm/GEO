@@ -109,6 +109,20 @@ COMPARATIVE_ADVANTAGE
 
 明显的操作步骤、补充提问和注意事项文本不会进入 Decision Stability 的主要推荐理由列表。
 
+推荐对象主导关系与稳定性分数分开表达：
+
+```text
+单一最高覆盖实体
+-> RECOMMENDATION_ENTITY
+
+多个最高覆盖实体并列
+-> CO_DOMINANT_RECOMMENDATION_ENTITIES
+-> unique_dominant_entity = none
+```
+
+Tie 不会自动降低稳定性分数。如果多个推荐对象在每个有效 Run 中都稳定出现，
+仍然可以是 `100/100` 和 `HIGH_STABILITY`。
+
 ## 4. 前端展示
 
 单 Prompt 主链页面新增“决策稳定性观察”信息块。
@@ -118,10 +132,10 @@ COMPARATIVE_ADVANTAGE
 ```text
 有效样本
 品牌决策发生
-主导推荐对象
+主要推荐对象
 稳定性分数
-Top 推荐覆盖
-Top 理由覆盖
+主要推荐覆盖
+代表理由覆盖
 ```
 
 引用资料决策详情页也展示同一指标，并明确标注：
@@ -147,7 +161,9 @@ Prompt `#40` 当前结果：
 valid_run_ids = [238, 239, 240, 253, 254, 255]
 valid_run_count = 6
 brand_decision_run_count = 6
-dominant_recommendation_outcome = RECOMMENDATION_ENTITY Bitly
+dominant_recommendation_outcome = CO_DOMINANT_RECOMMENDATION_ENTITIES
+co_dominant_entities = Bitly / 小码短链接 / 缩我短链接 / 轻松短链接
+unique_dominant_entity = none
 dominant_observed_run_ids = [238, 239, 240, 253, 254, 255]
 decision_stability_score = 100 / 100
 stability_level = HIGH_STABILITY

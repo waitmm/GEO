@@ -2,6 +2,65 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Single Prompt GEO V1 Phase 0/1 Handoff
+
+### Product Decision
+
+单 Prompt GEO 主链 V1 的 Phase 0/1 先冻结为审查文档，不继续直接开发业务代码。
+
+最新审查文档：
+
+```text
+docs/SINGLE_PROMPT_GEO_V1_PHASE0_1_HANDOFF.md
+```
+
+### Main Chain
+
+当前产品主链固定为：
+
+```text
+采集样本
+-> 答案决策识别
+-> 目标品牌事实
+-> 引用证据
+-> 对标来源
+-> 缺口诊断
+-> 策略候选 + 策略确认
+-> 实验方案落地
+```
+
+第 7 步不是独立的“推荐动作确认”模块。第 7 步必须复用已有
+`StrategyCandidate/effective_payload`，人工确认后才允许进入 Action/Experiment。
+
+### Hard Boundaries
+
+Phase 2 前必须守住：
+
+```text
+1. 优先复用 StrategyCandidate / effective_payload，不新增平行 Strategy。
+2. Experiment 必须绑定确认时 effective_payload 快照。
+3. DISCOVERABILITY_GAP 只能基于当前 Prompt/能力相关品牌资产。
+4. EvidenceAlignment 必须验证完整 Run lineage，不只看 run_id 非空。
+```
+
+### Current Conflicts
+
+本次审计确认当前实现仍有几个需要 Phase 2 先修的产品一致性风险：
+
+```text
+Citation Decision 确认路径仍可能直接创建 Experiment
+旧 SUPPORTS 消费者未统一走 lineage / feature flag 过滤
+品牌资产判断可能误用任意最新快照
+前端第 7 步语义仍容易被理解为“确认推荐动作”
+```
+
+当前状态：
+
+```text
+PHASE_0_1_HANDOFF_READY_FOR_REVIEW
+PHASE_2_BUSINESS_CODE_NOT_STARTED
+```
+
 ## 2026-08-27 Citation Decision V1.1 Workflow Read Policy
 
 ### Product Decision

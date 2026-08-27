@@ -397,6 +397,27 @@ Source Analysis
 The proposal is derived from existing entities only. It does not introduce a
 parallel Evidence, Benchmark, Opportunity, or Experiment model.
 
+Phase 0/1 handoff clarification:
+
+- The single Prompt V1 main chain is
+  `采集样本 -> 答案决策识别 -> 目标品牌事实 -> 引用证据 -> 对标来源 -> 缺口诊断 -> 策略候选 + 策略确认 -> 实验方案落地`.
+- Step 7 must be implemented with the existing
+  `OptimizationStrategyCandidate` and `effective_payload` gate. It is not a
+  standalone "confirm recommended action" module.
+- Step 8 creates Action/Experiment only after the effective payload is human
+  reviewed and validated.
+- Any Experiment created from a StrategyCandidate must bind the exact
+  confirmed `effective_payload` snapshot at creation time, including candidate
+  id, payload version, payload hash, confirmed actor/time, and source evidence
+  package id.
+- `DISCOVERABILITY_GAP` must be based on a brand asset relevant to the current
+  Prompt and capability. Arbitrary project assets or the newest snapshot cannot
+  prove discoverability.
+- Formal consumers of `EvidenceAlignment` must use a lineage-valid read model:
+  Prompt, Run, RecommendationEvent, AnswerUnit/Binding when applicable,
+  ReferenceSource/RetrievalCandidate, SourceDocument, SourceClaim, and
+  EvidenceAlignment must be consistent.
+
 Hard boundaries:
 
 - `recommended_action` is proposal-only until human confirmation.

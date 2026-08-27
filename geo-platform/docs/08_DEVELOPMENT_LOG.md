@@ -2,6 +2,51 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Single Prompt GEO V1 Phase 0/1 Handoff
+
+- Added the review-only handoff document:
+  `docs/SINGLE_PROMPT_GEO_V1_PHASE0_1_HANDOFF.md`.
+- This is a docs-only Phase 0/1 checkpoint. No business code, model migration,
+  API behavior, frontend workflow, StrategyCandidate, Action, or Experiment was
+  changed in this step.
+- Locked the single Prompt GEO V1 chain for review:
+
+```text
+1. 采集样本
+2. 答案决策识别
+3. 目标品牌事实
+4. 引用证据
+5. 对标来源
+6. 缺口诊断
+7. 策略候选 + 策略确认
+8. 实验方案落地
+```
+
+- Recorded four hard constraints for Phase 2:
+  - Reuse `OptimizationStrategyCandidate` and `effective_payload` as the
+    strategy confirmation boundary.
+  - `OptimizationExperiment` must freeze the confirmed `effective_payload`
+    snapshot at creation time.
+  - `DISCOVERABILITY_GAP` must be based on brand assets relevant to the current
+    Prompt/capability, not arbitrary project assets.
+  - Formal `EvidenceAlignment` consumers must verify full Run lineage, not just
+    non-empty `run_id`.
+- Recorded current conflict points before implementation:
+  - `confirm_citation_decision_vertical_slice` can still directly materialize
+    experiment plans.
+  - Current experiment payload storage does not explicitly freeze an
+    `effective_payload` snapshot.
+  - `_latest_brand_asset_snapshot` can fall back to the latest project asset,
+    which is unsafe for discoverability judgment.
+  - Several legacy modules still query raw `EvidenceAlignment.relation =
+    SUPPORTS` without a unified lineage/feature-flag read gate.
+- Current phase status:
+
+```text
+PHASE_0_1_HANDOFF_READY_FOR_REVIEW
+PHASE_2_BUSINESS_CODE_NOT_STARTED
+```
+
 ## 2026-08-27 Citation Decision V1.1 Main Workflow Read
 
 - 单 Prompt 主链路前端请求 `citation-decision-v1` 时显式传入

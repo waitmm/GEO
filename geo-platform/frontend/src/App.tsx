@@ -25,6 +25,8 @@ const PAGE_META: Record<PageKey, { title: string; subtitle: string }> = {
   golden: { title: "证据标注", subtitle: "底层 claim、引用片段、证据对齐与人工标注" },
 };
 
+const CURRENT_CITATION_DECISION_USE_ANSWER_BINDING_V1_1 = true;
+
 const emptyQueue: BrowserQueueSummary = {
   project_id: null, queued: 0, pending: 0, running: 0, success: 0,
   partial_success: 0, failed: 0, blocked: 0, total: 0, latest_run_id: null,
@@ -1485,7 +1487,12 @@ export default function App() {
     setCitationDecisionError(null);
     setCitationDecisionData(null);
     try {
-      const data = await api.getCitationDecisionV1(projectId, targetPromptId);
+      const data = await api.getCitationDecisionV1(
+        projectId,
+        targetPromptId,
+        undefined,
+        CURRENT_CITATION_DECISION_USE_ANSWER_BINDING_V1_1,
+      );
       if (seq !== citationDecisionRequestSeq.current) return null;
       if (!citationDecisionBelongsToPrompt(data, targetPromptId)) {
         throw new Error("引用资料优化决策返回的 Prompt 与当前页面不一致，已丢弃旧结果");
@@ -1531,7 +1538,12 @@ export default function App() {
       });
       setSelectedPkgId(evidencePackage.id);
       await loadEvidencePackages(projectId).catch(() => []);
-      const data = await api.getCitationDecisionV1(projectId, targetPromptId, evidencePackage.id);
+      const data = await api.getCitationDecisionV1(
+        projectId,
+        targetPromptId,
+        evidencePackage.id,
+        CURRENT_CITATION_DECISION_USE_ANSWER_BINDING_V1_1,
+      );
       if (!citationDecisionBelongsToPrompt(data, targetPromptId)) {
         throw new Error("引用证据结果与当前 Prompt 不一致，已阻止渲染");
       }

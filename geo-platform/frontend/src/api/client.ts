@@ -127,8 +127,11 @@ export const api = {
     request<StrategyCandidate[]>(`/api/optimization/projects/${projectId}/strategy-candidates/generate`, { method: "POST", body: JSON.stringify(payload) }),
   generateStrategyCandidatesV2: (projectId: number, payload: unknown) =>
     request<any>(`/api/optimization/projects/${projectId}/strategy-candidates/generate-v2`, { method: "POST", body: JSON.stringify(payload) }),
-  getCitationDecisionV1: (projectId: number, promptId: number, evidencePackageId?: number) =>
-    request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/citation-decision-v1${evidencePackageId ? `?evidence_package_id=${evidencePackageId}` : ""}`),
+  getCitationDecisionV1: (projectId: number, promptId: number, evidencePackageId?: number, useAnswerBindingV11?: boolean) =>
+    request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/citation-decision-v1${[
+      evidencePackageId ? `evidence_package_id=${evidencePackageId}` : "",
+      typeof useAnswerBindingV11 === "boolean" ? `use_answer_binding_v1_1=${useAnswerBindingV11 ? "true" : "false"}` : "",
+    ].filter(Boolean).join("&").replace(/^(.+)/, "?$1")}`),
   confirmCitationDecisionV1: (projectId: number, promptId: number, payload: unknown) =>
     request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/citation-decision-v1/confirm`, { method: "POST", body: JSON.stringify(payload) }),
   generateRecommendationAnalysis: (projectId: number, payload: unknown) =>

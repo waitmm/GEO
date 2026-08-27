@@ -2,6 +2,47 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Citation Decision V1.1 Workflow Read Policy
+
+### Product Decision
+
+单 Prompt 主链路进入 Citation Decision V1.1 验收态：前端当前工作流显式读取
+`use_answer_binding_v1_1=true` 的结果。
+
+### Boundary
+
+这不是全量 Phase 1 默认切换：
+
+```text
+后端默认 feature flag 不变
+8 步主链路顺序不变
+不新增 Citation Decision 独立模块
+不绕过 Product Truth
+不因 Benchmark 存在直接生成动作
+```
+
+### Expected #40 State
+
+Prompt `#40` 在 V1.1 读取下应显示：
+
+```text
+引用证据：已完成
+对标来源：1 个核心对标
+缺口诊断：卡在目标品牌事实
+推荐动作：0 个
+```
+
+待人工确认目标品牌自己的具体能力：
+
+```text
+点击统计
+自定义分享标题
+营销场景使用
+```
+
+确认后再重跑链路；如果事实为 `NOT_SUPPORTED`，必须进入产品缺口，
+不能生成虚假内容优化动作。
+
 ## 2026-08-26 Phase 1 Formal Result Audit Gate
 
 > 2026-08-27 更新：本节记录的是首次 Phase 1 审计发现，已被后续

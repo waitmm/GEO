@@ -2,6 +2,17 @@
 
 Status: ACTIVE
 
+## 2026-08-27 Citation Decision V1.1 Main Workflow Read
+
+- 单 Prompt 主链路前端请求 `citation-decision-v1` 时显式传入
+  `use_answer_binding_v1_1=true`，避免后端默认 OFF 时页面仍展示旧 V1
+  `0 Benchmark / 0 Action`，导致操作者误以为第 4 步后无法推进。
+- 该改动不调整 8 步主链路顺序，不新增模块，不改变后端默认 feature flag；
+  后端仍可用 `use_answer_binding_v1_1=false` 验证正式结果回滚。
+- Prompt `#40` 当前应进入“1 个核心对标，但推荐动作被 Product Truth
+  闸门阻断”的状态，待人工补齐 `点击统计`、`自定义分享标题`、
+  `营销场景使用` 等目标品牌事实后再继续生成动作。
+
 ## 2026-08-26 Prompt 40 Phase 1 Formal Result Audit
 
 - Audited the first small-scope formal Citation Decision V1.1 input switch on

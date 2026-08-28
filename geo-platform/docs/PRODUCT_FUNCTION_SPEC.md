@@ -641,31 +641,43 @@ DEFERRED
 VALIDATION_FAILED
 ```
 
-第 7 步 `StrategyCandidate` 只回答 AI 决策干预方向：
+第 7 步 `StrategyCandidate` 回答完整 Strategy Core：
 
 ```text
 要改变 AI 的哪类品牌/能力/推荐理由识别；
 为什么这个干预可能有效；
 优先补哪些目标品牌能力信号；
+计划在哪些平台层形成什么角色的信号；
+资产方向是更新已有资产还是提出新资产 proposal；
+执行顺序和归因意图是什么；
 本步明确不做什么。
 ```
 
 它不能在第 7 步决定：
 
 ```text
-发布平台
+具体账号
 目标 URL
 目标资产
-内容类型
-页面结构
+具体标题
+具体 section
+具体内容结构
+Draft
 Baseline
 Experiment
 ```
 
-这些属于 Step 8 Execution Plan。Benchmark Channel 不能自动成为 Strategy
-Channel。
+这些属于 Step 8 Execution Plan。第 7 步允许出现计划平台层，例如
+`OFFICIAL_SITE`、`ZHIHU`、`BAIJIAHAO`，但必须说明 `channel_role`，不能把
+Benchmark Channel 自动当成 Strategy Channel，更不能自动推出具体发布对象。
 
 只有人工接受后的候选才能进入执行方案/实验计划阶段。
+
+Step 8 可以补充或调整执行参数，包括具体 selected channel instance、
+selected asset、URL、账号、标题、section、内容结构和 execution delta，
+但不能直接修改 Strategy Core。如果执行参数改变了干预机制、渠道角色、所需信号
+或归因意图，必须触发 Mechanism Compatibility Check；如果改变 Strategy Core，
+后端必须阻断并返回 Step 7 重新确认。
 
 ### 11.3 effective_payload
 

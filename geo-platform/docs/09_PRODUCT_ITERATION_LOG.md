@@ -2,6 +2,68 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7/8 Strategy Core Boundary Correction
+
+### Product Decision
+
+第 7 步 `StrategyCandidate` 必须表达完整 Strategy Core，而不是只复述 Gap
+或提前生成具体执行任务。Strategy Core 至少包括：
+
+```text
+target_decision_change
+priority_capabilities
+strategic_hypothesis
+intervention_mechanism
+primary_intervention_path
+planned_channels
+channel_roles
+asset_direction
+execution_sequence
+required_signals
+non_goals
+attribution_intent
+```
+
+第 7 步允许到计划平台层，例如 `OFFICIAL_SITE`、`ZHIHU`、`BAIJIAHAO`，但必须说明
+`channel_role`。第 8 步才确认具体账号、URL、资产、标题、section、内容结构、
+Draft、Baseline、Action 和 Experiment。
+
+### User-Facing Rule
+
+用户在第 7 步应看到：
+
+```text
+为什么要做这个 Strategy
+计划在哪类平台形成什么信号
+哪些能力是本轮优先观察对象
+第 8 步还需要人工确认哪些具体执行参数
+```
+
+不能再把 Step 7 说成 “推荐动作确认” 或 “写文章任务”。
+
+### Boundary
+
+```text
+PRIMARY_BENCHMARK = 知乎
+≠
+planned_channel = 知乎
+≠
+selected_channel_instance = 某知乎账号/URL
+```
+
+Step 7 的计划平台必须结合 Gap、AI decision reason、Benchmark Evidence、
+Product Truth、Relevant Brand Asset、Retrieval/Citation 状态生成。Benchmark
+Channel 只能作为证据来源或候选上下文，不能自动成为执行平台。
+
+Step 8 可以修改执行参数，但不能修改 Strategy Core。涉及机制、渠道角色、所需信号或
+归因意图的调整必须触发 Mechanism Compatibility Check；改变 Strategy Core 时必须
+返回第 7 步重新确认。
+
+### Scope
+
+本次是 Step 7/8 边界修正和保护，不新增 Asset Brief、Claim Matrix、Draft、Step 9、
+Channel Intelligence 或新评分体系。
+
 ## 2026-08-28 Step 7 Strategy Page Display Rule
 
 ### Product Decision

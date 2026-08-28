@@ -61,14 +61,24 @@ Status: ACTIVE
   Strategy is not an Experiment; Experiment draft creation requires Step 8
   channel/asset/operation confirmation and frozen snapshots.
 - Step 7 StrategyCandidate must explain the AI decision intervention direction
-  before any execution planning. If the page only restates a Gap or leads with
-  channel/content-type/experiment controls, users will misread Strategy as a
-  content task. The required Step 7 fields are target decision change,
-  strategic hypothesis, priority capabilities, required signals, non-goals, and
-  an explicit Step 8 boundary note.
-- Benchmark channel is not execution channel. A Primary Benchmark from Zhihu
-  must not automatically mean "publish on Zhihu"; channel selection belongs to
-  Step 8.
+  before concrete execution planning. If the page only restates a Gap or leads
+  with article/draft controls, users will misread Strategy as a content task.
+  The required Step 7 Strategy Core fields are target decision change,
+  strategic hypothesis, priority capabilities, intervention mechanism, primary
+  intervention path, planned channels, channel roles, asset direction,
+  execution sequence, required signals, non-goals, and attribution intent.
+- Planned channel is not concrete execution channel. Step 7 may decide platform
+  layer such as OFFICIAL_SITE / ZHIHU / BAIJIAHAO and its channel role, but Step
+  8 must still confirm concrete account, URL, asset, title, section, content
+  structure, Baseline, Action, and Experiment.
+- Benchmark channel is not Strategy or execution channel. A Primary Benchmark
+  from Zhihu must not automatically mean `planned_channel = ZHIHU` or
+  "publish on Zhihu"; if Zhihu appears in planned channels it must have an
+  explicit role and cannot be copied from Benchmark provenance alone.
+- Step 8 must not mutate Strategy Core. If Step 8 attempts to change fields such
+  as intervention mechanism, channel roles, required signals, or attribution
+  intent, the backend must block or require review instead of silently creating
+  an Action/Experiment.
 - User-facing workflow labels, empty states, and action buttons must be Chinese.
   English enums may remain in storage/API internals only when Chinese labels are
   also provided to the frontend.

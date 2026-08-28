@@ -1122,6 +1122,31 @@ STEP8_CHANNELS = {
     "OTHER",
 }
 STEP8_ASSET_OPERATIONS = {"UPDATE_EXISTING", "CREATE_NEW"}
+STRATEGY_CORE_FIELD_PATHS = {
+    "target_decision_change",
+    "priority_capabilities",
+    "strategic_hypothesis",
+    "intervention_mechanism",
+    "mechanism",
+    "core_mechanism",
+    "primary_intervention_path",
+    "planned_channels",
+    "channel_roles",
+    "asset_direction",
+    "execution_sequence",
+    "required_signals",
+    "required_signal",
+    "non_goals",
+    "attribution_intent",
+}
+EXECUTION_MECHANISM_REVIEW_FIELDS = {
+    "execution.channel",
+    "execution.asset_operation",
+    "execution.selected_asset_type",
+    "execution.target_content_type",
+    "execution.target_object",
+    "execution.content_structure",
+}
 DECISION_STABILITY_VERSION = "decision_stability.phase5.v1"
 DECISION_STABILITY_EVENT_STATUSES = {"MACHINE_GROUNDED", "MACHINE_CANDIDATE", "HUMAN_CONFIRMED"}
 DECISION_STABILITY_DECISION_ACTS = {"RECOMMEND", "INCLUDE_AS_OPTION", "COMPARE"}
@@ -1169,6 +1194,8 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
         raise HTTPException(status_code=404, detail="Project 不存在")
     prompt = db.get(Prompt, package.prompt_id) if package.prompt_id else None
     _ensure_strategy_candidate_can_enter_step8(candidate)
+    current_effective = loads(candidate.effective_payload_json, {})
+    _ensure_step8_does_not_change_strategy_core(current_effective, payload)
 
     if candidate.experiment_id:
         experiment = db.get(OptimizationExperiment, candidate.experiment_id)
@@ -1194,7 +1221,20 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
         raise HTTPException(status_code=400, detail="baseline_run_ids 必须来自当前 Evidence Package 的固定 Run 集。")
 
     selected_asset_ref = _resolve_selected_asset_ref(db, project, payload, channel, asset_operation)
-    effective = deterministic_merge(loads(candidate.effective_payload_json, {}), {
+    execution_parameters = _step8_execution_parameters(payload, selected_asset_ref, channel, asset_operation)
+    execution_delta = _execution_delta_for_step8(current_effective, execution_parameters, payload)
+    compatibility = _mechanism_compatibility_for_step8(current_effective, execution_parameters)
+    if compatibility["status"] == "STRATEGY_RECONFIRM_REQUIRED":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "RETURN_TO_STEP_7",
+                "message": "当前执行方案已改变 Strategy Core 的机制边界，需要返回第 7 步重新确认 Strategy。",
+                "mechanism_compatibility": compatibility,
+                "execution_delta": execution_delta,
+            },
+        )
+    effective = deterministic_merge(current_effective, {
         "strategy_phase": "PHASE_4_EXECUTION_PLAN_CONFIRMED",
         "target_platform": channel,
         "asset_operation": asset_operation,
@@ -1203,7 +1243,10 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
         "target_url": selected_asset_ref.get("canonical_url") or selected_asset_ref.get("url") or "",
         "target_content_type": _payload_value(payload, "target_content_type", "") or selected_asset_ref.get("asset_type") or "ARTICLE",
         "target_object": _payload_value(payload, "target_object", "") or selected_asset_ref.get("asset_type") or "CONTENT_ASSET",
-        "intervention_type": _intervention_type_for_step8(channel, asset_operation, {"effective_payload": loads(candidate.effective_payload_json, {})}),
+        "intervention_type": _intervention_type_for_step8(channel, asset_operation, {"effective_payload": current_effective}),
+        "execution_parameters": execution_parameters,
+        "execution_delta": execution_delta,
+        "mechanism_compatibility": compatibility,
         "step8_confirmation": {
             "confirmed_by": _payload_value(payload, "confirmed_by", "human"),
             "confirmed_at": datetime.utcnow().isoformat(),
@@ -1251,6 +1294,9 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
         "asset_operation": asset_operation,
         "selected_asset_ref": selected_asset_ref,
         "strategy_snapshot": strategy_snapshot,
+        "execution_parameters": execution_parameters,
+        "execution_delta": execution_delta,
+        "mechanism_compatibility": compatibility,
         "baseline_run_ids": baseline_run_ids,
         "baseline_metrics": baseline_metrics,
         "action_snapshot": _action_snapshot(action),
@@ -1280,6 +1326,191 @@ def _ensure_strategy_candidate_can_enter_step8(candidate: OptimizationStrategyCa
         raise HTTPException(status_code=400, detail="Strategy 尚未人工确认，不能进入 Step 8。")
     if candidate.effective_validation_status not in {"PENDING_HUMAN_CHANNEL_REVIEW", "VALIDATED"}:
         raise HTTPException(status_code=400, detail="当前 Strategy 状态不能进入 Step 8。")
+
+
+def _ensure_step8_does_not_change_strategy_core(strategy: dict, payload) -> None:
+    attempts: list[dict] = []
+    updates = _payload_value(payload, "strategy_core_updates", {}) or {}
+    if isinstance(updates, dict):
+        for key, value in updates.items():
+            if key in STRATEGY_CORE_FIELD_PATHS:
+                attempts.append(_strategy_core_change_attempt(strategy, key, value))
+    for key in STRATEGY_CORE_FIELD_PATHS:
+        value = _payload_value(payload, key, None)
+        if value is not None:
+            attempts.append(_strategy_core_change_attempt(strategy, key, value))
+    attempts = [item for item in attempts if item["changed"]]
+    if attempts:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "RETURN_TO_STEP_7",
+                "message": "Step 8 不能直接修改 Strategy Core。请返回第 7 步重新编辑并确认策略。",
+                "blocked_changes": attempts,
+            },
+        )
+
+
+def _strategy_core_change_attempt(strategy: dict, key: str, new_value) -> dict:
+    canonical_key = {
+        "required_signal": "required_signals",
+        "mechanism": "intervention_mechanism",
+        "core_mechanism": "intervention_mechanism",
+    }.get(key, key)
+    original_value = strategy.get(canonical_key)
+    if canonical_key == "intervention_mechanism" and original_value is None:
+        original_value = strategy.get("mechanism") or strategy.get("core_mechanism")
+    return {
+        "field_path": canonical_key,
+        "original_value": original_value,
+        "new_value": new_value,
+        "impact_level": "STRATEGY_CORE_CHANGE",
+        "changed": _json_stable(original_value) != _json_stable(new_value),
+    }
+
+
+def _step8_execution_parameters(payload, selected_asset_ref: dict, channel: str, asset_operation: str) -> dict:
+    return {
+        "selected_channel": channel,
+        "channel_instance": _payload_value(payload, "channel_instance", "") or channel,
+        "asset_operation": asset_operation,
+        "selected_asset_ref": selected_asset_ref,
+        "selected_asset": _selected_asset_identity(selected_asset_ref),
+        "selected_asset_type": _payload_value(payload, "selected_asset_type", "") or selected_asset_ref.get("asset_type") or "ARTICLE",
+        "target_content_type": _payload_value(payload, "target_content_type", "") or selected_asset_ref.get("asset_type") or "ARTICLE",
+        "target_object": _payload_value(payload, "target_object", "") or selected_asset_ref.get("asset_type") or "CONTENT_ASSET",
+        "concrete_url": selected_asset_ref.get("canonical_url") or selected_asset_ref.get("url") or "",
+        "account": _payload_value(payload, "account", ""),
+        "location": _payload_value(payload, "location", ""),
+        "title": _payload_value(payload, "title", "") or selected_asset_ref.get("title", ""),
+        "section": _payload_value(payload, "section", ""),
+        "content_structure": _payload_value(payload, "content_structure", []) or [],
+    }
+
+
+def _execution_delta_for_step8(strategy: dict, execution: dict, payload) -> list[dict]:
+    changed_by = _payload_value(payload, "confirmed_by", "human")
+    changed_at = datetime.utcnow().isoformat()
+    reason = _payload_value(payload, "execution_reason", "") or _payload_value(payload, "confirmation_note", "") or "Step 8 人工配置执行参数"
+    planned = _planned_execution_defaults(strategy)
+    rows = []
+    comparisons = [
+        ("execution.channel", planned.get("channel"), execution.get("selected_channel")),
+        ("execution.asset_operation", planned.get("asset_operation"), execution.get("asset_operation")),
+        ("execution.selected_asset", planned.get("selected_asset"), execution.get("selected_asset")),
+        ("execution.selected_asset_type", planned.get("selected_asset_type"), execution.get("selected_asset_type")),
+        ("execution.target_content_type", planned.get("target_content_type"), execution.get("target_content_type")),
+        ("execution.target_object", planned.get("target_object"), execution.get("target_object")),
+        ("execution.concrete_url", planned.get("concrete_url"), execution.get("concrete_url")),
+        ("execution.account", planned.get("account"), execution.get("account")),
+        ("execution.location", planned.get("location"), execution.get("location")),
+        ("execution.title", planned.get("title"), execution.get("title")),
+        ("execution.section", planned.get("section"), execution.get("section")),
+        ("execution.content_structure", planned.get("content_structure"), execution.get("content_structure")),
+    ]
+    for field_path, original, new_value in comparisons:
+        if _json_stable(original) == _json_stable(new_value):
+            continue
+        rows.append({
+            "field_path": field_path,
+            "original_value": original,
+            "new_value": new_value,
+            "reason": reason,
+            "changed_by": changed_by,
+            "changed_at": changed_at,
+            "impact_level": _execution_delta_impact_level(field_path),
+        })
+    return rows
+
+
+def _execution_delta_impact_level(field_path: str) -> str:
+    if field_path in STRATEGY_CORE_FIELD_PATHS:
+        return "STRATEGY_CORE_CHANGE"
+    if field_path in EXECUTION_MECHANISM_REVIEW_FIELDS:
+        return "MECHANISM_REVIEW_REQUIRED"
+    return "EXECUTION_ONLY"
+
+
+def _planned_execution_defaults(strategy: dict) -> dict:
+    primary_channel = _primary_planned_channel(strategy)
+    asset_direction = strategy.get("asset_direction") or {}
+    if not isinstance(asset_direction, dict):
+        asset_direction = {}
+    return {
+        "channel": primary_channel.get("channel"),
+        "asset_operation": asset_direction.get("asset_operation"),
+        "selected_asset": None,
+        "selected_asset_type": asset_direction.get("asset_type") or "ARTICLE",
+        "target_content_type": asset_direction.get("asset_type") or "ARTICLE",
+        "target_object": asset_direction.get("target_object") or "CONTENT_ASSET",
+        "concrete_url": None,
+        "account": "",
+        "location": "",
+        "title": "",
+        "section": "",
+        "content_structure": [],
+    }
+
+
+def _mechanism_compatibility_for_step8(strategy: dict, execution: dict) -> dict:
+    selected_channel = execution.get("selected_channel") or ""
+    planned_channels = strategy.get("planned_channels") or []
+    exact = next((item for item in planned_channels if isinstance(item, dict) and item.get("channel") == selected_channel), None)
+    selected_family = _channel_family(selected_channel)
+    family_match = next((
+        item for item in planned_channels
+        if isinstance(item, dict) and _channel_family(item.get("channel") or "") == selected_family
+    ), None)
+    checked = {
+        "intervention_mechanism": strategy.get("intervention_mechanism") or strategy.get("mechanism") or strategy.get("core_mechanism"),
+        "channel_role": exact.get("channel_role") if isinstance(exact, dict) else (family_match.get("channel_role") if isinstance(family_match, dict) else ""),
+        "required_signals": strategy.get("required_signals", []),
+        "attribution_intent": strategy.get("attribution_intent", {}),
+    }
+    if exact:
+        return {
+            "status": "EXECUTION_COMPATIBLE",
+            "selected_channel": selected_channel,
+            "planned_channel_match": True,
+            "checked_against": checked,
+            "reasons": ["执行渠道属于已确认 Strategy 的 planned_channels。"],
+        }
+    if family_match:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "selected_channel": selected_channel,
+            "planned_channel_match": False,
+            "checked_against": checked,
+            "reasons": [
+                "执行渠道不在已确认 planned_channels 中，但与其中一个计划渠道属于相近机制族。",
+                "需要人工确认新渠道仍能履行原 channel_role 和 required_signals。",
+            ],
+        }
+    return {
+        "status": "STRATEGY_RECONFIRM_REQUIRED",
+        "selected_channel": selected_channel,
+        "planned_channel_match": False,
+        "checked_against": checked,
+        "reasons": ["执行渠道不在已确认 Strategy 中，也没有相近机制角色；需要返回第 7 步重新确认。"],
+    }
+
+
+def _primary_planned_channel(strategy: dict) -> dict:
+    channels = [item for item in strategy.get("planned_channels") or [] if isinstance(item, dict)]
+    primary = next((item for item in channels if item.get("intervention_priority") == "PRIMARY"), None)
+    return primary or (channels[0] if channels else {})
+
+
+def _channel_family(channel: str) -> str:
+    if channel in {"OFFICIAL_SITE", "PRODUCT_DOCS"}:
+        return "FIRST_PARTY"
+    if channel in {"ZHIHU", "BAIJIAHAO", "THIRD_PARTY_MEDIA"}:
+        return "THIRD_PARTY"
+    return channel or "UNKNOWN"
+
+
+def _json_stable(value) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _normalize_step8_channel(value: str) -> str:
@@ -1607,6 +1838,7 @@ def _create_step8_experiment(
 ) -> OptimizationExperiment:
     primary_metric = effective.get("target_metric") or effective.get("validation_metric") or "brand_recommendation_rate"
     metric = (baseline_metrics.get("metrics") or {}).get(primary_metric) or {}
+    attribution_intent = effective.get("attribution_intent") if isinstance(effective.get("attribution_intent"), dict) else {}
     intervention_variables = {
         "strategy_candidate_id": candidate.id,
         "strategy_snapshot": json.loads(json.dumps(strategy_snapshot, ensure_ascii=False)),
@@ -1618,6 +1850,16 @@ def _create_step8_experiment(
             "relevant_asset_refs": effective.get("relevant_asset_refs", []),
         },
         "action_snapshot": _action_snapshot(action),
+        "target_decision_change": effective.get("target_decision_change"),
+        "primary_capability": attribution_intent.get("primary_capability"),
+        "secondary_capabilities": attribution_intent.get("secondary_capabilities", []),
+        "attribution_scope": attribution_intent.get("attribution_scope"),
+        "tested_strategy_path": attribution_intent.get("tested_strategy_path"),
+        "validation_hypothesis": attribution_intent.get("validation_hypothesis"),
+        "intervention_mechanism": effective.get("intervention_mechanism") or effective.get("mechanism") or effective.get("core_mechanism"),
+        "required_signals": effective.get("required_signals", []),
+        "execution_delta": effective.get("execution_delta", []),
+        "mechanism_compatibility": effective.get("mechanism_compatibility", {}),
     }
     experiment = OptimizationExperiment(
         action_id=action.id,
@@ -1651,6 +1893,9 @@ def _create_step8_experiment(
             "action_snapshot": _action_snapshot(action),
             "baseline_run_ids": baseline_run_ids,
             "baseline_metrics": baseline_metrics,
+            "execution_delta": effective.get("execution_delta", []),
+            "mechanism_compatibility": effective.get("mechanism_compatibility", {}),
+            "attribution_intent": attribution_intent,
         }),
         channel=selected_asset_ref.get("channel", ""),
         experiment_mode="PER_CHANNEL",
@@ -1664,6 +1909,9 @@ def _create_step8_experiment(
             "selected_asset_ref": selected_asset_ref,
             "strategy_snapshot": strategy_snapshot,
             "baseline_metrics": baseline_metrics,
+            "attribution_intent": attribution_intent,
+            "execution_delta": effective.get("execution_delta", []),
+            "mechanism_compatibility": effective.get("mechanism_compatibility", {}),
         }),
         target_asset_type=selected_asset_ref.get("asset_type", "TBD"),
         target_asset_url=selected_asset_ref.get("canonical_url") or selected_asset_ref.get("url") or "",
@@ -3385,15 +3633,191 @@ def _strategy_fields_from_vertical_action(
     evidence_run_ids: list[int],
 ) -> dict:
     priority_capabilities = _strategy_priority_capabilities(gap_items, action)
+    planned_channels = _strategy_planned_channels(project, action, gap_items)
+    channel_roles = _strategy_channel_roles(planned_channels)
+    intervention_mechanism = _strategy_intervention_mechanism(project, prompt, action, priority_capabilities, evidence_run_ids)
+    primary_path = _strategy_primary_intervention_path(action, planned_channels)
+    asset_direction = _strategy_asset_direction(action, gap_items, planned_channels)
+    execution_sequence = _strategy_execution_sequence(action, planned_channels, asset_direction)
+    attribution_intent = _strategy_attribution_intent(project, prompt, action, priority_capabilities, primary_path, evidence_run_ids)
     return {
         "target_decision_change": _strategy_target_decision_change(project, prompt, priority_capabilities, evidence_run_ids),
         "strategic_hypothesis": _strategy_hypothesis(project, prompt, action, priority_capabilities, evidence_run_ids),
+        "intervention_mechanism": intervention_mechanism,
+        "primary_intervention_path": primary_path,
+        "planned_channels": planned_channels,
+        "channel_roles": channel_roles,
+        "asset_direction": asset_direction,
+        "execution_sequence": execution_sequence,
+        "attribution_intent": attribution_intent,
         "priority_capabilities": priority_capabilities,
         "required_signals": _strategy_required_signals(project, priority_capabilities),
         "non_goals": _strategy_non_goals(action),
         "strategy_boundary_note": (
-            "第 7 步只确认 AI 决策干预方向；渠道、目标资产、内容形式、发布和实验参数都在第 8 步人工确定。"
+            "第 7 步确认策略核心和计划平台层；具体账号、URL、页面、标题、段落、内容结构、发布和 Baseline 都在第 8 步人工确定。"
         ),
+    }
+
+
+def _strategy_planned_channels(project: Project, action: dict, gap_items: list[dict]) -> list[dict]:
+    route = (action.get("route") or "").upper()
+    benchmark = action.get("benchmark_source") or {}
+    benchmark_platform = str(benchmark.get("platform") or "").strip().lower()
+    channels: list[dict] = []
+    if route in {"CONTENT", "EVIDENCE"}:
+        first_party_channel = "PRODUCT_DOCS" if any(_relevant_asset_is_docs(item) for item in gap_items) else "OFFICIAL_SITE"
+        channels.append({
+            "channel": first_party_channel,
+            "channel_label": "产品文档" if first_party_channel == "PRODUCT_DOCS" else "官网",
+            "intervention_priority": "PRIMARY",
+            "channel_role": "承载目标品牌自己的能力事实表达和可摘录证据，先修正品牌资产而不是追随对标来源平台。",
+            "selection_basis": "由 Product Truth、相关品牌资产表达缺口、检索/引用状态共同确定；不是由 Benchmark 平台直接推出。",
+        })
+    if route == "EVIDENCE":
+        channels.append({
+            "channel": "THIRD_PARTY_MEDIA",
+            "channel_label": "第三方媒体",
+            "intervention_priority": "SECONDARY",
+            "channel_role": "在一方资产表达完成后补充可引用的外部证明、案例或场景证据。",
+            "selection_basis": "当前 Gap 需要更强证明信号，但具体平台和账号仍需 Step 8 人工确认。",
+        })
+    if benchmark_platform in {"zhihu", "baijiahao"}:
+        channel = "ZHIHU" if benchmark_platform == "zhihu" else "BAIJIAHAO"
+        if not any(item.get("channel") == channel for item in channels):
+            channels.append({
+                "channel": channel,
+                "channel_label": "知乎" if channel == "ZHIHU" else "百家号",
+                "intervention_priority": "OBSERVE",
+                "channel_role": "仅作为本轮对标证据来源和后续可选验证场景，不自动成为执行渠道。",
+                "selection_basis": "Benchmark 来源平台只说明 AI 当前引用过该平台；是否在该平台执行属于 Step 8 人工判断。",
+            })
+    if not channels:
+        channels.append({
+            "channel": "OTHER",
+            "channel_label": "待人工确认渠道",
+            "intervention_priority": "PRIMARY",
+            "channel_role": "当前 Strategy 只确认干预机制，执行渠道需 Step 8 人工补齐。",
+            "selection_basis": "缺口类型尚不能稳定映射到一方或第三方资产。",
+        })
+    return channels
+
+
+def _relevant_asset_is_docs(gap_item: dict) -> bool:
+    asset = gap_item.get("relevant_asset_snapshot") or {}
+    if not isinstance(asset, dict):
+        return False
+    text = " ".join(str(asset.get(key) or "") for key in ("asset_type", "title", "canonical_url", "url"))
+    return any(token in text.lower() for token in ("doc", "docs", "文档", "帮助", "guide"))
+
+
+def _strategy_channel_roles(planned_channels: list[dict]) -> dict:
+    return {
+        item.get("channel"): {
+            "channel_label": item.get("channel_label"),
+            "intervention_priority": item.get("intervention_priority"),
+            "channel_role": item.get("channel_role"),
+            "selection_basis": item.get("selection_basis"),
+        }
+        for item in planned_channels
+        if isinstance(item, dict) and item.get("channel")
+    }
+
+
+def _strategy_intervention_mechanism(
+    project: Project,
+    prompt: Prompt,
+    action: dict,
+    priority_capabilities: list[dict],
+    evidence_run_ids: list[int],
+) -> str:
+    brand = project.brand_name or "目标品牌"
+    labels = [item.get("capability_label") for item in priority_capabilities if item.get("capability_label")]
+    label_text = "、".join(labels[:4]) if labels else "目标能力"
+    gap_label = action.get("gap_label") or _source_gap_label(str(action.get("gap_type") or ""))
+    return (
+        f"把「{brand}」已确认支持的「{label_text}」沉淀为可被 AI 摘录的一方品牌事实信号；"
+        f"针对当前 {gap_label}，先让相关资产明确表达品牌-能力-场景关系，再用固定 Run 复测观察"
+        f"目标品牌是否进入候选/推荐理由。本机制基于 {len(set(evidence_run_ids))} 个有效 Run 的能力级证据链，不复制竞品事实。"
+    )
+
+
+def _strategy_primary_intervention_path(action: dict, planned_channels: list[dict]) -> str:
+    route = (action.get("route") or "").upper()
+    primary = next((item for item in planned_channels if item.get("intervention_priority") == "PRIMARY"), planned_channels[0] if planned_channels else {})
+    channel = primary.get("channel", "OTHER")
+    if route == "CONTENT":
+        return f"FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION:{channel}"
+    if route == "EVIDENCE":
+        return f"FIRST_PARTY_EVIDENCE_STRENGTHENING:{channel}"
+    if route == "PRODUCT":
+        return "PRODUCT_TRUTH_OR_ROADMAP_REVIEW"
+    return f"MANUAL_STRATEGY_REVIEW:{channel}"
+
+
+def _strategy_asset_direction(action: dict, gap_items: list[dict], planned_channels: list[dict]) -> dict:
+    snapshots = [item.get("relevant_asset_snapshot") for item in gap_items if isinstance(item.get("relevant_asset_snapshot"), dict)]
+    primary_channel = next((item.get("channel") for item in planned_channels if item.get("intervention_priority") == "PRIMARY"), None)
+    operation = "UPDATE_EXISTING" if snapshots else "CREATE_NEW"
+    first_snapshot = snapshots[0] if snapshots else {}
+    return {
+        "asset_operation": operation,
+        "channel": primary_channel or "OTHER",
+        "asset_type": (first_snapshot.get("asset_type") or "ARTICLE"),
+        "target_object": "CONTENT_ASSET",
+        "existing_asset_refs": snapshots,
+        "new_asset_policy": "只有现有相关品牌资产不足以稳定承载该能力事实时，Step 8 才能创建 NEW_ASSET proposal。",
+        "boundary": "本字段只描述资产方向；具体 URL、账号、标题、section 和内容结构属于 Step 8。",
+    }
+
+
+def _strategy_execution_sequence(action: dict, planned_channels: list[dict], asset_direction: dict) -> list[dict]:
+    primary = next((item for item in planned_channels if item.get("intervention_priority") == "PRIMARY"), planned_channels[0] if planned_channels else {})
+    rows = [
+        {
+            "step": 1,
+            "name": "确认执行资产",
+            "owner": "human",
+            "description": f"在第 8 步为计划平台「{primary.get('channel_label') or primary.get('channel') or '待确认'}」选择具体资产或 NEW_ASSET proposal。",
+        },
+        {
+            "step": 2,
+            "name": "落实能力事实表达",
+            "owner": "human",
+            "description": "围绕优先能力补齐目标品牌自己的能力说明、适用场景和可验证证据，不复制竞品页面。",
+        },
+        {
+            "step": 3,
+            "name": "锁定 Baseline 并进入发布 Gate",
+            "owner": "system+human",
+            "description": "创建 Action/Experiment 草案并冻结 Strategy、Gap、Asset、Baseline 快照；真实发布仍需 Release Audit。",
+        },
+    ]
+    if asset_direction.get("asset_operation") == "CREATE_NEW":
+        rows[0]["description"] += " 当前更倾向新建资产，但具体位置仍需人工确认。"
+    return rows
+
+
+def _strategy_attribution_intent(
+    project: Project,
+    prompt: Prompt,
+    action: dict,
+    priority_capabilities: list[dict],
+    primary_path: str,
+    evidence_run_ids: list[int],
+) -> dict:
+    labels = [item.get("capability_label") for item in priority_capabilities if item.get("capability_label")]
+    primary = labels[0] if labels else action.get("summary") or "目标能力"
+    return {
+        "primary_capability": primary,
+        "secondary_capabilities": labels[1:],
+        "attribution_scope": "CAPABILITY_BUNDLE" if len(labels) > 1 else "SINGLE_CAPABILITY",
+        "tested_strategy_path": primary_path,
+        "observed_run_ids": sorted(set(evidence_run_ids)),
+        "validation_hypothesis": (
+            f"如果第 8 步执行严格围绕「{primary}」及同组能力，不同时混改 Prompt、产品能力或外部渠道，"
+            f"则后续固定复采中可把目标品牌候选/推荐理由变化归因到本策略机制的可能性更高。"
+        ),
+        "non_attribution_boundary": "该归因只服务实验解释，不自动宣称因果有效；最终仍需发布、复采和人工结论。",
     }
 
 
@@ -3501,7 +3925,8 @@ def _strategy_hypothesis(
         f"AI 已在 {len(set(evidence_run_ids))} 个有效 Run 中把竞品能力作为推荐说明或辅助理由；"
         f"如果「{brand}」的 Product Truth 已支持「{label_text}」，但相关品牌资产表达不足，"
         f"则优先补齐这些能力与品牌实体的可摘录事实信号，有机会把当前 {gap_label} "
-        f"转化为后续回答中的候选/推荐理由识别。建议方向为「{route_label}」，但执行渠道和资产仍待第 8 步确认。"
+        f"转化为后续回答中的候选/推荐理由识别。建议方向为「{route_label}」，"
+        f"第 7 步只确认计划平台层和策略机制，具体账号、URL、资产、标题和段落仍待第 8 步确认。"
     )
 
 
@@ -3526,7 +3951,7 @@ def _strategy_non_goals(action: dict) -> list[str]:
     benchmark = action.get("benchmark_source") or {}
     platform_label = benchmark.get("platform_label") or benchmark.get("platform") or "对标来源平台"
     return [
-        "不在第 7 步选择发布平台、目标 URL、目标资产或内容类型。",
+        "不在第 7 步选择具体账号、具体 URL、具体页面、具体标题、具体 section 或 Draft。",
         f"不因为核心对标来源来自「{platform_label}」就默认去该平台发布。",
         "不把竞品页面里的能力描述自动当作目标品牌 Product Truth。",
         "不新增或承诺目标品牌尚未支持的产品功能。",
@@ -3565,7 +3990,7 @@ def _strategy_payload_from_vertical_action(
         if alignment_id
     })
     strategy_fields = _strategy_fields_from_vertical_action(project, prompt, action, gap_items, evidence_run_ids)
-    mechanism = (
+    mechanism = strategy_fields.get("intervention_mechanism") or (
         "如果目标品牌已真实具备这些能力，但当前相关资产没有形成可被引用和摘录的能力表达，"
         "则补齐能力说明、适用场景和证据表达，可能提高后续 AI 回答中目标品牌进入候选/推荐理由的机会。"
     )
@@ -3607,7 +4032,7 @@ def _strategy_payload_from_vertical_action(
         "baseline_value": baseline_value,
         "proposed_direction": action.get("route"),
         "recommended_action": action.get("summary") or "",
-        "recommended_action_boundary": "这不是发布平台或内容任务；平台、资产和执行方式属于 Step 8。",
+        "recommended_action_boundary": "这不是具体发布任务；第 7 步可确认计划平台层和渠道角色，具体账号、URL、资产、标题和内容结构属于 Step 8。",
         "changed_features": _changed_features_for_vertical_action(action),
         "controlled_variables": ["collection_prompt", "wenxin_entry", "account_profile", "product_capabilities", "single_channel_scope"],
         "recommended_outline": action.get("content_requirements", []),
@@ -3633,7 +4058,7 @@ def _strategy_payload_from_vertical_action(
         "run_coverage_count": len(evidence_run_ids),
         "blockers": [
             "待人工确认 Strategy 机制和范围",
-            "Step 8 前不得选择发布平台或创建执行任务",
+            "Step 8 前不得选择具体账号、URL、资产、标题、section 或创建执行任务",
             "target_platform / target_asset / target_content_type 仍为 UNRESOLVED 时不得物化 Action/Experiment",
         ],
         "expected_direction": "increase",

@@ -940,6 +940,138 @@ def test_step8_accepts_confirmed_strategy_pending_channel_review_and_freezes_sna
         frozen = loads(experiment.intervention_variables_json, {})["strategy_snapshot"]["effective_payload"]
         assert frozen == snapshot
         assert frozen["review_summary"] == "能力表达缺口成立"
+        intervention_variables = loads(experiment.intervention_variables_json, {})
+        assert intervention_variables["target_decision_change"]
+        assert intervention_variables["primary_capability"]
+        assert intervention_variables["attribution_scope"] in {"SINGLE_CAPABILITY", "CAPABILITY_BUNDLE"}
+        assert "execution_delta" in intervention_variables
+        assert "mechanism_compatibility" in intervention_variables
+    finally:
+        db.close()
+
+
+def test_step8_blocks_strategy_core_change_and_keeps_no_experiment():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _vertical_slice_fixture(db)
+        proposal = citation_decision_vertical_slice(db, project.id, prompt.id, package.id, use_answer_binding_v1_1=True)
+        confirmed = confirm_citation_decision_vertical_slice(
+            db,
+            project.id,
+            prompt.id,
+            {
+                "evidence_package_id": package.id,
+                "action_keys": [proposal["recommended_actions"][0]["action_key"]],
+                "reviewer": "human",
+                "use_answer_binding_v1_1": True,
+            },
+        )
+        candidate_id = confirmed["created"][0]["strategy_candidate"]["id"]
+        review_strategy_candidate(
+            db,
+            candidate_id,
+            type(
+                "Payload",
+                (),
+                {
+                    "review_status": "ACCEPTED",
+                    "reviewed_by": "human",
+                    "review_note": "确认策略机制。",
+                    "human_edited_payload": {},
+                },
+            )(),
+        )
+
+        with pytest.raises(Exception) as exc:
+            confirm_strategy_execution_plan(
+                db,
+                candidate_id,
+                {
+                    "channel": "OFFICIAL_SITE",
+                    "asset_operation": "UPDATE_EXISTING",
+                    "selected_asset_id": 901,
+                    "selected_asset_type": "ARTICLE",
+                    "target_content_type": "ARTICLE",
+                    "target_object": "CONTENT_ASSET",
+                    "baseline_run_ids": [101],
+                    "intervention_mechanism": "改成另一个策略机制",
+                },
+            )
+        assert getattr(exc.value, "detail", {}).get("status") == "RETURN_TO_STEP_7"
+        assert db.query(OptimizationAction).count() == 0
+        assert db.query(OptimizationExperiment).count() == 0
+    finally:
+        db.close()
+
+
+def test_step8_execution_delta_and_mechanism_review_for_channel_change():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        project, prompt, package = _vertical_slice_fixture(db)
+        proposal = citation_decision_vertical_slice(db, project.id, prompt.id, package.id, use_answer_binding_v1_1=True)
+        confirmed = confirm_citation_decision_vertical_slice(
+            db,
+            project.id,
+            prompt.id,
+            {
+                "evidence_package_id": package.id,
+                "action_keys": [proposal["recommended_actions"][0]["action_key"]],
+                "reviewer": "human",
+                "use_answer_binding_v1_1": True,
+            },
+        )
+        candidate_id = confirmed["created"][0]["strategy_candidate"]["id"]
+        review_strategy_candidate(
+            db,
+            candidate_id,
+            type(
+                "Payload",
+                (),
+                {
+                    "review_status": "ACCEPTED_WITH_EDITS",
+                    "reviewed_by": "human",
+                    "review_note": "确认策略核心，Step 8 再选具体平台和资产。",
+                    "human_edited_payload": {},
+                },
+            )(),
+        )
+
+        result = confirm_strategy_execution_plan(
+            db,
+            candidate_id,
+            {
+                "channel": "BAIJIAHAO",
+                "asset_operation": "CREATE_NEW",
+                "selected_asset_type": "ARTICLE",
+                "target_content_type": "ARTICLE",
+                "target_object": "CONTENT_ASSET",
+                "baseline_run_ids": [101],
+                "new_asset_proposal": {
+                    "title": "爱短链点击统计能力说明",
+                    "url": "https://baijiahao.baidu.com/s/new-proposal",
+                },
+                "title": "爱短链点击统计能力说明",
+                "section": "能力说明",
+                "content_structure": ["直接回答", "能力事实", "验证方式"],
+                "execution_reason": "用相近第三方内容渠道承载同一证明机制。",
+            },
+        )
+
+        plan = result["plan_payload"]
+        assert plan["mechanism_compatibility"]["status"] == "REVIEW_REQUIRED"
+        by_path = {item["field_path"]: item for item in plan["execution_delta"]}
+        assert by_path["execution.channel"]["impact_level"] == "MECHANISM_REVIEW_REQUIRED"
+        assert by_path["execution.title"]["impact_level"] == "EXECUTION_ONLY"
+        assert by_path["execution.section"]["impact_level"] == "EXECUTION_ONLY"
+        assert by_path["execution.content_structure"]["impact_level"] == "MECHANISM_REVIEW_REQUIRED"
+        experiment = db.get(OptimizationExperiment, result["experiment_id"])
+        variables = loads(experiment.intervention_variables_json, {})
+        assert variables["mechanism_compatibility"]["status"] == "REVIEW_REQUIRED"
+        assert variables["execution_delta"]
     finally:
         db.close()
 

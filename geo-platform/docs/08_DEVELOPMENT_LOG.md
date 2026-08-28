@@ -2,6 +2,84 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7 Strategy Core / Step 8 Protection First Cut
+
+- Updated Step 7 `StrategyCandidate` generation so the candidate carries a
+  complete Strategy Core while still reusing existing
+  `OptimizationStrategyCandidate.structured_payload/effective_payload`:
+
+```text
+target_decision_change
+priority_capabilities
+strategic_hypothesis
+intervention_mechanism
+primary_intervention_path
+planned_channels
+channel_roles
+asset_direction
+execution_sequence
+required_signals
+non_goals
+attribution_intent
+```
+
+- Corrected the Step 7/8 boundary: Step 7 may define planned platform layer and
+  channel role, such as `OFFICIAL_SITE` or `ZHIHU`, but it must not bind
+  concrete account, URL, page, title, section, content structure, Draft,
+  Baseline, Action, or Experiment.
+- Added Step 8 Strategy Core Protection. If Step 8 payload attempts to change
+  Strategy Core fields such as `intervention_mechanism`, the backend blocks the
+  request and returns `RETURN_TO_STEP_7`.
+- Added structured `execution_delta` rows with backend-calculated impact level:
+
+```text
+EXECUTION_ONLY
+MECHANISM_REVIEW_REQUIRED
+STRATEGY_CORE_CHANGE
+```
+
+- Added Mechanism Compatibility checks:
+
+```text
+EXECUTION_COMPATIBLE
+REVIEW_REQUIRED
+STRATEGY_RECONFIRM_REQUIRED
+```
+
+- Step 8 Experiment snapshots now freeze Strategy Core attribution intent,
+  selected asset, action snapshot, baseline, execution delta, and mechanism
+  compatibility. Existing StrategyCandidate and Experiment models were reused;
+  no migration was required.
+- Frontend strategy detail now renders Strategy Core, planned channels,
+  channel roles, asset direction, execution sequence, and attribution intent in
+  Chinese labels. The old warning `第 7 步不选择平台或文章类型` was replaced with
+  the more precise planned-channel vs concrete-execution boundary.
+- Prompt `#40` real regression:
+
+```text
+StrategyCandidate #44 = ACCEPTED_WITH_EDITS / VALIDATED
+Action #31
+Experiment #31
+planned primary channel = OFFICIAL_SITE
+Benchmark source channel = ZHIHU / OBSERVE only
+BAIJIAHAO simulation = REVIEW_REQUIRED
+intervention_mechanism mutation = RETURN_TO_STEP_7
+```
+
+- This checkpoint does not implement Asset Brief, Claim Matrix, Draft, Step 9,
+  Decision Stability changes, Citation/Benchmark formula changes, or new Gap
+  semantics.
+
+Validation:
+
+```text
+.venv/bin/python -m pytest -q tests/test_strategy_step7_v1.py tests/test_source_gap_v1.py
+54 passed
+.venv/bin/python -m compileall -q app
+frontend npm run build
+git diff --check
+```
+
 ## 2026-08-28 Step 7 Strategy Page Structured Payload Render Guard
 
 - Fixed a white-screen crash after Step 7 `生成策略候选` succeeded.

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "react";
 import {
   Alert, Button, Card, Checkbox, Col, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
-  Layout, Menu, Modal, Popconfirm, Progress, Row, Select, Space, Statistic, Steps, Table, Tag, Typography, message
+  Layout, Menu, Modal, Popconfirm, Progress, Row, Select, Space, Statistic, Steps, Table, Tag, Timeline, Typography, message
 } from "antd";
 import { BarChart3, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
 import { api } from "./api/client";
@@ -701,6 +701,28 @@ function strategyDisplayPayload(candidate: any) {
         : Array.isArray(original.required_signals)
           ? original.required_signals
           : [],
+    interventionMechanism:
+      textValue(executable.intervention_mechanism || original.intervention_mechanism || executable.mechanism || original.mechanism, ""),
+    primaryInterventionPath:
+      textValue(executable.primary_intervention_path || original.primary_intervention_path, ""),
+    plannedChannels:
+      Array.isArray(executable.planned_channels)
+        ? executable.planned_channels
+        : Array.isArray(original.planned_channels)
+          ? original.planned_channels
+          : [],
+    channelRoles:
+      executable.channel_roles || original.channel_roles || {},
+    assetDirection:
+      executable.asset_direction || original.asset_direction || null,
+    executionSequence:
+      Array.isArray(executable.execution_sequence)
+        ? executable.execution_sequence
+        : Array.isArray(original.execution_sequence)
+          ? original.execution_sequence
+          : [],
+    attributionIntent:
+      executable.attribution_intent || original.attribution_intent || null,
     nonGoals:
       Array.isArray(executable.non_goals)
         ? executable.non_goals
@@ -784,8 +806,12 @@ function platformLabel(platform?: string) {
     BAIDU: "百度",
     WENXIN: "文心",
     ZHIHU: "知乎",
+    BAIJIAHAO: "百家号",
+    PRODUCT_DOCS: "产品文档",
+    THIRD_PARTY_MEDIA: "第三方媒体",
     WECHAT: "微信",
     OFFICIAL_SITE: "官网",
+    OTHER: "其他",
   };
   return labels[platform || ""] || platform || "待确认";
 }
@@ -4153,6 +4179,8 @@ export default function App() {
                         <Text>{strategyView.targetDecisionChange || strategyView.actionText || "待确认 AI 决策变化"}</Text>
                         <Text strong>策略假设</Text>
                         <Text type="secondary">{strategyView.strategicHypothesis || strategyView.cause || "待补充策略假设"}</Text>
+                        <Text strong>干预机制</Text>
+                        <Text type="secondary">{strategyView.interventionMechanism || "待确认干预机制"}</Text>
                       </Space>
                     </Card>
                   </Col>
@@ -4175,8 +4203,24 @@ export default function App() {
                     </Card>
                   </Col>
                   <Col xs={24} md={8}>
-                    <Card size="small" title="需要形成的信号" style={{background:"#e6f7ff", height:"100%"}}>
+                    <Card size="small" title="计划平台与信号" style={{background:"#e6f7ff", height:"100%"}}>
                       <Space direction="vertical" size={8} style={{width:"100%"}}>
+                        {strategyView.primaryInterventionPath && <div>
+                          <Text strong>主路径</Text>
+                          <div><Text type="secondary">{strategyView.primaryInterventionPath}</Text></div>
+                        </div>}
+                        {strategyView.plannedChannels.length > 0 && <div>
+                          <Text strong>计划平台层</Text>
+                          <Space direction="vertical" size={6} style={{width:"100%", marginTop:6}}>
+                            {strategyView.plannedChannels.map((item:any, index:number) => <div key={`${item.channel || index}`} style={{borderBottom:"1px solid #f0f0f0", paddingBottom:6}}>
+                              <Space wrap>
+                                <Tag color={item.intervention_priority === "PRIMARY" ? "blue" : item.intervention_priority === "OBSERVE" ? "default" : "geekblue"}>{item.intervention_priority || "计划"}</Tag>
+                                <Text>{item.channel_label || platformLabel(item.channel)}</Text>
+                              </Space>
+                              <div><Text type="secondary">{item.channel_role || "待确认渠道角色"}</Text></div>
+                            </div>)}
+                          </Space>
+                        </div>}
                         {strategyView.requiredSignals.length > 0
                           ? strategyView.requiredSignals.map((item:any, index:number) => <Alert
                               key={`${item.capability_label || index}`}
@@ -4193,6 +4237,26 @@ export default function App() {
                           </ul>
                         </div>}
                       </Space>
+                    </Card>
+                  </Col>
+                  <Col xs={24}>
+                    <Card size="small" title="第 8 步执行边界（尚未生成 Draft）" style={{background:"#fff"}}>
+                      <Descriptions size="small" column={{xs:1, md:2}} items={[
+                        {key:"asset",label:"资产方向",children:<Text>{strategyView.assetDirection?.asset_operation === "UPDATE_EXISTING" ? "更新已有资产" : strategyView.assetDirection?.asset_operation === "CREATE_NEW" ? "新建资产 proposal" : "待第 8 步确认"}</Text>},
+                        {key:"asset-channel",label:"计划承载平台",children:<Text>{platformLabel(strategyView.assetDirection?.channel)}</Text>},
+                        {key:"attr",label:"归因范围",children:<Text>{strategyView.attributionIntent?.attribution_scope === "CAPABILITY_BUNDLE" ? "能力组合" : strategyView.attributionIntent?.attribution_scope === "SINGLE_CAPABILITY" ? "单能力" : "待确认"}</Text>},
+                        {key:"primary-capability",label:"主观察能力",children:<Text>{strategyView.attributionIntent?.primary_capability || "待确认"}</Text>},
+                      ]}/>
+                      {strategyView.executionSequence.length > 0 && <Timeline
+                        style={{marginTop:12}}
+                        items={strategyView.executionSequence.map((item:any) => ({
+                          color: "blue",
+                          children: <Space direction="vertical" size={2}>
+                            <Text strong>{item.name || `步骤 ${item.step}`}</Text>
+                            <Text type="secondary">{item.description || ""}</Text>
+                          </Space>
+                        }))}
+                      />}
                     </Card>
                   </Col>
                   <Col xs={24}>
@@ -4222,26 +4286,16 @@ export default function App() {
                           finally{setStrategyLoading(false)}
                         }}>确认策略</Button>}
                         <Button type="primary" size="small" loading={strategyLoading} disabled={!isAccepted || isAuditHistory} onClick={async()=>{
-                          setStrategyLoading(true);
-                          try{
-                            const generatedPlan = await api.strategyToExperimentPlan(c.id);
-                            updateCandidate({
-                              experiment_id: generatedPlan.experiment_id ?? c.experiment_id,
-                              converted_hypothesis_id: generatedPlan.hypothesis_id ?? c.converted_hypothesis_id,
-                              experiment_plan: generatedPlan.plan_payload || generatedPlan,
-                            });
-                            message.success("执行方案草案已生成");
-                          }catch(e:any){message.error(e.message)}
-                          finally{setStrategyLoading(false)}
-                        }}>{isAccepted ? "生成执行方案草案" : "先确认策略"}</Button>
+                          message.info("第 8 步需要先确认具体账号、URL、资产、标题、内容结构和 Baseline；本轮已锁死旧直通创建，下一 checkpoint 补执行方案表单。");
+                        }}>{isAccepted ? "进入第 8 步配置" : "先确认策略"}</Button>
                       </Space>}
                     >
                       <Alert
                         type="info"
                         showIcon
                         style={{marginBottom:8}}
-                        message="第 7 步不选择平台或文章类型"
-                        description="这里的按钮只是把已确认策略送入第 8 步。第 8 步才会人工选择渠道、资产、内容形式、Baseline 和发布 Gate。"
+                        message="第 7 步确认计划平台层；第 8 步确认具体执行参数"
+                        description="这里的按钮只是把已确认策略送入第 8 步。第 8 步才会人工选择具体账号、URL、资产、标题、段落、内容结构、Baseline 和发布 Gate。"
                       />
                       <Descriptions size="small" column={{xs:1, md:2}} items={[
                         {key:"ready",label:"计划状态",children:<Tag color={readinessStatusColor(plan.readiness_status)}>{readinessStatusLabel(plan.readiness_status)}</Tag>},

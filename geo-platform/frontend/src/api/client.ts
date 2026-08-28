@@ -191,6 +191,8 @@ export const api = {
     request<StrategyCandidate>(`/api/optimization/strategy-candidates/${candidateId}/review`, { method: "POST", body: JSON.stringify(payload) }),
   strategyToExperimentPlan: (candidateId: number) =>
     request<Record<string, any>>(`/api/optimization/strategy-candidates/${candidateId}/experiment-plan`, { method: "POST" }),
+  confirmStrategyExecutionPlan: (candidateId: number, payload: unknown) =>
+    request<Record<string, any>>(`/api/optimization/strategy-candidates/${candidateId}/execution-plan`, { method: "POST", body: JSON.stringify(payload) }),
   listPageSnapshots: (projectId: number, experimentId?: number) =>
     request<any[]>(`/api/optimization/projects/${projectId}/page-snapshots${experimentId ? `?experiment_id=${experimentId}` : ""}`),
   capturePageSnapshot: (projectId: number, payload: unknown) =>

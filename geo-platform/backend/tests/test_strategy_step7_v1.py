@@ -118,7 +118,7 @@ def test_step7_priority_capabilities_are_capability_level_and_allow_ties():
     assert "并列 P1" in capabilities[1]["priority_basis"]
 
 
-def test_step7_required_signals_and_non_goals_do_not_choose_execution_channel():
+def test_step7_required_signals_and_non_goals_do_not_choose_concrete_execution():
     payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), _action(), {})
 
     signal_text = " ".join(item["signal"] for item in payload["required_signals"])
@@ -128,12 +128,31 @@ def test_step7_required_signals_and_non_goals_do_not_choose_execution_channel():
     assert "爱短链 支持 点击统计" in signal_text
     assert "目标品牌自己的真实能力表达" in requirement_text
     assert "不因为核心对标来源来自「知乎」就默认去该平台发布" in non_goals
-    assert "不在第 7 步选择发布平台" in non_goals
+    assert "不在第 7 步选择具体账号" in non_goals
     assert "页面区块" not in signal_text + requirement_text
     assert "FAQ" not in signal_text + requirement_text
 
 
-def test_step7_execution_fields_remain_unresolved_and_step8_compatible():
+def test_step7_strategy_core_includes_planned_channel_layer():
+    payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), _action(), {})
+
+    assert payload["intervention_mechanism"]
+    assert payload["primary_intervention_path"].startswith("FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION")
+    assert payload["planned_channels"][0]["channel"] == "OFFICIAL_SITE"
+    assert payload["planned_channels"][0]["intervention_priority"] == "PRIMARY"
+    assert payload["planned_channels"][0]["channel_role"].startswith("承载目标品牌自己的能力事实表达")
+    zhihu = next(item for item in payload["planned_channels"] if item["channel"] == "ZHIHU")
+    assert zhihu["intervention_priority"] == "OBSERVE"
+    assert "不自动成为执行渠道" in zhihu["channel_role"]
+    assert payload["channel_roles"]["OFFICIAL_SITE"]["intervention_priority"] == "PRIMARY"
+    assert payload["asset_direction"]["asset_operation"] == "CREATE_NEW"
+    assert payload["execution_sequence"][0]["name"] == "确认执行资产"
+    assert payload["attribution_intent"]["primary_capability"] == "点击统计"
+    assert payload["attribution_intent"]["attribution_scope"] == "CAPABILITY_BUNDLE"
+    assert "计划平台层" in payload["strategy_boundary_note"]
+
+
+def test_step7_concrete_execution_fields_remain_unresolved_and_step8_compatible():
     payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), _action(), {})
 
     assert payload["target_platform"] == "UNRESOLVED"
@@ -141,6 +160,7 @@ def test_step7_execution_fields_remain_unresolved_and_step8_compatible():
     assert payload["target_content_type"] == "UNRESOLVED"
     assert payload["intervention_type"] == "UNRESOLVED"
     assert "Step 8" in payload["recommended_action_boundary"]
+    assert "具体账号" in payload["recommended_action_boundary"]
     assert payload["changed_features"]
     assert payload["required_sections"] == ["直接回答 Prompt", "能力事实说明", "适用场景"]
     assert payload["target_metric"] == "brand_mention_rate"

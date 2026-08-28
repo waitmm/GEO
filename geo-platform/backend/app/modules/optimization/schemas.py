@@ -254,6 +254,26 @@ class StrategyExecutionPlanPayload(BaseModel):
     baseline_run_ids: list[int]
     confirmed_by: str = "human"
     confirmation_note: str = ""
+    execution_reason: str = ""
+    channel_instance: str = ""
+    account: str = ""
+    location: str = ""
+    title: str = ""
+    section: str = ""
+    content_structure: list[dict[str, Any]] = Field(default_factory=list)
+    strategy_core_updates: dict[str, Any] = Field(default_factory=dict)
+    target_decision_change: Optional[Any] = None
+    priority_capabilities: Optional[Any] = None
+    strategic_hypothesis: Optional[Any] = None
+    intervention_mechanism: Optional[Any] = None
+    primary_intervention_path: Optional[Any] = None
+    planned_channels: Optional[Any] = None
+    channel_roles: Optional[Any] = None
+    asset_direction: Optional[Any] = None
+    execution_sequence: Optional[Any] = None
+    required_signals: Optional[Any] = None
+    non_goals: Optional[Any] = None
+    attribution_intent: Optional[Any] = None
     selected_asset_id: Optional[int] = None
     selected_asset_type: str = "ARTICLE"
     new_asset_proposal: dict[str, Any] = Field(default_factory=dict)

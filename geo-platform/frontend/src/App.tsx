@@ -685,6 +685,30 @@ function strategyDisplayPayload(candidate: any) {
     contentBrief,
     interventionCandidate,
     executionGate,
+    targetDecisionChange:
+      textValue(executable.target_decision_change || original.target_decision_change, ""),
+    strategicHypothesis:
+      textValue(executable.strategic_hypothesis || original.strategic_hypothesis || executable.mechanism || original.mechanism, ""),
+    priorityCapabilities:
+      Array.isArray(executable.priority_capabilities)
+        ? executable.priority_capabilities
+        : Array.isArray(original.priority_capabilities)
+          ? original.priority_capabilities
+          : [],
+    requiredSignals:
+      Array.isArray(executable.required_signals)
+        ? executable.required_signals
+        : Array.isArray(original.required_signals)
+          ? original.required_signals
+          : [],
+    nonGoals:
+      Array.isArray(executable.non_goals)
+        ? executable.non_goals
+        : Array.isArray(original.non_goals)
+          ? original.non_goals
+          : [],
+    strategyBoundaryNote:
+      textValue(executable.strategy_boundary_note || original.strategy_boundary_note || executable.recommended_action_boundary, ""),
     evidenceSummary:
       strategyEvidenceSummaryText(
         executable.evidence_summary ||
@@ -4123,69 +4147,69 @@ export default function App() {
                 />}
                 <Row gutter={[12,12]}>
                   <Col xs={24} md={8}>
-                    <Card size="small" title="📊 证据事实" style={{background:"#f6ffed"}}>
-                      <Text>{strategyView.evidenceSummary || "无"}</Text>
-                      {c.structured_payload?.evidence_fact_ids?.length>0 && <div style={{marginTop:8}}><Text type="secondary">引用事实ID: {(c.structured_payload.evidence_fact_ids as string[]).join(", ")}</Text></div>}
-                      {strategyView.decisionMarket?.primary_gap?.metric && <div style={{marginTop:8}}>
-                        <Text type="secondary">主指标：{metricLabel(strategyView.decisionMarket.primary_gap.metric.metric)} · {strategyView.decisionMarket.primary_gap.metric.numerator}/{strategyView.decisionMarket.primary_gap.metric.denominator}</Text>
-                      </div>}
+                    <Card size="small" title="AI 决策机会" style={{background:"#f6ffed", height:"100%"}}>
+                      <Space direction="vertical" size={8} style={{width:"100%"}}>
+                        <Text strong>目标变化</Text>
+                        <Text>{strategyView.targetDecisionChange || strategyView.actionText || "待确认 AI 决策变化"}</Text>
+                        <Text strong>策略假设</Text>
+                        <Text type="secondary">{strategyView.strategicHypothesis || strategyView.cause || "待补充策略假设"}</Text>
+                      </Space>
                     </Card>
                   </Col>
                   <Col xs={24} md={8}>
-                    <Card size="small" title="🔍 推断" style={{background:"#fff7e6"}}>
-                      {(c.structured_payload?.inferences||[]).length>0
-                        ? (c.structured_payload.inferences as any[]).map((inf:any)=><Alert key={inf.inference_id} type="warning" style={{marginBottom:4}} message={<Text>{inf.statement}</Text>} />)
-                        : <Text type="secondary">基于当前证据推导的有限判断</Text>}
-                      <div style={{marginTop:8}}><Text strong>推断原因：</Text><Text>{strategyView.cause || "-"}</Text></div>
-                      {strategyView.mustAnswer.length > 0 && <div style={{marginTop:8}}>
-                        <Text strong>审核前必须回答：</Text>
-                        <ul style={{margin:"6px 0 0 18px", padding:0}}>
-                          {strategyView.mustAnswer.slice(0, 4).map((item: string, index: number) => <li key={index}><Text>{item}</Text></li>)}
-                        </ul>
-                      </div>}
+                    <Card size="small" title="本轮策略重点" style={{background:"#fff7e6", height:"100%"}}>
+                      <Space direction="vertical" size={8} style={{width:"100%"}}>
+                        <Text strong>优先能力/理由</Text>
+                        {strategyView.priorityCapabilities.length > 0
+                          ? strategyView.priorityCapabilities.map((item:any, index:number) => <div key={`${item.gap_item_id || item.capability_label || index}`} style={{borderBottom:"1px solid #f0f0f0", paddingBottom:6}}>
+                              <Space wrap>
+                                <Tag color={item.priority_band === "P1" ? "red" : "orange"}>{item.priority_band || "待定"}</Tag>
+                                <Text>{item.capability_label || "待确认能力"}</Text>
+                                <Tag>{sourceGapLabel(item.gap_type)}</Tag>
+                                <Tag>{item.reason_run_coverage || `${item.run_coverage_count || 0} Runs`}</Tag>
+                              </Space>
+                              <div><Text type="secondary">{item.priority_basis || "来自已确认缺口和合格证据链。"}</Text></div>
+                            </div>)
+                          : <Text type="secondary">旧策略暂无能力级拆解；请重新生成策略候选。</Text>}
+                      </Space>
                     </Card>
                   </Col>
                   <Col xs={24} md={8}>
-                    <Card size="small" title="🎯 策略建议" style={{background:"#e6f7ff"}}>
-                      <Descriptions size="small" column={1} items={[
-                        {key:"type",label:"干预类型",children:<Tag color={strategyView.interventionType==="UNRESOLVED"?"orange":"blue"}>{interventionTypeLabel(strategyView.interventionType)}</Tag>},
-                        {key:"plat",label:"目标平台",children:<Tag color={strategyView.targetPlatform==="UNRESOLVED"?"orange":"blue"}>{platformLabel(strategyView.targetPlatform)}</Tag>},
-                        {key:"ct",label:"内容类型",children:<Tag>{strategyContentTypeLabel(strategyView.targetContentType)}</Tag>},
-                        {key:"fit",label:"证据匹配度 / 执行可行性",children:<Space><Tag>{c.structured_payload?.evidence_fit||"-"}</Tag><Tag>{c.structured_payload?.execution_feasibility||"未评估"}</Tag></Space>},
-                      ]}/>
-                      {c.structured_payload?.recommended_action && typeof c.structured_payload.recommended_action === "object"
-                          ? <Space direction="vertical" size={4} style={{marginTop:8}}>
-                            <Text strong>内容方向：</Text><Text>{(c.structured_payload.recommended_action as any).content_direction||"-"}</Text>
-                            <Text strong>平台方向：</Text><Text>{(c.structured_payload.recommended_action as any).platform_direction||"-"}</Text>
-                            {strategyView.platformRecommendations.length > 0 && <Space direction="vertical" size={6} style={{width:"100%"}}>
-                              <Text strong>推荐平台组合：</Text>
-                              {strategyView.platformRecommendations.map((item: any, index: number) => <Alert
-                                key={`${item.platform || item.platform_label}-${index}`}
-                                type="info"
-                                showIcon
-                                message={`${index + 1}. ${item.platform_label || platformLabel(item.platform)} · ${item.signal_level_label || "普通引用分布"} · ${(item.content_type_labels || []).join("、") || "内容待确认"}`}
-                                description={<Space direction="vertical" size={2}>
-                                  <Text>{item.recommended_action || "-"}</Text>
-                                  <Text type="secondary">{item.evidence_basis || `引用覆盖 ${item.citation_run_count || 0} 个 Run`}</Text>
-                                </Space>}
-                              />)}
-                            </Space>}
-                            <Text strong>资产方向：</Text><Text>{(c.structured_payload.recommended_action as any).asset_direction||"-"}</Text>
-                            {strategyView.metricAvailability && <Alert type="warning" showIcon message="指标边界" description={strategyView.metricAvailability} />}
-                          </Space>
-                        : <Space direction="vertical" size={6} style={{marginTop:8, width:"100%"}}>
-                            <Text>{strategyView.actionText || "-"}</Text>
-                            {strategyView.contentBrief.page_goal && <Alert type="info" showIcon message="内容目标" description={strategyView.contentBrief.page_goal} />}
-                            {strategyView.metricAvailability && <Alert type="warning" showIcon message="指标边界" description={strategyView.metricAvailability} />}
-                            {strategyView.requiredSections.length > 0 && <Text type="secondary">建议结构：{strategyView.requiredSections.join(" / ")}</Text>}
-                            {strategyView.evidenceRequirements.length > 0 && <Text type="secondary">证据要求：{strategyView.evidenceRequirements.join("；")}</Text>}
-                          </Space>}
+                    <Card size="small" title="需要形成的信号" style={{background:"#e6f7ff", height:"100%"}}>
+                      <Space direction="vertical" size={8} style={{width:"100%"}}>
+                        {strategyView.requiredSignals.length > 0
+                          ? strategyView.requiredSignals.map((item:any, index:number) => <Alert
+                              key={`${item.capability_label || index}`}
+                              type="info"
+                              showIcon
+                              message={item.signal || `目标品牌明确支持「${item.capability_label || "该能力"}」`}
+                              description={item.evidence_requirement || "必须来自目标品牌事实和可摘录资产表达。"}
+                            />)
+                          : <Text type="secondary">旧策略暂无信号拆解；请重新生成策略候选。</Text>}
+                        {strategyView.nonGoals.length > 0 && <div>
+                          <Text strong>本步不做</Text>
+                          <ul style={{margin:"6px 0 0 18px", padding:0}}>
+                            {strategyView.nonGoals.slice(0, 5).map((item: string, index: number) => <li key={index}><Text type="secondary">{item}</Text></li>)}
+                          </ul>
+                        </div>}
+                      </Space>
+                    </Card>
+                  </Col>
+                  <Col xs={24}>
+                    <Card size="small" title="证据依据（用于审计，不等于执行平台）" style={{background:"#fafafa"}}>
+                      <Space direction="vertical" size={6} style={{width:"100%"}}>
+                        <Text>{strategyView.evidenceSummary || "无"}</Text>
+                        <Text type="secondary">推导依据：{strategyView.cause || strategyView.strategicHypothesis || "-"}</Text>
+                        {strategyView.strategyBoundaryNote && <Alert type="info" showIcon message="第 7 步边界" description={strategyView.strategyBoundaryNote} />}
+                        {c.structured_payload?.evidence_fact_ids?.length>0 && <Text type="secondary">引用事实 ID：{(c.structured_payload.evidence_fact_ids as string[]).join(", ")}</Text>}
+                        {strategyView.decisionMarket?.primary_gap?.metric && <Text type="secondary">主指标：{metricLabel(strategyView.decisionMarket.primary_gap.metric.metric)} · {strategyView.decisionMarket.primary_gap.metric.numerator}/{strategyView.decisionMarket.primary_gap.metric.denominator}</Text>}
+                      </Space>
                     </Card>
                   </Col>
                   <Col xs={24}>
                     <Card
                       size="small"
-                      title="验证边界与实验计划"
+                      title="第 8 步入口：执行方案与实验草案"
                       style={{background:"#fff"}}
                       extra={<Space>
                         {!isAccepted && <Button size="small" loading={strategyLoading} disabled={isAuditHistory} onClick={async()=>{
@@ -4193,10 +4217,10 @@ export default function App() {
                           try{
                             const reviewed = await api.reviewStrategyCandidate(c.id,{review_status:"ACCEPTED",reviewed_by:"human",review_note:"最终策略页人工接受"});
                             updateCandidate(reviewed);
-                            message.success("策略已接受，可以生成实验计划");
+                            message.success("策略已确认，下一步可配置执行方案");
                           }catch(e:any){message.error(e.message)}
                           finally{setStrategyLoading(false)}
-                        }}>接受策略</Button>}
+                        }}>确认策略</Button>}
                         <Button type="primary" size="small" loading={strategyLoading} disabled={!isAccepted || isAuditHistory} onClick={async()=>{
                           setStrategyLoading(true);
                           try{
@@ -4206,12 +4230,19 @@ export default function App() {
                               converted_hypothesis_id: generatedPlan.hypothesis_id ?? c.converted_hypothesis_id,
                               experiment_plan: generatedPlan.plan_payload || generatedPlan,
                             });
-                            message.success("实验计划已生成");
+                            message.success("执行方案草案已生成");
                           }catch(e:any){message.error(e.message)}
                           finally{setStrategyLoading(false)}
-                        }}>{isAccepted ? "生成实验计划" : "先接受后生成"}</Button>
+                        }}>{isAccepted ? "生成执行方案草案" : "先确认策略"}</Button>
                       </Space>}
                     >
+                      <Alert
+                        type="info"
+                        showIcon
+                        style={{marginBottom:8}}
+                        message="第 7 步不选择平台或文章类型"
+                        description="这里的按钮只是把已确认策略送入第 8 步。第 8 步才会人工选择渠道、资产、内容形式、Baseline 和发布 Gate。"
+                      />
                       <Descriptions size="small" column={{xs:1, md:2}} items={[
                         {key:"ready",label:"计划状态",children:<Tag color={readinessStatusColor(plan.readiness_status)}>{readinessStatusLabel(plan.readiness_status)}</Tag>},
                         {key:"experiment",label:"实验编号",children:plan.experiment_id || c.experiment_id ? <Tag color="blue">#{plan.experiment_id || c.experiment_id}</Tag> : <Text type="secondary">尚未生成</Text>},

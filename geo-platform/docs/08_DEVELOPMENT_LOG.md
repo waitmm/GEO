@@ -1930,3 +1930,59 @@ Validation performed:
   - `OptimizationExperiment` stayed `16 -> 16`;
   - `strategy_to_experiment_plan` was rejected both before review and after
     review because Step 8 execution fields remain unresolved.
+
+## 2026-08-28 Step 7 StrategyCandidate Expression Upgrade
+
+- Scope was limited to Step 7 strategy candidate content and page expression.
+  No Step 8, Step 9, Evidence, Benchmark, Gap, Action, Experiment, Baseline, or
+  Decision Stability logic was redesigned.
+- Extended vertical StrategyCandidate structured payload with Step 7 strategy
+  fields:
+  - `target_decision_change`;
+  - `strategic_hypothesis`;
+  - `priority_capabilities`;
+  - `required_signals`;
+  - `non_goals`;
+  - `strategy_boundary_note`.
+- Kept existing Step 8 compatibility fields in the payload, including
+  `recommended_action`, `changed_features`, `required_sections`,
+  `target_metric`, `product_truth_refs`, `relevant_asset_refs`, and
+  `observed_run_ids`.
+- Preserved execution isolation:
+  - `target_platform = UNRESOLVED`;
+  - `target_asset = UNRESOLVED`;
+  - `target_content_type = UNRESOLVED`;
+  - `intervention_type = UNRESOLVED`;
+  - Benchmark channel still cannot become execution channel in Step 7.
+- Updated the frontend Strategy page so the StrategyCandidate card leads with:
+  - AI decision opportunity;
+  - strategy hypothesis;
+  - priority capabilities/reasons;
+  - required brand-capability signals;
+  - non-goals and Step 7/8 boundary.
+- Demoted execution/platform/experiment controls to a Step 8 entry block with
+  explicit copy that channel, asset, content form, baseline, release, and
+  experiment details belong to Step 8.
+- Added `backend/tests/test_strategy_step7_v1.py` to lock:
+  - strategy payload is not only a gap restatement;
+  - capability-level priority supports ties;
+  - required signals do not choose execution channel or page sections;
+  - non-goals prevent Benchmark channel leakage;
+  - unresolved execution fields remain unresolved for Step 8.
+- Prompt `#40` real regression:
+  - generated `StrategyCandidate #43`;
+  - status is `PENDING_REVIEW`;
+  - target decision change is to make `爱短链` build a clearer
+    brand-capability-recommendation-reason association for `点击统计`,
+    `自定义分享标题`, and `营销场景使用`;
+  - all three capabilities are `P1` with `6/6` observed Run coverage;
+  - `target_platform` remains `UNRESOLVED`.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest tests/test_strategy_step7_v1.py` passed:
+  `4 passed`.
+- `.venv/bin/python -m pytest tests/test_source_gap_v1.py` passed:
+  `47 passed`.
+- `source /Users/bmwqr/.nvm/nvm.sh && nvm use 18.20.8 && npm run build`
+  passed.

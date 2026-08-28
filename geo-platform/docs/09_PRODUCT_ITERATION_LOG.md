@@ -1844,3 +1844,108 @@ Benchmark Channel 只说明证据来源，不决定 Strategy Channel。
 PHASE_3_STRATEGY_CANDIDATE_READY_FOR_REVIEW
 STEP_8_NOT_STARTED
 ```
+
+## 2026-08-28 Step 7 策略候选表达增强
+
+本轮只调整第 7 步 `StrategyCandidate` 的策略表达，不改变单 Prompt V1
+1-8 主链顺序，也不进入 Step 8 / Step 9。
+
+### 背景
+
+用户在策略页无法理解机器策略的价值，主要原因是旧展示把 Step 7 和 Step 8
+混在一起：
+
+```text
+第 7 步策略候选看起来像“缺口复述”
+页面过早展示平台、内容类型、实验计划等执行字段
+用户会误以为“Benchmark 来自知乎 = 策略要去知乎发文章”
+```
+
+这与 V1 冻结后的产品定义冲突。Step 7 应该回答：
+
+```text
+要改变 AI 的哪类决策
+为什么这个干预方向可能有效
+优先补哪些目标品牌能力信号
+本步明确不决定什么
+```
+
+### 产品决策
+
+第 7 步正式语义保持为：
+
+```text
+策略确认
+```
+
+它确认的是：
+
+```text
+AI 决策干预方向 / Strategy Hypothesis
+```
+
+它不确认：
+
+```text
+发布平台
+目标 URL
+目标资产
+文章类型
+页面结构
+Baseline
+Experiment
+```
+
+这些全部属于 Step 8。
+
+### StrategyCandidate 新增展示字段
+
+在复用现有 `OptimizationStrategyCandidate` / `structured_payload` /
+`effective_payload` 的前提下，新增以下策略表达：
+
+```text
+target_decision_change
+strategic_hypothesis
+priority_capabilities
+required_signals
+non_goals
+strategy_boundary_note
+```
+
+旧字段继续保留给 Step 8 兼容，但不再作为第 7 步主体叙事。
+
+### Prompt #40 回归
+
+新生成：
+
+```text
+StrategyCandidate #43
+review_status = PENDING_REVIEW
+target_platform = UNRESOLVED
+```
+
+策略重点：
+
+```text
+让爱短链在“长链接缩短”这类 AI 回答中，围绕点击统计、自定义分享标题、
+营销场景使用建立更明确的品牌-能力-推荐理由关联。
+```
+
+优先能力：
+
+```text
+点击统计：P1 / 6 Runs
+自定义分享标题：P1 / 6 Runs
+营销场景使用：P1 / 6 Runs
+```
+
+### 边界
+
+```text
+PRIMARY_BENCHMARK 来自知乎
+≠
+第 7 步自动选择知乎发布
+```
+
+第 7 步只形成可人工确认的 StrategyCandidate。确认后仍需 Step 8 人工选择
+渠道、资产、资产操作、内容形式和 Baseline。

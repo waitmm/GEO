@@ -3377,6 +3377,163 @@ def _create_vertical_strategy_candidate(
     return candidate
 
 
+def _strategy_fields_from_vertical_action(
+    project: Project,
+    prompt: Prompt,
+    action: dict,
+    gap_items: list[dict],
+    evidence_run_ids: list[int],
+) -> dict:
+    priority_capabilities = _strategy_priority_capabilities(gap_items, action)
+    return {
+        "target_decision_change": _strategy_target_decision_change(project, prompt, priority_capabilities, evidence_run_ids),
+        "strategic_hypothesis": _strategy_hypothesis(project, prompt, action, priority_capabilities, evidence_run_ids),
+        "priority_capabilities": priority_capabilities,
+        "required_signals": _strategy_required_signals(project, priority_capabilities),
+        "non_goals": _strategy_non_goals(action),
+        "strategy_boundary_note": (
+            "第 7 步只确认 AI 决策干预方向；渠道、目标资产、内容形式、发布和实验参数都在第 8 步人工确定。"
+        ),
+    }
+
+
+def _strategy_priority_capabilities(gap_items: list[dict], action: dict) -> list[dict]:
+    if not gap_items:
+        label = str(action.get("title") or action.get("summary") or "待确认能力").strip()
+        return [{
+            "capability_label": label,
+            "priority_band": "P1",
+            "priority_basis": "当前推荐动作只有一个能力方向，需在人工确认时核对其 Product Truth 和证据链。",
+            "reason_run_coverage": "0/0",
+            "observed_run_ids": [],
+            "benchmark_tier": action.get("benchmark_source", {}).get("benchmark_tier") or "",
+            "benchmark_evidence_count": 0,
+            "product_truth_status": action.get("product_truth_status", "UNKNOWN"),
+            "gap_type": action.get("gap_type"),
+            "gap_layer": "",
+        }]
+
+    counts = [len(set(item.get("observed_run_ids") or [])) for item in gap_items]
+    max_count = max(counts) if counts else 0
+    result = []
+    for item, count in zip(gap_items, counts):
+        evidence_count = len(set(item.get("benchmark_evidence_ids") or []))
+        band = "P1" if count == max_count else "P2"
+        tier = item.get("benchmark_tier") or (item.get("benchmark_source") or {}).get("benchmark_tier") or ""
+        truth = item.get("product_truth_status") or action.get("product_truth_status") or "UNKNOWN"
+        gap_type = item.get("gap_type") or action.get("gap_type")
+        result.append({
+            "gap_item_id": item.get("gap_item_id"),
+            "capability_label": item.get("capability_label") or "待确认能力",
+            "priority_band": band,
+            "priority_basis": _strategy_priority_basis(item, count, max_count, evidence_count),
+            "reason_run_coverage": f"{count}/{max_count}" if max_count else f"{count}/0",
+            "observed_run_ids": sorted({int(run_id) for run_id in item.get("observed_run_ids", []) if run_id}),
+            "run_coverage_count": count,
+            "benchmark_tier": tier,
+            "decision_support_level": item.get("decision_support_level"),
+            "benchmark_evidence_ids": item.get("benchmark_evidence_ids", []),
+            "benchmark_evidence_count": evidence_count,
+            "product_truth_ids": item.get("product_truth_ids", []),
+            "product_truth_status": truth,
+            "gap_type": gap_type,
+            "gap_label": item.get("gap_label") or _source_gap_label(str(gap_type or "")),
+            "gap_layer": item.get("gap_layer") or "",
+        })
+    return result
+
+
+def _benchmark_tier_label(value: str) -> str:
+    return {
+        "PRIMARY_BENCHMARK": "核心对标",
+        "SECONDARY_BENCHMARK": "辅助对标",
+        "REFERENCE_ONLY": "仅引用参考",
+        "NOT_EVALUABLE": "不可评估",
+    }.get(value or "", value or "未判定对标")
+
+
+def _strategy_priority_basis(item: dict, count: int, max_count: int, evidence_count: int) -> str:
+    label = item.get("capability_label") or "该能力"
+    tier = _benchmark_tier_label(item.get("benchmark_tier") or (item.get("benchmark_source") or {}).get("benchmark_tier") or "")
+    gap_label = item.get("gap_label") or _source_gap_label(str(item.get("gap_type") or ""))
+    parts = [
+        f"「{label}」来自 {tier}",
+        f"覆盖 {count} 个有效 Run",
+        f"对应 {evidence_count} 条合格证据对齐",
+        f"当前缺口为 {gap_label}",
+    ]
+    if max_count and count == max_count:
+        parts.append("在本轮能力中属于最高覆盖，可与同覆盖能力并列 P1")
+    else:
+        parts.append("覆盖低于本轮最高能力，列为 P2 观察")
+    return "；".join(parts)
+
+
+def _strategy_target_decision_change(
+    project: Project,
+    prompt: Prompt,
+    priority_capabilities: list[dict],
+    evidence_run_ids: list[int],
+) -> str:
+    brand = project.brand_name or "目标品牌"
+    prompt_text = prompt.prompt_text or prompt.title or f"Prompt #{prompt.id}"
+    labels = [item.get("capability_label") for item in priority_capabilities if item.get("capability_label")]
+    capability_text = "、".join(labels[:3]) if labels else "当前已确认能力"
+    return (
+        f"让「{brand}」在「{prompt_text}」这类 AI 回答中，围绕「{capability_text}」"
+        f"建立更明确的品牌-能力-推荐理由关联；本轮观察覆盖 {len(set(evidence_run_ids))} 个有效 Run。"
+    )
+
+
+def _strategy_hypothesis(
+    project: Project,
+    prompt: Prompt,
+    action: dict,
+    priority_capabilities: list[dict],
+    evidence_run_ids: list[int],
+) -> str:
+    brand = project.brand_name or "目标品牌"
+    route_label = _action_route_label((action.get("route") or "").upper())
+    gap_label = action.get("gap_label") or _source_gap_label(str(action.get("gap_type") or ""))
+    labels = [item.get("capability_label") for item in priority_capabilities if item.get("capability_label")]
+    label_text = "、".join(labels[:4]) if labels else "当前能力"
+    return (
+        f"AI 已在 {len(set(evidence_run_ids))} 个有效 Run 中把竞品能力作为推荐说明或辅助理由；"
+        f"如果「{brand}」的 Product Truth 已支持「{label_text}」，但相关品牌资产表达不足，"
+        f"则优先补齐这些能力与品牌实体的可摘录事实信号，有机会把当前 {gap_label} "
+        f"转化为后续回答中的候选/推荐理由识别。建议方向为「{route_label}」，但执行渠道和资产仍待第 8 步确认。"
+    )
+
+
+def _strategy_required_signals(project: Project, priority_capabilities: list[dict]) -> list[dict]:
+    brand = project.brand_name or "目标品牌"
+    signals = []
+    for item in priority_capabilities:
+        label = item.get("capability_label") or "待确认能力"
+        signals.append({
+            "capability_label": label,
+            "signal": f"回答或引用资料能够明确表达「{brand} 支持 {label}」",
+            "evidence_requirement": (
+                "必须是目标品牌自己的真实能力表达，并能被页面正文或引用来源摘录；不能复制竞品事实作为目标品牌事实。"
+            ),
+            "observed_run_ids": item.get("observed_run_ids", []),
+            "product_truth_status": item.get("product_truth_status", "UNKNOWN"),
+        })
+    return signals
+
+
+def _strategy_non_goals(action: dict) -> list[str]:
+    benchmark = action.get("benchmark_source") or {}
+    platform_label = benchmark.get("platform_label") or benchmark.get("platform") or "对标来源平台"
+    return [
+        "不在第 7 步选择发布平台、目标 URL、目标资产或内容类型。",
+        f"不因为核心对标来源来自「{platform_label}」就默认去该平台发布。",
+        "不把竞品页面里的能力描述自动当作目标品牌 Product Truth。",
+        "不新增或承诺目标品牌尚未支持的产品功能。",
+        "不把价格、品牌定位或其他未进入本轮证据链的变量混入本次策略。",
+    ]
+
+
 def _strategy_payload_from_vertical_action(
     project: Project,
     prompt: Prompt,
@@ -3407,12 +3564,14 @@ def _strategy_payload_from_vertical_action(
         for alignment_id in item.get("benchmark_evidence_ids", [])
         if alignment_id
     })
+    strategy_fields = _strategy_fields_from_vertical_action(project, prompt, action, gap_items, evidence_run_ids)
     mechanism = (
         "如果目标品牌已真实具备这些能力，但当前相关资产没有形成可被引用和摘录的能力表达，"
         "则补齐能力说明、适用场景和证据表达，可能提高后续 AI 回答中目标品牌进入候选/推荐理由的机会。"
     )
     return {
         "strategy_phase": "PHASE_3_STRATEGY_CANDIDATE",
+        **strategy_fields,
         "prompt_id": prompt.id,
         "gap_item_ids": gap_item_ids,
         "target_capability_or_reason": capability_labels,

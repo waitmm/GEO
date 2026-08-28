@@ -60,6 +60,12 @@ Status: ACTIVE
 - StrategyCandidate, Action, and Experiment are different stages. A confirmed
   Strategy is not an Experiment; Experiment draft creation requires Step 8
   channel/asset/operation confirmation and frozen snapshots.
+- Step 7 StrategyCandidate must explain the AI decision intervention direction
+  before any execution planning. If the page only restates a Gap or leads with
+  channel/content-type/experiment controls, users will misread Strategy as a
+  content task. The required Step 7 fields are target decision change,
+  strategic hypothesis, priority capabilities, required signals, non-goals, and
+  an explicit Step 8 boundary note.
 - Benchmark channel is not execution channel. A Primary Benchmark from Zhihu
   must not automatically mean "publish on Zhihu"; channel selection belongs to
   Step 8.

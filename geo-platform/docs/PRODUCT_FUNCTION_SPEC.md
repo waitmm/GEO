@@ -619,6 +619,11 @@ Intervention Candidate 只能表达建议方向和证据前提。人工审核前
 - structured payload
 - human edited payload
 - effective payload
+- target decision change
+- strategic hypothesis
+- priority capabilities / reasons
+- required brand-capability signals
+- non-goals and Step 8 boundary
 - evidence validation status
 - hypothesis validation status
 - review status
@@ -636,7 +641,31 @@ DEFERRED
 VALIDATION_FAILED
 ```
 
-只有人工接受后的候选才能进入实验计划。
+第 7 步 `StrategyCandidate` 只回答 AI 决策干预方向：
+
+```text
+要改变 AI 的哪类品牌/能力/推荐理由识别；
+为什么这个干预可能有效；
+优先补哪些目标品牌能力信号；
+本步明确不做什么。
+```
+
+它不能在第 7 步决定：
+
+```text
+发布平台
+目标 URL
+目标资产
+内容类型
+页面结构
+Baseline
+Experiment
+```
+
+这些属于 Step 8 Execution Plan。Benchmark Channel 不能自动成为 Strategy
+Channel。
+
+只有人工接受后的候选才能进入执行方案/实验计划阶段。
 
 ### 11.3 effective_payload
 

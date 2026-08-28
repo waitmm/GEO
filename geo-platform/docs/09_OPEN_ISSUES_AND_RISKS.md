@@ -28,6 +28,11 @@ Status: ACTIVE
   context. Current main-chain cards must first verify the current Prompt,
   Evidence Package, evidence review, and gap state; historical rows may be
   shown only as historical context.
+- Audit-generated StrategyCandidate or Experiment rows, such as rows reviewed by
+  `phase3_audit` or `phase4_audit`, are acceptance evidence rather than current
+  operator workflow progress. They must remain visible for audit, but must not
+  become the default current strategy, enable Step 8, or complete Step 7/8 when
+  a user is re-running the same Prompt.
 - Workflow state can be misleading if a card mixes stale `continueResult`,
   historical Citation Decision data, or historical Experiment state with the
   current Prompt context. Every workflow card must use its own primary fact

@@ -2,6 +2,40 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7/8 Audit History Isolation
+
+- Fixed a Prompt `#40` retest UX issue where Phase audit artifacts from final
+  acceptance could make Step 7 and Step 8 look complete before the operator
+  saw or confirmed a current StrategyCandidate.
+- Root cause: Prompt `#40` already had audit-generated records on the current
+  Evidence Package:
+
+```text
+StrategyCandidate #41 / #40 = ACCEPTED_WITH_EDITS / VALIDATED
+reviewed_by = phase4_audit / phase3_audit
+Experiment #30 / #29 = draft
+```
+
+- The frontend now treats audit-generated `StrategyCandidate` rows as history
+  for the single Prompt main workflow. They remain visible under
+  `全部策略（含历史验收）`, but they no longer mark Step 7 as confirmed, mark
+  Step 8 as created, appear as the default current strategy, or allow accidental
+  accept/experiment generation from the historical card.
+- Current workflow Step 7 remains operable: when evidence and Gap are ready and
+  there is no non-audit current StrategyCandidate, the next action is
+  `生成策略候选`.
+- No backend data, Evidence lineage, Benchmark formula, Gap decision tree,
+  Product Truth, StrategyCandidate validation, Action/Experiment creation,
+  Baseline, Decision Stability, or Step 9 behavior was changed.
+
+Validation:
+
+```text
+frontend npm run build
+.venv/bin/python -m compileall -q app/modules/optimization/workflow.py app/modules/optimization/api.py
+git diff --check
+```
+
 ## 2026-08-28 Step 7 Strategy Gate Unblock
 
 - Fixed a single Prompt workflow blocker where Step 7 could remain

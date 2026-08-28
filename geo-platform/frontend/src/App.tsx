@@ -1770,6 +1770,12 @@ export default function App() {
     });
   }
 
+  function isAuditGeneratedStrategyCandidate(candidate: any) {
+    const reviewer = String(candidate?.reviewed_by || "").toLowerCase();
+    const note = String(candidate?.review_note || "").toLowerCase();
+    return reviewer.includes("audit") || /^phase\d+_audit$/.test(reviewer) || note.includes("phase");
+  }
+
   function strategyVersionMap(candidates: any[]) {
     return new Map(
       [...(candidates || [])]
@@ -2043,10 +2049,15 @@ export default function App() {
     })).sort((a, b) => b.run_count - a.run_count);
   }, [recommendationReasons]);
   const sortedStrategyCandidates = sortStrategyCandidatesByTime(strategyData?.candidates || []);
-  const visibleStrategyCandidates = filterStrategyCandidates(sortedStrategyCandidates, strategyCandidateFilter);
+  const workflowStrategyCandidates = sortedStrategyCandidates.filter((candidate: any) => !isAuditGeneratedStrategyCandidate(candidate));
+  const strategyCandidatesForDefaultView = workflowStrategyCandidates.length ? workflowStrategyCandidates : [];
+  const visibleStrategyCandidates = filterStrategyCandidates(
+    strategyCandidateFilter === "latest" ? strategyCandidatesForDefaultView : sortedStrategyCandidates,
+    strategyCandidateFilter
+  );
   const strategyFilterOptions = [
-    { label: "最新策略", value: "latest" },
-    { label: "全部策略", value: "all" },
+    { label: "当前流程策略", value: "latest" },
+    { label: "全部策略（含历史验收）", value: "all" },
     ...sortedStrategyCandidates.map((candidate: any) => ({
       label: `${strategyVersionLabel(candidate, sortedStrategyCandidates)} · 策略 #${candidate.id} · ${reviewStatusLabel(candidate.review_status)}`,
       value: `candidate:${candidate.id}`,
@@ -2076,12 +2087,21 @@ export default function App() {
     Number(selectedPkgId) === Number(currentCitationDecisionData.evidence_package_id)
       ? (strategyData?.candidates || [])
       : [];
-  const sortedCurrentPackageStrategies = sortStrategyCandidatesByTime(currentPackageStrategyCandidates);
-  const confirmedStrategies = currentPackageStrategyCandidates.filter((item: any) => item.review_status === "ACCEPTED" || item.review_status === "ACCEPTED_WITH_EDITS");
-  const pendingStrategies = currentPackageStrategyCandidates.filter((item: any) => item.review_status === "PENDING_REVIEW");
-  const strategyCandidateCount = currentPackageStrategyCandidates.length;
+  const workflowCurrentPackageStrategies = currentPackageStrategyCandidates.filter((item: any) => !isAuditGeneratedStrategyCandidate(item));
+  const auditGeneratedPackageStrategyCount = currentPackageStrategyCandidates.length - workflowCurrentPackageStrategies.length;
+  const sortedCurrentPackageStrategies = sortStrategyCandidatesByTime(workflowCurrentPackageStrategies);
+  const confirmedStrategies = workflowCurrentPackageStrategies.filter((item: any) => item.review_status === "ACCEPTED" || item.review_status === "ACCEPTED_WITH_EDITS");
+  const pendingStrategies = workflowCurrentPackageStrategies.filter((item: any) => item.review_status === "PENDING_REVIEW");
+  const strategyCandidateCount = workflowCurrentPackageStrategies.length;
   const latestStrategyCandidate = sortedCurrentPackageStrategies[0];
-  const rawExperimentCount = strategyExperiments?.length || 0;
+  const currentStrategyExperimentIds = new Set(
+    workflowCurrentPackageStrategies
+      .map((item: any) => item.experiment_id)
+      .filter(Boolean)
+      .map((id: any) => Number(id))
+  );
+  const rawExperimentCount = (strategyExperiments || []).filter((item: any) => currentStrategyExperimentIds.has(Number(item.id))).length;
+  const historicalExperimentCount = Math.max((strategyExperiments?.length || 0) - rawExperimentCount, 0);
   const citationNeedsEvidencePackage = Boolean(citationDecisionError?.includes("尚无 Evidence Package") || citationDecisionError?.includes("尚无证据包"));
   const eligibleBenchmarkCount = (citationSummary.primary_benchmark_count || 0) + (citationSummary.secondary_benchmark_count || 0);
   const unknownGapCount = citationRows.filter((row: any) => row.source_gap_type === "UNKNOWN").length;
@@ -2116,9 +2136,9 @@ export default function App() {
   const currentPendingStrategyCount = currentPendingStrategies.length;
   const currentLatestStrategyCandidate = strategyCurrentChainReady ? latestStrategyCandidate : null;
   const currentCitationCanConfirm = strategyCurrentChainReady && citationCanConfirm && !currentStrategyCandidateCount;
-  const ignoredHistoricalStrategyCount = !strategyCurrentChainReady && !strategyWorkflowDone ? strategyCandidateCount : 0;
+  const ignoredHistoricalStrategyCount = (!strategyCurrentChainReady && !strategyWorkflowDone ? currentPackageStrategyCandidates.length : 0) + auditGeneratedPackageStrategyCount;
   const currentExperimentCount = currentConfirmedStrategyCount ? rawExperimentCount : 0;
-  const ignoredHistoricalExperimentCount = !currentConfirmedStrategyCount ? rawExperimentCount : 0;
+  const ignoredHistoricalExperimentCount = !currentConfirmedStrategyCount ? (strategyExperiments?.length || 0) : historicalExperimentCount;
   const openStrategyConfirmationPage = () => {
     const packageId = currentCitationDecisionData?.evidence_package_id;
     if (packageId) void selectEvidencePackage(packageId, true);
@@ -3983,10 +4003,12 @@ export default function App() {
                 : "当前证据的数据量或维度不足以支持策略生成，建议使用数据更丰富的证据。"}
             /> : <Space direction="vertical" size={12} style={{ width: "100%" }}>
               <Alert
-                type="success"
+                type={workflowStrategyCandidates.length ? "success" : "info"}
                 showIcon
-                message={<Space><Tag color="green">{strategyDecisionStatusLabel(strategyData.decision_status)}</Tag><Tag>{strategyCapabilityLabel(strategyData.decision_capability)}</Tag><Text>共 {strategyData.strategy_options_count} 个策略版本</Text></Space>}
-                description={currentStrategySummary(strategyData.candidates || [])}
+                message={<Space><Tag color={workflowStrategyCandidates.length ? "green" : "default"}>{strategyDecisionStatusLabel(strategyData.decision_status)}</Tag><Tag>{strategyCapabilityLabel(strategyData.decision_capability)}</Tag><Text>当前流程 {workflowStrategyCandidates.length} 个策略候选 / 全部 {strategyData.strategy_options_count} 个版本</Text></Space>}
+                description={workflowStrategyCandidates.length
+                  ? currentStrategySummary(workflowStrategyCandidates)
+                  : "当前流程还没有新的策略候选；历史验收策略不计入当前第 7 步。请回到单 Prompt 主链第 7 步点击「生成策略候选」。"}
               />
               {sortedStrategyCandidates.length > 1 && <Card size="small" style={{ background: "#fafafa" }}>
                 <Space wrap>
@@ -3998,9 +4020,15 @@ export default function App() {
                     options={strategyFilterOptions}
                     onChange={(value) => setStrategyCandidateFilter(value)}
                   />
-                  <Text type="secondary">当前显示 {visibleStrategyCandidates.length}/{sortedStrategyCandidates.length} 个版本；默认展示最新可审核策略。</Text>
+                  <Text type="secondary">当前显示 {visibleStrategyCandidates.length}/{sortedStrategyCandidates.length} 个版本；默认只展示当前流程策略，历史验收策略需切到全部策略查看。</Text>
                 </Space>
               </Card>}
+              {strategyCandidateFilter === "latest" && visibleStrategyCandidates.length === 0 && <Alert
+                type="warning"
+                showIcon
+                message="当前流程暂无策略候选"
+                description="这里只有历史验收留下的策略/实验记录。它们不会让本次主链第 7/8 步自动完成；请回到单 Prompt 工作台第 7 步生成策略候选后再人工确认。"
+              />}
               {visibleStrategyCandidates.map((c:any)=>{
                 const allCandidates = strategyData.candidates || [];
                 const plan = experimentPlanPayload(c.experiment_plan);
@@ -4009,7 +4037,8 @@ export default function App() {
                 const controlled = plan.controlled_intervention || {};
                 const audit = plan.known_environment_audit || {};
                 const isAccepted = c.review_status === "ACCEPTED" || c.review_status === "ACCEPTED_WITH_EDITS";
-                const isCurrent = allCandidates[0]?.id === c.id;
+                const isAuditHistory = isAuditGeneratedStrategyCandidate(c);
+                const isCurrent = !isAuditHistory && workflowStrategyCandidates[0]?.id === c.id;
                 const isJustGenerated = latestGeneratedStrategyIds.includes(c.id);
                 const updateCandidate = (next: any) => setStrategyData((prev: any) => prev ? {
                   ...prev,
@@ -4023,6 +4052,7 @@ export default function App() {
                     <Tag color="blue">策略 #{c.id}</Tag>
                     {isCurrent && <Tag color="cyan">当前优先</Tag>}
                     {isJustGenerated && <Tag color="green">本次生成</Tag>}
+                    {isAuditHistory && <Tag color="default">历史验收</Tag>}
                     <Text strong>{interventionTypeLabel(strategyView.interventionType)}</Text>
                   </Space>}
                   extra={<Space wrap>
@@ -4114,7 +4144,7 @@ export default function App() {
                       title="验证边界与实验计划"
                       style={{background:"#fff"}}
                       extra={<Space>
-                        {!isAccepted && <Button size="small" loading={strategyLoading} onClick={async()=>{
+                        {!isAccepted && <Button size="small" loading={strategyLoading} disabled={isAuditHistory} onClick={async()=>{
                           setStrategyLoading(true);
                           try{
                             const reviewed = await api.reviewStrategyCandidate(c.id,{review_status:"ACCEPTED",reviewed_by:"human",review_note:"最终策略页人工接受"});
@@ -4123,7 +4153,7 @@ export default function App() {
                           }catch(e:any){message.error(e.message)}
                           finally{setStrategyLoading(false)}
                         }}>接受策略</Button>}
-                        <Button type="primary" size="small" loading={strategyLoading} disabled={!isAccepted} onClick={async()=>{
+                        <Button type="primary" size="small" loading={strategyLoading} disabled={!isAccepted || isAuditHistory} onClick={async()=>{
                           setStrategyLoading(true);
                           try{
                             const generatedPlan = await api.strategyToExperimentPlan(c.id);

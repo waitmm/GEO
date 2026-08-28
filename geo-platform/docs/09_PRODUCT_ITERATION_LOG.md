@@ -2,6 +2,43 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7/8 Audit History Isolation
+
+### Product Decision
+
+Prompt `#40` 的最终验收会留下审计用 StrategyCandidate 和 Experiment。
+这些对象证明历史验收跑通过，但不能代表操作者当前重新测试时已经完成第 7/8 步。
+
+当前主链必须区分：
+
+```text
+当前流程策略候选
+vs
+历史验收策略候选
+```
+
+### User-Facing Rule
+
+默认策略确认页只展示当前流程策略。历史验收策略保留在：
+
+```text
+全部策略（含历史验收）
+```
+
+历史验收策略可查看、可审计，但不能让当前工作台显示：
+
+```text
+策略确认 = 已完成
+实验草案 = 已创建
+```
+
+也不能从历史验收卡片继续误触发接受或创建实验。
+
+### Scope
+
+本次是 V1 状态完整性修复，不改变 1-8 主链顺序，不修改证据、对标、
+缺口、策略或实验生成规则，不进入 Step 9。
+
 ## 2026-08-28 Step 7 Strategy Gate Unblock
 
 ### Product Decision

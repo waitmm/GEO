@@ -2,6 +2,55 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7 Strategy Gate Unblock
+
+### Product Decision
+
+单 Prompt V1 第 7 步 `策略确认` 的下一步必须是：
+
+```text
+没有当前策略候选 -> 生成策略候选
+已有待审策略候选 -> 审核策略候选
+已有已确认策略 -> 查看已确认策略 / 进入 Step 8
+```
+
+不能继续让旧 `continueResult` 或旧 `WorkflowConfirmation.gap/action` 文案把用户引导到
+“继续分析生成缺口与动作”。
+
+### State Ownership
+
+第 7 步当前态以当前 Evidence Package 下的 `OptimizationStrategyCandidate` 为准，
+并且只在当前 Citation Decision Gap 已完成后生效：
+
+```text
+当前 Prompt
++ 当前 Evidence Package
++ 当前 Citation Decision Gap
++ 当前 StrategyCandidate.review_status / effective_payload
+```
+
+历史 StrategyCandidate / Experiment 可以展示为历史对象，但不能阻塞或点亮当前主链。
+
+### User-Facing Rule
+
+用户看到第 7 步时必须知道下一步动作：
+
+```text
+生成策略候选
+审核策略候选
+查看已确认策略
+```
+
+不允许出现：
+
+```text
+状态显示等待缺口
+但详情又提示可生成
+或按钮仍显示等待策略确认
+```
+
+本次不改变 1-8 主链顺序，不进入 Step 9。
+
 ## 2026-08-28 Evidence Review Group Batch Confirm
 
 ### Product Decision

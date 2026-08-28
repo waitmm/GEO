@@ -17,6 +17,12 @@ Status: ACTIVE
   Evidence-Package-scoped StrategyCandidate review status. Historical confirmed
   StrategyCandidates must not mark the current Step 7 as complete when evidence
   review or gap diagnosis is still pending.
+- Step 7 must not wait on legacy `WorkflowConfirmation.gap/action` after the
+  current Citation Decision V1 Gap result is available. Otherwise the page can
+  display Step 6 as complete while Step 7 still says `等待缺口`. The current
+  Step 7 gate is:
+  current Prompt + current Evidence Package + evidence review done + Citation
+  Gap decision done + current `OptimizationStrategyCandidate` state.
 - Historical StrategyCandidate or Experiment rows can make Step 7/8 appear
   falsely complete if the frontend counts them without the current workflow
   context. Current main-chain cards must first verify the current Prompt,

@@ -2,6 +2,43 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7 Strategy Gate Unblock
+
+- Fixed a single Prompt workflow blocker where Step 7 could remain
+  `策略确认 / 等待缺口` even though the current Citation Decision V1 result had
+  already completed Gap Diagnosis and the current Evidence Package had
+  confirmed `StrategyCandidate` rows.
+- Root cause: the frontend Step 7 gate still depended on legacy
+  `WorkflowConfirmation` keys (`gap` / `action`). The frozen V1 main chain must
+  use the current Citation Decision Gap result plus current
+  Evidence-Package-scoped `OptimizationStrategyCandidate` review state.
+- Updated the Step 7 current-chain guard:
+
+```text
+answer decision done
+-> evidence review done
+-> current Citation Gap decision done
+-> current Evidence Package StrategyCandidate state
+```
+
+- Updated user-facing wording so completed evidence review no longer tells
+  operators to click legacy `继续分析` to generate "缺口与动作". The next step is
+  now displayed as generating or reviewing `策略候选`.
+- Strategy detail entry buttons now route through the current Evidence Package
+  selector before opening the strategy page, reducing empty strategy-context
+  jumps.
+- No data model, Evidence lineage, Benchmark formula, Gap decision tree,
+  StrategyCandidate/effective_payload validation, Action, Experiment, Baseline,
+  Decision Stability, or Step 9 behavior was changed.
+
+Validation:
+
+```text
+.venv/bin/python -m compileall -q app/modules/optimization/workflow.py app/modules/optimization/api.py
+frontend npm run build
+git diff --check
+```
+
 ## 2026-08-28 Evidence Review Group Batch Confirm
 
 - Added semantic grouping for workflow EvidenceAlignment review items. The

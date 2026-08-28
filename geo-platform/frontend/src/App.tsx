@@ -1702,11 +1702,11 @@ export default function App() {
       if (!response.ok) throw new Error(await response.text());
       const result = await response.json();
       setWorkflowData({ ...workflowData, continueResult: result });
-      message.success("缺口与动作已生成");
+      message.success("旧缺口分析结果已生成");
       const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
       setWorkflowData({ ...wf, continueResult: result });
     } catch (error: any) {
-      message.error(error.message || "继续分析失败，请确认审核已全部完成");
+      message.error(error.message || "旧缺口分析失败，请确认审核已全部完成");
     } finally {
       setLoading(false);
     }
@@ -2099,21 +2099,26 @@ export default function App() {
   const gapWorkflowStep = workflowStepByKey("gap");
   const strategyWorkflowStep = workflowStepByKey("strategy") || workflowStepByKey("strategy_candidate") || workflowStepByKey("action");
   const evidenceReviewDone = Boolean(answerStepDone && evidenceReviewStep?.done);
-  const gapWorkflowDone = Boolean(answerStepDone && gapWorkflowStep?.done);
   const strategyWorkflowDone = Boolean(answerStepDone && strategyWorkflowStep?.done);
   const currentCitationLoaded = Boolean(answerStepDone && citationLoaded);
   const currentCitationNeedsEvidencePackage = Boolean(answerStepDone && citationNeedsEvidencePackage);
-  const strategyCurrentChainReady = Boolean(currentCitationLoaded && evidenceReviewDone && gapWorkflowDone);
-  const currentConfirmedStrategies = strategyWorkflowDone ? confirmedStrategies : [];
+  const citationGapDecisionDone = Boolean(
+    currentCitationLoaded &&
+    evidenceReviewDone &&
+    !citationProductTruthBlockedRows.length &&
+    unknownGapCount === 0
+  );
+  const strategyCurrentChainReady = Boolean(currentCitationLoaded && evidenceReviewDone && citationGapDecisionDone);
+  const currentConfirmedStrategies = strategyCurrentChainReady ? confirmedStrategies : [];
   const currentPendingStrategies = strategyCurrentChainReady ? pendingStrategies : [];
-  const currentStrategyCandidateCount = strategyCurrentChainReady || strategyWorkflowDone ? strategyCandidateCount : 0;
+  const currentStrategyCandidateCount = strategyCurrentChainReady ? strategyCandidateCount : 0;
   const currentConfirmedStrategyCount = currentConfirmedStrategies.length;
   const currentPendingStrategyCount = currentPendingStrategies.length;
-  const currentLatestStrategyCandidate = (strategyWorkflowDone || strategyCurrentChainReady) ? latestStrategyCandidate : null;
-  const currentCitationCanConfirm = strategyCurrentChainReady && citationCanConfirm;
+  const currentLatestStrategyCandidate = strategyCurrentChainReady ? latestStrategyCandidate : null;
+  const currentCitationCanConfirm = strategyCurrentChainReady && citationCanConfirm && !currentStrategyCandidateCount;
   const ignoredHistoricalStrategyCount = !strategyCurrentChainReady && !strategyWorkflowDone ? strategyCandidateCount : 0;
-  const currentExperimentCount = strategyWorkflowDone ? rawExperimentCount : 0;
-  const ignoredHistoricalExperimentCount = !strategyWorkflowDone ? rawExperimentCount : 0;
+  const currentExperimentCount = currentConfirmedStrategyCount ? rawExperimentCount : 0;
+  const ignoredHistoricalExperimentCount = !currentConfirmedStrategyCount ? rawExperimentCount : 0;
   const openStrategyConfirmationPage = () => {
     const packageId = currentCitationDecisionData?.evidence_package_id;
     if (packageId) void selectEvidencePackage(packageId, true);
@@ -2234,7 +2239,7 @@ export default function App() {
     {
       key: "action",
       label: "策略确认",
-      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !gapWorkflowDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
+      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !citationGapDecisionDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
       detail: currentConfirmedStrategyCount
         ? `已确认策略 #${currentConfirmedStrategies[0]?.id || currentLatestStrategyCandidate?.id}`
         : currentPendingStrategyCount
@@ -2245,12 +2250,12 @@ export default function App() {
               ? "等待缺口诊断"
               : !evidenceReviewDone
                 ? (evidenceReviewStep?.detail || "先完成人工证据审核，历史策略不计入当前主链")
-                : !gapWorkflowDone
+                : !citationGapDecisionDone
                   ? (gapWorkflowStep?.detail || "先生成当前缺口诊断")
                   : unresolvedAction || unknownGapCount > 0
                     ? "请查看依据后人工判断，不自动生成策略"
                     : "没有可生成策略的内容/证据缺口",
-      tone: currentConfirmedStrategyCount ? "done" : currentPendingStrategyCount || currentCitationCanConfirm || unresolvedAction ? "current" : currentCitationLoaded && evidenceReviewDone && gapWorkflowDone ? "done" : "pending",
+      tone: currentConfirmedStrategyCount ? "done" : currentPendingStrategyCount || currentCitationCanConfirm || unresolvedAction ? "current" : currentCitationLoaded && evidenceReviewDone && citationGapDecisionDone ? "done" : "pending",
       actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : unresolvedAction ? "查看依据" : "",
       onAction: currentConfirmedStrategyCount || currentPendingStrategyCount
         ? openStrategyConfirmationPage
@@ -2351,7 +2356,7 @@ export default function App() {
           </Card>}
           {projectId && activePromptId && <Card size="small" title={<Space><ShieldCheck size={18} />GEO 工作台 · Prompt #{currentWorkflowData?.prompt_id || activePromptId}</Space>} extra={<Space>
             <Button size="small" onClick={()=>setPage("recommendation")}>决策诊断详情</Button>
-            <Button size="small" onClick={()=>setPage("optimization")}>执行策略详情</Button>
+            <Button size="small" onClick={openStrategyConfirmationPage}>策略确认详情</Button>
             {currentWorkflowData ? (currentWorkflowData.shelved
               ? <Tag color="volcano">已人工搁置</Tag>
               : currentWorkflowData.ready_to_continue
@@ -2397,7 +2402,7 @@ export default function App() {
               >
                 {currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : "等待策略确认"}
               </Button>
-              <Button size="small" onClick={() => setPage("optimization")}>{citationProductTruthBlockedRows.length ? "补目标品牌事实" : "执行策略详情"}</Button>
+              <Button size="small" onClick={openStrategyConfirmationPage}>{citationProductTruthBlockedRows.length ? "补目标品牌事实" : "策略确认详情"}</Button>
               {citationProductTruthBlockedRows.length > 0 && <Text type="secondary">这里确认的是{project?.brand_name || "目标品牌"}自己的能力，不是竞品或对标文章的能力。</Text>}
               {legacyContinueResult && <Tag color="default">存在历史缺口/动作结果，不计入当前引用决策进度</Tag>}
             </Space>
@@ -3624,7 +3629,7 @@ export default function App() {
                     ? "已有可生成策略候选的内容/证据缺口"
                     : !evidenceReviewDone
                       ? "当前证据仍需人工审核，暂不进入策略确认"
-                      : !gapWorkflowDone
+                      : !citationGapDecisionDone
                         ? "当前缺口诊断尚未完成，暂不进入策略确认"
                         : "当前没有可生成策略候选的缺口，系统不会用引用显著性或历史相关标记强行生成策略"}
                 description={decisionDisplayText(citationSummary.boundary_note) || "这里展示 引用来源 → 对标来源 → 缺口 → 策略确认 → 实验草案 的纵向链路；目标品牌事实未确认前只允许人工补事实，不允许自动出执行策略。"}
@@ -3666,7 +3671,7 @@ export default function App() {
                       ? "下一步：生成策略候选并人工审核"
                       : !evidenceReviewDone
                         ? "下一步：先完成人工证据审核"
-                        : !gapWorkflowDone
+                        : !citationGapDecisionDone
                           ? "下一步：先生成当前缺口诊断"
                           : "当前没有可生成策略候选的缺口，可补产品事实后重新运行"}
                   description={`这里确认的是${project?.brand_name || "目标品牌"}自己的产品能力，不是确认对标文章或竞品是否具备能力。若事实来源需要写官网/文档 URL，请用下方表单补充；补完后系统会自动重跑链路。`}
@@ -4906,13 +4911,17 @@ export default function App() {
                 await fetch("/api/optimization/workflow/review/events/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
                 message.success("已确认 AI 说法无误");
                 setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
-                refreshWorkflowStatus();
+                await refreshWorkflowStatus();
+                const pid = currentWorkflowData?.prompt_id || citationTargetPromptId;
+                if (pid) await loadCitationDecisionV1(pid, true);
               }}>AI 确实这样说了</Button>
               <Button size="small" onClick={async()=>{
                 await fetch("/api/optimization/workflow/review/events/reject-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
                 message.success("已标记错误");
                 setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
-                refreshWorkflowStatus();
+                await refreshWorkflowStatus();
+                const pid = currentWorkflowData?.prompt_id || citationTargetPromptId;
+                if (pid) await loadCitationDecisionV1(pid, true);
               }}>判断有误</Button>
             </Space>
           </Card>)}
@@ -4935,11 +4944,13 @@ export default function App() {
                 await fetch("/api/optimization/workflow/review/alignments/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({alignment_ids:alignmentIds,relation:"SUPPORTS"})});
                 message.success(`已确认这一组 ${alignmentIds.length} 条支持证据`);
                 setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x!==a)});
-                refreshWorkflowStatus();
+                await refreshWorkflowStatus();
+                const pid = currentWorkflowData?.prompt_id || citationTargetPromptId;
+                if (pid) await loadCitationDecisionV1(pid, true);
               }}>确认这一组支持</Button>
             </Space>
           </Card>})}
-          {reviewQueue.unique_events.length===0 && reviewQueue.alignments.length===0 && competitorCandidates.length===0 && <Alert type="success" showIcon message="全部审核完成！关闭窗口后点「继续分析」生成缺口与动作。" />}
+          {reviewQueue.unique_events.length===0 && reviewQueue.alignments.length===0 && competitorCandidates.length===0 && <Alert type="success" showIcon message="全部审核完成！关闭窗口后在主链第 7 步生成或审核策略候选。" />}
         </Space>}
       </Space>
     </Modal>

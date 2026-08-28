@@ -4,6 +4,10 @@ Status: ACTIVE
 
 ## Single Prompt V1 Known Pitfalls
 
+- StrategyCandidate payloads are structured audit objects, not all fields are
+  display strings. Frontend pages must normalize object fields such as
+  `evidence_summary` into Chinese summaries before rendering; raw object
+  rendering can white-screen the app after successful Step 7 generation.
 - Citation Decision read and confirm paths must carry the same context identity,
   including the active `use_answer_binding_v1_1` input version. If GET renders
   V1.1-ready actions but POST confirm recomputes with old V1 defaults, Step 7

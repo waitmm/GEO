@@ -2,6 +2,31 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7 Strategy Page Display Rule
+
+### Product Decision
+
+第 7 步 `策略确认` 页面可以承载结构化 StrategyCandidate payload，但用户界面
+必须展示中文可读摘要，不能把内部 JSON 对象或工程字段直接渲染给操作者。
+
+### User-Facing Rule
+
+策略候选的证据事实至少应被压缩成：
+
+```text
+对标来源
+涉及能力
+缺口
+优先级
+```
+
+详细 lineage 仍可在依据/审计视图中查看，但默认策略卡片必须稳定、可读、不白屏。
+
+### Scope
+
+本次只修复展示层，不改变策略生成、人工确认、effective_payload、Action 或
+Experiment 语义。
+
 ## 2026-08-28 Step 7 Strategy Confirm Context Rule
 
 ### Product Decision

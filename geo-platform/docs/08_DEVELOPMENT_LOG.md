@@ -2,6 +2,33 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7 Strategy Page Structured Payload Render Guard
+
+- Fixed a white-screen crash after Step 7 `生成策略候选` succeeded.
+- Root cause: the generated `StrategyCandidate` payload can contain structured
+  objects such as `evidence_summary`. The strategy page rendered that value
+  directly as a React child, which crashes when the value is an object.
+- Added display-only normalization for strategy page text fields. Structured
+  evidence summaries are now shown as concise Chinese summaries:
+
+```text
+对标来源
+涉及能力
+缺口
+优先级
+```
+
+- This does not change StrategyCandidate payloads, effective_payload,
+  Evidence lineage, Benchmark, Gap, Action, Experiment, Baseline, Decision
+  Stability, or Step 9.
+
+Validation:
+
+```text
+frontend npm run build
+git diff --check
+```
+
 ## 2026-08-28 Step 7 Strategy Confirm V1.1 Context Parity
 
 - Fixed a Prompt `#40` blocker where clicking Step 7 `生成策略候选` looked like

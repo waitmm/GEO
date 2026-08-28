@@ -621,6 +621,43 @@ function listText(value: unknown, fallback = "-") {
   return fallback;
 }
 
+function textValue(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value || fallback;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.length ? value.map((item) => textValue(item, "")).filter(Boolean).join("；") : fallback;
+  if (value && typeof value === "object") {
+    const row = value as Record<string, any>;
+    const candidate =
+      row.summary ||
+      row.description ||
+      row.reason ||
+      row.note ||
+      row.title ||
+      row.content_direction ||
+      row.asset_direction ||
+      row.platform_direction;
+    if (candidate) return textValue(candidate, fallback);
+  }
+  return fallback;
+}
+
+function strategyEvidenceSummaryText(value: unknown, fallback = ""): string {
+  if (!value) return fallback;
+  if (typeof value !== "object" || Array.isArray(value)) return textValue(value, fallback);
+  const row = value as Record<string, any>;
+  const sourceTitle = row.benchmark_source?.title;
+  const capabilities = Array.isArray(row.gap_items)
+    ? row.gap_items.map((item: any) => item?.capability_label).filter(Boolean)
+    : [];
+  const parts = [
+    sourceTitle ? `对标来源「${sourceTitle}」` : "",
+    capabilities.length ? `涉及能力：${Array.from(new Set(capabilities)).join("、")}` : "",
+    row.gap_type ? `缺口：${sourceGapLabel(row.gap_type)}` : "",
+    row.priority_level ? `优先级：${priorityLevelLabel(row.priority_level)}` : "",
+  ].filter(Boolean);
+  return parts.join("；") || textValue(row, fallback);
+}
+
 function strategyDisplayPayload(candidate: any) {
   const executable =
     candidate?.effective_payload && Object.keys(candidate.effective_payload).length > 0
@@ -649,18 +686,22 @@ function strategyDisplayPayload(candidate: any) {
     interventionCandidate,
     executionGate,
     evidenceSummary:
-      executable.evidence_summary ||
-      decisionMarket.primary_gap?.diagnosis_text ||
-      interventionCandidate.observed_problem ||
-      original.observed_problem ||
-      "",
+      strategyEvidenceSummaryText(
+        executable.evidence_summary ||
+        decisionMarket.primary_gap?.diagnosis_text ||
+        interventionCandidate.observed_problem ||
+        original.observed_problem,
+        ""
+      ),
     cause:
-      executable.hypothesized_cause ||
-      original.hypothesized_cause ||
-      decisionMarket.primary_gap?.action_hint ||
-      interventionCandidate.recommended_direction ||
-      "",
-    actionText,
+      textValue(
+        executable.hypothesized_cause ||
+        original.hypothesized_cause ||
+        decisionMarket.primary_gap?.action_hint ||
+        interventionCandidate.recommended_direction,
+        ""
+      ),
+    actionText: textValue(actionText, ""),
     interventionType:
       executable.intervention_type ||
       interventionCandidate.intervention_type ||
@@ -676,7 +717,7 @@ function strategyDisplayPayload(candidate: any) {
       executable.target_metric ||
       original.target_metric ||
       decisionMarket.primary_gap?.metric?.metric,
-    metricAvailability: executable.metric_availability || original.metric_availability || "",
+    metricAvailability: textValue(executable.metric_availability || original.metric_availability, ""),
     platformRecommendations:
       executable.platform_recommendations ||
       original.platform_recommendations ||

@@ -2,6 +2,46 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Evidence Review Group Batch Confirm
+
+- Added semantic grouping for workflow EvidenceAlignment review items. The
+  review queue now merges duplicated Run-level SUPPORTS alignments into one
+  user-facing review group when they share:
+
+```text
+recommendation_reason_id
+source_document_id
+source_claim_id
+relation
+evidence_role
+```
+
+- The grouped review item keeps all underlying `alignment_ids`, true
+  `run_ids`, `run_count`, and `alignment_count`; no Run-level
+  EvidenceAlignment is merged, deleted, or rewritten.
+- Added a minimal batch confirmation endpoint:
+
+```text
+POST /api/optimization/workflow/review/alignments/confirm-batch
+```
+
+- The frontend manual review workspace now shows one card per grouped evidence
+  item and provides one action: `确认这一组支持`.
+- No data migration was required. The change only updates review queue payloads
+  and review status confirmation behavior.
+- No Evidence, Benchmark, Gap, Strategy, Action, Experiment, Baseline,
+  Decision Stability, or Step 9 logic was changed.
+
+Validation:
+
+```text
+.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py
+4 passed
+
+.venv/bin/python -m compileall -q app/modules/optimization/workflow.py app/modules/optimization/api.py
+frontend npm run build
+```
+
 ## 2026-08-28 Step 7 Current-Workflow State Integrity Bugfix
 
 - Fixed a single Prompt workflow regression where Step 7 could display

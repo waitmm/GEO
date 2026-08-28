@@ -2,6 +2,58 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Evidence Review Group Batch Confirm
+
+### Product Decision
+
+证据审核不再要求用户逐条确认多个 Run 中重复出现的同一语义证据。
+
+同一组证据可以合并展示为一条审核项：
+
+```text
+同一个 AI 推荐理由
++ 同一个引用正文
++ 同一个来源主张
++ 同一个语义关系
+-> 一组证据审核
+```
+
+用户只需要点击：
+
+```text
+确认这一组支持
+```
+
+系统再把该组背后的所有 Run-level EvidenceAlignment 一次性确认。
+
+### Scope
+
+本次是 V1 审核体验增强，只改变人工审核视图和确认动作。
+
+不改变：
+
+```text
+底层 Run-level EvidenceAlignment
+Evidence / Benchmark / Gap 规则
+StrategyCandidate / effective_payload Gate
+Action / Experiment 创建规则
+Decision Stability
+Step 9
+```
+
+### User-Facing Rule
+
+合并行必须展示真实覆盖范围：
+
+```text
+alignment_count
+run_ids
+run_count
+```
+
+不得把多个底层 Run 合成一个新的事实，也不得把历史 RELATED 或
+ineligible alignment 混入正式证据审核。
+
 ## 2026-08-28 Step 7 Current-Workflow State Integrity
 
 ### Product Decision

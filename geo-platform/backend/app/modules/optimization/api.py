@@ -1229,6 +1229,17 @@ def confirm_alignment_endpoint(alignment_id: int, payload: dict, db: Session = D
     return confirm_alignment(db, alignment_id, payload.get("relation", "SUPPORTS"), payload.get("reviewer", "human"))
 
 
+@router.post("/workflow/review/alignments/confirm-batch")
+def batch_confirm_alignments_endpoint(payload: dict, db: Session = Depends(get_db)):
+    from app.modules.optimization.workflow import batch_confirm_alignments
+    return batch_confirm_alignments(
+        db,
+        payload.get("alignment_ids", []),
+        payload.get("relation", "SUPPORTS"),
+        payload.get("reviewer", "human"),
+    )
+
+
 @router.get("/workflow/{project_id}/default-prompt")
 def workflow_default_prompt(project_id: int, db: Session = Depends(get_db)):
     """返回该项目机器分析进度最好的 Prompt（按语义事件数倒序），

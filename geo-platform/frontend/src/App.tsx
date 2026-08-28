@@ -4916,34 +4916,28 @@ export default function App() {
               }}>判断有误</Button>
             </Space>
           </Card>)}
-          {/* Evidence 对齐审核 */}
-          {reviewQueue.alignments.map((a:any, idx:number)=><Card key={`al-${idx}`} size="small" title={<Tag color="purple">证据语义关系校验 {idx+1}/{reviewQueue.alignments.length}</Tag>}>
+          {/* Evidence 对齐审核：同一语义证据组只展示一张卡，底层 Run-level Alignment 仍逐条保留。 */}
+          {reviewQueue.alignments.map((a:any, idx:number)=>{
+            const alignmentIds = a.alignment_ids || [a.alignment_id];
+            return <Card key={`al-${idx}`} size="small" title={<Space wrap><Tag color="purple">证据语义关系校验 {idx+1}/{reviewQueue.alignments.length}</Tag><Tag>{a.alignment_count || alignmentIds.length} 条同组证据</Tag><Tag>{a.run_count || (a.run_ids || []).length} 个 Runs</Tag></Space>}>
             <Alert type="warning" showIcon style={{marginBottom:8}} message="这里校验的是「来源原文是否真的支持这条 AI 理由」的语义关系，不判断竞品能力真伪。竞品证据只用于建立市场标准基线。" />
             <Text strong>AI 选择理由：</Text><Text>{a.reason_text}</Text>
             <Divider style={{margin:6}}/>
             <Text strong>来源原文：</Text><Alert type="info" message={a.claim_span || a.claim_text} style={{marginTop:4}}/>
-            <Text type="secondary" style={{display:"block",marginTop:4}}>机器判断：<Tag color={a.relation==="SUPPORTS"?"green":"gold"}>{semanticRelationLabel(a.relation)}</Tag></Text>
+            <Text type="secondary" style={{display:"block",marginTop:4}}>
+              机器判断：<Tag color={a.relation==="SUPPORTS"?"green":"gold"}>{semanticRelationLabel(a.relation)}</Tag>
+              覆盖 Runs：{(a.run_ids || []).join("、") || "未知"}
+            </Text>
+            {a.evidence_role && <Text type="secondary" style={{display:"block",marginTop:4}}>证据角色：{a.evidence_role}</Text>}
             <Space style={{marginTop:8}}>
               <Button size="small" type="primary" onClick={async()=>{
-                await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"SUPPORTS"})});
-                message.success("已确认支持");
-                setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
+                await fetch("/api/optimization/workflow/review/alignments/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({alignment_ids:alignmentIds,relation:"SUPPORTS"})});
+                message.success(`已确认这一组 ${alignmentIds.length} 条支持证据`);
+                setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x!==a)});
                 refreshWorkflowStatus();
-              }}>确认支持</Button>
-              <Button size="small" onClick={async()=>{
-                await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"RELATED"})});
-                message.success("已改为历史相关");
-                setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
-                refreshWorkflowStatus();
-              }}>改为历史相关</Button>
-              <Button size="small" onClick={async()=>{
-                await fetch(`/api/optimization/workflow/review/alignments/${a.alignment_id}/confirm`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation:"NONE"})});
-                message.success("已改为无支持");
-                setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x.alignment_id!==a.alignment_id)});
-                refreshWorkflowStatus();
-              }}>改为无支持</Button>
+              }}>确认这一组支持</Button>
             </Space>
-          </Card>)}
+          </Card>})}
           {reviewQueue.unique_events.length===0 && reviewQueue.alignments.length===0 && competitorCandidates.length===0 && <Alert type="success" showIcon message="全部审核完成！关闭窗口后点「继续分析」生成缺口与动作。" />}
         </Space>}
       </Space>

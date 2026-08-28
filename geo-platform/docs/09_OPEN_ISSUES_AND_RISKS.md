@@ -4,6 +4,11 @@ Status: ACTIVE
 
 ## Single Prompt V1 Known Pitfalls
 
+- Evidence review can become noisy when multiple Runs produce the same cited
+  source, same source claim, and same SUPPORTS relation. The UI should group
+  these duplicated Run-level alignments for review and provide one
+  `确认这一组支持` action, while preserving every underlying Run-level
+  EvidenceAlignment for lineage and coverage.
 - Step 7 must be shown as `策略确认`, not `推荐动作`. The underlying legacy
   workflow key may remain `action` for compatibility, but user-facing state must
   be derived from current workflow readiness plus current

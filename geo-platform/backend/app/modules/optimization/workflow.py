@@ -508,11 +508,11 @@ def project_prompt_overview(db: Session, project: Project) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 审核队列（去重：相同 answer_hash 只审一次）
+# 审核队列（去重：相同 answer_hash / 相同语义证据组只审一次）
 # ---------------------------------------------------------------------------
 
 def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
-    """返回去重后的待审核队列：事件（按 answer_hash 去重）+ 对齐（按 claim 对）。"""
+    """返回去重后的待审核队列：事件按 answer_hash，对齐按语义证据组。"""
     events = db.query(RecommendationEvent).filter(
         RecommendationEvent.project_id == project.id,
         RecommendationEvent.prompt_id == prompt_id,
@@ -546,22 +546,42 @@ def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
         EvidenceAlignment.review_status == "MACHINE_GROUNDED",
     ).all()
 
-    align_items = []
-    seen_align = set()
+    align_groups: dict[tuple, dict] = {}
     for a in supports:
         claim = db.get(SourceClaim, a.source_claim_id) if a.source_claim_id else None
-        key = (a.source_claim_id, a.recommendation_reason_id)
-        if key in seen_align:
-            continue
-        seen_align.add(key)
-        align_items.append({
+        machine_payload = loads(a.machine_payload_json, {})
+        evidence_role = machine_payload.get("evidence_role") or machine_payload.get("classification") or ""
+        key = (
+            a.recommendation_reason_id,
+            a.source_document_id,
+            a.source_claim_id,
+            a.relation,
+            evidence_role,
+        )
+        row = align_groups.setdefault(key, {
             "alignment_id": a.id,
+            "alignment_ids": [],
             "reason_text": a.recommendation_reason_id.replace("reason:", ""),
+            "source_document_id": a.source_document_id,
+            "source_claim_id": a.source_claim_id,
             "claim_text": claim.normalized_claim if claim else "",
             "claim_span": claim.source_span if claim else "",
             "relation": a.relation,
-            "run_ids": sorted({e.run_id for e in events})[:12],
+            "evidence_role": evidence_role,
+            "run_ids": set(),
         })
+        row["alignment_ids"].append(a.id)
+        row["run_ids"].add(a.run_id)
+
+    align_items = [
+        {
+            **{k: v for k, v in row.items() if k != "run_ids"},
+            "run_ids": sorted(row["run_ids"]),
+            "run_count": len(row["run_ids"]),
+            "alignment_count": len(row["alignment_ids"]),
+        }
+        for row in align_groups.values()
+    ]
 
     # 「尚未分析」的判定依据：该 Prompt 是否执行过机器分析
     # （有语义事件记录，或有分析运行记录——分析过但 0 事件也算分析过），
@@ -619,3 +639,24 @@ def confirm_alignment(db: Session, alignment_id: int, relation: str, reviewer: s
     a.reviewer = reviewer
     db.commit()
     return {"status": "CONFIRMED", "relation": relation}
+
+
+def batch_confirm_alignments(db: Session, alignment_ids: list[int], relation: str = "SUPPORTS", reviewer: str = "human") -> dict:
+    """批量确认同一语义证据组。
+
+    只更新人工审核字段和人工确认后的 relation，不合并、不删除底层
+    Run-level EvidenceAlignment。
+    """
+    updated = 0
+    missing_ids: list[int] = []
+    for alignment_id in alignment_ids:
+        a = db.get(EvidenceAlignment, alignment_id)
+        if not a:
+            missing_ids.append(alignment_id)
+            continue
+        a.review_status = "HUMAN_CONFIRMED"
+        a.relation = relation
+        a.reviewer = reviewer
+        updated += 1
+    db.commit()
+    return {"status": "CONFIRMED", "updated": updated, "missing_ids": missing_ids, "relation": relation}

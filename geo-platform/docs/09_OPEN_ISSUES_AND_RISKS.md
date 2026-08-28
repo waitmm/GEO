@@ -8,7 +8,9 @@ Status: ACTIVE
   source, same source claim, and same SUPPORTS relation. The UI should group
   these duplicated Run-level alignments for review and provide one
   `确认这一组支持` action, while preserving every underlying Run-level
-  EvidenceAlignment for lineage and coverage.
+  EvidenceAlignment for lineage and coverage. Do not group by per-Run technical
+  IDs such as `answer_unit:{id}:binding:{id}`; use the semantic reason key or
+  equivalent readable reason text.
 - Step 7 must be shown as `策略确认`, not `推荐动作`. The underlying legacy
   workflow key may remain `action` for compatibility, but user-facing state must
   be derived from current workflow readiness plus current

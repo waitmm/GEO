@@ -4926,8 +4926,9 @@ export default function App() {
             <Text strong>来源原文：</Text><Alert type="info" message={a.claim_span || a.claim_text} style={{marginTop:4}}/>
             <Text type="secondary" style={{display:"block",marginTop:4}}>
               机器判断：<Tag color={a.relation==="SUPPORTS"?"green":"gold"}>{semanticRelationLabel(a.relation)}</Tag>
-              覆盖 Runs：{(a.run_ids || []).join("、") || "未知"}
+              本组待审 Runs：{(a.run_ids || []).join("、") || "未知"}
             </Text>
+            {a.semantic_observed_run_count > (a.run_count || 0) && <Text type="secondary" style={{display:"block",marginTop:4}}>该理由在 {(a.semantic_observed_run_ids || []).join("、")} 中出现；当前按钮只确认本组待审证据。</Text>}
             {a.evidence_role && <Text type="secondary" style={{display:"block",marginTop:4}}>证据角色：{a.evidence_role}</Text>}
             <Space style={{marginTop:8}}>
               <Button size="small" type="primary" onClick={async()=>{

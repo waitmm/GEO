@@ -1223,12 +1223,6 @@ def batch_reject_events_endpoint(payload: dict, db: Session = Depends(get_db)):
     return {"updated": updated}
 
 
-@router.post("/workflow/review/alignments/{alignment_id}/confirm")
-def confirm_alignment_endpoint(alignment_id: int, payload: dict, db: Session = Depends(get_db)):
-    from app.modules.optimization.workflow import confirm_alignment
-    return confirm_alignment(db, alignment_id, payload.get("relation", "SUPPORTS"), payload.get("reviewer", "human"))
-
-
 @router.post("/workflow/review/alignments/confirm-batch")
 def batch_confirm_alignments_endpoint(payload: dict, db: Session = Depends(get_db)):
     from app.modules.optimization.workflow import batch_confirm_alignments
@@ -1238,6 +1232,12 @@ def batch_confirm_alignments_endpoint(payload: dict, db: Session = Depends(get_d
         payload.get("relation", "SUPPORTS"),
         payload.get("reviewer", "human"),
     )
+
+
+@router.post("/workflow/review/alignments/{alignment_id}/confirm")
+def confirm_alignment_endpoint(alignment_id: int, payload: dict, db: Session = Depends(get_db)):
+    from app.modules.optimization.workflow import confirm_alignment
+    return confirm_alignment(db, alignment_id, payload.get("relation", "SUPPORTS"), payload.get("reviewer", "human"))
 
 
 @router.get("/workflow/{project_id}/default-prompt")

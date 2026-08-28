@@ -11,7 +11,7 @@ Status: ACTIVE
 同一组证据可以合并展示为一条审核项：
 
 ```text
-同一个 AI 推荐理由
+同一个 AI 推荐理由语义
 + 同一个引用正文
 + 同一个来源主张
 + 同一个语义关系
@@ -53,6 +53,13 @@ run_count
 
 不得把多个底层 Run 合成一个新的事实，也不得把历史 RELATED 或
 ineligible alignment 混入正式证据审核。
+
+实现约束：
+
+```text
+不能用 answer_unit / binding 这类每个 Run 独有的技术 ID 作为合并依据；
+必须优先使用 semantic_reason_key 或等价的可读理由语义。
+```
 
 ## 2026-08-28 Step 7 Current-Workflow State Integrity
 

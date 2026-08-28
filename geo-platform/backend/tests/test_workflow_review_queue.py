@@ -24,6 +24,7 @@ from app.modules.optimization.workflow import (
     review_queue,
     workflow_status,
 )
+from app.services.serialization import dumps
 
 
 def _session():
@@ -167,10 +168,15 @@ def test_review_queue_groups_duplicate_run_level_alignments_and_batch_confirms_g
             prompt_id=40,
             run_id=401,
             recommendation_event_id=501,
-            recommendation_reason_id="reason:点击统计",
+            recommendation_reason_id="answer_unit:1001:binding:2001",
             source_document_id=601,
             source_claim_id=701,
             relation="SUPPORTS",
+            machine_payload_json=dumps({
+                "semantic_reason_key": "小码短链接自带点击统计|ENTITY_SPECIFIC|小码短链接",
+                "observed_run_ids": [401, 402],
+                "reason_source": "ANSWER_DECISION_BINDING",
+            }),
             review_status="MACHINE_GROUNDED",
         )
         alignment_b = EvidenceAlignment(
@@ -179,10 +185,15 @@ def test_review_queue_groups_duplicate_run_level_alignments_and_batch_confirms_g
             prompt_id=40,
             run_id=402,
             recommendation_event_id=502,
-            recommendation_reason_id="reason:点击统计",
+            recommendation_reason_id="answer_unit:1002:binding:2002",
             source_document_id=601,
             source_claim_id=701,
             relation="SUPPORTS",
+            machine_payload_json=dumps({
+                "semantic_reason_key": "小码短链接自带点击统计|ENTITY_SPECIFIC|小码短链接",
+                "observed_run_ids": [401, 402],
+                "reason_source": "ANSWER_DECISION_BINDING",
+            }),
             review_status="MACHINE_GROUNDED",
         )
         db.add_all([Organization(id=1, name="测试组织"), project, prompt, task, run_a, run_b, event_a, event_b, doc, claim, alignment_a, alignment_b])
@@ -198,6 +209,9 @@ def test_review_queue_groups_duplicate_run_level_alignments_and_batch_confirms_g
         assert group["alignment_count"] == 2
         assert group["run_ids"] == [401, 402]
         assert group["run_count"] == 2
+        assert group["semantic_observed_run_ids"] == [401, 402]
+        assert group["semantic_observed_run_count"] == 2
+        assert group["reason_text"] == "小码短链接自带点击统计"
         assert group["source_document_id"] == 601
         assert group["source_claim_id"] == 701
 

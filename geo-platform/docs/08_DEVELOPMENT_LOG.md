@@ -9,7 +9,7 @@ Status: ACTIVE
   user-facing review group when they share:
 
 ```text
-recommendation_reason_id
+semantic reason text
 source_document_id
 source_claim_id
 relation
@@ -19,6 +19,12 @@ evidence_role
 - The grouped review item keeps all underlying `alignment_ids`, true
   `run_ids`, `run_count`, and `alignment_count`; no Run-level
   EvidenceAlignment is merged, deleted, or rewritten.
+- Follow-up correction: V1.1 `recommendation_reason_id` can contain per-Run
+  technical IDs such as `answer_unit:{id}:binding:{id}` and must not be used as
+  the grouping key. The queue now uses `semantic_reason_key` when available and
+  falls back to the legacy readable reason text.
+- The batch confirm route is registered before the single-alignment dynamic
+  route so `/confirm-batch` cannot be parsed as an `alignment_id`.
 - Added a minimal batch confirmation endpoint:
 
 ```text

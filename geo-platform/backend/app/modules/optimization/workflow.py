@@ -45,6 +45,32 @@ VALID_DECISION_EVENT_STATUSES = {
 }
 
 
+def _compact_review_text(value: str) -> str:
+    return " ".join((value or "").split())
+
+
+def _review_reason_text(alignment: EvidenceAlignment, machine_payload: dict) -> str:
+    semantic_key = machine_payload.get("semantic_reason_key") or ""
+    if semantic_key:
+        return _compact_review_text(str(semantic_key).split("|")[0])
+    return _compact_review_text(alignment.recommendation_reason_id.replace("reason:", ""))
+
+
+def _semantic_observed_run_ids(alignment: EvidenceAlignment, machine_payload: dict) -> list[int]:
+    run_ids = {
+        int(run_id)
+        for run_id in (machine_payload.get("observed_run_ids") or [])
+        if run_id
+    }
+    if alignment.run_id:
+        run_ids.add(int(alignment.run_id))
+    return sorted(run_ids)
+
+
+def _alignment_run_ids(alignment: EvidenceAlignment) -> list[int]:
+    return [int(alignment.run_id)] if alignment.run_id else []
+
+
 # ---------------------------------------------------------------------------
 # 竞品候选发现
 # ---------------------------------------------------------------------------
@@ -551,8 +577,11 @@ def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
         claim = db.get(SourceClaim, a.source_claim_id) if a.source_claim_id else None
         machine_payload = loads(a.machine_payload_json, {})
         evidence_role = machine_payload.get("evidence_role") or machine_payload.get("classification") or ""
+        reason_text = _review_reason_text(a, machine_payload)
+        claim_text = _compact_review_text(claim.normalized_claim if claim else "")
+        claim_span = _compact_review_text(claim.source_span if claim else "")
         key = (
-            a.recommendation_reason_id,
+            reason_text,
             a.source_document_id,
             a.source_claim_id,
             a.relation,
@@ -561,23 +590,27 @@ def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
         row = align_groups.setdefault(key, {
             "alignment_id": a.id,
             "alignment_ids": [],
-            "reason_text": a.recommendation_reason_id.replace("reason:", ""),
+            "reason_text": reason_text,
             "source_document_id": a.source_document_id,
             "source_claim_id": a.source_claim_id,
-            "claim_text": claim.normalized_claim if claim else "",
-            "claim_span": claim.source_span if claim else "",
+            "claim_text": claim_text,
+            "claim_span": claim_span,
             "relation": a.relation,
             "evidence_role": evidence_role,
             "run_ids": set(),
+            "semantic_observed_run_ids": set(),
         })
         row["alignment_ids"].append(a.id)
-        row["run_ids"].add(a.run_id)
+        row["run_ids"].update(_alignment_run_ids(a))
+        row["semantic_observed_run_ids"].update(_semantic_observed_run_ids(a, machine_payload))
 
     align_items = [
         {
-            **{k: v for k, v in row.items() if k != "run_ids"},
+            **{k: v for k, v in row.items() if k not in {"run_ids", "semantic_observed_run_ids"}},
             "run_ids": sorted(row["run_ids"]),
             "run_count": len(row["run_ids"]),
+            "semantic_observed_run_ids": sorted(row["semantic_observed_run_ids"]),
+            "semantic_observed_run_count": len(row["semantic_observed_run_ids"]),
             "alignment_count": len(row["alignment_ids"]),
         }
         for row in align_groups.values()

@@ -2,6 +2,63 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7 Current-Workflow State Integrity
+
+### Product Decision
+
+单 Prompt V1 第 7 步 `策略确认` 的完成态，不能只由历史
+`StrategyCandidate` 或当前证据包里已有的策略对象决定。
+
+当前主链必须先满足：
+
+```text
+答案决策识别完成
+-> 证据人工审核完成
+-> 缺口诊断完成
+-> StrategyCandidate 人工确认
+```
+
+只有上述当前链路成立时，才允许显示：
+
+```text
+策略确认 = 已确认
+```
+
+### Scope
+
+本次是 V1 bugfix，只修正单 Prompt 页面和引用决策详情页的状态归属与跳转入口。
+
+不改变：
+
+```text
+1-8 主链顺序
+Evidence / Benchmark / Gap 规则
+StrategyCandidate / effective_payload Gate
+Action / Experiment 创建规则
+Baseline / Release Gate
+Decision Stability
+Step 9
+```
+
+### User-Facing Rule
+
+历史策略候选、历史实验草案可以展示为历史对象，但不能点亮当前主链进度。
+
+如果当前 workflow 仍停在证据审核或缺口诊断，第 7 步必须显示：
+
+```text
+待证据审核
+或
+等待缺口
+```
+
+不得显示：
+
+```text
+已确认策略
+查看已确认策略
+```
+
 ## 2026-08-27 Step 7 Strategy Confirmation UI Bugfix
 
 ### Product Decision

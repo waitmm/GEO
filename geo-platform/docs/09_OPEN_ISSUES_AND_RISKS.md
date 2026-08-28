@@ -6,8 +6,15 @@ Status: ACTIVE
 
 - Step 7 must be shown as `策略确认`, not `推荐动作`. The underlying legacy
   workflow key may remain `action` for compatibility, but user-facing state must
-  be derived from current Evidence-Package-scoped StrategyCandidate review
-  status whenever available.
+  be derived from current workflow readiness plus current
+  Evidence-Package-scoped StrategyCandidate review status. Historical confirmed
+  StrategyCandidates must not mark the current Step 7 as complete when evidence
+  review or gap diagnosis is still pending.
+- Historical StrategyCandidate or Experiment rows can make Step 7/8 appear
+  falsely complete if the frontend counts them without the current workflow
+  context. Current main-chain cards must first verify the current Prompt,
+  Evidence Package, evidence review, and gap state; historical rows may be
+  shown only as historical context.
 - Workflow state can be misleading if a card mixes stale `continueResult`,
   historical Citation Decision data, or historical Experiment state with the
   current Prompt context. Every workflow card must use its own primary fact

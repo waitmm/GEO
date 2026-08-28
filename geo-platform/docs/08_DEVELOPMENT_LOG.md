@@ -2,6 +2,39 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7 Current-Workflow State Integrity Bugfix
+
+- Fixed a single Prompt workflow regression where Step 7 could display
+  `策略确认 / 已确认` because the current Evidence Package already had a
+  historical confirmed `StrategyCandidate`, even when the current workflow
+  status still required evidence review or gap diagnosis.
+- The frontend now gates current Step 7 state by the current workflow chain:
+
+```text
+answer_semantic done
+-> evidence_review done
+-> gap done
+-> current StrategyCandidate state
+```
+
+- Existing StrategyCandidates and Experiments remain visible as historical
+  objects, but they no longer mark the current main-chain Step 7 or Step 8 as
+  complete unless the current workflow state has reached that step.
+- Strategy page navigation now reloads the current Evidence Package before
+  routing to the strategy confirmation page, preventing a "confirmed strategy"
+  button from opening an empty strategy context.
+- No data model, Evidence, Benchmark, Gap, StrategyCandidate validation,
+  Action, Experiment, Baseline, Release Gate, Decision Stability, or Step 9
+  behavior was changed.
+
+Validation:
+
+```text
+frontend npm run build
+backend compileall for workflow module
+git diff --check
+```
+
 ## 2026-08-27 Step 7 Strategy Confirmation UI Bugfix
 
 - Fixed the single Prompt workflow Step 7 user-facing semantics after V1

@@ -2,6 +2,35 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7 Strategy Confirm V1.1 Context Parity
+
+- Fixed a Prompt `#40` blocker where clicking Step 7 `生成策略候选` looked like
+  it had no effect.
+- Root cause: the frontend read Citation Decision V1 with
+  `use_answer_binding_v1_1=true`, so the page correctly showed a current
+  strategy candidate could be generated. The confirm POST did not pass the same
+  flag, so the backend recomputed the proposal with the default formal input
+  setting and returned:
+
+```text
+没有可生成策略候选的 Content/Evidence Gap。Product/Unresolved 需要先人工补充 Product Truth 或资产信息。
+```
+
+- The Step 7 confirm payload now includes the exact V1.1 usage flag returned by
+  the current Citation Decision result, falling back to the current frontend
+  constant only when the API response omits it.
+- No StrategyCandidate model, effective_payload validation, Evidence lineage,
+  Benchmark, Gap, Action, Experiment, Baseline, Decision Stability, or Step 9
+  behavior was changed.
+
+Validation:
+
+```text
+frontend npm run build
+.venv/bin/python -m compileall -q app/modules/optimization/workflow.py app/modules/optimization/api.py app/modules/optimization/service.py
+git diff --check
+```
+
 ## 2026-08-28 Step 7/8 Audit History Isolation
 
 - Fixed a Prompt `#40` retest UX issue where Phase audit artifacts from final

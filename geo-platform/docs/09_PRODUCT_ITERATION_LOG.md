@@ -2,6 +2,30 @@
 
 Status: ACTIVE
 
+## 2026-08-28 Step 7 Strategy Confirm Context Rule
+
+### Product Decision
+
+单 Prompt V1 第 7 步的页面展示和点击确认必须使用同一套当前证据链上下文。
+如果页面展示的是 V1.1 AnswerUnit / Binding 证据输入，那么生成策略候选时也必须
+使用同一个 `use_answer_binding_v1_1` 语义，不能回退到旧 V1 重新判断。
+
+### User-Facing Rule
+
+用户点击：
+
+```text
+生成策略候选
+```
+
+后，要么生成当前 Evidence Package 下的待审核 StrategyCandidate，要么明确展示后端
+拒绝原因。不能出现页面显示有可生成项，但点击后按旧链路重算成“无动作”的状态错配。
+
+### Scope
+
+本次只修正第 7 步确认动作的上下文一致性，不改变策略候选生成规则，不改变 1-8
+主链顺序，不进入 Step 9。
+
 ## 2026-08-28 Step 7/8 Audit History Isolation
 
 ### Product Decision

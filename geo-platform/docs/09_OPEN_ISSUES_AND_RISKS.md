@@ -4,6 +4,10 @@ Status: ACTIVE
 
 ## Single Prompt V1 Known Pitfalls
 
+- Citation Decision read and confirm paths must carry the same context identity,
+  including the active `use_answer_binding_v1_1` input version. If GET renders
+  V1.1-ready actions but POST confirm recomputes with old V1 defaults, Step 7
+  will look clickable while the backend rejects candidate generation.
 - Evidence review can become noisy when multiple Runs produce the same cited
   source, same source claim, and same SUPPORTS relation. The UI should group
   these duplicated Run-level alignments for review and provide one

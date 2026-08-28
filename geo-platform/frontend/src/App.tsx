@@ -1667,6 +1667,9 @@ export default function App() {
       }
       const result = await api.confirmCitationDecisionV1(projectId, targetPromptId, {
         evidence_package_id: latest.evidence_package_id,
+        use_answer_binding_v1_1: typeof latest.use_answer_binding_v1_1 === "boolean"
+          ? latest.use_answer_binding_v1_1
+          : CURRENT_CITATION_DECISION_USE_ANSWER_BINDING_V1_1,
         action_keys: actionKeys,
         reviewer: "human",
         review_note: "前端生成引用证据链路策略候选",

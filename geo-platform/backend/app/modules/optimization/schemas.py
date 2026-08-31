@@ -324,6 +324,11 @@ class StrategyCandidateRead(BaseModel):
     review_note: str = ""
     converted_hypothesis_id: Optional[int] = None
     experiment_plan: dict[str, Any] = Field(default_factory=dict)
+    candidate_origin: str = ""
+    strategy_context: dict[str, Any] = Field(default_factory=dict)
+    strategy_schema_complete: bool = False
+    eligible_for_current_step7: bool = False
+    current_step7_ineligibility_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

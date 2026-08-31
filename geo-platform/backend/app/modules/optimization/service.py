@@ -112,6 +112,33 @@ EVIDENCE_ACTION_VERSION = "evidence_action.v1"
 SOURCE_RELATION_VERSION = "relation.v1"
 STRATEGY_VERSION = "strategy.v2"
 VERTICAL_SLICE_VERSION = "citation_decision_vertical_slice.v1"
+CURRENT_STEP7_STRATEGY_SCHEMA_VERSION = "single_prompt_strategy_v1_1"
+CURRENT_STEP7_CANDIDATE_ORIGIN = "USER_FLOW"
+CURRENT_STEP7_GENERATOR_FAMILY = "citation_optimization_decision"
+CURRENT_STEP7_MODEL = "citation-optimization-decision-v1"
+CURRENT_STEP7_REQUIRED_CORE_FIELDS = (
+    "target_decision_change",
+    "priority_capabilities",
+    "strategic_hypothesis",
+    "intervention_mechanism",
+    "primary_intervention_path",
+    "planned_channels",
+    "channel_roles",
+    "asset_direction",
+    "execution_sequence",
+    "required_signals",
+    "non_goals",
+    "attribution_intent",
+)
+STEP7_NON_USER_ORIGIN_MARKERS = {
+    "phase": "REGRESSION_GENERATED",
+    "regression": "REGRESSION_GENERATED",
+    "audit": "AUDIT_GENERATED",
+    "test": "TEST_GENERATED",
+    "fixture": "TEST_GENERATED",
+    "shadow": "TEST_GENERATED",
+    "backfill": "REGRESSION_GENERATED",
+}
 UNAVAILABLE_RETRIEVAL_METRIC_STATUSES = {"not_applicable", "insufficient_retrieval_candidates", "unknown"}
 
 # Canonical intervention types (single source of truth — project spec §7)
@@ -474,7 +501,12 @@ def release_audit_to_read(record: ReleaseAuditRecord) -> dict:
     }
 
 
-def strategy_candidate_to_read(candidate: OptimizationStrategyCandidate) -> dict:
+def strategy_candidate_to_read(
+    candidate: OptimizationStrategyCandidate,
+    package_context: OptimizationEvidencePackage | None = None,
+) -> dict:
+    eligibility = current_step7_candidate_eligibility(candidate, package_context)
+    strategy_payload = _strategy_payload_for_candidate(candidate)
     return {
         "id": candidate.id,
         "project_id": candidate.project_id,
@@ -510,8 +542,148 @@ def strategy_candidate_to_read(candidate: OptimizationStrategyCandidate) -> dict
         "review_note": candidate.review_note,
         "converted_hypothesis_id": candidate.converted_hypothesis_id,
         "experiment_plan": loads(candidate.experiment_plan_json, {}),
+        "candidate_origin": eligibility["candidate_origin"],
+        "strategy_context": strategy_payload.get("strategy_context", {}),
+        "strategy_schema_complete": eligibility["schema_complete"],
+        "eligible_for_current_step7": eligibility["eligible"],
+        "current_step7_ineligibility_reasons": eligibility["ineligibility_reasons"],
         "created_at": candidate.created_at,
         "updated_at": candidate.updated_at,
+    }
+
+
+def _strategy_payload_for_candidate(candidate: OptimizationStrategyCandidate) -> dict:
+    payload = loads(candidate.structured_payload_json, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _current_step7_context_for_package(
+    package: OptimizationEvidencePackage,
+    *,
+    use_answer_binding_v1_1: bool = True,
+) -> dict:
+    return {
+        "prompt_id": int(package.prompt_id or 0),
+        "evidence_package_id": int(package.id),
+        "evidence_package_version": int(package.version or 0),
+        "analysis_version": VERTICAL_SLICE_VERSION,
+        "strategy_input_version": FORMAL_V1_1_INPUT_VERSION if use_answer_binding_v1_1 else "citation_decision_v1_legacy_input",
+        "answer_binding_mode": "ANSWER_BINDING_V1_1_ON" if use_answer_binding_v1_1 else "ANSWER_BINDING_V1_1_OFF",
+        "use_answer_binding_v1_1": bool(use_answer_binding_v1_1),
+        "strategy_schema_version": CURRENT_STEP7_STRATEGY_SCHEMA_VERSION,
+        "generator_family": CURRENT_STEP7_GENERATOR_FAMILY,
+    }
+
+
+def _candidate_origin_from_text(text: str) -> str | None:
+    normalized = (text or "").lower()
+    if "strategy_prompt.v2" in normalized or "local-rule-v1" in normalized:
+        return "LEGACY"
+    for marker, origin in STEP7_NON_USER_ORIGIN_MARKERS.items():
+        if marker in normalized:
+            return origin.replace("_GENERATED", "")
+    return None
+
+
+def _candidate_origin_from_reviewer(candidate: OptimizationStrategyCandidate) -> str | None:
+    text = " ".join([
+        candidate.reviewed_by or "",
+        candidate.review_note or "",
+        candidate.provider or "",
+        candidate.model or "",
+        candidate.prompt_version or "",
+    ])
+    return _candidate_origin_from_text(text)
+
+
+def infer_strategy_candidate_origin(candidate: OptimizationStrategyCandidate) -> str:
+    payload = _strategy_payload_for_candidate(candidate)
+    explicit = payload.get("candidate_origin")
+    if not explicit and isinstance(payload.get("strategy_context"), dict):
+        explicit = payload["strategy_context"].get("candidate_origin")
+    if explicit:
+        return str(explicit).strip().upper()
+    inferred = _candidate_origin_from_reviewer(candidate)
+    if inferred:
+        return inferred
+    return "LEGACY"
+
+
+def _strategy_core_schema_complete(payload: dict) -> bool:
+    for field in CURRENT_STEP7_REQUIRED_CORE_FIELDS:
+        value = payload.get(field)
+        if value is None or value == "":
+            return False
+        if isinstance(value, (list, dict)) and not value:
+            return False
+    gap_ids = payload.get("gap_item_ids") or []
+    benchmark_ids = payload.get("benchmark_evidence_ids") or []
+    return bool(gap_ids and benchmark_ids)
+
+
+def _candidate_analysis_context(candidate: OptimizationStrategyCandidate) -> dict:
+    payload = _strategy_payload_for_candidate(candidate)
+    context = payload.get("strategy_context")
+    return context if isinstance(context, dict) else {}
+
+
+def current_step7_candidate_eligibility(
+    candidate: OptimizationStrategyCandidate,
+    package: OptimizationEvidencePackage | None,
+    *,
+    use_answer_binding_v1_1: bool = True,
+) -> dict:
+    reasons: list[str] = []
+    payload = _strategy_payload_for_candidate(candidate)
+    context = _candidate_analysis_context(candidate)
+    origin = infer_strategy_candidate_origin(candidate)
+    if package is None:
+        reasons.append("MISSING_CURRENT_CONTEXT")
+    else:
+        if int(candidate.evidence_package_id or 0) != int(package.id):
+            reasons.append("EVIDENCE_CONTEXT_MISMATCH")
+        if int(candidate.source_package_id or candidate.evidence_package_id or 0) != int(package.id):
+            reasons.append("EVIDENCE_CONTEXT_MISMATCH")
+        if context:
+            if int(context.get("prompt_id") or 0) != int(package.prompt_id or 0):
+                reasons.append("WRONG_ANALYSIS_CONTEXT")
+            if int(context.get("evidence_package_id") or 0) != int(package.id):
+                reasons.append("EVIDENCE_CONTEXT_MISMATCH")
+            if int(context.get("evidence_package_version") or 0) != int(package.version or 0):
+                reasons.append("WRONG_ANALYSIS_CONTEXT")
+        else:
+            reasons.append("WRONG_ANALYSIS_CONTEXT")
+    if candidate.model != CURRENT_STEP7_MODEL or candidate.prompt_version != VERTICAL_SLICE_VERSION:
+        reasons.append("LEGACY_STRATEGY_GENERATOR")
+    if context.get("generator_family") not in {"", None, CURRENT_STEP7_GENERATOR_FAMILY}:
+        reasons.append("LEGACY_STRATEGY_GENERATOR")
+    if origin != CURRENT_STEP7_CANDIDATE_ORIGIN:
+        marker_reason = {
+            "AUDIT": "AUDIT_GENERATED",
+            "TEST": "TEST_GENERATED",
+            "REGRESSION": "REGRESSION_GENERATED",
+            "LEGACY": "LEGACY_STRATEGY_GENERATOR",
+        }.get(origin, "WRONG_GENERATOR_LINEAGE")
+        reasons.append(marker_reason)
+    if context.get("analysis_version") not in {VERTICAL_SLICE_VERSION}:
+        reasons.append("WRONG_ANALYSIS_CONTEXT")
+    if context.get("strategy_schema_version") != CURRENT_STEP7_STRATEGY_SCHEMA_VERSION:
+        reasons.append("MISSING_STRATEGY_CORE")
+    if bool(context.get("use_answer_binding_v1_1")) != bool(use_answer_binding_v1_1):
+        reasons.append("ANSWER_BINDING_CONTEXT_MISMATCH")
+    if not _strategy_core_schema_complete(payload):
+        reasons.append("MISSING_STRATEGY_CORE")
+    if not payload.get("gap_item_ids") or not payload.get("benchmark_evidence_ids"):
+        reasons.append("EVIDENCE_CONTEXT_MISMATCH")
+    if candidate.review_status == "DEFERRED" and "SUPERSEDED" in (candidate.review_note or "").upper():
+        reasons.append("SUPERSEDED")
+    unique_reasons = list(dict.fromkeys(reasons))
+    return {
+        "eligible": not unique_reasons,
+        "candidate_origin": origin,
+        "strategy_context": context,
+        "schema_complete": _strategy_core_schema_complete(payload),
+        "ineligibility_reasons": unique_reasons,
     }
 
 
@@ -843,7 +1015,8 @@ def list_strategy_candidates(db: Session, project_id: int, experiment_id: int | 
     if evidence_package_id is not None:
         query = query.filter(OptimizationStrategyCandidate.evidence_package_id == evidence_package_id)
     rows = query.order_by(OptimizationStrategyCandidate.created_at.desc(), OptimizationStrategyCandidate.id.desc()).limit(80).all()
-    return [strategy_candidate_to_read(row) for row in rows]
+    package = db.get(OptimizationEvidencePackage, evidence_package_id) if evidence_package_id else None
+    return [strategy_candidate_to_read(row, package) for row in rows]
 
 
 def generate_strategy_candidates(db: Session, project_id: int, payload) -> list[dict]:
@@ -859,6 +1032,7 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
     candidate = db.get(OptimizationStrategyCandidate, candidate_id)
     if not candidate:
         raise HTTPException(status_code=404, detail="策略候选不存在")
+    package = db.get(OptimizationEvidencePackage, candidate.evidence_package_id) if candidate.evidence_package_id else None
     status = str(payload.review_status or "").strip().upper()
     if status not in {"PENDING_REVIEW", "ACCEPTED", "ACCEPTED_WITH_EDITS", "REJECTED", "DEFERRED"}:
         raise HTTPException(status_code=400, detail="未知人工审核状态")
@@ -878,7 +1052,6 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
         effective = deterministic_merge(original, edited)
         # Re-validate effective payload through Evidence + Hypothesis validators
         if candidate.evidence_package_id:
-            package = db.get(OptimizationEvidencePackage, candidate.evidence_package_id)
             if package:
                 evidence_result = validate_strategy_evidence(package, None, effective)
                 hypothesis_result = validate_strategy_hypothesis(effective, evidence_result)
@@ -907,8 +1080,8 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
         candidate.effective_payload_version = EFFECTIVE_PAYLOAD_VERSION
         _set_effective_payload_review_status(candidate, effective)
     if status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"}:
-        package = db.get(OptimizationEvidencePackage, candidate.evidence_package_id) if candidate.evidence_package_id else None
-        if package and package.prompt_id:
+        eligibility = current_step7_candidate_eligibility(candidate, package)
+        if package and package.prompt_id and eligibility["eligible"]:
             _upsert_workflow_confirmation(
                 db,
                 candidate.project_id,
@@ -927,7 +1100,7 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
             )
     db.commit()
     db.refresh(candidate)
-    return strategy_candidate_to_read(candidate)
+    return strategy_candidate_to_read(candidate, package)
 
 
 def _set_effective_payload_review_status(candidate: OptimizationStrategyCandidate, effective: dict) -> None:
@@ -962,6 +1135,7 @@ def strategy_to_experiment_plan(db: Session, candidate_id: int) -> dict:
     if candidate.review_status not in {"ACCEPTED", "ACCEPTED_WITH_EDITS"}:
         raise HTTPException(status_code=400, detail="只有人工接受后的策略候选才能转换实验计划")
     package = db.get(OptimizationEvidencePackage, candidate.evidence_package_id)
+    _ensure_strategy_candidate_can_enter_step8(candidate, package)
     effective = get_effective_strategy_payload(candidate)
     experiment = db.get(OptimizationExperiment, candidate.experiment_id) if candidate.experiment_id else None
 
@@ -1216,7 +1390,7 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
     if not project:
         raise HTTPException(status_code=404, detail="Project 不存在")
     prompt = db.get(Prompt, package.prompt_id) if package.prompt_id else None
-    _ensure_strategy_candidate_can_enter_step8(candidate)
+    _ensure_strategy_candidate_can_enter_step8(candidate, package)
     current_effective = loads(candidate.effective_payload_json, {})
     _ensure_step8_does_not_change_strategy_core(current_effective, payload)
 
@@ -1510,7 +1684,20 @@ def _ensure_existing_step8_experiment_has_asset_brief(
     return plan_payload
 
 
-def _ensure_strategy_candidate_can_enter_step8(candidate: OptimizationStrategyCandidate) -> None:
+def _ensure_strategy_candidate_can_enter_step8(
+    candidate: OptimizationStrategyCandidate,
+    package: OptimizationEvidencePackage | None,
+) -> None:
+    eligibility = current_step7_candidate_eligibility(candidate, package)
+    if not eligibility["eligible"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "该策略候选不属于当前单 Prompt V1.1 主链，不能进入 Step 8。",
+                "ineligibility_reasons": eligibility["ineligibility_reasons"],
+                "candidate_origin": eligibility["candidate_origin"],
+            },
+        )
     if candidate.review_status not in {"ACCEPTED", "ACCEPTED_WITH_EDITS"}:
         raise HTTPException(status_code=400, detail="Strategy 尚未人工确认，不能进入 Step 8。")
     if candidate.effective_validation_status not in {"PENDING_HUMAN_CHANNEL_REVIEW", "VALIDATED"}:
@@ -3941,6 +4128,14 @@ def confirm_citation_decision_vertical_slice(
     if not project or not prompt or not package:
         raise HTTPException(status_code=404, detail="Project/Prompt/Evidence Package 不存在")
 
+    explicit_origin = str(payload.get("candidate_origin") or "").strip().upper()
+    inferred_origin = _candidate_origin_from_text(
+        " ".join([str(payload.get("reviewer") or ""), str(payload.get("review_note") or "")])
+    )
+    candidate_origin = explicit_origin or inferred_origin or CURRENT_STEP7_CANDIDATE_ORIGIN
+    if candidate_origin == CURRENT_STEP7_CANDIDATE_ORIGIN:
+        _supersede_current_pending_step7_candidates(db, package, reviewer)
+
     _upsert_workflow_confirmation(
         db,
         project_id,
@@ -3970,6 +4165,20 @@ def confirm_citation_decision_vertical_slice(
         "created": created,
         "boundary_note": "Step 7 只生成待审核 StrategyCandidate；人工审核形成 effective_payload 后才具有正式 Strategy 语义。本阶段不创建 Action/Experiment，不进入 Step 8。",
     }
+
+
+def generate_current_step7_strategy_candidates(
+    db: Session,
+    project_id: int,
+    prompt_id: int,
+    payload: dict,
+) -> dict:
+    step7_payload = dict(payload or {})
+    step7_payload["candidate_origin"] = CURRENT_STEP7_CANDIDATE_ORIGIN
+    step7_payload.setdefault("use_answer_binding_v1_1", True)
+    step7_payload.setdefault("reviewer", "human")
+    step7_payload.setdefault("review_note", "当前单 Prompt V1.1 Step 7 用户生成待审核策略候选。")
+    return confirm_citation_decision_vertical_slice(db, project_id, prompt_id, step7_payload)
 
 
 def _resolve_vertical_slice_package(
@@ -4165,6 +4374,34 @@ def _get_or_create_vertical_intervention_plan(
     plan.approved_at = datetime.utcnow()
     db.flush()
     return plan
+
+
+def _supersede_current_pending_step7_candidates(
+    db: Session,
+    package: OptimizationEvidencePackage,
+    reviewer: str,
+) -> None:
+    rows = (
+        db.query(OptimizationStrategyCandidate)
+        .filter(
+            OptimizationStrategyCandidate.project_id == package.project_id,
+            OptimizationStrategyCandidate.evidence_package_id == package.id,
+            OptimizationStrategyCandidate.review_status == "PENDING_REVIEW",
+        )
+        .all()
+    )
+    for row in rows:
+        if not current_step7_candidate_eligibility(row, package)["eligible"]:
+            continue
+        row.review_status = "DEFERRED"
+        row.reviewed_by = reviewer
+        row.reviewed_at = datetime.utcnow()
+        row.review_note = dumps({
+            "semantic": "SUPERSEDED_BY_NEW_CURRENT_STEP7_GENERATION",
+            "superseded_at": datetime.utcnow().isoformat(),
+            "evidence_package_id": package.id,
+            "prompt_id": package.prompt_id,
+        })
 
 
 def _create_vertical_strategy_candidate(
@@ -4585,6 +4822,20 @@ def _strategy_payload_from_vertical_action(
         for alignment_id in item.get("benchmark_evidence_ids", [])
         if alignment_id
     })
+    use_answer_binding_v1_1 = bool(confirm_payload.get("use_answer_binding_v1_1", True))
+    explicit_origin = str(confirm_payload.get("candidate_origin") or "").strip().upper()
+    inferred_origin = _candidate_origin_from_text(
+        " ".join([
+            str(confirm_payload.get("reviewer") or ""),
+            str(confirm_payload.get("review_note") or ""),
+        ])
+    )
+    candidate_origin = explicit_origin or inferred_origin or CURRENT_STEP7_CANDIDATE_ORIGIN
+    strategy_context = _current_step7_context_for_package(
+        package,
+        use_answer_binding_v1_1=use_answer_binding_v1_1,
+    )
+    strategy_context["candidate_origin"] = candidate_origin
     strategy_fields = _strategy_fields_from_vertical_action(project, prompt, action, gap_items, evidence_run_ids)
     mechanism = strategy_fields.get("intervention_mechanism") or (
         "如果目标品牌已真实具备这些能力，但当前相关资产没有形成可被引用和摘录的能力表达，"
@@ -4592,6 +4843,10 @@ def _strategy_payload_from_vertical_action(
     )
     return {
         "strategy_phase": "PHASE_3_STRATEGY_CANDIDATE",
+        "candidate_origin": candidate_origin,
+        "generator_family": CURRENT_STEP7_GENERATOR_FAMILY,
+        "strategy_schema_version": CURRENT_STEP7_STRATEGY_SCHEMA_VERSION,
+        "strategy_context": strategy_context,
         **strategy_fields,
         "prompt_id": prompt.id,
         "gap_item_ids": gap_item_ids,

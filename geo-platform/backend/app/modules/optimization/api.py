@@ -58,6 +58,7 @@ from app.modules.optimization.service import (
     evidence_package_to_read,
     experiment_to_read,
     generate_candidate_issues,
+    generate_current_step7_strategy_candidates,
     generate_strategy_candidates,
     generate_strategy_candidates_v2,
     get_evidence_package,
@@ -149,6 +150,16 @@ def generate_project_strategy_candidates(project_id: int, payload: StrategyGener
 @router.post("/projects/{project_id}/strategy-candidates/generate-v2")
 def generate_project_strategy_candidates_v2(project_id: int, payload: StrategyGenerationCreate, db: Session = Depends(get_db)):
     return generate_strategy_candidates_v2(db, project_id, payload)
+
+
+@router.post("/projects/{project_id}/prompts/{prompt_id}/strategy-candidates/generate-current-v1")
+def generate_current_prompt_strategy_candidate_v1(
+    project_id: int,
+    prompt_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+) -> dict:
+    return generate_current_step7_strategy_candidates(db, project_id, prompt_id, payload)
 
 
 @router.post("/strategy-candidates/{candidate_id}/review", response_model=StrategyCandidateRead)

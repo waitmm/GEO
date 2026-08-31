@@ -57,6 +57,43 @@ def _seed_project(db):
     return project, prompt, runs
 
 
+def _current_step7_payload(payload: dict, *, prompt_id: int = 1, package_id: int = 1, package_version: int = 1) -> dict:
+    current = {
+        "candidate_origin": service.CURRENT_STEP7_CANDIDATE_ORIGIN,
+        "generator_family": service.CURRENT_STEP7_GENERATOR_FAMILY,
+        "strategy_schema_version": service.CURRENT_STEP7_STRATEGY_SCHEMA_VERSION,
+        "strategy_context": {
+            "prompt_id": prompt_id,
+            "evidence_package_id": package_id,
+            "evidence_package_version": package_version,
+            "analysis_version": service.VERTICAL_SLICE_VERSION,
+            "strategy_input_version": service.FORMAL_V1_1_INPUT_VERSION,
+            "answer_binding_mode": "ANSWER_BINDING_V1_1_ON",
+            "use_answer_binding_v1_1": True,
+            "strategy_schema_version": service.CURRENT_STEP7_STRATEGY_SCHEMA_VERSION,
+            "generator_family": service.CURRENT_STEP7_GENERATOR_FAMILY,
+            "candidate_origin": service.CURRENT_STEP7_CANDIDATE_ORIGIN,
+        },
+        "gap_item_ids": ["gap-test"],
+        "benchmark_evidence_ids": [1],
+        "target_decision_change": "让 AI 在当前 Prompt 中识别目标品牌能力",
+        "priority_capabilities": [{"capability_label": "测试能力", "gap_item_id": "gap-test"}],
+        "strategic_hypothesis": "补齐目标品牌能力表达后，AI 后续回答更可能采用该理由。",
+        "intervention_mechanism": "补齐目标品牌事实与 AI 决策理由之间的可引用表达。",
+        "primary_intervention_path": "FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION",
+        "planned_channels": [{"channel": "OFFICIAL_SITE", "intervention_priority": "PRIMARY"}],
+        "channel_roles": {"OFFICIAL_SITE": {"channel_role": "承载目标品牌自己的能力事实表达"}},
+        "asset_direction": {"channel": "OFFICIAL_SITE", "asset_operation": "CREATE_NEW"},
+        "execution_sequence": [{"step": 1, "name": "确认执行资产"}],
+        "required_signals": [{"signal": "目标品牌支持测试能力", "evidence_requirement": "目标品牌事实"}],
+        "non_goals": ["不在第 7 步选择具体 URL"],
+        "attribution_intent": {"primary_capability": "测试能力", "attribution_scope": "SINGLE_CAPABILITY"},
+        "product_truth_gate": {"status": "READY_FOR_STRATEGY_REVIEW"},
+    }
+    current.update(payload)
+    return current
+
+
 # ============================================================================
 # Source Relation tests (P0-1: 1-4)
 # ============================================================================
@@ -844,7 +881,7 @@ def test_strategy_to_experiment_uses_effective_payload(db):
     db.commit()
 
     # Candidate with EXTERNAL_PLATFORM_ARTICLE in effective payload
-    effective_payload = {
+    effective_payload = _current_step7_payload({
         "intervention_type": "EXTERNAL_PLATFORM_ARTICLE",
         "target_platform": "ZHIHU",
         "target_url": "",
@@ -857,13 +894,15 @@ def test_strategy_to_experiment_uses_effective_payload(db):
         "invalidating_result": "test",
         "changed_features": [{"feature": "FAQ"}],
         "controlled_variables": ["URL"],
-    }
+    })
     candidate = OptimizationStrategyCandidate(
         id=1, project_id=1, evidence_package_id=1,
         target_url="http://x.com/card",
         intervention_type="OFFICIAL_NEW_PAGE",  # legacy — must NOT be used
         target_platform="owned_site",  # legacy — must NOT be used
-        provider="test", model="test",
+        provider="test", model=service.CURRENT_STEP7_MODEL,
+        prompt_version=service.VERTICAL_SLICE_VERSION,
+        source_package_id=1,
         structured_payload_json=dumps(effective_payload),
         human_edited_payload_json=dumps({}),
         effective_payload_json=dumps(effective_payload),
@@ -1397,7 +1436,7 @@ def test_no_action_creates_no_experiment(db):
     db.add(pkg)
     db.commit()
 
-    effective = {
+    effective = _current_step7_payload({
         "intervention_type": "NO_ACTION",
         "target_platform": "UNRESOLVED",
         "target_metric": "brand_mention_rate",
@@ -1405,14 +1444,17 @@ def test_no_action_creates_no_experiment(db):
         "core_mechanism": "mech", "recommended_action": "monitor",
         "validation_plan": {}, "invalidating_result": "test",
         "changed_features": [{"feature":"FAQ"}], "controlled_variables": ["URL"],
-    }
+    })
     candidate = OptimizationStrategyCandidate(
         id=1, project_id=1, evidence_package_id=1,
+        source_package_id=1,
         structured_payload_json=dumps(effective), human_edited_payload_json=dumps({}),
         effective_payload_json=dumps(effective), effective_payload_version="effective_payload.v1",
         effective_validation_status="VALIDATED",
         generation_status="GENERATED", evidence_validation_status="VALIDATED",
         hypothesis_validation_status="VALIDATED", review_status="ACCEPTED", reviewed_by="test",
+        model=service.CURRENT_STEP7_MODEL,
+        prompt_version=service.VERTICAL_SLICE_VERSION,
     )
     db.add(candidate)
     db.commit()
@@ -1456,7 +1498,7 @@ def test_experiment_identity_is_preserved(db):
     db.commit()
 
     # Now create a V2 strategy and run strategy_to_experiment_plan
-    effective = {
+    effective = _current_step7_payload({
         "intervention_type": "EXTERNAL_PLATFORM_ARTICLE",
         "target_platform": "ZHIHU",
         "target_url": "",
@@ -1465,7 +1507,7 @@ def test_experiment_identity_is_preserved(db):
         "core_mechanism": "test", "recommended_action": "Publish",
         "validation_plan": {"test": True}, "invalidating_result": "test",
         "changed_features": [{"feature": "FAQ"}], "controlled_variables": ["URL"],
-    }
+    })
     pkg = OptimizationEvidencePackage(id=1, project_id=1, prompt_id=1, version=1,
         source_run_ids_json="[1,2]", target_page_urls_json="[]",
         package_payload_json=dumps({
@@ -1480,11 +1522,14 @@ def test_experiment_identity_is_preserved(db):
 
     candidate = OptimizationStrategyCandidate(
         id=1, project_id=1, evidence_package_id=1,
+        source_package_id=1,
         structured_payload_json=dumps(effective), human_edited_payload_json=dumps({}),
         effective_payload_json=dumps(effective), effective_payload_version="effective_payload.v1",
         effective_validation_status="VALIDATED",
         generation_status="GENERATED", evidence_validation_status="VALIDATED",
         hypothesis_validation_status="VALIDATED", review_status="ACCEPTED", reviewed_by="test",
+        model=service.CURRENT_STEP7_MODEL,
+        prompt_version=service.VERTICAL_SLICE_VERSION,
     )
     db.add(candidate)
     db.commit()

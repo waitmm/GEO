@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -24,7 +25,16 @@ from app.models import (
     WorkflowConfirmation,
 )
 from app.modules.optimization.schemas import StrategyCandidateReviewPayload
-from app.modules.optimization.service import review_strategy_candidate
+from app.modules.optimization.service import (
+    CURRENT_STEP7_CANDIDATE_ORIGIN,
+    CURRENT_STEP7_GENERATOR_FAMILY,
+    CURRENT_STEP7_MODEL,
+    CURRENT_STEP7_STRATEGY_SCHEMA_VERSION,
+    FORMAL_V1_1_INPUT_VERSION,
+    VERTICAL_SLICE_VERSION,
+    review_strategy_candidate,
+    strategy_to_experiment_plan,
+)
 from app.modules.optimization.workflow import (
     batch_confirm_alignments,
     build_continue_review_context,
@@ -89,8 +99,43 @@ def _strategy_candidate(
     review_status: str,
     experiment_id: int | None = None,
     reviewed_by: str = "",
+    prompt_id: int = 300,
+    package_version: int = 1,
+    origin: str = CURRENT_STEP7_CANDIDATE_ORIGIN,
+    model: str = CURRENT_STEP7_MODEL,
+    prompt_version: str = VERTICAL_SLICE_VERSION,
+    payload_overrides: dict | None = None,
 ) -> OptimizationStrategyCandidate:
     payload = {
+        "candidate_origin": origin,
+        "generator_family": CURRENT_STEP7_GENERATOR_FAMILY,
+        "strategy_schema_version": CURRENT_STEP7_STRATEGY_SCHEMA_VERSION,
+        "strategy_context": {
+            "prompt_id": prompt_id,
+            "evidence_package_id": package_id,
+            "evidence_package_version": package_version,
+            "analysis_version": VERTICAL_SLICE_VERSION,
+            "strategy_input_version": FORMAL_V1_1_INPUT_VERSION,
+            "answer_binding_mode": "ANSWER_BINDING_V1_1_ON",
+            "use_answer_binding_v1_1": True,
+            "strategy_schema_version": CURRENT_STEP7_STRATEGY_SCHEMA_VERSION,
+            "generator_family": CURRENT_STEP7_GENERATOR_FAMILY,
+            "candidate_origin": origin,
+        },
+        "gap_item_ids": ["gap-click-stat"],
+        "benchmark_evidence_ids": [801],
+        "target_decision_change": "让 AI 在短链推荐中把目标品牌与点击统计能力建立关联",
+        "priority_capabilities": [{"capability_label": "点击统计", "gap_item_id": "gap-click-stat"}],
+        "strategic_hypothesis": "如果目标品牌资产补齐点击统计能力表达，后续回答更可能识别该能力。",
+        "intervention_mechanism": "补齐目标品牌事实到 AI 决策理由之间的可引用表达。",
+        "primary_intervention_path": "FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION",
+        "planned_channels": [{"channel": "OFFICIAL_SITE", "intervention_priority": "PRIMARY"}],
+        "channel_roles": {"OFFICIAL_SITE": {"channel_role": "承载目标品牌自己的能力事实表达"}},
+        "asset_direction": {"channel": "OFFICIAL_SITE", "asset_operation": "CREATE_NEW"},
+        "execution_sequence": [{"step": 1, "name": "确认执行资产"}],
+        "required_signals": [{"signal": "目标品牌支持点击统计", "evidence_requirement": "目标品牌事实"}],
+        "non_goals": ["不在第 7 步选择具体 URL"],
+        "attribution_intent": {"primary_capability": "点击统计", "attribution_scope": "SINGLE_CAPABILITY"},
         "product_truth_gate": {"status": "READY_FOR_STRATEGY_REVIEW"},
         "intervention_type": "UNRESOLVED",
         "target_platform": "UNRESOLVED",
@@ -99,10 +144,12 @@ def _strategy_candidate(
         "target_content_type": "UNRESOLVED",
         "recommended_action": "补齐点击统计表达",
     }
+    payload.update(payload_overrides or {})
     return OptimizationStrategyCandidate(
         id=candidate_id,
         project_id=project_id,
         evidence_package_id=package_id,
+        source_package_id=package_id,
         experiment_id=experiment_id,
         structured_payload_json=dumps(payload),
         effective_payload_json=dumps(payload) if review_status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"} else dumps({}),
@@ -112,6 +159,8 @@ def _strategy_candidate(
         hypothesis_validation_status="VALIDATED",
         review_status=review_status,
         reviewed_by=reviewed_by,
+        model=model,
+        prompt_version=prompt_version,
     )
 
 
@@ -420,6 +469,7 @@ def test_step7_current_state_uses_bound_strategy_candidate_not_history():
             review_status="ACCEPTED_WITH_EDITS",
             experiment_id=historical_experiment.id,
             reviewed_by="phase4_audit",
+            origin="AUDIT",
         )
         current_pending = _strategy_candidate(3104, project.id, package.id, review_status="PENDING_REVIEW")
         legacy_confirmation = WorkflowConfirmation(
@@ -543,5 +593,132 @@ def test_step8_complete_only_for_current_confirmed_candidate_experiment():
         assert status["current_experiment_id"] == experiment.id
         assert experiment_step["done"] is True
         assert "当前实验草案" in experiment_step["detail"]
+    finally:
+        db.close()
+
+
+def test_legacy_latest_pending_strategy_does_not_light_current_step7():
+    db = _session()
+    try:
+        project, prompt, package = _ready_strategy_workflow_base(db)
+        legacy_pending = _strategy_candidate(
+            3401,
+            project.id,
+            package.id,
+            review_status="PENDING_REVIEW",
+            origin="LEGACY",
+            model="local-rule-v1",
+            prompt_version="strategy_prompt.v2",
+            payload_overrides={
+                "strategy_context": {},
+                "target_decision_change": "",
+                "priority_capabilities": [],
+                "gap_item_ids": [],
+                "benchmark_evidence_ids": [],
+            },
+        )
+        db.add(legacy_pending)
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in status["steps"] if step["key"] == "action")
+
+        assert status["strategy_step_status"] == "READY_TO_GENERATE"
+        assert status["current_strategy_candidate_ids"] == []
+        assert action_step["done"] is False
+        assert action_step["detail"] == "可生成当前策略候选"
+        assert status["historical_strategy_candidate_count"] == 1
+        assert status["ineligible_strategy_candidates"][0]["id"] == legacy_pending.id
+        assert "LEGACY_STRATEGY_GENERATOR" in status["ineligible_strategy_candidates"][0]["ineligibility_reasons"]
+    finally:
+        db.close()
+
+
+def test_audit_confirmed_strategy_does_not_confirm_current_step7():
+    db = _session()
+    try:
+        project, prompt, package = _ready_strategy_workflow_base(db)
+        audit_candidate = _strategy_candidate(
+            3501,
+            project.id,
+            package.id,
+            review_status="ACCEPTED",
+            reviewed_by="phase_strategy_core_regression",
+            origin="REGRESSION",
+        )
+        db.add(audit_candidate)
+        db.commit()
+
+        reviewed = review_strategy_candidate(
+            db,
+                audit_candidate.id,
+                StrategyCandidateReviewPayload(
+                    review_status="ACCEPTED",
+                    reviewed_by="phase_strategy_core_regression",
+                    review_note="phase regression audit",
+                ),
+            )
+        status = workflow_status(db, project, prompt.id)
+
+        assert reviewed["eligible_for_current_step7"] is False
+        assert reviewed["candidate_origin"] == "REGRESSION"
+        assert status["strategy_step_status"] == "READY_TO_GENERATE"
+        assert status["current_strategy_confirmed"] is False
+        assert status["execution_step_status"] == "LOCKED"
+        assert db.query(WorkflowConfirmation).filter(WorkflowConfirmation.step_key == "action").count() == 0
+    finally:
+        db.close()
+
+
+def test_incomplete_strategy_core_is_ineligible_for_current_step7():
+    db = _session()
+    try:
+        project, prompt, package = _ready_strategy_workflow_base(db)
+        incomplete = _strategy_candidate(
+            3601,
+            project.id,
+            package.id,
+            review_status="PENDING_REVIEW",
+            payload_overrides={
+                "planned_channels": [],
+                "required_signals": [],
+            },
+        )
+        db.add(incomplete)
+        db.commit()
+
+        listed = [
+            row for row in workflow_status(db, project, prompt.id)["ineligible_strategy_candidates"]
+            if row["id"] == incomplete.id
+        ]
+        assert listed
+        assert "MISSING_STRATEGY_CORE" in listed[0]["ineligibility_reasons"]
+    finally:
+        db.close()
+
+
+def test_step8_rejects_ineligible_legacy_strategy_even_when_accepted():
+    db = _session()
+    try:
+        project, prompt, package = _ready_strategy_workflow_base(db)
+        legacy_accepted = _strategy_candidate(
+            3701,
+            project.id,
+            package.id,
+            review_status="ACCEPTED",
+            origin="LEGACY",
+            model="local-rule-v1",
+            prompt_version="strategy_prompt.v2",
+            payload_overrides={"strategy_context": {}},
+        )
+        db.add(legacy_accepted)
+        db.commit()
+
+        with pytest.raises(Exception) as excinfo:
+            strategy_to_experiment_plan(db, legacy_accepted.id)
+
+        assert "不属于当前单 Prompt V1.1 主链" in str(excinfo.value)
+        assert db.query(OptimizationAction).count() == 0
+        assert db.query(OptimizationExperiment).count() == 0
     finally:
         db.close()

@@ -1919,6 +1919,9 @@ export default function App() {
   }
 
   function isAuditGeneratedStrategyCandidate(candidate: any) {
+    const origin = String(candidate?.candidate_origin || "").toUpperCase();
+    if (origin && origin !== "USER_FLOW") return true;
+    if (candidate?.eligible_for_current_step7 === false) return true;
     const reviewer = String(candidate?.reviewed_by || "").toLowerCase();
     const note = String(candidate?.review_note || "").toLowerCase();
     return (
@@ -1927,6 +1930,10 @@ export default function App() {
       /^phase[\w-]*_(audit|regression)$/.test(reviewer) ||
       note.includes("phase")
     );
+  }
+
+  function isCurrentStep7StrategyCandidate(candidate: any) {
+    return candidate?.eligible_for_current_step7 === true;
   }
 
   function strategyVersionMap(candidates: any[]) {
@@ -1980,17 +1987,40 @@ export default function App() {
     setStrategyNotice(null);
     message.loading({ content: "正在生成策略...", key: "strategy-generate", duration: 0 });
     try {
-      const generated = await api.generateStrategyCandidatesV2(projectId, { evidence_package_id: selectedPkgId, max_hypotheses: 3 });
-      const generatedCandidates = generated?.candidates || [];
+      const selectedPackage = (evidencePackages || []).find((item: any) => Number(item.id) === Number(selectedPkgId));
+      const targetPromptId = Number(selectedPackage?.prompt_id || currentCitationDecisionPromptId());
+      if (!targetPromptId) {
+        throw new Error("当前策略生成必须绑定一个单 Prompt 证据包，请先选择具体 Prompt 的证据。");
+      }
+      const latest = await loadCitationDecisionV1(targetPromptId, true);
+      const actionKeys = (latest?.recommended_actions || [])
+        .filter((item: any) => item.route === "CONTENT" || item.route === "EVIDENCE")
+        .map((item: any) => item.action_key)
+        .filter(Boolean);
+      if (actionKeys.length === 0) {
+        throw new Error("当前没有可生成策略候选的内容/证据缺口；历史策略不会计入当前第 7 步。");
+      }
+      const generated = await api.generateCurrentStep7StrategyCandidateV1(projectId, targetPromptId, {
+        evidence_package_id: selectedPkgId,
+        use_answer_binding_v1_1: typeof latest?.use_answer_binding_v1_1 === "boolean"
+          ? latest.use_answer_binding_v1_1
+          : CURRENT_CITATION_DECISION_USE_ANSWER_BINDING_V1_1,
+        action_keys: actionKeys,
+        reviewer: "human",
+        review_note: "当前单 Prompt V1.1 Step 7 生成待审核策略候选",
+      });
+      const generatedCandidates = (generated?.created || [])
+        .map((item: any) => item.strategy_candidate || item)
+        .filter(Boolean);
       const generatedIds = generatedCandidates.map((item: any) => item.id).filter(Boolean);
       setLatestGeneratedStrategyIds(generatedIds);
       const existing = await api.listStrategyCandidates(projectId, selectedPkgId);
       const sorted = sortStrategyCandidates(existing);
-      const reviewable = sorted.filter((item: any) => item.review_status === "PENDING_REVIEW" || item.review_status === "ACCEPTED" || item.review_status === "ACCEPTED_WITH_EDITS");
+      const reviewable = sorted.filter((item: any) => isCurrentStep7StrategyCandidate(item) && (item.review_status === "PENDING_REVIEW" || item.review_status === "ACCEPTED" || item.review_status === "ACCEPTED_WITH_EDITS"));
       const generatedVersionMap = strategyVersionMap(existing);
       setStrategyData({
         ...(generated || {}),
-        decision_status: sorted.length ? "OPTIONS_AVAILABLE" : generated?.decision_status,
+        decision_status: reviewable.length ? "OPTIONS_AVAILABLE" : generated?.decision_status,
         decision_capability: generated?.decision_capability || "CONTENT_DIRECTION_ONLY",
         strategy_options_count: sorted.length,
         candidates: sorted,
@@ -2215,8 +2245,8 @@ export default function App() {
       .filter(Boolean)
   );
   const workflowStrategyCandidates = workflowStrategyIdSet.size
-    ? sortedStrategyCandidates.filter((candidate: any) => workflowStrategyIdSet.has(Number(candidate.id)))
-    : sortedStrategyCandidates.filter((candidate: any) => !isAuditGeneratedStrategyCandidate(candidate));
+    ? sortedStrategyCandidates.filter((candidate: any) => workflowStrategyIdSet.has(Number(candidate.id)) && isCurrentStep7StrategyCandidate(candidate))
+    : sortedStrategyCandidates.filter((candidate: any) => isCurrentStep7StrategyCandidate(candidate));
   const strategyCandidatesForDefaultView = workflowStrategyCandidates.length ? workflowStrategyCandidates : [];
   const visibleStrategyCandidates = filterStrategyCandidates(
     strategyCandidateFilter === "latest" ? strategyCandidatesForDefaultView : sortedStrategyCandidates,

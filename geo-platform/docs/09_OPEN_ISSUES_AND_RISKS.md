@@ -4,6 +4,13 @@ Status: ACTIVE
 
 ## Single Prompt V1 Known Pitfalls
 
+- Current Step 7 StrategyCandidate selection must be context-bound and origin
+  gated. Legacy `generate-v2/local-rule`, audit, test, regression, or shadow
+  candidates may stay in history, but they must not become current even if they
+  are latest, pending, accepted, or have existing experiments. The current
+  user-flow candidate must carry current Prompt/Evidence Package/package
+  version/V1.1 input context, `candidate_origin = USER_FLOW`, and complete
+  Strategy Core.
 - StrategyCandidate payloads are structured audit objects, not all fields are
   display strings. Frontend pages must normalize object fields such as
   `evidence_summary` into Chinese summaries before rendering; raw object

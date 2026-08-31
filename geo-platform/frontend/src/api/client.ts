@@ -127,6 +127,8 @@ export const api = {
     request<StrategyCandidate[]>(`/api/optimization/projects/${projectId}/strategy-candidates/generate`, { method: "POST", body: JSON.stringify(payload) }),
   generateStrategyCandidatesV2: (projectId: number, payload: unknown) =>
     request<any>(`/api/optimization/projects/${projectId}/strategy-candidates/generate-v2`, { method: "POST", body: JSON.stringify(payload) }),
+  generateCurrentStep7StrategyCandidateV1: (projectId: number, promptId: number, payload: unknown) =>
+    request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/strategy-candidates/generate-current-v1`, { method: "POST", body: JSON.stringify(payload) }),
   getCitationDecisionV1: (projectId: number, promptId: number, evidencePackageId?: number, useAnswerBindingV11?: boolean) =>
     request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/citation-decision-v1${[
       evidencePackageId ? `evidence_package_id=${evidencePackageId}` : "",

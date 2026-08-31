@@ -2,6 +2,56 @@
 
 Status: ACTIVE
 
+## 2026-08-31 Step 7 V1.1 Current Candidate Eligibility Blocker Fix
+
+- Fixed the current single Prompt Step 7 blocker where legacy, audit, test, or
+  regression `OptimizationStrategyCandidate` rows could be selected as the
+  current strategy candidate after Prompt `#40` was re-run.
+- Added a centralized current Step 7 eligibility validator. A candidate is
+  current-consumable only when it matches the active Prompt Evidence Package,
+  package version, V1.1 answer-binding input mode, current generator family,
+  `USER_FLOW` origin, and complete Strategy Core schema.
+- `review_strategy_candidate` now writes the current workflow confirmation only
+  for eligible current Step 7 candidates. Historical accepted candidates remain
+  reviewable history but cannot mark the current main chain as confirmed.
+- Step 8 backend entry points now reject ineligible candidates even if they are
+  already `ACCEPTED` or `ACCEPTED_WITH_EDITS`; this prevents old candidates from
+  creating current Action / Experiment rows.
+- Added a dedicated current generation endpoint:
+
+```text
+POST /api/optimization/projects/{project_id}/prompts/{prompt_id}/strategy-candidates/generate-current-v1
+```
+
+- The frontend strategy page no longer calls the old `generate-v2` route for
+  the current single Prompt Step 7 flow. It now generates through the current
+  V1.1 endpoint and defaults the strategy list to
+  `eligible_for_current_step7=true` rows only.
+- Prompt `#40` read-only regression after the fix:
+
+```text
+evidence_package_id = 15
+package_version = 2
+strategy_step_status = READY_TO_GENERATE
+current_strategy_candidate_ids = []
+current_strategy_confirmed = false
+execution_step_status = LOCKED
+historical_strategy_candidate_count = 8
+ineligible current candidates = #40-#47
+```
+
+- Scope deliberately excluded Evidence, Benchmark, Gap, Decision Stability,
+  Strategy Core algorithm, Asset Brief, Claim Matrix, Draft, Experiment,
+  Baseline, and Step 9 changes.
+
+Validation:
+
+```text
+.venv/bin/python -m compileall app
+.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py tests/test_strategy_step7_v1.py
+nvm use 18.20.8 && npm run build
+```
+
 ## 2026-08-31 Step 7/8 Current-State Alignment Fix
 
 - Fixed the single Prompt workbench state source for Step 7 / Step 8. The

@@ -29,6 +29,7 @@ from app.models import (
     WorkflowConfirmation,
 )
 from app.services.serialization import dumps, loads
+from app.modules.optimization.service import current_step7_candidate_eligibility
 
 REVIEWABLE_RECOMMENDATION_EVENT_STATUSES = {
     "MACHINE_GROUNDED",
@@ -93,8 +94,13 @@ def _candidate_time_key(candidate: OptimizationStrategyCandidate) -> tuple[datet
     return marker, int(candidate.id or 0)
 
 
-def _is_step7_confirmable_strategy(candidate: OptimizationStrategyCandidate) -> bool:
+def _is_step7_confirmable_strategy(
+    candidate: OptimizationStrategyCandidate,
+    package: OptimizationEvidencePackage | None,
+) -> bool:
     return (
+        current_step7_candidate_eligibility(candidate, package)["eligible"]
+        and
         candidate.review_status in ACCEPTED_STRATEGY_REVIEW_STATUSES
         and candidate.effective_validation_status in STEP7_EFFECTIVE_PAYLOAD_STATUSES
     )
@@ -149,13 +155,21 @@ def _current_strategy_chain_state(
             .all()
         )
 
+    eligibility_by_id = {
+        row.id: current_step7_candidate_eligibility(row, package)
+        for row in candidates
+    }
+    eligible_candidates = [
+        row for row in candidates
+        if eligibility_by_id.get(row.id, {}).get("eligible")
+    ]
     pending_candidates = sorted(
-        [row for row in candidates if row.review_status == "PENDING_REVIEW"],
+        [row for row in eligible_candidates if row.review_status == "PENDING_REVIEW"],
         key=_candidate_time_key,
         reverse=True,
     )
     accepted_candidates = sorted(
-        [row for row in candidates if _is_step7_confirmable_strategy(row)],
+        [row for row in eligible_candidates if _is_step7_confirmable_strategy(row, package)],
         key=_candidate_time_key,
         reverse=True,
     )
@@ -172,16 +186,16 @@ def _current_strategy_chain_state(
         (row for row in accepted_candidates if _strategy_confirmation_matches(confirmation, row, package)),
         None,
     )
-    if confirmed_candidate is not None:
+    if pending_candidates:
+        strategy_status = "PENDING_REVIEW"
+        current_ids = [pending_candidates[0].id]
+        current_candidate = pending_candidates[0]
+        detail = "1 个当前策略候选待人工审核"
+    elif confirmed_candidate is not None:
         strategy_status = "CONFIRMED"
         current_ids = [confirmed_candidate.id]
         current_candidate = confirmed_candidate
         detail = f"当前策略 #{confirmed_candidate.id} 已人工确认"
-    elif pending_candidates:
-        strategy_status = "PENDING_REVIEW"
-        current_ids = [row.id for row in pending_candidates]
-        current_candidate = pending_candidates[0]
-        detail = f"{len(pending_candidates)} 个当前策略候选待人工审核"
     elif reviews_done:
         strategy_status = "READY_TO_GENERATE"
         current_ids = []
@@ -219,6 +233,15 @@ def _current_strategy_chain_state(
         execution_detail = "等待当前策略确认"
 
     historical_candidate_ids = [row.id for row in candidates if row.id not in set(current_ids)]
+    ineligible_candidate_details = [
+        {
+            "id": row.id,
+            "candidate_origin": eligibility_by_id.get(row.id, {}).get("candidate_origin"),
+            "ineligibility_reasons": eligibility_by_id.get(row.id, {}).get("ineligibility_reasons", []),
+        }
+        for row in candidates
+        if row.id not in set(current_ids) and not eligibility_by_id.get(row.id, {}).get("eligible")
+    ]
     return {
         "context": {
             "prompt_id": prompt_id,
@@ -244,6 +267,7 @@ def _current_strategy_chain_state(
         "current_experiment_status": current_experiment.status if current_experiment else None,
         "historical_strategy_candidate_ids": historical_candidate_ids,
         "historical_strategy_candidate_count": len(historical_candidate_ids),
+        "ineligible_strategy_candidates": ineligible_candidate_details,
         "historical_experiment_ids": [row.id for row in historical_experiments],
         "historical_experiment_count": len(historical_experiments),
         "legacy_action_confirmation_ignored": bool(
@@ -531,6 +555,7 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         "current_experiment_status": current_chain["current_experiment_status"],
         "historical_strategy_candidate_ids": current_chain["historical_strategy_candidate_ids"],
         "historical_strategy_candidate_count": current_chain["historical_strategy_candidate_count"],
+        "ineligible_strategy_candidates": current_chain["ineligible_strategy_candidates"],
         "historical_experiment_ids": current_chain["historical_experiment_ids"],
         "historical_experiment_count": current_chain["historical_experiment_count"],
         "legacy_action_confirmation_ignored": current_chain["legacy_action_confirmation_ignored"],
@@ -542,6 +567,7 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
             "current_strategy_confirmed": current_chain["current_strategy_confirmed"],
             "effective_payload_status": current_chain["current_effective_payload_status"],
             "effective_payload_valid": current_chain["current_effective_payload_valid"],
+            "ineligible_strategy_candidates": current_chain["ineligible_strategy_candidates"],
         },
         "execution_step": {
             "status": current_chain["execution_step_status"],

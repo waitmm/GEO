@@ -2,6 +2,59 @@
 
 Status: ACTIVE
 
+## 2026-08-31 Step 7 Current Candidate Eligibility
+
+### Product Decision
+
+当前单 Prompt 第 7 步 `策略确认` 只能消费当前用户流程生成的
+StrategyCandidate。
+
+合格策略候选必须同时绑定：
+
+```text
+prompt_id
+evidence_package_id
+evidence_package_version
+analysis_version
+answer_binding_mode
+candidate_origin = USER_FLOW
+complete Strategy Core
+```
+
+历史验收、审计、测试、回归或旧 `generate-v2/local-rule` 候选只能作为历史记录。
+即使这些候选已经是 `ACCEPTED`，也不能点亮当前第 7 步，不能进入第 8 步。
+
+### User-Facing Rule
+
+当当前 Prompt 只有历史候选时，页面应显示：
+
+```text
+策略确认：可生成
+实验方案落地：等待当前策略确认
+```
+
+而不是显示：
+
+```text
+策略确认：已确认
+实验方案落地：已创建
+```
+
+用户点击“生成策略候选”时，只能生成当前 V1.1 用户流程候选。历史策略仍可在
+“全部策略（含历史验收）”中查看，但默认不会混入当前主链。
+
+### Boundary
+
+本次不改变 Strategy Core 的生成语义，不修改 Evidence、Benchmark、Gap、
+Decision Stability、Asset Brief、Experiment 或 Baseline。
+
+### Pitfall
+
+Prompt `#40` 曾出现旧 `local-rule-v1 / strategy_prompt.v2` 候选和
+`phase_*_regression` 候选污染当前链路，导致第 7 步卡住或误显示完成。后续凡是
+新增审计脚本、回归脚本或测试数据，都必须标明 candidate origin，不能默认参与
+当前用户主链。
+
 ## 2026-08-31 Step 7/8 Current-State Alignment
 
 ### Product Decision

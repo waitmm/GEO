@@ -557,6 +557,11 @@ export type StrategyCandidate = {
   review_note: string;
   converted_hypothesis_id?: number | null;
   experiment_plan: Record<string, any>;
+  candidate_origin?: string;
+  strategy_context?: Record<string, any>;
+  strategy_schema_complete?: boolean;
+  eligible_for_current_step7?: boolean;
+  current_step7_ineligibility_reasons?: string[];
   created_at: string;
   updated_at: string;
 };

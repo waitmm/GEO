@@ -586,6 +586,28 @@ function readinessStatusColor(status?: string) {
   return colors[status || ""] || "default";
 }
 
+function effectiveValidationStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    VALIDATED: "已形成可执行策略",
+    PENDING: "待校验",
+    PENDING_HUMAN_CHANNEL_REVIEW: "策略已确认，待第 8 步确认执行方案",
+    VALIDATION_FAILED: "校验失败",
+    BLOCKED_PRODUCT_TRUTH: "产品事实阻塞",
+  };
+  return labels[status || ""] || status || "待确认";
+}
+
+function effectiveValidationStatusColor(status?: string) {
+  const colors: Record<string, string> = {
+    VALIDATED: "green",
+    PENDING: "default",
+    PENDING_HUMAN_CHANNEL_REVIEW: "blue",
+    VALIDATION_FAILED: "red",
+    BLOCKED_PRODUCT_TRUTH: "orange",
+  };
+  return colors[status || ""] || "default";
+}
+
 function comparabilityStatusLabel(status?: string) {
   const labels: Record<string, string> = {
     COMPARABLE: "未发现显著已知混杂因素",
@@ -1566,6 +1588,37 @@ export default function App() {
     }
   }
 
+  async function openExperimentDraftForStrategy(candidate: any) {
+    const plan = experimentPlanPayload(candidate?.experiment_plan);
+    const actionId = Number(plan?.action_id || plan?.action_snapshot?.action_id || candidate?.action_id);
+    const experimentId = Number(plan?.experiment_id || candidate?.experiment_id);
+    if (!actionId && !experimentId) {
+      message.info("该策略已确认，但尚未完成第 8 步执行方案配置；需要先选择具体资产、URL、内容结构和 Baseline。");
+      return;
+    }
+    if (!projectId) return;
+    setOptimizationLoading(true);
+    try {
+      const issues = optimizationIssues.length ? optimizationIssues : await api.listOptimizationIssues(projectId);
+      setOptimizationIssues(issues);
+      for (const issue of issues) {
+        const chain = await api.getOptimizationEvidenceChain(issue.id);
+        const matchedAction = (chain.actions || []).some((action: any) => Number(action.id) === actionId);
+        const matchedExperiment = (chain.experiments || []).some((experiment: any) => Number(experiment.id) === experimentId);
+        if (matchedAction || matchedExperiment) {
+          setSelectedOptimizationIssueId(issue.id);
+          setOptimizationChain(chain);
+          setPage("optimization");
+          message.success(`已打开实验草案 #${experimentId || "?"}`);
+          return;
+        }
+      }
+      message.warning("已找到策略记录，但没有在实验闭环中找到对应 Action/Experiment，请刷新后重试。");
+    } finally {
+      setOptimizationLoading(false);
+    }
+  }
+
   async function refreshOptimizationChain() {
     if (selectedOptimizationIssueId) await loadOptimizationChain(selectedOptimizationIssueId);
     if (projectId) await loadOptimizationIssues();
@@ -1778,6 +1831,7 @@ export default function App() {
         loadOptimizationIssues(),
       ]);
       setLatestGeneratedStrategyIds(createdIds);
+      setStrategyCandidateFilter(createdIds.length ? `candidate:${createdIds[0]}` : "latest");
     } catch (error: any) {
       message.error(error.message || "生成策略候选失败");
     } finally {
@@ -4134,6 +4188,9 @@ export default function App() {
                 const isAuditHistory = isAuditGeneratedStrategyCandidate(c);
                 const isCurrent = !isAuditHistory && workflowStrategyCandidates[0]?.id === c.id;
                 const isJustGenerated = latestGeneratedStrategyIds.includes(c.id);
+                const planActionId = plan.action_id || plan.action_snapshot?.action_id;
+                const planExperimentId = plan.experiment_id || c.experiment_id;
+                const hasExperimentDraft = Boolean(planExperimentId || c.experiment_id);
                 const updateCandidate = (next: any) => setStrategyData((prev: any) => prev ? {
                   ...prev,
                   candidates: (prev.candidates || []).map((item: any) => item.id === c.id ? { ...item, ...next } : item),
@@ -4155,6 +4212,20 @@ export default function App() {
                     <Tag color={isAccepted?"green":c.review_status==="PENDING_REVIEW"?"default":"orange"}>{reviewStatusLabel(c.review_status)}</Tag>
                   </Space>}
                 >
+                <Alert
+                  type={isAccepted ? "success" : c.review_status === "PENDING_REVIEW" ? "warning" : "info"}
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={<Space wrap>
+                    <Text strong>策略确认链路</Text>
+                    <Tag color={isAccepted ? "green" : "orange"}>{isAccepted ? "已人工确认 Strategy" : "机器候选，待人工确认"}</Tag>
+                    <Tag color={effectiveValidationStatusColor(c.effective_validation_status)}>{effectiveValidationStatusLabel(c.effective_validation_status)}</Tag>
+                    {hasExperimentDraft ? <Tag color="blue">实验草案 #{planExperimentId}</Tag> : <Tag>尚未创建实验草案</Tag>}
+                  </Space>}
+                  description={isAccepted
+                    ? "该策略已经过人工确认并形成 effective_payload；下一步只是在第 8 步确认具体资产、URL、内容结构、Baseline 和 Asset Brief。"
+                    : "请先审核这条 StrategyCandidate。确认前它只是机器策略候选，不会创建 Action 或 Experiment。"}
+                />
                 {strategyView.decisionSpace && <Alert
                   type={strategyView.decisionSpace.worth_level === "WORTH_PURSUING" ? "success" : strategyView.decisionSpace.worth_level === "LOW_WORTH" ? "warning" : "info"}
                   showIcon
@@ -4285,21 +4356,24 @@ export default function App() {
                           }catch(e:any){message.error(e.message)}
                           finally{setStrategyLoading(false)}
                         }}>确认策略</Button>}
-                        <Button type="primary" size="small" loading={strategyLoading} disabled={!isAccepted || isAuditHistory} onClick={async()=>{
-                          message.info("第 8 步需要先确认具体账号、URL、资产、标题、内容结构和 Baseline；本轮已锁死旧直通创建，下一 checkpoint 补执行方案表单。");
-                        }}>{isAccepted ? "进入第 8 步配置" : "先确认策略"}</Button>
+                        <Button type="primary" size="small" loading={strategyLoading || optimizationLoading} disabled={!isAccepted || isAuditHistory} onClick={async()=>{
+                          await openExperimentDraftForStrategy(c);
+                        }}>{hasExperimentDraft ? "查看实验草案" : isAccepted ? "进入第 8 步配置" : "先确认策略"}</Button>
                       </Space>}
                     >
                       <Alert
                         type="info"
                         showIcon
                         style={{marginBottom:8}}
-                        message="第 7 步确认计划平台层；第 8 步确认具体执行参数"
-                        description="这里的按钮只是把已确认策略送入第 8 步。第 8 步才会人工选择具体账号、URL、资产、标题、段落、内容结构、Baseline 和发布 Gate。"
+                        message="第 7 步确认策略候选；第 8 步确认具体执行参数"
+                        description={hasExperimentDraft
+                          ? "该策略已经创建实验草案。点击「查看实验草案」会打开实验闭环控制台中的对应 Action/Experiment。"
+                          : "第 8 步才会人工选择具体账号、URL、资产、标题、段落、内容结构、Baseline 和发布 Gate；没有这些参数时不会假装已创建草案。"}
                       />
                       <Descriptions size="small" column={{xs:1, md:2}} items={[
                         {key:"ready",label:"计划状态",children:<Tag color={readinessStatusColor(plan.readiness_status)}>{readinessStatusLabel(plan.readiness_status)}</Tag>},
                         {key:"experiment",label:"实验编号",children:plan.experiment_id || c.experiment_id ? <Tag color="blue">#{plan.experiment_id || c.experiment_id}</Tag> : <Text type="secondary">尚未生成</Text>},
+                        {key:"action",label:"行动编号",children:planActionId ? <Tag color="geekblue">#{planActionId}</Tag> : <Text type="secondary">尚未生成</Text>},
                         {key:"metric",label:"主指标",children:<Text>{metricLabel(controlled.primary_metric || plan.target_metric || planPayload.target_metric || strategyView.targetMetric)}</Text>},
                         {key:"compare",label:"可比性边界",children:<Tag color={comparabilityStatusColor(plan.comparability_status)}>{comparabilityStatusLabel(plan.comparability_status)}</Tag>},
                         {key:"allowed",label:"允许改动",children:<Text>{listText(controlled.allowed_changes || planPayload.changed_features, "按策略中声明的同一机制内容改动")}</Text>},

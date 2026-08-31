@@ -2,6 +2,42 @@
 
 Status: ACTIVE
 
+## 2026-08-31 Step 7 Strategy Confirmation UX Link Fix
+
+- Fixed a Prompt `#40` UX regression where Step 7 appeared to only show two
+  planned channels and did not clearly expose:
+
+```text
+StrategyCandidate
+-> Human Strategy Confirmation
+-> effective_payload
+-> Step 8 Action / Experiment Draft
+```
+
+- Root cause: the strategy page displayed planned channels correctly, but the
+  card did not lead with the StrategyCandidate confirmation state. The Step 8
+  button was also a placeholder `message.info`, so confirmed strategies with an
+  existing Experiment looked clickable but did not open the corresponding draft.
+- Added a Chinese `策略确认链路` summary to each strategy card, including:
+
+```text
+机器候选 / 已人工确认 Strategy
+effective_payload validation state
+Action id
+Experiment draft id
+```
+
+- Changed the Step 8 button behavior:
+  - existing Action/Experiment -> open the matching experiment chain;
+  - accepted Strategy without draft -> explain that execution-plan parameters
+    are still required;
+  - pending Strategy -> keep the explicit `确认策略` gate.
+- When Step 7 generates a new StrategyCandidate from the single Prompt
+  workbench, the strategy page now defaults to the newly generated candidate
+  instead of letting historical accepted candidates steal the default view.
+- This is a UI flow fix only. It does not change Strategy generation, Evidence,
+  Benchmark, Gap, Product Truth, Action, Experiment, Baseline, Draft, or Step 9.
+
 ## 2026-08-31 Step 8 Asset Brief + Claim Matrix
 
 - Added Step 8 Asset Brief + Claim Matrix as the second cut after Strategy Core

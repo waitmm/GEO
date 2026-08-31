@@ -67,6 +67,10 @@ Status: ACTIVE
   strategic hypothesis, priority capabilities, intervention mechanism, primary
   intervention path, planned channels, channel roles, asset direction,
   execution sequence, required signals, non-goals, and attribution intent.
+- Step 7 planned channels are not the whole StrategyCandidate. The UI must lead
+  with `StrategyCandidate -> Human Review -> effective_payload` status before
+  showing channel cards; otherwise users may think the system only selected a
+  few channels and skipped strategy confirmation.
 - Planned channel is not concrete execution channel. Step 7 may decide platform
   layer such as OFFICIAL_SITE / ZHIHU / BAIJIAHAO and its channel role, but Step
   8 must still confirm concrete account, URL, asset, title, section, content

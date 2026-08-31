@@ -170,8 +170,8 @@ Decision Market
 -> 引用证据
 -> 对标来源
 -> 缺口诊断
--> 推荐动作
--> 实验草案
+-> 策略确认
+-> 实验方案落地
 ```
 
 每个卡片只能有一个主状态来源：
@@ -182,10 +182,25 @@ Decision Market
 - 引用证据：当前 Prompt 的 Evidence Package + SourceDocument / EvidenceAlignment。
 - 对标来源：Citation Decision V1 Benchmark 派生结果。
 - 缺口诊断：Source Gap 派生结果。
-- 推荐动作：当前 Gap -> Proposal。
-- 实验草案：当前人工确认后的 Strategy / Plan / Experiment。
+- 策略确认：当前 Evidence Package 下的 StrategyCandidate / effective_payload。
+- 实验方案落地：当前已确认 Strategy 对应的 Execution Plan / Action / Experiment Draft。
 
 历史 `continueResult`、历史 Experiment 或旧执行记录可以展示为历史上下文，但不能反向点亮当前 Citation V1 主链状态。
+
+第 7 步必须区分：
+
+```text
+READY_TO_GENERATE
+PENDING_REVIEW
+CONFIRMED
+```
+
+只有当前 Prompt + 当前 Evidence Package + 当前 StrategyCandidate 绑定后的
+`CONFIRMED` 可以视为完成。历史已接受策略、旧 `reviewed_by/review_note`、
+旧 `WorkflowConfirmation(action)` 或历史 Experiment 都不能反向点亮第 7 步。
+
+第 8 步只有在当前确认策略对应的 Action / Experiment Draft 已创建后才算完成。
+历史 Experiment 可以展示为历史执行记录，但不能点亮当前主链。
 
 任何会改变主链路顺序、增加新的首页级模块、或改变卡片主状态来源的开发，都属于产品级变更，必须先写入开发记录和产品迭代记录，并向操作者明确预警。
 

@@ -906,6 +906,25 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
         candidate.effective_payload_json = dumps(effective)
         candidate.effective_payload_version = EFFECTIVE_PAYLOAD_VERSION
         _set_effective_payload_review_status(candidate, effective)
+    if status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"}:
+        package = db.get(OptimizationEvidencePackage, candidate.evidence_package_id) if candidate.evidence_package_id else None
+        if package and package.prompt_id:
+            _upsert_workflow_confirmation(
+                db,
+                candidate.project_id,
+                int(package.prompt_id),
+                "action",
+                "CONFIRMED",
+                dumps({
+                    "semantic": "STEP7_STRATEGY_CONFIRMATION",
+                    "strategy_candidate_id": candidate.id,
+                    "evidence_package_id": package.id,
+                    "prompt_id": package.prompt_id,
+                    "review_status": status,
+                    "effective_validation_status": candidate.effective_validation_status,
+                }),
+                payload.reviewed_by,
+            )
     db.commit()
     db.refresh(candidate)
     return strategy_candidate_to_read(candidate)

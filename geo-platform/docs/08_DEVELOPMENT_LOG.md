@@ -2,6 +2,68 @@
 
 Status: ACTIVE
 
+## 2026-08-31 Step 7/8 Current-State Alignment Fix
+
+- Fixed the single Prompt workbench state source for Step 7 / Step 8. The
+  current main-chain state is now derived from the current Prompt, current
+  active Evidence Package, and the bound current StrategyCandidate instead of
+  historical accepted candidates, historical experiments, or legacy
+  `WorkflowConfirmation(action)` rows.
+- `review_strategy_candidate` now writes a context-bound confirmation record
+  when a StrategyCandidate is accepted:
+
+```text
+strategy_candidate_id
+evidence_package_id
+prompt_id
+review_status
+effective_validation_status
+```
+
+- `workflow_status` now returns central current-state fields for frontend use:
+
+```text
+strategy_step_status
+execution_step_status
+current_strategy_candidate_id(s)
+current_strategy_confirmed
+current_effective_payload_valid
+current_action_id
+current_experiment_id
+historical_strategy_candidate_ids/count
+historical_experiment_ids/count
+```
+
+- Step 7 status is now locked to:
+
+```text
+NOT_READY
+READY_TO_GENERATE
+PENDING_REVIEW
+CONFIRMED
+```
+
+Only `CONFIRMED` marks Step 7 complete. `READY_TO_GENERATE` and
+`PENDING_REVIEW` are actionable current states, not completion states.
+- Step 8 is complete only when the current confirmed StrategyCandidate points
+  to the current Action / Experiment Draft. Historical experiments remain
+  visible as history but cannot light the current main chain.
+- Removed the old workbench shortcut that could directly mark
+  `WorkflowConfirmation(action)` from a legacy continue result. Strategy
+  confirmation must go through StrategyCandidate human review.
+- Frontend single Prompt cards and the citation decision stepper now consume
+  backend current-state fields and keep history separate. User-facing labels
+  use `策略确认` and `实验方案落地`.
+- Scope deliberately excluded Evidence, Benchmark, Gap, Strategy generation,
+  Asset Brief, Draft, Step 9, Decision Stability, and scoring changes.
+
+Validation:
+
+```text
+.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py
+7 passed
+```
+
 ## 2026-08-31 Step 7 Strategy Confirmation UX Link Fix
 
 - Fixed a Prompt `#40` UX regression where Step 7 appeared to only show two

@@ -16,8 +16,10 @@ from app.models import (
     CompetitorRejection,
     EvidenceAlignment,
     OptimizationAction,
+    OptimizationEvidencePackage,
     OptimizationExperiment,
     OptimizationIssue,
+    OptimizationStrategyCandidate,
     Project,
     Prompt,
     PromptAnalysisRun,
@@ -43,6 +45,8 @@ VALID_DECISION_EVENT_STATUSES = {
     "MACHINE_CANDIDATE",
     "HUMAN_CONFIRMED",
 }
+ACCEPTED_STRATEGY_REVIEW_STATUSES = {"ACCEPTED", "ACCEPTED_WITH_EDITS"}
+STEP7_EFFECTIVE_PAYLOAD_STATUSES = {"VALIDATED", "PENDING_HUMAN_CHANNEL_REVIEW"}
 
 
 def _compact_review_text(value: str) -> str:
@@ -69,6 +73,185 @@ def _semantic_observed_run_ids(alignment: EvidenceAlignment, machine_payload: di
 
 def _alignment_run_ids(alignment: EvidenceAlignment) -> list[int]:
     return [int(alignment.run_id)] if alignment.run_id else []
+
+
+def _latest_prompt_evidence_package(db: Session, project_id: int, prompt_id: int) -> OptimizationEvidencePackage | None:
+    return (
+        db.query(OptimizationEvidencePackage)
+        .filter(
+            OptimizationEvidencePackage.project_id == project_id,
+            OptimizationEvidencePackage.prompt_id == prompt_id,
+            OptimizationEvidencePackage.status == "active",
+        )
+        .order_by(OptimizationEvidencePackage.version.desc(), OptimizationEvidencePackage.id.desc())
+        .first()
+    )
+
+
+def _candidate_time_key(candidate: OptimizationStrategyCandidate) -> tuple[datetime, int]:
+    marker = candidate.reviewed_at or candidate.updated_at or candidate.generated_at or candidate.created_at or datetime.min
+    return marker, int(candidate.id or 0)
+
+
+def _is_step7_confirmable_strategy(candidate: OptimizationStrategyCandidate) -> bool:
+    return (
+        candidate.review_status in ACCEPTED_STRATEGY_REVIEW_STATUSES
+        and candidate.effective_validation_status in STEP7_EFFECTIVE_PAYLOAD_STATUSES
+    )
+
+
+def _workflow_confirmation_context(row: WorkflowConfirmation | None) -> dict:
+    if row is None:
+        return {}
+    parsed = loads(row.decision_note or "", {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _strategy_confirmation_matches(
+    row: WorkflowConfirmation | None,
+    candidate: OptimizationStrategyCandidate | None,
+    package: OptimizationEvidencePackage | None,
+) -> bool:
+    """Only JSON-bound Strategy confirmations count as current Step 7 state.
+
+    Legacy ``WorkflowConfirmation(step_key="action")`` rows remain available as
+    audit history, but they cannot light the current single-Prompt main chain
+    because they do not identify the current StrategyCandidate/EvidencePackage.
+    """
+    if row is None or candidate is None or package is None:
+        return False
+    if row.decision_status != "CONFIRMED" or row.step_key != "action":
+        return False
+    context = _workflow_confirmation_context(row)
+    return (
+        int(context.get("strategy_candidate_id") or 0) == int(candidate.id)
+        and int(context.get("evidence_package_id") or 0) == int(package.id)
+        and int(context.get("prompt_id") or 0) == int(package.prompt_id or 0)
+    )
+
+
+def _current_strategy_chain_state(
+    db: Session,
+    project: Project,
+    prompt_id: int,
+    *,
+    reviews_done: bool,
+) -> dict:
+    package = _latest_prompt_evidence_package(db, project.id, prompt_id)
+    candidates: list[OptimizationStrategyCandidate] = []
+    if package is not None:
+        candidates = (
+            db.query(OptimizationStrategyCandidate)
+            .filter(
+                OptimizationStrategyCandidate.project_id == project.id,
+                OptimizationStrategyCandidate.evidence_package_id == package.id,
+            )
+            .all()
+        )
+
+    pending_candidates = sorted(
+        [row for row in candidates if row.review_status == "PENDING_REVIEW"],
+        key=_candidate_time_key,
+        reverse=True,
+    )
+    accepted_candidates = sorted(
+        [row for row in candidates if _is_step7_confirmable_strategy(row)],
+        key=_candidate_time_key,
+        reverse=True,
+    )
+    confirmation = (
+        db.query(WorkflowConfirmation)
+        .filter(
+            WorkflowConfirmation.project_id == project.id,
+            WorkflowConfirmation.prompt_id == prompt_id,
+            WorkflowConfirmation.step_key == "action",
+        )
+        .first()
+    )
+    confirmed_candidate = next(
+        (row for row in accepted_candidates if _strategy_confirmation_matches(confirmation, row, package)),
+        None,
+    )
+    if confirmed_candidate is not None:
+        strategy_status = "CONFIRMED"
+        current_ids = [confirmed_candidate.id]
+        current_candidate = confirmed_candidate
+        detail = f"当前策略 #{confirmed_candidate.id} 已人工确认"
+    elif pending_candidates:
+        strategy_status = "PENDING_REVIEW"
+        current_ids = [row.id for row in pending_candidates]
+        current_candidate = pending_candidates[0]
+        detail = f"{len(pending_candidates)} 个当前策略候选待人工审核"
+    elif reviews_done:
+        strategy_status = "READY_TO_GENERATE"
+        current_ids = []
+        current_candidate = None
+        detail = "可生成当前策略候选"
+    else:
+        strategy_status = "NOT_READY"
+        current_ids = []
+        current_candidate = None
+        detail = "待缺口诊断后生成策略候选"
+
+    current_experiment = None
+    if confirmed_candidate is not None and confirmed_candidate.experiment_id:
+        current_experiment = db.get(OptimizationExperiment, confirmed_candidate.experiment_id)
+
+    all_experiments = (
+        db.query(OptimizationExperiment)
+        .join(OptimizationAction, OptimizationAction.id == OptimizationExperiment.action_id)
+        .join(OptimizationIssue, OptimizationIssue.id == OptimizationAction.issue_id)
+        .filter(OptimizationIssue.project_id == project.id, OptimizationIssue.prompt_id == prompt_id)
+        .order_by(OptimizationExperiment.id.desc())
+        .all()
+    )
+    current_experiment_ids = {current_experiment.id} if current_experiment else set()
+    historical_experiments = [row for row in all_experiments if row.id not in current_experiment_ids]
+
+    if current_experiment is not None:
+        execution_status = "CREATED"
+        execution_detail = f"当前实验草案 #{current_experiment.id} 已创建，等待发布闸门"
+    elif confirmed_candidate is not None:
+        execution_status = "READY_TO_CREATE"
+        execution_detail = "当前策略已确认，可进入实验方案落地"
+    else:
+        execution_status = "LOCKED"
+        execution_detail = "等待当前策略确认"
+
+    historical_candidate_ids = [row.id for row in candidates if row.id not in set(current_ids)]
+    return {
+        "context": {
+            "prompt_id": prompt_id,
+            "evidence_package_id": package.id if package else None,
+            "package_version": package.version if package else None,
+        },
+        "strategy_step_status": strategy_status,
+        "strategy_step_detail": detail,
+        "current_strategy_candidate_id": current_candidate.id if current_candidate else None,
+        "current_strategy_candidate_ids": current_ids,
+        "current_strategy_confirmed": confirmed_candidate is not None,
+        "current_effective_payload_status": (
+            confirmed_candidate.effective_validation_status if confirmed_candidate else current_candidate.effective_validation_status if current_candidate else None
+        ),
+        "current_effective_payload_valid": (
+            confirmed_candidate is not None
+            and confirmed_candidate.effective_validation_status in STEP7_EFFECTIVE_PAYLOAD_STATUSES
+        ),
+        "execution_step_status": execution_status,
+        "execution_step_detail": execution_detail,
+        "current_action_id": current_experiment.action_id if current_experiment else None,
+        "current_experiment_id": current_experiment.id if current_experiment else None,
+        "current_experiment_status": current_experiment.status if current_experiment else None,
+        "historical_strategy_candidate_ids": historical_candidate_ids,
+        "historical_strategy_candidate_count": len(historical_candidate_ids),
+        "historical_experiment_ids": [row.id for row in historical_experiments],
+        "historical_experiment_count": len(historical_experiments),
+        "legacy_action_confirmation_ignored": bool(
+            confirmation
+            and confirmation.decision_status == "CONFIRMED"
+            and not _workflow_confirmation_context(confirmation)
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -282,8 +465,9 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         and bool(truths) and not truths_pending
     )
 
-    # gap/strategy 的人工确认状态。step_key="action" 为历史兼容键，
-    # 用户可见语义必须展示为“策略确认”，不能再理解为已执行动作。
+    # gap 的旧人工确认状态仍用于缺口卡片。Step 7/8 不再直接消费
+    # step_key="action" 的存在性，必须由 StrategyCandidate + 当前证据包
+    # 上下文绑定决定，避免历史候选/实验点亮当前主链。
     confirmed = {
         row.step_key
         for row in db.query(WorkflowConfirmation).filter(
@@ -293,7 +477,6 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         ).all()
     }
     gap_confirmed = "gap" in confirmed
-    action_confirmed = "action" in confirmed
 
     # 人工搁置（机器 UNRESOLVED 且人工选择搁置结束）
     shelved_row = (
@@ -309,25 +492,9 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     shelved = shelved_row is not None
     shelved_note = shelved_row.decision_note if shelved_row else ""
 
-    # 实验状态：渠道选择创建 Experiment 草案（Issue→Action→Experiment 链路）
-    experiments = (
-        db.query(OptimizationExperiment)
-        .join(OptimizationAction, OptimizationAction.id == OptimizationExperiment.action_id)
-        .join(OptimizationIssue, OptimizationIssue.id == OptimizationAction.issue_id)
-        .filter(OptimizationIssue.project_id == project.id, OptimizationIssue.prompt_id == prompt_id)
-        .order_by(OptimizationExperiment.id.desc())
-        .all()
-    )
-    if experiments:
-        latest = experiments[0]
-        experiment_done = latest.status in {"RELEASED", "RETESTED", "CONCLUDED"}
-        experiment_detail = f"实验 #{latest.id} · {latest.status}"
-    elif action_confirmed:
-        experiment_done = False
-        experiment_detail = "可创建实验草案（选择渠道）"
-    else:
-        experiment_done = False
-        experiment_detail = "待策略确认后进入"
+    current_chain = _current_strategy_chain_state(db, project, prompt_id, reviews_done=reviews_done)
+    strategy_done = current_chain["strategy_step_status"] == "CONFIRMED"
+    experiment_done = current_chain["execution_step_status"] == "CREATED"
 
     steps = [
         {"key": "collection", "label": "数据采集", "done": total_runs >= 1, "detail": f"{total_runs} Runs"},
@@ -337,8 +504,8 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         {"key": "evidence_review", "label": "证据人工确认", "done": evidence_review_done, "detail": f"{supports_reviewed}/{len(supports)} 条已审" if supports else "无需审核"},
         {"key": "product_truth", "label": "目标品牌能力确认", "done": bool(truths) and not truths_pending, "detail": f"{len(truths)-len(truths_pending)}/{len(truths)} 条已确认" if truths else "0 条"},
         {"key": "gap", "label": "缺口诊断", "done": gap_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if gap_confirmed else ("待答案决策识别修正" if analyzed and not answer_semantic_done else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成")))},
-        {"key": "action", "label": "策略确认", "done": action_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认策略" if action_confirmed else ("待答案决策识别修正" if analyzed and not answer_semantic_done else ("可生成策略候选（点「继续分析」）" if reviews_done else "待缺口后生成策略候选")))},
-        {"key": "experiment", "label": "实验", "done": experiment_done, "detail": experiment_detail},
+        {"key": "action", "label": "策略确认", "done": strategy_done, "detail": ("人工搁置-无法分析" if shelved else current_chain["strategy_step_detail"] if answer_semantic_done else "待答案决策识别修正")},
+        {"key": "experiment", "label": "实验方案落地", "done": experiment_done, "detail": current_chain["execution_step_detail"]},
     ]
     pending = sum(1 for s in steps if not s["done"] and s["key"] not in {"gap", "action", "experiment", "evidence", "answer_semantic"})
     return {
@@ -351,6 +518,39 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         "all_reviews_done": pending == 0,
         "answer_semantic_done": answer_semantic_done,
         "ready_to_continue": reviews_done,
+        "current_state_context": current_chain["context"],
+        "strategy_step_status": current_chain["strategy_step_status"],
+        "execution_step_status": current_chain["execution_step_status"],
+        "current_strategy_candidate_id": current_chain["current_strategy_candidate_id"],
+        "current_strategy_candidate_ids": current_chain["current_strategy_candidate_ids"],
+        "current_strategy_confirmed": current_chain["current_strategy_confirmed"],
+        "current_effective_payload_status": current_chain["current_effective_payload_status"],
+        "current_effective_payload_valid": current_chain["current_effective_payload_valid"],
+        "current_action_id": current_chain["current_action_id"],
+        "current_experiment_id": current_chain["current_experiment_id"],
+        "current_experiment_status": current_chain["current_experiment_status"],
+        "historical_strategy_candidate_ids": current_chain["historical_strategy_candidate_ids"],
+        "historical_strategy_candidate_count": current_chain["historical_strategy_candidate_count"],
+        "historical_experiment_ids": current_chain["historical_experiment_ids"],
+        "historical_experiment_count": current_chain["historical_experiment_count"],
+        "legacy_action_confirmation_ignored": current_chain["legacy_action_confirmation_ignored"],
+        "strategy_step": {
+            "status": current_chain["strategy_step_status"],
+            "detail": current_chain["strategy_step_detail"],
+            "current_strategy_candidate_id": current_chain["current_strategy_candidate_id"],
+            "current_strategy_candidate_ids": current_chain["current_strategy_candidate_ids"],
+            "current_strategy_confirmed": current_chain["current_strategy_confirmed"],
+            "effective_payload_status": current_chain["current_effective_payload_status"],
+            "effective_payload_valid": current_chain["current_effective_payload_valid"],
+        },
+        "execution_step": {
+            "status": current_chain["execution_step_status"],
+            "detail": current_chain["execution_step_detail"],
+            "current_action_id": current_chain["current_action_id"],
+            "current_experiment_id": current_chain["current_experiment_id"],
+            "current_experiment_status": current_chain["current_experiment_status"],
+            "historical_experiment_count": current_chain["historical_experiment_count"],
+        },
     }
 
 

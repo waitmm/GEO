@@ -2,6 +2,67 @@
 
 Status: ACTIVE
 
+## 2026-08-31 Step 7/8 Current-State Alignment
+
+### Product Decision
+
+第 7 步 `策略确认` 和第 8 步 `实验方案落地` 必须只反映当前 Prompt
+当前证据链的进度。
+
+当前态最小上下文为：
+
+```text
+prompt_id
+evidence_package_id
+strategy_candidate_id
+```
+
+历史 StrategyCandidate、历史 Experiment、旧 `reviewed_by/review_note`、旧
+`WorkflowConfirmation(action)` 只能作为历史记录展示，不能点亮当前 1-8 主链。
+
+### User-Facing Rule
+
+第 7 步只允许出现以下状态：
+
+```text
+未就绪
+可生成
+待审核
+已确认
+```
+
+只有“已确认”表示 StrategyCandidate 已经经过人工审核，并形成当前
+`effective_payload`。可生成或待审核都不是完成态。
+
+第 8 步只有在当前已确认策略对应的 Action / Experiment Draft 已创建后才显示完成。
+历史草案或历史实验必须明确标为历史，不得显示成当前进度。
+
+### Boundary
+
+本次只修正状态归属和展示语义，不改变：
+
+```text
+Evidence
+Benchmark
+Capability Gap
+Strategy Core 生成
+Asset Brief
+Claim Matrix
+Decision Stability
+Step 9
+```
+
+### Pitfall
+
+以前反复踩过的坑是：
+
+```text
+数据库里存在历史 accepted StrategyCandidate 或历史 Experiment
+-> 前端误以为当前 Step 7/8 已完成
+```
+
+后续开发如果要改变主链步骤状态来源，必须先更新产品/开发记录并向用户预警。
+
 ## 2026-08-31 Step 8 Asset Brief + Claim Matrix
 
 ### Product Decision

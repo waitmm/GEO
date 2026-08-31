@@ -9,6 +9,11 @@ from app.models import (
     BrowserMonitorTask,
     Competitor,
     EvidenceAlignment,
+    OptimizationAction,
+    OptimizationEvidencePackage,
+    OptimizationExperiment,
+    OptimizationIssue,
+    OptimizationStrategyCandidate,
     Organization,
     Project,
     Prompt,
@@ -16,7 +21,10 @@ from app.models import (
     SourceClaim,
     SourceDocument,
     TargetBrandCapabilityTruth,
+    WorkflowConfirmation,
 )
+from app.modules.optimization.schemas import StrategyCandidateReviewPayload
+from app.modules.optimization.service import review_strategy_candidate
 from app.modules.optimization.workflow import (
     batch_confirm_alignments,
     build_continue_review_context,
@@ -24,7 +32,87 @@ from app.modules.optimization.workflow import (
     review_queue,
     workflow_status,
 )
-from app.services.serialization import dumps
+from app.services.serialization import dumps, loads
+
+
+def _ready_strategy_workflow_base(db):
+    project = Project(id=30, organization_id=1, name="当前态测试", brand_name="目标品牌")
+    prompt = Prompt(id=300, project_id=30, prompt_text="短链推荐", title="短链推荐")
+    task = BrowserMonitorTask(id=3000, project_id=30, status="success")
+    run = BrowserMonitorRun(
+        id=3001,
+        task_id=3000,
+        project_id=30,
+        prompt_id=300,
+        status="success",
+        answer_text="推荐竞品短链。",
+    )
+    event = RecommendationEvent(
+        id=3002,
+        project_id=30,
+        prompt_id=300,
+        run_id=3001,
+        answer_hash="hash-current",
+        entity_text="竞品短链",
+        speech_act="RECOMMEND",
+        recommendation_strength="STRONG",
+        polarity="POSITIVE",
+        answer_span="推荐竞品短链",
+        review_status="HUMAN_CONFIRMED",
+    )
+    truth = TargetBrandCapabilityTruth(
+        id=3003,
+        project_id=30,
+        capability_key="点击统计",
+        capability_label="点击统计",
+        product_truth_status="SUPPORTED",
+    )
+    package = OptimizationEvidencePackage(
+        id=3004,
+        project_id=30,
+        prompt_id=300,
+        version=1,
+        source_run_ids_json=dumps([3001]),
+        package_hash="current-state-package",
+        status="active",
+    )
+    db.add_all([Organization(id=30, name="测试组织"), project, prompt, task, run, event, truth, package])
+    db.commit()
+    return project, prompt, package
+
+
+def _strategy_candidate(
+    candidate_id: int,
+    project_id: int,
+    package_id: int,
+    *,
+    review_status: str,
+    experiment_id: int | None = None,
+    reviewed_by: str = "",
+) -> OptimizationStrategyCandidate:
+    payload = {
+        "product_truth_gate": {"status": "READY_FOR_STRATEGY_REVIEW"},
+        "intervention_type": "UNRESOLVED",
+        "target_platform": "UNRESOLVED",
+        "target_object": "UNRESOLVED",
+        "target_asset": "UNRESOLVED",
+        "target_content_type": "UNRESOLVED",
+        "recommended_action": "补齐点击统计表达",
+    }
+    return OptimizationStrategyCandidate(
+        id=candidate_id,
+        project_id=project_id,
+        evidence_package_id=package_id,
+        experiment_id=experiment_id,
+        structured_payload_json=dumps(payload),
+        effective_payload_json=dumps(payload) if review_status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"} else dumps({}),
+        effective_payload_version="effective_payload.v1" if review_status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"} else "",
+        effective_validation_status="PENDING_HUMAN_CHANNEL_REVIEW" if review_status in {"ACCEPTED", "ACCEPTED_WITH_EDITS"} else "PENDING",
+        evidence_validation_status="VALIDATED",
+        hypothesis_validation_status="VALIDATED",
+        review_status=review_status,
+        reviewed_by=reviewed_by,
+    )
 
 
 def _session():
@@ -314,5 +402,146 @@ def test_rejected_decision_market_entity_does_not_become_valid_choice_event():
         assert after_answer["done"] is False
         assert "0 组有效选择事件" in after_answer["detail"]
         assert after["ready_to_continue"] is False
+    finally:
+        db.close()
+
+
+def test_step7_current_state_uses_bound_strategy_candidate_not_history():
+    db = _session()
+    try:
+        project, prompt, package = _ready_strategy_workflow_base(db)
+        issue = OptimizationIssue(id=3100, project_id=project.id, prompt_id=prompt.id, issue_type="CONTENT_GAP")
+        action = OptimizationAction(id=3101, issue_id=3100, action_type="content_update")
+        historical_experiment = OptimizationExperiment(id=3102, action_id=3101, status="draft", target_prompt_scope_json=dumps([prompt.id]))
+        historical = _strategy_candidate(
+            3103,
+            project.id,
+            package.id,
+            review_status="ACCEPTED_WITH_EDITS",
+            experiment_id=historical_experiment.id,
+            reviewed_by="phase4_audit",
+        )
+        current_pending = _strategy_candidate(3104, project.id, package.id, review_status="PENDING_REVIEW")
+        legacy_confirmation = WorkflowConfirmation(
+            project_id=project.id,
+            prompt_id=prompt.id,
+            step_key="action",
+            decision_status="CONFIRMED",
+            decision_note="旧动作确认，没有 StrategyCandidate 上下文",
+            reviewer="human",
+        )
+        db.add_all([issue, action, historical_experiment, historical, current_pending, legacy_confirmation])
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in status["steps"] if step["key"] == "action")
+        experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
+
+        assert status["strategy_step_status"] == "PENDING_REVIEW"
+        assert status["current_strategy_candidate_ids"] == [3104]
+        assert status["current_strategy_confirmed"] is False
+        assert status["historical_strategy_candidate_count"] == 1
+        assert status["legacy_action_confirmation_ignored"] is True
+        assert action_step["label"] == "策略确认"
+        assert action_step["done"] is False
+        assert "待人工审核" in action_step["detail"]
+        assert status["execution_step_status"] == "LOCKED"
+        assert status["current_experiment_id"] is None
+        assert status["historical_experiment_count"] == 1
+        assert experiment_step["label"] == "实验方案落地"
+        assert experiment_step["done"] is False
+        assert experiment_step["detail"] == "等待当前策略确认"
+    finally:
+        db.close()
+
+
+def test_strategy_review_writes_current_step7_context_and_unlocks_step8():
+    db = _session()
+    try:
+        project, prompt, package = _ready_strategy_workflow_base(db)
+        candidate = _strategy_candidate(3201, project.id, package.id, review_status="PENDING_REVIEW")
+        db.add(candidate)
+        db.commit()
+
+        before = workflow_status(db, project, prompt.id)
+        assert before["strategy_step_status"] == "PENDING_REVIEW"
+
+        reviewed = review_strategy_candidate(
+            db,
+            candidate.id,
+            StrategyCandidateReviewPayload(
+                review_status="ACCEPTED",
+                reviewed_by="human",
+                review_note="当前策略确认",
+            ),
+        )
+
+        assert reviewed["review_status"] == "ACCEPTED"
+        assert reviewed["effective_validation_status"] == "PENDING_HUMAN_CHANNEL_REVIEW"
+        after = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in after["steps"] if step["key"] == "action")
+        experiment_step = next(step for step in after["steps"] if step["key"] == "experiment")
+
+        assert after["strategy_step_status"] == "CONFIRMED"
+        assert after["current_strategy_candidate_id"] == candidate.id
+        assert after["current_effective_payload_valid"] is True
+        assert action_step["done"] is True
+        assert after["execution_step_status"] == "READY_TO_CREATE"
+        assert experiment_step["done"] is False
+        assert "可进入实验方案落地" in experiment_step["detail"]
+
+        confirmation = db.query(WorkflowConfirmation).filter(
+            WorkflowConfirmation.project_id == project.id,
+            WorkflowConfirmation.prompt_id == prompt.id,
+            WorkflowConfirmation.step_key == "action",
+        ).one()
+        context = loads(confirmation.decision_note, {})
+        assert context["strategy_candidate_id"] == candidate.id
+        assert context["evidence_package_id"] == package.id
+        assert context["prompt_id"] == prompt.id
+    finally:
+        db.close()
+
+
+def test_step8_complete_only_for_current_confirmed_candidate_experiment():
+    db = _session()
+    try:
+        project, prompt, package = _ready_strategy_workflow_base(db)
+        issue = OptimizationIssue(id=3300, project_id=project.id, prompt_id=prompt.id, issue_type="CONTENT_GAP")
+        action = OptimizationAction(id=3301, issue_id=3300, action_type="content_update")
+        experiment = OptimizationExperiment(id=3302, action_id=3301, status="draft", target_prompt_scope_json=dumps([prompt.id]))
+        candidate = _strategy_candidate(
+            3303,
+            project.id,
+            package.id,
+            review_status="ACCEPTED",
+            experiment_id=experiment.id,
+            reviewed_by="human",
+        )
+        confirmation = WorkflowConfirmation(
+            project_id=project.id,
+            prompt_id=prompt.id,
+            step_key="action",
+            decision_status="CONFIRMED",
+            decision_note=dumps({
+                "semantic": "STEP7_STRATEGY_CONFIRMATION",
+                "strategy_candidate_id": candidate.id,
+                "evidence_package_id": package.id,
+                "prompt_id": prompt.id,
+            }),
+            reviewer="human",
+        )
+        db.add_all([issue, action, experiment, candidate, confirmation])
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+        experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
+
+        assert status["strategy_step_status"] == "CONFIRMED"
+        assert status["execution_step_status"] == "CREATED"
+        assert status["current_action_id"] == action.id
+        assert status["current_experiment_id"] == experiment.id
+        assert experiment_step["done"] is True
+        assert "当前实验草案" in experiment_step["detail"]
     finally:
         db.close()

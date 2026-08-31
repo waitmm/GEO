@@ -2201,8 +2201,22 @@ export default function App() {
       run_ids: [...row.run_ids],
     })).sort((a, b) => b.run_count - a.run_count);
   }, [recommendationReasons]);
+  const citationTargetPromptId = currentCitationDecisionPromptId();
+  const currentWorkflowData = workflowData && (!citationTargetPromptId || Number(workflowData.prompt_id) === Number(citationTargetPromptId))
+    ? workflowData
+    : null;
+  const currentCitationDecisionData = citationDecisionBelongsToPrompt(citationDecisionData, citationTargetPromptId)
+    ? citationDecisionData
+    : null;
   const sortedStrategyCandidates = sortStrategyCandidatesByTime(strategyData?.candidates || []);
-  const workflowStrategyCandidates = sortedStrategyCandidates.filter((candidate: any) => !isAuditGeneratedStrategyCandidate(candidate));
+  const workflowStrategyIdSet = new Set(
+    (currentWorkflowData?.current_strategy_candidate_ids || [])
+      .map((id: any) => Number(id))
+      .filter(Boolean)
+  );
+  const workflowStrategyCandidates = workflowStrategyIdSet.size
+    ? sortedStrategyCandidates.filter((candidate: any) => workflowStrategyIdSet.has(Number(candidate.id)))
+    : sortedStrategyCandidates.filter((candidate: any) => !isAuditGeneratedStrategyCandidate(candidate));
   const strategyCandidatesForDefaultView = workflowStrategyCandidates.length ? workflowStrategyCandidates : [];
   const visibleStrategyCandidates = filterStrategyCandidates(
     strategyCandidateFilter === "latest" ? strategyCandidatesForDefaultView : sortedStrategyCandidates,
@@ -2216,13 +2230,6 @@ export default function App() {
       value: `candidate:${candidate.id}`,
     })),
   ];
-  const citationTargetPromptId = currentCitationDecisionPromptId();
-  const currentWorkflowData = workflowData && (!citationTargetPromptId || Number(workflowData.prompt_id) === Number(citationTargetPromptId))
-    ? workflowData
-    : null;
-  const currentCitationDecisionData = citationDecisionBelongsToPrompt(citationDecisionData, citationTargetPromptId)
-    ? citationDecisionData
-    : null;
   const citationRows = currentCitationDecisionData?.source_analysis || [];
   const citationSummary = currentCitationDecisionData?.summary || {};
   const citationBenchmarkRows = citationRows.filter((row: any) => row.benchmark_tier === "PRIMARY_BENCHMARK" || row.benchmark_tier === "SECONDARY_BENCHMARK");
@@ -2235,25 +2242,42 @@ export default function App() {
   const topRecommendationReason = decisionStability?.recommendation_reasons?.[0];
   const citationCanConfirm = citationConfirmableActions.length > 0;
   const citationLoaded = Boolean(currentCitationDecisionData);
+  const backendStrategyStep = currentWorkflowData?.strategy_step || {};
+  const backendExecutionStep = currentWorkflowData?.execution_step || {};
+  const backendStrategyStepStatus = currentWorkflowData?.strategy_step_status || backendStrategyStep.status || "";
+  const backendExecutionStepStatus = currentWorkflowData?.execution_step_status || backendExecutionStep.status || "";
+  const backendCurrentStrategyIds = new Set(
+    (currentWorkflowData?.current_strategy_candidate_ids || backendStrategyStep.current_strategy_candidate_ids || [])
+      .map((id: any) => Number(id))
+      .filter(Boolean)
+  );
+  const backendHistoricalStrategyIds = new Set(
+    (currentWorkflowData?.historical_strategy_candidate_ids || [])
+      .map((id: any) => Number(id))
+      .filter(Boolean)
+  );
+  const backendCurrentExperimentId = Number(currentWorkflowData?.current_experiment_id || backendExecutionStep.current_experiment_id || 0);
   const currentPackageStrategyCandidates =
     currentCitationDecisionData?.evidence_package_id &&
     Number(selectedPkgId) === Number(currentCitationDecisionData.evidence_package_id)
       ? (strategyData?.candidates || [])
       : [];
-  const workflowCurrentPackageStrategies = currentPackageStrategyCandidates.filter((item: any) => !isAuditGeneratedStrategyCandidate(item));
-  const auditGeneratedPackageStrategyCount = currentPackageStrategyCandidates.length - workflowCurrentPackageStrategies.length;
+  const workflowCurrentPackageStrategies = backendCurrentStrategyIds.size
+    ? currentPackageStrategyCandidates.filter((item: any) => backendCurrentStrategyIds.has(Number(item.id)))
+    : [];
+  const backendHistoricalStrategyCount = currentWorkflowData?.historical_strategy_candidate_count ?? backendHistoricalStrategyIds.size;
   const sortedCurrentPackageStrategies = sortStrategyCandidatesByTime(workflowCurrentPackageStrategies);
-  const confirmedStrategies = workflowCurrentPackageStrategies.filter((item: any) => item.review_status === "ACCEPTED" || item.review_status === "ACCEPTED_WITH_EDITS");
-  const pendingStrategies = workflowCurrentPackageStrategies.filter((item: any) => item.review_status === "PENDING_REVIEW");
+  const confirmedStrategies = backendStrategyStepStatus === "CONFIRMED"
+    ? workflowCurrentPackageStrategies.filter((item: any) => item.review_status === "ACCEPTED" || item.review_status === "ACCEPTED_WITH_EDITS")
+    : [];
+  const pendingStrategies = backendStrategyStepStatus === "PENDING_REVIEW"
+    ? workflowCurrentPackageStrategies.filter((item: any) => item.review_status === "PENDING_REVIEW")
+    : [];
   const strategyCandidateCount = workflowCurrentPackageStrategies.length;
   const latestStrategyCandidate = sortedCurrentPackageStrategies[0];
-  const currentStrategyExperimentIds = new Set(
-    workflowCurrentPackageStrategies
-      .map((item: any) => item.experiment_id)
-      .filter(Boolean)
-      .map((id: any) => Number(id))
-  );
-  const rawExperimentCount = (strategyExperiments || []).filter((item: any) => currentStrategyExperimentIds.has(Number(item.id))).length;
+  const rawExperimentCount = backendCurrentExperimentId
+    ? (strategyExperiments || []).filter((item: any) => Number(item.id) === backendCurrentExperimentId).length
+    : 0;
   const historicalExperimentCount = Math.max((strategyExperiments?.length || 0) - rawExperimentCount, 0);
   const citationNeedsEvidencePackage = Boolean(citationDecisionError?.includes("尚无 Evidence Package") || citationDecisionError?.includes("尚无证据包"));
   const eligibleBenchmarkCount = (citationSummary.primary_benchmark_count || 0) + (citationSummary.secondary_benchmark_count || 0);
@@ -2288,10 +2312,10 @@ export default function App() {
   const currentConfirmedStrategyCount = currentConfirmedStrategies.length;
   const currentPendingStrategyCount = currentPendingStrategies.length;
   const currentLatestStrategyCandidate = strategyCurrentChainReady ? latestStrategyCandidate : null;
-  const currentCitationCanConfirm = strategyCurrentChainReady && citationCanConfirm && !currentStrategyCandidateCount;
-  const ignoredHistoricalStrategyCount = (!strategyCurrentChainReady && !strategyWorkflowDone ? currentPackageStrategyCandidates.length : 0) + auditGeneratedPackageStrategyCount;
-  const currentExperimentCount = currentConfirmedStrategyCount ? rawExperimentCount : 0;
-  const ignoredHistoricalExperimentCount = !currentConfirmedStrategyCount ? (strategyExperiments?.length || 0) : historicalExperimentCount;
+  const currentCitationCanConfirm = strategyCurrentChainReady && citationCanConfirm && backendStrategyStepStatus === "READY_TO_GENERATE";
+  const ignoredHistoricalStrategyCount = backendHistoricalStrategyCount || Math.max(currentPackageStrategyCandidates.length - currentStrategyCandidateCount, 0);
+  const currentExperimentCount = currentConfirmedStrategyCount && backendExecutionStepStatus === "CREATED" ? rawExperimentCount : 0;
+  const ignoredHistoricalExperimentCount = currentWorkflowData?.historical_experiment_count ?? (!currentConfirmedStrategyCount ? (strategyExperiments?.length || 0) : historicalExperimentCount);
   const openStrategyConfirmationPage = () => {
     const packageId = currentCitationDecisionData?.evidence_package_id;
     if (packageId) void selectEvidencePackage(packageId, true);
@@ -2314,7 +2338,7 @@ export default function App() {
       status: citationProductTruthBlockedRows.length ? "error" : currentCitationDecisionData ? "finish" : "wait",
     },
     {
-      title: "策略候选",
+      title: "策略确认",
       description: currentStrategyCandidateCount
         ? `${currentStrategyCandidateCount} 个当前候选`
         : ignoredHistoricalStrategyCount
@@ -2322,10 +2346,10 @@ export default function App() {
           : citationLoaded
           ? `${citationSummary.recommended_action_count ?? 0} 个可生成线索`
           : "等待缺口判断",
-      status: currentConfirmedStrategyCount || currentPendingStrategyCount || currentCitationCanConfirm ? "finish" : currentCitationDecisionData ? "process" : "wait",
+      status: currentConfirmedStrategyCount ? "finish" : currentPendingStrategyCount || currentCitationCanConfirm ? "process" : currentCitationDecisionData ? "wait" : "wait",
     },
     {
-      title: "实验",
+      title: "实验方案",
       description: currentExperimentCount
         ? `${currentExperimentCount} 个当前草案/实验`
         : ignoredHistoricalExperimentCount
@@ -2428,7 +2452,7 @@ export default function App() {
                   : unresolvedAction || unknownGapCount > 0
                     ? "请查看依据后人工判断，不自动生成策略"
                     : "没有可生成策略的内容/证据缺口",
-      tone: currentConfirmedStrategyCount ? "done" : currentPendingStrategyCount || currentCitationCanConfirm || unresolvedAction ? "current" : currentCitationLoaded && evidenceReviewDone && citationGapDecisionDone ? "done" : "pending",
+      tone: currentConfirmedStrategyCount ? "done" : currentPendingStrategyCount || currentCitationCanConfirm || unresolvedAction ? "current" : "pending",
       actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : unresolvedAction ? "查看依据" : "",
       onAction: currentConfirmedStrategyCount || currentPendingStrategyCount
         ? openStrategyConfirmationPage
@@ -2440,7 +2464,7 @@ export default function App() {
     },
     {
       key: "experiment",
-      label: "实验草案",
+      label: "实验方案落地",
       statusText: currentExperimentCount ? "已创建" : currentConfirmedStrategyCount ? "待创建" : currentCitationLoaded ? "未创建" : "未开始",
       detail: currentExperimentCount
         ? `${currentExperimentCount} 个当前草案/实验，等待发布闸门`
@@ -2596,23 +2620,12 @@ export default function App() {
               <Alert type={currentContinueResult.gap?.gap_type==="UNRESOLVED" ? "warning" : "success"} showIcon
                 message={<Space wrap><Text strong>缺口：{decisionDisplayText(currentContinueResult.gap?.gap_type)}</Text><Tag>{decisionDisplayText(currentContinueResult.gap?.confidence)}</Tag>
                   <Button size="small" onClick={() => { setWorkflowEvidenceDrawerFocus("gap"); setWorkflowEvidenceDrawerOpen(true); }}>查看依据</Button>
-                  {!currentWorkflowData.steps.find((s:any)=>s.key==="gap")?.done && <Button size="small" type="primary" onClick={async()=>{
-                    await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/confirm-decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step_key:"gap",decision_status:"CONFIRMED"})});
-                    message.success("缺口已确认");
-                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/status`)).json();
-                    setWorkflowData({...wf, continueResult: currentContinueResult});
-                  }}>确认此缺口</Button>}
                 </Space>}
                 description={currentContinueResult.gap?.basis} />
               <Alert type={currentContinueResult.action?.intervention_goal==="UNRESOLVED" ? "warning" : "info"} showIcon
                 message={<Space wrap><Text strong>动作：{decisionDisplayText(currentContinueResult.action?.intervention_goal)}</Text><Tag>{decisionDisplayText(currentContinueResult.action?.asset_ownership)}</Tag><Tag>{decisionDisplayText(currentContinueResult.action?.target_platform)}</Tag>
                   <Button size="small" onClick={() => { setWorkflowEvidenceDrawerFocus("action"); setWorkflowEvidenceDrawerOpen(true); }}>查看依据</Button>
-                  {currentContinueResult.action?.intervention_goal!=="UNRESOLVED" && !currentWorkflowData.steps.find((s:any)=>s.key==="action")?.done && <Button size="small" type="primary" onClick={async()=>{
-                    await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/confirm-decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step_key:"action",decision_status:"CONFIRMED"})});
-                    message.success("动作已确认");
-                    const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData.prompt_id}/status`)).json();
-                    setWorkflowData({...wf, continueResult: currentContinueResult});
-                  }}>确认此动作</Button>}
+                  {currentContinueResult.action?.intervention_goal!=="UNRESOLVED" && <Button size="small" type="primary" onClick={openStrategyConfirmationPage}>进入策略确认</Button>}
                 </Space>}
                 description={currentContinueResult.action?.intervention_goal==="UNRESOLVED"
                   ? (currentContinueResult.action?.note || "")
@@ -4360,6 +4373,7 @@ export default function App() {
                           try{
                             const reviewed = await api.reviewStrategyCandidate(c.id,{review_status:"ACCEPTED",reviewed_by:"human",review_note:"最终策略页人工接受"});
                             updateCandidate(reviewed);
+                            await refreshWorkflowStatus();
                             message.success("策略已确认，下一步可配置执行方案");
                           }catch(e:any){message.error(e.message)}
                           finally{setStrategyLoading(false)}

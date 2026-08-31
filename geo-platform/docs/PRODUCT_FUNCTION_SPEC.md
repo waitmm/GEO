@@ -679,6 +679,31 @@ selected asset、URL、账号、标题、section、内容结构和 execution del
 或归因意图，必须触发 Mechanism Compatibility Check；如果改变 Strategy Core，
 后端必须阻断并返回 Step 7 重新确认。
 
+Step 8 还会生成 Asset Brief 与 Claim Matrix：
+
+```text
+Confirmed Strategy
+-> Execution Plan
+-> Asset Brief
+-> Claim Matrix
+-> 人工确认资产事实边界
+-> 后续 Draft/发布前准备
+```
+
+Asset Brief 属于具体 Action/Asset，不是新的 Strategy，也不是正文 Draft。
+Claim Matrix 只表达事实边界：
+
+```text
+REQUIRED    = Product Truth 已支持，执行资产必须覆盖
+OPTIONAL    = 可作为上下文表达，但不能替代核心 Claim
+PROHIBITED  = Product Truth 不支持，禁止声明
+REVIEW_REQUIRED = Product Truth 未确认或机制兼容需复核
+```
+
+目标品牌 Claim 只能由目标品牌 Product Truth 支持。Benchmark Evidence /
+SourceClaim 只能说明对标来源和 AI 决策上下文，不能被改写成目标品牌自己的能力
+事实。Asset Brief 人工确认前，系统不得进入正文 Draft 或自动发布。
+
 ### 11.3 effective_payload
 
 `effective_payload` 是所有策略执行路径的 single executable truth。
@@ -699,6 +724,17 @@ VALIDATION_FAILED
 BLOCKED_PRODUCT_TRUTH
 PENDING_HUMAN_CHANNEL_REVIEW
 ```
+
+其中 `PENDING_HUMAN_CHANNEL_REVIEW` 表示：
+
+```text
+Strategy 已经人工确认；
+但具体渠道、资产、URL、账号、标题、section、内容结构和 Asset Brief
+仍需在 Step 8 继续人工确认。
+```
+
+它允许进入 Step 8 Execution Plan，不允许绕过 Step 8 直接发布、创建 Draft
+或进入真实实验执行。
 
 如果 effective payload 中仍有这些字段为 `UNRESOLVED`，也不能执行：
 

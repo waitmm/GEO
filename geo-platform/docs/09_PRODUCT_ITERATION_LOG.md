@@ -2,6 +2,72 @@
 
 Status: ACTIVE
 
+## 2026-08-31 Step 8 Asset Brief + Claim Matrix
+
+### Product Decision
+
+第 8 步在创建 Action / Experiment Draft 后，必须生成 Asset Brief 与
+Claim Matrix，用来确认本次具体执行资产允许表达哪些目标品牌事实。
+
+Asset Brief 属于具体执行方案，不是新的 Strategy，也不是正文 Draft：
+
+```text
+Confirmed Strategy
+-> Execution Plan
+-> Action / Experiment Draft
+-> Asset Brief
+-> Claim Matrix
+-> 人工确认资产事实边界
+```
+
+### User-Facing Rule
+
+用户在第 8 步需要确认的是：
+
+```text
+这次要修改/新建的资产
+是否可以表达这些目标品牌能力；
+哪些 Claim 必须写；
+哪些 Claim 需要复核；
+哪些 Claim 禁止写。
+```
+
+用户不是在这里确认竞品文章真假，也不是在这里生成文章正文。
+
+### Boundary
+
+目标品牌 Claim 只能来自 Product Truth：
+
+```text
+SUPPORTED     -> 可作为 REQUIRED / OPTIONAL Claim
+UNKNOWN       -> REVIEW_REQUIRED，不能进入 Draft
+NOT_SUPPORTED -> PROHIBITED，禁止声明
+```
+
+Benchmark Evidence 只能说明：
+
+```text
+AI 当前为什么推荐竞品/对标对象；
+市场上哪些来源支撑了这个推荐理由；
+我们要补齐的是目标品牌自己的可验证表达。
+```
+
+它不能被改写成目标品牌能力事实。
+
+### Scope
+
+本次只完善 Step 8 的资产简报和事实边界：
+
+```text
+Asset Brief
+Claim Matrix
+Asset Brief Review Gate
+Snapshot Freeze
+```
+
+不进入 Draft、不自动发布、不进入 Step 9、不新增 Channel Intelligence、不修改
+Evidence / Benchmark / Gap / Strategy 推理。
+
 ## 2026-08-28 Step 7/8 Strategy Core Boundary Correction
 
 ### Product Decision

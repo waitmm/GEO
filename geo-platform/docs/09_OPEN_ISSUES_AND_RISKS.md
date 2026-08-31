@@ -79,6 +79,24 @@ Status: ACTIVE
   as intervention mechanism, channel roles, required signals, or attribution
   intent, the backend must block or require review instead of silently creating
   an Action/Experiment.
+- Asset Brief is not a Draft. It is the Step 8 fact-boundary brief for one
+  concrete Action / Asset / Execution Path. It must not generate article
+  paragraphs, FAQ, titles, or publishing copy; those belong to a later Draft
+  step.
+- Claim Matrix must keep target-brand Product Truth and Benchmark Evidence
+  separate. A competitor SourceClaim can establish market benchmark context,
+  but it must never become a target-brand claim. Target-brand claims require
+  Product Truth; `UNKNOWN` stays review-required and `NOT_SUPPORTED` stays
+  prohibited.
+- Required signals must map back to Claim Matrix rows. If a required signal
+  cannot be traced to an allowed target-brand claim, later Draft preparation
+  should remain blocked rather than inventing unsupported copy.
+- Confirmed Asset Brief does not mean content is published or experiment is
+  active. It only means Step 8 has frozen the asset fact boundary; release still
+  requires the existing Release Audit gate.
+- Existing Step 8 draft experiments created before Asset Brief support may need
+  in-place brief backfill. Backfill must not create duplicate Action or
+  Experiment rows and must not change Evidence, Benchmark, Gap, or Strategy.
 - User-facing workflow labels, empty states, and action buttons must be Chinese.
   English enums may remain in storage/API internals only when Chinese labels are
   also provided to the frontend.

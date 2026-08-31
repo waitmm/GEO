@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.modules.optimization.schemas import (
     ActionReleasePayload,
+    AssetBriefReviewPayload,
     EvidencePackageCreate,
     EvidencePackageRead,
     ExperimentConclusionPayload,
@@ -73,6 +74,7 @@ from app.modules.optimization.service import (
     reject_issue,
     release_action,
     review_strategy_candidate,
+    review_experiment_asset_brief,
     start_validation,
     confirm_strategy_execution_plan,
     strategy_to_experiment_plan,
@@ -166,6 +168,15 @@ def confirm_strategy_execution_plan_endpoint(
     db: Session = Depends(get_db),
 ) -> dict:
     return confirm_strategy_execution_plan(db, candidate_id, payload)
+
+
+@router.post("/experiments/{experiment_id}/asset-brief/review", response_model=OptimizationExperimentRead)
+def review_experiment_asset_brief_endpoint(
+    experiment_id: int,
+    payload: AssetBriefReviewPayload,
+    db: Session = Depends(get_db),
+) -> dict:
+    return review_experiment_asset_brief(db, experiment_id, payload)
 
 
 @router.get("/evidence-packages/{package_id}", response_model=EvidencePackageRead)

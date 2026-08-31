@@ -387,6 +387,7 @@ def experiment_to_read(experiment: OptimizationExperiment) -> dict:
         "controlled_intervention": loads(experiment.controlled_intervention_json, {}),
         "conclusion": _normalize_conclusion(experiment.conclusion) if experiment.conclusion else "",
         "conclusion_reason": experiment.conclusion_reason,
+        "brief": loads(experiment.brief_json, {}),
         "post_run_ids": loads(experiment.post_run_ids_json, []),
         "outcome_summary": loads(experiment.outcome_summary_json, {}),
         "created_at": experiment.created_at,
@@ -1122,6 +1123,9 @@ STEP8_CHANNELS = {
     "OTHER",
 }
 STEP8_ASSET_OPERATIONS = {"UPDATE_EXISTING", "CREATE_NEW"}
+ASSET_BRIEF_VERSION = "asset_brief.step8.v1"
+CLAIM_MATRIX_VERSION = "asset_brief.claim_matrix.v1"
+ASSET_BRIEF_REVIEW_STATUSES = {"PENDING_REVIEW", "CONFIRMED", "BLOCKED"}
 STRATEGY_CORE_FIELD_PATHS = {
     "target_decision_change",
     "priority_capabilities",
@@ -1200,15 +1204,23 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
     if candidate.experiment_id:
         experiment = db.get(OptimizationExperiment, candidate.experiment_id)
         if experiment:
+            plan_payload = _ensure_existing_step8_experiment_has_asset_brief(
+                db,
+                candidate,
+                package,
+                project,
+                prompt,
+                experiment,
+            )
             return {
                 "strategy_candidate_id": candidate.id,
                 "readiness_status": "DRAFT_ALREADY_EXISTS",
                 "readiness_errors": [],
-                "readiness_warnings": ["该策略候选已创建实验草案，本次未重复创建。"],
+                "readiness_warnings": ["该策略候选已创建实验草案，本次未重复创建；如缺少资产简报则已兼容补齐。"],
                 "experiment_id": experiment.id,
                 "action_id": experiment.action_id,
                 "hypothesis_id": candidate.converted_hypothesis_id,
-                "plan_payload": loads(candidate.experiment_plan_json, {}),
+                "plan_payload": plan_payload,
             }
 
     channel = _normalize_step8_channel(_payload_value(payload, "channel", ""))
@@ -1269,8 +1281,24 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
     if len(runs) != len(baseline_run_ids):
         raise HTTPException(status_code=400, detail="部分 baseline_run_ids 不存在或不属于当前项目。")
     baseline_metrics = baseline_metrics_for_fixed_runs(db, project, runs, effective, selected_asset_ref)
+    asset_brief = _asset_brief_for_step8(
+        db,
+        project,
+        prompt,
+        package,
+        candidate,
+        effective,
+        strategy_snapshot,
+        selected_asset_ref,
+        execution_parameters,
+        compatibility,
+    )
     issue = _get_or_create_step8_issue(db, candidate, package, prompt, strategy_snapshot, baseline_run_ids)
-    action = _create_step8_action(db, issue, effective, selected_asset_ref, strategy_snapshot)
+    action = _create_step8_action(db, issue, effective, selected_asset_ref, strategy_snapshot, asset_brief)
+    asset_brief = {
+        **asset_brief,
+        "action_ref": _action_snapshot(action),
+    }
     experiment = _create_step8_experiment(
         db,
         candidate,
@@ -1282,6 +1310,7 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
         selected_asset_ref,
         baseline_run_ids,
         baseline_metrics,
+        asset_brief,
     )
 
     candidate.experiment_id = experiment.id
@@ -1297,6 +1326,7 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
         "execution_parameters": execution_parameters,
         "execution_delta": execution_delta,
         "mechanism_compatibility": compatibility,
+        "asset_brief": asset_brief,
         "baseline_run_ids": baseline_run_ids,
         "baseline_metrics": baseline_metrics,
         "action_snapshot": _action_snapshot(action),
@@ -1319,6 +1349,146 @@ def confirm_strategy_execution_plan(db: Session, candidate_id: int, payload) -> 
         "hypothesis_id": candidate.converted_hypothesis_id,
         "plan_payload": plan_payload,
     }
+
+
+def review_experiment_asset_brief(db: Session, experiment_id: int, payload) -> dict:
+    """Human review gate for Step 8 Asset Brief before any content Draft work."""
+    experiment = db.get(OptimizationExperiment, experiment_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="实验不存在")
+    variables = loads(experiment.intervention_variables_json, {})
+    brief = variables.get("asset_brief")
+    if not isinstance(brief, dict):
+        brief = loads(experiment.brief_json, {}).get("asset_brief")
+    if not isinstance(brief, dict):
+        raise HTTPException(status_code=400, detail="当前实验没有可审核的资产简报")
+
+    status = str(_payload_value(payload, "review_status", "CONFIRMED") or "").strip().upper()
+    if status not in ASSET_BRIEF_REVIEW_STATUSES:
+        raise HTTPException(status_code=400, detail="未知资产简报审核状态")
+    reviewed_by = _payload_value(payload, "reviewed_by", "human")
+    review_note = _payload_value(payload, "review_note", "")
+
+    if status == "CONFIRMED":
+        _ensure_asset_brief_can_be_confirmed(brief, payload)
+    reviewed_brief = _apply_asset_brief_review_updates(brief, _payload_value(payload, "claim_review_updates", []))
+    now = datetime.utcnow().isoformat()
+    reviewed_brief.update({
+        "status": status,
+        "review_status": status,
+        "reviewed_by": reviewed_by,
+        "reviewed_at": now,
+        "review_note": review_note,
+        "draft_gate": {
+            "status": "READY_FOR_DRAFT_PREPARATION" if status == "CONFIRMED" else "BLOCKED_UNTIL_BRIEF_CONFIRMED",
+            "reason": "资产简报已人工确认，可作为后续 Draft 输入。" if status == "CONFIRMED" else "资产简报尚未确认或已阻塞，不能进入 Draft。",
+        },
+        "confirmed_at": now if status == "CONFIRMED" else None,
+        "confirmed_by": reviewed_by if status == "CONFIRMED" else "",
+    })
+    variables["asset_brief"] = json.loads(json.dumps(reviewed_brief, ensure_ascii=False))
+    controlled = loads(experiment.controlled_intervention_json, {})
+    controlled["asset_brief_snapshot"] = json.loads(json.dumps(reviewed_brief, ensure_ascii=False))
+    brief_json = loads(experiment.brief_json, {})
+    brief_json["asset_brief"] = json.loads(json.dumps(reviewed_brief, ensure_ascii=False))
+
+    experiment.intervention_variables_json = dumps(variables)
+    experiment.controlled_intervention_json = dumps(controlled)
+    experiment.brief_json = dumps(brief_json)
+    action = db.get(OptimizationAction, experiment.action_id)
+    if action:
+        release_evidence = loads(action.release_evidence_json, {})
+        release_evidence["asset_brief_snapshot"] = json.loads(json.dumps(reviewed_brief, ensure_ascii=False))
+        action.release_evidence_json = dumps(release_evidence)
+    db.commit()
+    db.refresh(experiment)
+    return experiment_to_read(experiment)
+
+
+def _ensure_existing_step8_experiment_has_asset_brief(
+    db: Session,
+    candidate: OptimizationStrategyCandidate,
+    package: OptimizationEvidencePackage,
+    project: Project,
+    prompt: Prompt | None,
+    experiment: OptimizationExperiment,
+) -> dict:
+    plan_payload = loads(candidate.experiment_plan_json, {})
+    existing = (
+        (plan_payload.get("asset_brief") if isinstance(plan_payload, dict) else None)
+        or loads(experiment.intervention_variables_json, {}).get("asset_brief")
+        or loads(experiment.brief_json, {}).get("asset_brief")
+    )
+    if isinstance(existing, dict) and existing.get("claim_matrix"):
+        return plan_payload
+
+    variables = loads(experiment.intervention_variables_json, {})
+    controlled = loads(experiment.controlled_intervention_json, {})
+    strategy_snapshot = variables.get("strategy_snapshot") or controlled.get("strategy_snapshot") or _strategy_snapshot_for_experiment(candidate, package)
+    effective = strategy_snapshot.get("effective_payload") if isinstance(strategy_snapshot, dict) else {}
+    if not isinstance(effective, dict) or not effective:
+        effective = loads(candidate.effective_payload_json, {})
+    selected_asset_ref = variables.get("selected_asset_ref") or controlled.get("selected_asset_ref")
+    if not isinstance(selected_asset_ref, dict) or not selected_asset_ref:
+        selected_asset_ref = {
+            "asset_ref_type": "PAGE_SNAPSHOT" if experiment.target_asset_ids_json != "[]" else "NEW_ASSET",
+            "asset_id": (loads(experiment.target_asset_ids_json, []) or [None])[0],
+            "canonical_url": experiment.target_asset_url or experiment.release_url or "",
+            "url": experiment.target_asset_url or experiment.release_url or "",
+            "asset_type": experiment.target_asset_type or "ARTICLE",
+            "channel": experiment.channel or effective.get("target_platform") or "OTHER",
+            "asset_operation": effective.get("asset_operation") or "UPDATE_EXISTING",
+        }
+    execution_parameters = effective.get("execution_parameters") if isinstance(effective.get("execution_parameters"), dict) else {}
+    if not execution_parameters:
+        execution_parameters = {
+            "selected_channel": selected_asset_ref.get("channel") or experiment.channel,
+            "asset_operation": selected_asset_ref.get("asset_operation") or effective.get("asset_operation"),
+            "selected_asset_ref": selected_asset_ref,
+            "selected_asset": _selected_asset_identity(selected_asset_ref),
+            "selected_asset_type": selected_asset_ref.get("asset_type") or experiment.target_asset_type,
+            "target_content_type": effective.get("target_content_type") or selected_asset_ref.get("asset_type") or "ARTICLE",
+            "target_object": effective.get("target_object") or "CONTENT_ASSET",
+            "concrete_url": selected_asset_ref.get("canonical_url") or selected_asset_ref.get("url") or experiment.target_asset_url,
+            "content_structure": [],
+        }
+    compatibility = (
+        variables.get("mechanism_compatibility")
+        or controlled.get("mechanism_compatibility")
+        or effective.get("mechanism_compatibility")
+        or {"status": "EXECUTION_COMPATIBLE", "reasons": ["历史 Step 8 草案兼容补齐资产简报。"]}
+    )
+    asset_brief = _asset_brief_for_step8(
+        db,
+        project,
+        prompt,
+        package,
+        candidate,
+        effective,
+        strategy_snapshot,
+        selected_asset_ref,
+        execution_parameters,
+        compatibility,
+    )
+    action = db.get(OptimizationAction, experiment.action_id)
+    if action:
+        asset_brief = {**asset_brief, "action_ref": _action_snapshot(action)}
+        release_evidence = loads(action.release_evidence_json, {})
+        release_evidence["asset_brief_snapshot"] = json.loads(json.dumps(asset_brief, ensure_ascii=False))
+        action.release_evidence_json = dumps(release_evidence)
+    variables["asset_brief"] = json.loads(json.dumps(asset_brief, ensure_ascii=False))
+    controlled["asset_brief_snapshot"] = json.loads(json.dumps(asset_brief, ensure_ascii=False))
+    brief_json = loads(experiment.brief_json, {})
+    brief_json["asset_brief"] = json.loads(json.dumps(asset_brief, ensure_ascii=False))
+    experiment.intervention_variables_json = dumps(variables)
+    experiment.controlled_intervention_json = dumps(controlled)
+    experiment.brief_json = dumps(brief_json)
+    if isinstance(plan_payload, dict):
+        plan_payload["asset_brief"] = json.loads(json.dumps(asset_brief, ensure_ascii=False))
+        candidate.experiment_plan_json = dumps(plan_payload)
+    db.commit()
+    db.refresh(experiment)
+    return plan_payload
 
 
 def _ensure_strategy_candidate_can_enter_step8(candidate: OptimizationStrategyCandidate) -> None:
@@ -1673,6 +1843,406 @@ def baseline_metrics_for_fixed_runs(
     }
 
 
+def _asset_brief_for_step8(
+    db: Session,
+    project: Project,
+    prompt: Prompt | None,
+    package: OptimizationEvidencePackage,
+    candidate: OptimizationStrategyCandidate,
+    effective: dict,
+    strategy_snapshot: dict,
+    selected_asset_ref: dict,
+    execution_parameters: dict,
+    compatibility: dict,
+) -> dict:
+    capability_rows = _strategy_capability_rows_for_brief(effective)
+    truth_snapshots = _product_truth_snapshots_for_brief(db, project.id, capability_rows, effective)
+    claim_matrix = _claim_matrix_for_asset_brief(project, effective, capability_rows, truth_snapshots)
+    status = _asset_brief_initial_status(claim_matrix, compatibility)
+    primary_channel = execution_parameters.get("selected_channel") or selected_asset_ref.get("channel") or ""
+    return {
+        "brief_version": ASSET_BRIEF_VERSION,
+        "status": status,
+        "review_status": status,
+        "strategy_candidate_id": candidate.id,
+        "evidence_package_id": package.id,
+        "prompt_id": package.prompt_id,
+        "prompt_text": prompt.prompt_text if prompt else "",
+        "channel": primary_channel,
+        "channel_label": _step8_channel_label(primary_channel),
+        "channel_role": _channel_role_for_brief(effective, primary_channel),
+        "selected_asset_ref": json.loads(json.dumps(selected_asset_ref, ensure_ascii=False)),
+        "asset_operation": selected_asset_ref.get("asset_operation") or execution_parameters.get("asset_operation"),
+        "asset_direction": effective.get("asset_direction", {}),
+        "strategy_core_snapshot": {
+            "strategy_candidate_id": candidate.id,
+            "strategy_snapshot_version": strategy_snapshot.get("snapshot_version"),
+            "target_decision_change": effective.get("target_decision_change"),
+            "intervention_mechanism": effective.get("intervention_mechanism") or effective.get("mechanism") or effective.get("core_mechanism"),
+            "primary_intervention_path": effective.get("primary_intervention_path"),
+            "required_signals": json.loads(json.dumps(effective.get("required_signals", []), ensure_ascii=False)),
+            "planned_channels": json.loads(json.dumps(effective.get("planned_channels", []), ensure_ascii=False)),
+            "attribution_intent": json.loads(json.dumps(effective.get("attribution_intent", {}), ensure_ascii=False)),
+            "non_goals": json.loads(json.dumps(effective.get("non_goals", []), ensure_ascii=False)),
+        },
+        "required_signals": json.loads(json.dumps(effective.get("required_signals", []), ensure_ascii=False)),
+        "primary_capability": (effective.get("attribution_intent") or {}).get("primary_capability")
+        if isinstance(effective.get("attribution_intent"), dict)
+        else (capability_rows[0].get("capability_label") if capability_rows else ""),
+        "secondary_capabilities": [
+            row.get("capability_label")
+            for row in capability_rows[1:]
+            if row.get("capability_label")
+        ],
+        "claim_matrix": claim_matrix,
+        "mechanism_compatibility": json.loads(json.dumps(compatibility, ensure_ascii=False)),
+        "execution_parameters": json.loads(json.dumps(execution_parameters, ensure_ascii=False)),
+        "draft_gate": {
+            "status": "BLOCKED_UNTIL_BRIEF_CONFIRMED",
+            "reason": "系统只生成资产简报和事实矩阵；进入 Draft 前必须人工确认。",
+        },
+        "brief_boundary": (
+            "资产简报不是正文草稿，不生成 FAQ、段落或发布内容；它只约束该渠道/资产上必须表达、允许表达和禁止表达的事实边界。"
+        ),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _strategy_capability_rows_for_brief(effective: dict) -> list[dict]:
+    rows: list[dict] = []
+    for source in (effective.get("priority_capabilities") or effective.get("target_capabilities") or []):
+        if not isinstance(source, dict):
+            continue
+        label = str(source.get("capability_label") or "").strip()
+        if not label:
+            continue
+        rows.append({
+            "gap_item_id": source.get("gap_item_id"),
+            "capability_label": label,
+            "priority_band": source.get("priority_band"),
+            "gap_type": source.get("gap_type"),
+            "gap_layer": source.get("gap_layer"),
+            "product_truth_ids": _normalize_int_list(source.get("product_truth_ids", [])),
+            "product_truth_status": source.get("product_truth_status") or "UNKNOWN",
+            "benchmark_evidence_ids": _normalize_int_list(source.get("benchmark_evidence_ids", [])),
+            "observed_run_ids": _normalize_int_list(source.get("observed_run_ids", [])),
+        })
+    if rows:
+        return rows
+    label_text = str(effective.get("target_capability_or_reason") or "").strip()
+    return [
+        {
+            "gap_item_id": None,
+            "capability_label": label,
+            "priority_band": "P1",
+            "gap_type": effective.get("gap_type"),
+            "gap_layer": "",
+            "product_truth_ids": _normalize_int_list((effective.get("product_truth_refs") or {}).get("ids", []))
+            if isinstance(effective.get("product_truth_refs"), dict)
+            else [],
+            "product_truth_status": (effective.get("product_truth_refs") or {}).get("status", "UNKNOWN")
+            if isinstance(effective.get("product_truth_refs"), dict)
+            else "UNKNOWN",
+            "benchmark_evidence_ids": _normalize_int_list(effective.get("benchmark_evidence_ids", [])),
+            "observed_run_ids": _normalize_int_list(effective.get("observed_run_ids", [])),
+        }
+        for label in [part.strip() for part in re.split(r"[、,/，]", label_text) if part.strip()]
+    ]
+
+
+def _product_truth_snapshots_for_brief(
+    db: Session,
+    project_id: int,
+    capability_rows: list[dict],
+    effective: dict,
+) -> dict[int, dict]:
+    ids = {
+        truth_id
+        for row in capability_rows
+        for truth_id in row.get("product_truth_ids", [])
+        if truth_id
+    }
+    refs = effective.get("product_truth_refs") if isinstance(effective.get("product_truth_refs"), dict) else {}
+    ids.update(int(truth_id) for truth_id in refs.get("ids", []) if truth_id)
+    rows = db.query(TargetBrandCapabilityTruth).filter(
+        TargetBrandCapabilityTruth.project_id == project_id,
+        TargetBrandCapabilityTruth.id.in_(ids),
+    ).all() if ids else []
+    by_id = {row.id: _product_truth_snapshot(row) for row in rows}
+    existing_labels = {_compact_key(item.get("capability_label", "")) for item in by_id.values()}
+    missing_labels = [
+        row.get("capability_label")
+        for row in capability_rows
+        if _compact_key(row.get("capability_label", "")) not in existing_labels
+    ]
+    if missing_labels:
+        candidates = db.query(TargetBrandCapabilityTruth).filter(
+            TargetBrandCapabilityTruth.project_id == project_id,
+        ).all()
+        for truth in candidates:
+            truth_key = _compact_key(truth.capability_label or truth.capability_key)
+            if any(_compact_key(label) and (_compact_key(label) in truth_key or truth_key in _compact_key(label)) for label in missing_labels):
+                by_id.setdefault(truth.id, _product_truth_snapshot(truth))
+    return by_id
+
+
+def _product_truth_snapshot(truth: TargetBrandCapabilityTruth) -> dict:
+    return {
+        "product_truth_id": truth.id,
+        "capability_key": truth.capability_key,
+        "capability_label": truth.capability_label or truth.capability_key,
+        "product_truth_status": truth.product_truth_status or "UNKNOWN",
+        "truth_source": truth.truth_source,
+        "source_reference": truth.source_reference,
+        "reviewed_by": truth.reviewed_by,
+        "reviewed_at": truth.reviewed_at.isoformat() if truth.reviewed_at else None,
+        "note": truth.note,
+        "snapshot_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _claim_matrix_for_asset_brief(
+    project: Project,
+    effective: dict,
+    capability_rows: list[dict],
+    truth_snapshots: dict[int, dict],
+) -> dict:
+    required_signals = effective.get("required_signals") if isinstance(effective.get("required_signals"), list) else []
+    target_claims: list[dict] = []
+    benchmark_context_claims: list[dict] = []
+    prohibited_claims: list[dict] = []
+    mappings: list[dict] = []
+    for index, row in enumerate(capability_rows):
+        label = row.get("capability_label") or "待确认能力"
+        matched_truths = _truths_for_capability_row(row, truth_snapshots)
+        truth_status = _claim_product_truth_status(row, matched_truths)
+        signal_indices = _required_signal_indices_for_label(label, required_signals)
+        requirement = _claim_requirement_for_truth_status(truth_status)
+        target_claim = _target_brand_claim_for_matrix(project, row, matched_truths, truth_status, requirement, signal_indices)
+        target_claims.append(target_claim)
+        if requirement == "PROHIBITED":
+            prohibited_claims.append({
+                **target_claim,
+                "prohibition_reason": "Product Truth 明确不支持，不能在执行资产中声明该能力。",
+            })
+        benchmark_context_claims.append(_benchmark_context_claim_for_matrix(row, target_claim["claim_id"]))
+        mappings.append({
+            "capability_label": label,
+            "required_signal_indices": signal_indices,
+            "required_signal_texts": [required_signals[i].get("signal") for i in signal_indices if isinstance(required_signals[i], dict)],
+            "claim_ids": [target_claim["claim_id"]],
+            "status": "MAPPED" if signal_indices else "NO_REQUIRED_SIGNAL",
+        })
+    return {
+        "matrix_version": CLAIM_MATRIX_VERSION,
+        "target_brand_claims": target_claims,
+        "benchmark_context_claims": benchmark_context_claims,
+        "prohibited_claims": prohibited_claims,
+        "required_signal_mappings": mappings,
+        "review_summary": {
+            "required_claim_count": sum(1 for item in target_claims if item.get("requirement_level") == "REQUIRED"),
+            "review_required_count": sum(1 for item in target_claims if item.get("requirement_level") == "REVIEW_REQUIRED"),
+            "prohibited_claim_count": len(prohibited_claims),
+            "benchmark_context_count": len(benchmark_context_claims),
+        },
+        "boundary_note": "目标品牌事实只来自 Product Truth；对标 SourceClaim 只说明市场标准/AI 决策证据，不得改写为目标品牌自己的能力事实。",
+    }
+
+
+def _truths_for_capability_row(row: dict, truth_snapshots: dict[int, dict]) -> list[dict]:
+    ids = set(row.get("product_truth_ids") or [])
+    label_key = _compact_key(row.get("capability_label") or "")
+    matched = [truth for truth_id, truth in truth_snapshots.items() if truth_id in ids]
+    if matched:
+        return matched
+    return [
+        truth
+        for truth in truth_snapshots.values()
+        if label_key and (
+            label_key in _compact_key(truth.get("capability_label") or truth.get("capability_key") or "")
+            or _compact_key(truth.get("capability_label") or truth.get("capability_key") or "") in label_key
+        )
+    ]
+
+
+def _claim_product_truth_status(row: dict, truth_snapshots: list[dict]) -> str:
+    statuses = {(truth.get("product_truth_status") or "UNKNOWN").upper() for truth in truth_snapshots}
+    if "NOT_SUPPORTED" in statuses:
+        return "NOT_SUPPORTED"
+    if "SUPPORTED" in statuses:
+        return "SUPPORTED"
+    if "PARTIALLY_SUPPORTED" in statuses:
+        return "PARTIALLY_SUPPORTED"
+    row_status = str(row.get("product_truth_status") or "UNKNOWN").upper()
+    return {
+        "TRUE": "SUPPORTED",
+        "FALSE": "NOT_SUPPORTED",
+    }.get(row_status, row_status if row_status in {"SUPPORTED", "PARTIALLY_SUPPORTED", "NOT_SUPPORTED"} else "UNKNOWN")
+
+
+def _claim_requirement_for_truth_status(status: str) -> str:
+    if status == "SUPPORTED":
+        return "REQUIRED"
+    if status == "NOT_SUPPORTED":
+        return "PROHIBITED"
+    return "REVIEW_REQUIRED"
+
+
+def _target_brand_claim_for_matrix(
+    project: Project,
+    row: dict,
+    truths: list[dict],
+    truth_status: str,
+    requirement: str,
+    signal_indices: list[int],
+) -> dict:
+    label = row.get("capability_label") or "待确认能力"
+    claim_id = _stable_brief_claim_id("target", project.id, label, row.get("gap_item_id"), requirement)
+    return {
+        "claim_id": claim_id,
+        "claim_type": "TARGET_BRAND_PRODUCT_CLAIM",
+        "subject_entity": project.brand_name or "目标品牌",
+        "capability_label": label,
+        "canonical_claim": f"{project.brand_name or '目标品牌'}支持{label}",
+        "requirement_level": requirement,
+        "product_truth_status": truth_status,
+        "support_basis": "PRODUCT_TRUTH" if truths else "PRODUCT_TRUTH_MISSING",
+        "product_truth_refs": truths,
+        "benchmark_evidence_refs": [],
+        "required_signal_indices": signal_indices,
+        "claim_boundary": {
+            "allowed_scope": f"只能表达已确认 Product Truth 覆盖的「{label}」能力边界。",
+            "prohibited_expansions": _unsupported_claim_expansions(label),
+        },
+        "risk_flags": _claim_risk_flags(requirement, truth_status, bool(truths)),
+        "review_status": "PENDING_REVIEW",
+        "source_entity_boundary": "该目标品牌 Claim 只能由 Product Truth 支持，不能由竞品 SourceClaim 支持。",
+    }
+
+
+def _benchmark_context_claim_for_matrix(row: dict, target_claim_id: str) -> dict:
+    label = row.get("capability_label") or "待确认能力"
+    return {
+        "claim_id": _stable_brief_claim_id("benchmark", row.get("gap_item_id"), label, ",".join(str(item) for item in row.get("benchmark_evidence_ids", []))),
+        "claim_type": "BENCHMARK_CONTEXT_CLAIM",
+        "subject_entity": "对标来源/AI推荐理由",
+        "capability_label": label,
+        "canonical_claim": f"当前对标证据显示「{label}」进入了 AI 推荐理由或辅助理由。",
+        "requirement_level": "OPTIONAL",
+        "support_basis": "ELIGIBLE_BENCHMARK_EVIDENCE",
+        "benchmark_evidence_refs": row.get("benchmark_evidence_ids", []),
+        "observed_run_ids": row.get("observed_run_ids", []),
+        "linked_target_claim_id": target_claim_id,
+        "source_entity_boundary": "该 Claim 只说明对标证据和市场标准，不得改写为目标品牌事实。",
+        "review_status": "PENDING_REVIEW",
+    }
+
+
+def _required_signal_indices_for_label(label: str, required_signals: list) -> list[int]:
+    key = _compact_key(label)
+    result = []
+    for index, signal in enumerate(required_signals):
+        if not isinstance(signal, dict):
+            continue
+        text = " ".join(str(signal.get(part) or "") for part in ("capability_label", "signal", "evidence_requirement"))
+        if key and key in _compact_key(text):
+            result.append(index)
+    return result
+
+
+def _unsupported_claim_expansions(label: str) -> list[str]:
+    generic = ["实时用户画像", "全渠道归因", "转化率保证", "平台风控规避", "行业第一"]
+    if any(token in label for token in ["点击", "统计", "数据"]):
+        return generic
+    return ["未确认高级功能", "未确认数据效果", "未确认第三方背书", "未确认平台合规承诺"]
+
+
+def _claim_risk_flags(requirement: str, truth_status: str, has_truth_ref: bool) -> list[str]:
+    flags = []
+    if not has_truth_ref:
+        flags.append("PRODUCT_TRUTH_REF_MISSING")
+    if requirement == "REVIEW_REQUIRED":
+        flags.append("PRODUCT_TRUTH_REVIEW_REQUIRED")
+    if requirement == "PROHIBITED":
+        flags.append("PRODUCT_TRUTH_NOT_SUPPORTED")
+    if truth_status == "PARTIALLY_SUPPORTED":
+        flags.append("PARTIAL_PRODUCT_TRUTH")
+    return flags
+
+
+def _asset_brief_initial_status(claim_matrix: dict, compatibility: dict) -> str:
+    target_claims = claim_matrix.get("target_brand_claims") or []
+    if any(item.get("requirement_level") in {"REVIEW_REQUIRED", "PROHIBITED"} for item in target_claims):
+        return "BLOCKED"
+    if (compatibility.get("status") or "") == "STRATEGY_RECONFIRM_REQUIRED":
+        return "BLOCKED"
+    return "PENDING_REVIEW"
+
+
+def _ensure_asset_brief_can_be_confirmed(brief: dict, payload) -> None:
+    compatibility = brief.get("mechanism_compatibility") or {}
+    if compatibility.get("status") == "STRATEGY_RECONFIRM_REQUIRED":
+        raise HTTPException(status_code=400, detail="执行方案改变 Strategy Core，必须返回第 7 步重新确认。")
+    if compatibility.get("status") == "REVIEW_REQUIRED" and not _payload_value(payload, "approved_mechanism_review", False):
+        raise HTTPException(status_code=400, detail="当前执行方案需要人工确认机制兼容后，才能确认资产简报。")
+    matrix = brief.get("claim_matrix") or {}
+    target_claims = matrix.get("target_brand_claims") or []
+    blockers = []
+    for claim in target_claims:
+        if claim.get("requirement_level") == "REQUIRED" and claim.get("product_truth_status") != "SUPPORTED":
+            blockers.append(f"{claim.get('capability_label')} 缺少 SUPPORTED Product Truth")
+        if claim.get("requirement_level") == "REVIEW_REQUIRED":
+            blockers.append(f"{claim.get('capability_label')} 仍需补充 Product Truth")
+    mappings = matrix.get("required_signal_mappings") or []
+    for mapping in mappings:
+        if mapping.get("status") != "MAPPED":
+            blockers.append(f"{mapping.get('capability_label')} 未映射到 required_signal")
+    if blockers:
+        raise HTTPException(status_code=400, detail={"message": "资产简报仍有阻塞项，不能确认。", "blockers": blockers})
+
+
+def _apply_asset_brief_review_updates(brief: dict, updates) -> dict:
+    result = json.loads(json.dumps(brief, ensure_ascii=False))
+    if not updates:
+        return result
+    updates_by_id = {
+        str(item.get("claim_id")): item
+        for item in updates
+        if isinstance(item, dict) and item.get("claim_id")
+    }
+    matrix = result.get("claim_matrix") if isinstance(result.get("claim_matrix"), dict) else {}
+    for key in ("target_brand_claims", "benchmark_context_claims", "prohibited_claims"):
+        for claim in matrix.get(key, []) or []:
+            update = updates_by_id.get(str(claim.get("claim_id")))
+            if not update:
+                continue
+            for field in ("review_status", "review_note", "requirement_level"):
+                if field in update:
+                    claim[field] = update[field]
+    return result
+
+
+def _step8_channel_label(channel: str) -> str:
+    return {
+        "OFFICIAL_SITE": "官网",
+        "PRODUCT_DOCS": "产品文档",
+        "ZHIHU": "知乎",
+        "BAIJIAHAO": "百家号",
+        "THIRD_PARTY_MEDIA": "第三方媒体",
+        "OTHER": "其他",
+    }.get(channel or "", channel or "未确认渠道")
+
+
+def _channel_role_for_brief(effective: dict, channel: str) -> dict:
+    roles = effective.get("channel_roles") if isinstance(effective.get("channel_roles"), dict) else {}
+    return roles.get(channel) or {"channel_label": _step8_channel_label(channel), "channel_role": "第 8 步人工选择的执行渠道。"}
+
+
+def _stable_brief_claim_id(*parts) -> str:
+    raw = "|".join(str(part or "") for part in parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def _baseline_metric_row(name: str, source_run_ids: list[int], denominator: int, level: str = "brand_level") -> dict:
     numerator = len(set(source_run_ids))
     return {
@@ -1796,6 +2366,7 @@ def _create_step8_action(
     effective: dict,
     selected_asset_ref: dict,
     strategy_snapshot: dict,
+    asset_brief: dict,
 ) -> OptimizationAction:
     action_type = "content_update" if selected_asset_ref.get("asset_operation") == "UPDATE_EXISTING" else "content_create"
     if (effective.get("proposed_direction") or "").upper() == "PRODUCT":
@@ -1816,6 +2387,7 @@ def _create_step8_action(
         release_evidence_json=dumps({
             "strategy_candidate_id": strategy_snapshot.get("strategy_candidate_id"),
             "selected_asset_ref": selected_asset_ref,
+            "asset_brief_snapshot": asset_brief,
             "step": "PHASE_4_EXECUTION_PLAN_DRAFT",
         }),
     )
@@ -1835,6 +2407,7 @@ def _create_step8_experiment(
     selected_asset_ref: dict,
     baseline_run_ids: list[int],
     baseline_metrics: dict,
+    asset_brief: dict,
 ) -> OptimizationExperiment:
     primary_metric = effective.get("target_metric") or effective.get("validation_metric") or "brand_recommendation_rate"
     metric = (baseline_metrics.get("metrics") or {}).get(primary_metric) or {}
@@ -1860,6 +2433,7 @@ def _create_step8_experiment(
         "required_signals": effective.get("required_signals", []),
         "execution_delta": effective.get("execution_delta", []),
         "mechanism_compatibility": effective.get("mechanism_compatibility", {}),
+        "asset_brief": json.loads(json.dumps(asset_brief, ensure_ascii=False)),
     }
     experiment = OptimizationExperiment(
         action_id=action.id,
@@ -1896,6 +2470,7 @@ def _create_step8_experiment(
             "execution_delta": effective.get("execution_delta", []),
             "mechanism_compatibility": effective.get("mechanism_compatibility", {}),
             "attribution_intent": attribution_intent,
+            "asset_brief_snapshot": json.loads(json.dumps(asset_brief, ensure_ascii=False)),
         }),
         channel=selected_asset_ref.get("channel", ""),
         experiment_mode="PER_CHANNEL",
@@ -1905,6 +2480,8 @@ def _create_step8_experiment(
         target_gap_ids_json=dumps(effective.get("gap_item_ids", [])),
         hypothesis_text=(effective.get("mechanism") or effective.get("core_mechanism") or ""),
         brief_json=dumps({
+            "brief_type": "ASSET_BRIEF",
+            "asset_brief": json.loads(json.dumps(asset_brief, ensure_ascii=False)),
             "strategy_candidate_id": candidate.id,
             "selected_asset_ref": selected_asset_ref,
             "strategy_snapshot": strategy_snapshot,

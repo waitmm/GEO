@@ -2,6 +2,78 @@
 
 Status: ACTIVE
 
+## 2026-08-31 Step 8 Asset Brief + Claim Matrix
+
+- Added Step 8 Asset Brief + Claim Matrix as the second cut after Strategy Core
+  protection. This checkpoint stays inside Step 8 and does not create Draft,
+  Step 9, new scoring, new Gap semantics, or a parallel Strategy model.
+- Reused existing storage instead of adding a new asset-brief table:
+
+```text
+OptimizationExperiment.brief_json
+OptimizationExperiment.intervention_variables_json
+OptimizationExperiment.controlled_intervention_json
+OptimizationAction.release_evidence_json
+OptimizationStrategyCandidate.experiment_plan_json / effective_payload
+```
+
+- Added `AssetBriefReviewPayload` and the backend review endpoint:
+
+```text
+POST /api/optimization/experiments/{experiment_id}/asset-brief/review
+```
+
+- Step 8 now builds an Asset Brief for the concrete Action / Asset /
+  Execution Path. The brief freezes strategy snapshot/ref, selected asset
+  ref/snapshot, required signals, claim matrix, Product Truth refs/snapshot,
+  benchmark evidence refs, channel role, brief version, and review timestamp
+  when confirmed.
+- Claim Matrix is fact-boundary only. It lists required, optional, prohibited,
+  and review-required claims; it does not generate article paragraphs, FAQ, or
+  content draft.
+- Product Truth discipline was enforced in backend logic:
+
+```text
+SUPPORTED     -> REQUIRED / OPTIONAL
+UNKNOWN       -> REVIEW_REQUIRED / BLOCKED
+NOT_SUPPORTED -> PROHIBITED
+```
+
+- Benchmark Evidence / SourceClaim can explain market standard and AI decision
+  context, but can never become target-brand Product Truth.
+- Added explicit draft gate: Asset Brief must be confirmed before later Draft
+  preparation can start. This checkpoint still stops before Draft.
+- Existing Step 8 draft objects are backfilled in place when missing Asset
+  Brief data. The #40 official path reused `StrategyCandidate #44`,
+  `Action #31`, and `Experiment #31`; no duplicate Action/Experiment was
+  created.
+- Prompt `#40` real regression:
+
+```text
+StrategyCandidate #44
+Action #31
+Experiment #31
+created_new_draft = False
+PRIMARY_BENCHMARK = 1 -> 1
+recommended_action_count = 1 -> 1
+Prompt #40 EvidenceAlignment = 660 -> 660
+claim_matrix REQUIRED = 点击统计 / 自定义分享标题 / 营销场景使用
+draft_gate = READY_FOR_DRAFT_PREPARATION
+mechanism_compatibility = EXECUTION_COMPATIBLE
+```
+
+- A script selection pitfall was caught during audit: the first pass could pick
+  a previously created channel-simulation candidate instead of the official
+  Step 8 path. The audit runner now prefers the current experiment-bound
+  `OFFICIAL_SITE` candidate for #40 acceptance evidence.
+
+Validation:
+
+```text
+.venv/bin/python -m pytest -q tests/test_strategy_step7_v1.py tests/test_source_gap_v1.py tests/test_evidence_lineage_v1.py tests/test_asset_brief_v1.py
+69 passed
+```
+
 ## 2026-08-28 Step 7 Strategy Core / Step 8 Protection First Cut
 
 - Updated Step 7 `StrategyCandidate` generation so the candidate carries a

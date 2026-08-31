@@ -281,6 +281,14 @@ class StrategyExecutionPlanPayload(BaseModel):
     target_object: str = ""
 
 
+class AssetBriefReviewPayload(BaseModel):
+    review_status: str = "CONFIRMED"
+    reviewed_by: str = "human"
+    review_note: str = ""
+    approved_mechanism_review: bool = False
+    claim_review_updates: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class StrategyCandidateRead(BaseModel):
     id: int
     project_id: int
@@ -511,6 +519,7 @@ class OptimizationExperimentRead(BaseModel):
     controlled_intervention: dict[str, Any] = Field(default_factory=dict)
     conclusion: str = ""
     conclusion_reason: str = ""
+    brief: dict[str, Any] = Field(default_factory=dict)
     post_run_ids: list[int] = Field(default_factory=list)
     outcome_summary: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime

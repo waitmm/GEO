@@ -1921,7 +1921,12 @@ export default function App() {
   function isAuditGeneratedStrategyCandidate(candidate: any) {
     const reviewer = String(candidate?.reviewed_by || "").toLowerCase();
     const note = String(candidate?.review_note || "").toLowerCase();
-    return reviewer.includes("audit") || /^phase\d+_audit$/.test(reviewer) || note.includes("phase");
+    return (
+      reviewer.includes("audit") ||
+      reviewer.includes("regression") ||
+      /^phase[\w-]*_(audit|regression)$/.test(reviewer) ||
+      note.includes("phase")
+    );
   }
 
   function strategyVersionMap(candidates: any[]) {
@@ -4289,6 +4294,9 @@ export default function App() {
                                 <Text>{item.channel_label || platformLabel(item.channel)}</Text>
                               </Space>
                               <div><Text type="secondary">{item.channel_role || "待确认渠道角色"}</Text></div>
+                              <div style={{ marginTop: 4 }}>
+                                <Text type="secondary">推荐依据：{item.selection_basis || "由缺口、AI 推荐理由、对标证据、目标品牌事实、品牌资产和检索/引用状态共同判断；不是直接复制对标来源平台。"}</Text>
+                              </div>
                             </div>)}
                           </Space>
                         </div>}

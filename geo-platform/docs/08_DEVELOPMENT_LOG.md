@@ -37,6 +37,11 @@ Experiment draft id
   instead of letting historical accepted candidates steal the default view.
 - This is a UI flow fix only. It does not change Strategy generation, Evidence,
   Benchmark, Gap, Product Truth, Action, Experiment, Baseline, Draft, or Step 9.
+- Follow-up correction: `phase_*_regression` StrategyCandidates are now treated
+  as historical acceptance artifacts, the same as `phase*_audit`. They no
+  longer mark the current Prompt workflow Step 7/8 as complete. Planned channel
+  rows now show `selection_basis` so users can see why a platform layer is
+  suggested.
 
 ## 2026-08-31 Step 8 Asset Brief + Claim Matrix
 

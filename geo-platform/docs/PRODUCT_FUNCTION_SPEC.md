@@ -331,10 +331,13 @@ PERIPHERAL_CITATION：来源进入引用/检索环境，但未形成重要 eligi
 ```
 
 平台策略不能只由 Gap 类型或 Benchmark 来源平台决定。Step 7 的 `planned_channels`
-必须综合 Answer Decision、Citation Decision Value、Run recurrence、Channel
-Aggregation、Benchmark Evidence、Product Truth、Capability Gap、Relevant Brand
-Asset 和 Retrieval/Citation 状态。Benchmark 来源平台可以因真实
-`DECISION_CITATION` 获得 `SECONDARY` 或 `EXPERIMENTAL` 角色，但不能自动成为具体执行平台。
+必须由唯一的确定性 Strategy Channel Resolver 输出。Resolver 综合 Answer
+Decision、Citation Decision Value、Run recurrence、Channel Aggregation、
+Benchmark Evidence、Product Truth、Capability Gap、Relevant Brand Asset 和
+Retrieval/Citation 状态，统一决定 `primary_intervention_path`、计划平台层、
+平台角色和理由。Benchmark 来源平台可以因真实 `DECISION_CITATION` 获得
+`PRIMARY / SECONDARY / EXPERIMENTAL / OBSERVE` 等角色，但必须由 Resolver
+解释，不能自动成为具体执行平台。
 
 核心边界：
 
@@ -353,6 +356,11 @@ Asset 和 Retrieval/Citation 状态。Benchmark 来源平台可以因真实
 - `DECISION_CITATION` 必须能回溯完整 lineage：Run -> RecommendationEvent -> AnswerDecisionBinding -> AnswerUnit -> ReferenceSource -> SourceDocument -> SourceClaim -> EvidenceAlignment。
 - `ANSWER_SUPPORT_CITATION` 必须谨慎，只有存在 eligible SUPPORTS 且 AnswerUnit 明确可用但未绑定 Recommendation Decision 时才输出；不能为了凑三类新增 Judge 或降低标准。
 - Channel Aggregation 只能作为 Step 7 Strategy 输入，不直接创建 Step 8 的账号、URL、标题、Draft、Action 或 Experiment。
+- Step 7 只有一个正式渠道策略决策源：Strategy Channel Resolver。Capability
+  Gap、Citation Decision Value、Channel Aggregation、Product Truth、Brand
+  Asset 和 Retrieval/Citation State 都只是 Resolver 输入，不能各自产生另一套平台结论。
+- LLM 负责语义理解与自然语言解释，不能决定正式的 `PRIMARY / SECONDARY /
+  EXPERIMENTAL / OBSERVE / NOT_RECOMMENDED` 平台角色。
 
 ## 9. 证据标注：主张、正文和段落对齐
 
@@ -704,6 +712,27 @@ Experiment
 这些属于 Step 8 Execution Plan。第 7 步允许出现计划平台层，例如
 `OFFICIAL_SITE`、`ZHIHU`、`BAIJIAHAO`，但必须说明 `channel_role`，不能把
 Benchmark Channel 自动当成 Strategy Channel，更不能自动推出具体发布对象。
+
+第 7 步平台角色由唯一 Strategy Channel Resolver 产生。它只决定：
+
+```text
+primary_intervention_path
+planned_channels
+channel_roles
+channel_rationales
+```
+
+它不决定：
+
+```text
+具体账号
+具体 URL
+具体页面
+具体标题
+具体 section
+具体资产实例
+Draft
+```
 
 只有人工接受后的候选才能进入执行方案/实验计划阶段。
 

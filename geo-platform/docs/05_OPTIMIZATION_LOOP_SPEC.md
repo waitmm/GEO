@@ -446,6 +446,83 @@ Hard boundaries:
 - Benchmark answers "which source is worth studying"; Citation Decision Value
   answers "what role this source played in the AI decision".
 
+## Strategy Channel Resolver V1.1
+
+Step 7 has exactly one formal channel strategy decision source:
+
+```text
+resolve_strategy_channels(...)
+```
+
+The resolver is deterministic. It decides only:
+
+```text
+primary_intervention_path
+planned_channels
+channel_roles
+channel_rationales
+```
+
+It must not decide Step 8 execution parameters:
+
+```text
+account
+URL
+page
+title
+section
+asset instance
+Draft
+```
+
+Inputs are formal read-model signals:
+
+```text
+capability_gap_items
+priority_capabilities / reasons
+Citation Decision Value
+Channel Aggregation
+Product Truth
+Relevant Brand Asset
+Retrieval State
+Citation State
+Benchmark Evidence
+```
+
+LLM can still produce semantic facts such as RecommendationEvent, AnswerUnit,
+SourceClaim, and EvidenceAlignment. LLM cannot decide formal channel roles such
+as `PRIMARY`, `SECONDARY`, `EXPERIMENTAL`, `OBSERVE`, or `NOT_RECOMMENDED`.
+
+Policy rules:
+
+- `CONTENT_GAP`: if Product Truth is supported and the earliest failed layer is
+  relevant brand asset expression, the relevant first-party asset channel can be
+  `PRIMARY`. Strong third-party Decision Citation can become `SECONDARY` or
+  `EXPERIMENTAL`, but not override the earliest failed layer.
+- `EVIDENCE_GAP`: if Product Truth, asset expression, and retrieval are already
+  sufficient but decision evidence adoption is missing, a third-party channel
+  with strong Decision Citation coverage can become `PRIMARY`.
+- `DISCOVERABILITY_GAP`: focus the primary mechanism on retrieval expansion and
+  effective discoverability. Retrieval recurrence is more important than raw
+  citation volume, but it still does not automatically choose an execution
+  platform.
+- `PRODUCT_GAP`: use `PRODUCT_IMPROVEMENT`. Do not force official-site or
+  third-party content channels.
+- `UNKNOWN`: do not generate a determined `PRIMARY` channel.
+- `NO_GAP`: do not generate a channel action only to fill the workflow.
+
+Deprecated distributed shortcuts must not be consumed as formal Step 7 policy:
+
+```text
+CONTENT/EVIDENCE -> official site PRIMARY
+Benchmark channel -> execution channel
+Benchmark channel -> always OBSERVE
+```
+
+The expected behavior is not a hardcoded channel result. It is an auditable
+decision explaining why a channel role follows from Gap + Decision Citation +
+Retrieval/Citation + Product Truth + Brand Asset.
+
 ## Citation Decision Vertical Slice V1
 
 After Priority and Action Route are available, the system can generate a

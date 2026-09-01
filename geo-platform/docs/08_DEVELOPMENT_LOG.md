@@ -2,6 +2,112 @@
 
 Status: ACTIVE
 
+## 2026-09-01 Step 7 Strategy Channel Resolver
+
+- Audited current channel-decision logic. Formal Step 7 channel roles were
+  previously distributed across:
+
+```text
+_strategy_planned_channels
+_strategy_primary_intervention_path
+_strategy_channel_roles
+frontend display of planned_channels/channel_roles
+Step 8 mechanism compatibility checks
+```
+
+- Introduced a single deterministic resolver:
+
+```text
+_resolve_strategy_channels(...)
+```
+
+It is now the only formal source for:
+
+```text
+primary_intervention_path
+planned_channels
+channel_roles
+channel_rationales
+```
+
+- Resolver inputs are existing formal read-model signals only:
+
+```text
+capability_gap_items
+priority_capabilities
+citation_decision_values
+channel_aggregation
+product_truth
+relevant_brand_assets
+retrieval/citation state
+benchmark evidence
+```
+
+- Deprecated distributed shortcuts are no longer consumed by formal Step 7:
+
+```text
+CONTENT/EVIDENCE -> first-party PRIMARY
+Benchmark platform -> execution channel
+Benchmark platform -> always OBSERVE
+```
+
+- Added deterministic policy behavior:
+
+```text
+CONTENT_GAP -> relevant first-party asset can be PRIMARY.
+EVIDENCE_GAP + strong third-party Decision Citation -> third-party channel can be PRIMARY.
+DISCOVERABILITY_GAP -> retrieval expansion path.
+PRODUCT_GAP -> PRODUCT_IMPROVEMENT, no content-channel PRIMARY.
+UNKNOWN -> no forced PRIMARY channel.
+Benchmark-only without Decision Citation -> OBSERVE.
+```
+
+- The resolver explicitly does not decide Step 8 execution parameters:
+
+```text
+account
+URL
+page
+title
+section
+asset instance
+Draft
+```
+
+- Prompt `#40` read-only regression:
+
+```text
+Evidence Package #15
+status = READY_FOR_HUMAN_CONFIRM
+primary_intervention_path = FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION:OFFICIAL_SITE
+OFFICIAL_SITE = PRIMARY
+ZHIHU = SECONDARY
+ZHIHU basis = Decision Citation 6/6 Runs; supported reasons 点击统计 / 自定义分享标题 / 营销场景使用; primary benchmark 1
+resolver = resolve_strategy_channels / DETERMINISTIC_POLICY_ENGINE
+```
+
+The #40 output did not change for change's sake. The important correction is
+that both OFFICIAL_SITE and ZHIHU roles now come from the same resolver rather
+than two distributed rule fragments.
+
+Validation:
+
+```text
+.venv/bin/python -m pytest -q tests/test_strategy_step7_v1.py tests/test_source_gap_v1.py tests/test_evidence_lineage_v1.py tests/test_asset_brief_v1.py tests/test_workflow_review_queue.py
+.venv/bin/python -m compileall app
+source /Users/bmwqr/.nvm/nvm.sh && nvm use 18.20.8 && cd geo-platform/frontend && npm run build
+git diff --check
+```
+
+Results:
+
+```text
+91 passed
+compileall passed
+frontend build passed
+git diff --check passed
+```
+
 ## 2026-09-01 Citation Decision Value Step 7 Strategy Input
 
 - Added a Citation Decision Value interpretation layer on top of existing

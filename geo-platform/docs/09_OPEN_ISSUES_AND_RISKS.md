@@ -14,6 +14,16 @@ Status: ACTIVE
   channel`. Planned channel roles must be explained by Citation Decision Value,
   Channel Aggregation, Product Truth, Capability Gap, Relevant Brand Asset, and
   Retrieval/Citation status. Concrete account/URL/title/Draft remains Step 8.
+- Step 7 now has exactly one formal channel strategy decision source:
+  `resolve_strategy_channels(...)`. Frontend, workflow, and downstream services
+  must not re-infer `PRIMARY / SECONDARY / EXPERIMENTAL / OBSERVE /
+  NOT_RECOMMENDED` from Gap or Benchmark platform. If channel roles change,
+  update the Resolver and its fixtures rather than adding a second resolver.
+- `EVIDENCE_GAP` is the regression canary for Step 7 channel policy. A strong
+  third-party Decision Citation path must be allowed to become `PRIMARY` when
+  Product Truth, asset expression, and retrieval have already passed. If tests
+  force official site PRIMARY in that case, the old hardcoded policy has leaked
+  back in.
 - Current Step 7 StrategyCandidate selection must be context-bound and origin
   gated. Legacy `generate-v2/local-rule`, audit, test, regression, or shadow
   candidates may stay in history, but they must not become current even if they

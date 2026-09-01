@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import copy
+
 from app.models import OptimizationEvidencePackage, Project, Prompt
 from app.modules.optimization.service import (
     _channel_aggregation_for_rows,
     _citation_decision_values_from_benchmark_items,
+    _resolve_strategy_channels,
     _strategy_payload_from_vertical_action,
 )
 from app.services.serialization import dumps
@@ -337,3 +340,139 @@ def test_benchmark_channel_without_decision_citation_remains_observe():
 
     assert zhihu["intervention_priority"] == "OBSERVE"
     assert "Benchmark 来源平台只说明" in zhihu["selection_basis"]
+
+
+def _action_for_gap(gap_type: str, *, route: str | None = None, product_truth_status: str = "TRUE") -> dict:
+    action = copy.deepcopy(_action())
+    action["gap_type"] = gap_type
+    action["gap_label"] = {
+        "CONTENT_GAP": "内容表达缺口",
+        "EVIDENCE_GAP": "证据采纳缺口",
+        "DISCOVERABILITY_GAP": "检索发现缺口",
+        "PRODUCT_GAP": "产品能力缺口",
+        "UNKNOWN": "待确认缺口",
+        "NO_GAP": "无明确缺口",
+    }.get(gap_type, gap_type)
+    action["route"] = route or {
+        "CONTENT_GAP": "CONTENT",
+        "EVIDENCE_GAP": "EVIDENCE",
+        "DISCOVERABILITY_GAP": "DISCOVERABILITY",
+        "PRODUCT_GAP": "PRODUCT",
+        "UNKNOWN": "UNRESOLVED",
+        "NO_GAP": "NO_ACTION",
+    }.get(gap_type, "UNRESOLVED")
+    action["product_truth_status"] = product_truth_status
+    for item in action["gap_items"]:
+        item["gap_type"] = gap_type
+        item["gap_label"] = action["gap_label"]
+        item["product_truth_status"] = product_truth_status
+        item["gap_layer"] = {
+            "CONTENT_GAP": "RELEVANT_ASSET_EXPRESSION",
+            "EVIDENCE_GAP": "EVIDENCE_ADOPTION",
+            "DISCOVERABILITY_GAP": "RETRIEVAL_CANDIDATE",
+            "PRODUCT_GAP": "PRODUCT_TRUTH",
+            "UNKNOWN": "UNKNOWN",
+            "NO_GAP": "NO_GAP",
+        }.get(gap_type, "")
+    return action
+
+
+def test_strategy_channel_resolver_content_gap_keeps_first_party_primary_with_strong_third_party_secondary():
+    action = _action_for_gap("CONTENT_GAP")
+    payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), action, {})
+
+    assert payload["strategy_channel_resolver"]["name"] == "resolve_strategy_channels"
+    assert payload["primary_intervention_path"] == "FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION:OFFICIAL_SITE"
+    assert payload["planned_channels"][0]["channel"] == "OFFICIAL_SITE"
+    assert payload["planned_channels"][0]["intervention_priority"] == "PRIMARY"
+    zhihu = next(item for item in payload["planned_channels"] if item["channel"] == "ZHIHU")
+    assert zhihu["intervention_priority"] == "SECONDARY"
+    assert "Decision Citation 覆盖 6/6 Runs" in zhihu["selection_basis"]
+    assert "不是因为官网天然优先" in payload["planned_channels"][0]["selection_basis"]
+
+
+def test_strategy_channel_resolver_evidence_gap_allows_third_party_primary_when_decision_citation_is_strong():
+    action = _action_for_gap("EVIDENCE_GAP")
+    payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), action, {})
+
+    assert payload["primary_intervention_path"] == "THIRD_PARTY_DECISION_EVIDENCE:ZHIHU"
+    assert payload["planned_channels"][0]["channel"] == "ZHIHU"
+    assert payload["planned_channels"][0]["intervention_priority"] == "PRIMARY"
+    assert "多个有效 Run" in payload["planned_channels"][0]["channel_role"]
+    official = next(item for item in payload["planned_channels"] if item["channel"] == "OFFICIAL_SITE")
+    assert official["intervention_priority"] == "SECONDARY"
+    assert "第三方证据可成为主路径" in official["selection_basis"]
+
+
+def test_strategy_channel_resolver_discoverability_gap_prioritizes_retrieval_expansion():
+    action = _action_for_gap("DISCOVERABILITY_GAP")
+    action["channel_aggregation"].append({
+        "channel": "BAIJIAHAO",
+        "channel_label": "百家号",
+        "retrieval_run_count": 5,
+        "citation_run_count": 1,
+        "decision_citation_run_count": 0,
+        "run_coverage_denominator": 6,
+        "supported_reasons": [],
+    })
+    payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), action, {})
+
+    assert payload["primary_intervention_path"] == "DISCOVERABILITY_RETRIEVAL_EXPANSION:OFFICIAL_SITE"
+    assert payload["planned_channels"][0]["intervention_type"] == "DISCOVERABILITY_RETRIEVAL_EXPANSION"
+    assert "Retrieval 缺口" in payload["planned_channels"][0]["selection_basis"]
+
+
+def test_strategy_channel_resolver_product_gap_does_not_create_content_channel_primary():
+    action = _action_for_gap("PRODUCT_GAP", product_truth_status="FALSE")
+    payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), action, {})
+
+    assert payload["primary_intervention_path"] == "PRODUCT_IMPROVEMENT"
+    assert not any(item["intervention_priority"] == "PRIMARY" for item in payload["planned_channels"])
+    assert payload["planned_channels"][0]["channel"] == "OTHER"
+    assert payload["planned_channels"][0]["intervention_priority"] == "NOT_RECOMMENDED"
+    assert "不能把未支持的产品能力包装成官网或第三方内容优化" in payload["planned_channels"][0]["selection_basis"]
+
+
+def test_strategy_channel_resolver_unknown_does_not_force_primary_channel():
+    action = _action_for_gap("UNKNOWN", product_truth_status="UNKNOWN")
+    payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), action, {})
+
+    assert payload["primary_intervention_path"] == "NEED_MORE_EVIDENCE"
+    assert not any(item["intervention_priority"] == "PRIMARY" for item in payload["planned_channels"])
+    assert payload["planned_channels"][0]["intervention_priority"] == "NOT_RECOMMENDED"
+    assert "暂不生成确定执行平台" in payload["planned_channels"][0]["channel_role"]
+
+
+def test_strategy_channel_resolver_benchmark_only_without_decision_citation_cannot_upgrade_channel():
+    action = _action_for_gap("CONTENT_GAP")
+    action["channel_aggregation"] = [
+        {
+            "channel": "ZHIHU",
+            "channel_label": "知乎",
+            "retrieval_run_count": 6,
+            "citation_run_count": 6,
+            "decision_citation_run_count": 0,
+            "answer_support_run_count": 0,
+            "eligible_support_run_count": 0,
+            "run_coverage_denominator": 6,
+            "supported_reasons": [],
+            "primary_benchmark_count": 1,
+            "secondary_benchmark_count": 0,
+        }
+    ]
+    payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), action, {})
+    zhihu = next(item for item in payload["planned_channels"] if item["channel"] == "ZHIHU")
+
+    assert payload["primary_intervention_path"] == "FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION:OFFICIAL_SITE"
+    assert zhihu["intervention_priority"] == "OBSERVE"
+    assert "没有 Decision Citation 时不能升级" in zhihu["selection_basis"]
+
+
+def test_strategy_channel_resolver_step7_does_not_choose_step8_concrete_execution_fields():
+    payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), _action(), {})
+
+    assert payload["strategy_channel_resolver"]["scope"] == "STEP_7_CHANNEL_ROLE_AND_INTERVENTION_PATH_ONLY"
+    assert "url" in payload["strategy_channel_resolver"]["does_not_decide"]
+    assert payload["target_platform"] == "UNRESOLVED"
+    assert payload["target_url"] == ""
+    assert payload["target_asset"] == "UNRESOLVED"

@@ -4482,10 +4482,18 @@ def _strategy_fields_from_vertical_action(
     evidence_run_ids: list[int],
 ) -> dict:
     priority_capabilities = _strategy_priority_capabilities(gap_items, action)
-    planned_channels = _strategy_planned_channels(project, action, gap_items)
-    channel_roles = _strategy_channel_roles(planned_channels)
-    intervention_mechanism = _strategy_intervention_mechanism(project, prompt, action, priority_capabilities, evidence_run_ids)
-    primary_path = _strategy_primary_intervention_path(action, planned_channels)
+    channel_resolution = _resolve_strategy_channels(project, action, gap_items, priority_capabilities)
+    planned_channels = channel_resolution["planned_channels"]
+    channel_roles = channel_resolution["channel_roles"]
+    primary_path = channel_resolution["primary_intervention_path"]
+    intervention_mechanism = _strategy_intervention_mechanism(
+        project,
+        prompt,
+        action,
+        priority_capabilities,
+        evidence_run_ids,
+        channel_resolution,
+    )
     asset_direction = _strategy_asset_direction(action, gap_items, planned_channels)
     execution_sequence = _strategy_execution_sequence(action, planned_channels, asset_direction)
     attribution_intent = _strategy_attribution_intent(project, prompt, action, priority_capabilities, primary_path, evidence_run_ids)
@@ -4496,6 +4504,8 @@ def _strategy_fields_from_vertical_action(
         "primary_intervention_path": primary_path,
         "planned_channels": planned_channels,
         "channel_roles": channel_roles,
+        "channel_rationales": channel_resolution["channel_rationales"],
+        "strategy_channel_resolver": channel_resolution["resolver"],
         "channel_aggregation": action.get("channel_aggregation", []),
         "citation_decision_values": action.get("citation_decision_values", []),
         "citation_value_summary": action.get("citation_value_summary", {}),
@@ -4512,89 +4522,427 @@ def _strategy_fields_from_vertical_action(
     }
 
 
-def _strategy_planned_channels(project: Project, action: dict, gap_items: list[dict]) -> list[dict]:
-    route = (action.get("route") or "").upper()
-    benchmark = action.get("benchmark_source") or {}
-    benchmark_platform = str(benchmark.get("platform") or "").strip().lower()
+def _resolve_strategy_channels(
+    project: Project,
+    action: dict,
+    gap_items: list[dict],
+    priority_capabilities: list[dict],
+) -> dict:
+    """Single formal Step 7 source for channel roles and intervention path."""
+    gap_type = _strategy_dominant_gap_type(action, gap_items)
+    first_party_channel = _strategy_first_party_channel(gap_items)
+    aggregation_by_channel = _strategy_channel_aggregation_by_channel(action)
+    benchmark_channel = _strategy_benchmark_channel(action)
+    best_decision = _strategy_best_decision_citation_channel(aggregation_by_channel)
+    priority_labels = {
+        item.get("capability_label")
+        for item in priority_capabilities
+        if item.get("capability_label")
+    }
+    channels: list[dict] = []
+    primary_path = "NEED_MORE_EVIDENCE"
+    rationale = ""
+
+    if gap_type == "CONTENT_GAP":
+        primary_path = f"FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION:{first_party_channel}"
+        rationale = "最早失败层发生在目标品牌相关资产表达，优先补齐一方品牌能力事实。"
+        channels.append(_strategy_channel_plan(
+            first_party_channel,
+            "PRIMARY",
+            "FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION",
+            gap_type,
+            "承载目标品牌自己的能力事实表达和可摘录证据；当前最早失败层发生在目标品牌自身的内容表达层，需要先让相关品牌资产承载能力事实和可摘录证据。",
+            "由 Product Truth、相关品牌资产表达缺口、检索/引用状态共同确定；不是因为官网天然优先。",
+            priority_labels=priority_labels,
+            gap_items=gap_items,
+        ))
+        _append_benchmark_channel_plan(
+            channels,
+            benchmark_channel,
+            aggregation_by_channel,
+            gap_type,
+            priority_labels,
+            primary_allowed=False,
+        )
+    elif gap_type == "EVIDENCE_GAP":
+        if best_decision and int(best_decision.get("decision_citation_run_count") or 0) >= 2:
+            channel = str(best_decision.get("channel") or "THIRD_PARTY_MEDIA").upper()
+            primary_path = f"THIRD_PARTY_DECISION_EVIDENCE:{channel}"
+            rationale = "品牌事实、资产表达和检索已经具备基础，但 AI 决策证据采纳不足，优先建设已被 AI 稳定采纳的第三方证据形态。"
+            channels.append(_strategy_channel_plan(
+                channel,
+                "PRIMARY",
+                "THIRD_PARTY_DECISION_EVIDENCE",
+                gap_type,
+                "该平台在多个有效 Run 中直接支撑 AI 品牌决策理由，可优先用于第三方证据建设；具体账号、URL、标题和内容结构仍属 Step 8。",
+                _strategy_decision_channel_basis(best_decision, priority_labels, include_benchmark=True),
+                aggregate=best_decision,
+                priority_labels=priority_labels,
+                gap_items=gap_items,
+            ))
+            channels.append(_strategy_channel_plan(
+                first_party_channel,
+                "SECONDARY",
+                "FIRST_PARTY_EVIDENCE_STRENGTHENING",
+                gap_type,
+                "目标品牌一方资产用于承接和校准产品事实，避免第三方证据缺少品牌事实锚点。",
+                "EVIDENCE_GAP 下第三方证据可成为主路径；一方资产作为事实锚点和复核入口。",
+                priority_labels=priority_labels,
+                gap_items=gap_items,
+            ))
+        else:
+            primary_path = f"FIRST_PARTY_EVIDENCE_STRENGTHENING:{first_party_channel}"
+            rationale = "尚无稳定第三方决策引用覆盖，先补强一方资产中的证明、案例和场景证据。"
+            channels.append(_strategy_channel_plan(
+                first_party_channel,
+                "PRIMARY",
+                "FIRST_PARTY_EVIDENCE_STRENGTHENING",
+                gap_type,
+                "当前缺口在证据强度，但尚未看到可作为主路径的多 Run 第三方 Decision Citation，先补强目标品牌自己的证明信号。",
+                "由 Evidence Gap、Product Truth、相关资产和 Decision Citation 覆盖共同确定。",
+                priority_labels=priority_labels,
+                gap_items=gap_items,
+            ))
+            _append_benchmark_channel_plan(
+                channels,
+                benchmark_channel,
+                aggregation_by_channel,
+                gap_type,
+                priority_labels,
+                primary_allowed=False,
+            )
+    elif gap_type == "DISCOVERABILITY_GAP":
+        primary_path = f"DISCOVERABILITY_RETRIEVAL_EXPANSION:{first_party_channel}"
+        rationale = "目标品牌能力和资产表达具备基础，但相关资产没有进入有效 Retrieval，优先处理可检索性和检索覆盖。"
+        channels.append(_strategy_channel_plan(
+            first_party_channel,
+            "PRIMARY",
+            "DISCOVERABILITY_RETRIEVAL_EXPANSION",
+            gap_type,
+            "当前最早失败层在有效检索覆盖，优先提升相关品牌资产被检索发现的能力。",
+            "由 Retrieval 缺口、相关品牌资产和 Product Truth 共同确定；Citation 只作辅助观察。",
+            priority_labels=priority_labels,
+            gap_items=gap_items,
+        ))
+        best_retrieval = _strategy_best_retrieval_channel(aggregation_by_channel, exclude={first_party_channel})
+        if best_retrieval:
+            channels.append(_strategy_channel_plan(
+                str(best_retrieval.get("channel") or "OTHER").upper(),
+                "OBSERVE",
+                "RETRIEVAL_PATTERN_OBSERVATION",
+                gap_type,
+                "该平台在当前检索/引用环境中有可观察信号，但不能仅因 Retrieval 高就自动成为执行渠道。",
+                _strategy_retrieval_channel_basis(best_retrieval),
+                aggregate=best_retrieval,
+                priority_labels=priority_labels,
+                gap_items=gap_items,
+            ))
+    elif gap_type == "PRODUCT_GAP":
+        primary_path = "PRODUCT_IMPROVEMENT"
+        rationale = "目标品牌能力本身未被 Product Truth 支持，不能把产品缺口包装成内容或渠道优化。"
+        channels.append(_strategy_channel_plan(
+            "OTHER",
+            "NOT_RECOMMENDED",
+            "PRODUCT_IMPROVEMENT",
+            gap_type,
+            "当前应进入产品能力/路线图评估，不推荐生成内容渠道动作。",
+            "Product Truth 未支持该 capability/reason，不能把未支持的产品能力包装成官网或第三方内容优化；Step 7 不强行选择官网、知乎或其他内容渠道。",
+            priority_labels=priority_labels,
+            gap_items=gap_items,
+        ))
+    elif gap_type == "NO_GAP":
+        primary_path = "NO_ACTION"
+        rationale = "当前 capability 没有明确四层缺口，不生成渠道动作。"
+        channels.append(_strategy_channel_plan(
+            "OTHER",
+            "NOT_RECOMMENDED",
+            "NO_ACTION",
+            gap_type,
+            "当前没有可确认的能力级缺口，不推荐进入执行渠道。",
+            "NO_GAP 不能为了形成 Strategy 而机械生成平台动作。",
+            priority_labels=priority_labels,
+            gap_items=gap_items,
+        ))
+    else:
+        primary_path = "NEED_MORE_EVIDENCE"
+        rationale = "关键事实不足，不能生成确定 Primary Channel。"
+        channels.append(_strategy_channel_plan(
+            "OTHER",
+            "NOT_RECOMMENDED",
+            "NEED_MORE_EVIDENCE",
+            gap_type or "UNKNOWN",
+            "Product Truth、Retrieval、Evidence 或 Brand Asset 事实不足，暂不生成确定执行平台。",
+            "UNKNOWN 状态不等于低优先级动作；需要先补证据或人工复核。",
+            priority_labels=priority_labels,
+            gap_items=gap_items,
+        ))
+
+    channel_roles = _strategy_channel_roles(channels)
+    return {
+        "resolver": {
+            "name": "resolve_strategy_channels",
+            "version": "strategy_channel_resolver.v1",
+            "decision_mode": "DETERMINISTIC_POLICY_ENGINE",
+            "scope": "STEP_7_CHANNEL_ROLE_AND_INTERVENTION_PATH_ONLY",
+            "does_not_decide": ["account", "url", "title", "section", "asset_instance", "draft"],
+            "input_signals": [
+                "capability_gap_items",
+                "priority_capabilities",
+                "citation_decision_values",
+                "channel_aggregation",
+                "product_truth",
+                "relevant_brand_assets",
+                "retrieval_state",
+                "citation_state",
+                "benchmark_evidence",
+            ],
+        },
+        "gap_type": gap_type,
+        "primary_intervention_path": primary_path,
+        "planned_channels": channels,
+        "channel_roles": channel_roles,
+        "channel_rationales": {
+            "primary_decision": rationale,
+            "gap_type": gap_type,
+            "benchmark_channel_boundary": "Benchmark 来源平台不能自动成为 Strategy 执行平台；必须由 Resolver 结合 Decision Citation、Gap、Product Truth、Brand Asset 和 Retrieval/Citation 状态统一判断。",
+            "step8_boundary": "Resolver 只决定 Step 7 的平台角色和干预路径；具体账号、URL、页面、标题、section、资产实例和 Draft 属于 Step 8。",
+        },
+    }
+
+
+def _strategy_dominant_gap_type(action: dict, gap_items: list[dict]) -> str:
+    if gap_items:
+        counter: Counter[str] = Counter()
+        for item in gap_items:
+            gap_type = str(item.get("gap_type") or "").upper()
+            if not gap_type:
+                continue
+            weight = max(1, len(set(item.get("observed_run_ids") or [])))
+            counter[gap_type] += weight
+        if counter:
+            return counter.most_common(1)[0][0]
+    return str(action.get("gap_type") or "UNKNOWN").upper()
+
+
+def _strategy_first_party_channel(gap_items: list[dict]) -> str:
+    return "PRODUCT_DOCS" if any(_relevant_asset_is_docs(item) for item in gap_items) else "OFFICIAL_SITE"
+
+
+def _strategy_channel_aggregation_by_channel(action: dict) -> dict[str, dict]:
     channel_aggregation = action.get("channel_aggregation") if isinstance(action.get("channel_aggregation"), list) else []
-    aggregation_by_channel = {
+    return {
         str(item.get("channel") or "").upper(): item
         for item in channel_aggregation
         if isinstance(item, dict) and item.get("channel")
     }
-    priority_labels = {
-        item.get("capability_label")
-        for item in (gap_items or [])
-        if item.get("capability_label")
+
+
+def _strategy_benchmark_channel(action: dict) -> str:
+    benchmark = action.get("benchmark_source") or {}
+    benchmark_platform = str(benchmark.get("platform") or "").strip().lower()
+    if benchmark_platform in {"zhihu", "zhuanlan.zhihu.com"}:
+        return "ZHIHU"
+    if benchmark_platform in {"baijiahao", "baidu", "baidu.com", "mbd.baidu.com"}:
+        return "BAIJIAHAO"
+    return ""
+
+
+def _strategy_best_decision_citation_channel(aggregation_by_channel: dict[str, dict]) -> dict | None:
+    candidates = [
+        item for item in aggregation_by_channel.values()
+        if int(item.get("decision_citation_run_count") or 0) > 0
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (
+        -int(item.get("decision_citation_run_count") or 0),
+        -int(item.get("primary_benchmark_count") or 0),
+        str(item.get("channel_label") or item.get("channel") or ""),
+    ))[0]
+
+
+def _strategy_best_retrieval_channel(aggregation_by_channel: dict[str, dict], exclude: set[str] | None = None) -> dict | None:
+    excluded = exclude or set()
+    candidates = [
+        item for item in aggregation_by_channel.values()
+        if str(item.get("channel") or "").upper() not in excluded
+        and int(item.get("retrieval_run_count") or 0) > 0
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (
+        -int(item.get("retrieval_run_count") or 0),
+        -int(item.get("citation_run_count") or 0),
+        str(item.get("channel_label") or item.get("channel") or ""),
+    ))[0]
+
+
+def _append_benchmark_channel_plan(
+    channels: list[dict],
+    benchmark_channel: str,
+    aggregation_by_channel: dict[str, dict],
+    gap_type: str,
+    priority_labels: set[str],
+    primary_allowed: bool,
+) -> None:
+    if not benchmark_channel or any(item.get("channel") == benchmark_channel for item in channels):
+        return
+    aggregate = aggregation_by_channel.get(benchmark_channel, {})
+    decision_count = int(aggregate.get("decision_citation_run_count") or 0)
+    if primary_allowed and decision_count >= 2:
+        priority = "PRIMARY"
+        intervention_type = "THIRD_PARTY_DECISION_EVIDENCE"
+        role = "该平台在多个有效 Run 中直接支撑 AI 品牌决策理由，可作为当前证据建设主路径。"
+    elif decision_count >= 2:
+        priority = "SECONDARY"
+        intervention_type = "THIRD_PARTY_DECISION_EVIDENCE"
+        role = "该平台在多个有效 Run 中出现直接参与 AI 品牌决策的引用证据，可作为第三方证据建设或验证渠道；具体账号、资产和内容形式仍需 Step 8 人工确认。"
+    elif decision_count == 1:
+        priority = "EXPERIMENTAL"
+        intervention_type = "THIRD_PARTY_DECISION_EVIDENCE"
+        role = "该平台出现过直接参与 AI 品牌决策的引用证据，但覆盖有限，适合作为小范围实验型渠道观察。"
+    else:
+        priority = "OBSERVE"
+        intervention_type = "BENCHMARK_CONTEXT_OBSERVATION"
+        role = "仅作为本轮对标证据来源和后续可选验证场景，不自动成为执行渠道。"
+    basis = (
+        _strategy_decision_channel_basis(aggregate, priority_labels, include_benchmark=True)
+        if decision_count
+        else "Benchmark 来源平台只说明 AI 当前引用过该平台；没有 Decision Citation 时不能升级为执行渠道。"
+    )
+    channels.append(_strategy_channel_plan(
+        benchmark_channel,
+        priority,
+        intervention_type,
+        gap_type,
+        role,
+        basis,
+        aggregate=aggregate,
+        priority_labels=priority_labels,
+    ))
+
+
+def _strategy_channel_plan(
+    channel: str,
+    priority: str,
+    intervention_type: str,
+    gap_type: str,
+    role: str,
+    basis: str,
+    *,
+    aggregate: dict | None = None,
+    priority_labels: set[str] | None = None,
+    gap_items: list[dict] | None = None,
+) -> dict:
+    aggregate = aggregate or {}
+    priority_labels = priority_labels or set()
+    supported_reasons = _strategy_supported_reasons_for_channel(aggregate, priority_labels)
+    channel_key = channel.upper()
+    return {
+        "channel": channel_key,
+        "channel_label": _strategy_channel_label(channel_key),
+        "intervention_priority": priority,
+        "role": priority,
+        "intervention_type": intervention_type,
+        "channel_role": role,
+        "selection_basis": basis,
+        "rationale": basis,
+        "supported_capabilities": supported_reasons,
+        "supported_reasons": supported_reasons,
+        "gap_basis": _strategy_gap_basis(gap_type, gap_items or []),
+        "decision_citation_run_count": int(aggregate.get("decision_citation_run_count") or 0),
+        "decision_citation_total_runs": int(aggregate.get("run_coverage_denominator") or 0),
+        "answer_support_run_count": int(aggregate.get("answer_support_run_count") or 0),
+        "retrieval_run_count": int(aggregate.get("retrieval_run_count") or 0),
+        "citation_run_count": int(aggregate.get("citation_run_count") or 0),
+        "benchmark_basis": {
+            "primary_benchmark_count": int(aggregate.get("primary_benchmark_count") or 0),
+            "secondary_benchmark_count": int(aggregate.get("secondary_benchmark_count") or 0),
+            "source_document_ids": aggregate.get("source_document_ids", []),
+        },
+        "brand_asset_basis": _strategy_brand_asset_basis(gap_items or []),
+        "citation_decision_value_basis": aggregate,
+        "step8_boundary": "本字段不决定具体账号、URL、页面、标题、section、资产实例或 Draft。",
     }
-    channels: list[dict] = []
-    if route in {"CONTENT", "EVIDENCE"}:
-        first_party_channel = "PRODUCT_DOCS" if any(_relevant_asset_is_docs(item) for item in gap_items) else "OFFICIAL_SITE"
-        channels.append({
-            "channel": first_party_channel,
-            "channel_label": "产品文档" if first_party_channel == "PRODUCT_DOCS" else "官网",
-            "intervention_priority": "PRIMARY",
-            "channel_role": "承载目标品牌自己的能力事实表达和可摘录证据，先修正品牌资产而不是追随对标来源平台。",
-            "selection_basis": "由 Product Truth、相关品牌资产表达缺口、检索/引用状态共同确定；不是由 Benchmark 平台直接推出。",
-        })
-    if route == "EVIDENCE":
-        channels.append({
-            "channel": "THIRD_PARTY_MEDIA",
-            "channel_label": "第三方媒体",
-            "intervention_priority": "SECONDARY",
-            "channel_role": "在一方资产表达完成后补充可引用的外部证明、案例或场景证据。",
-            "selection_basis": "当前 Gap 需要更强证明信号，但具体平台和账号仍需 Step 8 人工确认。",
-        })
-    if benchmark_platform in {"zhihu", "baijiahao"}:
-        channel = "ZHIHU" if benchmark_platform == "zhihu" else "BAIJIAHAO"
-        if not any(item.get("channel") == channel for item in channels):
-            aggregate = aggregation_by_channel.get(channel, {})
-            decision_count = int(aggregate.get("decision_citation_run_count") or 0)
-            denominator = int(aggregate.get("run_coverage_denominator") or 0)
-            supported_reasons = [
-                reason for reason in aggregate.get("supported_reasons", [])
-                if not priority_labels or reason in priority_labels or any(str(label) in reason or reason in str(label) for label in priority_labels)
-            ][:5]
-            if decision_count >= 2:
-                intervention_priority = "SECONDARY"
-                role = (
-                    "该平台在多个有效 Run 中出现直接参与 AI 品牌决策的引用证据，可作为第三方证据建设或验证渠道；"
-                    "具体账号、资产和内容形式仍需 Step 8 人工确认。"
-                )
-            elif decision_count == 1:
-                intervention_priority = "EXPERIMENTAL"
-                role = (
-                    "该平台出现过直接参与 AI 品牌决策的引用证据，但覆盖有限，适合作为小范围实验型渠道观察。"
-                )
-            else:
-                intervention_priority = "OBSERVE"
-                role = "仅作为本轮对标证据来源和后续可选验证场景，不自动成为执行渠道。"
-            basis_parts = []
-            if decision_count:
-                basis_parts.append(f"Decision Citation 覆盖 {decision_count}/{denominator or '?'} Runs")
-            if supported_reasons:
-                basis_parts.append("支撑理由：" + "、".join(supported_reasons))
-            if decision_count and aggregate.get("primary_benchmark_count"):
-                basis_parts.append(f"核心对标来源 {aggregate.get('primary_benchmark_count')} 个")
-            if not basis_parts:
-                basis_parts.append("Benchmark 来源平台只说明 AI 当前引用过该平台；是否在该平台执行属于 Step 8 人工判断。")
-            channels.append({
-                "channel": channel,
-                "channel_label": "知乎" if channel == "ZHIHU" else "百家号",
-                "intervention_priority": intervention_priority,
-                "channel_role": role,
-                "selection_basis": "；".join(basis_parts),
-                "citation_decision_value_basis": aggregate,
-            })
-    if not channels:
-        channels.append({
-            "channel": "OTHER",
-            "channel_label": "待人工确认渠道",
-            "intervention_priority": "PRIMARY",
-            "channel_role": "当前 Strategy 只确认干预机制，执行渠道需 Step 8 人工补齐。",
-            "selection_basis": "缺口类型尚不能稳定映射到一方或第三方资产。",
-        })
-    return channels
+
+
+def _strategy_channel_label(channel: str) -> str:
+    return {
+        "OFFICIAL_SITE": "官网",
+        "PRODUCT_DOCS": "产品文档",
+        "ZHIHU": "知乎",
+        "BAIJIAHAO": "百家号",
+        "THIRD_PARTY_MEDIA": "第三方媒体",
+        "OTHER": "待人工确认",
+    }.get(channel, source_platform_label(channel.lower()))
+
+
+def _strategy_supported_reasons_for_channel(aggregate: dict, priority_labels: set[str]) -> list[str]:
+    reasons = [
+        str(reason)
+        for reason in aggregate.get("supported_reasons", [])
+        if reason and (
+            not priority_labels
+            or reason in priority_labels
+            or any(str(label) in reason or reason in str(label) for label in priority_labels)
+        )
+    ]
+    return reasons[:5]
+
+
+def _strategy_decision_channel_basis(aggregate: dict, priority_labels: set[str], include_benchmark: bool = False) -> str:
+    decision_count = int(aggregate.get("decision_citation_run_count") or 0)
+    denominator = int(aggregate.get("run_coverage_denominator") or 0)
+    parts = [f"Decision Citation 覆盖 {decision_count}/{denominator or '?'} Runs"]
+    supported_reasons = _strategy_supported_reasons_for_channel(aggregate, priority_labels)
+    if supported_reasons:
+        parts.append("支撑理由：" + "、".join(supported_reasons))
+    if include_benchmark and aggregate.get("primary_benchmark_count"):
+        parts.append(f"核心对标来源 {aggregate.get('primary_benchmark_count')} 个")
+    return "；".join(parts)
+
+
+def _strategy_retrieval_channel_basis(aggregate: dict) -> str:
+    denominator = int(aggregate.get("run_coverage_denominator") or 0)
+    return (
+        f"Retrieval 覆盖 {int(aggregate.get('retrieval_run_count') or 0)}/{denominator or '?'} Runs；"
+        f"Citation 覆盖 {int(aggregate.get('citation_run_count') or 0)}/{denominator or '?'} Runs；"
+        "该信号只用于观察检索环境，不自动决定执行平台。"
+    )
+
+
+def _strategy_gap_basis(gap_type: str, gap_items: list[dict]) -> dict:
+    return {
+        "gap_type": gap_type,
+        "gap_labels": sorted({item.get("gap_label") for item in gap_items if item.get("gap_label")}),
+        "gap_layers": sorted({item.get("gap_layer") for item in gap_items if item.get("gap_layer")}),
+        "gap_item_ids": [item.get("gap_item_id") for item in gap_items if item.get("gap_item_id")],
+    }
+
+
+def _strategy_brand_asset_basis(gap_items: list[dict]) -> dict:
+    snapshots = [
+        item.get("relevant_asset_snapshot")
+        for item in gap_items
+        if isinstance(item.get("relevant_asset_snapshot"), dict)
+    ]
+    return {
+        "has_relevant_asset_snapshot": bool(snapshots),
+        "asset_refs": [
+            {
+                "asset_id": snapshot.get("asset_id"),
+                "canonical_url": snapshot.get("canonical_url") or snapshot.get("url"),
+                "asset_type": snapshot.get("asset_type"),
+                "title": snapshot.get("title"),
+            }
+            for snapshot in snapshots[:5]
+        ],
+    }
+
+
+def _strategy_planned_channels(project: Project, action: dict, gap_items: list[dict]) -> list[dict]:
+    priority_capabilities = _strategy_priority_capabilities(gap_items, action)
+    return _resolve_strategy_channels(project, action, gap_items, priority_capabilities)["planned_channels"]
 
 
 def _relevant_asset_is_docs(gap_item: dict) -> bool:
@@ -4610,8 +4958,21 @@ def _strategy_channel_roles(planned_channels: list[dict]) -> dict:
         item.get("channel"): {
             "channel_label": item.get("channel_label"),
             "intervention_priority": item.get("intervention_priority"),
+            "role": item.get("role"),
+            "intervention_type": item.get("intervention_type"),
             "channel_role": item.get("channel_role"),
             "selection_basis": item.get("selection_basis"),
+            "supported_capabilities": item.get("supported_capabilities", []),
+            "supported_reasons": item.get("supported_reasons", []),
+            "gap_basis": item.get("gap_basis", {}),
+            "decision_citation_run_count": item.get("decision_citation_run_count", 0),
+            "decision_citation_total_runs": item.get("decision_citation_total_runs", 0),
+            "answer_support_run_count": item.get("answer_support_run_count", 0),
+            "retrieval_run_count": item.get("retrieval_run_count", 0),
+            "citation_run_count": item.get("citation_run_count", 0),
+            "benchmark_basis": item.get("benchmark_basis", {}),
+            "brand_asset_basis": item.get("brand_asset_basis", {}),
+            "rationale": item.get("rationale"),
             "citation_decision_value_basis": item.get("citation_decision_value_basis", {}),
         }
         for item in planned_channels
@@ -4639,11 +5000,36 @@ def _strategy_intervention_mechanism(
     action: dict,
     priority_capabilities: list[dict],
     evidence_run_ids: list[int],
+    channel_resolution: dict | None = None,
 ) -> str:
     brand = project.brand_name or "目标品牌"
     labels = [item.get("capability_label") for item in priority_capabilities if item.get("capability_label")]
     label_text = "、".join(labels[:4]) if labels else "目标能力"
     gap_label = action.get("gap_label") or _source_gap_label(str(action.get("gap_type") or ""))
+    primary_path = str((channel_resolution or {}).get("primary_intervention_path") or "")
+    channel_rationale = ((channel_resolution or {}).get("channel_rationales") or {}).get("primary_decision")
+    if primary_path.startswith("THIRD_PARTY_DECISION_EVIDENCE"):
+        return (
+            f"把「{brand}」已确认支持的「{label_text}」转化为可被第三方来源承载和验证的决策型证据信号；"
+            f"针对当前 {gap_label}，优先补齐 AI 已在多 Run 决策中采纳的证据形态，同时保留一方资产作为产品事实锚点。"
+            f"本机制基于 {len(set(evidence_run_ids))} 个有效 Run 的能力级证据链，不把 Benchmark 平台机械等同为执行平台。"
+        )
+    if primary_path.startswith("DISCOVERABILITY_RETRIEVAL_EXPANSION"):
+        return (
+            f"把「{brand}」已确认支持的「{label_text}」对应品牌资产提升为更容易进入有效检索候选的可发现信号；"
+            f"针对当前 {gap_label}，重点解决 Retrieval 层的最早失败点，而不是直接改写证据采纳结论。"
+            f"本机制基于 {len(set(evidence_run_ids))} 个有效 Run 的能力级证据链。"
+        )
+    if primary_path == "PRODUCT_IMPROVEMENT":
+        return (
+            f"当前「{label_text}」未被 Product Truth 支持，策略应回到产品能力或路线图评估；"
+            "不能把未支持的产品能力包装成官网或第三方内容优化。"
+        )
+    if primary_path in {"NEED_MORE_EVIDENCE", "NO_ACTION"}:
+        return (
+            f"当前 {gap_label} 不足以形成确定执行平台；"
+            f"{channel_rationale or '需要先补齐 Product Truth、Retrieval、Evidence 或 Brand Asset 事实。'}"
+        )
     return (
         f"把「{brand}」已确认支持的「{label_text}」沉淀为可被 AI 摘录的一方品牌事实信号；"
         f"针对当前 {gap_label}，先让相关资产明确表达品牌-能力-场景关系，再用固定 Run 复测观察"
@@ -4652,15 +5038,13 @@ def _strategy_intervention_mechanism(
 
 
 def _strategy_primary_intervention_path(action: dict, planned_channels: list[dict]) -> str:
-    route = (action.get("route") or "").upper()
     primary = next((item for item in planned_channels if item.get("intervention_priority") == "PRIMARY"), planned_channels[0] if planned_channels else {})
     channel = primary.get("channel", "OTHER")
-    if route == "CONTENT":
-        return f"FIRST_PARTY_BRAND_CAPABILITY_EXPRESSION:{channel}"
-    if route == "EVIDENCE":
-        return f"FIRST_PARTY_EVIDENCE_STRENGTHENING:{channel}"
-    if route == "PRODUCT":
-        return "PRODUCT_TRUTH_OR_ROADMAP_REVIEW"
+    intervention_type = str(primary.get("intervention_type") or "").upper()
+    if intervention_type in {"PRODUCT_IMPROVEMENT", "NO_ACTION", "NEED_MORE_EVIDENCE"}:
+        return intervention_type
+    if intervention_type:
+        return f"{intervention_type}:{channel}"
     return f"MANUAL_STRATEGY_REVIEW:{channel}"
 
 

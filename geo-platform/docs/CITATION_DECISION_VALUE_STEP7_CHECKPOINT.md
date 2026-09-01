@@ -133,6 +133,21 @@ Benchmark Channel != Automatic Strategy Channel
 Channel Aggregation != Step 8 concrete account / URL / title / Draft
 ```
 
+后续 `Strategy Channel Resolver Step 7 Checkpoint` 已将正式平台角色进一步收口：
+
+```text
+Citation Decision Value
+Channel Aggregation
+Gap
+Product Truth
+Brand Asset
+Retrieval / Citation State
+↓
+resolve_strategy_channels(...)
+```
+
+因此 Citation Decision Value 只是 Resolver 输入，不是第二套平台决策器。
+
 ## 6. Prompt #40 真实回归
 
 只读运行：

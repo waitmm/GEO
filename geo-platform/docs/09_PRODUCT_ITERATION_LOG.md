@@ -2,6 +2,89 @@
 
 Status: ACTIVE
 
+## 2026-09-01 Step 7 Single Strategy Channel Resolver
+
+### Product Decision
+
+第 7 步正式收口为唯一确定性 `Strategy Channel Resolver`。
+
+```text
+Capability Gap
+Citation Decision Value
+Channel Aggregation
+Product Truth
+Relevant Brand Asset
+Retrieval / Citation State
+Benchmark Evidence
+↓
+resolve_strategy_channels(...)
+↓
+primary_intervention_path
+planned_channels
+channel_roles
+channel_rationales
+```
+
+Capability Gap、Citation Decision Value、Channel Aggregation、Product Truth、
+Brand Asset 和 Retrieval/Citation State 都只是 Resolver 输入，不再各自产生另一套平台结论。
+
+### Why
+
+上一版已经让 Step 7 消费 Citation Decision Value，但平台角色仍容易被理解为两套规则拼接：
+
+```text
+CONTENT_GAP -> 官网 PRIMARY
+Citation Decision Value -> 知乎 SECONDARY
+```
+
+这会导致两个问题：
+
+```text
+1. 官网 PRIMARY 的依据容易被误解成“官网天然优先”。
+2. EVIDENCE_GAP 下第三方 Decision Citation 即使很强，也可能被旧规则压成 SECONDARY。
+```
+
+本轮修正为同一个 Resolver 统一解释：
+
+```text
+CONTENT_GAP
+-> 一方资产可 PRIMARY
+
+EVIDENCE_GAP + 强第三方 Decision Citation
+-> 第三方渠道可 PRIMARY
+
+DISCOVERABILITY_GAP
+-> Retrieval 扩展优先
+
+PRODUCT_GAP
+-> Product Improvement，不包装成内容渠道
+
+UNKNOWN / NO_GAP
+-> 不强行生成 PRIMARY
+```
+
+### User-Facing Rule
+
+用户看到的计划平台必须能回答：
+
+```text
+为什么这个平台是 PRIMARY / SECONDARY / EXPERIMENTAL / OBSERVE / NOT_RECOMMENDED？
+它来自哪些 Gap、Decision Citation、Retrieval/Citation、Product Truth 和 Brand Asset 事实？
+哪些东西还属于 Step 8 人工确认？
+```
+
+Step 7 Resolver 不能决定具体账号、URL、页面、标题、section、资产实例或 Draft。
+
+### Source Of Truth
+
+正式定义写入：
+
+```text
+产品纲要.md
+geo-platform/docs/05_OPTIMIZATION_LOOP_SPEC.md
+geo-platform/docs/PRODUCT_FUNCTION_SPEC.md
+```
+
 ## 2026-09-01 Citation Decision Value To Step 7
 
 ### Product Decision

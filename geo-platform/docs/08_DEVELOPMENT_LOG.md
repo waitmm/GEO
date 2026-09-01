@@ -2519,3 +2519,43 @@ Validation performed:
 - `curl -s http://127.0.0.1:8000/api/optimization/workflow/3/40/status`
   confirms `1 个当前策略候选待人工审核`.
 - `git diff --check` passed.
+
+## 2026-09-01 Step 7 No-Strategy Terminal State Bugfix
+
+- Fixed a workflow state-source mismatch observed on Prompt `#19`.
+- Symptom:
+  - frontend loaded Prompt `#19` with Steps 1-6 completed;
+  - Step 7 showed no current StrategyCandidate and no generatable
+    content/evidence gap;
+  - backend workflow still reported `strategy_step_status=READY_TO_GENERATE`
+    because it only checked whether upstream reviews were done.
+- Root cause:
+  - Step 7 workflow status did not consume the formal Citation Decision result;
+  - `reviews_done` was incorrectly treated as sufficient to say a
+    StrategyCandidate could be generated.
+- Fix:
+  - workflow status now calls the current Citation Decision V1 path for the
+    current Prompt/Evidence Package when no current candidate exists;
+  - Step 7 is `READY_TO_GENERATE` only when formal recommended actions include
+    a `CONTENT` or `EVIDENCE` route;
+  - otherwise Step 7 returns `NO_STRATEGY` with
+    `当前没有可生成策略的内容/证据缺口`;
+  - Step 8 returns `NO_EXPERIMENT` with
+    `本轮没有策略候选，无需创建实验草案`.
+- Frontend behavior:
+  - `NO_STRATEGY` is displayed as `无需策略`;
+  - Step 8 is displayed as `无需创建`;
+  - users can still click `查看依据` to inspect the Citation/Gap context.
+- Workflow done semantics:
+  - `NO_STRATEGY` and `NO_EXPERIMENT` are terminal done states for the current
+    Prompt, not pending work;
+  - they mean the current V1 chain has no strategy or experiment to create.
+- Boundary:
+  - no Citation / Benchmark / Gap / Strategy generation rules changed;
+  - no historical StrategyCandidate or Experiment is counted as current;
+  - no Step 8 materialization behavior changed.
+
+Validation performed:
+
+- `.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py`
+  passed: `12 passed`.

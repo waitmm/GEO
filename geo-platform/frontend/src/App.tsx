@@ -2281,6 +2281,7 @@ export default function App() {
   const backendExecutionStep = currentWorkflowData?.execution_step || {};
   const backendStrategyStepStatus = currentWorkflowData?.strategy_step_status || backendStrategyStep.status || "";
   const backendExecutionStepStatus = currentWorkflowData?.execution_step_status || backendExecutionStep.status || "";
+  const currentNoStrategyNeeded = backendStrategyStepStatus === "NO_STRATEGY";
   const backendCurrentStrategyIds = new Set(
     (currentWorkflowData?.current_strategy_candidate_ids || backendStrategyStep.current_strategy_candidate_ids || [])
       .map((id: any) => Number(id))
@@ -2378,23 +2379,27 @@ export default function App() {
       title: "策略确认",
       description: currentStrategyCandidateCount
         ? `${currentStrategyCandidateCount} 个当前候选`
+        : currentNoStrategyNeeded
+          ? "本轮无需策略候选"
         : ignoredHistoricalStrategyCount
           ? `已有 ${ignoredHistoricalStrategyCount} 个历史候选，不计入当前主链`
           : citationLoaded
           ? `${citationSummary.recommended_action_count ?? 0} 个可生成线索`
           : "等待缺口判断",
-      status: currentConfirmedStrategyCount ? "finish" : currentPendingStrategyCount || currentCitationCanConfirm ? "process" : currentCitationDecisionData ? "wait" : "wait",
+      status: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "finish" : currentPendingStrategyCount || currentCitationCanConfirm ? "process" : currentCitationDecisionData ? "wait" : "wait",
     },
     {
       title: "实验方案",
       description: currentExperimentCount
         ? `${currentExperimentCount} 个当前草案/实验`
+        : currentNoStrategyNeeded
+          ? "本轮无需实验草案"
         : ignoredHistoricalExperimentCount
           ? `已有 ${ignoredHistoricalExperimentCount} 个历史草案/实验，不计入当前步骤`
           : currentConfirmedStrategyCount
             ? "待创建实验草案"
             : "等待策略确认",
-      status: currentExperimentCount ? "finish" : currentConfirmedStrategyCount ? "process" : "wait",
+      status: currentExperimentCount || currentNoStrategyNeeded ? "finish" : currentConfirmedStrategyCount ? "process" : "wait",
     },
   ] as any[];
   const collectedRunCount = visibleRuns.filter((run: any) => ["success", "partial_success"].includes(run.status)).length;
@@ -2473,13 +2478,15 @@ export default function App() {
     {
       key: "action",
       label: "策略确认",
-      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !citationGapDecisionDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
+      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : currentNoStrategyNeeded ? "无需策略" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !citationGapDecisionDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
       detail: currentConfirmedStrategyCount
         ? `已确认策略 #${currentConfirmedStrategies[0]?.id || currentLatestStrategyCandidate?.id}`
         : currentPendingStrategyCount
           ? `${currentPendingStrategyCount} 个当前策略候选待人工审核`
           : currentCitationCanConfirm
             ? `${citationConfirmableActions.length} 个缺口可生成策略候选`
+            : currentNoStrategyNeeded
+              ? "本轮没有可生成策略的内容/证据缺口"
             : !currentCitationLoaded
               ? "等待缺口诊断"
               : !evidenceReviewDone
@@ -2489,12 +2496,14 @@ export default function App() {
                   : unresolvedAction || unknownGapCount > 0
                     ? "请查看依据后人工判断，不自动生成策略"
                     : "没有可生成策略的内容/证据缺口",
-      tone: currentConfirmedStrategyCount ? "done" : currentPendingStrategyCount || currentCitationCanConfirm || unresolvedAction ? "current" : "pending",
-      actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : unresolvedAction ? "查看依据" : "",
+      tone: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "done" : currentPendingStrategyCount || currentCitationCanConfirm || unresolvedAction ? "current" : "pending",
+      actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentNoStrategyNeeded || unresolvedAction ? "查看依据" : "",
       onAction: currentConfirmedStrategyCount || currentPendingStrategyCount
         ? openStrategyConfirmationPage
         : currentCitationCanConfirm
           ? confirmCitationDecisionV1
+          : currentNoStrategyNeeded
+            ? () => setPage("optimization")
           : unresolvedAction
             ? () => { setWorkflowEvidenceDrawerFocus("action"); setWorkflowEvidenceDrawerOpen(true); }
             : undefined,
@@ -2502,17 +2511,19 @@ export default function App() {
     {
       key: "experiment",
       label: "实验方案落地",
-      statusText: currentExperimentCount ? "已创建" : currentConfirmedStrategyCount ? "待创建" : currentCitationLoaded ? "未创建" : "未开始",
+      statusText: currentExperimentCount ? "已创建" : currentConfirmedStrategyCount ? "待创建" : currentNoStrategyNeeded ? "无需创建" : currentCitationLoaded ? "未创建" : "未开始",
       detail: currentExperimentCount
         ? `${currentExperimentCount} 个当前草案/实验，等待发布闸门`
         : ignoredHistoricalExperimentCount && !currentConfirmedStrategyCount
           ? "存在历史草案/实验，但当前主链仍需先完成策略确认"
+          : currentNoStrategyNeeded
+            ? "本轮没有策略候选，无需实验草案"
           : currentConfirmedStrategyCount
             ? "策略确认后，进入执行方案和实验草案"
             : currentCitationLoaded
               ? "等待策略确认"
               : "等待策略候选",
-      tone: currentExperimentCount ? "done" : currentConfirmedStrategyCount ? "current" : "pending",
+      tone: currentExperimentCount || currentNoStrategyNeeded ? "done" : currentConfirmedStrategyCount ? "current" : "pending",
       actionLabel: currentExperimentCount ? "查看实验草案" : currentConfirmedStrategyCount ? "去创建草案" : "",
       onAction: currentExperimentCount || currentConfirmedStrategyCount ? openStrategyConfirmationPage : undefined,
     },

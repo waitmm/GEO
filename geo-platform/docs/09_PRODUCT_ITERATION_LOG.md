@@ -2389,3 +2389,64 @@ Gap Diagnosis
 Evidence / Benchmark
 Step 8 Action / Experiment
 ```
+
+## 2026-09-01 Step 7 无策略终态
+
+### 用户问题
+
+Prompt `#19` 的 1-6 步都已完成，但第 7 步显示：
+
+```text
+策略确认
+无策略
+没有可生成策略的内容/证据缺口
+```
+
+用户无法判断这是流程卡住，还是当前 Prompt 本来没有策略可生成。
+
+### 产品口径
+
+如果当前 Citation Decision 没有可生成策略的 `CONTENT` / `EVIDENCE`
+缺口，第 7 步应明确进入：
+
+```text
+NO_STRATEGY
+无需策略
+```
+
+第 8 步同步进入：
+
+```text
+NO_EXPERIMENT
+无需创建实验草案
+```
+
+这是当前单 Prompt V1 的合法终态：
+
+```text
+有证据
+有对标/缺口判断
+但没有可执行策略候选
+```
+
+在工作流完成度上，`NO_STRATEGY` 和 `NO_EXPERIMENT` 应视为当前 Prompt
+已收口，而不是仍有待处理项。页面必须用“无需策略 / 无需创建实验草案”解释清楚。
+
+不能为了让流程“看起来完整”强行生成 StrategyCandidate，也不能用历史策略或历史实验点亮当前第 7/8 步。
+
+### 本轮修正
+
+第 7 步是否可生成策略不再只看“前置审核是否完成”，而必须看当前 Citation
+Decision 是否实际产出可生成策略的内容/证据动作。
+
+### 边界
+
+本次只修正状态归属与展示，不改变：
+
+```text
+Citation Decision
+Benchmark
+Gap Diagnosis
+Strategy Channel Resolver
+Step 8 Action / Experiment
+```

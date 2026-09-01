@@ -193,11 +193,15 @@ Decision Market
 READY_TO_GENERATE
 PENDING_REVIEW
 CONFIRMED
+NO_STRATEGY
 ```
 
 只有当前 Prompt + 当前 Evidence Package + 当前 StrategyCandidate 绑定后的
 `CONFIRMED` 可以视为完成。历史已接受策略、旧 `reviewed_by/review_note`、
 旧 `WorkflowConfirmation(action)` 或历史 Experiment 都不能反向点亮第 7 步。
+
+`NO_STRATEGY` 表示当前 Citation Decision 没有可生成策略的内容/证据缺口。
+这是合法终态，不是卡住，也不能用历史 StrategyCandidate 或历史 Experiment 补位。
 
 第 8 步只有在当前确认策略对应的 Action / Experiment Draft 已创建后才算完成。
 历史 Experiment 可以展示为历史执行记录，但不能点亮当前主链。

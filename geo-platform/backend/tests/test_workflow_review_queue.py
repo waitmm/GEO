@@ -597,7 +597,7 @@ def test_step8_complete_only_for_current_confirmed_candidate_experiment():
         db.close()
 
 
-def test_legacy_latest_pending_strategy_does_not_light_current_step7():
+def test_reviewed_workflow_without_generatable_gap_is_no_strategy():
     db = _session()
     try:
         project, prompt, package = _ready_strategy_workflow_base(db)
@@ -622,14 +622,41 @@ def test_legacy_latest_pending_strategy_does_not_light_current_step7():
 
         status = workflow_status(db, project, prompt.id)
         action_step = next(step for step in status["steps"] if step["key"] == "action")
+        experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
 
-        assert status["strategy_step_status"] == "READY_TO_GENERATE"
+        assert status["strategy_step_status"] == "NO_STRATEGY"
+        assert status["execution_step_status"] == "NO_EXPERIMENT"
         assert status["current_strategy_candidate_ids"] == []
-        assert action_step["done"] is False
-        assert action_step["detail"] == "可生成当前策略候选"
+        assert action_step["done"] is True
+        assert action_step["detail"] == "当前没有可生成策略的内容/证据缺口"
+        assert experiment_step["done"] is True
+        assert experiment_step["detail"] == "本轮没有策略候选，无需创建实验草案"
         assert status["historical_strategy_candidate_count"] == 1
         assert status["ineligible_strategy_candidates"][0]["id"] == legacy_pending.id
         assert "LEGACY_STRATEGY_GENERATOR" in status["ineligible_strategy_candidates"][0]["ineligibility_reasons"]
+    finally:
+        db.close()
+
+
+def test_citation_decision_action_unlocks_strategy_generation(monkeypatch):
+    db = _session()
+    try:
+        project, prompt, _package = _ready_strategy_workflow_base(db)
+
+        def fake_citation_decision(*args, **kwargs):
+            return {"recommended_actions": [{"route": "CONTENT", "action_key": "gap-1"}]}
+
+        monkeypatch.setattr(
+            "app.modules.optimization.workflow.citation_decision_vertical_slice",
+            fake_citation_decision,
+        )
+
+        status = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in status["steps"] if step["key"] == "action")
+
+        assert status["strategy_step_status"] == "READY_TO_GENERATE"
+        assert status["execution_step_status"] == "LOCKED"
+        assert action_step["detail"] == "1 个缺口可生成策略候选"
     finally:
         db.close()
 
@@ -662,9 +689,9 @@ def test_audit_confirmed_strategy_does_not_confirm_current_step7():
 
         assert reviewed["eligible_for_current_step7"] is False
         assert reviewed["candidate_origin"] == "REGRESSION"
-        assert status["strategy_step_status"] == "READY_TO_GENERATE"
+        assert status["strategy_step_status"] == "NO_STRATEGY"
         assert status["current_strategy_confirmed"] is False
-        assert status["execution_step_status"] == "LOCKED"
+        assert status["execution_step_status"] == "NO_EXPERIMENT"
         assert db.query(WorkflowConfirmation).filter(WorkflowConfirmation.step_key == "action").count() == 0
     finally:
         db.close()

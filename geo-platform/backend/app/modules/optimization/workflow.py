@@ -29,7 +29,10 @@ from app.models import (
     WorkflowConfirmation,
 )
 from app.services.serialization import dumps, loads
-from app.modules.optimization.service import current_step7_candidate_eligibility
+from app.modules.optimization.service import (
+    citation_decision_vertical_slice,
+    current_step7_candidate_eligibility,
+)
 
 REVIEWABLE_RECOMMENDATION_EVENT_STATUSES = {
     "MACHINE_GROUNDED",
@@ -197,10 +200,26 @@ def _current_strategy_chain_state(
         current_candidate = confirmed_candidate
         detail = f"当前策略 #{confirmed_candidate.id} 已人工确认"
     elif reviews_done:
-        strategy_status = "READY_TO_GENERATE"
+        proposal = citation_decision_vertical_slice(
+            db,
+            project.id,
+            prompt_id,
+            package.id if package is not None else None,
+            use_answer_binding_v1_1=True,
+        ) if package is not None else {}
+        generatable_actions = [
+            action
+            for action in (proposal.get("recommended_actions") or [])
+            if action.get("route") in {"CONTENT", "EVIDENCE"}
+        ]
+        strategy_status = "READY_TO_GENERATE" if generatable_actions else "NO_STRATEGY"
         current_ids = []
         current_candidate = None
-        detail = "可生成当前策略候选"
+        detail = (
+            f"{len(generatable_actions)} 个缺口可生成策略候选"
+            if generatable_actions
+            else "当前没有可生成策略的内容/证据缺口"
+        )
     else:
         strategy_status = "NOT_READY"
         current_ids = []
@@ -228,6 +247,9 @@ def _current_strategy_chain_state(
     elif confirmed_candidate is not None:
         execution_status = "READY_TO_CREATE"
         execution_detail = "当前策略已确认，可进入实验方案落地"
+    elif strategy_status == "NO_STRATEGY":
+        execution_status = "NO_EXPERIMENT"
+        execution_detail = "本轮没有策略候选，无需创建实验草案"
     else:
         execution_status = "LOCKED"
         execution_detail = "等待当前策略确认"
@@ -517,8 +539,8 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     shelved_note = shelved_row.decision_note if shelved_row else ""
 
     current_chain = _current_strategy_chain_state(db, project, prompt_id, reviews_done=reviews_done)
-    strategy_done = current_chain["strategy_step_status"] == "CONFIRMED"
-    experiment_done = current_chain["execution_step_status"] == "CREATED"
+    strategy_done = current_chain["strategy_step_status"] in {"CONFIRMED", "NO_STRATEGY"}
+    experiment_done = current_chain["execution_step_status"] in {"CREATED", "NO_EXPERIMENT"}
 
     steps = [
         {"key": "collection", "label": "数据采集", "done": total_runs >= 1, "detail": f"{total_runs} Runs"},

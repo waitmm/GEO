@@ -2,6 +2,93 @@
 
 Status: ACTIVE
 
+## 2026-09-01 Citation Decision Value Step 7 Strategy Input
+
+- Added a Citation Decision Value interpretation layer on top of existing
+  Phase 2A eligible `EvidenceAlignment`. This is a derived read model only; it
+  does not add a database table, migration, new Evidence Judge, new Citation
+  Score, new Benchmark formula, new Gap type, Draft, or Step 9 behavior.
+- Formal grain is now:
+
+```text
+SourceDocument
++ supported_entity
++ capability/reason
+```
+
+The same SourceDocument can therefore expose multiple values rather than a
+single document-wide label.
+- Implemented derived classes:
+
+```text
+DECISION_CITATION
+ANSWER_SUPPORT_CITATION
+PERIPHERAL_CITATION
+UNCLASSIFIED_SUPPORT
+NOT_EVALUABLE
+```
+
+- Added source-row output:
+
+```text
+citation_decision_values
+citation_value_class
+citation_value_summary
+citation_run_ids
+retrieval_run_ids
+```
+
+- Added `channel_aggregation` to `citation_decision_vertical_slice`, summarizing
+  platform-level retrieval/citation/decision-citation coverage, supported
+  entities/reasons, and benchmark counts.
+- Updated Step 7 Strategy Core generation so `planned_channels` and
+  `channel_roles` consume Citation Decision Value + Channel Aggregation. The
+  old simplified behavior:
+
+```text
+CONTENT_GAP -> OFFICIAL_SITE PRIMARY
+Benchmark platform -> OBSERVE
+```
+
+is no longer sufficient. Benchmark Channel still cannot automatically become an
+execution channel; a platform can become `SECONDARY` or `EXPERIMENTAL` only when
+Decision Citation coverage explains why.
+- Prompt `#40` read-only regression:
+
+```text
+Evidence Package #15
+source_count = 68
+recommended_actions = 1
+ZHIHU retrieval = 6/6
+ZHIHU citation = 6/6
+ZHIHU decision citation = 6/6
+ZHIHU primary_benchmark_count = 1
+supported reasons = 点击统计 / 自定义分享标题 / 营销场景使用
+planned_channels = OFFICIAL_SITE PRIMARY + ZHIHU SECONDARY
+```
+
+- Scope deliberately excluded Step 8 Draft, Step 9, Channel Intelligence,
+  Product Truth changes, Gap rule changes, EvidenceAlignment eligibility
+  changes, Benchmark scoring changes, and Decision Stability changes.
+
+Validation:
+
+```text
+.venv/bin/python -m compileall app
+.venv/bin/python -m pytest -q tests/test_strategy_step7_v1.py tests/test_source_gap_v1.py tests/test_evidence_lineage_v1.py tests/test_asset_brief_v1.py tests/test_workflow_review_queue.py
+source /Users/bmwqr/.nvm/nvm.sh && nvm use 18.20.8 && cd geo-platform/frontend && npm run build
+git diff --check
+```
+
+Results:
+
+```text
+compileall passed
+84 passed
+frontend build passed
+git diff --check passed
+```
+
 ## 2026-08-31 Step 7 V1.1 Current Candidate Eligibility Blocker Fix
 
 - Fixed the current single Prompt Step 7 blocker where legacy, audit, test, or

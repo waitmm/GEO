@@ -378,6 +378,74 @@ Mapping:
 Citation Prominence is only a same-priority sort signal and must not change the
 priority tier.
 
+## Citation Decision Value V1.1
+
+Citation Decision Value is a business interpretation layer on top of existing
+eligible V1 EvidenceAlignment. It does not introduce a new citation score, a new
+Evidence Judge, or a new Benchmark formula.
+
+Formal grain:
+
+```text
+SourceDocument
++ supported_entity
++ capability/reason
+```
+
+The same SourceDocument may contain multiple values:
+
+```text
+点击统计 -> DECISION_CITATION
+营销场景说明 -> ANSWER_SUPPORT_CITATION
+other cited context -> PERIPHERAL_CITATION
+```
+
+Classes:
+
+- `DECISION_CITATION`: an eligible `SUPPORTS` alignment connects a SourceClaim
+  to an AnswerUnit / AnswerDecisionBinding / RecommendationEvent that participates
+  in the current AI brand recommendation, candidate, or evaluation decision.
+- `ANSWER_SUPPORT_CITATION`: an eligible `SUPPORTS` alignment supports an
+  important AnswerUnit, but the unit is not bound to a brand decision. If
+  importance cannot be established safely, keep the result conservative instead
+  of guessing.
+- `PERIPHERAL_CITATION`: a source appears in the current citation/retrieval
+  environment but has no important eligible `SUPPORTS` relation.
+- `UNCLASSIFIED_SUPPORT`: an eligible `SUPPORTS` relation exists but cannot be
+  safely classified as decision or answer support.
+- `NOT_EVALUABLE`: source content or lineage is insufficient for this layer.
+
+Channel Aggregation summarizes these values by platform:
+
+```text
+retrieval_run_count
+citation_run_count
+decision_citation_run_count
+answer_support_run_count
+eligible_support_run_count
+supported_entities
+supported_capabilities / reasons
+primary_benchmark_count
+secondary_benchmark_count
+```
+
+Step 7 StrategyCandidate generation must consume Citation Decision Value and
+Channel Aggregation together with Product Truth, Capability Gap, Relevant Brand
+Asset, Retrieval/Citation state, and Benchmark Evidence. The platform role is
+not decided by Gap Type alone and is not mechanically copied from Benchmark
+Source Channel.
+
+Hard boundaries:
+
+- `DECISION_CITATION` requires full Phase 2A eligible lineage.
+- Historical `RELATED`, Citation Prominence, title similarity, and same-entity
+  hints cannot create Citation Decision Value.
+- Channel Aggregation can make a platform `SECONDARY` or `EXPERIMENTAL` only
+  when decision-citation evidence explains why. It still cannot create concrete
+  Step 8 account, URL, title, Draft, Action, or Experiment output.
+- Benchmark answers "which source is worth studying"; Citation Decision Value
+  answers "what role this source played in the AI decision".
+
 ## Citation Decision Vertical Slice V1
 
 After Priority and Action Route are available, the system can generate a

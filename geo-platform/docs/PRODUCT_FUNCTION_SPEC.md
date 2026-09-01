@@ -308,6 +308,8 @@ single_continuous
 - 展示 prompt match、freshness、authority、account identity、risk flags。
 - 输出 `citation_prominence_level`，用于解释该来源在当前回答样本中的引用显著性。
 - 输出 `decision_support_level`、`has_contradiction` 和 `benchmark_tier`，用于说明该来源是否真正支撑了回答中的推荐理由、候选或事实。
+- 在 eligible EvidenceAlignment 之上输出 `citation_decision_values`，按 `SourceDocument + supported_entity + capability/reason` 区分 `DECISION_CITATION`、`ANSWER_SUPPORT_CITATION`、`PERIPHERAL_CITATION` 等业务价值，不把整篇文章简化成唯一标签。
+- 输出 `channel_aggregation`，汇总各平台的 retrieval coverage、citation coverage、decision citation coverage、supported reasons 和 benchmark count，作为 Step 7 策略平台层输入。
 - 在存在 Primary/Secondary Benchmark 时，输出来源级 `source_gap_type`，用于判断目标品牌和可信 Benchmark 的差距。
 - 基于 `benchmark_tier` 和 `source_gap_type` 输出 `priority_level` 和 `action_route`，只表达优先级与处理路径，不生成具体执行动作。
 - 在人工确认前，基于 `priority_level` 和 `action_route` 生成 proposal-only 的 `recommended_action` 与 `channel_opportunity`。
@@ -319,6 +321,20 @@ single_continuous
 旧 `source_score` 仅作为历史兼容字段保留，不再作为 Benchmark、Priority、Strategy 或 Experiment 的决策依据。
 
 `benchmark_tier` 只由正文状态、V1 EvidenceAlignment 和 Decision Support 规则决定。Citation Prominence 只能用于同 Tier 内排序，不能把缺正文或无支持对齐的来源升级为 Benchmark。
+
+`citation_decision_values` 不是新的引用分数，也不是新的 Evidence Judge。它只消费正式 eligible EvidenceAlignment，把已成立的 SUPPORTS 翻译为业务价值：
+
+```text
+DECISION_CITATION：来源主张直接 SUPPORT 了 AI 品牌推荐/候选/评价中的能力或理由。
+ANSWER_SUPPORT_CITATION：来源主张 SUPPORT 了重要答案内容，但该内容未绑定品牌决策。
+PERIPHERAL_CITATION：来源进入引用/检索环境，但未形成重要 eligible SUPPORT。
+```
+
+平台策略不能只由 Gap 类型或 Benchmark 来源平台决定。Step 7 的 `planned_channels`
+必须综合 Answer Decision、Citation Decision Value、Run recurrence、Channel
+Aggregation、Benchmark Evidence、Product Truth、Capability Gap、Relevant Brand
+Asset 和 Retrieval/Citation 状态。Benchmark 来源平台可以因真实
+`DECISION_CITATION` 获得 `SECONDARY` 或 `EXPERIMENTAL` 角色，但不能自动成为具体执行平台。
 
 核心边界：
 
@@ -334,6 +350,9 @@ single_continuous
 - `recommended_action` 只能由 Primary/Secondary Benchmark 且存在可解释 Source Gap 的来源产生；`REFERENCE_ONLY`、`NOT_EVALUABLE` 和历史 `RELATED` 不能生成执行建议。
 - `PRODUCT_GAP` 可以是高优先级发现，但在 Product Truth 更新前不能生成对外内容宣称或发布实验。
 - Recommendation Outcome 只记录固定复测前后观察变化，最终有效性仍必须人工结论确认。
+- `DECISION_CITATION` 必须能回溯完整 lineage：Run -> RecommendationEvent -> AnswerDecisionBinding -> AnswerUnit -> ReferenceSource -> SourceDocument -> SourceClaim -> EvidenceAlignment。
+- `ANSWER_SUPPORT_CITATION` 必须谨慎，只有存在 eligible SUPPORTS 且 AnswerUnit 明确可用但未绑定 Recommendation Decision 时才输出；不能为了凑三类新增 Judge 或降低标准。
+- Channel Aggregation 只能作为 Step 7 Strategy 输入，不直接创建 Step 8 的账号、URL、标题、Draft、Action 或 Experiment。
 
 ## 9. 证据标注：主张、正文和段落对齐
 

@@ -130,6 +130,20 @@ CURRENT_STEP7_REQUIRED_CORE_FIELDS = (
     "non_goals",
     "attribution_intent",
 )
+CITATION_DECISION_VALUE_CLASSES = {
+    "DECISION_CITATION",
+    "ANSWER_SUPPORT_CITATION",
+    "PERIPHERAL_CITATION",
+    "UNCLASSIFIED_SUPPORT",
+    "NOT_EVALUABLE",
+}
+CITATION_DECISION_VALUE_RANK = {
+    "DECISION_CITATION": 1,
+    "ANSWER_SUPPORT_CITATION": 2,
+    "UNCLASSIFIED_SUPPORT": 3,
+    "PERIPHERAL_CITATION": 4,
+    "NOT_EVALUABLE": 5,
+}
 STEP7_NON_USER_ORIGIN_MARKERS = {
     "phase": "REGRESSION_GENERATED",
     "regression": "REGRESSION_GENERATED",
@@ -3632,6 +3646,7 @@ def citation_decision_vertical_slice(
     )
     package = _resolve_vertical_slice_package(db, project_id, prompt_id, evidence_package_id)
     rows = _source_analysis_for_package(db, project, prompt, package, include_answer_binding_v1_1=use_v1_1)
+    channel_aggregation = _channel_aggregation_for_rows(rows, loads(package.source_run_ids_json, []))
     recommended_actions = [
         row["recommended_action"]
         for row in rows
@@ -3663,6 +3678,7 @@ def citation_decision_vertical_slice(
         "summary": _vertical_slice_summary(rows, recommended_actions, channel_opportunities),
         "recommended_actions": recommended_actions,
         "channel_opportunities": channel_opportunities,
+        "channel_aggregation": channel_aggregation,
         "experiment_proposals": experiment_proposals,
         "decision_stability": decision_stability,
         "resampling_plan": _vertical_resampling_plan(prompt, package),
@@ -4480,11 +4496,15 @@ def _strategy_fields_from_vertical_action(
         "primary_intervention_path": primary_path,
         "planned_channels": planned_channels,
         "channel_roles": channel_roles,
+        "channel_aggregation": action.get("channel_aggregation", []),
+        "citation_decision_values": action.get("citation_decision_values", []),
+        "citation_value_summary": action.get("citation_value_summary", {}),
         "asset_direction": asset_direction,
         "execution_sequence": execution_sequence,
         "attribution_intent": attribution_intent,
         "priority_capabilities": priority_capabilities,
         "required_signals": _strategy_required_signals(project, priority_capabilities),
+        "secondary_intervention": _strategy_secondary_intervention(planned_channels),
         "non_goals": _strategy_non_goals(action),
         "strategy_boundary_note": (
             "第 7 步确认策略核心和计划平台层；具体账号、URL、页面、标题、段落、内容结构、发布和 Baseline 都在第 8 步人工确定。"
@@ -4496,6 +4516,17 @@ def _strategy_planned_channels(project: Project, action: dict, gap_items: list[d
     route = (action.get("route") or "").upper()
     benchmark = action.get("benchmark_source") or {}
     benchmark_platform = str(benchmark.get("platform") or "").strip().lower()
+    channel_aggregation = action.get("channel_aggregation") if isinstance(action.get("channel_aggregation"), list) else []
+    aggregation_by_channel = {
+        str(item.get("channel") or "").upper(): item
+        for item in channel_aggregation
+        if isinstance(item, dict) and item.get("channel")
+    }
+    priority_labels = {
+        item.get("capability_label")
+        for item in (gap_items or [])
+        if item.get("capability_label")
+    }
     channels: list[dict] = []
     if route in {"CONTENT", "EVIDENCE"}:
         first_party_channel = "PRODUCT_DOCS" if any(_relevant_asset_is_docs(item) for item in gap_items) else "OFFICIAL_SITE"
@@ -4517,12 +4548,43 @@ def _strategy_planned_channels(project: Project, action: dict, gap_items: list[d
     if benchmark_platform in {"zhihu", "baijiahao"}:
         channel = "ZHIHU" if benchmark_platform == "zhihu" else "BAIJIAHAO"
         if not any(item.get("channel") == channel for item in channels):
+            aggregate = aggregation_by_channel.get(channel, {})
+            decision_count = int(aggregate.get("decision_citation_run_count") or 0)
+            denominator = int(aggregate.get("run_coverage_denominator") or 0)
+            supported_reasons = [
+                reason for reason in aggregate.get("supported_reasons", [])
+                if not priority_labels or reason in priority_labels or any(str(label) in reason or reason in str(label) for label in priority_labels)
+            ][:5]
+            if decision_count >= 2:
+                intervention_priority = "SECONDARY"
+                role = (
+                    "该平台在多个有效 Run 中出现直接参与 AI 品牌决策的引用证据，可作为第三方证据建设或验证渠道；"
+                    "具体账号、资产和内容形式仍需 Step 8 人工确认。"
+                )
+            elif decision_count == 1:
+                intervention_priority = "EXPERIMENTAL"
+                role = (
+                    "该平台出现过直接参与 AI 品牌决策的引用证据，但覆盖有限，适合作为小范围实验型渠道观察。"
+                )
+            else:
+                intervention_priority = "OBSERVE"
+                role = "仅作为本轮对标证据来源和后续可选验证场景，不自动成为执行渠道。"
+            basis_parts = []
+            if decision_count:
+                basis_parts.append(f"Decision Citation 覆盖 {decision_count}/{denominator or '?'} Runs")
+            if supported_reasons:
+                basis_parts.append("支撑理由：" + "、".join(supported_reasons))
+            if decision_count and aggregate.get("primary_benchmark_count"):
+                basis_parts.append(f"核心对标来源 {aggregate.get('primary_benchmark_count')} 个")
+            if not basis_parts:
+                basis_parts.append("Benchmark 来源平台只说明 AI 当前引用过该平台；是否在该平台执行属于 Step 8 人工判断。")
             channels.append({
                 "channel": channel,
                 "channel_label": "知乎" if channel == "ZHIHU" else "百家号",
-                "intervention_priority": "OBSERVE",
-                "channel_role": "仅作为本轮对标证据来源和后续可选验证场景，不自动成为执行渠道。",
-                "selection_basis": "Benchmark 来源平台只说明 AI 当前引用过该平台；是否在该平台执行属于 Step 8 人工判断。",
+                "intervention_priority": intervention_priority,
+                "channel_role": role,
+                "selection_basis": "；".join(basis_parts),
+                "citation_decision_value_basis": aggregate,
             })
     if not channels:
         channels.append({
@@ -4550,10 +4612,25 @@ def _strategy_channel_roles(planned_channels: list[dict]) -> dict:
             "intervention_priority": item.get("intervention_priority"),
             "channel_role": item.get("channel_role"),
             "selection_basis": item.get("selection_basis"),
+            "citation_decision_value_basis": item.get("citation_decision_value_basis", {}),
         }
         for item in planned_channels
         if isinstance(item, dict) and item.get("channel")
     }
+
+
+def _strategy_secondary_intervention(planned_channels: list[dict]) -> list[dict]:
+    return [
+        {
+            "channel": item.get("channel"),
+            "channel_label": item.get("channel_label"),
+            "intervention_priority": item.get("intervention_priority"),
+            "channel_role": item.get("channel_role"),
+            "selection_basis": item.get("selection_basis"),
+        }
+        for item in planned_channels
+        if item.get("intervention_priority") in {"SECONDARY", "EXPERIMENTAL", "OBSERVE"}
+    ]
 
 
 def _strategy_intervention_mechanism(
@@ -4897,6 +4974,9 @@ def _strategy_payload_from_vertical_action(
             "gap_type": action.get("gap_type"),
             "gap_items": gap_items,
             "decision_support_level": action.get("decision_support_level"),
+            "citation_value_summary": action.get("citation_value_summary", {}),
+            "citation_decision_values": action.get("citation_decision_values", []),
+            "channel_aggregation": action.get("channel_aggregation", []),
         },
         "product_truth_refs": {
             "status": product_truth_status,
@@ -6344,11 +6424,13 @@ def source_analysis(
         valid_run_ids=valid_run_ids or [run.id for run in runs],
         include_answer_binding_v1_1=include_answer_binding_v1_1,
     )
+    rows = _attach_citation_decision_values(rows, db)
     rows = _attach_source_gap_analysis(db, project, rows, prompt=prompt, retrievals=retrievals, references=references)
     rows = _attach_capability_gap_items(rows)
     rows = _attach_priority_action_routes(rows)
     rows = _attach_channel_opportunities(rows)
-    rows = _attach_recommended_actions(rows, project, prompt)
+    channel_aggregation = _channel_aggregation_for_rows(rows, valid_run_ids or [run.id for run in runs])
+    rows = _attach_recommended_actions(rows, project, prompt, channel_aggregation)
     rows = _attach_cross_source_comparison(rows)
     return sorted(rows, key=_source_analysis_sort_key)
 
@@ -6420,6 +6502,8 @@ def _source_analysis_row(
         "run_ids": [run_id],
         "run_count": 1,
         "cited": cited,
+        "citation_run_ids": [run_id] if cited else [],
+        "retrieval_run_ids": [run_id] if retrieval_rank is not None else [],
         "retrieval_rank": retrieval_rank,
         "title": title,
         "url": url,
@@ -6455,6 +6539,17 @@ def _source_analysis_row(
         "supporting_alignment_ids": [],
         "contradicting_alignment_ids": [],
         "decision_support_basis": [],
+        "citation_decision_values": [],
+        "citation_value_class": "NOT_EVALUABLE",
+        "citation_value_label": "不可评估",
+        "citation_value_summary": {
+            "class": "NOT_EVALUABLE",
+            "label": "不可评估",
+            "reason": "尚未匹配到可用于语义判断的来源正文。",
+            "decision_citation_count": 0,
+            "answer_support_count": 0,
+            "support_run_ids": [],
+        },
         "suggested_capability_label": "",
         "source_gap_type": None,
         "source_gap_label": "",
@@ -6535,6 +6630,18 @@ def _merge_source_rows(rows: list[dict]) -> dict:
     )
     base = dict(sorted_rows[0])
     run_ids = sorted({int(row["run_id"]) for row in rows if row.get("run_id")})
+    citation_run_ids = sorted({
+        int(run_id)
+        for row in rows
+        for run_id in row.get("citation_run_ids", [])
+        if run_id
+    })
+    retrieval_run_ids = sorted({
+        int(run_id)
+        for row in rows
+        for run_id in row.get("retrieval_run_ids", [])
+        if run_id
+    })
     retrieval_ranks = [int(row["retrieval_rank"]) for row in rows if row.get("retrieval_rank")]
     risk_flags = sorted({flag for row in rows for flag in row.get("risk_flags", [])})
     structure_signals = []
@@ -6550,6 +6657,8 @@ def _merge_source_rows(rows: list[dict]) -> dict:
             "cited": any(row.get("cited") for row in rows),
             "run_ids": run_ids,
             "run_count": len(run_ids),
+            "citation_run_ids": citation_run_ids,
+            "retrieval_run_ids": retrieval_run_ids,
             "retrieval_rank": min(retrieval_ranks) if retrieval_ranks else None,
             "risk_flags": risk_flags,
             "content_structure_signals": structure_signals,
@@ -6849,6 +6958,289 @@ def _benchmark_basis(content_payload: dict, support_payload: dict, tier: str) ->
     return basis
 
 
+def _attach_citation_decision_values(rows: list[dict], db: Session) -> list[dict]:
+    support_ids = {
+        int(alignment_id)
+        for row in rows
+        for alignment_id in row.get("supporting_alignment_ids", [])
+        if alignment_id
+    }
+    benchmark_by_alignment_id = _benchmark_evidence_by_alignment_id(db, support_ids)
+    for row in rows:
+        benchmark_items = [
+            benchmark_by_alignment_id[alignment_id]
+            for alignment_id in row.get("supporting_alignment_ids", [])
+            if alignment_id in benchmark_by_alignment_id
+        ]
+        values = _citation_decision_values_from_benchmark_items(row, benchmark_items)
+        summary = _citation_value_summary_for_row(row, values)
+        row["citation_decision_values"] = values
+        row["citation_value_class"] = summary["class"]
+        row["citation_value_label"] = summary["label"]
+        row["citation_value_summary"] = summary
+    return rows
+
+
+def _citation_decision_values_from_benchmark_items(row: dict, benchmark_items: list[dict]) -> list[dict]:
+    grouped: dict[tuple, dict] = {}
+    source_document_id = row.get("source_document_id")
+    for item in benchmark_items:
+        value_class = _citation_value_class_for_benchmark_item(row, item)
+        if value_class not in {"DECISION_CITATION", "ANSWER_SUPPORT_CITATION", "UNCLASSIFIED_SUPPORT"}:
+            continue
+        capability = _citation_value_capability(item)
+        supported_entity = _citation_value_supported_entity(item)
+        key = (source_document_id, supported_entity, capability, value_class)
+        entry = grouped.setdefault(key, {
+            "citation_value_class": value_class,
+            "citation_value_label": _citation_value_label(value_class),
+            "source_document_id": source_document_id,
+            "platform": _channel_key_for_row(row) or row.get("platform") or "web",
+            "platform_label": source_platform_label(_channel_key_for_row(row) or row.get("platform") or "web"),
+            "supported_entity": supported_entity,
+            "supported_capability": capability,
+            "supported_reason": capability,
+            "recommendation_event_ids": set(),
+            "decision_binding_ids": set(),
+            "answer_unit_ids": set(),
+            "source_claim_ids": set(),
+            "evidence_alignment_ids": set(),
+            "citation_run_ids": set(int(run_id) for run_id in row.get("citation_run_ids", []) if run_id),
+            "support_run_ids": set(),
+            "observed_run_ids": set(),
+            "benchmark_tier": row.get("benchmark_tier") or "",
+            "basis": set(),
+        })
+        if item.get("recommendation_event_id"):
+            entry["recommendation_event_ids"].add(int(item["recommendation_event_id"]))
+        if item.get("decision_binding_id"):
+            entry["decision_binding_ids"].add(int(item["decision_binding_id"]))
+        if item.get("answer_unit_id"):
+            entry["answer_unit_ids"].add(int(item["answer_unit_id"]))
+        if item.get("source_claim_id"):
+            entry["source_claim_ids"].add(int(item["source_claim_id"]))
+        if item.get("alignment_id"):
+            entry["evidence_alignment_ids"].add(int(item["alignment_id"]))
+        for run_id in item.get("observed_run_ids") or []:
+            if run_id:
+                entry["support_run_ids"].add(int(run_id))
+                entry["observed_run_ids"].add(int(run_id))
+        entry["basis"].add(_citation_value_basis(value_class, item))
+
+    return [
+        {
+            **entry,
+            "recommendation_event_ids": sorted(entry["recommendation_event_ids"]),
+            "decision_binding_ids": sorted(entry["decision_binding_ids"]),
+            "answer_unit_ids": sorted(entry["answer_unit_ids"]),
+            "source_claim_ids": sorted(entry["source_claim_ids"]),
+            "evidence_alignment_ids": sorted(entry["evidence_alignment_ids"]),
+            "citation_run_ids": sorted(entry["citation_run_ids"]),
+            "support_run_ids": sorted(entry["support_run_ids"]),
+            "observed_run_ids": sorted(entry["observed_run_ids"]),
+            "support_run_count": len(entry["support_run_ids"]),
+            "citation_run_count": len(entry["citation_run_ids"]),
+            "basis": sorted(entry["basis"]),
+        }
+        for entry in sorted(grouped.values(), key=lambda item: (
+            CITATION_DECISION_VALUE_RANK.get(item["citation_value_class"], 99),
+            item["supported_entity"],
+            item["supported_capability"],
+        ))
+    ]
+
+
+def _citation_value_class_for_benchmark_item(row: dict, item: dict) -> str:
+    if not item.get("alignment_id"):
+        return "PERIPHERAL_CITATION"
+    if item.get("decision_binding_id") and item.get("recommendation_event_id"):
+        event_level = _decision_support_level_from_benchmark_item(item)
+        if event_level in {"RECOMMENDATION_REASON", "CANDIDATE_OR_EVALUATION"}:
+            return "DECISION_CITATION"
+    if item.get("answer_unit_id") and not item.get("decision_binding_id") and (row.get("decision_support_level") or "") == "FACT_ONLY":
+        return "ANSWER_SUPPORT_CITATION"
+    return "UNCLASSIFIED_SUPPORT"
+
+
+def _decision_support_level_from_benchmark_item(item: dict) -> str:
+    speech_act = str(item.get("event_speech_act") or "").upper()
+    strength = str(item.get("event_recommendation_strength") or "").upper()
+    polarity = str(item.get("event_polarity") or "").upper()
+    if speech_act == "RECOMMEND":
+        return "RECOMMENDATION_REASON"
+    if speech_act in {"INCLUDE_AS_OPTION", "COMPARE"} or strength in {"MODERATE", "STRONG"} or polarity == "POSITIVE":
+        return "CANDIDATE_OR_EVALUATION"
+    return "FACT_ONLY"
+
+
+def _citation_value_supported_entity(item: dict) -> str:
+    return _clean_display_text(item.get("event_entity") or item.get("claim_subject") or item.get("claim_subject_text") or "未知实体") or "未知实体"
+
+
+def _citation_value_capability(item: dict) -> str:
+    for key in ("answer_unit_text", "claim_object", "claim_text", "event_answer_span"):
+        value = _clean_display_text(item.get(key) or "")
+        if value:
+            return value[:120]
+    return "未命名能力/理由"
+
+
+def _citation_value_basis(value_class: str, item: dict) -> str:
+    label = _citation_value_label(value_class)
+    alignment_id = item.get("alignment_id")
+    claim = str(item.get("claim_text") or item.get("source_span") or "").strip()
+    claim_part = f"；来源主张：{claim[:80]}" if claim else ""
+    return f"{label}: eligible EvidenceAlignment #{alignment_id} SUPPORTS{claim_part}"
+
+
+def _citation_value_summary_for_row(row: dict, values: list[dict]) -> dict:
+    if values:
+        top_class = min(
+            (value.get("citation_value_class") for value in values),
+            key=lambda value: CITATION_DECISION_VALUE_RANK.get(value or "", 99),
+        )
+        decision_values = [value for value in values if value.get("citation_value_class") == "DECISION_CITATION"]
+        answer_values = [value for value in values if value.get("citation_value_class") == "ANSWER_SUPPORT_CITATION"]
+        support_run_ids = sorted({
+            int(run_id)
+            for value in values
+            for run_id in value.get("support_run_ids", [])
+            if run_id
+        })
+        return {
+            "class": top_class,
+            "label": _citation_value_label(top_class),
+            "reason": _citation_value_summary_reason(top_class, decision_values, answer_values),
+            "decision_citation_count": len(decision_values),
+            "answer_support_count": len(answer_values),
+            "support_run_ids": support_run_ids,
+            "supported_entities": sorted({value.get("supported_entity") for value in values if value.get("supported_entity")}),
+            "supported_capabilities": sorted({value.get("supported_capability") for value in values if value.get("supported_capability")}),
+        }
+    if (row.get("content_status") or "") != "CONTENT_VALID":
+        value_class = "NOT_EVALUABLE"
+        reason = "正文不可评估或待补，不能判断该引用是否参与 AI 品牌决策。"
+    else:
+        value_class = "PERIPHERAL_CITATION"
+        reason = "来源出现在当前引用/检索环境中，但未形成 eligible SUPPORTS，不作为高价值策略输入。"
+    return {
+        "class": value_class,
+        "label": _citation_value_label(value_class),
+        "reason": reason,
+        "decision_citation_count": 0,
+        "answer_support_count": 0,
+        "support_run_ids": [],
+        "supported_entities": [],
+        "supported_capabilities": [],
+    }
+
+
+def _citation_value_summary_reason(top_class: str, decision_values: list[dict], answer_values: list[dict]) -> str:
+    if top_class == "DECISION_CITATION":
+        run_ids = sorted({run_id for value in decision_values for run_id in value.get("support_run_ids", [])})
+        return f"该来源通过 eligible SUPPORTS 直接支撑 AI 品牌决策理由，覆盖 {len(run_ids)} 个 Run。"
+    if top_class == "ANSWER_SUPPORT_CITATION":
+        run_ids = sorted({run_id for value in answer_values for run_id in value.get("support_run_ids", [])})
+        return f"该来源支撑答案内容中的重要信息，但未直接绑定品牌推荐决策，覆盖 {len(run_ids)} 个 Run。"
+    return "该来源存在 SUPPORTS，但暂不能安全判定为品牌决策引用或答案支撑引用。"
+
+
+def _citation_value_label(value_class: str | None) -> str:
+    return {
+        "DECISION_CITATION": "决策引用",
+        "ANSWER_SUPPORT_CITATION": "答案支撑引用",
+        "PERIPHERAL_CITATION": "外围引用",
+        "UNCLASSIFIED_SUPPORT": "未分类支撑",
+        "NOT_EVALUABLE": "不可评估",
+    }.get(value_class or "", value_class or "未分类")
+
+
+def _channel_aggregation_for_rows(rows: list[dict], valid_run_ids: list[int] | None = None) -> list[dict]:
+    denominator = len(set(int(run_id) for run_id in (valid_run_ids or []) if run_id))
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        channel = (_channel_key_for_row(row) or "web").upper()
+        entry = grouped.setdefault(channel, {
+            "channel": channel,
+            "channel_label": source_platform_label(channel.lower()),
+            "retrieval_run_ids": set(),
+            "citation_run_ids": set(),
+            "decision_citation_run_ids": set(),
+            "answer_support_run_ids": set(),
+            "peripheral_run_ids": set(),
+            "eligible_support_run_ids": set(),
+            "supported_entities": set(),
+            "supported_capabilities": set(),
+            "supported_reasons": set(),
+            "primary_benchmark_count": 0,
+            "secondary_benchmark_count": 0,
+            "source_document_ids": set(),
+            "gap_types": set(),
+            "representative_sources": [],
+        })
+        entry["retrieval_run_ids"].update(int(run_id) for run_id in row.get("retrieval_run_ids", []) if run_id)
+        entry["citation_run_ids"].update(int(run_id) for run_id in row.get("citation_run_ids", []) if run_id)
+        if row.get("benchmark_tier") == "PRIMARY_BENCHMARK":
+            entry["primary_benchmark_count"] += 1
+        if row.get("benchmark_tier") == "SECONDARY_BENCHMARK":
+            entry["secondary_benchmark_count"] += 1
+        if row.get("source_document_id"):
+            entry["source_document_ids"].add(int(row["source_document_id"]))
+        if row.get("source_gap_type"):
+            entry["gap_types"].add(str(row["source_gap_type"]))
+        if len(entry["representative_sources"]) < 3 and row.get("title"):
+            entry["representative_sources"].append(_benchmark_source_for_row(row))
+        values = row.get("citation_decision_values") or []
+        if not values and row.get("citation_value_class") == "PERIPHERAL_CITATION":
+            entry["peripheral_run_ids"].update(int(run_id) for run_id in row.get("run_ids", []) if run_id)
+        for value in values:
+            support_run_ids = {int(run_id) for run_id in value.get("support_run_ids", []) if run_id}
+            value_class = value.get("citation_value_class")
+            entry["eligible_support_run_ids"].update(support_run_ids)
+            if value_class == "DECISION_CITATION":
+                entry["decision_citation_run_ids"].update(support_run_ids)
+            elif value_class == "ANSWER_SUPPORT_CITATION":
+                entry["answer_support_run_ids"].update(support_run_ids)
+            if value.get("supported_entity"):
+                entry["supported_entities"].add(value["supported_entity"])
+            if value.get("supported_capability"):
+                entry["supported_capabilities"].add(value["supported_capability"])
+                entry["supported_reasons"].add(value["supported_capability"])
+
+    result = []
+    for entry in grouped.values():
+        result.append({
+            "channel": entry["channel"],
+            "channel_label": entry["channel_label"],
+            "retrieval_run_count": len(entry["retrieval_run_ids"]),
+            "citation_run_count": len(entry["citation_run_ids"]),
+            "decision_citation_run_count": len(entry["decision_citation_run_ids"]),
+            "answer_support_run_count": len(entry["answer_support_run_ids"]),
+            "peripheral_run_count": len(entry["peripheral_run_ids"]),
+            "eligible_support_run_count": len(entry["eligible_support_run_ids"]),
+            "retrieval_run_ids": sorted(entry["retrieval_run_ids"]),
+            "citation_run_ids": sorted(entry["citation_run_ids"]),
+            "decision_citation_run_ids": sorted(entry["decision_citation_run_ids"]),
+            "answer_support_run_ids": sorted(entry["answer_support_run_ids"]),
+            "eligible_support_run_ids": sorted(entry["eligible_support_run_ids"]),
+            "run_coverage_denominator": denominator,
+            "supported_entities": sorted(entry["supported_entities"]),
+            "supported_capabilities": sorted(entry["supported_capabilities"]),
+            "supported_reasons": sorted(entry["supported_reasons"]),
+            "primary_benchmark_count": entry["primary_benchmark_count"],
+            "secondary_benchmark_count": entry["secondary_benchmark_count"],
+            "source_document_ids": sorted(entry["source_document_ids"]),
+            "gap_types": sorted(entry["gap_types"]),
+            "representative_sources": entry["representative_sources"],
+        })
+    return sorted(result, key=lambda item: (
+        -item["decision_citation_run_count"],
+        -item["eligible_support_run_count"],
+        -item["primary_benchmark_count"],
+        item["channel_label"],
+    ))
+
+
 def _attach_source_gap_analysis(
     db: Session,
     project: Project,
@@ -6920,12 +7312,17 @@ def _benchmark_evidence_by_alignment_id(db: Session, support_ids: set[int]) -> d
             "source_claim_id": alignment.source_claim_id,
             "recommendation_event_id": alignment.recommendation_event_id,
             "run_id": alignment.run_id,
+            "source_document_id": alignment.source_document_id,
             "claim_text": claim.normalized_claim if claim else "",
             "source_span": claim.source_span if claim else "",
             "claim_subject": claim.subject_entity if claim else "",
+            "claim_subject_text": claim.subject_text if claim else "",
             "claim_object": claim.object_text if claim else "",
             "claim_predicate": claim.predicate if claim else "",
             "event_entity": event.entity_text if event else "",
+            "event_speech_act": event.speech_act if event else "",
+            "event_recommendation_strength": event.recommendation_strength if event else "",
+            "event_polarity": event.polarity if event else "",
             "event_answer_span": event.answer_span if event else "",
             "event_reasons": loads(event.reasons_json, []) if event else [],
             "answer_unit_id": answer_unit_id or None,
@@ -7846,6 +8243,10 @@ def _compact_key(value: str) -> str:
     return re.sub(r"[\s\W_]+", "", cleaned.lower())
 
 
+def _clean_display_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[\u200b\u200c\u200d\ufeff]", "", str(value or ""))).strip()
+
+
 def _not_eligible_source_gap_payload(precondition: str, reason: str) -> dict:
     return {
         "source_gap_type": None,
@@ -8110,13 +8511,19 @@ def _attach_recommended_actions(
     rows: list[dict],
     project: Project,
     prompt: Prompt | None,
+    channel_aggregation: list[dict] | None = None,
 ) -> list[dict]:
     for row in rows:
-        row["recommended_action"] = _recommended_action_for_row(row, project, prompt)
+        row["recommended_action"] = _recommended_action_for_row(row, project, prompt, channel_aggregation or [])
     return rows
 
 
-def _recommended_action_for_row(row: dict, project: Project, prompt: Prompt | None) -> dict | None:
+def _recommended_action_for_row(
+    row: dict,
+    project: Project,
+    prompt: Prompt | None,
+    channel_aggregation: list[dict] | None = None,
+) -> dict | None:
     route = (row.get("action_route") or "").upper()
     priority = (row.get("priority_level") or "").upper()
     gap_type = (row.get("source_gap_type") or "").upper()
@@ -8169,6 +8576,9 @@ def _recommended_action_for_row(row: dict, project: Project, prompt: Prompt | No
         "gap_item_ids": [item.get("gap_item_id") for item in gap_items if item.get("gap_item_id")],
         "benchmark_source": _benchmark_source_for_row(row),
         "benchmark_basis": row.get("benchmark_basis", []),
+        "citation_decision_values": row.get("citation_decision_values", []),
+        "citation_value_summary": row.get("citation_value_summary", {}),
+        "channel_aggregation": channel_aggregation or [],
         "decision_support_level": row.get("decision_support_level", "NONE"),
         "source_gap_basis": row.get("source_gap_basis", []),
         "product_truth_ids": row.get("matched_product_truth_ids", []),

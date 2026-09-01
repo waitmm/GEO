@@ -4,6 +4,16 @@ Status: ACTIVE
 
 ## Single Prompt V1 Known Pitfalls
 
+- Citation Decision Value is a business interpretation layer, not a new
+  Citation Score. It must stay at `SourceDocument + supported_entity +
+  capability/reason` grain. A page-level summary may say "high-value decision
+  citation", but formal Strategy input must preserve the underlying capability
+  values, alignment IDs, and observed Run coverage.
+- Step 7 Channel Strategy must not regress to either extreme:
+  `CONTENT_GAP -> always official site` or `Benchmark channel -> execution
+  channel`. Planned channel roles must be explained by Citation Decision Value,
+  Channel Aggregation, Product Truth, Capability Gap, Relevant Brand Asset, and
+  Retrieval/Citation status. Concrete account/URL/title/Draft remains Step 8.
 - Current Step 7 StrategyCandidate selection must be context-bound and origin
   gated. Legacy `generate-v2/local-rule`, audit, test, regression, or shadow
   candidates may stay in history, but they must not become current even if they

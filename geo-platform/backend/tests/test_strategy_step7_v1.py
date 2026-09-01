@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from app.models import OptimizationEvidencePackage, Project, Prompt
-from app.modules.optimization.service import _strategy_payload_from_vertical_action
+from app.modules.optimization.service import (
+    _channel_aggregation_for_rows,
+    _citation_decision_values_from_benchmark_items,
+    _strategy_payload_from_vertical_action,
+)
 from app.services.serialization import dumps
 
 
@@ -48,6 +52,44 @@ def _action() -> dict:
             "platform": "zhihu",
             "platform_label": "知乎",
         },
+        "citation_decision_values": [
+            {
+                "citation_value_class": "DECISION_CITATION",
+                "source_document_id": 345,
+                "platform": "zhihu",
+                "platform_label": "知乎",
+                "supported_entity": "小码短链接",
+                "supported_capability": "点击统计",
+                "supported_reason": "点击统计",
+                "evidence_alignment_ids": [9001],
+                "support_run_ids": [238, 239, 240, 253, 254, 255],
+                "observed_run_ids": [238, 239, 240, 253, 254, 255],
+            }
+        ],
+        "citation_value_summary": {
+            "class": "DECISION_CITATION",
+            "label": "决策引用",
+            "decision_citation_count": 1,
+            "support_run_ids": [238, 239, 240, 253, 254, 255],
+        },
+        "channel_aggregation": [
+            {
+                "channel": "ZHIHU",
+                "channel_label": "知乎",
+                "retrieval_run_count": 6,
+                "citation_run_count": 6,
+                "decision_citation_run_count": 6,
+                "answer_support_run_count": 0,
+                "eligible_support_run_count": 6,
+                "run_coverage_denominator": 6,
+                "supported_entities": ["小码短链接"],
+                "supported_reasons": ["点击统计", "自定义分享标题"],
+                "supported_capabilities": ["点击统计", "自定义分享标题"],
+                "primary_benchmark_count": 1,
+                "secondary_benchmark_count": 0,
+                "gap_types": ["CONTENT_GAP"],
+            }
+        ],
         "product_truth_status": "TRUE",
         "product_truth_ids": [701, 702],
         "content_requirements": ["直接回答 Prompt", "能力事实说明", "适用场景"],
@@ -142,9 +184,12 @@ def test_step7_strategy_core_includes_planned_channel_layer():
     assert payload["planned_channels"][0]["intervention_priority"] == "PRIMARY"
     assert payload["planned_channels"][0]["channel_role"].startswith("承载目标品牌自己的能力事实表达")
     zhihu = next(item for item in payload["planned_channels"] if item["channel"] == "ZHIHU")
-    assert zhihu["intervention_priority"] == "OBSERVE"
-    assert "不自动成为执行渠道" in zhihu["channel_role"]
+    assert zhihu["intervention_priority"] == "SECONDARY"
+    assert "直接参与 AI 品牌决策" in zhihu["channel_role"]
+    assert "Decision Citation 覆盖 6/6 Runs" in zhihu["selection_basis"]
     assert payload["channel_roles"]["OFFICIAL_SITE"]["intervention_priority"] == "PRIMARY"
+    assert payload["channel_roles"]["ZHIHU"]["citation_decision_value_basis"]["decision_citation_run_count"] == 6
+    assert payload["secondary_intervention"][0]["channel"] == "ZHIHU"
     assert payload["asset_direction"]["asset_operation"] == "CREATE_NEW"
     assert payload["execution_sequence"][0]["name"] == "确认执行资产"
     assert payload["attribution_intent"]["primary_capability"] == "点击统计"
@@ -165,3 +210,130 @@ def test_step7_concrete_execution_fields_remain_unresolved_and_step8_compatible(
     assert payload["required_sections"] == ["直接回答 Prompt", "能力事实说明", "适用场景"]
     assert payload["target_metric"] == "brand_mention_rate"
     assert payload["benchmark_channel_boundary"].startswith("Benchmark 来源平台不能自动成为")
+
+
+def test_citation_decision_value_is_source_entity_capability_grained():
+    row = {
+        "source_document_id": 345,
+        "platform": "zhihu",
+        "domain": "zhuanlan.zhihu.com",
+        "url": "https://zhuanlan.zhihu.com/p/1",
+        "benchmark_tier": "PRIMARY_BENCHMARK",
+        "decision_support_level": "RECOMMENDATION_REASON",
+        "citation_run_ids": [238, 239],
+    }
+    values = _citation_decision_values_from_benchmark_items(row, [
+        {
+            "alignment_id": 9001,
+            "source_claim_id": 8001,
+            "recommendation_event_id": 7001,
+            "decision_binding_id": 6001,
+            "answer_unit_id": 5001,
+            "event_entity": "小码短链接",
+            "event_speech_act": "RECOMMEND",
+            "answer_unit_text": "点击统计",
+            "claim_text": "小码短链接支持点击统计",
+            "observed_run_ids": [238],
+        },
+        {
+            "alignment_id": 9002,
+            "source_claim_id": 8002,
+            "recommendation_event_id": 7001,
+            "decision_binding_id": 6002,
+            "answer_unit_id": 5002,
+            "event_entity": "小码短链接",
+            "event_speech_act": "RECOMMEND",
+            "answer_unit_text": "自定义分享标题",
+            "claim_text": "小码短链接可设置分享标题",
+            "observed_run_ids": [239],
+        },
+    ])
+
+    assert len(values) == 2
+    assert {item["supported_capability"] for item in values} == {"点击统计", "自定义分享标题"}
+    assert all(item["citation_value_class"] == "DECISION_CITATION" for item in values)
+    assert values[0]["source_document_id"] == 345
+    assert values[0]["supported_entity"] == "小码短链接"
+
+
+def test_answer_support_citation_requires_support_without_decision_binding():
+    row = {
+        "source_document_id": 88,
+        "platform": "web",
+        "benchmark_tier": "SECONDARY_BENCHMARK",
+        "decision_support_level": "FACT_ONLY",
+        "citation_run_ids": [1],
+    }
+    values = _citation_decision_values_from_benchmark_items(row, [
+        {
+            "alignment_id": 11,
+            "source_claim_id": 12,
+            "answer_unit_id": 13,
+            "answer_unit_text": "短链接适合营销场景",
+            "claim_text": "短链接可用于营销场景",
+            "observed_run_ids": [1],
+        }
+    ])
+
+    assert values[0]["citation_value_class"] == "ANSWER_SUPPORT_CITATION"
+
+
+def test_channel_aggregation_counts_decision_answer_and_peripheral_runs():
+    rows = [
+        {
+            "source_document_id": 345,
+            "platform": "zhihu",
+            "title": "小码文章",
+            "benchmark_tier": "PRIMARY_BENCHMARK",
+            "citation_run_ids": [238, 239],
+            "retrieval_run_ids": [238, 239, 240],
+            "citation_decision_values": [
+                {
+                    "citation_value_class": "DECISION_CITATION",
+                    "supported_entity": "小码短链接",
+                    "supported_capability": "点击统计",
+                    "support_run_ids": [238, 239],
+                }
+            ],
+        },
+        {
+            "source_document_id": 346,
+            "platform": "zhihu",
+            "title": "背景文章",
+            "benchmark_tier": "REFERENCE_ONLY",
+            "citation_run_ids": [240],
+            "retrieval_run_ids": [240],
+            "citation_decision_values": [],
+            "citation_value_class": "PERIPHERAL_CITATION",
+            "run_ids": [240],
+        },
+    ]
+
+    aggregation = _channel_aggregation_for_rows(rows, [238, 239, 240])
+    zhihu = aggregation[0]
+
+    assert zhihu["channel"] == "ZHIHU"
+    assert zhihu["decision_citation_run_count"] == 2
+    assert zhihu["peripheral_run_count"] == 1
+    assert zhihu["primary_benchmark_count"] == 1
+    assert zhihu["supported_reasons"] == ["点击统计"]
+
+
+def test_benchmark_channel_without_decision_citation_remains_observe():
+    action = _action()
+    action["channel_aggregation"] = [
+        {
+            "channel": "ZHIHU",
+            "channel_label": "知乎",
+            "decision_citation_run_count": 0,
+            "eligible_support_run_count": 0,
+            "run_coverage_denominator": 6,
+            "supported_reasons": [],
+            "primary_benchmark_count": 1,
+        }
+    ]
+    payload = _strategy_payload_from_vertical_action(_project(), _prompt(), _package(), action, {})
+    zhihu = next(item for item in payload["planned_channels"] if item["channel"] == "ZHIHU")
+
+    assert zhihu["intervention_priority"] == "OBSERVE"
+    assert "Benchmark 来源平台只说明" in zhihu["selection_basis"]

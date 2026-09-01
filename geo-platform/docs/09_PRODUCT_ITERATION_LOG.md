@@ -2,6 +2,72 @@
 
 Status: ACTIVE
 
+## 2026-09-01 Citation Decision Value To Step 7
+
+### Product Decision
+
+本轮不重新设计单 Prompt V1.1 主链，不进入 Step 9，不新增引用评分体系。正式补充
+`Citation Decision Value`：
+
+```text
+eligible EvidenceAlignment
+-> source × entity × capability/reason 的 Citation Decision Value
+-> 跨 Run 聚合
+-> Channel Aggregation
+-> Step 7 planned_channels / channel_roles
+```
+
+正式分类：
+
+```text
+DECISION_CITATION
+ANSWER_SUPPORT_CITATION
+PERIPHERAL_CITATION
+UNCLASSIFIED_SUPPORT
+NOT_EVALUABLE
+```
+
+其中 `DECISION_CITATION` 必须来自完整 Phase 2A lineage 和 eligible
+`SUPPORTS`，并能回溯到 RecommendationEvent / AnswerDecisionBinding /
+AnswerUnit / ReferenceSource / SourceDocument / SourceClaim / EvidenceAlignment。
+
+### Why
+
+旧 Step 7 平台逻辑容易退化为：
+
+```text
+CONTENT_GAP -> 官网优先
+Benchmark 来源平台 -> OBSERVE
+```
+
+这虽然守住了“不因 Benchmark 在知乎就自动去知乎”的边界，但没有充分消费前面已经建立的
+Answer Decision、EvidenceAlignment、Benchmark 和多 Run lineage。
+
+### User-Facing Rule
+
+Step 7 的平台角色必须能解释：
+
+```text
+为什么官网是 PRIMARY？
+为什么知乎/百家号等平台是 SECONDARY / EXPERIMENTAL / OBSERVE？
+这个角色来自哪些 Decision Citation、Run coverage 和 supported reasons？
+```
+
+平台角色不能只由 Gap 类型决定，也不能把 Benchmark 来源平台机械变成执行平台。Step 7
+仍然只到计划平台层；具体账号、URL、标题、section、内容结构、Draft、Action 和
+Experiment 仍属于 Step 8。
+
+### Source Of Truth
+
+正式定义由以下文档共同承担：
+
+```text
+产品纲要.md
+geo-platform/docs/05_OPTIMIZATION_LOOP_SPEC.md
+```
+
+`PRODUCT_FUNCTION_SPEC.md` 提供产品功能解释；本日志记录迭代原因与边界。
+
 ## 2026-08-31 Step 7 Current Candidate Eligibility
 
 ### Product Decision

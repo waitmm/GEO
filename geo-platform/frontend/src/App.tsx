@@ -1860,6 +1860,33 @@ export default function App() {
     }
   }
 
+  async function runCurrentWorkflowAnalysis() {
+    const targetPromptId = currentCitationDecisionPromptId() || workflowData?.prompt_id;
+    if (!projectId || !targetPromptId) {
+      message.warning("请先选择一个 Prompt");
+      return;
+    }
+    setCitationDecisionLoading(true);
+    try {
+      const response = await fetch(`/api/optimization/workflow/${projectId}/${targetPromptId}/run-analysis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ use_answer_binding_v1_1: true }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const result = await response.json();
+      message.success(result.already_running
+        ? "当前主链已经在后台运行，完成后刷新状态"
+        : "已开始重新运行当前主链，完成后会生成正式证据与策略候选状态");
+      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${targetPromptId}/status`)).json();
+      setWorkflowData(wf);
+    } catch (error: any) {
+      message.error(error.message || "重新运行当前主链失败");
+    } finally {
+      setCitationDecisionLoading(false);
+    }
+  }
+
   async function selectEvidencePackage(packageId: number, silent = false) {
     if (!projectId || !packageId) return;
     setSelectedPkgId(packageId);
@@ -2282,6 +2309,7 @@ export default function App() {
   const backendStrategyStepStatus = currentWorkflowData?.strategy_step_status || backendStrategyStep.status || "";
   const backendExecutionStepStatus = currentWorkflowData?.execution_step_status || backendExecutionStep.status || "";
   const currentNoStrategyNeeded = backendStrategyStepStatus === "NO_STRATEGY";
+  const currentNeedsCurrentAnalysis = backendStrategyStepStatus === "NEEDS_CURRENT_ANALYSIS";
   const backendCurrentStrategyIds = new Set(
     (currentWorkflowData?.current_strategy_candidate_ids || backendStrategyStep.current_strategy_candidate_ids || [])
       .map((id: any) => Number(id))
@@ -2379,6 +2407,8 @@ export default function App() {
       title: "策略确认",
       description: currentStrategyCandidateCount
         ? `${currentStrategyCandidateCount} 个当前候选`
+        : currentNeedsCurrentAnalysis
+          ? "有上游线索，需重新运行当前主链"
         : currentNoStrategyNeeded
           ? "本轮无需策略候选"
         : ignoredHistoricalStrategyCount
@@ -2386,12 +2416,14 @@ export default function App() {
           : citationLoaded
           ? `${citationSummary.recommended_action_count ?? 0} 个可生成线索`
           : "等待缺口判断",
-      status: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "finish" : currentPendingStrategyCount || currentCitationCanConfirm ? "process" : currentCitationDecisionData ? "wait" : "wait",
+      status: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "finish" : currentNeedsCurrentAnalysis || currentPendingStrategyCount || currentCitationCanConfirm ? "process" : currentCitationDecisionData ? "wait" : "wait",
     },
     {
       title: "实验方案",
       description: currentExperimentCount
         ? `${currentExperimentCount} 个当前草案/实验`
+        : currentNeedsCurrentAnalysis
+          ? "等待当前主链生成策略候选"
         : currentNoStrategyNeeded
           ? "本轮无需实验草案"
         : ignoredHistoricalExperimentCount
@@ -2478,13 +2510,15 @@ export default function App() {
     {
       key: "action",
       label: "策略确认",
-      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : currentNoStrategyNeeded ? "无需策略" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !citationGapDecisionDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
+      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : currentNeedsCurrentAnalysis ? "需重跑主链" : currentNoStrategyNeeded ? "无需策略" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !citationGapDecisionDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
       detail: currentConfirmedStrategyCount
         ? `已确认策略 #${currentConfirmedStrategies[0]?.id || currentLatestStrategyCandidate?.id}`
         : currentPendingStrategyCount
           ? `${currentPendingStrategyCount} 个当前策略候选待人工审核`
           : currentCitationCanConfirm
             ? `${citationConfirmableActions.length} 个缺口可生成策略候选`
+            : currentNeedsCurrentAnalysis
+              ? (currentWorkflowData?.strategy_step_detail || "当前有答案决策/证据线索，但尚未生成 V1.1 正式证据与缺口")
             : currentNoStrategyNeeded
               ? "本轮没有可生成策略的内容/证据缺口"
             : !currentCitationLoaded
@@ -2496,12 +2530,14 @@ export default function App() {
                   : unresolvedAction || unknownGapCount > 0
                     ? "请查看依据后人工判断，不自动生成策略"
                     : "没有可生成策略的内容/证据缺口",
-      tone: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "done" : currentPendingStrategyCount || currentCitationCanConfirm || unresolvedAction ? "current" : "pending",
-      actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentNoStrategyNeeded || unresolvedAction ? "查看依据" : "",
+      tone: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "done" : currentPendingStrategyCount || currentCitationCanConfirm || currentNeedsCurrentAnalysis || unresolvedAction ? "current" : "pending",
+      actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentNeedsCurrentAnalysis ? "重新运行当前主链" : currentNoStrategyNeeded || unresolvedAction ? "查看依据" : "",
       onAction: currentConfirmedStrategyCount || currentPendingStrategyCount
         ? openStrategyConfirmationPage
         : currentCitationCanConfirm
           ? confirmCitationDecisionV1
+          : currentNeedsCurrentAnalysis
+            ? runCurrentWorkflowAnalysis
           : currentNoStrategyNeeded
             ? () => setPage("optimization")
           : unresolvedAction
@@ -2511,11 +2547,13 @@ export default function App() {
     {
       key: "experiment",
       label: "实验方案落地",
-      statusText: currentExperimentCount ? "已创建" : currentConfirmedStrategyCount ? "待创建" : currentNoStrategyNeeded ? "无需创建" : currentCitationLoaded ? "未创建" : "未开始",
+      statusText: currentExperimentCount ? "已创建" : currentConfirmedStrategyCount ? "待创建" : currentNeedsCurrentAnalysis ? "等待主链" : currentNoStrategyNeeded ? "无需创建" : currentCitationLoaded ? "未创建" : "未开始",
       detail: currentExperimentCount
         ? `${currentExperimentCount} 个当前草案/实验，等待发布闸门`
         : ignoredHistoricalExperimentCount && !currentConfirmedStrategyCount
           ? "存在历史草案/实验，但当前主链仍需先完成策略确认"
+          : currentNeedsCurrentAnalysis
+            ? "先重新运行当前主链，生成正式证据与策略候选"
           : currentNoStrategyNeeded
             ? "本轮没有策略候选，无需实验草案"
           : currentConfirmedStrategyCount
@@ -2523,7 +2561,7 @@ export default function App() {
             : currentCitationLoaded
               ? "等待策略确认"
               : "等待策略候选",
-      tone: currentExperimentCount || currentNoStrategyNeeded ? "done" : currentConfirmedStrategyCount ? "current" : "pending",
+      tone: currentExperimentCount || currentNoStrategyNeeded ? "done" : currentConfirmedStrategyCount || currentNeedsCurrentAnalysis ? "current" : "pending",
       actionLabel: currentExperimentCount ? "查看实验草案" : currentConfirmedStrategyCount ? "去创建草案" : "",
       onAction: currentExperimentCount || currentConfirmedStrategyCount ? openStrategyConfirmationPage : undefined,
     },
@@ -2641,11 +2679,11 @@ export default function App() {
               <Button
                 size="small"
                 type="primary"
-                disabled={!currentCitationCanConfirm && !currentStrategyCandidateCount}
+                disabled={!currentCitationCanConfirm && !currentStrategyCandidateCount && !currentNeedsCurrentAnalysis}
                 loading={citationDecisionLoading}
-                onClick={currentStrategyCandidateCount ? openStrategyConfirmationPage : confirmCitationDecisionV1}
+                onClick={currentStrategyCandidateCount ? openStrategyConfirmationPage : currentNeedsCurrentAnalysis ? runCurrentWorkflowAnalysis : confirmCitationDecisionV1}
               >
-                {currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : "等待策略确认"}
+                {currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentNeedsCurrentAnalysis ? "重新运行当前主链" : "等待策略确认"}
               </Button>
               <Button size="small" onClick={openStrategyConfirmationPage}>{citationProductTruthBlockedRows.length ? "补目标品牌事实" : "策略确认详情"}</Button>
               {citationProductTruthBlockedRows.length > 0 && <Text type="secondary">这里确认的是{project?.brand_name || "目标品牌"}自己的能力，不是竞品或对标文章的能力。</Text>}
@@ -5141,7 +5179,7 @@ export default function App() {
             setLoading(true);
             try{
               const pid = currentWorkflowData?.prompt_id;
-              const r = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/run-analysis`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})})).json();
+              const r = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/run-analysis`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({use_answer_binding_v1_1:true})})).json();
               if (r.started === false) {
                 message.info("该 Prompt 的机器分析已在后台运行中，稍后点击「加载待审核项」查看进度");
                 return;

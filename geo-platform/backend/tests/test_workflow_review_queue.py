@@ -597,7 +597,7 @@ def test_step8_complete_only_for_current_confirmed_candidate_experiment():
         db.close()
 
 
-def test_reviewed_workflow_without_generatable_gap_is_no_strategy():
+def test_reviewed_workflow_with_upstream_signal_without_current_v1_1_input_needs_current_analysis():
     db = _session()
     try:
         project, prompt, package = _ready_strategy_workflow_base(db)
@@ -624,16 +624,69 @@ def test_reviewed_workflow_without_generatable_gap_is_no_strategy():
         action_step = next(step for step in status["steps"] if step["key"] == "action")
         experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
 
-        assert status["strategy_step_status"] == "NO_STRATEGY"
-        assert status["execution_step_status"] == "NO_EXPERIMENT"
+        assert status["strategy_step_status"] == "NEEDS_CURRENT_ANALYSIS"
+        assert status["execution_step_status"] == "LOCKED"
         assert status["current_strategy_candidate_ids"] == []
-        assert action_step["done"] is True
-        assert action_step["detail"] == "当前没有可生成策略的内容/证据缺口"
-        assert experiment_step["done"] is True
-        assert experiment_step["detail"] == "本轮没有策略候选，无需创建实验草案"
+        assert action_step["done"] is False
+        assert "尚未生成 V1.1 正式证据" in action_step["detail"]
+        assert experiment_step["done"] is False
+        assert experiment_step["detail"] == "等待重新运行当前主链生成正式证据与策略候选"
         assert status["historical_strategy_candidate_count"] == 1
         assert status["ineligible_strategy_candidates"][0]["id"] == legacy_pending.id
         assert "LEGACY_STRATEGY_GENERATOR" in status["ineligible_strategy_candidates"][0]["ineligibility_reasons"]
+    finally:
+        db.close()
+
+
+def test_reviewed_workflow_with_current_v1_1_input_and_no_gap_is_no_strategy():
+    db = _session()
+    try:
+        project, prompt, _package = _ready_strategy_workflow_base(db)
+        doc = SourceDocument(
+            id=3701,
+            url="https://example.com/current-v1",
+            canonical_url="https://example.com/current-v1",
+            domain="example.com",
+            fetch_status="SUCCESS",
+            clean_text="当前正式链已运行但没有形成支持缺口。",
+        )
+        claim = SourceClaim(
+            id=3702,
+            project_id=project.id,
+            source_document_id=doc.id,
+            normalized_claim="当前正式链已运行但没有形成支持缺口",
+            source_span="当前正式链已运行但没有形成支持缺口。",
+            review_status="MACHINE_GROUNDED",
+        )
+        alignment = EvidenceAlignment(
+            id=3703,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3001,
+            recommendation_event_id=3002,
+            recommendation_reason_id="answer_unit:3700:binding:3700",
+            source_document_id=doc.id,
+            source_claim_id=claim.id,
+            relation="NONE",
+            machine_payload_json=dumps({
+                "formal_input_version": FORMAL_V1_1_INPUT_VERSION,
+                "reason_source": "ANSWER_DECISION_BINDING",
+            }),
+            review_status="MACHINE_GROUNDED",
+        )
+        db.add_all([doc, claim, alignment])
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in status["steps"] if step["key"] == "action")
+        experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
+
+        assert status["strategy_step_status"] == "NO_STRATEGY"
+        assert status["execution_step_status"] == "NO_EXPERIMENT"
+        assert action_step["done"] is True
+        assert action_step["detail"] == "当前正式链已完成，没有可生成策略的内容/证据缺口"
+        assert experiment_step["done"] is True
+        assert experiment_step["detail"] == "本轮没有策略候选，无需创建实验草案"
     finally:
         db.close()
 
@@ -689,9 +742,9 @@ def test_audit_confirmed_strategy_does_not_confirm_current_step7():
 
         assert reviewed["eligible_for_current_step7"] is False
         assert reviewed["candidate_origin"] == "REGRESSION"
-        assert status["strategy_step_status"] == "NO_STRATEGY"
+        assert status["strategy_step_status"] == "NEEDS_CURRENT_ANALYSIS"
         assert status["current_strategy_confirmed"] is False
-        assert status["execution_step_status"] == "NO_EXPERIMENT"
+        assert status["execution_step_status"] == "LOCKED"
         assert db.query(WorkflowConfirmation).filter(WorkflowConfirmation.step_key == "action").count() == 0
     finally:
         db.close()

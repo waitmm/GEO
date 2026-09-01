@@ -2,6 +2,72 @@
 
 Status: ACTIVE
 
+## 2026-09-01 Step 7 Current Analysis State Fix
+
+- Fixed a workflow state bug where a Prompt with upstream answer-decision or
+  evidence signals but no generated V1.1 formal Evidence input could be shown
+  as:
+
+```text
+NO_STRATEGY
+NO_EXPERIMENT
+```
+
+This was misleading because "current V1.1 chain has not produced formal input"
+is not the same as "current chain proved no strategy is needed".
+
+- Added a current-chain input state check for:
+
+```text
+decision events
+legacy SUPPORTS / RELATED evidence signals
+formal V1.1 EvidenceAlignment input
+completed V1.1 Shadow runs
+```
+
+- New workflow state:
+
+```text
+NEEDS_CURRENT_ANALYSIS
+```
+
+It is returned only when the current Prompt has upstream signals but lacks
+V1.1 formal Evidence input. Step 7 and Step 8 remain unfinished in this state.
+
+- `NO_STRATEGY` is now reserved for the terminal case where the current formal
+  chain has run and still produced no Content/Evidence strategy candidate.
+
+- The frontend now renders `NEEDS_CURRENT_ANALYSIS` as:
+
+```text
+第 7 步：需重跑主链
+按钮：重新运行当前主链
+```
+
+The button calls:
+
+```text
+POST /api/optimization/workflow/{project_id}/{prompt_id}/run-analysis
+{ "use_answer_binding_v1_1": true }
+```
+
+- The backend `run-analysis` pipeline now generates the V1.1 AnswerUnit /
+  AnswerDecisionBinding shadow input before running formal SourceClaim /
+  EvidenceAlignment when `use_answer_binding_v1_1=true`.
+- When the frontend does not pass explicit `run_ids`, `run-analysis` now
+  defaults to the active Evidence Package's frozen `source_run_ids` before
+  falling back to all available Prompt runs. This keeps "current main chain"
+  aligned to the current Evidence Package context.
+
+Boundary:
+
+```text
+No Gap rule changes.
+No Strategy rule changes.
+No Step 8 or Step 9 changes.
+Historical candidates/experiments still cannot light the current workflow.
+```
+
 ## 2026-09-01 Step 7 Strategy Channel Resolver
 
 - Audited current channel-decision logic. Formal Step 7 channel roles were

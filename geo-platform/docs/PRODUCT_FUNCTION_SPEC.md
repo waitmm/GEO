@@ -190,6 +190,7 @@ Decision Market
 第 7 步必须区分：
 
 ```text
+NEEDS_CURRENT_ANALYSIS
 READY_TO_GENERATE
 PENDING_REVIEW
 CONFIRMED
@@ -200,7 +201,11 @@ NO_STRATEGY
 `CONFIRMED` 可以视为完成。历史已接受策略、旧 `reviewed_by/review_note`、
 旧 `WorkflowConfirmation(action)` 或历史 Experiment 都不能反向点亮第 7 步。
 
-`NO_STRATEGY` 表示当前 Citation Decision 没有可生成策略的内容/证据缺口。
+`NEEDS_CURRENT_ANALYSIS` 表示当前 Prompt 已有答案决策、引用或历史证据线索，
+但尚未生成当前 V1.1 正式 Evidence 输入。此时不能宣称“无策略”，第 7/8 步
+不能点亮，用户下一步应重新运行当前主链。
+
+`NO_STRATEGY` 表示当前 V1.1 正式链已经运行，且 Citation Decision 没有可生成策略的内容/证据缺口。
 这是合法终态，不是卡住，也不能用历史 StrategyCandidate 或历史 Experiment 补位。
 
 第 8 步只有在当前确认策略对应的 Action / Experiment Draft 已创建后才算完成。

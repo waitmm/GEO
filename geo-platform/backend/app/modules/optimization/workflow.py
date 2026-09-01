@@ -11,6 +11,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AnswerEvidenceShadowRun,
     BrowserMonitorRun,
     Competitor,
     CompetitorRejection,
@@ -33,6 +34,11 @@ from app.modules.optimization.service import (
     citation_decision_vertical_slice,
     current_step7_candidate_eligibility,
 )
+from app.modules.optimization.passage_retrieval import (
+    ANSWER_BINDING_REASON_SOURCE,
+    FORMAL_V1_1_INPUT_VERSION,
+    SHADOW_INPUT_PIPELINE_VERSION,
+)
 
 REVIEWABLE_RECOMMENDATION_EVENT_STATUSES = {
     "MACHINE_GROUNDED",
@@ -51,6 +57,7 @@ VALID_DECISION_EVENT_STATUSES = {
 }
 ACCEPTED_STRATEGY_REVIEW_STATUSES = {"ACCEPTED", "ACCEPTED_WITH_EDITS"}
 STEP7_EFFECTIVE_PAYLOAD_STATUSES = {"VALIDATED", "PENDING_HUMAN_CHANNEL_REVIEW"}
+CURRENT_ANALYSIS_DECISION_ACTS = {"RECOMMEND", "INCLUDE_AS_OPTION", "COMPARE"}
 
 
 def _compact_review_text(value: str) -> str:
@@ -77,6 +84,101 @@ def _semantic_observed_run_ids(alignment: EvidenceAlignment, machine_payload: di
 
 def _alignment_run_ids(alignment: EvidenceAlignment) -> list[int]:
     return [int(alignment.run_id)] if alignment.run_id else []
+
+
+def _current_v1_1_input_state(
+    db: Session,
+    project: Project,
+    prompt_id: int,
+    package: OptimizationEvidencePackage | None,
+) -> dict:
+    """判断当前 Prompt 是否已经生成可供正式 V1.1 消费的 Evidence 输入。
+
+    这里专门区分两种状态：
+    1. 当前正式链已运行，但没有可生成策略的缺口；
+    2. 上游已有答案决策/历史证据线索，但 V1.1 正式 Evidence 还没生成。
+
+    第二种不能被展示成"无策略"，否则用户会卡在第 7 步空转。
+    """
+    run_ids = {
+        int(run_id)
+        for run_id in loads(package.source_run_ids_json if package else "[]", [])
+        if run_id
+    }
+    if not run_ids:
+        run_ids = {
+            int(row[0])
+            for row in db.query(BrowserMonitorRun.id).filter(
+                BrowserMonitorRun.project_id == project.id,
+                BrowserMonitorRun.prompt_id == prompt_id,
+                BrowserMonitorRun.status.in_(["success", "partial_success"]),
+            ).all()
+        }
+
+    formal_alignment_count = 0
+    legacy_support_count = 0
+    legacy_related_count = 0
+    if run_ids:
+        alignments = (
+            db.query(EvidenceAlignment)
+            .filter(
+                EvidenceAlignment.project_id == project.id,
+                EvidenceAlignment.prompt_id == prompt_id,
+                EvidenceAlignment.run_id.in_(run_ids),
+            )
+            .all()
+        )
+        for alignment in alignments:
+            payload = loads(alignment.machine_payload_json, {})
+            is_v1_1_input = (
+                payload.get("reason_source") == ANSWER_BINDING_REASON_SOURCE
+                or payload.get("formal_input_version") == FORMAL_V1_1_INPUT_VERSION
+            )
+            if is_v1_1_input:
+                formal_alignment_count += 1
+            elif alignment.relation == "SUPPORTS":
+                legacy_support_count += 1
+            elif alignment.relation == "RELATED":
+                legacy_related_count += 1
+
+    event_query = db.query(RecommendationEvent).filter(
+        RecommendationEvent.project_id == project.id,
+        RecommendationEvent.prompt_id == prompt_id,
+        RecommendationEvent.review_status.in_(VALID_DECISION_EVENT_STATUSES),
+        RecommendationEvent.speech_act.in_(CURRENT_ANALYSIS_DECISION_ACTS),
+    )
+    if run_ids:
+        event_query = event_query.filter(RecommendationEvent.run_id.in_(run_ids))
+    decision_events = event_query.all()
+    event_reason_count = sum(1 for row in decision_events if loads(row.reasons_json, []))
+
+    shadow_query = db.query(AnswerEvidenceShadowRun).filter(
+        AnswerEvidenceShadowRun.project_id == project.id,
+        AnswerEvidenceShadowRun.prompt_id == prompt_id,
+        AnswerEvidenceShadowRun.pipeline_version == SHADOW_INPUT_PIPELINE_VERSION,
+        AnswerEvidenceShadowRun.status.in_(["completed", "completed_with_warnings"]),
+        AnswerEvidenceShadowRun.formal_output_impact == "NONE",
+    )
+    if package is not None:
+        shadow_query = shadow_query.filter(AnswerEvidenceShadowRun.evidence_package_id == package.id)
+    shadow_run_count = shadow_query.count()
+
+    has_upstream_signal = bool(decision_events or legacy_support_count or legacy_related_count)
+    needs_current_analysis = (
+        has_upstream_signal
+        and formal_alignment_count == 0
+    )
+    return {
+        "run_ids": sorted(run_ids),
+        "decision_event_count": len(decision_events),
+        "event_reason_count": event_reason_count,
+        "formal_v1_1_alignment_count": formal_alignment_count,
+        "legacy_support_count": legacy_support_count,
+        "legacy_related_count": legacy_related_count,
+        "shadow_run_count": shadow_run_count,
+        "has_upstream_signal": has_upstream_signal,
+        "needs_current_analysis": needs_current_analysis,
+    }
 
 
 def _latest_prompt_evidence_package(db: Session, project_id: int, prompt_id: int) -> OptimizationEvidencePackage | None:
@@ -189,6 +291,7 @@ def _current_strategy_chain_state(
         (row for row in accepted_candidates if _strategy_confirmation_matches(confirmation, row, package)),
         None,
     )
+    v1_1_input_state = _current_v1_1_input_state(db, project, prompt_id, package)
     if pending_candidates:
         strategy_status = "PENDING_REVIEW"
         current_ids = [pending_candidates[0].id]
@@ -212,14 +315,17 @@ def _current_strategy_chain_state(
             for action in (proposal.get("recommended_actions") or [])
             if action.get("route") in {"CONTENT", "EVIDENCE"}
         ]
-        strategy_status = "READY_TO_GENERATE" if generatable_actions else "NO_STRATEGY"
         current_ids = []
         current_candidate = None
-        detail = (
-            f"{len(generatable_actions)} 个缺口可生成策略候选"
-            if generatable_actions
-            else "当前没有可生成策略的内容/证据缺口"
-        )
+        if generatable_actions:
+            strategy_status = "READY_TO_GENERATE"
+            detail = f"{len(generatable_actions)} 个缺口可生成策略候选"
+        elif v1_1_input_state.get("needs_current_analysis"):
+            strategy_status = "NEEDS_CURRENT_ANALYSIS"
+            detail = "当前有答案决策/证据线索，但尚未生成 V1.1 正式证据与缺口，请重新运行当前主链"
+        else:
+            strategy_status = "NO_STRATEGY"
+            detail = "当前正式链已完成，没有可生成策略的内容/证据缺口"
     else:
         strategy_status = "NOT_READY"
         current_ids = []
@@ -250,6 +356,9 @@ def _current_strategy_chain_state(
     elif strategy_status == "NO_STRATEGY":
         execution_status = "NO_EXPERIMENT"
         execution_detail = "本轮没有策略候选，无需创建实验草案"
+    elif strategy_status == "NEEDS_CURRENT_ANALYSIS":
+        execution_status = "LOCKED"
+        execution_detail = "等待重新运行当前主链生成正式证据与策略候选"
     else:
         execution_status = "LOCKED"
         execution_detail = "等待当前策略确认"
@@ -282,6 +391,7 @@ def _current_strategy_chain_state(
             confirmed_candidate is not None
             and confirmed_candidate.effective_validation_status in STEP7_EFFECTIVE_PAYLOAD_STATUSES
         ),
+        "current_v1_1_input_state": v1_1_input_state,
         "execution_step_status": execution_status,
         "execution_step_detail": execution_detail,
         "current_action_id": current_experiment.action_id if current_experiment else None,

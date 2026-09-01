@@ -2,6 +2,42 @@
 
 Status: ACTIVE
 
+## 2026-09-01 Step 7 Current Analysis State Fix
+
+### Product Decision
+
+当前 Prompt 的第 7 步必须区分：
+
+```text
+当前 V1.1 正式链尚未生成可消费 Evidence 输入
+vs
+当前 V1.1 正式链已完成但确实没有策略候选
+```
+
+前者不能显示为“无策略”，否则用户会在策略页看到空内容并误以为流程已经结束。
+
+### User-Facing Rule
+
+当已有答案决策/证据线索但缺少当前 V1.1 正式输入时：
+
+```text
+第 7 步 = 需重跑主链
+第 8 步 = 等待主链
+主操作 = 重新运行当前主链
+```
+
+只有当前正式链已经运行且仍无 Content/Evidence 缺口时，才允许：
+
+```text
+第 7 步 = 无需策略
+第 8 步 = 无需创建
+```
+
+### Pitfall Recorded
+
+历史 StrategyCandidate / Experiment 不允许点亮当前流程；但缺少当前正式链输入也不能
+被归类为 `NO_STRATEGY`。这两个约束必须同时成立。
+
 ## 2026-09-01 Step 7 Single Strategy Channel Resolver
 
 ### Product Decision

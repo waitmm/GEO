@@ -1813,6 +1813,7 @@ def _run_analysis_pipeline(
     from app.modules.optimization.source_qualification import run_source_qualification
     from app.modules.optimization.source_claim import run_source_claim_extraction
     from app.modules.optimization.evidence_alignment import run_evidence_alignment
+    from app.modules.optimization.answer_evidence_shadow import run_answer_evidence_shadow_chain
     from app.modules.optimization.passage_service import acquire_cited_sources, segment_all_documents
 
     logger = logging.getLogger("uvicorn.error")
@@ -1832,6 +1833,22 @@ def _run_analysis_pipeline(
             "机器分析引用原文补齐 project=%s prompt=%s acquisition=%s",
             project_id, prompt_id, acquisition,
         )
+        if use_answer_binding_v1_1:
+            shadow = run_answer_evidence_shadow_chain(
+                db,
+                project_id,
+                prompt_id,
+                run_ids=run_ids,
+                top_k=3,
+                use_llm_binding=True,
+            )
+            logger.info(
+                "机器分析 V1.1 Answer Binding 输入完成 project=%s prompt=%s shadow_run_id=%s status=%s",
+                project_id,
+                prompt_id,
+                shadow.get("id") or shadow.get("shadow_run_id"),
+                shadow.get("status"),
+            )
         run_source_claim_extraction(
             db,
             project,
@@ -1877,20 +1894,34 @@ def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Se
 
     分析耗时较长（逐条 LLM 比对），改为后台线程执行并立即返回；前端轮询 review-queue 感知进度。
     """
-    from app.models import Project, Prompt, BrowserMonitorRun
+    from app.models import Project, Prompt, BrowserMonitorRun, OptimizationEvidencePackage
 
     project = db.get(Project, project_id)
     prompt = db.get(Prompt, prompt_id)
     if not project or not prompt:
         raise HTTPException(status_code=404, detail="Project/Prompt not found")
 
-    run_ids = payload.get("run_ids") or [
-        r.id for r in db.query(BrowserMonitorRun).filter(
-            BrowserMonitorRun.project_id == project_id,
-            BrowserMonitorRun.prompt_id == prompt_id,
-            BrowserMonitorRun.status.in_(["success", "partial_success"]),
-        ).all()
-    ]
+    run_ids = payload.get("run_ids")
+    if not run_ids:
+        package = (
+            db.query(OptimizationEvidencePackage)
+            .filter(
+                OptimizationEvidencePackage.project_id == project_id,
+                OptimizationEvidencePackage.prompt_id == prompt_id,
+                OptimizationEvidencePackage.status == "active",
+            )
+            .order_by(OptimizationEvidencePackage.version.desc(), OptimizationEvidencePackage.id.desc())
+            .first()
+        )
+        run_ids = loads(package.source_run_ids_json, []) if package else []
+    if not run_ids:
+        run_ids = [
+            r.id for r in db.query(BrowserMonitorRun).filter(
+                BrowserMonitorRun.project_id == project_id,
+                BrowserMonitorRun.prompt_id == prompt_id,
+                BrowserMonitorRun.status.in_(["success", "partial_success"]),
+            ).all()
+        ]
     if not run_ids:
         raise HTTPException(status_code=400, detail="该 Prompt 没有可用的采集 Run")
 

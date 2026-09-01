@@ -69,6 +69,14 @@ CURRENT_ANALYSIS_FAILED
 
 This prevents the UI from looking unchanged after the user clicks "重新运行当前主链".
 Failure details are surfaced from `PromptAnalysisRun.errors_json`.
+- When a rerun creates new RecommendationEvents, Step 7 `NOT_READY` now points
+  to the earliest unfinished prerequisite, for example:
+
+```text
+待推荐行为人工确认完成后生成策略候选
+```
+
+instead of the misleading generic text "待缺口诊断后生成策略候选".
 
 Boundary:
 

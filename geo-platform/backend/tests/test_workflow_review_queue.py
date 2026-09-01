@@ -744,6 +744,25 @@ def test_current_analysis_failed_is_visible_in_step7():
         db.close()
 
 
+def test_step7_not_ready_detail_points_to_pending_event_review():
+    db = _session()
+    try:
+        project, prompt, _package = _ready_strategy_workflow_base(db)
+        event = db.get(RecommendationEvent, 3002)
+        event.review_status = "MACHINE_CANDIDATE"
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in status["steps"] if step["key"] == "action")
+        experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
+
+        assert status["strategy_step_status"] == "NOT_READY"
+        assert action_step["detail"] == "待推荐行为人工确认完成后生成策略候选"
+        assert experiment_step["detail"] == "等待推荐行为人工确认"
+    finally:
+        db.close()
+
+
 def test_citation_decision_action_unlocks_strategy_generation(monkeypatch):
     db = _session()
     try:

@@ -668,6 +668,25 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
                 "execution_step_status": "LOCKED",
                 "execution_step_detail": "先重新运行当前主链，成功后才能进入策略确认",
             }
+    elif current_chain["strategy_step_status"] == "NOT_READY":
+        if not event_review_done:
+            current_chain = {
+                **current_chain,
+                "strategy_step_detail": "待推荐行为人工确认完成后生成策略候选",
+                "execution_step_detail": "等待推荐行为人工确认",
+            }
+        elif not evidence_review_done:
+            current_chain = {
+                **current_chain,
+                "strategy_step_detail": "待证据人工确认完成后生成策略候选",
+                "execution_step_detail": "等待证据人工确认",
+            }
+        elif not (bool(truths) and not truths_pending):
+            current_chain = {
+                **current_chain,
+                "strategy_step_detail": "待目标品牌事实确认完成后生成策略候选",
+                "execution_step_detail": "等待目标品牌事实确认",
+            }
     strategy_done = current_chain["strategy_step_status"] in {"CONFIRMED", "NO_STRATEGY"}
     experiment_done = current_chain["execution_step_status"] in {"CREATED", "NO_EXPERIMENT"}
 

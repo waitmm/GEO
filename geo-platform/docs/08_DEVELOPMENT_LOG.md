@@ -2482,3 +2482,40 @@ Validation performed:
   `47 passed`.
 - `source /Users/bmwqr/.nvm/nvm.sh && nvm use 18.20.8 && npm run build`
   passed.
+
+## 2026-09-01 Step 7 Current Candidate Display Bugfix
+
+- Fixed a frontend state-integrity bug where Step 7 strategy generation could
+  succeed, but the Strategy page still displayed:
+  `当前流程 0 个策略候选 / 全部 N 个版本`.
+- Root cause:
+  - the Strategy page prioritized `workflowData.current_strategy_candidate_ids`
+    when filtering current candidates;
+  - after generating a new current StrategyCandidate, the page refreshed the
+    candidate list but did not refresh workflow status in the same path;
+  - stale workflow IDs could therefore hide the newly generated candidate even
+    when the API returned `eligible_for_current_step7 = true`.
+- Fix:
+  - refresh Prompt workflow status after current Step 7 generation;
+  - when workflow IDs are stale and match no visible current candidate, fall
+    back to candidates whose backend eligibility says
+    `eligible_for_current_step7 = true`;
+  - opening Strategy confirmation now refreshes the current Prompt workflow and
+    uses the current evidence package from either Citation Decision or workflow
+    context.
+- Boundary:
+  - no Strategy generation rule changed;
+  - no historical StrategyCandidate is counted as current;
+  - no Step 8 / Action / Experiment behavior changed.
+- Prompt `#40` verification:
+  - backend workflow reports `current_strategy_candidate_id = 50`;
+  - Step 7 status is `PENDING_REVIEW`;
+  - Step 8 remains `LOCKED` until Strategy is confirmed.
+
+Validation performed:
+
+- `source /Users/bmwqr/.nvm/nvm.sh && nvm use 18.20.8 && cd geo-platform/frontend && npm run build`
+  passed.
+- `curl -s http://127.0.0.1:8000/api/optimization/workflow/3/40/status`
+  confirms `1 个当前策略候选待人工审核`.
+- `git diff --check` passed.

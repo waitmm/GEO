@@ -2017,6 +2017,7 @@ export default function App() {
       const existing = await api.listStrategyCandidates(projectId, selectedPkgId);
       const sorted = sortStrategyCandidates(existing);
       const reviewable = sorted.filter((item: any) => isCurrentStep7StrategyCandidate(item) && (item.review_status === "PENDING_REVIEW" || item.review_status === "ACCEPTED" || item.review_status === "ACCEPTED_WITH_EDITS"));
+      await loadWorkflowForPrompt(targetPromptId, projectId);
       const generatedVersionMap = strategyVersionMap(existing);
       setStrategyData({
         ...(generated || {}),
@@ -2244,9 +2245,13 @@ export default function App() {
       .map((id: any) => Number(id))
       .filter(Boolean)
   );
-  const workflowStrategyCandidates = workflowStrategyIdSet.size
-    ? sortedStrategyCandidates.filter((candidate: any) => workflowStrategyIdSet.has(Number(candidate.id)) && isCurrentStep7StrategyCandidate(candidate))
-    : sortedStrategyCandidates.filter((candidate: any) => isCurrentStep7StrategyCandidate(candidate));
+  const eligibleCurrentStep7StrategyCandidates = sortedStrategyCandidates.filter((candidate: any) => isCurrentStep7StrategyCandidate(candidate));
+  const workflowMatchedStrategyCandidates = workflowStrategyIdSet.size
+    ? eligibleCurrentStep7StrategyCandidates.filter((candidate: any) => workflowStrategyIdSet.has(Number(candidate.id)))
+    : [];
+  const workflowStrategyCandidates = workflowStrategyIdSet.size && workflowMatchedStrategyCandidates.length
+    ? workflowMatchedStrategyCandidates
+    : eligibleCurrentStep7StrategyCandidates;
   const strategyCandidatesForDefaultView = workflowStrategyCandidates.length ? workflowStrategyCandidates : [];
   const visibleStrategyCandidates = filterStrategyCandidates(
     strategyCandidateFilter === "latest" ? strategyCandidatesForDefaultView : sortedStrategyCandidates,
@@ -2347,8 +2352,10 @@ export default function App() {
   const currentExperimentCount = currentConfirmedStrategyCount && backendExecutionStepStatus === "CREATED" ? rawExperimentCount : 0;
   const ignoredHistoricalExperimentCount = currentWorkflowData?.historical_experiment_count ?? (!currentConfirmedStrategyCount ? (strategyExperiments?.length || 0) : historicalExperimentCount);
   const openStrategyConfirmationPage = () => {
-    const packageId = currentCitationDecisionData?.evidence_package_id;
-    if (packageId) void selectEvidencePackage(packageId, true);
+    const packageId = currentCitationDecisionData?.evidence_package_id || currentWorkflowData?.current_state_context?.evidence_package_id || selectedPkgId;
+    const targetPromptId = currentCitationDecisionData?.prompt_id || currentWorkflowData?.prompt_id || activePromptId;
+    if (targetPromptId && projectId) void loadWorkflowForPrompt(Number(targetPromptId), projectId);
+    if (packageId) void selectEvidencePackage(Number(packageId), true);
     setPage("optimization");
   };
   const citationStepItems = [

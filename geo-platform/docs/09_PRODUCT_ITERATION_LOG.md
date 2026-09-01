@@ -2340,3 +2340,52 @@ PRIMARY_BENCHMARK 来自知乎
 
 第 7 步只形成可人工确认的 StrategyCandidate。确认后仍需 Step 8 人工选择
 渠道、资产、资产操作、内容形式和 Baseline。
+
+## 2026-09-01 Step 7 当前策略候选展示一致性
+
+### 用户问题
+
+Prompt `#40` 新生成策略后，策略页仍提示：
+
+```text
+当前流程 0 个策略候选 / 全部 11 个版本
+```
+
+但后端实际已经生成当前流程候选：
+
+```text
+StrategyCandidate #50
+review_status = PENDING_REVIEW
+eligible_for_current_step7 = true
+```
+
+### 产品口径
+
+第 7 步展示必须以“当前 Prompt + 当前 Evidence Package + 当前 V1.1
+资格”的策略候选为准。
+
+历史验收策略继续保留在“全部策略”中，但不计入当前主链。
+
+如果前端缓存的 workflow ID 过期，不能因此隐藏后端已经判定为当前流程的
+StrategyCandidate。
+
+### 本轮修正
+
+```text
+生成策略候选
+-> 刷新当前 Prompt workflow
+-> 重新加载当前证据包下的策略候选
+-> 默认展示 eligible_for_current_step7 = true 的当前候选
+```
+
+### 边界
+
+本次只修正展示状态一致性，不改变：
+
+```text
+Strategy 生成规则
+Channel Resolver
+Gap Diagnosis
+Evidence / Benchmark
+Step 8 Action / Experiment
+```

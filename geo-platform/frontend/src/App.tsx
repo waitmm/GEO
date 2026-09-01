@@ -2310,6 +2310,8 @@ export default function App() {
   const backendExecutionStepStatus = currentWorkflowData?.execution_step_status || backendExecutionStep.status || "";
   const currentNoStrategyNeeded = backendStrategyStepStatus === "NO_STRATEGY";
   const currentNeedsCurrentAnalysis = backendStrategyStepStatus === "NEEDS_CURRENT_ANALYSIS";
+  const currentAnalysisRunning = backendStrategyStepStatus === "CURRENT_ANALYSIS_RUNNING";
+  const currentAnalysisFailed = backendStrategyStepStatus === "CURRENT_ANALYSIS_FAILED";
   const backendCurrentStrategyIds = new Set(
     (currentWorkflowData?.current_strategy_candidate_ids || backendStrategyStep.current_strategy_candidate_ids || [])
       .map((id: any) => Number(id))
@@ -2407,6 +2409,10 @@ export default function App() {
       title: "策略确认",
       description: currentStrategyCandidateCount
         ? `${currentStrategyCandidateCount} 个当前候选`
+        : currentAnalysisRunning
+          ? "当前主链后台运行中"
+        : currentAnalysisFailed
+          ? "当前主链运行失败，可重试"
         : currentNeedsCurrentAnalysis
           ? "有上游线索，需重新运行当前主链"
         : currentNoStrategyNeeded
@@ -2416,12 +2422,16 @@ export default function App() {
           : citationLoaded
           ? `${citationSummary.recommended_action_count ?? 0} 个可生成线索`
           : "等待缺口判断",
-      status: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "finish" : currentNeedsCurrentAnalysis || currentPendingStrategyCount || currentCitationCanConfirm ? "process" : currentCitationDecisionData ? "wait" : "wait",
+      status: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "finish" : currentAnalysisFailed ? "error" : currentAnalysisRunning || currentNeedsCurrentAnalysis || currentPendingStrategyCount || currentCitationCanConfirm ? "process" : currentCitationDecisionData ? "wait" : "wait",
     },
     {
       title: "实验方案",
       description: currentExperimentCount
         ? `${currentExperimentCount} 个当前草案/实验`
+        : currentAnalysisRunning
+          ? "等待当前主链运行完成"
+        : currentAnalysisFailed
+          ? "先重新运行当前主链"
         : currentNeedsCurrentAnalysis
           ? "等待当前主链生成策略候选"
         : currentNoStrategyNeeded
@@ -2510,13 +2520,17 @@ export default function App() {
     {
       key: "action",
       label: "策略确认",
-      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : currentNeedsCurrentAnalysis ? "需重跑主链" : currentNoStrategyNeeded ? "无需策略" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !citationGapDecisionDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
+      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : currentAnalysisRunning ? "主链运行中" : currentAnalysisFailed ? "运行失败" : currentNeedsCurrentAnalysis ? "需重跑主链" : currentNoStrategyNeeded ? "无需策略" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !citationGapDecisionDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
       detail: currentConfirmedStrategyCount
         ? `已确认策略 #${currentConfirmedStrategies[0]?.id || currentLatestStrategyCandidate?.id}`
         : currentPendingStrategyCount
           ? `${currentPendingStrategyCount} 个当前策略候选待人工审核`
           : currentCitationCanConfirm
             ? `${citationConfirmableActions.length} 个缺口可生成策略候选`
+            : currentAnalysisRunning
+              ? (currentWorkflowData?.strategy_step_detail || "当前主链正在后台运行")
+            : currentAnalysisFailed
+              ? (currentWorkflowData?.strategy_step_detail || "当前主链运行失败，请重试或查看日志")
             : currentNeedsCurrentAnalysis
               ? (currentWorkflowData?.strategy_step_detail || "当前有答案决策/证据线索，但尚未生成 V1.1 正式证据与缺口")
             : currentNoStrategyNeeded
@@ -2530,12 +2544,16 @@ export default function App() {
                   : unresolvedAction || unknownGapCount > 0
                     ? "请查看依据后人工判断，不自动生成策略"
                     : "没有可生成策略的内容/证据缺口",
-      tone: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "done" : currentPendingStrategyCount || currentCitationCanConfirm || currentNeedsCurrentAnalysis || unresolvedAction ? "current" : "pending",
-      actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentNeedsCurrentAnalysis ? "重新运行当前主链" : currentNoStrategyNeeded || unresolvedAction ? "查看依据" : "",
+      tone: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "done" : currentAnalysisFailed ? "error" : currentPendingStrategyCount || currentCitationCanConfirm || currentAnalysisRunning || currentNeedsCurrentAnalysis || unresolvedAction ? "current" : "pending",
+      actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentAnalysisRunning ? "运行中" : currentAnalysisFailed ? "重新运行当前主链" : currentNeedsCurrentAnalysis ? "重新运行当前主链" : currentNoStrategyNeeded || unresolvedAction ? "查看依据" : "",
       onAction: currentConfirmedStrategyCount || currentPendingStrategyCount
         ? openStrategyConfirmationPage
         : currentCitationCanConfirm
           ? confirmCitationDecisionV1
+          : currentAnalysisRunning
+            ? undefined
+          : currentAnalysisFailed
+            ? runCurrentWorkflowAnalysis
           : currentNeedsCurrentAnalysis
             ? runCurrentWorkflowAnalysis
           : currentNoStrategyNeeded
@@ -2547,11 +2565,15 @@ export default function App() {
     {
       key: "experiment",
       label: "实验方案落地",
-      statusText: currentExperimentCount ? "已创建" : currentConfirmedStrategyCount ? "待创建" : currentNeedsCurrentAnalysis ? "等待主链" : currentNoStrategyNeeded ? "无需创建" : currentCitationLoaded ? "未创建" : "未开始",
+      statusText: currentExperimentCount ? "已创建" : currentConfirmedStrategyCount ? "待创建" : currentAnalysisRunning ? "等待主链" : currentAnalysisFailed ? "等待重跑" : currentNeedsCurrentAnalysis ? "等待主链" : currentNoStrategyNeeded ? "无需创建" : currentCitationLoaded ? "未创建" : "未开始",
       detail: currentExperimentCount
         ? `${currentExperimentCount} 个当前草案/实验，等待发布闸门`
         : ignoredHistoricalExperimentCount && !currentConfirmedStrategyCount
           ? "存在历史草案/实验，但当前主链仍需先完成策略确认"
+          : currentAnalysisRunning
+            ? "当前主链运行完成后，再进入策略确认"
+          : currentAnalysisFailed
+            ? "先修复并重新运行当前主链"
           : currentNeedsCurrentAnalysis
             ? "先重新运行当前主链，生成正式证据与策略候选"
           : currentNoStrategyNeeded
@@ -2561,7 +2583,7 @@ export default function App() {
             : currentCitationLoaded
               ? "等待策略确认"
               : "等待策略候选",
-      tone: currentExperimentCount || currentNoStrategyNeeded ? "done" : currentConfirmedStrategyCount || currentNeedsCurrentAnalysis ? "current" : "pending",
+      tone: currentExperimentCount || currentNoStrategyNeeded ? "done" : currentAnalysisFailed ? "error" : currentConfirmedStrategyCount || currentAnalysisRunning || currentNeedsCurrentAnalysis ? "current" : "pending",
       actionLabel: currentExperimentCount ? "查看实验草案" : currentConfirmedStrategyCount ? "去创建草案" : "",
       onAction: currentExperimentCount || currentConfirmedStrategyCount ? openStrategyConfirmationPage : undefined,
     },
@@ -2679,11 +2701,11 @@ export default function App() {
               <Button
                 size="small"
                 type="primary"
-                disabled={!currentCitationCanConfirm && !currentStrategyCandidateCount && !currentNeedsCurrentAnalysis}
+                disabled={currentAnalysisRunning || (!currentCitationCanConfirm && !currentStrategyCandidateCount && !currentNeedsCurrentAnalysis && !currentAnalysisFailed)}
                 loading={citationDecisionLoading}
-                onClick={currentStrategyCandidateCount ? openStrategyConfirmationPage : currentNeedsCurrentAnalysis ? runCurrentWorkflowAnalysis : confirmCitationDecisionV1}
+                onClick={currentStrategyCandidateCount ? openStrategyConfirmationPage : currentAnalysisFailed || currentNeedsCurrentAnalysis ? runCurrentWorkflowAnalysis : confirmCitationDecisionV1}
               >
-                {currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentNeedsCurrentAnalysis ? "重新运行当前主链" : "等待策略确认"}
+                {currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentAnalysisRunning ? "主链运行中" : currentAnalysisFailed || currentNeedsCurrentAnalysis ? "重新运行当前主链" : "等待策略确认"}
               </Button>
               <Button size="small" onClick={openStrategyConfirmationPage}>{citationProductTruthBlockedRows.length ? "补目标品牌事实" : "策略确认详情"}</Button>
               {citationProductTruthBlockedRows.length > 0 && <Text type="secondary">这里确认的是{project?.brand_name || "目标品牌"}自己的能力，不是竞品或对标文章的能力。</Text>}

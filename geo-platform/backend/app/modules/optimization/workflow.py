@@ -649,6 +649,25 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     shelved_note = shelved_row.decision_note if shelved_row else ""
 
     current_chain = _current_strategy_chain_state(db, project, prompt_id, reviews_done=reviews_done)
+    if analysis_run and current_chain["strategy_step_status"] == "NEEDS_CURRENT_ANALYSIS":
+        if analysis_run.status == "RUNNING":
+            current_chain = {
+                **current_chain,
+                "strategy_step_status": "CURRENT_ANALYSIS_RUNNING",
+                "strategy_step_detail": "当前主链正在后台运行：生成 V1.1 正式证据、缺口和策略候选状态",
+                "execution_step_status": "LOCKED",
+                "execution_step_detail": "等待当前主链运行完成",
+            }
+        elif analysis_run.status == "FAILED":
+            error_items = loads(analysis_run.errors_json, [])
+            error_text = str(error_items[0]) if error_items else "后台分析失败，请查看日志"
+            current_chain = {
+                **current_chain,
+                "strategy_step_status": "CURRENT_ANALYSIS_FAILED",
+                "strategy_step_detail": f"当前主链运行失败：{error_text[:160]}",
+                "execution_step_status": "LOCKED",
+                "execution_step_detail": "先重新运行当前主链，成功后才能进入策略确认",
+            }
     strategy_done = current_chain["strategy_step_status"] in {"CONFIRMED", "NO_STRATEGY"}
     experiment_done = current_chain["execution_step_status"] in {"CREATED", "NO_EXPERIMENT"}
 

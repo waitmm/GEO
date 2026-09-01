@@ -58,6 +58,17 @@ POST /api/optimization/workflow/{project_id}/{prompt_id}/run-analysis
   defaults to the active Evidence Package's frozen `source_run_ids` before
   falling back to all available Prompt runs. This keeps "current main chain"
   aligned to the current Evidence Package context.
+- Follow-up fix: `run-analysis` now creates a persistent
+  `PromptAnalysisRun(status=RUNNING)` record at task start and updates it to
+  `COMPLETED` or `FAILED`. Workflow status maps these into:
+
+```text
+CURRENT_ANALYSIS_RUNNING
+CURRENT_ANALYSIS_FAILED
+```
+
+This prevents the UI from looking unchanged after the user clicks "重新运行当前主链".
+Failure details are surfaced from `PromptAnalysisRun.errors_json`.
 
 Boundary:
 

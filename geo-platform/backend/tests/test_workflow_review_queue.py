@@ -18,6 +18,7 @@ from app.models import (
     Organization,
     Project,
     Prompt,
+    PromptAnalysisRun,
     RecommendationEvent,
     SourceClaim,
     SourceDocument,
@@ -687,6 +688,58 @@ def test_reviewed_workflow_with_current_v1_1_input_and_no_gap_is_no_strategy():
         assert action_step["detail"] == "当前正式链已完成，没有可生成策略的内容/证据缺口"
         assert experiment_step["done"] is True
         assert experiment_step["detail"] == "本轮没有策略候选，无需创建实验草案"
+    finally:
+        db.close()
+
+
+def test_current_analysis_running_is_visible_in_step7():
+    db = _session()
+    try:
+        project, prompt, _package = _ready_strategy_workflow_base(db)
+        db.add(PromptAnalysisRun(
+            project_id=project.id,
+            prompt_id=prompt.id,
+            status="RUNNING",
+            runs_associated=1,
+            errors_json=dumps([]),
+        ))
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in status["steps"] if step["key"] == "action")
+        experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
+
+        assert status["strategy_step_status"] == "CURRENT_ANALYSIS_RUNNING"
+        assert status["execution_step_status"] == "LOCKED"
+        assert action_step["done"] is False
+        assert "后台运行" in action_step["detail"]
+        assert experiment_step["detail"] == "等待当前主链运行完成"
+    finally:
+        db.close()
+
+
+def test_current_analysis_failed_is_visible_in_step7():
+    db = _session()
+    try:
+        project, prompt, _package = _ready_strategy_workflow_base(db)
+        db.add(PromptAnalysisRun(
+            project_id=project.id,
+            prompt_id=prompt.id,
+            status="FAILED",
+            runs_associated=1,
+            errors_json=dumps(["database is locked"]),
+        ))
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in status["steps"] if step["key"] == "action")
+        experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
+
+        assert status["strategy_step_status"] == "CURRENT_ANALYSIS_FAILED"
+        assert status["execution_step_status"] == "LOCKED"
+        assert action_step["done"] is False
+        assert "database is locked" in action_step["detail"]
+        assert experiment_step["detail"] == "先重新运行当前主链，成功后才能进入策略确认"
     finally:
         db.close()
 

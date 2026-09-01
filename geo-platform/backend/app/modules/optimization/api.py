@@ -1818,11 +1818,33 @@ def _run_analysis_pipeline(
 
     logger = logging.getLogger("uvicorn.error")
     db = SessionLocal()
+    analysis_run = None
     try:
         project = db.get(Project, project_id)
         prompt = db.get(Prompt, prompt_id)
         if not project or not prompt:
             return
+        from app.models import PromptAnalysisRun
+        from app.services.serialization import dumps as _dumps
+
+        analysis_run = PromptAnalysisRun(
+            project_id=project_id,
+            prompt_id=prompt_id,
+            status="RUNNING",
+            events_created=0,
+            runs_associated=len(run_ids),
+            errors_json=_dumps([]),
+        )
+        db.add(analysis_run)
+        db.commit()
+        db.refresh(analysis_run)
+        logger.info(
+            "机器分析后台任务开始 project=%s prompt=%s run_ids=%s v1_1_formal_input=%s",
+            project_id,
+            prompt_id,
+            run_ids,
+            use_answer_binding_v1_1,
+        )
         layer1 = run_answer_semantic(db, project, prompt, run_ids)
         run_source_qualification(db, project)
         # 补齐所有引用资料的原文内容（老流程必备步骤）：抓取缺失的引用页原文并分段，
@@ -1863,24 +1885,25 @@ def _run_analysis_pipeline(
             run_ids,
             include_answer_binding_reasons=use_answer_binding_v1_1,
         )
-        # 落分析运行记录：区分「分析过但 0 事件」与「从未分析」
-        from app.models import PromptAnalysisRun
-        from app.services.serialization import dumps as _dumps
-
-        db.add(PromptAnalysisRun(
-            project_id=project_id,
-            prompt_id=prompt_id,
-            status="COMPLETED",
-            events_created=layer1.get("events_created", 0),
-            runs_associated=layer1.get("runs_associated", 0),
-            errors_json=_dumps(layer1.get("errors", [])),
-        ))
+        # 更新分析运行记录：区分「运行中 / 分析过但 0 事件 / 失败」。
+        analysis_run.status = "COMPLETED"
+        analysis_run.events_created = layer1.get("events_created", 0)
+        analysis_run.runs_associated = layer1.get("runs_associated", 0)
+        analysis_run.errors_json = _dumps(layer1.get("errors", []))
         db.commit()
         logger.info(
             "机器分析后台任务完成 project=%s prompt=%s v1_1_formal_input=%s layer1=%s",
             project_id, prompt_id, use_answer_binding_v1_1, layer1,
         )
-    except Exception:
+    except Exception as exc:
+        try:
+            db.rollback()
+            if analysis_run is not None:
+                analysis_run.status = "FAILED"
+                analysis_run.errors_json = dumps([str(exc)[:1000]])
+                db.commit()
+        except Exception:
+            db.rollback()
         logger.exception("机器分析后台任务失败 project=%s prompt=%s", project_id, prompt_id)
     finally:
         db.close()

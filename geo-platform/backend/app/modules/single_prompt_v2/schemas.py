@@ -68,6 +68,11 @@ class SinglePromptSourcePreparationCreate(BaseModel):
     created_by: str = Field(min_length=1, max_length=120)
 
 
+class SinglePromptSourceAutoFetchCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+
+
 class SinglePromptManualSourceContentCreate(BaseModel):
     project_id: int
     prompt_id: int

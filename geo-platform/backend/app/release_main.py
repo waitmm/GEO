@@ -13,6 +13,7 @@ from app.core.release_database import ReleaseSessionLocal, release_engine
 from app.modules.single_prompt_v2.diagnosis import recover_interrupted_diagnoses
 from app.modules.single_prompt_v2.release_api import router as single_prompt_router
 from app.modules.single_prompt_v2.service import recover_interrupted_analyses
+from app.modules.single_prompt_v2.source_preparation import recover_interrupted_source_preparations
 from app.release_schema import validate_release_database
 
 
@@ -38,6 +39,7 @@ def create_release_app(*, validate_on_startup: bool = True) -> FastAPI:
         try:
             recover_interrupted_analyses(db)
             recover_interrupted_diagnoses(db)
+            recover_interrupted_source_preparations(db)
         finally:
             db.close()
 

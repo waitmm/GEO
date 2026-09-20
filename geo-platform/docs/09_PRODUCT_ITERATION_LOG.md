@@ -4270,3 +4270,13 @@ DOM 核查确认文心页面包含两个独立区域：搜索/引用过程和最
 同时确认：旧系统的正文自动抓取计算内核仍然存在，但 release Source Preparation 尚未通过显式
 V2 输入接入，目前正式入口只有人工补录。正确方向是复用抓取内核并由 V2 保存 Snapshot/Manifest，
 而不是重新启用会读取旧状态的 Diagnosis 或 optimization Runner。
+
+### 2026-09-20：来源正文改为自动优先、人工兜底
+
+正式 release 页面现在在 Citation Manifest 冻结后提供“自动获取正文”。它复用已经成熟的浏览器
+渲染、HTTP 兜底和单 URL 重试能力，但不复用旧 Runner 的业务状态：URL 范围来自当前 Manifest，
+合格正文由 V2 保存为绑定当前 Context 的不可变 Snapshot。
+
+自动抓取未成功的来源会明确进入 `MANUAL_REQUIRED` 并展示原因，随后才由用户人工补录或明确记录
+WAIVE。抓取失败不会自动放弃来源，处置完成也仍不等于证据充分。该调整恢复了已有有价值能力，
+同时保留 R3 确认的 Source Completion 与 Evidence 精确版本 Gate。

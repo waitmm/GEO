@@ -1,6 +1,6 @@
 # GEO 1.0 首批来源与证据主链操作说明
 
-Status: `REAL_INPUT_PARTIAL / BLOCKED_BY_ANSWER_BOUNDARY_AND_MANUAL_SOURCE_COMPLETION`
+Status: `AUTO_SOURCE_PREPARATION_ENGINEERING_READY / REAL_REPLAY_PENDING`
 Date: 2026-09-20
 
 ## 1. 当前交付范围
@@ -54,21 +54,26 @@ cd /Users/bmwqr/Desktop/python/GEO
 1. 在 release 页面创建/选择 Project 与 Prompt；
 2. 用户显式启动 Analysis；此操作可能触发浏览器采样，必须已有对应授权；
 3. Raw Result / Context 冻结后，点击创建来源准备；系统同时冻结 Citation Manifest；
-4. 对每个来源补录标题和正文，提交后内容 Gate 校验验证页、登录墙、错误页和正文长度；
-5. 合格正文生成不可变 Snapshot、正文 SHA-256、artifact 文件和 passages；
-6. 无法取得的来源只能由用户明确填写原因与影响后 `WAIVED_WITH_LIMITATION`；
-7. 所有来源处置完成后冻结 Source Completion Manifest；全部 WAIVED 时状态为
+4. 用户显式点击“自动获取正文”；单 worker 只处理该 Citation Manifest 内仍未完成的
+   URL，复用既有浏览器渲染 + HTTP 兜底抓取内核；
+5. 自动取得的正文经过验证页、登录墙、错误页、完整性和正文长度 Gate。合格内容由
+   V2 生成不可变 Snapshot、正文 SHA-256、artifact 文件和 passages；
+6. 自动获取失败或内容不合格的来源进入 `MANUAL_REQUIRED`，页面集中显示原因并允许
+   人工补录；系统不会自动 WAIVE；
+7. 无法取得的来源只能由用户明确填写原因与影响后 `WAIVED_WITH_LIMITATION`；
+8. 所有来源处置完成后冻结 Source Completion Manifest；全部 WAIVED 时状态为
    `NO_USABLE_SOURCE`，不能进入 Evidence；
-8. Citation Manifest 冻结后，Answer Semantic 可与第 4-7 步独立推进；完成后
+9. Citation Manifest 冻结后，Answer Semantic 可与来源准备独立推进；完成后
    用户审核精确 ResultVersion；它不需要等待正文完成，但 Evidence 需要两侧都完成；
-9. 用户显式启动 Evidence；API 先校验同一 Analysis/Context 下的 Citation、
+10. 用户显式启动 Evidence；API 先校验同一 Analysis/Context 下的 Citation、
    Completion、Answer Result 与 Review，成功后仅入队；
-10. release worker 对完全相同的版本绑定再次校验并消费，发布不可变 Evidence 结果。
+11. release worker 对完全相同的版本绑定再次校验并消费，发布不可变 Evidence 结果。
 
 ## 4. 关键 API
 
 - `POST /api/v2/single-prompt/analyses`
 - `POST /api/v2/single-prompt/analyses/{analysis_id}/source-preparation`
+- `POST /api/v2/single-prompt/source-preparations/{preparation_id}/auto-fetch`
 - `POST /api/v2/single-prompt/source-preparations/{preparation_id}/manual-content`
 - `POST /api/v2/single-prompt/source-preparations/{preparation_id}/waivers`
 - `POST /api/v2/single-prompt/source-preparations/{preparation_id}/completion-manifests`
@@ -83,7 +88,9 @@ cd /Users/bmwqr/Desktop/python/GEO
 
 - `READY` 正文只表示可定位、可校验、可复现，不代表正文主张真实；
 - `WAIVED_WITH_LIMITATION` 只表示人工完成处置，不提供证据结论；
-- `PENDING` 存在时 Completion 不可冻结；
+- `PENDING`、`AUTO_FETCH_QUEUED`、`AUTO_FETCHING` 或 `MANUAL_REQUIRED` 存在时
+  Completion 不可冻结；
+- 自动获取失败只产生人工补录待办，不产生 WAIVE、SUPPORTS 或 NO_SUPPORT；
 - Answer 未审核、Review 错版、Manifest 错版、跨 Context 或全部来源 WAIVED，
   Evidence 均被后端阻断；
 - Evidence 结果为零只有在实际评估完成且合法返回零关系时成立；未执行、失败、

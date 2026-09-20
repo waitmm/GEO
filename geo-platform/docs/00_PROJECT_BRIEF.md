@@ -57,6 +57,14 @@ Evidence gate are engineering-accepted. The formal release database is separate
 from the legacy development database and contains only the approved first-slice
 allowlist.
 
+Source Preparation now reuses the established rendered-page/HTTP-fallback fetch
+kernel through an explicit V2 adapter. The kernel does not own workflow state:
+only the exact Analysis/Context/Citation Manifest can queue work, and only V2 can
+admit fetched text into immutable snapshots. Automatic acquisition runs first;
+failed, partial or blocked pages become visible manual-completion items and are
+never automatically waived. This integration is engineering-tested; a new real
+resample and source replay is the next acceptance action.
+
 This does not mean the real positive evidence chain is complete. The first
 release acceptance has now created a real Analysis/Context, frozen 38-source
 Citation Manifest, one real immutable source Snapshot, and a 3/3-admitted Answer

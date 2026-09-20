@@ -871,9 +871,11 @@ Status: ACTIVE
   fixed and both artifacts replay as complete, but immutable Raw Result
   `raw-v1:c10d6ba7d06dee7e` remains 27/23 until a formal resample creates a new
   result. Do not interpret the missing row as a Wenxin or network omission.
-- **Automatic source fetch is not yet wired into release Source Preparation**:
-  the mature `fetch_page_playwright()` kernel exists, while the formal release
-  API currently supports manual content only. Reuse must occur through an
-  explicit V2 scope adapter that creates Analysis-owned immutable snapshots;
-  invoking legacy Diagnosis/optimization runners would reintroduce forbidden
-  workflow ownership and latest-state dependencies.
+- **Release automatic source fetch is wired but not yet accepted on the new real
+  resample**: the formal V2 adapter now reuses `fetch_page_playwright()` and
+  creates Analysis-owned immutable snapshots. Focused tests prove automatic
+  success, manual fallback, no auto-waiver and restart handling. Until the next
+  authorized real Citation Manifest is processed, report this as engineering
+  ready rather than real source-completion acceptance. The legacy
+  `acquire_cited_sources()` runner remains prohibited because it writes V1
+  `SourceDocument` state.

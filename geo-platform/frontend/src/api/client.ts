@@ -66,6 +66,8 @@ export const api = {
   }) => request<SinglePromptV2SourcePreparation>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/source-preparation`, { method: "POST", body: JSON.stringify(payload) }),
   getSinglePromptV2SourcePreparation: (analysisId: string, projectId: number, promptId: number) =>
     request<SinglePromptV2SourcePreparation | null>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/source-preparation?project_id=${projectId}&prompt_id=${promptId}`),
+  queueSinglePromptV2SourceAutoFetch: (preparationId: string, payload: { project_id: number; prompt_id: number }) =>
+    request<SinglePromptV2SourcePreparation>(`/api/v2/single-prompt/source-preparations/${encodeURIComponent(preparationId)}/auto-fetch`, { method: "POST", body: JSON.stringify(payload) }),
   submitSinglePromptV2ManualSource: (preparationId: string, payload: {
     project_id: number; prompt_id: number; source_key: string; expected_row_version: number;
     title: string; clean_text: string; coverage_scope: "FULL_PAGE" | "EXCERPT"; submitted_by: string;

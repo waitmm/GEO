@@ -5341,3 +5341,23 @@ review_queue = READY
   Preparation API currently exposes only manual submission. The missing V2 DTO
   adapter is a release-path integration gap; the legacy Diagnosis/optimization
   runner must not be re-enabled as a shortcut.
+
+## 2026-09-20 Release Source Auto-Fetch Adapter
+
+- Connected the existing `fetch_page_playwright()` browser-rendering and HTTP
+  fallback kernel to the formal release Source Preparation path. The V1
+  `acquire_cited_sources()` runner was deliberately not called because it writes
+  legacy `SourceDocument` workflow state; V2 owns queue state, validation,
+  artifact persistence, passages and immutable snapshot identity.
+- Added explicit `POST .../source-preparations/{id}/auto-fetch`, single-worker
+  execution and restart recovery. GET remains read-only. Network work occurs
+  outside database write transactions.
+- Successful complete content becomes an Analysis/Context/Citation-Manifest
+  bound `AUTO_FETCH` snapshot. Partial, blocked, missing, unsafe or failed
+  results become `MANUAL_REQUIRED`; no automatic WAIVE is possible.
+- The release page now presents “automatic first, manual fallback”, polls queued
+  work, shows per-source failure reasons and only opens manual controls for
+  unresolved sources (or explicit replacement of an existing READY version).
+- Added focused worker, snapshot, failure, no-waiver and restart tests. Release
+  first-slice suite: 14 passed. Python compile, frontend production build and
+  diff check pass. No real source fetch or resample occurred before checkpoint.

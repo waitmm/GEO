@@ -296,12 +296,15 @@ export type SinglePromptV2SourcePreparation = {
     waiver: null | { reason: string; impact: string; waived_by: string; waived_at: string | null };
     snapshot: null | {
       snapshot_id: string;
+      title: string;
       content_hash: string;
       artifact_hash: string;
       artifact_path: string;
       passages_hash: string;
       passage_count: number;
       coverage_scope: "FULL_PAGE" | "EXCERPT" | string;
+      acquisition_method: "AUTO_FETCH" | "MANUAL" | string;
+      acquired_at: string;
       submitted_by: string;
       created_at: string;
     };

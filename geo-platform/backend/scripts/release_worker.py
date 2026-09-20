@@ -10,9 +10,10 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.release_database import ReleaseSessionLocal, release_engine
-from app.models import SinglePromptAnalysis, SinglePromptDiagnosisExecution
+from app.models import SinglePromptAnalysis, SinglePromptDiagnosisExecution, SinglePromptSourcePreparation
 from app.modules.single_prompt_v2.diagnosis import execute_diagnosis, execute_queued_evidence
 from app.modules.single_prompt_v2.service import execute_analysis
+from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_STATUS, execute_auto_fetch
 from app.release_schema import validate_release_database
 
 
@@ -29,16 +30,26 @@ def run_once() -> str | None:
             identity = analysis.analysis_id
             work_type = "analysis"
         else:
-            diagnosis = (
-                db.query(SinglePromptDiagnosisExecution)
-                .filter(SinglePromptDiagnosisExecution.status.in_(["QUEUED", "EVIDENCE_QUEUED"]))
-                .order_by(SinglePromptDiagnosisExecution.id.asc())
+            preparation = (
+                db.query(SinglePromptSourcePreparation)
+                .filter(SinglePromptSourcePreparation.status == AUTO_FETCH_QUEUED_STATUS)
+                .order_by(SinglePromptSourcePreparation.id.asc())
                 .first()
             )
-            if not diagnosis:
-                return None
-            identity = diagnosis.diagnosis_id
-            work_type = "evidence" if diagnosis.status == "EVIDENCE_QUEUED" else "answer"
+            if preparation:
+                identity = preparation.preparation_id
+                work_type = "source"
+            else:
+                diagnosis = (
+                    db.query(SinglePromptDiagnosisExecution)
+                    .filter(SinglePromptDiagnosisExecution.status.in_(["QUEUED", "EVIDENCE_QUEUED"]))
+                    .order_by(SinglePromptDiagnosisExecution.id.asc())
+                    .first()
+                )
+                if not diagnosis:
+                    return None
+                identity = diagnosis.diagnosis_id
+                work_type = "evidence" if diagnosis.status == "EVIDENCE_QUEUED" else "answer"
     finally:
         db.close()
 
@@ -51,6 +62,9 @@ def run_once() -> str | None:
             session_factory=ReleaseSessionLocal,
         )
         return f"analysis:{identity}"
+    if work_type == "source":
+        execute_auto_fetch(identity, session_factory=ReleaseSessionLocal)
+        return f"source:{identity}"
     if work_type == "evidence":
         execute_queued_evidence(identity, session_factory=ReleaseSessionLocal)
         return f"evidence:{identity}"

@@ -22,6 +22,7 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptEvidenceContinuationCreate,
     SinglePromptManualSourceContentCreate,
     SinglePromptSourceCompletionCreate,
+    SinglePromptSourceAutoFetchCreate,
     SinglePromptSourcePreparationCreate,
     SinglePromptSourceWaiverCreate,
 )
@@ -31,6 +32,7 @@ from app.modules.single_prompt_v2.source_preparation import (
     freeze_completion_manifest,
     get_source_preparation_for_analysis,
     get_source_preparation_status,
+    queue_auto_fetch,
     submit_manual_content,
     waive_source,
 )
@@ -99,6 +101,17 @@ def _require_preparation_scope(status: dict, project_id: int, prompt_id: int) ->
     identity = status["preparation"]
     if identity["project_id"] != project_id or identity["prompt_id"] != prompt_id:
         raise HTTPException(status_code=409, detail="来源准备与当前 Project/Prompt 不匹配")
+
+
+@router.post("/source-preparations/{preparation_id}/auto-fetch", status_code=202)
+def start_source_auto_fetch(preparation_id: str, payload: SinglePromptSourceAutoFetchCreate, db: Session = Depends(get_db)) -> dict:
+    queue_auto_fetch(
+        db,
+        preparation_id=preparation_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+    return get_source_preparation_status(db, preparation_id=preparation_id)
 
 
 @router.post("/source-preparations/{preparation_id}/manual-content")

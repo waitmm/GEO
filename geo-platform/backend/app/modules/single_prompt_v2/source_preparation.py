@@ -7,12 +7,14 @@ not call legacy diagnosis runners or discover a latest snapshot.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -31,17 +33,26 @@ from app.models import (
 )
 from app.services.serialization import loads
 from app.services.url_identity import canonicalize_url
+from app.modules.optimization.passage_service import fetch_page_playwright
 
 
 CITATION_MANIFEST_CONTRACT_VERSION = "single_prompt_citation_manifest.v1"
 URL_IDENTITY_VERSION = "single_prompt_source_identity.v1"
 SOURCE_PREPARATION_CONTRACT_VERSION = "single_prompt_source_preparation.v1"
-SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v2_manual"
+SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v3_auto_then_manual"
 PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
 
 READY_STATE = "READY"
 WAIVED_STATE = "WAIVED_WITH_LIMITATION"
 TERMINAL_STATES = {READY_STATE, WAIVED_STATE}
+AUTO_FETCH_PENDING_STATUS = "AUTO_FETCH_PENDING"
+AUTO_FETCH_QUEUED_STATUS = "AUTO_FETCH_QUEUED"
+AUTO_FETCHING_STATUS = "AUTO_FETCHING"
+MANUAL_REQUIRED_STATUS = "MANUAL_REQUIRED"
+AUTO_FETCH_QUEUED_STATE = "AUTO_FETCH_QUEUED"
+AUTO_FETCHING_STATE = "AUTO_FETCHING"
+MANUAL_REQUIRED_STATE = "MANUAL_REQUIRED"
+ACTIVE_AUTO_FETCH_STATUSES = {AUTO_FETCH_QUEUED_STATUS, AUTO_FETCHING_STATUS}
 
 _CONTENT_BLOCK_MARKERS = (
     "验证码",
@@ -209,7 +220,7 @@ def create_source_preparation(
         project_id=project_id,
         prompt_id=prompt_id,
         idempotency_key=idempotency_key,
-        status="PENDING" if payload["source_count"] else "READY_TO_FREEZE",
+        status=AUTO_FETCH_PENDING_STATUS if payload["source_count"] else "READY_TO_FREEZE",
         created_by=created_by,
     )
     db.add(preparation)
@@ -275,6 +286,266 @@ def _write_immutable_artifact(path: Path, content: str) -> None:
     os.replace(temporary, path)
 
 
+def _is_fetchable_public_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host or host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local"):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+    )
+
+
+def _snapshot_from_content(
+    db: Session,
+    *,
+    preparation: SinglePromptSourcePreparation,
+    disposition: SinglePromptSourceDisposition,
+    title: str,
+    clean_text: str,
+    coverage_scope: str,
+    acquisition_method: str,
+    submitted_by: str,
+    acquired_at: datetime | None = None,
+) -> SinglePromptPreparedSourceSnapshot:
+    text = clean_text.strip()
+    block_reason = _content_block_reason(title, text)
+    if block_reason:
+        raise ValueError(block_reason)
+    passages = _split_passages(text, disposition.source_key)
+    if not passages:
+        raise ValueError("正文没有形成任何合格 passage")
+    snapshot_id = f"source-snapshot-{uuid4()}"
+    artifact_path = _artifact_path(
+        snapshot_id,
+        preparation.context_id,
+        preparation.preparation_id,
+        disposition.source_key,
+    )
+    _write_immutable_artifact(artifact_path, text)
+    content_hash = _text_hash(text)
+    snapshot = SinglePromptPreparedSourceSnapshot(
+        snapshot_id=snapshot_id,
+        preparation_id=preparation.preparation_id,
+        context_id=preparation.context_id,
+        citation_manifest_id=preparation.citation_manifest_id,
+        source_key=disposition.source_key,
+        canonical_url=disposition.canonical_url,
+        original_urls_json=disposition.original_urls_json,
+        reference_observations_json=disposition.reference_observations_json,
+        occurrence_count=disposition.occurrence_count,
+        title=title.strip()[:500],
+        content_hash=content_hash,
+        clean_text=text,
+        artifact_path=str(artifact_path),
+        artifact_hash=content_hash,
+        passages_json=_canonical_json(passages),
+        passages_hash=_hash(passages),
+        parser_version=PASSAGE_SPLIT_VERSION,
+        acquisition_method=acquisition_method,
+        coverage_scope=coverage_scope,
+        acquired_at=acquired_at or datetime.utcnow(),
+        submitted_by=submitted_by,
+    )
+    db.add(snapshot)
+    disposition.state = READY_STATE
+    disposition.active_snapshot_id = snapshot_id
+    disposition.failure_code = ""
+    disposition.failure_detail = ""
+    disposition.waiver_reason = ""
+    disposition.waiver_impact = ""
+    disposition.waived_by = ""
+    disposition.waived_at = None
+    disposition.row_version += 1
+    return snapshot
+
+
+def _refresh_preparation_status(
+    db: Session,
+    preparation: SinglePromptSourcePreparation,
+) -> None:
+    states = [
+        row[0]
+        for row in db.query(SinglePromptSourceDisposition.state)
+        .filter_by(preparation_id=preparation.preparation_id)
+        .all()
+    ]
+    if states and all(state in TERMINAL_STATES for state in states):
+        preparation.status = "READY_TO_FREEZE"
+    elif any(state == MANUAL_REQUIRED_STATE for state in states):
+        preparation.status = MANUAL_REQUIRED_STATUS
+    elif states:
+        preparation.status = AUTO_FETCH_PENDING_STATUS
+    else:
+        preparation.status = "READY_TO_FREEZE"
+    preparation.current_completion_manifest_id = None
+
+
+def queue_auto_fetch(
+    db: Session,
+    *,
+    preparation_id: str,
+    project_id: int,
+    prompt_id: int,
+) -> SinglePromptSourcePreparation:
+    preparation = db.query(SinglePromptSourcePreparation).filter_by(preparation_id=preparation_id).one_or_none()
+    if not preparation:
+        raise HTTPException(status_code=404, detail="来源准备不存在")
+    if preparation.project_id != project_id or preparation.prompt_id != prompt_id:
+        raise HTTPException(status_code=409, detail="来源准备与当前 Project/Prompt 不匹配")
+    if preparation.status in {AUTO_FETCH_QUEUED_STATUS, AUTO_FETCHING_STATUS}:
+        return preparation
+    candidates = (
+        db.query(SinglePromptSourceDisposition)
+        .filter(
+            SinglePromptSourceDisposition.preparation_id == preparation_id,
+            SinglePromptSourceDisposition.state.notin_(TERMINAL_STATES),
+        )
+        .all()
+    )
+    if not candidates:
+        raise HTTPException(status_code=409, detail="没有需要自动获取的来源")
+    for row in candidates:
+        row.state = AUTO_FETCH_QUEUED_STATE
+        row.row_version += 1
+    preparation.status = AUTO_FETCH_QUEUED_STATUS
+    preparation.current_completion_manifest_id = None
+    db.commit()
+    db.refresh(preparation)
+    return preparation
+
+
+def execute_auto_fetch(
+    preparation_id: str,
+    *,
+    session_factory: Callable[[], Session],
+    fetcher: Callable[..., list[dict[str, Any]]] = fetch_page_playwright,
+) -> dict[str, int]:
+    db = session_factory()
+    try:
+        preparation = db.query(SinglePromptSourcePreparation).filter_by(preparation_id=preparation_id).one_or_none()
+        if not preparation or preparation.status != AUTO_FETCH_QUEUED_STATUS:
+            return {"requested": 0, "ready": 0, "manual_required": 0}
+        rows = (
+            db.query(SinglePromptSourceDisposition)
+            .filter_by(preparation_id=preparation_id, state=AUTO_FETCH_QUEUED_STATE)
+            .order_by(SinglePromptSourceDisposition.source_key)
+            .all()
+        )
+        preparation.status = AUTO_FETCHING_STATUS
+        requests: list[dict[str, Any]] = []
+        for row in rows:
+            row.state = AUTO_FETCHING_STATE
+            urls = loads(row.original_urls_json, [])
+            url = row.canonical_url or (str(urls[0]) if urls else "")
+            requests.append({"disposition_id": row.disposition_id, "url": url})
+        db.commit()
+    finally:
+        db.close()
+
+    fetchable = [item for item in requests if _is_fetchable_public_url(item["url"])]
+    fetched_results: list[dict[str, Any]] = []
+    if fetchable:
+        try:
+            fetched_results = fetcher([item["url"] for item in fetchable])
+        except Exception as exc:
+            fetched_results = [
+                {"fetch_status": "FETCH_FAILED", "failure_reason": str(exc)[:500]}
+                for _ in fetchable
+            ]
+    result_by_disposition = {
+        item["disposition_id"]: (
+            fetched_results[index]
+            if index < len(fetched_results)
+            else {"fetch_status": "FETCH_FAILED", "failure_reason": "正文抓取器未返回对应结果"}
+        )
+        for index, item in enumerate(fetchable)
+    }
+
+    ready = 0
+    manual_required = 0
+    db = session_factory()
+    try:
+        preparation = db.query(SinglePromptSourcePreparation).filter_by(preparation_id=preparation_id).one()
+        rows = (
+            db.query(SinglePromptSourceDisposition)
+            .filter_by(preparation_id=preparation_id, state=AUTO_FETCHING_STATE)
+            .order_by(SinglePromptSourceDisposition.source_key)
+            .all()
+        )
+        for row in rows:
+            request = next(item for item in requests if item["disposition_id"] == row.disposition_id)
+            result = result_by_disposition.get(row.disposition_id)
+            failure_code = ""
+            failure_detail = ""
+            if not _is_fetchable_public_url(request["url"]):
+                failure_code = "UNSAFE_OR_MISSING_SOURCE_URL"
+                failure_detail = "来源 URL 缺失或不符合公网 HTTP(S) 访问限制"
+            elif not result:
+                failure_code = "FETCH_FAILED"
+                failure_detail = "正文抓取器没有返回结果"
+            else:
+                status = str(result.get("fetch_status") or "FETCH_FAILED").upper()
+                text = str(result.get("clean_text") or "").strip()
+                final_url = str(result.get("canonical_url") or request["url"])
+                if not _is_fetchable_public_url(final_url):
+                    failure_code = "UNSAFE_REDIRECT_TARGET"
+                    failure_detail = "抓取后的最终 URL 不符合公网 HTTP(S) 访问限制"
+                elif status != "SUCCESS":
+                    failure_code = status
+                    failure_detail = str(result.get("failure_reason") or "自动获取未得到完整正文")[:2000]
+                elif len(text) < 50:
+                    failure_code = "CONTENT_TOO_SHORT"
+                    failure_detail = "自动获取正文过短，需人工补录"
+                else:
+                    block_reason = _content_block_reason(str(result.get("title") or ""), text)
+                    if block_reason:
+                        failure_code = "CONTENT_BLOCKED"
+                        failure_detail = block_reason
+                    else:
+                        try:
+                            _snapshot_from_content(
+                                db,
+                                preparation=preparation,
+                                disposition=row,
+                                title=str(result.get("title") or ""),
+                                clean_text=text,
+                                coverage_scope="FULL_PAGE",
+                                acquisition_method="AUTO_FETCH",
+                                submitted_by=f"AUTO:{preparation.created_by}",
+                                acquired_at=result.get("fetch_time") if isinstance(result.get("fetch_time"), datetime) else None,
+                            )
+                            ready += 1
+                            continue
+                        except ValueError as exc:
+                            failure_code = "CONTENT_BLOCKED"
+                            failure_detail = str(exc)[:2000]
+            row.state = MANUAL_REQUIRED_STATE
+            row.active_snapshot_id = None
+            row.failure_code = failure_code or "FETCH_FAILED"
+            row.failure_detail = failure_detail or "自动获取失败，需人工补录"
+            row.row_version += 1
+            manual_required += 1
+        _refresh_preparation_status(db, preparation)
+        db.commit()
+    finally:
+        db.close()
+    return {"requested": len(requests), "ready": ready, "manual_required": manual_required}
+
+
 def submit_manual_content(
     db: Session,
     *,
@@ -306,47 +577,22 @@ def submit_manual_content(
     if disposition.row_version != expected_row_version:
         raise HTTPException(status_code=409, detail="来源处置版本已变化，请刷新后重试")
     preparation = db.query(SinglePromptSourcePreparation).filter_by(preparation_id=preparation_id).one()
-    passages = _split_passages(text, source_key)
-    if not passages:
-        raise HTTPException(status_code=422, detail="正文没有形成任何合格 passage")
-    snapshot_id = f"source-snapshot-{uuid4()}"
-    artifact_path = _artifact_path(snapshot_id, preparation.context_id, preparation_id, source_key)
-    _write_immutable_artifact(artifact_path, text)
-    content_hash = _text_hash(text)
-    snapshot = SinglePromptPreparedSourceSnapshot(
-        snapshot_id=snapshot_id,
-        preparation_id=preparation_id,
-        context_id=preparation.context_id,
-        citation_manifest_id=preparation.citation_manifest_id,
-        source_key=source_key,
-        canonical_url=disposition.canonical_url,
-        original_urls_json=disposition.original_urls_json,
-        reference_observations_json=disposition.reference_observations_json,
-        occurrence_count=disposition.occurrence_count,
-        title=title.strip()[:500],
-        content_hash=content_hash,
-        clean_text=text,
-        artifact_path=str(artifact_path),
-        artifact_hash=content_hash,
-        passages_json=_canonical_json(passages),
-        passages_hash=_hash(passages),
-        parser_version=PASSAGE_SPLIT_VERSION,
-        acquisition_method="MANUAL",
-        coverage_scope=coverage_scope,
-        submitted_by=submitted_by.strip(),
-    )
-    db.add(snapshot)
-    disposition.state = READY_STATE
-    disposition.active_snapshot_id = snapshot_id
-    disposition.failure_code = ""
-    disposition.failure_detail = ""
-    disposition.waiver_reason = ""
-    disposition.waiver_impact = ""
-    disposition.waived_by = ""
-    disposition.waived_at = None
-    disposition.row_version += 1
-    preparation.status = "PENDING"
-    preparation.current_completion_manifest_id = None
+    if preparation.status in ACTIVE_AUTO_FETCH_STATUSES:
+        raise HTTPException(status_code=409, detail="自动获取正在排队或执行，请等待完成后再人工补录")
+    try:
+        snapshot = _snapshot_from_content(
+            db,
+            preparation=preparation,
+            disposition=disposition,
+            title=title,
+            clean_text=text,
+            coverage_scope=coverage_scope,
+            acquisition_method="MANUAL",
+            submitted_by=submitted_by.strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _refresh_preparation_status(db, preparation)
     db.commit()
     db.refresh(snapshot)
     return snapshot
@@ -373,6 +619,9 @@ def waive_source(
         raise HTTPException(status_code=404, detail="固定引用范围中不存在该来源")
     if disposition.row_version != expected_row_version:
         raise HTTPException(status_code=409, detail="来源处置版本已变化，请刷新后重试")
+    preparation = db.query(SinglePromptSourcePreparation).filter_by(preparation_id=preparation_id).one()
+    if preparation.status in ACTIVE_AUTO_FETCH_STATUSES:
+        raise HTTPException(status_code=409, detail="自动获取正在排队或执行，请等待完成后再记录人工放弃")
     disposition.state = WAIVED_STATE
     disposition.active_snapshot_id = None
     disposition.waiver_reason = reason.strip()
@@ -380,10 +629,31 @@ def waive_source(
     disposition.waived_by = waived_by.strip()
     disposition.waived_at = datetime.utcnow()
     disposition.row_version += 1
-    preparation = db.query(SinglePromptSourcePreparation).filter_by(preparation_id=preparation_id).one()
-    preparation.status = "PENDING"
-    preparation.current_completion_manifest_id = None
+    _refresh_preparation_status(db, preparation)
     db.commit()
+
+
+def recover_interrupted_source_preparations(db: Session) -> int:
+    interrupted = (
+        db.query(SinglePromptSourcePreparation)
+        .filter_by(status=AUTO_FETCHING_STATUS)
+        .all()
+    )
+    for preparation in interrupted:
+        rows = (
+            db.query(SinglePromptSourceDisposition)
+            .filter_by(preparation_id=preparation.preparation_id, state=AUTO_FETCHING_STATE)
+            .all()
+        )
+        for row in rows:
+            row.state = MANUAL_REQUIRED_STATE
+            row.failure_code = "AUTO_FETCH_INTERRUPTED"
+            row.failure_detail = "服务在自动获取正文期间重启；未确认抓取完成，需人工补录或明确再次自动获取"
+            row.row_version += 1
+        _refresh_preparation_status(db, preparation)
+    if interrupted:
+        db.commit()
+    return len(interrupted)
 
 
 def _verify_snapshot(snapshot: SinglePromptPreparedSourceSnapshot) -> list[dict[str, Any]]:
@@ -542,12 +812,15 @@ def get_source_preparation_status(db: Session, *, preparation_id: str) -> dict[s
             if snapshot_row:
                 snapshot = {
                     "snapshot_id": snapshot_row.snapshot_id,
+                    "title": snapshot_row.title,
                     "content_hash": snapshot_row.content_hash,
                     "artifact_hash": snapshot_row.artifact_hash,
                     "artifact_path": snapshot_row.artifact_path,
                     "passages_hash": snapshot_row.passages_hash,
                     "passage_count": len(loads(snapshot_row.passages_json, [])),
                     "coverage_scope": snapshot_row.coverage_scope,
+                    "acquisition_method": snapshot_row.acquisition_method,
+                    "acquired_at": snapshot_row.acquired_at.isoformat(),
                     "submitted_by": snapshot_row.submitted_by,
                     "created_at": snapshot_row.created_at.isoformat(),
                 }
@@ -593,6 +866,7 @@ def get_source_preparation_status(db: Session, *, preparation_id: str) -> dict[s
             "project_id": preparation.project_id,
             "prompt_id": preparation.prompt_id,
             "status": preparation.status,
+            "created_by": preparation.created_by,
         },
         "citation_manifest": {
             "manifest_id": citation.manifest_id,
@@ -612,8 +886,19 @@ def get_source_preparation_status(db: Session, *, preparation_id: str) -> dict[s
         "sources": sources,
         "completion_manifest": completion,
         "allowed_operations": [
-            *( ["SUBMIT_MANUAL_CONTENT", "WAIVE_SOURCE"] if citation.source_count else [] ),
-            *( ["FREEZE_COMPLETION"] if terminal_count == citation.source_count else [] ),
+            *(
+                ["QUEUE_AUTO_FETCH"]
+                if citation.source_count
+                and preparation.status not in ACTIVE_AUTO_FETCH_STATUSES
+                and terminal_count < citation.source_count
+                else []
+            ),
+            *(
+                ["SUBMIT_MANUAL_CONTENT", "WAIVE_SOURCE"]
+                if citation.source_count and preparation.status not in ACTIVE_AUTO_FETCH_STATUSES
+                else []
+            ),
+            *(["FREEZE_COMPLETION"] if terminal_count == citation.source_count else []),
         ],
     }
 

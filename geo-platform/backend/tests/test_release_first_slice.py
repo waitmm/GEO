@@ -242,6 +242,129 @@ def test_release_worker_keeps_failed_runs_retryable_before_context_freeze(tmp_pa
         engine.dispose()
 
 
+def test_release_worker_executes_queued_source_fetch(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        analysis = _seed_frozen_analysis(db, reference_urls=["https://example.com/source"])
+        preparation, _ = _create_preparation(db, analysis)
+        source_preparation.queue_auto_fetch(
+            db,
+            preparation_id=preparation.preparation_id,
+            project_id=1,
+            prompt_id=44,
+        )
+        called = {}
+
+        def fake_execute_source(identity, **kwargs):
+            called.update({"identity": identity, **kwargs})
+
+        monkeypatch.setattr(release_worker, "ReleaseSessionLocal", factory)
+        monkeypatch.setattr(release_worker, "execute_auto_fetch", fake_execute_source)
+
+        assert release_worker.run_once() == f"source:{preparation.preparation_id}"
+        assert called == {"identity": preparation.preparation_id, "session_factory": factory}
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_auto_fetch_creates_v2_snapshot_and_leaves_failures_for_manual_resolution(tmp_path, monkeypatch):
+    artifact_root = _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        analysis = _seed_frozen_analysis(
+            db,
+            reference_urls=["https://example.com/ready", "https://example.com/partial"],
+        )
+        preparation, initial = _create_preparation(db, analysis)
+        assert initial["preparation"]["status"] == "AUTO_FETCH_PENDING"
+        assert initial["allowed_operations"][:1] == ["QUEUE_AUTO_FETCH"]
+        source_preparation.queue_auto_fetch(
+            db,
+            preparation_id=preparation.preparation_id,
+            project_id=1,
+            prompt_id=44,
+        )
+
+        def fake_fetcher(urls):
+            return [
+                {
+                    "canonical_url": url,
+                    "fetch_status": "PARTIAL" if url.endswith("/partial") else "SUCCESS",
+                    "failure_reason": "正文不完整" if url.endswith("/partial") else "",
+                    "title": "自动获取标题",
+                    "clean_text": "不完整" if url.endswith("/partial") else "自动获取的真实正文，明确保留主体、能力和适用边界。" * 5,
+                }
+                for url in urls
+            ]
+
+        summary = source_preparation.execute_auto_fetch(
+            preparation.preparation_id,
+            session_factory=factory,
+            fetcher=fake_fetcher,
+        )
+        assert summary == {"requested": 2, "ready": 1, "manual_required": 1}
+
+        db.expire_all()
+        status = source_preparation.get_source_preparation_status(db, preparation_id=preparation.preparation_id)
+        assert status["preparation"]["status"] == "MANUAL_REQUIRED"
+        assert status["conservation"]["by_state"] == {"READY": 1, "MANUAL_REQUIRED": 1}
+        ready = next(row for row in status["sources"] if row["state"] == "READY")
+        manual = next(row for row in status["sources"] if row["state"] == "MANUAL_REQUIRED")
+        assert ready["snapshot"]["acquisition_method"] == "AUTO_FETCH"
+        assert ready["snapshot"]["artifact_path"].startswith(str(artifact_root))
+        assert Path(ready["snapshot"]["artifact_path"]).is_file()
+        assert manual["failure"]["code"] == "PARTIAL"
+        assert manual["waiver"] is None
+        assert status["completion_manifest"] is None
+
+        _submit(
+            db,
+            preparation.preparation_id,
+            manual,
+            "人工补录失败来源的真实正文，保留完整上下文、主体和能力边界。" * 4,
+        )
+        completed = source_preparation.get_source_preparation_status(db, preparation_id=preparation.preparation_id)
+        assert completed["preparation"]["status"] == "READY_TO_FREEZE"
+        assert completed["conservation"]["by_state"] == {"READY": 2}
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_auto_fetch_never_waives_and_interrupted_fetch_requires_explicit_resolution(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    try:
+        analysis = _seed_frozen_analysis(db, reference_urls=["https://example.com/interrupted"])
+        preparation, _ = _create_preparation(db, analysis)
+        source_preparation.queue_auto_fetch(
+            db,
+            preparation_id=preparation.preparation_id,
+            project_id=1,
+            prompt_id=44,
+        )
+        preparation.status = "AUTO_FETCHING"
+        disposition = db.query(source_preparation.SinglePromptSourceDisposition).filter_by(
+            preparation_id=preparation.preparation_id
+        ).one()
+        disposition.state = "AUTO_FETCHING"
+        db.commit()
+
+        assert source_preparation.recover_interrupted_source_preparations(db) == 1
+        status = source_preparation.get_source_preparation_status(db, preparation_id=preparation.preparation_id)
+        assert status["preparation"]["status"] == "MANUAL_REQUIRED"
+        assert status["sources"][0]["state"] == "MANUAL_REQUIRED"
+        assert status["sources"][0]["failure"]["code"] == "AUTO_FETCH_INTERRUPTED"
+        assert status["sources"][0]["waiver"] is None
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_release_restart_preserves_queued_work_and_fails_only_running_work(tmp_path, monkeypatch):
     _configure_artifacts(monkeypatch, tmp_path)
     db, engine = _session(tmp_path)

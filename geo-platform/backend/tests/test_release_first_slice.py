@@ -19,6 +19,8 @@ from app.models import (
     Project,
     Prompt,
     ReferenceSource,
+    SinglePromptDiagnosisResult,
+    SinglePromptDiagnosisReview,
     SinglePromptPreparedSourceSnapshot,
     SinglePromptSourceCompletionManifest,
 )
@@ -29,9 +31,16 @@ from app.modules.single_prompt_v2.diagnosis import (
     continue_evidence_diagnosis,
     create_answer_diagnosis,
     get_diagnosis_status,
+    queue_evidence_continuation,
+    recover_interrupted_diagnoses,
 )
 from app.modules.single_prompt_v2 import source_preparation
-from app.modules.single_prompt_v2.service import claim_analysis, create_analysis, finalize_analysis
+from app.modules.single_prompt_v2.service import (
+    claim_analysis,
+    create_analysis,
+    finalize_analysis,
+    recover_interrupted_analyses,
+)
 from app.release_main import create_release_app
 from app.release_schema import (
     RELEASE_SCHEMA_REVISION,
@@ -193,6 +202,48 @@ def test_release_routes_exclude_legacy_and_later_workflows():
     assert not any("execution-proposal" in path for path in paths)
     assert not any("retest" in path for path in paths)
     assert not any(path.startswith("/api/optimization") for path in paths)
+
+
+def test_release_restart_preserves_queued_work_and_fails_only_running_work(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    try:
+        analysis = _seed_frozen_analysis(db, reference_urls=["https://example.com/only"])
+        preparation, status = _create_preparation(db, analysis)
+        diagnosis, _ = create_answer_diagnosis(
+            db,
+            analysis_id=analysis.analysis_id,
+            project_id=1,
+            prompt_id=44,
+            citation_manifest_id=status["citation_manifest"]["manifest_id"],
+            citation_manifest_hash=status["citation_manifest"]["payload_hash"],
+            answer_llm_policy="CACHE_ONLY",
+            idempotency_key="restart-queue-answer",
+        )
+
+        analysis.status = "QUEUED"
+        diagnosis.status = "EVIDENCE_QUEUED"
+        db.commit()
+        assert recover_interrupted_analyses(db) == 0
+        assert recover_interrupted_diagnoses(db) == 0
+        db.refresh(analysis)
+        db.refresh(diagnosis)
+        assert analysis.status == "QUEUED"
+        assert diagnosis.status == "EVIDENCE_QUEUED"
+
+        analysis.status = "COLLECTING"
+        diagnosis.status = "EVIDENCE_RUNNING"
+        db.commit()
+        assert recover_interrupted_analyses(db) == 1
+        assert recover_interrupted_diagnoses(db) == 1
+        db.refresh(analysis)
+        db.refresh(diagnosis)
+        assert analysis.status == "INTERRUPTED"
+        assert diagnosis.status == "EVIDENCE_FAILED"
+        assert diagnosis.blocker_code == "SERVICE_RESTART_INTERRUPTED"
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def test_manual_source_completion_freezes_exact_content_and_waiver_limitations(tmp_path, monkeypatch):
@@ -510,6 +561,26 @@ def test_migrated_release_database_consumes_exact_answer_review_and_source_compl
             )
         assert wrong_version.value.detail["code"] == "SOURCE_COMPLETION_INPUT_MISMATCH"
 
+        queued_result, queued = queue_evidence_continuation(
+            db,
+            analysis_id=analysis.analysis_id,
+            diagnosis_id=diagnosis.diagnosis_id,
+            project_id=1,
+            prompt_id=44,
+            answer_result_version=answer_result.result_version,
+            answer_result_hash=answer_result.output_hash,
+            answer_review_id=answer_review.review_id,
+            citation_manifest_id=citation["manifest_id"],
+            citation_manifest_hash=citation["payload_hash"],
+            completion_manifest_id=completion.manifest_id,
+            completion_manifest_hash=completion.payload_hash,
+            evidence_llm_policy="ALLOW_EXTERNAL",
+        )
+        assert queued_result is None
+        assert queued is True
+        db.refresh(diagnosis)
+        assert diagnosis.status == "EVIDENCE_QUEUED"
+
         evidence_result = continue_evidence_diagnosis(
             db,
             analysis_id=analysis.analysis_id,
@@ -566,6 +637,31 @@ def test_migrated_release_database_consumes_exact_answer_review_and_source_compl
         assert api_status["review"] is None
         assert api_status["source_content_status_summary"]["content_ready"] == 1
         assert not inspect(engine).has_table("single_prompt_source_snapshots")
+
+        snapshot_id = snapshot.snapshot_id
+        artifact_path = snapshot.artifact_path
+        artifact_hash = snapshot.artifact_hash
+        review_id = answer_review.review_id
+        result_version = evidence_result.result_version
+        db.close()
+        engine.dispose()
+
+        restarted_engine = create_engine(
+            f"sqlite:///{(tmp_path / 'migrated-release-first-slice.db').as_posix()}",
+            connect_args={"check_same_thread": False},
+        )
+        restarted_db = sessionmaker(bind=restarted_engine, expire_on_commit=False)()
+        persisted_snapshot = restarted_db.query(SinglePromptPreparedSourceSnapshot).filter_by(
+            snapshot_id=snapshot_id
+        ).one()
+        assert persisted_snapshot.artifact_path == artifact_path
+        assert hashlib.sha256(Path(artifact_path).read_bytes()).hexdigest() == artifact_hash
+        assert restarted_db.query(SinglePromptDiagnosisReview).filter_by(review_id=review_id).one()
+        assert restarted_db.query(SinglePromptDiagnosisResult).filter_by(
+            result_version=result_version
+        ).one().output_hash == evidence_result.output_hash
+        restarted_db.close()
+        restarted_engine.dispose()
     finally:
         db.close()
         engine.dispose()

@@ -1850,7 +1850,7 @@ export default function App() {
       );
       setV2Diagnosis(status);
       persistV2DiagnosisIdentity(status);
-      message.success("Evidence 已消费精确 Answer Review 与 Source Completion 版本");
+      message.success("Evidence 双输入 Gate 已通过，等待串行业务 worker 执行");
     } catch (error: any) {
       message.error(error.message || "Evidence 双输入校验或执行失败");
     } finally {
@@ -2702,7 +2702,7 @@ export default function App() {
     void refreshV2Diagnosis();
   }, [page, v2Analysis?.analysis.analysis_id, v2Analysis?.context_id, projectId, activePromptId]);
   useEffect(() => {
-    if (!v2Diagnosis || !["QUEUED", "RUNNING"].includes(v2Diagnosis.compute_status)) return;
+    if (!v2Diagnosis || !["QUEUED", "RUNNING", "EVIDENCE_QUEUED", "EVIDENCE_RUNNING"].includes(v2Diagnosis.compute_status)) return;
     const timer = window.setInterval(() => { void refreshV2Diagnosis(); }, 3000);
     return () => window.clearInterval(timer);
   }, [v2Diagnosis?.diagnosis.diagnosis_id, v2Diagnosis?.compute_status, projectId, activePromptId]);
@@ -4533,8 +4533,8 @@ export default function App() {
               </Card>}
 
               {v2Analysis.context_id && <Card size="small" title={<Space><ShieldCheck size={18} />回答语义与证据诊断</Space>} extra={<Space wrap>
-                {v2Diagnosis && <Tag color={v2NoConsumableAnswerSemantic ? "red" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "green" : ["QUEUED", "RUNNING"].includes(v2Diagnosis.compute_status) ? "blue" : v2Diagnosis.compute_status === "FAILED" ? "red" : "gold"}>
-                  {v2NoConsumableAnswerSemantic ? "回答语义失败" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "审核完成" : v2Diagnosis.compute_status === "READY_FOR_REVIEW" ? "待审核" : v2Diagnosis.compute_status === "RUNNING" ? "诊断中" : v2Diagnosis.compute_status === "QUEUED" ? "等待诊断" : v2Diagnosis.compute_status === "INTERRUPTED" ? "诊断中断" : v2Diagnosis.compute_status}
+                {v2Diagnosis && <Tag color={v2NoConsumableAnswerSemantic ? "red" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "green" : ["QUEUED", "RUNNING", "EVIDENCE_QUEUED", "EVIDENCE_RUNNING"].includes(v2Diagnosis.compute_status) ? "blue" : ["FAILED", "EVIDENCE_FAILED"].includes(v2Diagnosis.compute_status) ? "red" : "gold"}>
+                  {v2NoConsumableAnswerSemantic ? "回答语义失败" : v2Diagnosis.compute_status === "EVIDENCE_QUEUED" ? "等待证据计算" : v2Diagnosis.compute_status === "EVIDENCE_RUNNING" ? "证据计算中" : v2Diagnosis.compute_status === "EVIDENCE_FAILED" ? "证据计算失败" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "审核完成" : v2Diagnosis.compute_status === "READY_FOR_REVIEW" ? "待审核" : v2Diagnosis.compute_status === "RUNNING" ? "诊断中" : v2Diagnosis.compute_status === "QUEUED" ? "等待诊断" : v2Diagnosis.compute_status === "INTERRUPTED" ? "诊断中断" : v2Diagnosis.compute_status}
                 </Tag>}
                 {!v2Diagnosis ? <Space wrap><Select value={v2AnswerPolicy} onChange={setV2AnswerPolicy} options={[{ value: "CACHE_ONLY", label: "仅兼容缓存" }, { value: "ALLOW_EXTERNAL", label: "授权 Answer LLM" }]} /><Button type="primary" icon={<Play size={15} />} loading={v2DiagnosisLoading} disabled={!v2SourcePreparation} onClick={startV2Diagnosis}>开始 Answer Semantic</Button></Space> : <>
                   <Tooltip title="只读取当前诊断执行状态">
@@ -4552,7 +4552,7 @@ export default function App() {
                     <Descriptions.Item label="兼容缓存复用">{v2Diagnosis.usage.llm_cache_hits}</Descriptions.Item>
                     <Descriptions.Item label="完成时间">{formatDateTime(v2Diagnosis.finished_at)}</Descriptions.Item>
                   </Descriptions>
-                  {["QUEUED", "RUNNING"].includes(v2Diagnosis.compute_status) && <div style={{ marginTop: 16 }}>
+                  {["QUEUED", "RUNNING", "EVIDENCE_QUEUED", "EVIDENCE_RUNNING"].includes(v2Diagnosis.compute_status) && <div style={{ marginTop: 16 }}>
                     <Progress percent={Math.round(100 * Number(v2Diagnosis.progress.completed || 0) / Math.max(Number(v2Diagnosis.progress.total || 1), 1))} status="active" />
                     <Text type="secondary">{v2Diagnosis.progress.detail || v2Diagnosis.progress.stage || "正在处理"}</Text>
                   </div>}

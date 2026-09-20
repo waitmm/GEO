@@ -83,7 +83,6 @@ PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
 TRUTH_MATCH_VERSION = "single_prompt_truth_relation.v2_subject_aware"
 REVIEW_CONTRACT_VERSION = "single_prompt_diagnosis_review.v1"
 V2_LLM_THINKING_MODE = "disabled"
-ACTIVE_STATUSES = {"QUEUED", "RUNNING"}
 
 _SPEECH_ACTS = {"RECOMMEND", "INCLUDE_AS_OPTION", "PRAISE", "COMPARE", "MENTION", "DISCOURAGE", "REJECT"}
 _RECOMMENDATION_STRENGTHS = {"STRONG", "MODERATE", "WEAK", "NONE"}
@@ -2046,7 +2045,7 @@ def _reviewed_answer_for_evidence(output: dict[str, Any], review: SinglePromptDi
     return reviewed
 
 
-def continue_evidence_diagnosis(
+def _evidence_continuation_inputs(
     db: Session,
     *,
     analysis_id: str,
@@ -2061,9 +2060,7 @@ def continue_evidence_diagnosis(
     completion_manifest_id: str,
     completion_manifest_hash: str,
     evidence_llm_policy: str,
-    source_claim_judge: Any | None = None,
-    alignment_judge: Any | None = None,
-) -> SinglePromptDiagnosisResult:
+):
     if evidence_llm_policy not in {"ALLOW_EXTERNAL", "CACHE_ONLY"}:
         raise HTTPException(status_code=422, detail="Evidence LLM 授权策略非法")
     execution = db.query(SinglePromptDiagnosisExecution).filter_by(
@@ -2130,7 +2127,105 @@ def continue_evidence_diagnosis(
     for row in db.query(SinglePromptDiagnosisResult).filter_by(diagnosis_id=diagnosis_id).all():
         prior = loads(row.output_json, {})
         if prior.get("result_scope") == "ANSWER_AND_EVIDENCE" and (prior.get("input") or {}).get("evidence_binding_hash") == binding_hash:
-            return row
+            return {
+                "execution": execution,
+                "answer_result": answer_result,
+                "answer_output": answer_output,
+                "review": review,
+                "completion": completion,
+                "snapshots": snapshots,
+                "waiver_limitations": waiver_limitations,
+                "binding": binding,
+                "binding_hash": binding_hash,
+                "existing_result": row,
+            }
+    return {
+        "execution": execution,
+        "answer_result": answer_result,
+        "answer_output": answer_output,
+        "review": review,
+        "completion": completion,
+        "snapshots": snapshots,
+        "waiver_limitations": waiver_limitations,
+        "binding": binding,
+        "binding_hash": binding_hash,
+        "existing_result": None,
+    }
+
+
+def queue_evidence_continuation(
+    db: Session,
+    **kwargs,
+) -> tuple[SinglePromptDiagnosisResult | None, bool]:
+    gate = _evidence_continuation_inputs(db, **kwargs)
+    if gate["existing_result"] is not None:
+        return gate["existing_result"], False
+    execution = gate["execution"]
+    progress = loads(execution.progress_json, {})
+    if execution.status in {"EVIDENCE_QUEUED", "EVIDENCE_RUNNING"}:
+        if progress.get("input_binding_hash") == gate["binding_hash"]:
+            return None, False
+        raise HTTPException(status_code=409, detail={"code": "OTHER_EVIDENCE_INPUT_ALREADY_ACTIVE"})
+    execution.status = "EVIDENCE_QUEUED"
+    execution.blocker_code = ""
+    execution.blocker_detail = ""
+    execution.finished_at = None
+    execution.progress_json = _canonical_json({
+        "stage": "EVIDENCE_QUEUED",
+        "completed": 0,
+        "total": 1,
+        "detail": "双输入 Gate 已通过，等待 release worker 消费精确版本",
+        "input_binding_hash": gate["binding_hash"],
+        "request": gate["binding"],
+    })
+    db.commit()
+    return None, True
+
+
+def continue_evidence_diagnosis(
+    db: Session,
+    *,
+    analysis_id: str,
+    diagnosis_id: str,
+    project_id: int,
+    prompt_id: int,
+    answer_result_version: str,
+    answer_result_hash: str,
+    answer_review_id: str,
+    citation_manifest_id: str,
+    citation_manifest_hash: str,
+    completion_manifest_id: str,
+    completion_manifest_hash: str,
+    evidence_llm_policy: str,
+    source_claim_judge: Any | None = None,
+    alignment_judge: Any | None = None,
+) -> SinglePromptDiagnosisResult:
+    gate = _evidence_continuation_inputs(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        answer_result_version=answer_result_version,
+        answer_result_hash=answer_result_hash,
+        answer_review_id=answer_review_id,
+        citation_manifest_id=citation_manifest_id,
+        citation_manifest_hash=citation_manifest_hash,
+        completion_manifest_id=completion_manifest_id,
+        completion_manifest_hash=completion_manifest_hash,
+        evidence_llm_policy=evidence_llm_policy,
+    )
+    if gate["existing_result"] is not None:
+        return gate["existing_result"]
+    execution = gate["execution"]
+    answer_result = gate["answer_result"]
+    answer_output = gate["answer_output"]
+    review = gate["review"]
+    completion = gate["completion"]
+    snapshots = gate["snapshots"]
+    waiver_limitations = gate["waiver_limitations"]
+    binding = gate["binding"]
+    binding_hash = gate["binding_hash"]
 
     raw_context = db.query(SinglePromptAnalysisContext).filter_by(context_id=execution.context_id).one()
     raw_output = loads(raw_context.raw_output_json, {})
@@ -2159,6 +2254,7 @@ def continue_evidence_diagnosis(
         "total": 1,
         "detail": "使用精确 Answer Review 与 Source Completion Manifest 计算证据关系",
         "input_binding_hash": binding_hash,
+        "request": binding,
     })
     db.commit()
     try:
@@ -2315,12 +2411,80 @@ def execute_diagnosis(
         db.close()
 
 
+def execute_queued_evidence(
+    diagnosis_id: str,
+    *,
+    session_factory: Callable[[], Session] | None = None,
+) -> None:
+    if session_factory is None:
+        from app.core.database import SessionLocal
+
+        session_factory = SessionLocal
+    db = session_factory()
+    try:
+        execution = db.query(SinglePromptDiagnosisExecution).filter_by(diagnosis_id=diagnosis_id).one_or_none()
+        if not execution or execution.status != "EVIDENCE_QUEUED":
+            return
+        progress = loads(execution.progress_json, {})
+        request = progress.get("request") or {}
+        required = {
+            "analysis_id", "citation_manifest_id", "citation_manifest_hash",
+            "completion_manifest_id", "completion_manifest_hash", "answer_result_version",
+            "answer_result_hash", "answer_review_id", "evidence_llm_policy",
+        }
+        if not required.issubset(request):
+            raise RuntimeError("EVIDENCE_QUEUE_REQUEST_INCOMPLETE")
+        execution.status = "EVIDENCE_RUNNING"
+        execution.attempt_count += 1
+        db.commit()
+        continue_evidence_diagnosis(
+            db,
+            analysis_id=request["analysis_id"],
+            diagnosis_id=diagnosis_id,
+            project_id=execution.project_id,
+            prompt_id=execution.prompt_id,
+            answer_result_version=request["answer_result_version"],
+            answer_result_hash=request["answer_result_hash"],
+            answer_review_id=request["answer_review_id"],
+            citation_manifest_id=request["citation_manifest_id"],
+            citation_manifest_hash=request["citation_manifest_hash"],
+            completion_manifest_id=request["completion_manifest_id"],
+            completion_manifest_hash=request["completion_manifest_hash"],
+            evidence_llm_policy=request["evidence_llm_policy"],
+        )
+    except Exception as exc:
+        db.rollback()
+        execution = db.query(SinglePromptDiagnosisExecution).filter_by(diagnosis_id=diagnosis_id).one_or_none()
+        if execution and execution.status != "EVIDENCE_FAILED":
+            execution.status = "EVIDENCE_FAILED"
+            execution.blocker_code = "EVIDENCE_EXECUTION_FAILED"
+            execution.blocker_detail = str(exc)[:2000]
+            execution.finished_at = datetime.utcnow()
+            db.commit()
+    finally:
+        db.close()
+
+
 def retry_diagnosis(db: Session, diagnosis_id: str) -> SinglePromptDiagnosisExecution:
     execution = db.query(SinglePromptDiagnosisExecution).filter(
         SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id
     ).one_or_none()
     if not execution:
         raise HTTPException(status_code=404, detail="诊断执行不存在")
+    if execution.status == "EVIDENCE_FAILED":
+        progress = loads(execution.progress_json, {})
+        if not progress.get("request"):
+            raise HTTPException(status_code=409, detail="Evidence 重试输入不存在")
+        execution.status = "EVIDENCE_QUEUED"
+        execution.blocker_code = ""
+        execution.blocker_detail = ""
+        execution.finished_at = None
+        progress["stage"] = "EVIDENCE_QUEUED"
+        progress["detail"] = "等待 release worker 重试相同 Evidence 输入"
+        execution.progress_json = _canonical_json(progress)
+        db.commit()
+        db.refresh(execution)
+        return execution
     if execution.active_result_version:
         raise HTTPException(status_code=409, detail="诊断结果已经发布；重跑请创建新的诊断执行")
     if execution.status not in {"FAILED", "INTERRUPTED"}:
@@ -2455,7 +2619,7 @@ def get_diagnosis_status(
             ["VIEW"] if result and answer_eligibility and answer_eligibility["no_consumable_answer_semantic_result"]
             else ["VIEW", "REVISE", "COMPLETE_REVIEW"] if result and not review
             else ["VIEW"] if result
-            else ["VIEW", "RETRY"] if execution.status in {"FAILED", "INTERRUPTED"}
+            else ["VIEW", "RETRY"] if execution.status in {"FAILED", "INTERRUPTED", "EVIDENCE_FAILED"}
             else ["VIEW"]
         ),
         "created_at": _iso(execution.created_at),
@@ -2658,10 +2822,10 @@ def validate_answer_event_review_decisions(output: dict[str, Any], decisions: li
 
 def recover_interrupted_diagnoses(db: Session) -> int:
     rows = db.query(SinglePromptDiagnosisExecution).filter(
-        SinglePromptDiagnosisExecution.status.in_(ACTIVE_STATUSES)
+        SinglePromptDiagnosisExecution.status.in_(["RUNNING", "EVIDENCE_RUNNING"])
     ).all()
     for row in rows:
-        row.status = "INTERRUPTED"
+        row.status = "EVIDENCE_FAILED" if row.status == "EVIDENCE_RUNNING" else "INTERRUPTED"
         row.blocker_code = "SERVICE_RESTART_INTERRUPTED"
         row.blocker_detail = "服务重启中断了诊断执行；未静默重算，请人工确认后重试"
         row.active_attempt_token = ""

@@ -8,9 +8,10 @@ import sys
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+from app.core.release_sqlite import get_release_sqlite_dbapi
 
 config = context.config
 if config.config_file_name is not None:
@@ -35,6 +36,7 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
         connect_args={"check_same_thread": False, "timeout": 30},
+        module=get_release_sqlite_dbapi(),
     )
     with connectable.connect() as connection:
         connection.exec_driver_sql("PRAGMA foreign_keys=ON")

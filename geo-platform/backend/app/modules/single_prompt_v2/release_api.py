@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
-from app.core.release_database import ReleaseSessionLocal, get_release_db
+from app.core.release_database import get_release_db
 from app.modules.single_prompt_v2.diagnosis import (
     complete_diagnosis_review,
-    continue_evidence_diagnosis,
     create_answer_diagnosis,
-    execute_diagnosis,
     get_diagnosis_status,
+    queue_evidence_continuation,
     retry_diagnosis,
     revise_diagnosis_result,
 )
@@ -26,7 +25,7 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptSourcePreparationCreate,
     SinglePromptSourceWaiverCreate,
 )
-from app.modules.single_prompt_v2.service import create_analysis, execute_analysis, get_analysis_status, retry_analysis
+from app.modules.single_prompt_v2.service import create_analysis, get_analysis_status, retry_analysis
 from app.modules.single_prompt_v2.source_preparation import (
     create_source_preparation,
     freeze_completion_manifest,
@@ -42,7 +41,7 @@ get_db = get_release_db
 
 
 @router.post("/analyses", status_code=202)
-def start_analysis(payload: SinglePromptAnalysisCreate, background_tasks: BackgroundTasks, response: Response, db: Session = Depends(get_db)) -> dict:
+def start_analysis(payload: SinglePromptAnalysisCreate, response: Response, db: Session = Depends(get_db)) -> dict:
     analysis, created = create_analysis(
         db,
         project_id=payload.project_id,
@@ -50,13 +49,7 @@ def start_analysis(payload: SinglePromptAnalysisCreate, background_tasks: Backgr
         sample_count=payload.sample_count,
         idempotency_key=payload.idempotency_key,
     )
-    if created:
-        background_tasks.add_task(
-            execute_analysis,
-            analysis.analysis_id,
-            session_factory=ReleaseSessionLocal,
-        )
-    else:
+    if not created:
         response.status_code = 200
     return get_analysis_status(db, analysis.analysis_id)
 
@@ -71,14 +64,9 @@ def read_analysis(analysis_id: str, project_id: int, prompt_id: int, db: Session
 
 
 @router.post("/analyses/{analysis_id}/retry", status_code=202)
-def retry_collection(analysis_id: str, project_id: int, prompt_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
+def retry_collection(analysis_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> dict:
     read_analysis(analysis_id, project_id, prompt_id, db)
     retry_analysis(db, analysis_id)
-    background_tasks.add_task(
-        execute_analysis,
-        analysis_id,
-        session_factory=ReleaseSessionLocal,
-    )
     return get_analysis_status(db, analysis_id)
 
 
@@ -152,7 +140,7 @@ def complete_source_preparation(preparation_id: str, payload: SinglePromptSource
 
 
 @router.post("/analyses/{analysis_id}/answer-diagnoses", status_code=202)
-def start_answer_diagnosis(analysis_id: str, payload: SinglePromptAnswerDiagnosisCreate, background_tasks: BackgroundTasks, response: Response, db: Session = Depends(get_db)) -> dict:
+def start_answer_diagnosis(analysis_id: str, payload: SinglePromptAnswerDiagnosisCreate, response: Response, db: Session = Depends(get_db)) -> dict:
     execution, created = create_answer_diagnosis(
         db,
         analysis_id=analysis_id,
@@ -163,13 +151,7 @@ def start_answer_diagnosis(analysis_id: str, payload: SinglePromptAnswerDiagnosi
         answer_llm_policy=payload.answer_llm_policy,
         idempotency_key=payload.idempotency_key,
     )
-    if created:
-        background_tasks.add_task(
-            execute_diagnosis,
-            execution.diagnosis_id,
-            session_factory=ReleaseSessionLocal,
-        )
-    else:
+    if not created:
         response.status_code = 200
     return get_diagnosis_status(db, analysis_id=analysis_id, diagnosis_id=execution.diagnosis_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
 
@@ -180,14 +162,9 @@ def read_diagnosis(analysis_id: str, diagnosis_id: str, project_id: int, prompt_
 
 
 @router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/retry", status_code=202)
-def retry_diagnosis_execution(analysis_id: str, diagnosis_id: str, project_id: int, prompt_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
+def retry_diagnosis_execution(analysis_id: str, diagnosis_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> dict:
     read_diagnosis(analysis_id, diagnosis_id, project_id, prompt_id, db)
     retry_diagnosis(db, diagnosis_id)
-    background_tasks.add_task(
-        execute_diagnosis,
-        diagnosis_id,
-        session_factory=ReleaseSessionLocal,
-    )
     return read_diagnosis(analysis_id, diagnosis_id, project_id, prompt_id, db)
 
 
@@ -224,9 +201,9 @@ def review_diagnosis(analysis_id: str, diagnosis_id: str, result_version: str, p
     return read_diagnosis(analysis_id, diagnosis_id, payload.project_id, payload.prompt_id, db)
 
 
-@router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/evidence-continuations", status_code=201)
-def start_evidence_continuation(analysis_id: str, diagnosis_id: str, payload: SinglePromptEvidenceContinuationCreate, db: Session = Depends(get_db)) -> dict:
-    continue_evidence_diagnosis(
+@router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/evidence-continuations", status_code=202)
+def start_evidence_continuation(analysis_id: str, diagnosis_id: str, payload: SinglePromptEvidenceContinuationCreate, response: Response, db: Session = Depends(get_db)) -> dict:
+    _, created = queue_evidence_continuation(
         db,
         analysis_id=analysis_id,
         diagnosis_id=diagnosis_id,
@@ -241,4 +218,6 @@ def start_evidence_continuation(analysis_id: str, diagnosis_id: str, payload: Si
         completion_manifest_hash=payload.completion_manifest_hash,
         evidence_llm_policy=payload.evidence_llm_policy,
     )
+    if not created:
+        response.status_code = 200
     return read_diagnosis(analysis_id, diagnosis_id, payload.project_id, payload.prompt_id, db)

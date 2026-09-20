@@ -576,7 +576,7 @@ def finalize_analysis_with_recorded_failures(db: Session, analysis_id: str) -> S
 
 
 def recover_interrupted_analyses(db: Session) -> int:
-    analyses = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.status.in_(ACTIVE_ANALYSIS_STATUSES)).all()
+    analyses = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.status == "COLLECTING").all()
     recovered = 0
     for analysis in analyses:
         runs = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == analysis.task_id).all()

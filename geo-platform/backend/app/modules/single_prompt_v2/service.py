@@ -348,13 +348,22 @@ def _snapshot_runs(db: Session, analysis: SinglePromptAnalysis) -> list[dict[str
                 "network_region": run.network_region,
                 "collector_version": run.collector_version,
                 "parser_version": run.parser_version,
+                "session_verification": {
+                    "status": "VERIFIED" if run.sampling_mode == "single_independent" else "UNVERIFIED",
+                    "basis": "PRE_SUBMIT_ZERO_TURN_DOM_GATE" if run.sampling_mode == "single_independent" else "NOT_AVAILABLE",
+                    "conversation_id": run.conversation_id or None,
+                },
             },
             "observed_conditions": {
                 "platform": {"value": run.platform, "source": "RUN_CAPTURE"},
                 "source_type": {"value": run.source_type, "source": "RUN_CAPTURE"},
                 "adapter": {"value": run.adapter, "source": "RUN_CAPTURE"},
                 "original_query": {"value": run.original_query, "source": "RUN_CAPTURE"},
-                "collection_mode": {"value": run.collection_mode, "source": "RUN_CAPTURE"},
+                "collection_mode": {"value": run.collection_mode, "source": "SAMPLING_PLAN"},
+                "actual_sampling_mode": {
+                    "value": run.sampling_mode if run.sampling_mode not in {None, "", "UNKNOWN"} else None,
+                    "source": "COLLECTOR_PRE_SUBMIT_ZERO_TURN_GATE" if run.sampling_mode == "single_independent" else "COLLECTOR_NOT_VERIFIED",
+                },
                 "page_query": {"value": run.page_query or None, "source": "RUN_CAPTURE" if run.page_query else "PLATFORM_NOT_EXPOSED"},
                 "retrieval_query": {"value": run.retrieval_query or None, "source": "RUN_CAPTURE" if run.retrieval_query else "PLATFORM_NOT_EXPOSED"},
                 "model_revision": {"value": None, "source": "PLATFORM_NOT_EXPOSED"},

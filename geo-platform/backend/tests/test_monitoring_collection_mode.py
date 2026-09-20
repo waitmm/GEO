@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -108,3 +109,51 @@ def test_prepare_collection_mode_raises_when_conversation_cannot_reset():
 
     with pytest.raises(ConversationResetError):
         asyncio.run(collector._prepare_collection_mode(page, "single_independent"))
+
+
+def test_prepare_collection_mode_records_verified_zero_turn_gate():
+    collector = WenxinWebCollector()
+    page = _FakePage([0])
+
+    asyncio.run(collector._prepare_collection_mode(page, "single_independent"))
+
+    assert collector._actual_sampling_mode == "single_independent"
+    assert collector._session_verification_basis == "PRE_SUBMIT_ZERO_TURN_DOM_GATE"
+
+
+def test_collect_one_checks_independent_session_before_submitting(monkeypatch):
+    collector = WenxinWebCollector()
+    collector._page = object()
+    calls: list[str] = []
+
+    async def prepare(page, mode):
+        calls.append(f"prepare:{mode}")
+
+    async def submit(page, query):
+        calls.append(f"submit:{query}")
+        raise ConversationResetError("stop after order check")
+
+    monkeypatch.setattr(collector, "_prepare_collection_mode", prepare)
+    monkeypatch.setattr(collector, "_submit_query", submit)
+    run = SimpleNamespace(collection_mode="single_independent", original_query="长链接缩短")
+
+    with pytest.raises(ConversationResetError):
+        asyncio.run(collector._collect_one(run, SimpleNamespace()))
+
+    assert calls == ["prepare:single_independent", "submit:长链接缩短"]
+
+
+def test_environment_reports_actual_verified_sampling_mode(tmp_path):
+    collector = WenxinWebCollector()
+    collector._requested_collection_mode = "single_independent"
+    collector._actual_sampling_mode = "single_independent"
+    collector._session_verification_basis = "PRE_SUBMIT_ZERO_TURN_DOM_GATE"
+    collector._context = SimpleNamespace(browser=SimpleNamespace(version="test-browser"))
+    page = SimpleNamespace(url="https://chat.baidu.com/")
+    settings = SimpleNamespace(wenxin_profile_dir=str(tmp_path / "profile"))
+
+    metadata = asyncio.run(collector._environment_metadata(page, settings))
+
+    assert metadata["collection_mode"] == "single_independent"
+    assert metadata["sampling_mode"] == "single_independent"
+    assert metadata["session_verification_basis"] == "PRE_SUBMIT_ZERO_TURN_DOM_GATE"

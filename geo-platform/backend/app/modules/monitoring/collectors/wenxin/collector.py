@@ -18,6 +18,7 @@ from app.modules.monitoring.collectors.wenxin.exceptions import (
     AnswerTimeoutError,
     CaptchaRequiredError,
     ConfigurationError,
+    ConversationResetError,
     LoginRequiredError,
     PageStructureError,
 )
@@ -45,6 +46,9 @@ class WenxinWebCollector(BaseCollector):
         self._network_events = []
         self._capture_network = False
         self._session_active = False
+        self._requested_collection_mode = ""
+        self._actual_sampling_mode = "UNKNOWN"
+        self._session_verification_basis = "NOT_CHECKED"
 
     def _find_chromium_path(self) -> str | None:
         candidates = []
@@ -151,7 +155,11 @@ class WenxinWebCollector(BaseCollector):
 
         self._network_events = []
         self._capture_network = True
+        self._requested_collection_mode = str(run.collection_mode or "")
+        self._actual_sampling_mode = "UNKNOWN"
+        self._session_verification_basis = "NOT_CHECKED"
         try:
+            await self._prepare_collection_mode(self._page, self._requested_collection_mode)
             await self._submit_query(self._page, run.original_query)
             run.page_query = run.original_query
             run.retrieval_query = run.original_query
@@ -203,22 +211,56 @@ class WenxinWebCollector(BaseCollector):
 
     async def _prepare_collection_mode(self, page, collection_mode: str) -> None:
         if collection_mode != "single_independent":
+            self._actual_sampling_mode = "single_continuous"
+            self._session_verification_basis = "NOT_REQUIRED_BY_PLAN"
+            return
+        existing_turns = await self._conversation_turn_count(page)
+        if existing_turns == 0:
+            self._mark_independent_session_verified()
             return
         try:
-            existing_turns = await page.locator(
-                "#conversation-flow-content .conversation-flow-question-container"
-            ).count()
-            if existing_turns == 0:
-                return
             trigger = page.get_by_text(re.compile(r"开启新对话|新对话"), exact=False).first
-            if await trigger.is_visible(timeout=1000):
-                await trigger.click(timeout=3000)
-                await page.wait_for_timeout(1500)
-                self._conversation_id = str(uuid.uuid4())
+            if not await trigger.is_visible(timeout=1000):
+                raise ConversationResetError("当前页面存在历史对话，但未找到“新对话”入口，无法保证独立会话采集")
+            await trigger.click(timeout=3000)
+            await self._wait_for_fresh_conversation(page)
+            self._conversation_id = str(uuid.uuid4())
+            self._mark_independent_session_verified()
         except Exception:
-            # Failure to switch is visible later as turn-binding evidence; do
-            # not restart Chrome because that increases verification risk.
-            return
+            try:
+                settings = get_settings()
+                await page.goto(
+                    settings.wenxin_web_url,
+                    wait_until="domcontentloaded",
+                    timeout=settings.wenxin_browser_timeout_seconds * 1000,
+                )
+                await page.wait_for_timeout(1500)
+                await self._wait_for_fresh_conversation(page)
+                self._conversation_id = str(uuid.uuid4())
+                self._mark_independent_session_verified()
+                return
+            except ConversationResetError:
+                raise
+            except Exception as exc:
+                raise ConversationResetError(
+                    "独立对话采集要求每个 Prompt 先开启新对话，当前未能成功重置会话"
+                ) from exc
+
+    async def _conversation_turn_count(self, page) -> int:
+        return await page.locator(
+            "#conversation-flow-content .conversation-flow-question-container"
+        ).count()
+
+    async def _wait_for_fresh_conversation(self, page) -> None:
+        for _ in range(8):
+            if await self._conversation_turn_count(page) == 0:
+                return
+            await page.wait_for_timeout(400)
+        raise ConversationResetError("新对话后仍检测到历史提问，已在提交 Prompt 前停止该 Run")
+
+    def _mark_independent_session_verified(self) -> None:
+        self._actual_sampling_mode = "single_independent"
+        self._session_verification_basis = "PRE_SUBMIT_ZERO_TURN_DOM_GATE"
 
     async def _ensure_session(self, async_playwright, settings, browser_options):
         if self._page is not None and not self._page.is_closed():
@@ -274,14 +316,16 @@ class WenxinWebCollector(BaseCollector):
             pass
         return {
             "collector_id": socket.gethostname(),
-            "collection_mode": "single_continuous",
+            "collection_mode": self._requested_collection_mode or "UNKNOWN",
+            "sampling_mode": self._actual_sampling_mode,
+            "session_verification_basis": self._session_verification_basis,
             "browser": "Google Chrome",
             "browser_version": browser_version,
             "os": f"{platform.system()} {platform.release()}",
             "profile_identifier": Path(settings.wenxin_profile_dir).name,
             "conversation_id": self._conversation_id,
             "network_region": os.getenv("WENXIN_NETWORK_REGION", "unknown"),
-            "collector_version": "wenxin-web-v1",
+            "collector_version": "wenxin-web-v1.1-independent-session-proof",
             "parser_version": "reference-parser-v1.8c-compatible",
             "page_url": page.url,
         }

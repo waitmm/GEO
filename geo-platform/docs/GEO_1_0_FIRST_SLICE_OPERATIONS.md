@@ -115,6 +115,17 @@ READY 的 1 条外，形成 10 份待人工检查的正文候选、17 条内容�
 补录项，另 2 条已达尝试上限。候选文件不属于正式 Snapshot，验证码页、JS 壳及
 403/412/521 响应均未进入 READY。
 
+本次只读获取审计保存在：
+
+```text
+backend/artifacts/release-acceptance/source-prep-626e2e6e-4cda-41a2-81b7-cc08a393198e/fetch-audit.json
+```
+
+审计文件 SHA-256 为
+`d7394f769a32123ae4c65bcce995642681bacd4750639896fcbdab342ab83eea`；配套正文放在
+同目录的 `unvalidated-candidates/`。两者都是人工处置材料，不是正式 Snapshot、
+Completion 或 Evidence。
+
 当前真实守恒为 `READY=1 / PENDING=37`，Completion Manifest 未生成；Answer
 Review 也尚未由用户完成。正式 API 已分别验证：来源范围未完成时冻结 Completion
 返回 409，缺精确 Answer Review 时 Evidence continuation 返回 409。没有 Evidence

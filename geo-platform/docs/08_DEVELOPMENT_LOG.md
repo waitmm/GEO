@@ -5284,6 +5284,9 @@ review_queue = READY
 - Answer Semantic made three DeepSeek requests, admitted all three frozen
   answers, and published `diag-v1:69cb9884452deead` with a legal zero-event
   result. Usage is 8,922 total tokens, zero cache hits; no Review was created.
+- Preserved the serial source-fetch audit and 27 candidate texts under the
+  ignored `backend/artifacts/release-acceptance/.../unvalidated-candidates`
+  directory. They remain human-review inputs and are not formal Snapshots.
 - Real negative gates passed: Completion freeze returned 409 with 37 PENDING
   sources, and Evidence continuation returned 409 without the exact Answer
   Review. No SourceClaim/Alignment evaluation or Evidence task was created.

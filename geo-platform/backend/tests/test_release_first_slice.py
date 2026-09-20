@@ -365,6 +365,32 @@ def test_auto_fetch_never_waives_and_interrupted_fetch_requires_explicit_resolut
         engine.dispose()
 
 
+def test_restart_repairs_settled_auto_fetch_summary_without_refetching(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    try:
+        analysis = _seed_frozen_analysis(db, reference_urls=["https://example.com/manual"])
+        preparation, _ = _create_preparation(db, analysis)
+        disposition = db.query(source_preparation.SinglePromptSourceDisposition).filter_by(
+            preparation_id=preparation.preparation_id
+        ).one()
+        disposition.state = "MANUAL_REQUIRED"
+        disposition.failure_code = "FETCH_FAILED"
+        disposition.failure_detail = "timeout"
+        preparation.status = "AUTO_FETCH_PENDING"
+        db.commit()
+
+        assert source_preparation.recover_interrupted_source_preparations(db) == 1
+        db.refresh(preparation)
+        assert preparation.status == "MANUAL_REQUIRED"
+        db.refresh(disposition)
+        assert disposition.state == "MANUAL_REQUIRED"
+        assert disposition.failure_code == "FETCH_FAILED"
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_release_restart_preserves_queued_work_and_fails_only_running_work(tmp_path, monkeypatch):
     _configure_artifacts(monkeypatch, tmp_path)
     db, engine = _session(tmp_path)

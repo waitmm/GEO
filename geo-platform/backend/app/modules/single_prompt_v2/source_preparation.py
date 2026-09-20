@@ -377,6 +377,9 @@ def _refresh_preparation_status(
     db: Session,
     preparation: SinglePromptSourcePreparation,
 ) -> None:
+    # Status aggregation must observe disposition changes made in this unit of
+    # work, not the pre-fetch values still stored in the database.
+    db.flush()
     states = [
         row[0]
         for row in db.query(SinglePromptSourceDisposition.state)
@@ -651,9 +654,25 @@ def recover_interrupted_source_preparations(db: Session) -> int:
             row.failure_detail = "服务在自动获取正文期间重启；未确认抓取完成，需人工补录或明确再次自动获取"
             row.row_version += 1
         _refresh_preparation_status(db, preparation)
-    if interrupted:
+    settled_with_stale_summary = (
+        db.query(SinglePromptSourcePreparation)
+        .filter_by(status=AUTO_FETCH_PENDING_STATUS)
+        .all()
+    )
+    reconciled = 0
+    for preparation in settled_with_stale_summary:
+        states = [
+            row[0]
+            for row in db.query(SinglePromptSourceDisposition.state)
+            .filter_by(preparation_id=preparation.preparation_id)
+            .all()
+        ]
+        if states and not any(state in {"PENDING", AUTO_FETCH_QUEUED_STATE, AUTO_FETCHING_STATE} for state in states):
+            _refresh_preparation_status(db, preparation)
+            reconciled += 1
+    if interrupted or reconciled:
         db.commit()
-    return len(interrupted)
+    return len(interrupted) + reconciled
 
 
 def _verify_snapshot(snapshot: SinglePromptPreparedSourceSnapshot) -> list[dict[str, Any]]:

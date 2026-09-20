@@ -871,11 +871,18 @@ Status: ACTIVE
   fixed and both artifacts replay as complete, but immutable Raw Result
   `raw-v1:c10d6ba7d06dee7e` remains 27/23 until a formal resample creates a new
   result. Do not interpret the missing row as a Wenxin or network omission.
-- **Release automatic source fetch is wired but not yet accepted on the new real
-  resample**: the formal V2 adapter now reuses `fetch_page_playwright()` and
-  creates Analysis-owned immutable snapshots. Focused tests prove automatic
-  success, manual fallback, no auto-waiver and restart handling. Until the next
-  authorized real Citation Manifest is processed, report this as engineering
-  ready rather than real source-completion acceptance. The legacy
-  `acquire_cited_sources()` runner remains prohibited because it writes V1
-  `SourceDocument` state.
+- **Release automatic source fetch is real-run accepted but Source Completion is
+  still blocked**: corrected Analysis `92bb12a5-edcc-43c7-b848-ca60267a2672`
+  froze 46 unique sources and the formal worker produced 30 READY snapshots plus
+  16 MANUAL_REQUIRED items, with zero automatic waivers. Artifact hashes and the
+  859 persisted passages are intact after restart. This proves automatic-first
+  acquisition, not a complete Evidence input: the 16 unresolved sources still
+  require explicit manual content or human waiver before a Completion Manifest
+  can exist. The legacy `acquire_cited_sources()` runner remains prohibited
+  because it writes V1 `SourceDocument` workflow state.
+- **Auto-fetch summary aggregation previously lagged settled disposition rows**:
+  the real run exposed `AUTO_FETCH_PENDING` at preparation level while all 46
+  children were already READY or MANUAL_REQUIRED. The transaction now flushes
+  before aggregation and startup reconciles only fully settled stale summaries;
+  it does not repeat network fetches. Keep the restart regression because this
+  status otherwise leaves the page polling forever despite correct child data.

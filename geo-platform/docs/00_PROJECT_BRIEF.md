@@ -62,20 +62,18 @@ kernel through an explicit V2 adapter. The kernel does not own workflow state:
 only the exact Analysis/Context/Citation Manifest can queue work, and only V2 can
 admit fetched text into immutable snapshots. Automatic acquisition runs first;
 failed, partial or blocked pages become visible manual-completion items and are
-never automatically waived. This integration is engineering-tested; a new real
-resample and source replay is the next acceptance action.
+never automatically waived. The corrected real resample has now accepted this
+integration: 46 frozen sources produced 30 immutable AUTO_FETCH snapshots and
+16 MANUAL_REQUIRED items, with zero automatic waivers. The remaining manual
+items still block Source Completion and Evidence.
 
 This does not mean the real positive evidence chain is complete. The first
-release acceptance has now created a real Analysis/Context, frozen 38-source
-Citation Manifest, one real immutable source Snapshot, and a 3/3-admitted Answer
-ResultVersion. A later DOM audit found that those frozen Run answer texts include
-Wenxin's search/thinking region before the final Markdown answer. The immutable
-result remains available for audit, but current eligibility marks it
-`ANSWER_CONTENT_BOUNDARY_NOT_INDEPENDENT`; it cannot be reviewed or consumed by
-Evidence. New collection separates the platform-reported search observation into
-its own artifact and stores only the final Markdown as `answer_text`. The remaining
-37 sources also still require human disposition. Candidate fetch files and
-fixture output are not reported as completed evidence.
+release acceptance remains immutable and ineligible because its answer text
+mixed Wenxin search/thinking content. Corrected Analysis
+`92bb12a5-edcc-43c7-b848-ca60267a2672` stores only final Markdown, freezes a new
+46-source Citation Manifest and has 30 qualified source snapshots. Its remaining
+16 sources still require human disposition; no Answer Review, Completion
+Manifest or Evidence result was created by the resample/source-fetch run.
 See `docs/GEO_1_0_FIRST_SLICE_OPERATIONS.md` for the executable workflow and
 `docs/GEO_1_0_R3_EXECUTION_CONTRACT.md` for the frozen boundary.
 

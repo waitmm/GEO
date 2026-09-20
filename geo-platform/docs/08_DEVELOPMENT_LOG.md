@@ -5361,3 +5361,35 @@ review_queue = READY
 - Added focused worker, snapshot, failure, no-waiver and restart tests. Release
   first-slice suite: 14 passed. Python compile, frontend production build and
   diff check pass. No real source fetch or resample occurred before checkpoint.
+
+## 2026-09-20 Corrected Resample and Real Automatic Source Preparation
+
+- Created a new formal release Analysis for Project `1` / Prompt `1` without
+  rewriting the earlier immutable acceptance run. Analysis
+  `92bb12a5-edcc-43c7-b848-ca60267a2672`, Task `2`, Runs `4/5/6`, Context
+  `ctx-79dcb9e0-a8fe-4c17-b584-01c240acdde2` and Raw Result
+  `raw-v1:eb86358c452b1bc4` are the corrected baseline.
+- All three Runs submitted exactly `抖音跳转链接`, stored only final-answer
+  Markdown, completed with 30/27/30 references and distinct Wenxin conversation
+  identities, and recorded `PRE_SUBMIT_ZERO_TURN_DOM_GATE` as the independent
+  session proof. No retry or replacement sample was needed.
+- Source Preparation `source-prep-25dbbbb2-b5ed-49c7-895c-8a8384a55afe`
+  froze Citation Manifest `citation-manifest-9ccde3db-5810-440a-aef8-836306c6db44`
+  (`46` unique sources / `87` occurrences) and then used the formal auto-fetch
+  endpoint. The serial worker produced `30` READY immutable AUTO_FETCH snapshots
+  and `16` MANUAL_REQUIRED items; it produced zero waivers.
+- The 30 snapshot files all exist and match their stored SHA-256 values. They
+  contain 859 passages. A read-only replay through the established content
+  quality rules classified all 30 as `CONTENT_VALID`; the 16 unresolved items
+  remain visible as blocked/partial/fetch-failed manual work rather than being
+  promoted to evidence.
+- Real execution exposed a transaction-order defect: disposition rows were
+  correct while the preparation summary retained `AUTO_FETCH_PENDING` because
+  aggregation ran before the ORM flush. Aggregation now flushes first, and
+  startup reconciliation repairs this settled stale summary without fetching
+  any URL again. The real preparation recovered to `MANUAL_REQUIRED` with the
+  exact `30/16/0` disposition set unchanged.
+- Completion Manifest and Evidence were not created. Answer Semantic, Review,
+  SourceClaim, Alignment, Truth and Strategy were not run in this replay. The
+  next user action is manual completion or explicit waiver of the 16 unresolved
+  sources; source disposition completion still does not imply evidence support.

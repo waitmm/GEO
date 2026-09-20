@@ -326,6 +326,10 @@ class StrategyCandidateRead(BaseModel):
     experiment_plan: dict[str, Any] = Field(default_factory=dict)
     candidate_origin: str = ""
     strategy_context: dict[str, Any] = Field(default_factory=dict)
+    strategy_decision_view: dict[str, Any] = Field(default_factory=dict)
+    strategy_audit_view: dict[str, Any] = Field(default_factory=dict)
+    strategy_synthesis: dict[str, Any] = Field(default_factory=dict)
+    strategy_view_mode: str = "LEGACY"
     strategy_schema_complete: bool = False
     eligible_for_current_step7: bool = False
     current_step7_ineligibility_reasons: list[str] = Field(default_factory=list)

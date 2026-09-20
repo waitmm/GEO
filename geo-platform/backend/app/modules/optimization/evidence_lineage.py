@@ -8,7 +8,6 @@ formal single-Prompt V1 decision chain.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy.orm import Session
 
@@ -27,6 +26,7 @@ from app.modules.optimization.passage_retrieval import (
     FORMAL_V1_1_INPUT_VERSION,
 )
 from app.services.serialization import loads
+from app.services.url_identity import canonicalize_url
 
 LEGACY_INELIGIBLE_RELATIONS = {"RELATED"}
 
@@ -223,17 +223,7 @@ def _reference_source_id_for_run_document(db: Session, run_id: int, doc: SourceD
 
 
 def _normalize_url_key(url: str | None) -> str:
-    if not url:
-        return ""
-    try:
-        parsed = urlsplit(str(url).strip())
-    except ValueError:
-        return str(url).strip().lower()
-    host = (parsed.netloc or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    path = parsed.path.rstrip("/") or "/"
-    return urlunsplit((parsed.scheme.lower() or "https", host, path, "", ""))
+    return canonicalize_url(str(url or ""))
 
 
 def _optional_int(value: object) -> int | None:

@@ -42,6 +42,8 @@ def create_browser_task(
     adapter: str = WENXIN_WEB_ADAPTER,
     batch_id: int | None = None,
     schedule_type: str = "manual",
+    created_by: str = "",
+    commit: bool = True,
 ) -> BrowserMonitorTask:
     batch = db.get(MonitoringBatch, batch_id) if batch_id else None
     task = BrowserMonitorTask(
@@ -54,6 +56,7 @@ def create_browser_task(
         run_count=run_count,
         schedule_type=schedule_type,
         status="queued" if execute_now else "pending",
+        created_by=created_by,
     )
     db.add(task)
     db.flush()
@@ -78,8 +81,71 @@ def create_browser_task(
                 )
             )
 
-    db.commit()
-    db.refresh(task)
+    if commit:
+        db.commit()
+        db.refresh(task)
+    else:
+        db.flush()
+    return task
+
+
+def create_browser_task_from_frozen_prompt(
+    db: Session,
+    *,
+    project_id: int,
+    prompt_id: int,
+    prompt_text: str,
+    run_count: int,
+    execute_now: bool,
+    platform: str,
+    source_type: str,
+    adapter: str,
+    collection_mode: str,
+    schedule_type: str,
+    created_by: str,
+    commit: bool = True,
+) -> BrowserMonitorTask:
+    """Create a task without consulting mutable Project or Prompt fields."""
+
+    frozen_text = str(prompt_text or "")
+    if not frozen_text.strip():
+        raise ValueError("frozen prompt_text must not be blank")
+    if run_count < 1:
+        raise ValueError("run_count must be positive")
+    status = "queued" if execute_now else "pending"
+    task = BrowserMonitorTask(
+        project_id=project_id,
+        platform=platform,
+        source_type=source_type,
+        adapter=adapter,
+        question_ids_json=dumps([prompt_id]),
+        run_count=run_count,
+        schedule_type=schedule_type,
+        status=status,
+        created_by=created_by,
+    )
+    db.add(task)
+    db.flush()
+    for sequence in range(1, run_count + 1):
+        db.add(BrowserMonitorRun(
+            task_id=task.id,
+            project_id=project_id,
+            prompt_id=prompt_id,
+            platform=platform,
+            source_type=source_type,
+            adapter=adapter,
+            run_sequence=sequence,
+            sample_index=sequence,
+            collection_mode=collection_mode,
+            status=status,
+            stage=status,
+            original_query=frozen_text,
+        ))
+    if commit:
+        db.commit()
+        db.refresh(task)
+    else:
+        db.flush()
     return task
 
 

@@ -1,21 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "react";
 import {
-  Alert, Button, Card, Checkbox, Col, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
-  Layout, Menu, Modal, Popconfirm, Progress, Row, Select, Space, Statistic, Steps, Table, Tag, Timeline, Typography, message
+  Alert, Button, Card, Checkbox, Col, Collapse, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
+  Layout, Menu, Modal, Popconfirm, Progress, Radio, Row, Segmented, Select, Space, Statistic, Steps, Table, Tag, Timeline, Tooltip, Typography, message
 } from "antd";
-import { BarChart3, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
+import { ArrowDown, ArrowUp, BarChart3, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
-  ValidationDashboard, ValidationPresence, ValidationSource
+  SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text, Link } = Typography;
-type PageKey = "validation" | "recommendation" | "optimization" | "config" | "runs" | "ranking" | "golden";
+type PageKey = "coreV2" | "validation" | "recommendation" | "optimization" | "config" | "runs" | "ranking" | "golden";
+type V2AnswerReviewDecision = "CONFIRM_INCLUDE_AS_OPTION" | "CORRECT_TO_MENTION" | "KEEP_UNRESOLVED" | "EXCLUDE_EXTRACTION";
 
 const PAGE_META: Record<PageKey, { title: string; subtitle: string }> = {
+  coreV2: { title: "单问题分析 V2", subtitle: "一次分析、固定采样、可信状态" },
   validation: { title: "监测总览", subtitle: "看品牌当前表现，不在这里下最终策略" },
   recommendation: { title: "决策诊断", subtitle: "解释单个问题为什么没进入候选/推荐，并送入最终策略" },
   optimization: { title: "执行策略", subtitle: "知道为什么以后，具体怎么干" },
@@ -48,6 +51,82 @@ function statusTag(status: string) {
     running: "processing", pending: "default", queued: "blue"
   };
   return <Tag color={colors[status]}>{labels[status] || status || "未知"}</Tag>;
+}
+
+function v2AnalysisStatusTag(status?: string) {
+  const labels: Record<string, string> = {
+    QUEUED: "等待采集", COLLECTING: "采集中", READY: "结果已冻结",
+    READY_WITH_FAILURES: "部分结果已冻结", FAILED: "采集失败", INTERRUPTED: "采集中断",
+  };
+  const colors: Record<string, string> = {
+    QUEUED: "blue", COLLECTING: "processing", READY: "green",
+    READY_WITH_FAILURES: "gold", FAILED: "red", INTERRUPTED: "volcano",
+  };
+  return <Tag color={colors[status || ""] || "default"}>{labels[status || ""] || status || "未开始"}</Tag>;
+}
+
+function v2BlockerLabel(code?: string) {
+  const labels: Record<string, string> = {
+    NEXT_STAGE_NOT_IMPLEMENTED: "下一阶段暂未接入",
+    NO_VALID_RUNS: "本次没有有效采样结果",
+    COLLECTION_WORKER_INTERRUPTED: "采集执行中断",
+    INCOMPLETE_TASK_TERMINATION: "采集任务未完整结束",
+    SERVICE_RESTART_INTERRUPTED: "服务重启中断采集",
+  };
+  return labels[code || ""] || code || "当前分析受阻";
+}
+
+function v2AnswerReviewReasonLabel(code: string) {
+  return ({
+    OPTION_ACT_WITHOUT_EXPLICIT_OPTION_CUE: "答案把工具放在场景列表中，但没有明确的‘推荐/可选’措辞，需要确认它是否真的是一个可选方案。",
+  } as Record<string, string>)[code] || code;
+}
+
+const V2_ANSWER_REVIEW_OPTIONS: { label: string; value: V2AnswerReviewDecision }[] = [
+  { label: "确认是候选", value: "CONFIRM_INCLUDE_AS_OPTION" },
+  { label: "仅为提及", value: "CORRECT_TO_MENTION" },
+  { label: "保留不确定", value: "KEEP_UNRESOLVED" },
+  { label: "抽取错误", value: "EXCLUDE_EXTRACTION" },
+];
+
+function v2ExecutionValidationLabel(code: string) {
+  const labels: Record<string, string> = {
+    ASSET_TYPE_SELECTION_REQUIRED: "请选择资产类型",
+    PUBLICATION_SURFACE_SELECTION_REQUIRED: "请选择发布位置",
+    PUBLICATION_SURFACE_ASSET_TYPE_MISMATCH: "资产类型与发布位置不匹配",
+    PUBLISHING_ACCOUNT_REQUIRED: "请填写发布账号",
+    PUBLISHING_LOCATION_REQUIRED: "请填写具体栏目或页面位置",
+    PUBLICATION_AUTHORITY_NOT_CONFIRMED: "请确认账号或位置的可操作性",
+    TITLE_CONTAINS_UNAPPROVED_WORDING: "标题包含未获事实授权的表述",
+    TITLE_DROPS_CONFIRMED_SCOPE: "标题没有保留本方案的已确认事实",
+    PRODUCT_TRUTH_SECTION_REQUIRED: "至少保留一个品牌事实 Section",
+    INVALID_PUBLIC_SECTION_SELECTION: "公开内容 Section 选择无效",
+    UPDATE_MANAGED_NOT_ENABLED: "当前仅支持新建资产",
+  };
+  return labels[code] || code;
+}
+
+function v2ConformanceLabel(value: string) {
+  return ({
+    MATCHED: "与确认版本一致",
+    VALIDATED_VARIATION: "合法调整",
+    OUTSIDE_CONFIRMED_SCOPE: "偏离确认范围",
+    NOT_EVALUABLE: "材料不足，无法判断",
+  } as Record<string, string>)[value] || value;
+}
+
+function v2MetricLabel(value: string) {
+  return ({
+    brand_mention_rate: "品牌提及率",
+    brand_recommendation_rate: "品牌推荐率",
+    target_brand_official_reference_rate: "目标品牌官方来源引用率",
+    published_url_reference_rate: "已发布 URL 引用率",
+  } as Record<string, string>)[value] || value;
+}
+
+function v2MetricValue(metric?: { hit_count: number; evaluable_count: number; value: number | null }) {
+  if (!metric || metric.value === null) return "不可计算";
+  return `${metric.hit_count}/${metric.evaluable_count} · ${(metric.value * 100).toFixed(1)}%`;
 }
 
 function formatDateTime(v: string | null | undefined) {
@@ -707,6 +786,21 @@ function strategyDisplayPayload(candidate: any) {
     contentBrief,
     interventionCandidate,
     executionGate,
+    strategyBasis: executable.strategy_basis || original.strategy_basis || "",
+    evidenceGapReason: executable.evidence_gap_reason || original.evidence_gap_reason || "",
+    decisionReasonIds:
+      Array.isArray(executable.decision_reason_ids)
+        ? executable.decision_reason_ids
+        : Array.isArray(original.decision_reason_ids)
+          ? original.decision_reason_ids
+          : [],
+    productTruthRefs: executable.product_truth_refs || original.product_truth_refs || {},
+    benchmarkSource:
+      executable.benchmark_source ||
+      executable.evidence_summary?.benchmark_source ||
+      original.benchmark_source ||
+      original.evidence_summary?.benchmark_source ||
+      {},
     targetDecisionChange:
       textValue(executable.target_decision_change || original.target_decision_change, ""),
     strategicHypothesis:
@@ -798,6 +892,140 @@ function strategyDisplayPayload(candidate: any) {
       original.decision_space ||
       null,
   };
+}
+
+function hasSynthesisDecisionView(candidate: any): boolean {
+  return candidate?.strategy_view_mode === "SYNTHESIS_DECISION_VIEW"
+    && candidate?.strategy_synthesis?.strategy_synthesis_contract_version === "STRATEGY_SYNTHESIS_V1"
+    && candidate?.strategy_synthesis?.validator_status === "VALID"
+    && Boolean(candidate?.strategy_decision_view?.view_schema_version);
+}
+
+function StrategySynthesisDecisionView({ candidate }: { candidate: any }) {
+  const view = candidate.strategy_decision_view || {};
+  const audit = candidate.strategy_audit_view || {};
+  const synthesis = candidate.strategy_synthesis || {};
+  const themes = Array.isArray(view.themes) ? view.themes : [];
+  const portfolio = view.portfolio || {};
+  const primary = Array.isArray(portfolio.primary_interventions) ? portfolio.primary_interventions : [];
+  const secondary = Array.isArray(portfolio.secondary_interventions) ? portfolio.secondary_interventions : [];
+  const priorityTests = Array.isArray(portfolio.priority_tests) ? portfolio.priority_tests : [];
+  const deferredTests = Array.isArray(portfolio.deferred_tests) ? portfolio.deferred_tests : [];
+  const observeChannels = Array.isArray(portfolio.observe_channels) ? portfolio.observe_channels : [];
+  const metrics = Array.isArray(view.success_metrics) ? view.success_metrics : [];
+
+  const renderChannel = (item: any, label: string) => <div className="strategy-channel-item" key={item.channel_key}>
+    <div className="strategy-channel-heading">
+      <div>
+        <Text type="secondary" className="strategy-channel-role">{label}</Text>
+        <div><Text strong className="strategy-channel-name">{item.channel_label || platformLabel(item.channel_key)}</Text></div>
+      </div>
+      <Tag color={item.execution_priority === "P1" ? "red" : "default"}>{item.execution_priority || "待定"}</Tag>
+    </div>
+    <Text>{item.business_rationale}</Text>
+    {Array.isArray(item.related_themes) && item.related_themes.length > 0 && <div className="strategy-channel-themes">
+      <Text type="secondary">关联主题</Text>
+      <Space wrap size={[4, 4]}>{item.related_themes.map((theme: any) => <Tag key={theme.theme_key}>{theme.title}</Tag>)}</Space>
+    </div>}
+    {Array.isArray(item.related_reasons) && item.related_reasons.length > 0 && <details className="strategy-inline-details">
+      <summary>查看关联理由</summary>
+      <ul>{item.related_reasons.map((reason: string, index: number) => <li key={`${item.channel_key}-${index}`}>{reason}</li>)}</ul>
+    </details>}
+    {item.validation_question && <div className="strategy-channel-note"><Text type="secondary">验证问题：{item.validation_question}</Text></div>}
+    {item.why_not_primary && <div className="strategy-channel-note"><Text type="secondary">角色边界：{item.why_not_primary}</Text></div>}
+  </div>;
+
+  return <div className="strategy-decision-view" data-strategy-view="synthesis">
+    <section className="strategy-view-intro">
+      <div>
+        <Text type="secondary" className="strategy-section-kicker">AI 决策机会</Text>
+        <Title level={5}>当前可干预的决策空间</Title>
+        <Text>{view.current_ai_decision_opportunity?.text}</Text>
+      </div>
+      <div>
+        <Text type="secondary" className="strategy-section-kicker">本轮目标变化</Text>
+        <Title level={5}>验证决策信号是否变化</Title>
+        <Text>{view.expected_decision_change?.text}</Text>
+      </div>
+    </section>
+
+    <section className="strategy-view-section">
+      <div className="strategy-section-heading">
+        <div>
+          <Text type="secondary" className="strategy-section-kicker">本轮干预主题</Text>
+          <Title level={5}>{themes.length} 个主题</Title>
+        </div>
+        {portfolio.needs_human_prioritization && <Tag color="orange">待人工确定优先级</Tag>}
+      </div>
+      <div className="strategy-theme-grid">
+        {themes.map((theme: any) => <article className="strategy-theme-item" key={theme.theme_key}>
+          <div className="strategy-theme-heading">
+            <Tag color={theme.priority === "P1" ? "red" : "gold"}>{theme.priority}</Tag>
+            <Text strong>{theme.title}</Text>
+          </div>
+          <Text className="strategy-theme-coverage">{theme.coverage_label || theme.coverage} 个有效 Run</Text>
+          <details className="strategy-inline-details">
+            <summary>查看包含的理由</summary>
+            <ul>
+              {(theme.original_reasons || []).map((reason: string, index: number) => <li key={`${theme.theme_key}-${index}`}>{reason}</li>)}
+            </ul>
+          </details>
+        </article>)}
+      </div>
+    </section>
+
+    <section className="strategy-view-section">
+      <Text type="secondary" className="strategy-section-kicker">本轮渠道组合</Text>
+      <Title level={5}>主干预</Title>
+      <div className="strategy-channel-grid">
+        {primary.map((item: any) => renderChannel(item, "主干预"))}
+        {secondary.map((item: any) => renderChannel(item, "辅助干预"))}
+      </div>
+    </section>
+
+    <section className="strategy-view-section">
+      <Text type="secondary" className="strategy-section-kicker">最小验证组合</Text>
+      <Title level={5}>优先验证渠道</Title>
+      {priorityTests.length > 0
+        ? <div className="strategy-channel-grid">{priorityTests.map((item: any) => renderChannel(item, "验证渠道"))}</div>
+        : <Text type="secondary">本轮没有需要单独验证的渠道。</Text>}
+    </section>
+
+    {deferredTests.length > 0 && <section className="strategy-view-section">
+      <Text type="secondary" className="strategy-section-kicker">后续验证</Text>
+      <Title level={5}>暂不进入本轮组合</Title>
+      <Text type="secondary">这些渠道有验证价值，但不进入本轮最小实验组合。</Text>
+      <div className="strategy-channel-grid strategy-channel-grid-deferred">
+        {deferredTests.map((item: any) => renderChannel(item, "后续验证"))}
+      </div>
+    </section>}
+
+    <section className="strategy-view-section strategy-view-footer-grid">
+      <div>
+        <Text type="secondary" className="strategy-section-kicker">本轮验证指标</Text>
+        <Title level={5}>成功指标</Title>
+        <Space wrap>{metrics.map((item: any) => <Tag color="blue" key={item.text}>{metricLabel(item.text)}</Tag>)}</Space>
+      </div>
+      <details className="strategy-observe-details">
+        <summary>观察渠道（{observeChannels.length}）</summary>
+        <Text type="secondary">{view.observe_summary?.text}</Text>
+        <div className="strategy-observe-list">
+          {observeChannels.map((item: any) => <Tag key={item.channel_key}>{item.channel_label || platformLabel(item.channel_key)}</Tag>)}
+        </div>
+      </details>
+    </section>
+
+    <details className="strategy-audit-details">
+      <summary>证据与审计详情</summary>
+      <Descriptions size="small" column={{ xs: 1, md: 2 }} items={[
+        { key: "contract", label: "综合契约", children: synthesis.strategy_synthesis_contract_version || "-" },
+        { key: "mode", label: "综合模式", children: synthesis.synthesis_mode || "-" },
+        { key: "validation", label: "校验状态", children: synthesis.validator_status || "-" },
+        { key: "projection", label: "视图来源", children: synthesis.projection_mode || "PERSISTED_SYNTHESIS" },
+      ]} />
+      <pre className="strategy-audit-json">{JSON.stringify(audit, null, 2)}</pre>
+    </details>
+  </div>;
 }
 
 function interventionTypeLabel(type?: string) {
@@ -967,6 +1195,13 @@ export default function App() {
   const [strategyNotice, setStrategyNotice] = useState<{ type: "success" | "info" | "warning" | "error"; message: string; description?: string } | null>(null);
   const [latestGeneratedStrategyIds, setLatestGeneratedStrategyIds] = useState<number[]>([]);
   const [strategyCandidateFilter, setStrategyCandidateFilter] = useState("latest");
+  const [step8ModalOpen, setStep8ModalOpen] = useState(false);
+  const [step8Candidate, setStep8Candidate] = useState<any>(null);
+  const [step8ProposalData, setStep8ProposalData] = useState<any>(null);
+  const [step8ProposalEdits, setStep8ProposalEdits] = useState<Record<string, any>>({});
+  const [step8ValidationResult, setStep8ValidationResult] = useState<any>(null);
+  const [step8AssetsLoading, setStep8AssetsLoading] = useState(false);
+  const [step8Submitting, setStep8Submitting] = useState(false);
   const [optimizationIssues, setOptimizationIssues] = useState<any[]>([]);
   const [optimizationChain, setOptimizationChain] = useState<any>(null);
   const [selectedOptimizationIssueId, setSelectedOptimizationIssueId] = useState<number | null>(null);
@@ -989,7 +1224,52 @@ export default function App() {
   const [refetchingSourceUrls, setRefetchingSourceUrls] = useState<Set<string>>(new Set());
   const [sourceRefetchResults, setSourceRefetchResults] = useState<Record<string, any>>({});
   const [workflowData, setWorkflowData] = useState<any>(null);
+  const [workflowMaterializationPlan, setWorkflowMaterializationPlan] = useState<any>(null);
+  const [workflowMaterializationLoading, setWorkflowMaterializationLoading] = useState(false);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
   const [promptContext, setPromptContext] = useState<number | "ALL" | null>(null); // null=未选, "ALL"=全部, number=具体 prompt
+  const [v2Analysis, setV2Analysis] = useState<SinglePromptV2Status | null>(null);
+  const [v2Loading, setV2Loading] = useState(false);
+  const [v2SampleCount, setV2SampleCount] = useState(3);
+  const v2PendingIdempotencyKey = useRef<string | null>(null);
+  const [v2Diagnosis, setV2Diagnosis] = useState<SinglePromptV2DiagnosisStatus | null>(null);
+  const [v2DiagnosisLoading, setV2DiagnosisLoading] = useState(false);
+  const [v2DiagnosisEdits, setV2DiagnosisEdits] = useState<Record<string, Omit<SinglePromptV2DiagnosisEdit, "reason">>>({});
+  const [v2DiagnosisEditor, setV2DiagnosisEditor] = useState("本地审核人");
+  const [v2DiagnosisEditReason, setV2DiagnosisEditReason] = useState("");
+  const [v2DiagnosisReviewNote, setV2DiagnosisReviewNote] = useState("");
+  const [v2AnswerReviewDecisions, setV2AnswerReviewDecisions] = useState<Record<string, V2AnswerReviewDecision>>({});
+  const v2PendingDiagnosisKey = useRef<string | null>(null);
+  const [v2StrategyReadiness, setV2StrategyReadiness] = useState<SinglePromptV2StrategyReadiness | null>(null);
+  const [v2Strategy, setV2Strategy] = useState<SinglePromptV2StrategyStatus | null>(null);
+  const [v2StrategyLoading, setV2StrategyLoading] = useState(false);
+  const [v2StrategyEditor, setV2StrategyEditor] = useState("本地审核人");
+  const [v2StrategyNote, setV2StrategyNote] = useState("");
+  const [v2StrategyPriorityReason, setV2StrategyPriorityReason] = useState("");
+  const [v2StrategyDirectionOrder, setV2StrategyDirectionOrder] = useState<string[]>([]);
+  const v2PendingStrategyKey = useRef<string | null>(null);
+  const [v2Execution, setV2Execution] = useState<SinglePromptV2ExecutionStatus | null>(null);
+  const [v2ExecutionLoading, setV2ExecutionLoading] = useState(false);
+  const [v2ExecutionDirectionId, setV2ExecutionDirectionId] = useState("");
+  const [v2ExecutionEditor, setV2ExecutionEditor] = useState("本地执行人");
+  const [v2ExecutionEdit, setV2ExecutionEdit] = useState<Record<string, any>>({});
+  const [v2ExecutionNote, setV2ExecutionNote] = useState("");
+  const [v2Publication, setV2Publication] = useState<Record<string, any>>({
+    actual_channel: "", actual_account: "", actual_location: "", actual_url: "",
+    published_at: "", actual_content_version: "", actual_title: "", differences: "",
+  });
+  const v2PendingExecutionKey = useRef<string | null>(null);
+  const v2PendingConfirmationKey = useRef<string | null>(null);
+  const v2PendingPublicationKey = useRef<string | null>(null);
+  const [v2RetestReadiness, setV2RetestReadiness] = useState<SinglePromptV2RetestReadiness | null>(null);
+  const [v2Retest, setV2Retest] = useState<SinglePromptV2RetestStatus | null>(null);
+  const [v2RetestLoading, setV2RetestLoading] = useState(false);
+  const [v2RetestPublicationId, setV2RetestPublicationId] = useState("");
+  const [v2RetestSampleCount, setV2RetestSampleCount] = useState(3);
+  const [v2MeasurementIdentity, setV2MeasurementIdentity] = useState({
+    canonical_brand_name: "", accepted_aliases: "", official_domains: "", official_urls: "", confirmed_by: "",
+  });
+  const v2PendingRetestKey = useRef<string | null>(null);
   const [channelStrategy, setChannelStrategy] = useState<any>(null); // V3 平台×内容方向（数据分层推导）
   const [resolveGoal, setResolveGoal] = useState<string>("EVIDENCE_STRENGTHEN"); // UNRESOLVED 人工指定方向
   const [resolveReason, setResolveReason] = useState<string>(""); // UNRESOLVED 人工理由
@@ -1003,6 +1283,7 @@ export default function App() {
   const [strategyOutcomes, setStrategyOutcomes] = useState<any>({});
   const [citationDecisionData, setCitationDecisionData] = useState<any>(null);
   const [citationDecisionLoading, setCitationDecisionLoading] = useState(false);
+  const [workflowActionLoadingKey, setWorkflowActionLoadingKey] = useState<string | null>(null);
   const [citationDecisionError, setCitationDecisionError] = useState<string | null>(null);
   const citationDecisionRequestSeq = useRef(0);
   const [decisionMarketEntities, setDecisionMarketEntities] = useState<any[]>([]);
@@ -1010,6 +1291,9 @@ export default function App() {
   const [workflowEvidenceDrawerOpen, setWorkflowEvidenceDrawerOpen] = useState(false);
   const [workflowEvidenceDrawerFocus, setWorkflowEvidenceDrawerFocus] = useState<"gap" | "action" | "review">("gap");
   const [reviewQueue, setReviewQueue] = useState<any>(null);
+  const [reviewQueueLoading, setReviewQueueLoading] = useState(false);
+  const [reviewAnalysisLoading, setReviewAnalysisLoading] = useState(false);
+  const [confirmingAlignmentGroupKeys, setConfirmingAlignmentGroupKeys] = useState<Set<string>>(new Set());
   const [competitorCandidates, setCompetitorCandidates] = useState<any[]>([]);
   const [goldenLoading, setGoldenLoading] = useState(false);
   const [manualUrl, setManualUrl] = useState("");
@@ -1097,6 +1381,8 @@ export default function App() {
     setStrategyExperiments([]);
     setCitationDecisionData(null);
     setCitationDecisionError(null);
+    setWorkflowMaterializationPlan(null);
+    setWorkflowMaterializationLoading(false);
     setDecisionMarketEntities([]);
     setDraftChannels([]);
     setRefetchingSourceUrls(new Set());
@@ -1162,7 +1448,835 @@ export default function App() {
   async function loadProjects() {
     const next = await api.listProjects();
     setProjects(next);
-    if (!projectId && next.length) setProjectId(next[0].id);
+    const params = new URLSearchParams(window.location.search);
+    const requestedProjectId = Number(params.get("v2_project"));
+    if (params.get("v2_analysis") && next.some((item) => item.id === requestedProjectId)) {
+      setPage("coreV2");
+      setProjectId(requestedProjectId);
+    } else if (!projectId && next.length) {
+      setProjectId(next[0].id);
+    }
+  }
+
+  function persistV2Identity(status: SinglePromptV2Status) {
+    const params = new URLSearchParams(window.location.search);
+    params.set("v2_analysis", status.analysis.analysis_id);
+    params.set("v2_project", String(status.analysis.project_id));
+    params.set("v2_prompt", String(status.analysis.prompt_id));
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+  }
+
+  function persistV2DiagnosisIdentity(status: SinglePromptV2DiagnosisStatus) {
+    const params = new URLSearchParams(window.location.search);
+    const nextResultVersion = status.result?.result_version || null;
+    const diagnosisChanged = Boolean(params.get("v2_diagnosis") && params.get("v2_diagnosis") !== status.diagnosis.diagnosis_id);
+    const resultChanged = Boolean(params.get("v2_diagnosis_result") && params.get("v2_diagnosis_result") !== nextResultVersion);
+    if (diagnosisChanged || resultChanged) {
+      params.delete("v2_strategy");
+      params.delete("v2_strategy_result");
+      params.delete("v2_execution_proposal");
+      params.delete("v2_execution_result");
+      params.delete("v2_retest");
+      params.delete("v2_execution_proposal");
+      params.delete("v2_execution_result");
+      params.delete("v2_retest");
+      setV2Strategy(null);
+      setV2Execution(null);
+      setV2RetestReadiness(null);
+      setV2Retest(null);
+      setV2RetestReadiness(null);
+      setV2Retest(null);
+    }
+    params.set("v2_diagnosis", status.diagnosis.diagnosis_id);
+    if (nextResultVersion) params.set("v2_diagnosis_result", nextResultVersion);
+    else params.delete("v2_diagnosis_result");
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+  }
+
+  function persistV2StrategyIdentity(status: SinglePromptV2StrategyStatus) {
+    const params = new URLSearchParams(window.location.search);
+    const changed = Boolean(
+      (params.get("v2_strategy") && params.get("v2_strategy") !== status.strategy.strategy_id)
+      || (params.get("v2_strategy_result") && params.get("v2_strategy_result") !== status.result?.result_version)
+    );
+    if (changed) {
+      params.delete("v2_execution_proposal");
+      params.delete("v2_execution_result");
+      params.delete("v2_retest");
+      params.delete("v2_retest");
+      setV2Execution(null);
+      setV2RetestReadiness(null);
+      setV2Retest(null);
+    }
+    params.set("v2_strategy", status.strategy.strategy_id);
+    if (status.result) params.set("v2_strategy_result", status.result.result_version);
+    else params.delete("v2_strategy_result");
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+  }
+
+  function persistV2ExecutionIdentity(status: SinglePromptV2ExecutionStatus) {
+    const params = new URLSearchParams(window.location.search);
+    params.set("v2_execution_proposal", status.proposal.proposal_id);
+    if (status.result) params.set("v2_execution_result", status.result.result_version);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+  }
+
+  function persistV2RetestIdentity(status: SinglePromptV2RetestStatus) {
+    const params = new URLSearchParams(window.location.search);
+    params.set("v2_retest", status.retest.retest_id);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+  }
+
+  function hydrateV2ExecutionEdit(status: SinglePromptV2ExecutionStatus) {
+    const selection = status.result?.output.selection;
+    if (!selection) return;
+    setV2ExecutionEdit({ ...selection });
+    const confirmation = status.confirmations.find(
+      (row) => row.result_version === status.result?.result_version,
+    );
+    setV2Publication((current) => ({
+      ...current,
+      actual_channel: status.result?.output.strategy_channel.channel_key || current.actual_channel || "OFFICIAL_SITE",
+      actual_account: selection.publishing_account,
+      actual_location: selection.publishing_location,
+      actual_content_version: confirmation?.result_version || "",
+      actual_title: selection.title,
+    }));
+  }
+
+  async function refreshV2Analysis() {
+    const params = new URLSearchParams(window.location.search);
+    const analysisId = v2Analysis?.analysis.analysis_id || params.get("v2_analysis");
+    if (!analysisId || !projectId || !activePromptId) return;
+    setV2Loading(true);
+    try {
+      const status = await api.getSinglePromptV2Analysis(analysisId, projectId, activePromptId);
+      setV2Analysis(status);
+      setV2SampleCount(status.sampling.planned_run_count);
+      persistV2Identity(status);
+    } catch (error: any) {
+      setV2Analysis(null);
+      message.error(error.message || "读取 V2 分析状态失败");
+    } finally {
+      setV2Loading(false);
+    }
+  }
+
+  async function startV2Analysis() {
+    if (!projectId || !activePromptId) {
+      message.warning("请先选择一个 Prompt");
+      return;
+    }
+    setV2Loading(true);
+    const key = v2PendingIdempotencyKey.current || crypto.randomUUID();
+    v2PendingIdempotencyKey.current = key;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("v2_diagnosis");
+      params.delete("v2_diagnosis_result");
+      params.delete("v2_strategy");
+      params.delete("v2_strategy_result");
+      window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+      setV2Diagnosis(null);
+      setV2DiagnosisEdits({});
+      setV2StrategyReadiness(null);
+      setV2Strategy(null);
+      setV2Execution(null);
+      setV2RetestReadiness(null);
+      setV2Retest(null);
+      const status = await api.createSinglePromptV2Analysis({
+        project_id: projectId,
+        prompt_id: activePromptId,
+        sample_count: v2SampleCount,
+        idempotency_key: key,
+      });
+      v2PendingIdempotencyKey.current = null;
+      setV2Analysis(status);
+      setV2SampleCount(status.sampling.planned_run_count);
+      persistV2Identity(status);
+      message.success("V2 分析已创建，采样计划已经固定");
+    } catch (error: any) {
+      message.error(error.message || "创建 V2 分析失败");
+    } finally {
+      setV2Loading(false);
+    }
+  }
+
+  async function retryV2Analysis() {
+    if (!v2Analysis || !projectId || !activePromptId) return;
+    setV2Loading(true);
+    try {
+      const status = await api.retrySinglePromptV2Analysis(v2Analysis.analysis.analysis_id, projectId, activePromptId);
+      setV2Analysis(status);
+      message.success("已明确重试未完成的采样");
+    } catch (error: any) {
+      message.error(error.message || "重试失败");
+    } finally {
+      setV2Loading(false);
+    }
+  }
+
+  async function refreshV2Diagnosis() {
+    if (!v2Analysis || !projectId || !activePromptId) return;
+    const params = new URLSearchParams(window.location.search);
+    const diagnosisId = v2Diagnosis?.diagnosis.diagnosis_id || params.get("v2_diagnosis");
+    if (!diagnosisId) return;
+    setV2DiagnosisLoading(true);
+    try {
+      const status = await api.getSinglePromptV2Diagnosis(v2Analysis.analysis.analysis_id, diagnosisId, projectId, activePromptId);
+      setV2Diagnosis(status);
+      persistV2DiagnosisIdentity(status);
+    } catch (error: any) {
+      setV2Diagnosis(null);
+      message.error(error.message || "读取诊断状态失败");
+    } finally {
+      setV2DiagnosisLoading(false);
+    }
+  }
+
+  async function startV2Diagnosis() {
+    if (!v2Analysis?.context_id || !projectId || !activePromptId) return;
+    const key = v2PendingDiagnosisKey.current || crypto.randomUUID();
+    v2PendingDiagnosisKey.current = key;
+    setV2DiagnosisLoading(true);
+    try {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("v2_strategy");
+      params.delete("v2_strategy_result");
+      params.delete("v2_execution_proposal");
+      params.delete("v2_execution_result");
+      window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+      setV2StrategyReadiness(null);
+      setV2Strategy(null);
+      setV2Execution(null);
+      const status = await api.createSinglePromptV2Diagnosis(v2Analysis.analysis.analysis_id, {
+        project_id: projectId,
+        prompt_id: activePromptId,
+        idempotency_key: key,
+      });
+      v2PendingDiagnosisKey.current = null;
+      setV2Diagnosis(status);
+      persistV2DiagnosisIdentity(status);
+      message.success("诊断执行已创建，输入快照已经固定");
+    } catch (error: any) {
+      message.error(error.message || "创建诊断失败");
+    } finally {
+      setV2DiagnosisLoading(false);
+    }
+  }
+
+  async function retryV2DiagnosisExecution() {
+    if (!v2Analysis || !v2Diagnosis || !projectId || !activePromptId) return;
+    setV2DiagnosisLoading(true);
+    try {
+      const status = await api.retrySinglePromptV2Diagnosis(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        projectId,
+        activePromptId,
+      );
+      setV2Diagnosis(status);
+      message.success("已明确重试同一次诊断执行");
+    } catch (error: any) {
+      message.error(error.message || "重试诊断失败");
+    } finally {
+      setV2DiagnosisLoading(false);
+    }
+  }
+
+  function stageV2DiagnosisEdit(targetType: SinglePromptV2DiagnosisEdit["target_type"], targetId: string, value: string) {
+    const key = `${targetType}:${targetId}`;
+    setV2DiagnosisEdits((current) => ({ ...current, [key]: { target_type: targetType, target_id: targetId, value } }));
+  }
+
+  function clearV2DiagnosisEdit(targetType: SinglePromptV2DiagnosisEdit["target_type"], targetId: string) {
+    const key = `${targetType}:${targetId}`;
+    setV2DiagnosisEdits((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+
+  function setV2AnswerReviewDecision(event: any, decision: V2AnswerReviewDecision) {
+    setV2AnswerReviewDecisions((current) => ({ ...current, [event.event_id]: decision }));
+    if (decision === "CORRECT_TO_MENTION") {
+      stageV2DiagnosisEdit("RECOMMENDATION_EVENT", event.event_id, "MENTION");
+    } else {
+      clearV2DiagnosisEdit("RECOMMENDATION_EVENT", event.event_id);
+    }
+  }
+
+  async function saveV2DiagnosisRevision() {
+    if (!v2Analysis || !v2Diagnosis?.result || !projectId || !activePromptId) return;
+    const edits = Object.values(v2DiagnosisEdits);
+    if (!edits.length) return;
+    if (!v2DiagnosisEditReason.trim()) {
+      message.warning("请填写本次语义修改原因");
+      return;
+    }
+    setV2DiagnosisLoading(true);
+    try {
+      const result = v2Diagnosis.result;
+      const status = await api.reviseSinglePromptV2Diagnosis(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          base_result_version: result.result_version,
+          base_result_hash: result.output_hash,
+          reviewable_set_hash: result.reviewable_set_hash,
+          editor: v2DiagnosisEditor.trim(),
+          edits: edits.map((edit) => ({ ...edit, reason: v2DiagnosisEditReason.trim() })),
+        },
+      );
+      setV2Diagnosis(status);
+      persistV2DiagnosisIdentity(status);
+      setV2DiagnosisEdits({});
+      setV2DiagnosisEditReason("");
+      message.success("修改已保存为新的不可变结果版本");
+    } catch (error: any) {
+      message.error(error.message || "保存诊断修改失败");
+    } finally {
+      setV2DiagnosisLoading(false);
+    }
+  }
+
+  async function completeV2DiagnosisReview() {
+    if (!v2Analysis || !v2Diagnosis?.result || !projectId || !activePromptId) return;
+    if (!v2DiagnosisEditor.trim()) {
+      message.warning("请填写审核人");
+      return;
+    }
+    if (Object.keys(v2DiagnosisEdits).length) {
+      message.warning("存在尚未保存的语义修改，请先生成新结果版本");
+      return;
+    }
+    const pendingEvents = (v2Diagnosis.result.output.answer_diagnosis?.events || []).filter(
+      (event: any) => event.semantic_validation_status === "SEMANTIC_REVIEW_REQUIRED",
+    );
+    const undecidedEvents = pendingEvents.filter((event: any) => !v2AnswerReviewDecisions[event.event_id]);
+    if (undecidedEvents.length) {
+      message.warning(`还有 ${undecidedEvents.length} 个候选判断未处理`);
+      document.getElementById("v2-answer-semantic-review")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    setV2DiagnosisLoading(true);
+    try {
+      const result = v2Diagnosis.result;
+      const status = await api.reviewSinglePromptV2Diagnosis(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          result_hash: result.output_hash,
+          reviewable_set_hash: result.reviewable_set_hash,
+          reviewer: v2DiagnosisEditor.trim(),
+          note: v2DiagnosisReviewNote.trim(),
+          decisions: [
+            ...pendingEvents.map((event: any) => ({
+              scope: "ANSWER_SEMANTIC_EVENT",
+              event_id: event.event_id,
+              run_id: event.run_id,
+              decision: v2AnswerReviewDecisions[event.event_id],
+              machine_speech_act: event.machine_speech_act,
+              effective_speech_act: event.effective_speech_act,
+              review_reasons: event.semantic_admission?.review_reasons || [],
+            })),
+            { scope: "ENTIRE_REVIEWABLE_SET", decision: "REVIEW_COMPLETED_WITH_LIMITATIONS_PRESERVED" },
+          ],
+        },
+      );
+      setV2Diagnosis(status);
+      persistV2DiagnosisIdentity(status);
+      message.success("本版诊断审核已完成；未解决项和限制仍被保留");
+    } catch (error: any) {
+      message.error(error.message || "完成诊断审核失败");
+    } finally {
+      setV2DiagnosisLoading(false);
+    }
+  }
+
+  async function refreshV2StrategyContext(diagnosisStatus: SinglePromptV2DiagnosisStatus | null = v2Diagnosis) {
+    if (!v2Analysis || !diagnosisStatus?.result || !projectId || !activePromptId) return;
+    setV2StrategyLoading(true);
+    try {
+      const readiness = await api.getSinglePromptV2StrategyReadiness(
+        v2Analysis.analysis.analysis_id,
+        diagnosisStatus.diagnosis.diagnosis_id,
+        diagnosisStatus.result.result_version,
+        projectId,
+        activePromptId,
+      );
+      setV2StrategyReadiness(readiness);
+      const params = new URLSearchParams(window.location.search);
+      const strategyId = params.get("v2_strategy");
+      if (!strategyId) {
+        setV2Strategy(null);
+        setV2StrategyDirectionOrder([]);
+        return;
+      }
+      const status = await api.getSinglePromptV2Strategy(
+        v2Analysis.analysis.analysis_id,
+        diagnosisStatus.diagnosis.diagnosis_id,
+        strategyId,
+        projectId,
+        activePromptId,
+      );
+      setV2Strategy(status);
+      persistV2StrategyIdentity(status);
+      setV2StrategyDirectionOrder(
+        [...(status.result?.output.directions || [])]
+          .sort((left, right) => (left.priority_order || Number.MAX_SAFE_INTEGER) - (right.priority_order || Number.MAX_SAFE_INTEGER))
+          .map((row) => row.direction_id),
+      );
+      if ((status.result?.output.directions || []).length === 1) setV2ExecutionDirectionId(status.result!.output.directions[0].direction_id);
+    } catch (error: any) {
+      message.error(error.message || "读取 V2 策略状态失败");
+    } finally {
+      setV2StrategyLoading(false);
+    }
+  }
+
+  async function createV2Strategy() {
+    if (!v2Analysis || !v2Diagnosis?.result || !v2StrategyReadiness || !projectId || !activePromptId) return;
+    if (!v2StrategyReadiness.can_create_strategy || !v2StrategyReadiness.review_id || !v2StrategyReadiness.review_snapshot_hash) {
+      message.warning(v2StrategyReadiness.blocker?.detail || "当前输入尚不能生成正式策略候选");
+      return;
+    }
+    const key = v2PendingStrategyKey.current || crypto.randomUUID();
+    v2PendingStrategyKey.current = key;
+    setV2StrategyLoading(true);
+    try {
+      const status = await api.createSinglePromptV2Strategy(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        v2Diagnosis.result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          idempotency_key: key,
+          diagnosis_result_hash: v2Diagnosis.result.output_hash,
+          reviewable_set_hash: v2Diagnosis.result.reviewable_set_hash,
+          review_id: v2StrategyReadiness.review_id,
+          review_snapshot_hash: v2StrategyReadiness.review_snapshot_hash,
+          input_projection_hash: v2StrategyReadiness.input_projection_hash,
+        },
+      );
+      v2PendingStrategyKey.current = null;
+      setV2Strategy(status);
+      persistV2StrategyIdentity(status);
+      setV2StrategyDirectionOrder((status.result?.output.directions || []).map((row) => row.direction_id));
+      if ((status.result?.output.directions || []).length === 1) setV2ExecutionDirectionId(status.result!.output.directions[0].direction_id);
+      message.success("策略候选已按当前审核版本生成，未创建执行方案");
+    } catch (error: any) {
+      message.error(error.message || "生成 V2 策略候选失败");
+    } finally {
+      setV2StrategyLoading(false);
+    }
+  }
+
+  function moveV2StrategyDirection(directionId: string, delta: -1 | 1) {
+    setV2StrategyDirectionOrder((current) => {
+      const index = current.indexOf(directionId);
+      const target = index + delta;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  async function saveV2StrategyPriority() {
+    if (!v2Analysis || !v2Diagnosis || !v2Strategy?.result || !projectId || !activePromptId) return;
+    if (!v2StrategyEditor.trim() || !v2StrategyPriorityReason.trim()) {
+      message.warning("请填写优先级调整人和原因");
+      return;
+    }
+    setV2StrategyLoading(true);
+    try {
+      const result = v2Strategy.result;
+      const status = await api.reviseSinglePromptV2StrategyPriority(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        v2Strategy.strategy.strategy_id,
+        result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          base_result_version: result.result_version,
+          base_result_hash: result.output_hash,
+          reviewable_set_hash: result.reviewable_set_hash,
+          ordered_direction_ids: v2StrategyDirectionOrder,
+          editor: v2StrategyEditor.trim(),
+          reason: v2StrategyPriorityReason.trim(),
+        },
+      );
+      setV2Strategy(status);
+      persistV2StrategyIdentity(status);
+      setV2StrategyPriorityReason("");
+      message.success("优先顺序已保存为新的不可变策略版本");
+    } catch (error: any) {
+      message.error(error.message || "保存策略优先顺序失败");
+    } finally {
+      setV2StrategyLoading(false);
+    }
+  }
+
+  async function reviewV2Strategy(decision: "ACCEPTED" | "REJECTED") {
+    if (!v2Analysis || !v2Diagnosis || !v2Strategy?.result || !projectId || !activePromptId) return;
+    if (!v2StrategyEditor.trim()) {
+      message.warning("请填写策略审核人");
+      return;
+    }
+    if (decision === "ACCEPTED" && v2Strategy.result.output.needs_human_prioritization) {
+      message.warning("请先明确同层方向的人工优先顺序");
+      return;
+    }
+    setV2StrategyLoading(true);
+    try {
+      const result = v2Strategy.result;
+      const status = await api.reviewSinglePromptV2Strategy(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        v2Strategy.strategy.strategy_id,
+        result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          result_hash: result.output_hash,
+          reviewable_set_hash: result.reviewable_set_hash,
+          decision,
+          reviewer: v2StrategyEditor.trim(),
+          note: v2StrategyNote.trim(),
+        },
+      );
+      setV2Strategy(status);
+      if (decision === "ACCEPTED" && (status.result?.output.directions || []).length === 1) setV2ExecutionDirectionId(status.result!.output.directions[0].direction_id);
+      message.success(decision === "ACCEPTED" ? "策略候选已确认" : "策略候选已拒绝");
+    } catch (error: any) {
+      message.error(error.message || "策略审核失败");
+    } finally {
+      setV2StrategyLoading(false);
+    }
+  }
+
+  async function refreshV2Execution() {
+    if (!v2Strategy || !projectId || !activePromptId) return;
+    const proposalId = v2Execution?.proposal.proposal_id || new URLSearchParams(window.location.search).get("v2_execution_proposal");
+    if (!proposalId) return;
+    setV2ExecutionLoading(true);
+    try {
+      const status = await api.getSinglePromptV2ExecutionProposal(
+        v2Strategy.strategy.strategy_id, proposalId, projectId, activePromptId,
+      );
+      setV2Execution(status);
+      persistV2ExecutionIdentity(status);
+      hydrateV2ExecutionEdit(status);
+    } catch (error: any) {
+      setV2Execution(null);
+      message.error(error.message || "读取 V2 执行方案失败");
+    } finally {
+      setV2ExecutionLoading(false);
+    }
+  }
+
+  async function createV2ExecutionProposal() {
+    if (!v2Strategy?.result || !v2Strategy.review || !projectId || !activePromptId || !v2ExecutionDirectionId) return;
+    if (v2Strategy.review.decision !== "ACCEPTED") {
+      message.warning("只有已确认的精确策略版本可以生成执行方案");
+      return;
+    }
+    const key = v2PendingExecutionKey.current || crypto.randomUUID();
+    v2PendingExecutionKey.current = key;
+    setV2ExecutionLoading(true);
+    try {
+      const status = await api.createSinglePromptV2ExecutionProposal(
+        v2Strategy.strategy.analysis_id,
+        v2Strategy.strategy.diagnosis_id,
+        v2Strategy.strategy.strategy_id,
+        v2Strategy.result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          direction_id: v2ExecutionDirectionId,
+          idempotency_key: key,
+          strategy_result_hash: v2Strategy.result.output_hash,
+          strategy_review_id: v2Strategy.review.review_id,
+          strategy_review_snapshot_hash: v2Strategy.review.review_snapshot_hash,
+        },
+      );
+      v2PendingExecutionKey.current = null;
+      setV2Execution(status);
+      persistV2ExecutionIdentity(status);
+      hydrateV2ExecutionEdit(status);
+      message.success("执行内容骨架已生成；尚未确认，也尚未发布");
+    } catch (error: any) {
+      message.error(error.message || "生成执行方案失败");
+    } finally {
+      setV2ExecutionLoading(false);
+    }
+  }
+
+  async function saveV2ExecutionRevision() {
+    if (!v2Execution?.result || !v2Strategy || !projectId || !activePromptId || !v2ExecutionEditor.trim()) return;
+    setV2ExecutionLoading(true);
+    try {
+      const result = v2Execution.result;
+      const status = await api.reviseSinglePromptV2ExecutionProposal(
+        v2Strategy.strategy.strategy_id,
+        v2Execution.proposal.proposal_id,
+        result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          base_result_version: result.result_version,
+          base_result_hash: result.output_hash,
+          reviewable_set_hash: result.reviewable_set_hash,
+          editor: v2ExecutionEditor.trim(),
+          edit: { ...v2ExecutionEdit, asset_operation: "CREATE_NEW" },
+        },
+      );
+      setV2Execution(status);
+      persistV2ExecutionIdentity(status);
+      hydrateV2ExecutionEdit(status);
+      message.success(status.result?.output.validation.status === "READY_FOR_CONFIRMATION" ? "执行方案已保存并通过校验" : "执行方案已保存，请继续补齐校验项");
+    } catch (error: any) {
+      message.error(error.message || "保存执行方案失败");
+    } finally {
+      setV2ExecutionLoading(false);
+    }
+  }
+
+  function moveV2ExecutionSection(sectionId: string, delta: number) {
+    setV2ExecutionEdit((current) => {
+      const sectionOrder = [...(current.section_order || [])];
+      const index = sectionOrder.indexOf(sectionId);
+      const nextIndex = index + delta;
+      if (index < 0 || nextIndex < 0 || nextIndex >= sectionOrder.length) return current;
+      [sectionOrder[index], sectionOrder[nextIndex]] = [sectionOrder[nextIndex], sectionOrder[index]];
+      return { ...current, section_order: sectionOrder };
+    });
+  }
+
+  async function confirmV2ExecutionProposal() {
+    if (!v2Execution?.result || !v2Strategy || !projectId || !activePromptId || !v2ExecutionEditor.trim()) return;
+    const key = v2PendingConfirmationKey.current || crypto.randomUUID();
+    v2PendingConfirmationKey.current = key;
+    setV2ExecutionLoading(true);
+    try {
+      const result = v2Execution.result;
+      const status = await api.confirmSinglePromptV2ExecutionProposal(
+        v2Strategy.strategy.strategy_id,
+        v2Execution.proposal.proposal_id,
+        result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          result_hash: result.output_hash,
+          reviewable_set_hash: result.reviewable_set_hash,
+          idempotency_key: key,
+          confirmer: v2ExecutionEditor.trim(),
+          note: v2ExecutionNote.trim(),
+        },
+      );
+      v2PendingConfirmationKey.current = null;
+      setV2Execution(status);
+      persistV2ExecutionIdentity(status);
+      hydrateV2ExecutionEdit(status);
+      message.success("执行方案已确认，当前仍是待人工发布状态");
+    } catch (error: any) {
+      message.error(error.message || "确认执行方案失败");
+    } finally {
+      setV2ExecutionLoading(false);
+    }
+  }
+
+  async function recordV2Publication() {
+    if (!v2Execution || !v2Strategy || !projectId || !activePromptId || !v2ExecutionEditor.trim()) return;
+    const confirmation = v2Execution.confirmations.find(
+      (row) => row.result_version === v2Execution.result?.result_version,
+    );
+    if (!confirmation) {
+      message.warning("请先确认执行方案");
+      return;
+    }
+    if (!v2Publication.actual_url || !v2Publication.published_at) {
+      message.warning("请填写实际发布 URL 和发布时间");
+      return;
+    }
+    const key = v2PendingPublicationKey.current || crypto.randomUUID();
+    const priorPublication = [...v2Execution.publications]
+      .reverse()
+      .find((row) => row.confirmation_id === confirmation.confirmation_id);
+    v2PendingPublicationKey.current = key;
+    setV2ExecutionLoading(true);
+    try {
+      const status = await api.recordSinglePromptV2Publication(
+        v2Strategy.strategy.strategy_id,
+        v2Execution.proposal.proposal_id,
+        confirmation.confirmation_id,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          idempotency_key: key,
+          prior_publication_id: priorPublication?.publication_id || null,
+          recorder: v2ExecutionEditor.trim(),
+          publication_status: "USER_REPORTED",
+          actual_channel: v2Publication.actual_channel,
+          actual_account: v2Publication.actual_account,
+          actual_location: v2Publication.actual_location,
+          actual_url: v2Publication.actual_url,
+          published_at: v2Publication.published_at,
+          actual_content_version: v2Publication.actual_content_version || "",
+          actual_title: v2Publication.actual_title || "",
+          actual_section_ids: v2Publication.actual_content_version ? null : (v2Execution.result?.output.selection.section_order || null),
+          actual_claim_ids: null,
+          actual_content_excerpt: "",
+          differences: v2Publication.differences || "",
+        },
+      );
+      v2PendingPublicationKey.current = null;
+      setV2Execution(status);
+      message.success("实际发布信息已按人工报告登记，未标记为系统验证");
+    } catch (error: any) {
+      message.error(error.message || "登记发布信息失败");
+    } finally {
+      setV2ExecutionLoading(false);
+    }
+  }
+
+  function parseV2IdentityList(value: string) {
+    return value.split(/[\n,，]/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  async function refreshV2RetestReadiness(publicationId: string = v2RetestPublicationId) {
+    if (!projectId || !activePromptId) return;
+    const publication = v2Execution?.publications.find((row) => row.publication_id === publicationId);
+    setV2RetestLoading(true);
+    try {
+      const readiness = await api.getSinglePromptV2RetestReadiness(
+        projectId, activePromptId, publication?.confirmation_id, publication?.publication_id,
+      );
+      setV2RetestReadiness(readiness);
+      if (readiness.identity_default) {
+        setV2MeasurementIdentity({
+          canonical_brand_name: readiness.identity_default.canonical_brand_name || "",
+          accepted_aliases: (readiness.identity_default.accepted_aliases || []).join("，"),
+          official_domains: (readiness.identity_default.official_domains || []).join("，"),
+          official_urls: (readiness.identity_default.official_urls || []).join("\n"),
+          confirmed_by: "",
+        });
+      }
+      const planned = Number(readiness.baseline?.sampling_configuration?.sample_count || readiness.baseline?.run_manifest?.planned_count || 3);
+      setV2RetestSampleCount(Math.min(10, Math.max(1, planned)));
+    } catch (error: any) {
+      setV2RetestReadiness(null);
+      message.error(error.message || "读取复测资格失败");
+    } finally {
+      setV2RetestLoading(false);
+    }
+  }
+
+  async function createV2RetestPlan() {
+    if (!projectId || !activePromptId || !v2RetestReadiness?.sampling_eligible) return;
+    const publication = v2Execution?.publications.find((row) => row.publication_id === v2RetestPublicationId);
+    const confirmation = v2Execution?.confirmations.find((row) => row.confirmation_id === publication?.confirmation_id);
+    if (!publication || !confirmation) {
+      message.warning("请选择一条精确发布记录");
+      return;
+    }
+    const key = v2PendingRetestKey.current || crypto.randomUUID();
+    v2PendingRetestKey.current = key;
+    setV2RetestLoading(true);
+    try {
+      const status = await api.createSinglePromptV2Retest({
+        project_id: projectId,
+        prompt_id: activePromptId,
+        confirmation_id: confirmation.confirmation_id,
+        publication_id: publication.publication_id,
+        confirmation_snapshot_hash: confirmation.confirmation_snapshot_hash,
+        publication_report_hash: publication.report_hash,
+        idempotency_key: key,
+        sample_count: v2RetestSampleCount,
+        measurement_identity: {
+          canonical_brand_name: v2MeasurementIdentity.canonical_brand_name.trim(),
+          accepted_aliases: parseV2IdentityList(v2MeasurementIdentity.accepted_aliases),
+          official_domains: parseV2IdentityList(v2MeasurementIdentity.official_domains),
+          official_urls: parseV2IdentityList(v2MeasurementIdentity.official_urls),
+          confirmed_by: v2MeasurementIdentity.confirmed_by.trim(),
+        },
+      });
+      v2PendingRetestKey.current = null;
+      setV2Retest(status);
+      persistV2RetestIdentity(status);
+      message.success("复测计划和测量身份已冻结，尚未启动外部采样");
+    } catch (error: any) {
+      message.error(error.message || "创建复测计划失败");
+    } finally {
+      setV2RetestLoading(false);
+    }
+  }
+
+  async function refreshV2Retest() {
+    if (!projectId || !activePromptId) return;
+    const retestId = v2Retest?.retest.retest_id || new URLSearchParams(window.location.search).get("v2_retest");
+    if (!retestId) return;
+    setV2RetestLoading(true);
+    try {
+      const status = await api.getSinglePromptV2Retest(retestId, projectId, activePromptId);
+      setV2Retest(status);
+      setV2RetestPublicationId(status.retest.publication_id);
+      persistV2RetestIdentity(status);
+    } catch (error: any) {
+      setV2Retest(null);
+      message.error(error.message || "读取复测状态失败");
+    } finally {
+      setV2RetestLoading(false);
+    }
+  }
+
+  async function runV2RetestAction(action: "START" | "RETRY" | "FINALIZE" | "CACHE_ONLY" | "EXTERNAL_LLM" | "COMPARE") {
+    if (!projectId || !activePromptId || !v2Retest) return;
+    setV2RetestLoading(true);
+    try {
+      const id = v2Retest.retest.retest_id;
+      const status = action === "START" ? await api.startSinglePromptV2RetestSampling(id, projectId, activePromptId)
+        : action === "RETRY" ? await api.retrySinglePromptV2RetestSampling(id, projectId, activePromptId)
+        : action === "FINALIZE" ? await api.finalizeSinglePromptV2RetestSampling(id, projectId, activePromptId)
+        : action === "CACHE_ONLY" ? await api.startSinglePromptV2SemanticMeasurement(id, projectId, activePromptId, false)
+        : action === "EXTERNAL_LLM" ? await api.startSinglePromptV2SemanticMeasurement(id, projectId, activePromptId, true)
+        : await api.createSinglePromptV2Comparison(id, projectId, activePromptId);
+      setV2Retest(status);
+      persistV2RetestIdentity(status);
+      message.success(action === "START" ? "复测采样已显式启动" : action === "COMPARE" ? "描述性变化报告已生成" : "操作已提交");
+    } catch (error: any) {
+      message.error(error.message || "复测操作失败");
+    } finally {
+      setV2RetestLoading(false);
+    }
+  }
+
+  const workflowMaterializationRequestSeq = useRef(0);
+  async function refreshWorkflowMaterializationPlan(promptId?: number | null, targetProjectId: number = projectId!) {
+    const targetPromptId = promptId || workflowData?.prompt_id;
+    if (!targetProjectId || !targetPromptId) return null;
+    const seq = ++workflowMaterializationRequestSeq.current;
+    setWorkflowMaterializationLoading(true);
+    try {
+      const matPlan = await fetch(`/api/optimization/workflow/${targetProjectId}/${targetPromptId}/materialization-plan`).then((r) => r.json());
+      if (seq !== workflowMaterializationRequestSeq.current) return null;
+      setWorkflowMaterializationPlan(matPlan);
+      return matPlan;
+    } catch {
+      return null;
+    } finally {
+      if (seq === workflowMaterializationRequestSeq.current) setWorkflowMaterializationLoading(false);
+    }
   }
 
   const workflowRequestSeq = useRef(0);
@@ -1170,7 +2284,9 @@ export default function App() {
     if (!targetProjectId) return;
     const seq = ++workflowRequestSeq.current;
     // 切换 Prompt 上下文时重置该 Prompt 专属的执行策略状态
+    setWorkflowLoading(true);
     setWorkflowData(null);
+    workflowMaterializationRequestSeq.current += 1;
     resetPromptScopedAnalysisState();
     try {
       // pid 为 null 时由后端返回机器分析进度最好的 Prompt（项目视图默认）
@@ -1193,15 +2309,68 @@ export default function App() {
     } catch {
       // 工作流数据加载失败不影响主页面
       if (pid === null && seq === workflowRequestSeq.current) setWorkflowData(null);
+    } finally {
+      if (seq === workflowRequestSeq.current) setWorkflowLoading(false);
+    }
+  }
+
+  async function refreshWorkflowStatusForPrompt(promptId?: number | null) {
+    const targetPromptId = promptId || workflowData?.prompt_id;
+    if (!projectId || !targetPromptId) return null;
+    try {
+      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${targetPromptId}/status`)).json();
+      setWorkflowData(wf);
+      return wf;
+    } catch {
+      // 状态刷新失败不影响当前页面；下一次轮询或手动刷新会继续校正。
+      return null;
     }
   }
 
   async function refreshWorkflowStatus() {
-    if (!projectId || !workflowData?.prompt_id) return;
+    return refreshWorkflowStatusForPrompt(workflowData?.prompt_id);
+  }
+
+  async function refreshCurrentMainChainDisplay(promptId?: number | null, silent = false) {
+    const targetPromptId = promptId || currentCitationDecisionPromptId();
+    if (!targetPromptId) return;
+    await Promise.allSettled([
+      loadCitationDecisionV1(targetPromptId, silent),
+      refreshWorkflowStatusForPrompt(targetPromptId),
+    ]);
+  }
+
+  async function fetchReviewAction(path: string, init: RequestInit, timeoutMs = 20000) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${workflowData.prompt_id}/status`)).json();
-      setWorkflowData(wf);
-    } catch { /* 状态刷新失败不影响当前页面 */ }
+      return await fetch(path, { ...init, signal: controller.signal });
+    } catch (error: any) {
+      if (error?.name === "AbortError") {
+        throw new Error("审核请求超过 20 秒未返回，请稍后点击「加载待审核项」校正当前状态。");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function fetchReviewJson<T = any>(path: string, timeoutMs = 10000): Promise<T> {
+    const response = await fetchReviewAction(path, {}, timeoutMs);
+    await assertWorkflowResponse(response, "审核数据加载失败");
+    return response.json();
+  }
+
+  async function assertWorkflowResponse(response: Response, fallbackMessage: string) {
+    if (response.ok) return;
+    let detail = "";
+    try {
+      const payload = await response.json();
+      detail = payload?.detail || payload?.message || "";
+    } catch {
+      detail = await response.text().catch(() => "");
+    }
+    throw new Error(detail || fallbackMessage);
   }
 
   async function resolveDecisionMarketEntity(entityText: string, resolution: "CONFIRMED_COMPETITOR" | "TARGET_BRAND" | "REJECTED") {
@@ -1265,9 +2434,17 @@ export default function App() {
       setQueue(nextQueue);
       setTopics(nextTopics);
       setClusters(nextClusters);
-      // 加载分析工作流状态：pid=null 时后端返回机器分析进度最好的 Prompt
-      await loadWorkflowForPrompt(promptFilter, id);
-      await loadDashboard(id, promptFilter, nextRuns, nextPrompts);
+      const params = new URLSearchParams(window.location.search);
+      const requestedProjectId = Number(params.get("v2_project"));
+      const requestedPromptId = Number(params.get("v2_prompt"));
+      if (params.get("v2_analysis") && requestedProjectId === id && nextPrompts.some((item) => item.id === requestedPromptId)) {
+        setPromptContext(requestedPromptId);
+      }
+      // V2 has its own explicit analysis identity and authoritative status.
+      if (page !== "coreV2") {
+        await loadWorkflowForPrompt(promptFilter, id);
+        await loadDashboard(id, promptFilter, nextRuns, nextPrompts);
+      }
     } finally {
       setLoading(false);
     }
@@ -1285,8 +2462,81 @@ export default function App() {
   // 切换 Prompt 上下文时重新拉取监测看板（"ALL"=项目视图）
   useEffect(() => {
     if (!projectId || promptContext === null) return;
-    loadDashboard(projectId, typeof promptContext === "number" ? promptContext : null).catch(() => {});
-  }, [promptContext]);
+    const promptFilter = typeof promptContext === "number" ? promptContext : null;
+    if (page !== "coreV2") {
+      loadDashboard(projectId, promptFilter).catch(() => {});
+      loadWorkflowForPrompt(promptFilter, projectId).catch(() => {});
+    }
+  }, [projectId, promptContext, page]);
+  useEffect(() => {
+    if (page !== "coreV2" || !projectId || !activePromptId) return;
+    const params = new URLSearchParams(window.location.search);
+    if (Number(params.get("v2_project")) !== projectId || Number(params.get("v2_prompt")) !== activePromptId) {
+      setV2Analysis(null);
+      setV2Diagnosis(null);
+      setV2DiagnosisEdits({});
+      setV2StrategyReadiness(null);
+      setV2Strategy(null);
+      setV2Execution(null);
+      setV2RetestReadiness(null);
+      setV2Retest(null);
+      return;
+    }
+    if (!params.get("v2_analysis")) return;
+    void refreshV2Analysis();
+  }, [page, projectId, activePromptId]);
+  useEffect(() => {
+    if (!v2Analysis || !["QUEUED", "COLLECTING"].includes(v2Analysis.sampling.status)) return;
+    const timer = window.setInterval(() => { void refreshV2Analysis(); }, 3000);
+    return () => window.clearInterval(timer);
+  }, [v2Analysis?.analysis.analysis_id, v2Analysis?.sampling.status, projectId, activePromptId]);
+  useEffect(() => {
+    if (page !== "coreV2" || !v2Analysis?.context_id) return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.get("v2_diagnosis")) return;
+    if (v2Diagnosis?.diagnosis.analysis_id === v2Analysis.analysis.analysis_id) return;
+    void refreshV2Diagnosis();
+  }, [page, v2Analysis?.analysis.analysis_id, v2Analysis?.context_id, projectId, activePromptId]);
+  useEffect(() => {
+    if (!v2Diagnosis || !["QUEUED", "RUNNING"].includes(v2Diagnosis.compute_status)) return;
+    const timer = window.setInterval(() => { void refreshV2Diagnosis(); }, 3000);
+    return () => window.clearInterval(timer);
+  }, [v2Diagnosis?.diagnosis.diagnosis_id, v2Diagnosis?.compute_status, projectId, activePromptId]);
+  useEffect(() => {
+    setV2AnswerReviewDecisions({});
+  }, [v2Diagnosis?.diagnosis.diagnosis_id]);
+  useEffect(() => {
+    if (page !== "coreV2" || !v2Diagnosis?.result || v2Diagnosis.compute_status !== "READY_FOR_REVIEW") return;
+    void refreshV2StrategyContext(v2Diagnosis);
+  }, [page, v2Diagnosis?.diagnosis.diagnosis_id, v2Diagnosis?.result?.result_version, v2Diagnosis?.review?.review_id, projectId, activePromptId]);
+  useEffect(() => {
+    if (page !== "coreV2" || !v2Strategy?.result || !v2Strategy.review) return;
+    const proposalId = new URLSearchParams(window.location.search).get("v2_execution_proposal");
+    if (!proposalId || v2Execution?.proposal.strategy_id === v2Strategy.strategy.strategy_id) return;
+    void refreshV2Execution();
+  }, [page, v2Strategy?.strategy.strategy_id, v2Strategy?.result?.result_version, v2Strategy?.review?.review_id, projectId, activePromptId]);
+  useEffect(() => {
+    if (page !== "coreV2" || !projectId || !activePromptId || !v2Diagnosis?.result) return;
+    const retestId = new URLSearchParams(window.location.search).get("v2_retest");
+    if (retestId) {
+      if (v2Retest?.retest.retest_id !== retestId) void refreshV2Retest();
+      return;
+    }
+    if (!v2RetestReadiness) void refreshV2RetestReadiness("");
+  }, [page, projectId, activePromptId, v2Diagnosis?.result?.result_version, v2Execution?.publications.length]);
+  useEffect(() => {
+    if (!v2Retest || !["SAMPLING", "SEMANTIC_MEASURING"].includes(v2Retest.retest.status)) return;
+    const timer = window.setInterval(() => { void refreshV2Retest(); }, 3000);
+    return () => window.clearInterval(timer);
+  }, [v2Retest?.retest.retest_id, v2Retest?.retest.status, projectId, activePromptId]);
+  useEffect(() => {
+    const status = workflowData?.strategy_step_status || workflowData?.strategy_step?.status;
+    if (!projectId || !workflowData?.prompt_id || status !== "CURRENT_ANALYSIS_RUNNING") return;
+    const timer = window.setInterval(() => {
+      void refreshWorkflowStatusForPrompt(workflowData.prompt_id);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [projectId, workflowData?.prompt_id, workflowData?.strategy_step_status, workflowData?.strategy_step?.status]);
   // Action 确认后加载 V3 平台×内容方向分析（渠道选择数据参考）
   useEffect(() => {
     const actionDone = Boolean(workflowData?.steps?.find((s: any) => s.key === "action")?.done);
@@ -1300,7 +2550,7 @@ export default function App() {
     if (!projectId || activePromptId) { setPromptOverview(null); return; }
     fetch(`/api/optimization/workflow/${projectId}/prompt-overview`)
       .then((r) => r.json()).then(setPromptOverview).catch(() => { /* 概览失败不影响页面 */ });
-  }, [projectId, activePromptId, workflowData]);
+  }, [projectId, activePromptId]);
   useEffect(() => {
     setRecommendationPromptId(null);
     setRecommendationData(null);
@@ -1343,13 +2593,38 @@ export default function App() {
       setCitationDecisionData(null);
       return;
     }
+    if (!workflowData || Number(workflowData.prompt_id) !== Number(targetPromptId)) {
+      return;
+    }
     if (
-      workflowData &&
-      Number(workflowData.prompt_id) === Number(targetPromptId) &&
       !workflowData.steps?.some((step: any) => step.key === "answer_semantic" && step.done)
     ) {
       setCitationDecisionData(null);
       setCitationDecisionError(null);
+      return;
+    }
+    const workflowSteps = workflowData?.steps || [];
+    const evidenceReviewStep = workflowSteps.find((step: any) => step.key === "evidence_review");
+    if (evidenceReviewStep && !evidenceReviewStep.done) {
+      citationDecisionRequestSeq.current += 1;
+      setCitationDecisionLoading(false);
+      setCitationDecisionData(null);
+      setCitationDecisionError(null);
+      return;
+    }
+    const strategyStatus = workflowData?.strategy_step_status || workflowData?.strategy_step?.status || "";
+    if (
+      [
+        "PENDING_REVIEW",
+        "CONFIRMED",
+        "NO_STRATEGY",
+        "NEEDS_CURRENT_ANALYSIS",
+        "CURRENT_ANALYSIS_RUNNING",
+        "CURRENT_ANALYSIS_FAILED",
+      ].includes(strategyStatus)
+    ) {
+      citationDecisionRequestSeq.current += 1;
+      setCitationDecisionLoading(false);
       return;
     }
     loadCitationDecisionV1(targetPromptId, true).catch(() => {});
@@ -1588,12 +2863,118 @@ export default function App() {
     }
   }
 
+  function initialStep8Edit(proposal: any) {
+    const packageKey = proposal.selected_asset_package_key || undefined;
+    const selectedPlan = (proposal.section_plan_candidates || []).find((item: any) => item.asset_package_key === packageKey);
+    return {
+      execute_this_proposal: undefined,
+      selected_asset_package_key: packageKey,
+      selected_asset_type: proposal.recommended_asset_type || undefined,
+      title: proposal.title_candidates?.[0]?.title || "",
+      section_order: (selectedPlan?.section_plan || []).map((item: any) => item.section_id),
+      publishing_metadata: {
+        publishing_account: "",
+        publishing_location: "",
+        url_slug: "",
+        channel_specific_posting_metadata: {},
+      },
+      selected_observation_window_index: proposal.validation_plan?.observation_window_candidates?.length === 1 ? 0 : undefined,
+    };
+  }
+
+  function updateStep8Edit(proposalKey: string, patch: Record<string, any>) {
+    setStep8ProposalEdits((previous) => ({
+      ...previous,
+      [proposalKey]: { ...(previous[proposalKey] || {}), ...patch },
+    }));
+    setStep8ValidationResult(null);
+  }
+
+  async function openStep8ExecutionConfig(candidate: any) {
+    if (!projectId) {
+      message.warning("请先选择项目");
+      return;
+    }
+    const promptId = currentCitationDecisionPromptId();
+    if (!promptId) {
+      message.warning("请先进入具体 Prompt 的工作台");
+      return;
+    }
+    setStep8Candidate(candidate);
+    setStep8ProposalData(null);
+    setStep8ProposalEdits({});
+    setStep8ValidationResult(null);
+    setStep8ModalOpen(true);
+    setStep8AssetsLoading(true);
+    try {
+      const result = await api.getExecutionProposalShadow(projectId, promptId, candidate.id);
+      const edits = Object.fromEntries(
+        (result.active_proposals || []).map((proposal: any) => [proposal.proposal_key, initialStep8Edit(proposal)])
+      );
+      setStep8ProposalData(result);
+      setStep8ProposalEdits(edits);
+    } catch (error: any) {
+      message.error(error.message || "执行方案建议加载失败");
+    } finally {
+      setStep8AssetsLoading(false);
+    }
+  }
+
+  async function revalidateStep8Proposal(proposal: any) {
+    if (!step8Candidate || !projectId) return;
+    const promptId = currentCitationDecisionPromptId();
+    if (!promptId) return;
+    try {
+      const result = await api.revalidateExecutionProposal(projectId, promptId, {
+        strategy_candidate_id: step8Candidate.id,
+        proposal_key: proposal.proposal_key,
+        edited_by: "human",
+        human_edits: step8ProposalEdits[proposal.proposal_key] || {},
+      });
+      setStep8ValidationResult((previous: any) => ({
+        ...(previous || {}),
+        single_results: { ...(previous?.single_results || {}), [proposal.proposal_key]: result },
+      }));
+    } catch (error: any) {
+      message.error(error.message || "执行方案校验失败");
+    }
+  }
+
+  async function submitStep8ExecutionPlan() {
+    if (!step8Candidate || !projectId || !step8ProposalData) return;
+    const promptId = currentCitationDecisionPromptId();
+    if (!promptId) return;
+    setStep8Submitting(true);
+    try {
+      const result = await api.revalidateExecutionProposalPortfolio(projectId, promptId, {
+        strategy_candidate_id: step8Candidate.id,
+        edited_by: "human",
+        proposal_edits: (step8ProposalData.active_proposals || []).map((proposal: any) => ({
+          proposal_key: proposal.proposal_key,
+          human_edits: step8ProposalEdits[proposal.proposal_key] || {},
+        })),
+      });
+      setStep8ValidationResult(result);
+      if (result.ready_for_freeze) {
+        message.success("执行方案已通过重校验，已具备进入 PR5-C 冻结的条件");
+      } else if (result.portfolio_readiness === "HAS_INVALID_EDIT") {
+        message.error("存在非法编辑，请按卡片中的具体原因修正");
+      } else {
+        message.warning("执行方案仍有必选项未完成");
+      }
+    } catch (error: any) {
+      message.error(error.message || "执行方案组合校验失败");
+    } finally {
+      setStep8Submitting(false);
+    }
+  }
+
   async function openExperimentDraftForStrategy(candidate: any) {
     const plan = experimentPlanPayload(candidate?.experiment_plan);
     const actionId = Number(plan?.action_id || plan?.action_snapshot?.action_id || candidate?.action_id);
     const experimentId = Number(plan?.experiment_id || candidate?.experiment_id);
     if (!actionId && !experimentId) {
-      message.info("该策略已确认，但尚未完成第 8 步执行方案配置；需要先选择具体资产、URL、内容结构和 Baseline。");
+      openStep8ExecutionConfig(candidate);
       return;
     }
     if (!projectId) return;
@@ -1647,6 +3028,8 @@ export default function App() {
       return null;
     }
     const seq = ++citationDecisionRequestSeq.current;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
     setCitationDecisionLoading(true);
     setCitationDecisionError(null);
     setCitationDecisionData(null);
@@ -1656,6 +3039,7 @@ export default function App() {
         targetPromptId,
         undefined,
         CURRENT_CITATION_DECISION_USE_ANSWER_BINDING_V1_1,
+        { signal: controller.signal },
       );
       if (seq !== citationDecisionRequestSeq.current) return null;
       if (!citationDecisionBelongsToPrompt(data, targetPromptId)) {
@@ -1669,12 +3053,15 @@ export default function App() {
       return data;
     } catch (error: any) {
       if (seq !== citationDecisionRequestSeq.current) return null;
-      const errorMessage = error.message || "引用资料优化决策运行失败";
+      const errorMessage = error?.name === "AbortError"
+        ? "引用资料优化决策超过 20 秒未返回，已停止等待；证据待确认时可继续审核。"
+        : error.message || "引用资料优化决策运行失败";
       setCitationDecisionData(null);
       setCitationDecisionError(errorMessage);
       if (!silent) message.error(errorMessage);
       return null;
     } finally {
+      window.clearTimeout(timeout);
       if (seq === citationDecisionRequestSeq.current) setCitationDecisionLoading(false);
     }
   }
@@ -1695,6 +3082,7 @@ export default function App() {
     }
     const runIds = promptRuns.map((run: any) => run.id);
     setCitationDecisionLoading(true);
+    setWorkflowActionLoadingKey("citation");
     setCitationDecisionError(null);
     try {
       message.loading({ content: "正在生成证据包并运行引用证据链路...", duration: 0, key: "citation-evidence-run" });
@@ -1729,6 +3117,7 @@ export default function App() {
       return null;
     } finally {
       setCitationDecisionLoading(false);
+      setWorkflowActionLoadingKey(null);
     }
   }
 
@@ -1792,14 +3181,23 @@ export default function App() {
       return;
     }
     setCitationDecisionLoading(true);
+    setWorkflowActionLoadingKey("strategy");
     try {
-      const latest = await loadCitationDecisionV1(targetPromptId, true);
-      if (!latest) return;
-      const actionKeys = (latest.recommended_actions || [])
+      const workflowPackageId = currentWorkflowData?.current_state_context?.evidence_package_id || selectedPkgId;
+      const latest = citationDecisionBelongsToPrompt(currentCitationDecisionData, targetPromptId)
+        ? currentCitationDecisionData
+        : (!currentReadyToGenerateStrategy || !workflowPackageId)
+          ? await loadCitationDecisionV1(targetPromptId, true)
+          : null;
+      if (!latest && (!currentReadyToGenerateStrategy || !workflowPackageId)) {
+        message.warning("当前主链详情未加载完成，请先点击「刷新主链路」或稍后重试");
+        return;
+      }
+      const actionKeys = (latest?.recommended_actions || [])
         .filter((item: any) => item.route === "CONTENT" || item.route === "EVIDENCE")
         .map((item: any) => item.action_key)
         .filter(Boolean);
-      if (actionKeys.length === 0) {
+      if (latest && actionKeys.length === 0) {
         const blockedCount = (latest.source_analysis || []).filter((row: any) =>
           (row.benchmark_tier === "PRIMARY_BENCHMARK" || row.benchmark_tier === "SECONDARY_BENCHMARK") &&
           row.source_gap_precondition === "PRODUCT_TRUTH_UNKNOWN"
@@ -1809,10 +3207,10 @@ export default function App() {
           : "当前没有可生成策略候选的内容/证据缺口；可能没有真实缺口，或只剩产品评估/不需要动作");
         return;
       }
-      const result = await api.confirmCitationDecisionV1(projectId, targetPromptId, {
-        evidence_package_id: latest.evidence_package_id,
-        use_answer_binding_v1_1: typeof latest.use_answer_binding_v1_1 === "boolean"
-          ? latest.use_answer_binding_v1_1
+      const result = await api.generateCurrentStep7StrategyCandidateV1(projectId, targetPromptId, {
+        evidence_package_id: latest?.evidence_package_id || workflowPackageId,
+        use_answer_binding_v1_1: typeof latest?.use_answer_binding_v1_1 === "boolean"
+          ? latest?.use_answer_binding_v1_1
           : CURRENT_CITATION_DECISION_USE_ANSWER_BINDING_V1_1,
         action_keys: actionKeys,
         reviewer: "human",
@@ -1821,21 +3219,26 @@ export default function App() {
       const createdIds = (result.created || [])
         .map((item: any) => item.strategy_candidate?.id)
         .filter(Boolean);
-      if (latest.evidence_package_id) {
-        await selectEvidencePackage(latest.evidence_package_id, true);
+      const generatedPackageId = latest?.evidence_package_id || workflowPackageId;
+      if (generatedPackageId) {
+        await selectEvidencePackage(generatedPackageId, true);
       }
       setPage("optimization");
       message.success(`已生成 ${createdIds.length || actionKeys.length} 个待审核策略候选，请在下方审核确认`);
-      await Promise.all([
-        loadCitationDecisionV1(targetPromptId, true),
+      await Promise.allSettled([
+        loadWorkflowForPrompt(targetPromptId, projectId),
         loadOptimizationIssues(),
       ]);
       setLatestGeneratedStrategyIds(createdIds);
       setStrategyCandidateFilter(createdIds.length ? `candidate:${createdIds[0]}` : "latest");
     } catch (error: any) {
       message.error(error.message || "生成策略候选失败");
+      if (projectId && targetPromptId) {
+        await loadWorkflowForPrompt(targetPromptId, projectId).catch(() => {});
+      }
     } finally {
       setCitationDecisionLoading(false);
+      setWorkflowActionLoadingKey(null);
     }
   }
 
@@ -1867,6 +3270,7 @@ export default function App() {
       return;
     }
     setCitationDecisionLoading(true);
+    setWorkflowActionLoadingKey("analysis");
     try {
       const response = await fetch(`/api/optimization/workflow/${projectId}/${targetPromptId}/run-analysis`, {
         method: "POST",
@@ -1876,14 +3280,15 @@ export default function App() {
       if (!response.ok) throw new Error(await response.text());
       const result = await response.json();
       message.success(result.already_running
-        ? "当前主链已经在后台运行，完成后刷新状态"
-        : "已开始重新运行当前主链，完成后会生成正式证据与策略候选状态");
+        ? "V1.1 正式证据输入已在后台生成中，完成后刷新状态"
+        : "已开始生成 V1.1 正式证据输入，完成后再生成策略候选");
       const wf = await (await fetch(`/api/optimization/workflow/${projectId}/${targetPromptId}/status`)).json();
       setWorkflowData(wf);
     } catch (error: any) {
-      message.error(error.message || "重新运行当前主链失败");
+      message.error(error.message || "生成 V1.1 正式证据输入失败");
     } finally {
       setCitationDecisionLoading(false);
+      setWorkflowActionLoadingKey(null);
     }
   }
 
@@ -2019,16 +3424,28 @@ export default function App() {
       if (!targetPromptId) {
         throw new Error("当前策略生成必须绑定一个单 Prompt 证据包，请先选择具体 Prompt 的证据。");
       }
-      const latest = await loadCitationDecisionV1(targetPromptId, true);
+      const workflowReadyForTarget = Boolean(
+        Number(currentWorkflowData?.prompt_id) === Number(targetPromptId) &&
+        currentReadyToGenerateStrategy
+      );
+      const workflowPackageId = workflowReadyForTarget
+        ? currentWorkflowData?.current_state_context?.evidence_package_id
+        : null;
+      const latest = citationDecisionBelongsToPrompt(currentCitationDecisionData, targetPromptId)
+        ? currentCitationDecisionData
+        : null;
+      if (!latest && !workflowReadyForTarget) {
+        throw new Error("当前主链状态未确认可生成，请先刷新当前 Prompt 工作流状态。");
+      }
       const actionKeys = (latest?.recommended_actions || [])
         .filter((item: any) => item.route === "CONTENT" || item.route === "EVIDENCE")
         .map((item: any) => item.action_key)
         .filter(Boolean);
-      if (actionKeys.length === 0) {
+      if (latest && actionKeys.length === 0) {
         throw new Error("当前没有可生成策略候选的内容/证据缺口；历史策略不会计入当前第 7 步。");
       }
       const generated = await api.generateCurrentStep7StrategyCandidateV1(projectId, targetPromptId, {
-        evidence_package_id: selectedPkgId,
+        evidence_package_id: workflowPackageId || selectedPkgId,
         use_answer_binding_v1_1: typeof latest?.use_answer_binding_v1_1 === "boolean"
           ? latest.use_answer_binding_v1_1
           : CURRENT_CITATION_DECISION_USE_ANSWER_BINDING_V1_1,
@@ -2081,6 +3498,11 @@ export default function App() {
     } catch (error: any) {
       setStrategyNotice({ type: "error", message: "策略生成失败", description: error.message || String(error) });
       message.error({ content: error.message || "策略生成失败", key: "strategy-generate" });
+      const selectedPackage = (evidencePackages || []).find((item: any) => Number(item.id) === Number(selectedPkgId));
+      const targetPromptId = Number(selectedPackage?.prompt_id || currentCitationDecisionPromptId());
+      if (projectId && targetPromptId) {
+        await loadWorkflowForPrompt(targetPromptId, projectId).catch(() => {});
+      }
     } finally {
       setStrategyLoading(false);
     }
@@ -2312,11 +3734,18 @@ export default function App() {
   const currentNeedsCurrentAnalysis = backendStrategyStepStatus === "NEEDS_CURRENT_ANALYSIS";
   const currentAnalysisRunning = backendStrategyStepStatus === "CURRENT_ANALYSIS_RUNNING";
   const currentAnalysisFailed = backendStrategyStepStatus === "CURRENT_ANALYSIS_FAILED";
+  const currentReadyToGenerateStrategy = backendStrategyStepStatus === "READY_TO_GENERATE";
+  const workflowStepButtonLoading = (stepKey: string) => {
+    if (stepKey === "citation") return workflowActionLoadingKey === "citation";
+    if (stepKey === "action") return workflowActionLoadingKey === "strategy" || workflowActionLoadingKey === "analysis";
+    return false;
+  };
   const backendCurrentStrategyIds = new Set(
     (currentWorkflowData?.current_strategy_candidate_ids || backendStrategyStep.current_strategy_candidate_ids || [])
       .map((id: any) => Number(id))
       .filter(Boolean)
   );
+  const backendCurrentStrategyIdList = Array.from(backendCurrentStrategyIds);
   const backendHistoricalStrategyIds = new Set(
     (currentWorkflowData?.historical_strategy_candidate_ids || [])
       .map((id: any) => Number(id))
@@ -2339,7 +3768,8 @@ export default function App() {
   const pendingStrategies = backendStrategyStepStatus === "PENDING_REVIEW"
     ? workflowCurrentPackageStrategies.filter((item: any) => item.review_status === "PENDING_REVIEW")
     : [];
-  const strategyCandidateCount = workflowCurrentPackageStrategies.length;
+  const backendCurrentStrategyCandidateCount = backendCurrentStrategyIds.size;
+  const strategyCandidateCount = Math.max(workflowCurrentPackageStrategies.length, backendCurrentStrategyCandidateCount);
   const latestStrategyCandidate = sortedCurrentPackageStrategies[0];
   const rawExperimentCount = backendCurrentExperimentId
     ? (strategyExperiments || []).filter((item: any) => Number(item.id) === backendCurrentExperimentId).length
@@ -2358,27 +3788,47 @@ export default function App() {
   const answerStepBlocked = Boolean(currentWorkflowData && !answerStepDone && answerReviewDone);
   const productTruthStep = workflowStepByKey("product_truth");
   const productTruthDone = Boolean(answerStepDone && productTruthStep?.done);
+  const evidenceStep = workflowStepByKey("evidence");
   const evidenceReviewStep = workflowStepByKey("evidence_review");
   const gapWorkflowStep = workflowStepByKey("gap");
   const strategyWorkflowStep = workflowStepByKey("strategy") || workflowStepByKey("strategy_candidate") || workflowStepByKey("action");
+  const backendStrategyStepDetail = currentWorkflowData?.strategy_step_detail || backendStrategyStep.detail || strategyWorkflowStep?.detail || "";
+  const backendExecutionStepDetail = currentWorkflowData?.execution_step_detail || backendExecutionStep.detail || "";
   const evidenceReviewDone = Boolean(answerStepDone && evidenceReviewStep?.done);
+  const evidenceAvailable = Boolean(answerStepDone && (citationLoaded || evidenceStep?.done));
+  const evidenceNeedsHumanReview = Boolean(answerStepDone && evidenceAvailable && evidenceReviewStep && !evidenceReviewDone);
   const strategyWorkflowDone = Boolean(answerStepDone && strategyWorkflowStep?.done);
+  const currentEvidenceDone = Boolean(answerStepDone && evidenceStep?.done);
   const currentCitationLoaded = Boolean(answerStepDone && citationLoaded);
+  const currentWorkflowEvidenceLoaded = Boolean(answerStepDone && evidenceAvailable);
   const currentCitationNeedsEvidencePackage = Boolean(answerStepDone && citationNeedsEvidencePackage);
   const citationGapDecisionDone = Boolean(
-    currentCitationLoaded &&
+    currentWorkflowEvidenceLoaded &&
     evidenceReviewDone &&
     !citationProductTruthBlockedRows.length &&
-    unknownGapCount === 0
+    (currentReadyToGenerateStrategy || currentNoStrategyNeeded || unknownGapCount === 0)
   );
-  const strategyCurrentChainReady = Boolean(currentCitationLoaded && evidenceReviewDone && citationGapDecisionDone);
+  const backendStrategyGateReady = [
+    "READY_TO_GENERATE",
+    "PENDING_REVIEW",
+    "CONFIRMED",
+    "NO_STRATEGY",
+  ].includes(backendStrategyStepStatus);
+  const strategyCurrentChainReady = Boolean(
+    (currentWorkflowEvidenceLoaded && evidenceReviewDone && citationGapDecisionDone) ||
+    backendStrategyGateReady
+  );
   const currentConfirmedStrategies = strategyCurrentChainReady ? confirmedStrategies : [];
   const currentPendingStrategies = strategyCurrentChainReady ? pendingStrategies : [];
   const currentStrategyCandidateCount = strategyCurrentChainReady ? strategyCandidateCount : 0;
-  const currentConfirmedStrategyCount = currentConfirmedStrategies.length;
-  const currentPendingStrategyCount = currentPendingStrategies.length;
+  const currentConfirmedStrategyCount = backendStrategyStepStatus === "CONFIRMED"
+    ? Math.max(currentConfirmedStrategies.length, backendCurrentStrategyCandidateCount)
+    : currentConfirmedStrategies.length;
+  const currentPendingStrategyCount = backendStrategyStepStatus === "PENDING_REVIEW"
+    ? Math.max(currentPendingStrategies.length, backendCurrentStrategyCandidateCount)
+    : currentPendingStrategies.length;
   const currentLatestStrategyCandidate = strategyCurrentChainReady ? latestStrategyCandidate : null;
-  const currentCitationCanConfirm = strategyCurrentChainReady && citationCanConfirm && backendStrategyStepStatus === "READY_TO_GENERATE";
+  const currentCitationCanConfirm = Boolean(answerStepDone && evidenceReviewDone && currentReadyToGenerateStrategy);
   const ignoredHistoricalStrategyCount = backendHistoricalStrategyCount || Math.max(currentPackageStrategyCandidates.length - currentStrategyCandidateCount, 0);
   const currentExperimentCount = currentConfirmedStrategyCount && backendExecutionStepStatus === "CREATED" ? rawExperimentCount : 0;
   const ignoredHistoricalExperimentCount = currentWorkflowData?.historical_experiment_count ?? (!currentConfirmedStrategyCount ? (strategyExperiments?.length || 0) : historicalExperimentCount);
@@ -2392,18 +3842,18 @@ export default function App() {
   const citationStepItems = [
     {
       title: "引用来源",
-      description: citationLoaded ? `${citationSummary.source_count ?? 0} 个来源` : "等待加载",
-      status: citationLoaded ? "finish" : citationDecisionError ? "error" : "wait",
+      description: citationLoaded ? `${citationSummary.source_count ?? 0} 个来源` : currentEvidenceDone ? (evidenceStep?.detail || "证据已确认") : "等待加载",
+      status: citationLoaded || currentEvidenceDone ? "finish" : citationDecisionError ? "error" : "wait",
     },
     {
       title: "对标来源",
-      description: citationLoaded ? `核心 ${citationSummary.primary_benchmark_count ?? 0} / 辅助 ${citationSummary.secondary_benchmark_count ?? 0}` : "等待来源资格判断",
-      status: citationLoaded ? ((citationSummary.primary_benchmark_count || citationSummary.secondary_benchmark_count) ? "finish" : "process") : "wait",
+      description: citationLoaded ? `核心 ${citationSummary.primary_benchmark_count ?? 0} / 辅助 ${citationSummary.secondary_benchmark_count ?? 0}` : currentWorkflowEvidenceLoaded && evidenceReviewDone ? "证据已确认，详情可刷新" : "等待来源资格判断",
+      status: citationLoaded ? ((citationSummary.primary_benchmark_count || citationSummary.secondary_benchmark_count) ? "finish" : "process") : currentWorkflowEvidenceLoaded && evidenceReviewDone ? "finish" : "wait",
     },
     {
       title: "缺口",
-      description: citationProductTruthBlockedRows.length ? `${citationProductTruthBlockedRows.length} 条卡在产品事实` : citationLoaded ? "已完成资格判断" : "等待对标结果",
-      status: citationProductTruthBlockedRows.length ? "error" : currentCitationDecisionData ? "finish" : "wait",
+      description: citationProductTruthBlockedRows.length ? `${citationProductTruthBlockedRows.length} 条卡在产品事实` : citationLoaded ? "已完成资格判断" : gapWorkflowStep?.done ? (gapWorkflowStep.detail || "已完成缺口判断") : "等待对标结果",
+      status: citationProductTruthBlockedRows.length ? "error" : currentCitationDecisionData || gapWorkflowStep?.done ? "finish" : "wait",
     },
     {
       title: "策略确认",
@@ -2414,9 +3864,11 @@ export default function App() {
         : currentAnalysisFailed
           ? "当前主链运行失败，可重试"
         : currentNeedsCurrentAnalysis
-          ? "有上游线索，需重新运行当前主链"
+          ? "有上游线索，待生成 V1.1 输入"
         : currentNoStrategyNeeded
           ? "本轮无需策略候选"
+        : currentCitationCanConfirm
+          ? (backendStrategyStepDetail || "证据审核完成，可生成策略候选")
         : ignoredHistoricalStrategyCount
           ? `已有 ${ignoredHistoricalStrategyCount} 个历史候选，不计入当前主链`
           : citationLoaded
@@ -2431,9 +3883,9 @@ export default function App() {
         : currentAnalysisRunning
           ? "等待当前主链运行完成"
         : currentAnalysisFailed
-          ? "先重新运行当前主链"
+          ? "先重新生成 V1.1 输入"
         : currentNeedsCurrentAnalysis
-          ? "等待当前主链生成策略候选"
+          ? "等待 V1.1 输入生成策略候选"
         : currentNoStrategyNeeded
           ? "本轮无需实验草案"
         : ignoredHistoricalExperimentCount
@@ -2444,6 +3896,18 @@ export default function App() {
       status: currentExperimentCount || currentNoStrategyNeeded ? "finish" : currentConfirmedStrategyCount ? "process" : "wait",
     },
   ] as any[];
+  const mainChainStatusTagLabel = currentCitationDecisionData
+    ? citationDecisionStatusLabel(currentCitationDecisionData.status)
+    : currentWorkflowData
+      ? "主链状态已同步"
+      : citationDecisionStatusLabel(undefined);
+  const mainChainStatusTagColor = currentCitationDecisionData
+    ? citationDecisionStatusColor(currentCitationDecisionData.status)
+    : currentWorkflowData
+      ? "blue"
+      : citationDecisionStatusColor(undefined);
+  const citationDetailNonBlockingError = Boolean(answerStepDone && citationDecisionError && (currentWorkflowEvidenceLoaded || backendStrategyGateReady));
+  const citationDetailBlockingError = Boolean(answerStepDone && citationDecisionError && !citationDetailNonBlockingError);
   const collectedRunCount = visibleRuns.filter((run: any) => ["success", "partial_success"].includes(run.status)).length;
   const unresolvedAction = currentContinueResult?.action?.intervention_goal === "UNRESOLVED";
   const mainWorkflowSteps = [
@@ -2489,12 +3953,14 @@ export default function App() {
     {
       key: "citation",
       label: "引用证据",
-      statusText: !answerStepDone ? "未开始" : currentCitationLoaded ? "已完成" : citationDecisionLoading ? "运行中" : currentCitationNeedsEvidencePackage ? "待生成证据包" : citationDecisionError ? "待重试" : "待运行",
-      detail: !answerStepDone ? "先完成答案决策识别" : currentCitationLoaded ? `${citationSummary.source_count ?? 0} 个当前来源，去补正文和证据对齐` : currentCitationNeedsEvidencePackage ? "当前问题尚无证据包；正文已补齐后可直接生成并运行" : citationDecisionError ? "当前链路运行失败，可重试或核对引用正文" : "生成当前问题的证据包，并运行引用正文和证据对齐",
-      tone: currentCitationLoaded ? "done" : answerStepDone && citationDecisionLoading ? "current" : "pending",
-      actionLabel: answerStepDone ? (currentCitationLoaded ? "查看证据正文" : currentCitationNeedsEvidencePackage || citationDecisionError ? "生成证据包" : "运行引用证据") : "",
+      statusText: !answerStepDone ? "未开始" : evidenceNeedsHumanReview ? "待人工确认" : currentCitationLoaded || currentEvidenceDone ? "已完成" : citationDecisionLoading ? "运行中" : currentCitationNeedsEvidencePackage ? "待生成证据包" : citationDecisionError ? "待重试" : "待运行",
+      detail: !answerStepDone ? "先完成答案决策识别" : evidenceNeedsHumanReview ? (evidenceReviewStep?.detail || "证据关系待人工确认") : currentCitationLoaded ? `${citationSummary.source_count ?? 0} 个当前来源，正文和证据关系已确认` : currentEvidenceDone ? (evidenceStep?.detail || "引用证据已生成并确认，完整详情可手动刷新") : currentCitationNeedsEvidencePackage ? "当前问题尚无证据包；正文已补齐后可直接生成并运行" : citationDecisionError ? "当前链路运行失败，可重试或核对引用正文" : "生成当前问题的证据包，并运行引用正文和证据对齐",
+      tone: evidenceNeedsHumanReview ? "current" : currentCitationLoaded || currentEvidenceDone ? "done" : answerStepDone && citationDecisionLoading ? "current" : "pending",
+      actionLabel: answerStepDone ? (evidenceNeedsHumanReview ? "审核证据关系" : currentCitationLoaded || currentEvidenceDone ? "查看证据正文" : currentCitationNeedsEvidencePackage || citationDecisionError ? "生成证据包" : "运行引用证据") : "",
       onAction: answerStepDone
-        ? currentCitationLoaded
+        ? evidenceNeedsHumanReview
+          ? () => setWorkflowReviewOpen(true)
+          : currentCitationLoaded || currentEvidenceDone
           ? () => openGoldenCaseWorkspaceForPrompt(citationTargetPromptId)
           : () => runCitationEvidenceForPrompt(citationTargetPromptId)
         : undefined,
@@ -2502,41 +3968,41 @@ export default function App() {
     {
       key: "benchmark",
       label: "对标来源",
-      statusText: currentCitationLoaded ? "已判断" : "未开始",
-      detail: currentCitationLoaded ? (eligibleBenchmarkCount > 0 ? `核心 ${citationSummary.primary_benchmark_count ?? 0} / 辅助 ${citationSummary.secondary_benchmark_count ?? 0}` : "0 个可信对标（允许）") : "等待引用证据",
-      tone: currentCitationLoaded ? "done" : "pending",
-      actionLabel: currentCitationLoaded ? "查看对标" : "",
-      onAction: currentCitationLoaded ? () => setPage("optimization") : undefined,
+      statusText: !currentWorkflowEvidenceLoaded ? "未开始" : !evidenceReviewDone ? "等待证据确认" : "已判断",
+      detail: !currentWorkflowEvidenceLoaded ? "等待引用证据" : !evidenceReviewDone ? "先确认来源原文是否支持 AI 理由" : currentCitationLoaded ? (eligibleBenchmarkCount > 0 ? `核心 ${citationSummary.primary_benchmark_count ?? 0} / 辅助 ${citationSummary.secondary_benchmark_count ?? 0}` : "0 个可信对标（允许）") : "证据已确认，完整对标详情可手动刷新",
+      tone: currentWorkflowEvidenceLoaded && evidenceReviewDone ? "done" : "pending",
+      actionLabel: currentWorkflowEvidenceLoaded && evidenceReviewDone ? "查看对标" : "",
+      onAction: currentWorkflowEvidenceLoaded && evidenceReviewDone ? () => setPage("optimization") : undefined,
     },
     {
       key: "gap",
       label: "缺口诊断",
-      statusText: !currentCitationLoaded ? "未开始" : eligibleBenchmarkCount === 0 ? "暂无缺口" : unknownGapCount > 0 ? "待人工判断" : "已完成",
-      detail: !currentCitationLoaded ? "等待对标来源" : eligibleBenchmarkCount === 0 ? "暂无可分析 Benchmark，不生成竞争缺口" : unknownGapCount > 0 ? `${unknownGapCount} 条缺口需要人工判断` : "已基于对标来源完成缺口判断",
-      tone: !currentCitationLoaded ? "pending" : unknownGapCount > 0 ? "current" : "done",
-      actionLabel: currentCitationLoaded ? "查看缺口" : "",
-      onAction: currentCitationLoaded ? () => setPage("optimization") : undefined,
+      statusText: !currentWorkflowEvidenceLoaded ? "未开始" : !evidenceReviewDone ? "等待证据确认" : currentCitationLoaded ? (eligibleBenchmarkCount === 0 ? "暂无缺口" : unknownGapCount > 0 ? "待人工判断" : "已完成") : (gapWorkflowStep?.done ? "已完成" : "待加载"),
+      detail: !currentWorkflowEvidenceLoaded ? "等待对标来源" : !evidenceReviewDone ? "先完成引用证据人工确认" : currentCitationLoaded ? (eligibleBenchmarkCount === 0 ? "暂无可分析 Benchmark，不生成竞争缺口" : unknownGapCount > 0 ? `${unknownGapCount} 条缺口需要人工判断` : "已基于对标来源完成缺口判断") : (gapWorkflowStep?.detail || "证据已确认，完整缺口详情可手动刷新"),
+      tone: !currentWorkflowEvidenceLoaded || !evidenceReviewDone ? "pending" : unknownGapCount > 0 ? "current" : "done",
+      actionLabel: currentWorkflowEvidenceLoaded && evidenceReviewDone ? "查看缺口" : "",
+      onAction: currentWorkflowEvidenceLoaded && evidenceReviewDone ? () => setPage("optimization") : undefined,
     },
     {
       key: "action",
       label: "策略确认",
-      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : currentAnalysisRunning ? "主链运行中" : currentAnalysisFailed ? "运行失败" : currentNeedsCurrentAnalysis ? "需重跑主链" : currentNoStrategyNeeded ? "无需策略" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !citationGapDecisionDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
+      statusText: currentConfirmedStrategyCount ? "已确认" : currentPendingStrategyCount ? "待审核" : currentCitationCanConfirm ? "可生成" : currentAnalysisRunning ? "主链运行中" : currentAnalysisFailed ? "运行失败" : currentNeedsCurrentAnalysis ? "待生成输入" : currentNoStrategyNeeded ? "无需策略" : !currentCitationLoaded ? "未开始" : !evidenceReviewDone ? "待证据审核" : !citationGapDecisionDone ? "等待缺口" : unresolvedAction || unknownGapCount > 0 ? "待人工判断" : "无策略",
       detail: currentConfirmedStrategyCount
-        ? `已确认策略 #${currentConfirmedStrategies[0]?.id || currentLatestStrategyCandidate?.id}`
+        ? `已确认策略 #${currentConfirmedStrategies[0]?.id || currentLatestStrategyCandidate?.id || backendCurrentStrategyIdList[0] || "-"}`
         : currentPendingStrategyCount
           ? `${currentPendingStrategyCount} 个当前策略候选待人工审核`
           : currentCitationCanConfirm
-            ? `${citationConfirmableActions.length} 个缺口可生成策略候选`
-            : currentAnalysisRunning
-              ? (currentWorkflowData?.strategy_step_detail || "当前主链正在后台运行")
-            : currentAnalysisFailed
-              ? (currentWorkflowData?.strategy_step_detail || "当前主链运行失败，请重试或查看日志")
-            : currentNeedsCurrentAnalysis
-              ? (currentWorkflowData?.strategy_step_detail || "当前有答案决策/证据线索，但尚未生成 V1.1 正式证据与缺口")
+            ? (backendStrategyStepDetail || `${citationConfirmableActions.length} 个缺口可生成策略候选`)
+          : currentAnalysisRunning
+            ? (backendStrategyStepDetail || "当前主链正在后台运行")
+          : currentAnalysisFailed
+            ? (backendStrategyStepDetail || "当前主链运行失败，请重试或查看日志")
+          : currentNeedsCurrentAnalysis
+            ? (backendStrategyStepDetail || "当前有答案决策/证据线索，但尚未生成 V1.1 正式证据输入")
             : currentNoStrategyNeeded
               ? "本轮没有可生成策略的内容/证据缺口"
             : !currentCitationLoaded
-              ? "等待缺口诊断"
+              ? (strategyWorkflowStep?.detail || "等待缺口诊断")
               : !evidenceReviewDone
                 ? (evidenceReviewStep?.detail || "先完成人工证据审核，历史策略不计入当前主链")
                 : !citationGapDecisionDone
@@ -2545,7 +4011,7 @@ export default function App() {
                     ? "请查看依据后人工判断，不自动生成策略"
                     : "没有可生成策略的内容/证据缺口",
       tone: currentConfirmedStrategyCount || currentNoStrategyNeeded ? "done" : currentAnalysisFailed ? "error" : currentPendingStrategyCount || currentCitationCanConfirm || currentAnalysisRunning || currentNeedsCurrentAnalysis || unresolvedAction ? "current" : "pending",
-      actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentAnalysisRunning ? "运行中" : currentAnalysisFailed ? "重新运行当前主链" : currentNeedsCurrentAnalysis ? "重新运行当前主链" : currentNoStrategyNeeded || unresolvedAction ? "查看依据" : "",
+      actionLabel: currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentAnalysisRunning ? "运行中" : currentAnalysisFailed ? "重新生成 V1.1 输入" : currentNeedsCurrentAnalysis ? "生成 V1.1 输入" : currentNoStrategyNeeded || unresolvedAction ? "查看依据" : "",
       onAction: currentConfirmedStrategyCount || currentPendingStrategyCount
         ? openStrategyConfirmationPage
         : currentCitationCanConfirm
@@ -2565,25 +4031,25 @@ export default function App() {
     {
       key: "experiment",
       label: "实验方案落地",
-      statusText: currentExperimentCount ? "已创建" : currentConfirmedStrategyCount ? "待创建" : currentAnalysisRunning ? "等待主链" : currentAnalysisFailed ? "等待重跑" : currentNeedsCurrentAnalysis ? "等待主链" : currentNoStrategyNeeded ? "无需创建" : currentCitationLoaded ? "未创建" : "未开始",
+      statusText: currentExperimentCount ? "已创建" : currentConfirmedStrategyCount ? "待创建" : currentAnalysisRunning ? "等待主链" : currentAnalysisFailed ? "等待输入" : currentNeedsCurrentAnalysis ? "等待输入" : currentNoStrategyNeeded ? "无需创建" : currentWorkflowEvidenceLoaded ? "未创建" : "未开始",
       detail: currentExperimentCount
         ? `${currentExperimentCount} 个当前草案/实验，等待发布闸门`
         : ignoredHistoricalExperimentCount && !currentConfirmedStrategyCount
           ? "存在历史草案/实验，但当前主链仍需先完成策略确认"
-          : currentAnalysisRunning
-            ? "当前主链运行完成后，再进入策略确认"
+        : currentAnalysisRunning
+            ? (backendExecutionStepDetail || "当前主链运行完成后，再进入策略确认")
           : currentAnalysisFailed
-            ? "先修复并重新运行当前主链"
+            ? (backendExecutionStepDetail || "先修复并重新生成 V1.1 正式证据输入")
           : currentNeedsCurrentAnalysis
-            ? "先重新运行当前主链，生成正式证据与策略候选"
+            ? (backendExecutionStepDetail || "先生成 V1.1 正式证据输入，再进入策略确认")
           : currentNoStrategyNeeded
             ? "本轮没有策略候选，无需实验草案"
           : currentConfirmedStrategyCount
             ? "策略确认后，进入执行方案和实验草案"
-            : currentCitationLoaded
+            : currentWorkflowEvidenceLoaded
               ? "等待策略确认"
               : "等待策略候选",
-      tone: currentExperimentCount || currentNoStrategyNeeded ? "done" : currentAnalysisFailed ? "error" : currentConfirmedStrategyCount || currentAnalysisRunning || currentNeedsCurrentAnalysis ? "current" : "pending",
+      tone: currentExperimentCount || currentNoStrategyNeeded ? "done" : currentAnalysisFailed ? "error" : currentConfirmedStrategyCount || currentAnalysisRunning || currentNeedsCurrentAnalysis || currentCitationCanConfirm ? "current" : "pending",
       actionLabel: currentExperimentCount ? "查看实验草案" : currentConfirmedStrategyCount ? "去创建草案" : "",
       onAction: currentExperimentCount || currentConfirmedStrategyCount ? openStrategyConfirmationPage : undefined,
     },
@@ -2595,17 +4061,109 @@ export default function App() {
     error: { color: "red", text: "异常", className: "error" },
     pending: { color: "default", text: "等待", className: "pending" },
   };
+  const materializationPartSummary = (part: any, fallbackRequiredKey: string, fallbackLlmKey: string) => {
+    const conservation = part?.object_conservation || {};
+    const missingConservation = part?.missing_conservation || {};
+    const required = Number(conservation.required_unique_inputs ?? part?.[fallbackRequiredKey] ?? 0);
+    const ledgerHit = Number(conservation.materialization_hit ?? part?.materialization_hit_count ?? part?.hit ?? 0);
+    const legacy = Number(conservation.legacy_reuse ?? part?.legacy_reuse_count ?? 0);
+    const missing = Number(conservation.missing ?? part?.missing_count ?? 0);
+    const stale = Number(conservation.stale ?? part?.stale_count ?? 0);
+    const inProgress = Number(conservation.in_progress ?? part?.in_progress_count ?? 0);
+    const failedRetryable = Number(conservation.failed_retryable ?? part?.failed_retryable_count ?? 0);
+    const failedFinal = Number(conservation.failed_final ?? part?.failed_final_count ?? 0);
+    const llmCache = Number(part?.missing_llm_call_cache_hit ?? part?.llm_call_cache_hit_pairs ?? 0);
+    const external = Number(part?.[fallbackLlmKey] ?? part?.lookup_first_llm_required ?? 0);
+    const doneLike = ledgerHit + legacy;
+    return {
+      required,
+      ledgerHit,
+      legacy,
+      missing,
+      stale,
+      inProgress,
+      failedRetryable,
+      failedFinal,
+      llmCache,
+      external,
+      conservationOk: Boolean(conservation.is_balanced ?? missingConservation.is_balanced ?? true),
+      progress: required ? Math.round((doneLike / required) * 100) : 100,
+    };
+  };
+  const sourceClaimMat = materializationPartSummary(workflowMaterializationPlan?.source_claims, "required_semantic_passages", "lookup_first_llm_required");
+  const alignmentMat = materializationPartSummary(workflowMaterializationPlan?.evidence_alignment, "unique_alignment_inputs", "actual_llm_required");
+  const materializationRemaining = sourceClaimMat.missing + sourceClaimMat.stale + sourceClaimMat.failedRetryable + alignmentMat.missing + alignmentMat.stale + alignmentMat.failedRetryable;
+  const materializationFailedFinal = sourceClaimMat.failedFinal + alignmentMat.failedFinal;
   const unresolvedReviewContext = currentContinueResult?.review_context || {};
   const unresolvedAnswerSamples = unresolvedReviewContext.answer_samples || [];
   const unresolvedEventDiagnostics = unresolvedReviewContext.event_diagnostics || [];
   const unresolvedEventStatusCounts = unresolvedReviewContext.event_status_counts || {};
   const decisionMarketUnknownEntities = decisionMarketEntities.filter((item: any) => item.relationship === "UNKNOWN_ENTITY");
+  const v2DiagnosisOutput = v2Diagnosis?.result?.output;
+  const v2DiagnosisEvents = v2DiagnosisOutput?.answer_diagnosis?.events || [];
+  const v2PendingSemanticEvents = v2DiagnosisEvents
+    .filter((event: any) => event.semantic_validation_status === "SEMANTIC_REVIEW_REQUIRED")
+    .sort((left: any, right: any) => {
+      const brandName = String(project?.brand_name || "").trim();
+      const leftTarget = brandName && String(left.entity_text || "").includes(brandName) ? 0 : 1;
+      const rightTarget = brandName && String(right.entity_text || "").includes(brandName) ? 0 : 1;
+      return leftTarget - rightTarget || Number(left.run_id || 0) - Number(right.run_id || 0) || String(left.entity_text || "").localeCompare(String(right.entity_text || ""));
+    });
+  const v2VerifiedSemanticEvents = v2DiagnosisEvents.filter((event: any) => event.semantic_validation_status !== "SEMANTIC_REVIEW_REQUIRED");
+  const v2StoredAnswerReviewDecisions = new Map(
+    (v2Diagnosis?.review?.decisions || [])
+      .filter((row: any) => row.scope === "ANSWER_SEMANTIC_EVENT" && row.event_id)
+      .map((row: any) => [row.event_id, row.decision]),
+  );
+  const v2AnsweredSemanticReviewCount = v2PendingSemanticEvents.filter(
+    (event: any) => v2AnswerReviewDecisions[event.event_id] || v2StoredAnswerReviewDecisions.has(event.event_id),
+  ).length;
+  const v2MarketCriteria = v2DiagnosisOutput?.answer_diagnosis?.market_criteria || [];
+  const v2AnswerJobs = v2DiagnosisOutput?.answer_diagnosis?.answer_jobs || [];
+  const v2AnswerEligibility = v2Diagnosis?.answer_semantic_eligibility;
+  const v2NoConsumableAnswerSemantic = Boolean(v2AnswerEligibility?.no_consumable_answer_semantic_result);
+  const v2DiagnosisReasons = v2DiagnosisEvents.flatMap((event: any) => event.reasons || []);
+  const v2DiagnosisReasonById = new Map(v2DiagnosisReasons.map((reason: any) => [reason.reason_id, reason]));
+  const v2DiagnosisSnapshots = v2DiagnosisOutput?.source_diagnosis?.snapshots || [];
+  const v2DiagnosisSnapshotById = new Map(v2DiagnosisSnapshots.map((source: any) => [source.snapshot_id, source]));
+  const v2DiagnosisRelations = v2DiagnosisOutput?.evidence_diagnosis?.source_relations || [];
+  const v2TruthRelationships = v2Diagnosis?.current_truth_relation_eligibility?.effective_relationships
+    || v2DiagnosisOutput?.truth_diagnosis?.relationships
+    || [];
+  const v2EvidenceEligibility = v2Diagnosis?.effective_evidence_eligibility;
+  const v2SourceStatus = v2Diagnosis?.source_content_status_summary;
+  const v2StrategyOutput = v2Strategy?.result?.output;
+  const v2ExecutionOutput = v2Execution?.result?.output;
+  const v2ExecutionConfirmation = v2Execution?.confirmations.find(
+    (row) => row.result_version === v2Execution.result?.result_version,
+  );
+  const v2ExecutionCurrentPublications = v2ExecutionConfirmation
+    ? v2Execution?.publications.filter((row) => row.confirmation_id === v2ExecutionConfirmation.confirmation_id) || []
+    : [];
+  const v2RetestPublicationOptions = (v2Execution?.publications || []).map((row) => ({
+    value: row.publication_id,
+    label: `修订 ${row.revision_number} · ${row.report.actual_url || row.publication_id} · ${v2ConformanceLabel(row.conformance)}`,
+  }));
+  const v2ComparisonRows = Object.entries(v2Retest?.comparison_result?.comparison.metrics || {}).map(([metricKey, comparison]) => ({
+    metricKey,
+    comparison,
+    baseline: v2Retest?.comparison_result?.baseline_measurement.metrics[metricKey],
+    retest: v2Retest?.comparison_result?.retest_measurement.metrics[metricKey],
+  }));
+  const v2StrategyDirectionById = new Map((v2StrategyOutput?.directions || []).map((row) => [row.direction_id, row]));
+  const v2OrderedStrategyDirections = v2StrategyDirectionOrder
+    .map((directionId) => v2StrategyDirectionById.get(directionId))
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  const v2BlockedHistoricalRelations = new Set(v2EvidenceEligibility?.blocked_historical_relation_ids || []);
+  const stagedDiagnosisValue = (targetType: string, targetId: string, fallbackValue: string | null | undefined) =>
+    v2DiagnosisEdits[`${targetType}:${targetId}`]?.value ?? fallbackValue ?? "";
 
   return <Layout className="app-shell">
-    <Sider width={228} className="side-nav">
+    <Sider width={228} className="side-nav" breakpoint="md" collapsedWidth={0} collapsible>
       <div className="brand-block"><Title level={4}>生成式搜索决策平台</Title><Text type="secondary">监测 · 诊断 · 策略 · 复测</Text></div>
         <Menu mode="inline" selectedKeys={[page]} onClick={({ key }) => setPage(key as PageKey)} items={[
         { type: "group", label: "业务闭环", children: [
+          { key: "coreV2", icon: <Play size={18} />, label: "单问题分析 V2" },
           { key: "validation", icon: <BarChart3 size={18} />, label: "监测总览" },
           { key: "recommendation", icon: <ShieldCheck size={18} />, label: "决策诊断" },
           { key: "optimization", icon: <ShieldCheck size={18} />, label: "执行策略" },
@@ -2628,10 +4186,8 @@ export default function App() {
           {projectId && prompts.length>0 && <Select size="small" style={{minWidth:240}} placeholder="选择 Prompt"
             value={promptContext ?? "ALL"}
             options={[{label:"全部 Prompt（项目视图）",value:"ALL"},...prompts.map((p:any)=>({label:`#${p.id} ${p.prompt_text}`,value:p.id}))]}
-            onChange={async(v)=>{
+            onChange={(v)=>{
               setPromptContext(v);
-              // "ALL"=项目视图：展示机器分析进度最好的 Prompt 的工作流；单 Prompt 则展示该 Prompt 的
-              await loadWorkflowForPrompt(typeof v === "number" ? v : null);
             }}
           />}
           <Button icon={<Plus size={16} />} onClick={() => openProjectModal()}>新建项目</Button>
@@ -2640,7 +4196,688 @@ export default function App() {
         </Space>
       </Header>
       <Content className="workspace">
-        {!project || !dashboard ? <Card loading={loading}><Empty description="请选择包含采集数据的项目" /></Card> : page === "validation" ? <Space direction="vertical" size={16} className="page-stack">
+        {!project ? <Card loading={loading}><Empty description="请选择项目" /></Card> : page === "coreV2" ? <Space direction="vertical" size={16} className="page-stack">
+          {!activePromptId ? <Card><Empty description="请在顶部选择一个 Prompt" /></Card> : <>
+            <Card size="small" title={<Space><Play size={18} />Single-Prompt Core V2 · Prompt #{activePromptId}</Space>} extra={<Space wrap>
+              <Text type="secondary">采样次数</Text>
+              <InputNumber min={1} max={10} value={v2SampleCount} onChange={(value) => setV2SampleCount(Number(value || 1))} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")} />
+              <Tooltip title="创建一次具有独立身份和固定采样计划的分析">
+                <Button type="primary" icon={<Play size={15} />} loading={v2Loading} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")} onClick={startV2Analysis}>
+                  {v2Analysis?.context_id ? "发起新分析" : "开始分析"}
+                </Button>
+              </Tooltip>
+              <Tooltip title="读取这次分析的后端权威状态">
+                <Button icon={<RefreshCw size={15} />} loading={v2Loading} disabled={!v2Analysis} onClick={refreshV2Analysis} aria-label="刷新分析状态" />
+              </Tooltip>
+            </Space>}>
+              <Text>{scopedPrompt?.prompt_text}</Text>
+            </Card>
+
+            {!v2Analysis ? <Card><Empty description="该页面尚未绑定一次 V2 分析" /></Card> : <>
+              <Card size="small" title={<Space>{v2AnalysisStatusTag(v2Analysis.sampling.status)}<Text code>{v2Analysis.analysis.analysis_id}</Text></Space>} extra={<Tag color={v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "green" : "blue"}>{v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "冻结结果" : "实时任务状态"}</Tag>}>
+                <div className="v2-status-grid">
+                  <Statistic title="计划采样" value={v2Analysis.sampling.planned_run_count} suffix="次" />
+                  <Statistic title="已进入终态" value={v2Analysis.sampling.terminal_run_count} suffix="次" />
+                  <Statistic title="有效结果" value={v2Analysis.sampling.valid_run_count} suffix="次" />
+                  <Statistic title="失败" value={v2Analysis.sampling.failed_run_count} suffix="次" />
+                  <Statistic title="执行尝试" value={v2Analysis.sampling.attempt_count} suffix="次" />
+                </div>
+                <Descriptions size="small" column={{ xs: 1, md: 2 }} style={{ marginTop: 18 }}>
+                  <Descriptions.Item label="采集任务">#{v2Analysis.analysis.task_id} · {v2Analysis.active_task?.status || "-"}</Descriptions.Item>
+                  <Descriptions.Item label="结果版本">{v2Analysis.result_version || "采集完成后生成"}</Descriptions.Item>
+                  <Descriptions.Item label="AnalysisContext">{v2Analysis.context_id || "尚未冻结"}</Descriptions.Item>
+                  <Descriptions.Item label="开始时间">{formatDateTime(v2Analysis.started_at)}</Descriptions.Item>
+                </Descriptions>
+                {v2Analysis.blocker && v2Analysis.blocker.code !== "NEXT_STAGE_NOT_IMPLEMENTED" && <Alert style={{ marginTop: 14 }} type={v2Analysis.context_id ? "info" : "error"} showIcon message={v2BlockerLabel(v2Analysis.blocker.code)} description={v2Analysis.blocker.detail} action={v2Analysis.allowed_operations.includes("RETRY_COLLECTION") ? <Button size="small" danger loading={v2Loading} onClick={retryV2Analysis}>明确重试</Button> : undefined} />}
+                {v2Analysis.warnings.map((warning) => <Alert key={warning.code} style={{ marginTop: 10 }} type="warning" showIcon message={warning.code === "RETRIEVAL_OBSERVATION_UNAVAILABLE" ? "检索观测不可用" : "独立会话证明不可用"} description={warning.detail} />)}
+              </Card>
+
+              <Card size="small" title="本次分析的原始采样结果" extra={<Text type="secondary">只读取 Task #{v2Analysis.analysis.task_id}</Text>}>
+                <Table
+                  rowKey="run_id"
+                  size="small"
+                  pagination={false}
+                  dataSource={v2Analysis.runs}
+                  locale={{ emptyText: "采样任务尚未产生结果" }}
+                  scroll={{ x: 720 }}
+                  columns={[
+                    { title: "样本", width: 76, render: (_: unknown, row: any) => `第 ${row.run_sequence} 次` },
+                    { title: "状态", dataIndex: "status", width: 100, render: statusTag },
+                    { title: "回答", dataIndex: "answer_text", ellipsis: true, render: (value: string) => value || <Text type="secondary">尚无回答</Text> },
+                    { title: "引用", width: 72, render: (_: unknown, row: any) => row.references?.length || 0 },
+                    { title: "检索", width: 72, render: (_: unknown, row: any) => row.retrieval_candidates?.length || 0 },
+                    { title: "耗时", width: 92, render: (_: unknown, row: any) => row.duration_ms ? `${Math.round(row.duration_ms / 1000)} 秒` : "-" },
+                  ]}
+                  expandable={{ expandedRowRender: (row: any) => <div className="v2-run-detail">
+                    {row.error && <Alert type="error" showIcon message={row.error.type || row.status} description={row.error.message || row.error.blocked_reason || "采集未完成"} />}
+                    {row.answer_text && <div><Text strong>原始回答</Text><Typography.Paragraph className="v2-answer-text">{row.answer_text}</Typography.Paragraph></div>}
+                    <div className="v2-output-columns">
+                      <div><Text strong>引用资料 · {row.references?.length || 0}</Text>{(row.references || []).map((item: any) => <div key={item.reference_id}><Link href={item.canonical_url || item.url} target="_blank">{item.index}. {item.title || item.domain || item.url}</Link></div>)}</div>
+                      <div><Text strong>检索观测 · {row.retrieval_candidates?.length || 0}</Text>{(row.retrieval_candidates || []).map((item: any) => <div key={item.candidate_id}><Link href={item.canonical_url || item.url} target="_blank">{item.rank}. {item.title || item.domain || item.url}</Link></div>)}</div>
+                    </div>
+                  </div> }}
+                />
+              </Card>
+
+              {v2Analysis.context_id && <Card size="small" title={<Space><ShieldCheck size={18} />推荐理由、引用与品牌事实诊断</Space>} extra={<Space wrap>
+                {v2Diagnosis && <Tag color={v2NoConsumableAnswerSemantic ? "red" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "green" : ["QUEUED", "RUNNING"].includes(v2Diagnosis.compute_status) ? "blue" : v2Diagnosis.compute_status === "FAILED" ? "red" : "gold"}>
+                  {v2NoConsumableAnswerSemantic ? "回答语义失败" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "审核完成" : v2Diagnosis.compute_status === "READY_FOR_REVIEW" ? "待审核" : v2Diagnosis.compute_status === "RUNNING" ? "诊断中" : v2Diagnosis.compute_status === "QUEUED" ? "等待诊断" : v2Diagnosis.compute_status === "INTERRUPTED" ? "诊断中断" : v2Diagnosis.compute_status}
+                </Tag>}
+                {!v2Diagnosis ? <Button type="primary" icon={<Play size={15} />} loading={v2DiagnosisLoading} onClick={startV2Diagnosis}>开始诊断</Button> : <>
+                  <Tooltip title="只读取当前诊断执行状态">
+                    <Button icon={<RefreshCw size={15} />} loading={v2DiagnosisLoading} onClick={refreshV2Diagnosis} aria-label="刷新诊断状态" />
+                  </Tooltip>
+                  {v2Diagnosis.allowed_operations.includes("RETRY") && <Button danger loading={v2DiagnosisLoading} onClick={retryV2DiagnosisExecution}>明确重试</Button>}
+                </>}
+              </Space>}>
+                {!v2Diagnosis ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="采样结果已冻结，尚未创建诊断执行" /> : <>
+                  <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                    <Descriptions.Item label="执行身份"><Text code>{v2Diagnosis.diagnosis.diagnosis_id}</Text></Descriptions.Item>
+                    <Descriptions.Item label="结果版本">{v2Diagnosis.result?.result_version || "尚未发布"}</Descriptions.Item>
+                    <Descriptions.Item label="执行尝试">{v2Diagnosis.attempt_count} 次</Descriptions.Item>
+                    <Descriptions.Item label="外部模型调用">{v2Diagnosis.usage.external_llm_calls}</Descriptions.Item>
+                    <Descriptions.Item label="兼容缓存复用">{v2Diagnosis.usage.llm_cache_hits}</Descriptions.Item>
+                    <Descriptions.Item label="完成时间">{formatDateTime(v2Diagnosis.finished_at)}</Descriptions.Item>
+                  </Descriptions>
+                  {["QUEUED", "RUNNING"].includes(v2Diagnosis.compute_status) && <div style={{ marginTop: 16 }}>
+                    <Progress percent={Math.round(100 * Number(v2Diagnosis.progress.completed || 0) / Math.max(Number(v2Diagnosis.progress.total || 1), 1))} status="active" />
+                    <Text type="secondary">{v2Diagnosis.progress.detail || v2Diagnosis.progress.stage || "正在处理"}</Text>
+                  </div>}
+                  {v2Diagnosis.blocker && <Alert style={{ marginTop: 14 }} type="error" showIcon message={v2Diagnosis.blocker.code} description={v2Diagnosis.blocker.detail} />}
+                </>}
+              </Card>}
+
+              {v2Diagnosis?.result && <>
+                {v2NoConsumableAnswerSemantic && <Alert
+                  type="error"
+                  showIcon
+                  message={`回答语义分析失败 ${v2AnswerEligibility?.failed_answer_count || 0}/${v2AnswerEligibility?.total_answer_count || 0}`}
+                  description="没有任何回答通过当前准入契约。以下 0 条事件不是‘回答没有推荐’，本结果只能查看失败报告，不能审核、修订或进入策略。"
+                />}
+                {v2AnswerEligibility?.partial_failure && <Alert
+                  type="warning"
+                  showIcon
+                  message={`回答语义部分完成：通过 ${v2AnswerEligibility.admitted_answer_count}，失败 ${v2AnswerEligibility.failed_answer_count}`}
+                  description="仅审核通过准入的结果；失败 Run 及限制会随本版永久保留。"
+                />}
+                {(v2Diagnosis.current_safety_advisories || []).map((advisory) => <Alert
+                  key={advisory.code}
+                  type="warning"
+                  showIcon
+                  message="当前正文安全限制"
+                  description={`${advisory.message} 历史技术成功 ${advisory.historical_content_ready}，当前有效正文最多 ${advisory.maximum_currently_eligible}。`}
+                />)}
+                <Card size="small" title="诊断概览" extra={<Text type="secondary">输入、结果和审核版本均绑定当前 AnalysisContext</Text>}>
+                  <div className="v2-status-grid">
+                    <Statistic title="推荐/提及事件" value={v2NoConsumableAnswerSemantic ? "不可用" : v2Diagnosis.result.stats.recommendation_events || 0} />
+                    <Statistic title="推荐理由" value={v2NoConsumableAnswerSemantic ? "不可用" : v2Diagnosis.result.stats.reasons || 0} />
+                    <Statistic title="市场选择标准" value={v2NoConsumableAnswerSemantic ? "不可用" : v2Diagnosis.result.stats.market_criteria || 0} />
+                    <Statistic title="引用记录" value={v2Diagnosis.result.stats.reference_records || 0} />
+                    <Statistic title="唯一来源" value={v2Diagnosis.result.stats.unique_sources || 0} />
+                    <Statistic title="历史正文技术成功" value={v2EvidenceEligibility?.historical_content_ready ?? v2Diagnosis.result.stats.content_ready ?? 0} />
+                    <Statistic title="当前正文拦截" value={v2EvidenceEligibility?.content_blocked_current || 0} />
+                    <Statistic title="当前最多可用" value={v2EvidenceEligibility?.maximum_currently_eligible ?? v2Diagnosis.result.stats.content_ready ?? 0} />
+                    <Statistic title="本次未抓取" value={v2SourceStatus?.not_fetched || 0} />
+                    <Statistic title="实际抓取失败" value={v2SourceStatus?.fetch_failed || 0} />
+                  </div>
+                  {v2EvidenceEligibility && <Text type="secondary" style={{ display: "block", marginTop: 12 }}>
+                    “当前最多可用”只表示通过当前拦截规则的上限，不表示其余正文均已完成质量核验。
+                  </Text>}
+                  {Boolean(v2SourceStatus?.not_fetched) && <Alert
+                    style={{ marginTop: 12 }}
+                    type="info"
+                    showIcon
+                    message={`${v2SourceStatus?.not_fetched || 0} 个来源本次未抓取`}
+                    description="原因是本次未获正文抓取授权且没有可复用正文，不是网络抓取失败。旧 ResultVersion 中的失败标签属于不可变历史口径。"
+                  />}
+                  <Space wrap className="v2-code-tags" style={{ marginTop: 16 }}>
+                    {(v2Diagnosis.result.limitations || []).map((item: any) => <Tag key={item.code} color="gold">{item.code === "SOURCE_CONTENT_PARTIAL_FAILURE" && v2SourceStatus?.not_fetched && !v2SourceStatus?.fetch_failed ? "历史口径：SOURCE_CONTENT_PARTIAL_FAILURE" : item.code}{typeof item.count === "number" ? ` · ${item.count}` : ""}</Tag>)}
+                  </Space>
+                </Card>
+
+                {v2PendingSemanticEvents.length > 0 && !v2Diagnosis.review && <Alert
+                  type="warning"
+                  showIcon
+                  message={`${v2PendingSemanticEvents.length} 个候选判断需要人工确认`}
+                  description="这是对答案表达方式的复核，不是让你确认品牌能力或渠道效果。逐项处理后才能完成本版审核。"
+                  action={<Button onClick={() => document.getElementById("v2-answer-semantic-review")?.scrollIntoView({ behavior: "smooth", block: "start" })}>前往审核</Button>}
+                />}
+
+                <Card
+                  id="v2-answer-semantic-review"
+                  size="small"
+                  title="待人工确认的候选判断"
+                  extra={<Space wrap><Tag color={v2PendingSemanticEvents.length ? "gold" : "green"}>{v2AnsweredSemanticReviewCount}/{v2PendingSemanticEvents.length} 已处理</Tag><Text type="secondary">确认候选不等于推荐或品牌事实</Text></Space>}
+                >
+                  {v2PendingSemanticEvents.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有待人工确认的候选判断" /> : <>
+                    <Alert
+                      style={{ marginBottom: 12 }}
+                      type="info"
+                      showIcon
+                      message="只判断：答案是否把这个工具作为当前场景下的可选方案"
+                      description="没有‘推荐’二字不一定只是提及；确认后仍保持 INCLUDE_AS_OPTION，不会升级为 RECOMMEND，也不会写入 Product Truth。"
+                    />
+                    <Table
+                      rowKey="event_id"
+                      size="small"
+                      pagination={false}
+                      dataSource={v2PendingSemanticEvents}
+                      scroll={{ x: 920 }}
+                      columns={[
+                        { title: "Run", dataIndex: "run_id", width: 72 },
+                        { title: "对象", dataIndex: "entity_text", width: 140, render: (value: string) => <Text strong>{value}</Text> },
+                        { title: "当前判断", width: 160, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Tag color="blue">{row.effective_speech_act}</Tag><Text type="secondary">{row.recommendation_strength}</Text></Space> },
+                        { title: "答案原文", dataIndex: "answer_span", ellipsis: true },
+                        { title: "你的判断", width: 190, render: (_: unknown, row: any) => v2Diagnosis.review ? <Tag>{v2Diagnosis.review.decisions?.find((item: any) => item.scope === "ANSWER_SEMANTIC_EVENT" && item.event_id === row.event_id)?.decision || "未记录"}</Tag> : <Select
+                          style={{ width: 175 }}
+                          placeholder="请选择"
+                          value={v2AnswerReviewDecisions[row.event_id]}
+                          options={V2_ANSWER_REVIEW_OPTIONS}
+                          onChange={(value) => setV2AnswerReviewDecision(row, value)}
+                        /> },
+                      ]}
+                      expandable={{
+                        expandedRowRender: (row: any) => <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                          <Text type="secondary">Event ID：<Text code>{row.event_id}</Text></Text>
+                          <div><Text strong>判断上下文</Text><div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{row.grounding?.raw_line_context || row.grounding?.context_span || row.answer_span}</div></div>
+                          <div><Text strong>模型抽取理由</Text><Space direction="vertical" size={2} style={{ display: "flex", marginTop: 4 }}>{(row.reasons || []).length ? (row.reasons || []).map((reason: any) => <Text key={reason.reason_id}>{reason.effective_grounded_text || reason.reason_span}</Text>) : <Text type="secondary">没有独立理由</Text>}</Space></div>
+                          <div><Text strong>为什么待审</Text><Space direction="vertical" size={2} style={{ display: "flex", marginTop: 4 }}>{(row.semantic_admission?.review_reasons || ["SEMANTIC_REVIEW_REQUIRED"]).map((reason: string) => <Text key={reason}>{v2AnswerReviewReasonLabel(reason)}</Text>)}</Space></div>
+                        </Space>,
+                      }}
+                    />
+                  </>}
+                </Card>
+
+                <Card size="small" title="回答中的推荐语义">
+                  {v2AnswerJobs.some((row: any) => String(row.status || "").startsWith("FAILED")) && <Table
+                    style={{ marginBottom: 14 }}
+                    rowKey="answer_hash"
+                    size="small"
+                    pagination={false}
+                    dataSource={v2AnswerJobs.filter((row: any) => String(row.status || "").startsWith("FAILED"))}
+                    columns={[
+                      { title: "回答", dataIndex: "answer_hash", width: 220, render: (value: string) => <Text code>{value.slice(0, 16)}</Text> },
+                      { title: "状态", dataIndex: "status", width: 150, render: (value: string) => <Tag color="red">{value}</Tag> },
+                      { title: "失败原因", dataIndex: "error", render: (value: string) => value || "未通过回答语义准入" },
+                    ]}
+                  />}
+                  <Table
+                    rowKey="event_id"
+                    size="small"
+                    pagination={false}
+                    dataSource={v2VerifiedSemanticEvents}
+                    scroll={{ x: 900 }}
+                    locale={{ emptyText: "没有机器保守准入事件；待审项请在上方逐项处理" }}
+                    columns={[
+                      { title: "Run", dataIndex: "run_id", width: 72 },
+                      { title: "对象", dataIndex: "entity_text", width: 140, render: (value: string) => <Text strong>{value}</Text> },
+                      { title: "语义", width: 190, render: (_: unknown, row: any) => v2Diagnosis.allowed_operations.includes("REVISE") ? <Select
+                        style={{ width: 170 }}
+                        value={stagedDiagnosisValue("RECOMMENDATION_EVENT", row.event_id, row.effective_speech_act)}
+                        onChange={(value) => stageV2DiagnosisEdit("RECOMMENDATION_EVENT", row.event_id, value)}
+                        options={["RECOMMEND", "INCLUDE_AS_OPTION", "PRAISE", "COMPARE", "MENTION", "DISCOURAGE", "REJECT"].map((value) => ({ label: value, value }))}
+                      /> : <Tag>{row.effective_speech_act}</Tag> },
+                      { title: "强度", dataIndex: "recommendation_strength", width: 100, render: (value: string) => <Tag>{value}</Tag> },
+                      { title: "原文", dataIndex: "answer_span", ellipsis: true },
+                      { title: "理由", width: 300, render: (_: unknown, row: any) => <Space direction="vertical" size={2}>{(row.reasons || []).map((reason: any) => <Text key={reason.reason_id}>{reason.effective_grounded_text || reason.reason_span}</Text>)}</Space> },
+                    ]}
+                  />
+                  {v2MarketCriteria.length > 0 && <div style={{ marginTop: 16 }}>
+                    <Text strong>独立市场选择标准</Text>
+                    <Table
+                      style={{ marginTop: 8 }}
+                      rowKey="criterion_id"
+                      size="small"
+                      pagination={false}
+                      dataSource={v2MarketCriteria}
+                      columns={[
+                        { title: "Run", dataIndex: "run_id", width: 80 },
+                        { title: "原文标准", dataIndex: "effective_grounded_text" },
+                        { title: "展示概括", dataIndex: "normalized_reason" },
+                        { title: "状态", width: 220, render: (_: unknown, row: any) => <Tag color={row.normalization_eligible ? "green" : "gold"}>{row.semantic_validation_status}</Tag> },
+                      ]}
+                    />
+                    <Text type="secondary">市场选择标准独立于品牌推荐理由，不会自动进入品牌事实或 Reason→Truth 关系。</Text>
+                  </div>}
+                  {(v2DiagnosisOutput?.answer_diagnosis?.unresolved_items?.length || 0) > 0 && <Alert
+                    style={{ marginTop: 12 }}
+                    type="warning"
+                    showIcon
+                    message={`${v2DiagnosisOutput?.answer_diagnosis?.unresolved_items?.length || 0} 个未解决问题`}
+                    description={<Space direction="vertical" size={2}>{v2DiagnosisOutput?.answer_diagnosis?.unresolved_items?.map((row: any, index: number) => <Text key={`${row.run_id || "unknown"}-${index}`}>{`Run ${row.run_id || "-"}：${typeof row.item === "string" ? row.item : row.reason || "需要人工核对"}`}</Text>)}</Space>}
+                  />}
+                </Card>
+
+                <Card size="small" title="引用与理由关系" extra={<Text type="secondary">来源出现、原文锚点、候选召回、关系判断分别记录</Text>}>
+                  <Table
+                    className="v2-evidence-table"
+                    rowKey="relation_id"
+                    size="small"
+                    dataSource={v2DiagnosisRelations}
+                    pagination={{ pageSize: 10, showSizeChanger: false }}
+                    scroll={{ x: 1160 }}
+                    tableLayout="fixed"
+                    columns={[
+                      { title: "理由", width: 210, render: (_: unknown, row: any) => (v2DiagnosisReasonById.get(row.reason_id) as any)?.normalized_reason || row.reason_id },
+                      { title: "引用来源", width: 260, render: (_: unknown, row: any) => { const source: any = v2DiagnosisSnapshotById.get(row.source_snapshot_id); return source?.canonical_url ? <Link href={source.canonical_url} target="_blank" ellipsis>{source.title || displaySourceDomain("", source.canonical_url)}</Link> : <Text type="secondary">来源地址不可用</Text>; } },
+                      { title: "回答中出现", width: 110, render: (_: unknown, row: any) => <Tag color={row.reference_observation === "OBSERVED" ? "green" : "default"}>{row.reference_observation}</Tag> },
+                      { title: "原文锚点", width: 110, render: (_: unknown, row: any) => <Tag color={row.anchor_binding === "EXPLICIT" ? "green" : "gold"}>{row.anchor_binding}</Tag> },
+                      { title: "候选召回", width: 120, render: (_: unknown, row: any) => <Tag color={row.candidate_recall === "RECALLED" ? "blue" : "default"}>{row.candidate_recall}</Tag> },
+                      { title: "判断状态", width: 180, render: (_: unknown, row: any) => <Space size={4} wrap><Tag color={row.alignment_evaluation === "EVALUATED" ? "green" : row.alignment_evaluation === "FAILED" ? "red" : "gold"}>{row.alignment_evaluation}</Tag>{v2BlockedHistoricalRelations.has(row.relation_id) && <Tag color="red">当前不可消费</Tag>}</Space> },
+                      { title: "关系结论", width: 230, render: (_: unknown, row: any) => v2Diagnosis.allowed_operations.includes("REVISE") && row.alignment_evaluation === "EVALUATED" ? <Select
+                        style={{ width: 215 }}
+                        value={stagedDiagnosisValue("EVIDENCE_RELATION", row.relation_id, row.effective_relation)}
+                        onChange={(value) => stageV2DiagnosisEdit("EVIDENCE_RELATION", row.relation_id, value)}
+                        options={["SOURCE_SUPPORTS_REASON", "SOURCE_CONTRADICTS_REASON", "RELATED", "NONE"].map((value) => ({ label: value, value }))}
+                      /> : <Text>{row.effective_relation || "未形成结论"}</Text> },
+                    ]}
+                  />
+                  <Alert type="info" showIcon message="SOURCE_SUPPORTS_REASON 只表示来源正文支持该理由；锚点为 UNPROVEN 时，不代表本次回答实际使用了该来源作为推荐依据。" />
+                </Card>
+
+                <Card size="small" title="目标品牌事实核对">
+                  {v2DiagnosisOutput?.truth_diagnosis?.truth_snapshot?.length === 0 ? <Alert type="warning" showIcon message="当前诊断冻结的品牌事实集合为空" description="所有理由保持 UNRESOLVED；这不表示目标品牌不具备这些能力。" /> : <Descriptions size="small" column={1} bordered>
+                    {v2DiagnosisOutput?.truth_diagnosis?.truth_snapshot?.map((truth: any) => <Descriptions.Item key={truth.truth_id} label={truth.capability_label || truth.capability_key}><Space><Tag>{truth.product_truth_status}</Tag><Text type="secondary">{truth.source_reference || "无来源记录"}</Text></Space></Descriptions.Item>)}
+                  </Descriptions>}
+                  {v2TruthRelationships.some((row: any) => row.relation_purpose === "TARGET_CAPABILITY_FIT_SUGGESTION") && <Alert
+                    style={{ marginTop: 14 }}
+                    type="warning"
+                    showIcon
+                    message="存在跨品牌能力适配建议"
+                    description="竞品理由只能提示目标品牌事实可能相关，不能用目标品牌 Truth 证明竞品陈述，也不会自动形成可消费的覆盖关系。"
+                  />}
+                  <Table
+                    className="v2-truth-table"
+                    style={{ marginTop: 14 }}
+                    rowKey="relationship_id"
+                    size="small"
+                    pagination={false}
+                    dataSource={v2TruthRelationships}
+                    scroll={{ x: 810 }}
+                    tableLayout="fixed"
+                    columns={[
+                      { title: "推荐理由", width: 320, render: (_: unknown, row: any) => (v2DiagnosisReasonById.get(row.reason_id) as any)?.normalized_reason || row.reason_id },
+                      { title: "事实 ID", width: 110, render: (_: unknown, row: any) => row.truth_id || <Text type="secondary">待补事实</Text> },
+                      { title: "关系", width: 220, render: (_: unknown, row: any) => v2Diagnosis.allowed_operations.includes("REVISE") && row.truth_id ? <Select
+                        style={{ width: 200 }}
+                        value={stagedDiagnosisValue("TRUTH_RELATION", row.relationship_id, row.effective_relation)}
+                        onChange={(value) => stageV2DiagnosisEdit("TRUTH_RELATION", row.relationship_id, value)}
+                        options={["FULLY_COVERS", "PARTIALLY_COVERS", "CONFLICTS", "UNRESOLVED"].map((value) => ({ label: value, value }))}
+                      /> : <Tag color={row.effective_relation === "FULLY_COVERS" ? "green" : row.effective_relation === "CONFLICTS" ? "red" : "gold"}>{row.effective_relation}</Tag> },
+                      { title: "判断依据", width: 240, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Text>{row.method}</Text>{row.cross_subject && <Text type="secondary">{row.source_subject} → {row.target_subject}（待人工核对适配）</Text>}</Space> },
+                    ]}
+                  />
+                </Card>
+
+                <Card id="v2-diagnosis-review" size="small" title="审核与版本" extra={v2NoConsumableAnswerSemantic ? <Tag color="red">不可审核</Tag> : v2Diagnosis.review ? <Tag color="green">REVIEW_COMPLETED</Tag> : <Tag color="gold">待审核</Tag>}>
+                  {v2NoConsumableAnswerSemantic ? <Alert type="error" showIcon message="当前结果不能完成审核" description="所有回答语义均未通过准入。审核不能把 Schema 失败升级为有效推荐、理由或策略输入。" /> : v2Diagnosis.review ? <Descriptions size="small" column={{ xs: 1, md: 2 }}>
+                    <Descriptions.Item label="审核记录"><Text code>{v2Diagnosis.review.review_id}</Text></Descriptions.Item>
+                    <Descriptions.Item label="审核人">{v2Diagnosis.review.reviewer}</Descriptions.Item>
+                    <Descriptions.Item label="绑定结果">{v2Diagnosis.review.result_version}</Descriptions.Item>
+                    <Descriptions.Item label="审核时间">{formatDateTime(v2Diagnosis.review.created_at)}</Descriptions.Item>
+                    <Descriptions.Item label="说明" span={2}>{v2Diagnosis.review.note || "未填写"}</Descriptions.Item>
+                  </Descriptions> : <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    <Row gutter={[12, 12]}>
+                      <Col xs={24} md={8}><Input value={v2DiagnosisEditor} onChange={(event) => setV2DiagnosisEditor(event.target.value)} placeholder="审核人" /></Col>
+                      <Col xs={24} md={16}><Input value={v2DiagnosisEditReason} onChange={(event) => setV2DiagnosisEditReason(event.target.value)} placeholder="有语义修改时填写修改原因" /></Col>
+                    </Row>
+                    {v2PendingSemanticEvents.length > 0 && <Alert
+                      type={v2AnsweredSemanticReviewCount === v2PendingSemanticEvents.length ? "success" : "warning"}
+                      showIcon
+                      message={`候选判断已处理 ${v2AnsweredSemanticReviewCount}/${v2PendingSemanticEvents.length}`}
+                      description="可以保留不确定，但每个待审事件都必须有明确处置。只有“确认是候选”可进入后续消费；它仍不是 RECOMMEND、品牌事实或证据结论。"
+                    />}
+                    {Object.keys(v2DiagnosisEdits).length > 0 && <Alert type="warning" showIcon message={`${Object.keys(v2DiagnosisEdits).length} 项修改尚未保存为新版本`} action={<Button type="primary" loading={v2DiagnosisLoading} onClick={saveV2DiagnosisRevision}>保存为新版本</Button>} />}
+                    <Input.TextArea value={v2DiagnosisReviewNote} onChange={(event) => setV2DiagnosisReviewNote(event.target.value)} rows={2} placeholder="审核说明，可记录仍待补充的事实或来源限制" />
+                    <Popconfirm title="完成当前结果版本审核？" description="审核完成不会把 UNRESOLVED、UNPROVEN 或失败项改成已确认事实。" onConfirm={completeV2DiagnosisReview} okText="完成审核" cancelText="取消">
+                      <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2DiagnosisLoading} disabled={Object.keys(v2DiagnosisEdits).length > 0 || v2AnsweredSemanticReviewCount < v2PendingSemanticEvents.length}>完成本版审核</Button>
+                    </Popconfirm>
+                  </Space>}
+                  <Collapse ghost style={{ marginTop: 12 }} items={[{
+                    key: "audit",
+                    label: "查看输入与版本审计",
+                    children: <Descriptions size="small" column={1}>
+                      <Descriptions.Item label="AnalysisContext">{v2Diagnosis.diagnosis.context_id}</Descriptions.Item>
+                      <Descriptions.Item label="Raw output SHA-256"><Text code copyable>{v2Diagnosis.diagnosis.raw_output_hash}</Text></Descriptions.Item>
+                      <Descriptions.Item label="品牌快照 SHA-256"><Text code copyable>{v2Diagnosis.diagnosis.brand_snapshot_hash}</Text></Descriptions.Item>
+                      <Descriptions.Item label="事实集合 SHA-256"><Text code copyable>{v2Diagnosis.diagnosis.truth_set_hash}</Text></Descriptions.Item>
+                      <Descriptions.Item label="结果 SHA-256"><Text code copyable>{v2Diagnosis.result?.output_hash}</Text></Descriptions.Item>
+                      <Descriptions.Item label="审核集合 SHA-256"><Text code copyable>{v2Diagnosis.result?.reviewable_set_hash}</Text></Descriptions.Item>
+                    </Descriptions>,
+                  }]} />
+                </Card>
+
+                <Card
+                  id="v2-strategy"
+                  size="small"
+                  title={<Space><ListChecks size={18} />审核后诊断 → 有依据的策略候选</Space>}
+                  extra={<Space wrap>
+                    {v2StrategyReadiness && <Tag color={v2StrategyReadiness.classification === "C" ? "green" : v2StrategyReadiness.classification === "B" ? "gold" : "blue"}>{`输入类型 ${v2StrategyReadiness.classification}`}</Tag>}
+                    <Button icon={<RefreshCw size={14} />} loading={v2StrategyLoading} onClick={() => refreshV2StrategyContext()} aria-label="刷新策略状态" />
+                  </Space>}
+                >
+                  {!v2StrategyReadiness ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={v2StrategyLoading ? "正在读取策略资格" : "尚未形成策略输入投影"} /> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                    <Descriptions size="small" column={{ xs: 1, md: 4 }}>
+                      <Descriptions.Item label="可消费理由">{v2StrategyReadiness.current_observation.fact_consumable_reason_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="来源快照">{v2StrategyReadiness.current_observation.source_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="有效证据关系">{v2StrategyReadiness.current_observation.effective_evidence_relation_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="合格方向">{v2StrategyReadiness.qualified_direction_count}</Descriptions.Item>
+                    </Descriptions>
+
+                    <div className="v2-strategy-band">
+                      <Space wrap><Text strong>权威事实基础</Text><Tag color={v2StrategyReadiness.foundation.state === "REQUIRED" ? "green" : v2StrategyReadiness.foundation.state === "UNKNOWN" ? "gold" : "default"}>{v2StrategyReadiness.foundation.state}</Tag></Space>
+                      <Text type="secondary">{v2StrategyReadiness.foundation.reason}</Text>
+                      <Text type="secondary">Foundation 只说明事实承载基础需求，不选择渠道，也不要求必须存在 PRIMARY。</Text>
+                    </div>
+
+                    {v2StrategyReadiness.observed_themes.length > 0 && <div>
+                      <Text strong>当前观察主题</Text>
+                      <Space wrap className="v2-theme-tags" style={{ marginTop: 8 }}>
+                        {v2StrategyReadiness.observed_themes.map((theme: any) => <Tag key={theme.theme_id}>{theme.title}</Tag>)}
+                      </Space>
+                    </div>}
+
+                    <Table
+                      size="small"
+                      rowKey="channel_key"
+                      pagination={false}
+                      dataSource={v2StrategyReadiness.channel_assessments}
+                      locale={{ emptyText: "当前没有可识别的渠道环境" }}
+                      scroll={{ x: 760 }}
+                      columns={[
+                        { title: "渠道环境", width: 150, render: (_: unknown, row: any) => <Text strong>{row.channel_label}</Text> },
+                        { title: "处理层级", width: 110, render: (_: unknown, row: any) => <Tag color={row.level === "ACTIONABLE" ? "green" : row.level === "BLOCKED" ? "red" : "gold"}>{row.level}</Tag> },
+                        { title: "渠道 Role", width: 100, render: (_: unknown, row: any) => <Tag>{row.channel_role}</Tag> },
+                        { title: "依据", dataIndex: "rationale" },
+                        { title: "未解决", width: 230, render: (_: unknown, row: any) => <Space wrap>{(row.blocking_signals || []).map((value: string) => <Tag key={value} color="gold">{value}</Tag>)}</Space> },
+                      ]}
+                    />
+
+                    {v2StrategyReadiness.blocker && <Alert
+                      type={v2StrategyReadiness.classification === "A" ? "info" : "warning"}
+                      showIcon
+                      message={v2StrategyReadiness.blocker.code === "DIAGNOSIS_REVIEW_REQUIRED" ? "请先完成当前诊断版本审核" : "当前没有通过资格 Gate 的策略方向"}
+                      description={v2StrategyReadiness.blocker.detail}
+                      action={v2StrategyReadiness.classification === "A" ? <Button size="small" onClick={() => document.getElementById("v2-diagnosis-review")?.scrollIntoView({ behavior: "smooth", block: "center" })}>前往诊断审核</Button> : undefined}
+                    />}
+
+                    {v2StrategyReadiness.verification_items.length > 0 && <div>
+                      <Text strong>限制与合法下一步</Text>
+                      <div className="v2-strategy-list">
+                        {v2StrategyReadiness.verification_items.map((item) => <div key={item.code} className="v2-strategy-list-row"><Tag color="gold">{item.code}</Tag><Text>{item.detail}</Text></div>)}
+                      </div>
+                    </div>}
+
+                    {v2StrategyReadiness.can_create_strategy && !v2Strategy && <Alert
+                      type="success"
+                      showIcon
+                      message={`${v2StrategyReadiness.qualified_direction_count} 个方向通过资格 Gate`}
+                      description="只会冻结并保存这些合格方向；其余未知、未评估和受限项继续随候选保留。"
+                      action={<Button type="primary" icon={<Play size={15} />} loading={v2StrategyLoading} onClick={createV2Strategy}>生成策略候选</Button>}
+                    />}
+
+                    {v2Strategy?.result && <>
+                      <Divider orientation="left">策略候选</Divider>
+                      <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                        <Descriptions.Item label="策略 ID"><Text code copyable>{v2Strategy.strategy.strategy_id}</Text></Descriptions.Item>
+                        <Descriptions.Item label="结果版本"><Text code>{v2Strategy.result.result_version}</Text></Descriptions.Item>
+                        <Descriptions.Item label="审核状态">{v2Strategy.review ? <Tag color={v2Strategy.review.decision === "ACCEPTED" ? "green" : "red"}>{v2Strategy.review.decision}</Tag> : <Tag color="gold">待审核</Tag>}</Descriptions.Item>
+                        <Descriptions.Item label="消费诊断版本"><Text code>{v2Strategy.strategy.diagnosis_result_version}</Text></Descriptions.Item>
+                        <Descriptions.Item label="消费诊断审核"><Text code>{v2Strategy.strategy.diagnosis_review_id}</Text></Descriptions.Item>
+                        <Descriptions.Item label="验证契约"><Text code>{v2Strategy.strategy.validation_contract_version}</Text></Descriptions.Item>
+                      </Descriptions>
+                      {!v2Strategy.applicability.is_current_input && <Alert type="warning" showIcon message="该策略候选已成为历史版本" description="诊断结果、审核快照或当前安全消费范围已经变化；本候选保留可查，但不能继续修改或审核。" />}
+
+                      <div className="v2-strategy-list">
+                        {v2OrderedStrategyDirections.map((direction, index) => <div key={direction.direction_id} className="v2-strategy-direction">
+                          <div className="v2-strategy-direction-order"><Text strong>{v2Strategy.result?.output.needs_human_prioritization ? "同层" : index + 1}</Text></div>
+                          <div className="v2-strategy-direction-body">
+                            <Space wrap>
+                              <Text strong>{direction.direction_type === "FOUNDATION" ? "权威事实基础" : direction.channel_label}</Text>
+                              <Tag color="green">{direction.level}</Tag>
+                              {direction.channel_role && <Tag color={direction.channel_role === "PRIMARY" ? "blue" : "purple"}>{direction.channel_role}</Tag>}
+                              <Tag>{direction.effect_status}</Tag>
+                            </Space>
+                            <Text>{direction.rationale}</Text>
+                            {direction.hypothesis && <Text type="secondary">测试假设：{direction.hypothesis}</Text>}
+                            <Text type="secondary">Reason {direction.reason_ids.join("、") || "无"} · Truth {direction.truth_ids.join("、") || "无"} · Evidence {direction.evidence_relation_ids.join("、") || "无"}</Text>
+                          </div>
+                          {!v2Strategy.review && v2Strategy.allowed_operations.includes("REVISE") && v2Strategy.result?.output.needs_human_prioritization && <Space size={4}>
+                            <Tooltip title="上移"><Button icon={<ArrowUp size={14} />} disabled={index === 0} onClick={() => moveV2StrategyDirection(direction.direction_id, -1)} aria-label="上移策略方向" /></Tooltip>
+                            <Tooltip title="下移"><Button icon={<ArrowDown size={14} />} disabled={index === v2OrderedStrategyDirections.length - 1} onClick={() => moveV2StrategyDirection(direction.direction_id, 1)} aria-label="下移策略方向" /></Tooltip>
+                          </Space>}
+                        </div>)}
+                      </div>
+
+                      {v2Strategy.result.output.needs_human_prioritization && !v2Strategy.review && v2Strategy.allowed_operations.includes("REVISE") && <Alert type="warning" showIcon message="多个同层方向无法由确定性规则唯一排序" description="调整顺序并写明人工判断依据；系统不会用引用次数或隐藏分数制造 P1。" />}
+
+                      {!v2Strategy.review && v2Strategy.allowed_operations.includes("REVIEW") ? <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                        <Row gutter={[12, 12]}>
+                          <Col xs={24} md={8}><Input value={v2StrategyEditor} onChange={(event) => setV2StrategyEditor(event.target.value)} placeholder="策略审核人" /></Col>
+                          <Col xs={24} md={16}><Input value={v2StrategyPriorityReason} onChange={(event) => setV2StrategyPriorityReason(event.target.value)} placeholder="调整优先顺序时填写判断依据" /></Col>
+                        </Row>
+                        {v2Strategy.result.output.needs_human_prioritization && <Button icon={<ListChecks size={15} />} loading={v2StrategyLoading} onClick={saveV2StrategyPriority}>保存优先顺序为新版本</Button>}
+                        <Input.TextArea value={v2StrategyNote} onChange={(event) => setV2StrategyNote(event.target.value)} rows={2} placeholder="策略审核说明；未知和限制不会因确认而消失" />
+                        <Space wrap>
+                          <Popconfirm title="确认当前策略候选？" description="确认只追加审核记录，不修改机器结果，也不会创建执行方案。" onConfirm={() => reviewV2Strategy("ACCEPTED")} okText="确认" cancelText="取消">
+                            <Button type="primary" icon={<ShieldCheck size={15} />} disabled={v2Strategy.result.output.needs_human_prioritization} loading={v2StrategyLoading}>确认策略</Button>
+                          </Popconfirm>
+                          <Popconfirm title="拒绝当前策略候选？" onConfirm={() => reviewV2Strategy("REJECTED")} okText="拒绝" cancelText="取消">
+                            <Button danger loading={v2StrategyLoading}>拒绝</Button>
+                          </Popconfirm>
+                        </Space>
+                      </Space> : v2Strategy.review ? <Alert type={v2Strategy.review.decision === "ACCEPTED" ? "success" : "warning"} showIcon message={`策略审核：${v2Strategy.review.decision}`} description={v2Strategy.review.note || "未填写审核说明"} /> : null}
+
+                      <Collapse ghost items={[{
+                        key: "strategy-audit",
+                        label: "查看策略输入、限制与版本审计",
+                        children: <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                          <Descriptions size="small" column={1}>
+                            <Descriptions.Item label="诊断审核快照 SHA-256"><Text code copyable>{v2Strategy.strategy.review_snapshot_hash}</Text></Descriptions.Item>
+                            <Descriptions.Item label="策略输入 SHA-256"><Text code copyable>{v2Strategy.strategy.input_snapshot_hash}</Text></Descriptions.Item>
+                            <Descriptions.Item label="策略结果 SHA-256"><Text code copyable>{v2Strategy.result.output_hash}</Text></Descriptions.Item>
+                            <Descriptions.Item label="审核集合 SHA-256"><Text code copyable>{v2Strategy.result.reviewable_set_hash}</Text></Descriptions.Item>
+                          </Descriptions>
+                          <Space wrap>{(v2Strategy.result.output.limitations || []).map((item: any, index: number) => <Tag color="gold" key={`${item.code || "LIMITATION"}-${index}`}>{item.code || "LIMITATION"}</Tag>)}</Space>
+                          <Alert type="info" showIcon message="边界保持" description="测试方向只是假设；CONTENT_BLOCKED、UNPROVEN、UNRESOLVED 与 NOT_EVALUATED 不会因策略审核被升级或清除。" />
+                        </Space>,
+                      }]} />
+                    </>}
+                  </Space>}
+                </Card>
+
+                <Card size="small" title={<Space><FileText size={18} />执行内容骨架、确认与发布登记</Space>} extra={v2Execution && <Tooltip title="只读取当前执行方案、确认和发布记录"><Button icon={<RefreshCw size={15} />} loading={v2ExecutionLoading} onClick={refreshV2Execution} aria-label="刷新执行方案" /></Tooltip>}>
+                  {!v2Strategy?.result ? <Alert type="info" showIcon message="尚无策略候选" description="当前诊断需要先形成合法策略方向。" />
+                  : !v2Strategy.review || v2Strategy.review.decision !== "ACCEPTED" ? <Alert type="warning" showIcon message="策略尚未确认" description="执行方案只能消费已确认的精确策略结果版本；人工排序不等于确认。" />
+                  : !v2Execution ? <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    <Alert type="info" showIcon message="选择一个已确认方向" description="一次方案只承接一个方向和一个新资产，不会合并多个渠道或页面。" />
+                    <Select
+                      style={{ width: "100%", maxWidth: 620 }}
+                      placeholder="选择执行方向"
+                      value={v2ExecutionDirectionId || undefined}
+                      onChange={setV2ExecutionDirectionId}
+                      options={(v2Strategy.result.output.directions || []).map((row) => ({
+                        value: row.direction_id,
+                        label: row.direction_type === "FOUNDATION" ? "权威事实基础" : `${row.channel_label} · ${row.channel_role}`,
+                      }))}
+                    />
+                    <Button type="primary" icon={<FileText size={15} />} disabled={!v2ExecutionDirectionId} loading={v2ExecutionLoading} onClick={createV2ExecutionProposal}>生成执行内容骨架</Button>
+                  </Space> : v2ExecutionOutput ? <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                    <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                      <Descriptions.Item label="方案 ID"><Text code copyable>{v2Execution.proposal.proposal_id}</Text></Descriptions.Item>
+                      <Descriptions.Item label="结果版本"><Text code>{v2Execution.result?.result_version}</Text></Descriptions.Item>
+                      <Descriptions.Item label="状态"><Tag color={v2ExecutionConfirmation ? "green" : v2ExecutionOutput.validation.status === "READY_FOR_CONFIRMATION" ? "blue" : "gold"}>{v2ExecutionConfirmation ? "已确认，待发布" : v2ExecutionOutput.validation.status === "READY_FOR_CONFIRMATION" ? "可确认" : "待补充"}</Tag></Descriptions.Item>
+                      <Descriptions.Item label="策略方向">{v2ExecutionOutput.direction.direction_type === "FOUNDATION" ? "权威事实基础" : v2ExecutionOutput.direction.channel_label}</Descriptions.Item>
+                      <Descriptions.Item label="策略渠道 Role">{v2ExecutionOutput.strategy_channel.channel_role || "无（Foundation 独立）"}</Descriptions.Item>
+                      <Descriptions.Item label="资产操作"><Tag color="blue">新建资产</Tag></Descriptions.Item>
+                    </Descriptions>
+                    {v2ExecutionOutput.direction.direction_type === "FOUNDATION" && <Alert type="info" showIcon message="Foundation 与渠道 Role 保持分离" description="下面选择的官网产品页、功能页或帮助中心只是执行目的地，不会把策略改成 OFFICIAL_SITE PRIMARY。" />}
+                    {!v2Execution.applicability.is_current_input && <Alert type="warning" showIcon message="执行输入已经过期" description="历史方案和发布记录仍保留，但该版本不能继续授权新编辑或确认。" />}
+
+                    <Divider orientation="left">资产制作简报</Divider>
+                    <Row gutter={[12, 12]}>
+                      <Col xs={24} md={8}><Text type="secondary">资产类型</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_type || undefined} options={v2ExecutionOutput.asset_type_candidates.map((row) => ({ label: row.label, value: row.asset_type }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_type: value, publication_surface: null }))} /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">计划发布位置</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.publication_surface || undefined} options={v2ExecutionOutput.publication_surface_candidates.filter((row) => row.asset_type === v2ExecutionEdit.asset_type).map((row) => ({ label: row.label, value: row.surface_key }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, publication_surface: value }))} /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">方案范围</Text><Input style={{ marginTop: 5 }} value="完整承接已确认方向" disabled /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">发布账号</Text><Input style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_account || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_account: event.target.value }))} /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">栏目或拟建页面位置</Text><Input style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_location || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_location: event.target.value }))} /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">账号可操作性</Text><div style={{ marginTop: 9 }}><Checkbox checked={v2ExecutionEdit.account_control_status === "USER_REPORTED_CONTROL"} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, account_control_status: event.target.checked ? "USER_REPORTED_CONTROL" : "UNVERIFIED" }))}>用户确认可操作</Checkbox></div></Col>
+                    </Row>
+
+                    <Divider orientation="left">公开内容骨架</Divider>
+                    <Input value={v2ExecutionEdit.title || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, title: event.target.value }))} addonBefore="安全标题" />
+                    <Checkbox.Group
+                      style={{ width: "100%" }}
+                      value={v2ExecutionEdit.section_order || []}
+                      onChange={(values) => setV2ExecutionEdit((current) => ({ ...current, section_order: values }))}
+                    >
+                      <div className="v2-execution-sections">
+                        {v2ExecutionOutput.public_content_candidates.map((section) => {
+                          const selectedIndex = (v2ExecutionEdit.section_order || []).indexOf(section.section_id);
+                          return <div key={section.section_id} className="v2-execution-section">
+                            <Checkbox value={section.section_id} />
+                            <div><Text strong>{section.title}</Text><div><Text type="secondary">{section.purpose} · Truth {(section.truth_ids || []).join("、")}</Text></div></div>
+                            <Space size={4} className="v2-execution-section-order">
+                              <Tooltip title="上移"><Button size="small" icon={<ArrowUp size={14} />} disabled={selectedIndex <= 0} onClick={() => moveV2ExecutionSection(section.section_id, -1)} aria-label="上移公开 Section" /></Tooltip>
+                              <Tooltip title="下移"><Button size="small" icon={<ArrowDown size={14} />} disabled={selectedIndex < 0 || selectedIndex >= (v2ExecutionEdit.section_order || []).length - 1} onClick={() => moveV2ExecutionSection(section.section_id, 1)} aria-label="下移公开 Section" /></Tooltip>
+                            </Space>
+                          </div>;
+                        })}
+                      </div>
+                    </Checkbox.Group>
+                    <Input.TextArea rows={2} value={v2ExecutionEdit.execution_note || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, execution_note: event.target.value }))} placeholder="执行备注" />
+
+                    <Divider orientation="left">内部待确认清单</Divider>
+                    <div className="v2-strategy-list">{v2ExecutionOutput.internal_checklist.map((item, index) => <div className="v2-strategy-list-row" key={`${item.code}-${index}`}><Tag color="gold">{item.code}</Tag><Text type="secondary">{typeof item.detail === "string" ? item.detail : JSON.stringify(item.detail)}</Text></div>)}</div>
+                    <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                      <Descriptions.Item label="固定 Baseline">{v2ExecutionOutput.baseline.baseline_run_ids?.length || 0} 个有效 Run</Descriptions.Item>
+                      <Descriptions.Item label="计划/有效/失败">{v2ExecutionOutput.baseline.run_manifest?.planned_count || 0} / {v2ExecutionOutput.baseline.run_manifest?.valid_count || 0} / {v2ExecutionOutput.baseline.run_manifest?.failed_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="测量状态">仅冻结输入，尚未比较</Descriptions.Item>
+                    </Descriptions>
+                    <Space wrap>{(v2ExecutionOutput.baseline.collector_capability_snapshot?.warnings || []).map((code: string) => <Tag color="gold" key={code}>{code}</Tag>)}</Space>
+
+                    {v2ExecutionOutput.validation.errors.length > 0 && <Alert type="warning" showIcon message="方案尚不能确认" description={v2ExecutionOutput.validation.errors.map(v2ExecutionValidationLabel).join("；")} />}
+                    {v2Execution.allowed_operations.includes("REVISE") && <Row gutter={[12, 12]} align="middle">
+                      <Col xs={24} md={8}><Input value={v2ExecutionEditor} onChange={(event) => setV2ExecutionEditor(event.target.value)} placeholder="执行人/确认人" /></Col>
+                      <Col xs={24} md={16}><Space wrap><Button icon={<ListChecks size={15} />} loading={v2ExecutionLoading} onClick={saveV2ExecutionRevision}>保存并重新校验</Button>{v2Execution.allowed_operations.includes("CONFIRM") && <Popconfirm title="确认当前执行方案？" description="确认后仍需人工发布并单独登记。" okText="确认" cancelText="取消" onConfirm={confirmV2ExecutionProposal}><Button type="primary" icon={<ShieldCheck size={15} />} loading={v2ExecutionLoading}>确认执行方案</Button></Popconfirm>}</Space></Col>
+                    </Row>}
+                    {v2ExecutionConfirmation && <Alert type="success" showIcon message="执行方案已确认，尚未报告发布" description={`Confirmation ${v2ExecutionConfirmation.confirmation_id} · ${formatDateTime(v2ExecutionConfirmation.created_at)}`} />}
+
+                    {v2ExecutionConfirmation && <>
+                      <Divider orientation="left">登记实际发布</Divider>
+                      <Row gutter={[12, 12]}>
+                        <Col xs={24} md={8}><Input value={v2Publication.actual_channel || ""} onChange={(event) => setV2Publication((current) => ({ ...current, actual_channel: event.target.value }))} placeholder="实际渠道" /></Col>
+                        <Col xs={24} md={8}><Input value={v2Publication.actual_account || ""} onChange={(event) => setV2Publication((current) => ({ ...current, actual_account: event.target.value }))} placeholder="实际账号" /></Col>
+                        <Col xs={24} md={8}><Input value={v2Publication.actual_location || ""} onChange={(event) => setV2Publication((current) => ({ ...current, actual_location: event.target.value }))} placeholder="实际栏目/位置" /></Col>
+                        <Col xs={24} md={12}><Input value={v2Publication.actual_url || ""} onChange={(event) => setV2Publication((current) => ({ ...current, actual_url: event.target.value }))} placeholder="实际发布 URL" /></Col>
+                        <Col xs={24} md={12}><Input value={v2Publication.published_at || ""} onChange={(event) => setV2Publication((current) => ({ ...current, published_at: event.target.value }))} placeholder="实际发布时间，例如 2026-09-11T12:00:00+08:00" /></Col>
+                        <Col xs={24}><Checkbox checked={v2Publication.actual_content_version === v2ExecutionConfirmation.result_version} onChange={(event) => setV2Publication((current) => ({ ...current, actual_content_version: event.target.checked ? v2ExecutionConfirmation.result_version : "" }))}>实际采用该确认版本的内容骨架</Checkbox></Col>
+                        <Col xs={24}><Input.TextArea rows={2} value={v2Publication.differences || ""} onChange={(event) => setV2Publication((current) => ({ ...current, differences: event.target.value }))} placeholder="与确认方案的差异；材料不足时将标记为无法判断" /></Col>
+                      </Row>
+                      <Button type="primary" icon={<ExternalLink size={15} />} loading={v2ExecutionLoading} onClick={recordV2Publication}>{v2ExecutionCurrentPublications.length ? "修订人工发布报告" : "登记人工发布报告"}</Button>
+                    </>}
+
+                    {v2Execution.publications.length > 0 && <>
+                      <Divider orientation="left">发布记录</Divider>
+                      <Table rowKey="publication_id" size="small" pagination={false} dataSource={v2Execution.publications} columns={[
+                        { title: "状态", dataIndex: "publication_status", render: () => <Tag color="blue">用户报告</Tag> },
+                        { title: "符合性", dataIndex: "conformance", render: (value: string) => <Tag color={value === "MATCHED" ? "green" : value === "OUTSIDE_CONFIRMED_SCOPE" ? "red" : "gold"}>{v2ConformanceLabel(value)}</Tag> },
+                        { title: "实际 URL", render: (_: unknown, row: any) => <Link href={row.report.actual_url} target="_blank">{row.report.actual_url}</Link> },
+                        { title: "记录时间", dataIndex: "created_at", render: formatDateTime },
+                      ]} />
+                      <Alert type="info" showIcon message="发布记录为人工报告" description="系统未抓取或验证线上页面；方案符合性与发布是否真实发生分别展示。" />
+                    </>}
+
+                    <Collapse ghost items={[{ key: "execution-audit", label: "查看执行输入与版本审计", children: <Descriptions size="small" column={1}>
+                      <Descriptions.Item label="策略结果"><Text code>{v2Execution.proposal.strategy_result_version}</Text></Descriptions.Item>
+                      <Descriptions.Item label="策略审核"><Text code>{v2Execution.proposal.strategy_review_id}</Text></Descriptions.Item>
+                      <Descriptions.Item label="执行输入 SHA-256"><Text code copyable>{v2Execution.proposal.input_snapshot_hash}</Text></Descriptions.Item>
+                      <Descriptions.Item label="Baseline Raw Result"><Text code>{v2ExecutionOutput.baseline.raw_result_version}</Text></Descriptions.Item>
+                    </Descriptions> }]} />
+                  </Space> : <Empty description="执行方案结果不可用" />}
+                </Card>
+
+                <Card id="v2-retest" size="small" title={<Space><BarChart3 size={18} />固定复测与前后变化</Space>} extra={v2Retest && <Tooltip title="只读取复测状态，不触发采样或计算"><Button icon={<RefreshCw size={15} />} loading={v2RetestLoading} onClick={refreshV2Retest} aria-label="刷新复测状态" /></Tooltip>}>
+                  {!v2Retest ? <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                    {v2RetestPublicationOptions.length === 0 ? <Alert
+                      type="info"
+                      showIcon
+                      message="尚不能创建发布后复测"
+                      description={v2RetestReadiness?.blocker?.detail || "需要已确认的执行方案和一条明确的人工发布记录；查看本页不会自动补齐这些对象。"}
+                    /> : <>
+                      <Alert type="info" showIcon message="先选择精确发布记录" description="历史发布记录也可复测；系统不会自动采用 latest，也不会把用户报告升级为系统验证。" />
+                      <Select
+                        style={{ width: "100%" }}
+                        placeholder="选择要观察的发布记录"
+                        value={v2RetestPublicationId || undefined}
+                        options={v2RetestPublicationOptions}
+                        onChange={(value) => {
+                          setV2RetestPublicationId(value);
+                          setV2RetestReadiness(null);
+                          void refreshV2RetestReadiness(value);
+                        }}
+                      />
+                    </>}
+                    {v2RetestReadiness?.sampling_eligible && <>
+                      <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                        <Descriptions.Item label="固定 Baseline">{v2RetestReadiness.baseline?.baseline_run_ids?.length || 0} 个有效 Run</Descriptions.Item>
+                        <Descriptions.Item label="发布状态"><Tag color="blue">用户报告</Tag></Descriptions.Item>
+                        <Descriptions.Item label="发布时间校验">{v2RetestReadiness.publication?.published_at_parse_status === "TIMEZONE_AWARE" ? "已记录时区" : "顺序待核实"}</Descriptions.Item>
+                      </Descriptions>
+                      <Divider orientation="left">冻结本次测量身份</Divider>
+                      <Row gutter={[12, 12]}>
+                        <Col xs={24} md={8}><Text type="secondary">目标品牌</Text><Input style={{ marginTop: 5 }} value={v2MeasurementIdentity.canonical_brand_name} onChange={(event) => setV2MeasurementIdentity((current) => ({ ...current, canonical_brand_name: event.target.value }))} /></Col>
+                        <Col xs={24} md={8}><Text type="secondary">确认人</Text><Input style={{ marginTop: 5 }} value={v2MeasurementIdentity.confirmed_by} onChange={(event) => setV2MeasurementIdentity((current) => ({ ...current, confirmed_by: event.target.value }))} placeholder="确认别名和官方身份时填写" /></Col>
+                        <Col xs={24} md={8}><Text type="secondary">计划采样</Text><InputNumber style={{ width: "100%", marginTop: 5 }} min={1} max={10} value={v2RetestSampleCount} onChange={(value) => setV2RetestSampleCount(Number(value || 1))} /></Col>
+                        <Col xs={24} md={8}><Text type="secondary">可接受品牌别名</Text><Input.TextArea rows={2} style={{ marginTop: 5 }} value={v2MeasurementIdentity.accepted_aliases} onChange={(event) => setV2MeasurementIdentity((current) => ({ ...current, accepted_aliases: event.target.value }))} placeholder="逗号或换行分隔" /></Col>
+                        <Col xs={24} md={8}><Text type="secondary">官方域名</Text><Input.TextArea rows={2} style={{ marginTop: 5 }} value={v2MeasurementIdentity.official_domains} onChange={(event) => setV2MeasurementIdentity((current) => ({ ...current, official_domains: event.target.value }))} placeholder="未确认时留空，指标将不可计算" /></Col>
+                        <Col xs={24} md={8}><Text type="secondary">官方精确 URL</Text><Input.TextArea rows={2} style={{ marginTop: 5 }} value={v2MeasurementIdentity.official_urls} onChange={(event) => setV2MeasurementIdentity((current) => ({ ...current, official_urls: event.target.value }))} placeholder="未确认时留空" /></Col>
+                      </Row>
+                      <Button type="primary" icon={<ListChecks size={15} />} loading={v2RetestLoading} onClick={createV2RetestPlan}>冻结复测计划</Button>
+                    </>}
+                  </Space> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                    <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                      <Descriptions.Item label="复测 ID"><Text code copyable>{v2Retest.retest.retest_id}</Text></Descriptions.Item>
+                      <Descriptions.Item label="状态"><Tag color={["COMPARISON_READY", "READY_FOR_COMPARISON"].includes(v2Retest.retest.status) ? "green" : ["SAMPLING", "SEMANTIC_MEASURING"].includes(v2Retest.retest.status) ? "blue" : "gold"}>{v2Retest.retest.status}</Tag></Descriptions.Item>
+                      <Descriptions.Item label="复测 Analysis"><Text code>{v2Retest.retest.retest_analysis_id}</Text></Descriptions.Item>
+                      <Descriptions.Item label="固定 Baseline">{v2Retest.baseline.baseline_run_ids?.length || 0} 个有效 Run</Descriptions.Item>
+                      <Descriptions.Item label="计划/终态/有效">{v2Retest.sampling.sampling.planned_run_count} / {v2Retest.sampling.sampling.terminal_run_count} / {v2Retest.sampling.sampling.valid_run_count}</Descriptions.Item>
+                      <Descriptions.Item label="外部语义调用">{v2Retest.boundary.external_llm_calls || 0}</Descriptions.Item>
+                    </Descriptions>
+                    <Alert type="info" showIcon message="只报告观察变化" description="人工发布记录未经过系统抓取验证；本报告不会输出渠道有效、策略成功或因果提升结论。" />
+                    {v2Retest.blocker && <Alert type="warning" showIcon message={v2Retest.blocker.code} description={v2Retest.blocker.detail} />}
+                    <Space wrap>
+                      {v2Retest.allowed_actions.includes("START_RETEST_SAMPLING") && <Popconfirm title="启动真实复测采样？" description="这会按冻结 Prompt 和计划执行外部浏览器采样，不会扩大样本数。" okText="启动" cancelText="取消" onConfirm={() => runV2RetestAction("START")}><Button type="primary" icon={<Play size={15} />} loading={v2RetestLoading}>启动复测采样</Button></Popconfirm>}
+                      {v2Retest.allowed_actions.includes("RETRY_RETEST_SAMPLING") && <Button danger loading={v2RetestLoading} onClick={() => runV2RetestAction("RETRY")}>重试失败样本</Button>}
+                      {v2Retest.allowed_actions.includes("FINALIZE_RETEST_WITH_FAILURES") && <Popconfirm title="保留已记录失败并冻结结果？" okText="冻结" cancelText="取消" onConfirm={() => runV2RetestAction("FINALIZE")}><Button loading={v2RetestLoading}>带失败冻结</Button></Popconfirm>}
+                      {v2Retest.allowed_actions.includes("START_SEMANTIC_MEASUREMENT") && <Button loading={v2RetestLoading} onClick={() => runV2RetestAction("CACHE_ONLY")}>仅用兼容缓存识别推荐</Button>}
+                      {v2Retest.allowed_actions.includes("START_SEMANTIC_MEASUREMENT") && <Popconfirm title="授权本次 DeepSeek 推荐语义判断？" description="只发送本次冻结回答；这是与浏览器采样分开的外部调用授权。" okText="授权并执行" cancelText="取消" onConfirm={() => runV2RetestAction("EXTERNAL_LLM")}><Button loading={v2RetestLoading}>授权语义测量</Button></Popconfirm>}
+                      {v2Retest.allowed_actions.includes("CREATE_COMPARISON") && <Button type="primary" icon={<BarChart3 size={15} />} loading={v2RetestLoading} onClick={() => runV2RetestAction("COMPARE")}>生成描述性比较</Button>}
+                    </Space>
+                    {v2Retest.comparison_result && <>
+                      <Divider orientation="left">前后指标</Divider>
+                      <Table rowKey="metricKey" size="small" pagination={false} dataSource={v2ComparisonRows} scroll={{ x: 780 }} columns={[
+                        { title: "指标", dataIndex: "metricKey", render: v2MetricLabel },
+                        { title: "Baseline", dataIndex: "baseline", render: (value: any) => v2MetricValue(value) },
+                        { title: "复测", dataIndex: "retest", render: (value: any) => v2MetricValue(value) },
+                        { title: "观察差值", render: (_: unknown, row: any) => row.comparison.delta_percentage_points === null ? "不可比较" : `${row.comparison.delta_percentage_points > 0 ? "+" : ""}${row.comparison.delta_percentage_points.toFixed(1)} 个百分点` },
+                        { title: "可比性", render: (_: unknown, row: any) => <Tag color={row.comparison.comparison_eligible ? "green" : "gold"}>{row.comparison.comparison_mode}</Tag> },
+                      ]} />
+                      <Space wrap>{(v2Retest.comparison_result.comparison.limitations || []).map((item: any, index: number) => <Tag color="gold" key={`${item.code || "LIMITATION"}-${index}`}>{item.code || "LIMITATION"}</Tag>)}</Space>
+                    </>}
+                    <Collapse ghost items={[{ key: "retest-audit", label: "查看复测输入、授权与版本审计", children: <Descriptions size="small" column={1}>
+                      <Descriptions.Item label="Publication"><Text code>{v2Retest.retest.publication_id}</Text></Descriptions.Item>
+                      <Descriptions.Item label="Confirmation"><Text code>{v2Retest.retest.confirmation_id}</Text></Descriptions.Item>
+                      <Descriptions.Item label="复测计划 SHA-256"><Text code copyable>{v2Retest.retest.retest_plan_hash}</Text></Descriptions.Item>
+                      <Descriptions.Item label="测量身份 SHA-256"><Text code copyable>{v2Retest.retest.measurement_identity_hash}</Text></Descriptions.Item>
+                      <Descriptions.Item label="测量契约 SHA-256"><Text code copyable>{v2Retest.retest.measurement_contract_hash}</Text></Descriptions.Item>
+                    </Descriptions> }]} />
+                  </Space>}
+                </Card>
+              </>}
+            </>}
+          </>}
+        </Space> : !dashboard ? <Card loading={loading}><Empty description="正在加载项目数据" /></Card> : page === "validation" ? <Space direction="vertical" size={16} className="page-stack">
           {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下指标仅统计该 Prompt 的采集记录；切回「全部 Prompt」查看项目整体。" />}
           <Card size="small" className="audit-hero">
             <Row align="middle" justify="space-between" gutter={[16, 16]}>
@@ -2662,7 +4899,9 @@ export default function App() {
           {projectId && activePromptId && <Card size="small" title={<Space><ShieldCheck size={18} />GEO 工作台 · Prompt #{currentWorkflowData?.prompt_id || activePromptId}</Space>} extra={<Space>
             <Button size="small" onClick={()=>setPage("recommendation")}>决策诊断详情</Button>
             <Button size="small" onClick={openStrategyConfirmationPage}>策略确认详情</Button>
-            {currentWorkflowData ? (currentWorkflowData.shelved
+            {workflowLoading && !currentWorkflowData
+              ? <Tag color="blue">正在加载当前 Prompt 工作流</Tag>
+              : currentWorkflowData ? (currentWorkflowData.shelved
               ? <Tag color="volcano">已人工搁置</Tag>
               : currentWorkflowData.ready_to_continue
                 ? <Tag color="green">答案识别已完成</Tag>
@@ -2671,7 +4910,12 @@ export default function App() {
                 : <Button type="primary" size="small" danger onClick={()=>setWorkflowReviewOpen(true)}>开始审核（{currentWorkflowData.pending_review_steps} 步待处理）</Button>)
               : <Tag color="blue">等待当前 Prompt 状态</Tag>}
           </Space>}>
-            <div className="single-prompt-flow">
+            {workflowLoading && !currentWorkflowData ? <Alert
+              type="info"
+              showIcon
+              message="正在读取当前 Prompt 工作流状态"
+              description="正在同步答案识别、证据审核、缺口和策略状态；加载完成前不展示旧 Prompt 或空状态，避免误判为只完成采集。"
+            /> : <div className="single-prompt-flow">
               {mainWorkflowSteps.map((step: any, index: number) => {
                 const tone = workflowToneMeta[step.tone] || workflowToneMeta.pending;
                 return <div key={step.key} className={`workflow-step-card ${tone.className}`}>
@@ -2686,31 +4930,82 @@ export default function App() {
                   {step.actionLabel && <Button
                     size="small"
                     type={step.tone === "current" ? "primary" : "default"}
-                    loading={(step.key === "citation" || step.key === "action" || step.key === "experiment") && citationDecisionLoading}
+                    loading={workflowStepButtonLoading(step.key)}
                     onClick={step.onAction}
                   >
                     {step.actionLabel}
                   </Button>}
                 </div>;
               })}
-            </div>
+            </div>}
             <Space wrap style={{ marginTop: 12 }}>
-              <Tag color={citationDecisionStatusColor(currentCitationDecisionData?.status)}>{citationDecisionStatusLabel(currentCitationDecisionData?.status)}</Tag>
-              {answerStepDone && citationDecisionError && <Tag color="red">引用链路异常</Tag>}
-              <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>刷新主链路</Button>
+              <Tag color={mainChainStatusTagColor}>{mainChainStatusTagLabel}</Tag>
+              {citationDetailBlockingError && <Tag color="red">引用链路异常</Tag>}
+              {citationDetailNonBlockingError && <Tag color="gold">完整引用详情未加载</Tag>}
+              <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => refreshCurrentMainChainDisplay(citationTargetPromptId, false)}>刷新主链路</Button>
+              <Button size="small" icon={<RefreshCw size={14} />} loading={workflowMaterializationLoading} disabled={!answerStepDone} onClick={() => refreshWorkflowMaterializationPlan(currentWorkflowData?.prompt_id || activePromptId)}>
+                {workflowMaterializationPlan ? "刷新物化进度" : "查看物化进度"}
+              </Button>
               <Button
                 size="small"
                 type="primary"
                 disabled={currentAnalysisRunning || (!currentCitationCanConfirm && !currentStrategyCandidateCount && !currentNeedsCurrentAnalysis && !currentAnalysisFailed)}
-                loading={citationDecisionLoading}
+                loading={workflowActionLoadingKey === "strategy" || workflowActionLoadingKey === "analysis"}
                 onClick={currentStrategyCandidateCount ? openStrategyConfirmationPage : currentAnalysisFailed || currentNeedsCurrentAnalysis ? runCurrentWorkflowAnalysis : confirmCitationDecisionV1}
               >
-                {currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentAnalysisRunning ? "主链运行中" : currentAnalysisFailed || currentNeedsCurrentAnalysis ? "重新运行当前主链" : "等待策略确认"}
+                {currentConfirmedStrategyCount ? "查看已确认策略" : currentPendingStrategyCount ? "审核策略候选" : currentCitationCanConfirm ? "生成策略候选" : currentAnalysisRunning ? "主链运行中" : currentAnalysisFailed ? "重新生成 V1.1 输入" : currentNeedsCurrentAnalysis ? "生成 V1.1 输入" : "等待策略确认"}
               </Button>
               <Button size="small" onClick={openStrategyConfirmationPage}>{citationProductTruthBlockedRows.length ? "补目标品牌事实" : "策略确认详情"}</Button>
               {citationProductTruthBlockedRows.length > 0 && <Text type="secondary">这里确认的是{project?.brand_name || "目标品牌"}自己的能力，不是竞品或对标文章的能力。</Text>}
               {legacyContinueResult && <Tag color="default">存在历史缺口/动作结果，不计入当前引用决策进度</Tag>}
             </Space>
+            {(workflowMaterializationPlan || workflowMaterializationLoading) && <div className="materialization-progress-panel">
+              <Space wrap style={{ width: "100%", justifyContent: "space-between" }}>
+                <Space wrap>
+                  <Text strong>V1.1 物化进度</Text>
+                  {workflowMaterializationLoading && <Tag color="processing">Planner 更新中</Tag>}
+                  {workflowMaterializationPlan && <Tag color={materializationFailedFinal ? "red" : materializationRemaining ? "gold" : "green"}>
+                    {materializationFailedFinal ? "存在最终失败" : materializationRemaining ? "可继续处理" : "已完成"}
+                  </Tag>}
+                  <Tag color="default">只读 Planner</Tag>
+                  <Button size="small" loading={workflowMaterializationLoading} onClick={() => refreshWorkflowMaterializationPlan(currentWorkflowData?.prompt_id || activePromptId)}>刷新物化进度</Button>
+                </Space>
+                <Text type="secondary">恢复执行只补 Missing / Failed / Stale，DONE ledger 不重算。</Text>
+              </Space>
+              {workflowMaterializationPlan && <Row gutter={[12, 10]} style={{ marginTop: 8 }}>
+                <Col xs={24} lg={12}>
+                  <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                    <Space wrap>
+                      <Text strong>SourceClaim</Text>
+                      <Tag>Required {sourceClaimMat.required}</Tag>
+                      <Tag color="green">Ledger HIT {sourceClaimMat.ledgerHit}</Tag>
+                      <Tag color="blue">Legacy {sourceClaimMat.legacy}</Tag>
+                      <Tag color={sourceClaimMat.external ? "gold" : "green"}>预计新增 LLM {sourceClaimMat.external}</Tag>
+                    </Space>
+                    <Progress percent={Math.min(100, sourceClaimMat.progress)} size="small" status={sourceClaimMat.failedFinal ? "exception" : sourceClaimMat.conservationOk ? "normal" : "exception"} />
+                    <Text type="secondary">Missing {sourceClaimMat.missing} · LLMCallCache {sourceClaimMat.llmCache} · Retrying {sourceClaimMat.inProgress} · Failed {sourceClaimMat.failedRetryable}/{sourceClaimMat.failedFinal}</Text>
+                  </Space>
+                </Col>
+                <Col xs={24} lg={12}>
+                  <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                    <Space wrap>
+                      <Text strong>EvidenceAlignment</Text>
+                      <Tag>Required {alignmentMat.required}</Tag>
+                      <Tag color="green">Ledger HIT {alignmentMat.ledgerHit}</Tag>
+                      <Tag color="blue">Legacy {alignmentMat.legacy}</Tag>
+                      <Tag color={alignmentMat.external ? "gold" : "green"}>预计新增 LLM {alignmentMat.external}</Tag>
+                    </Space>
+                    <Progress percent={Math.min(100, alignmentMat.progress)} size="small" status={alignmentMat.failedFinal ? "exception" : alignmentMat.conservationOk ? "normal" : "exception"} />
+                    <Text type="secondary">Naive {workflowMaterializationPlan.evidence_alignment?.naive_pairs ?? 0} → Candidate {workflowMaterializationPlan.evidence_alignment?.after_recall ?? 0} · Missing {alignmentMat.missing} · Failed {alignmentMat.failedRetryable}/{alignmentMat.failedFinal}</Text>
+                  </Space>
+                </Col>
+              </Row>}
+              {workflowMaterializationPlan && <Space wrap style={{ marginTop: 8 }}>
+                <Tag color={sourceClaimMat.conservationOk && alignmentMat.conservationOk ? "green" : "red"}>守恒{sourceClaimMat.conservationOk && alignmentMat.conservationOk ? "通过" : "异常"}</Tag>
+                <Tag color="default">候选策略 {workflowMaterializationPlan.evidence_alignment?.candidate_builder_shadow?.selected_shadow_policy || workflowMaterializationPlan.evidence_alignment?.candidate_builder_shadow?.selected_shadow_policy_key || "Policy D"}</Tag>
+                <Tag color="default">全库 fallback：{workflowMaterializationPlan.evidence_alignment?.candidate_builder_shadow?.c2b_cutover_gate?.no_full_library_fallback === false ? "需检查" : "未启用"}</Tag>
+              </Space>}
+            </div>}
             {decisionStability && <Card size="small" style={{ marginTop: 12 }} title={<Space wrap><Text strong>决策稳定性观察</Text><Tag color={decisionStabilityLevelColor(decisionStability.stability_level)}>{decisionStability.stability_level_label}</Tag><Tag>旁路指标</Tag></Space>}>
               <Row gutter={[12, 12]}>
                 <Col xs={12} md={6}><Statistic title="有效样本" value={decisionStability.valid_run_count ?? 0} suffix="Runs" /></Col>
@@ -3900,8 +6195,13 @@ export default function App() {
             size="small"
             title={<Space wrap><ShieldCheck size={16} /><Text strong>引用证据与策略确认详情</Text><Tag>问题 #{citationTargetPromptId}</Tag>{currentCitationDecisionData?.evidence_package_id && <Tag color="blue">证据 #{currentCitationDecisionData.evidence_package_id}</Tag>}</Space>}
             extra={<Space wrap>
-              <Tag color={citationDecisionStatusColor(currentCitationDecisionData?.status)}>{citationDecisionStatusLabel(currentCitationDecisionData?.status)}</Tag>
-              <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>重新运行链路</Button>
+              <Tag color={mainChainStatusTagColor}>{mainChainStatusTagLabel}</Tag>
+              {citationDetailNonBlockingError && <Tag color="gold">完整引用详情未加载</Tag>}
+              {citationDetailBlockingError && <Tag color="red">引用链路异常</Tag>}
+              <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => refreshCurrentMainChainDisplay(citationTargetPromptId, false)}>刷新主链路</Button>
+              <Button size="small" icon={<RefreshCw size={14} />} loading={workflowMaterializationLoading} disabled={!answerStepDone} onClick={() => refreshWorkflowMaterializationPlan(currentWorkflowData?.prompt_id || activePromptId)}>
+                {workflowMaterializationPlan ? "刷新物化进度" : "查看物化进度"}
+              </Button>
               <Button size="small" type="primary" disabled={!currentCitationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>生成策略候选</Button>
             </Space>}
           >
@@ -3951,7 +6251,10 @@ export default function App() {
                 size="small"
                 title={<Space wrap><Text strong>操作台</Text>{citationProductTruthBlockedRows.length > 0 && <Tag color="gold">{citationProductTruthBlockedRows.length} 条需要产品事实</Tag>}</Space>}
                 extra={<Space wrap>
-                  <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => loadCitationDecisionV1(citationTargetPromptId, false)}>重新运行</Button>
+                  <Button size="small" icon={<RefreshCw size={14} />} loading={citationDecisionLoading} disabled={!answerStepDone} onClick={() => refreshCurrentMainChainDisplay(citationTargetPromptId, false)}>刷新主链路</Button>
+                  <Button size="small" icon={<RefreshCw size={14} />} loading={workflowMaterializationLoading} disabled={!answerStepDone} onClick={() => refreshWorkflowMaterializationPlan(currentWorkflowData?.prompt_id || activePromptId)}>
+                    {workflowMaterializationPlan ? "刷新物化进度" : "查看物化进度"}
+                  </Button>
                   <Button size="small" type="primary" disabled={!currentCitationCanConfirm} loading={citationDecisionLoading} onClick={confirmCitationDecisionV1}>生成策略候选</Button>
                 </Space>}
               >
@@ -4307,6 +6610,7 @@ export default function App() {
                 const allCandidates = strategyData.candidates || [];
                 const plan = experimentPlanPayload(c.experiment_plan);
                 const strategyView = strategyDisplayPayload(c);
+                const useSynthesisDecisionView = hasSynthesisDecisionView(c);
                 const planPayload = plan.payload || strategyView.payload || c.structured_payload || {};
                 const controlled = plan.controlled_intervention || {};
                 const audit = plan.known_environment_audit || {};
@@ -4352,7 +6656,23 @@ export default function App() {
                     ? "该策略已经过人工确认并形成 effective_payload；下一步只是在第 8 步确认具体资产、URL、内容结构、Baseline 和 Asset Brief。"
                     : "请先审核这条 StrategyCandidate。确认前它只是机器策略候选，不会创建 Action 或 Experiment。"}
                 />
-                {strategyView.decisionSpace && <Alert
+                {useSynthesisDecisionView && <StrategySynthesisDecisionView candidate={c} />}
+                {!useSynthesisDecisionView && strategyView.strategyBasis === "ANSWER_DECISION_EVIDENCE_GAP" && <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={<Space wrap>
+                    <Text strong>策略依据：答案决策理由证据缺口</Text>
+                    <Tag>对标来源：无</Tag>
+                    <Tag color="blue">答案决策理由：有</Tag>
+                    <Tag color={strategyView.productTruthRefs?.status === "TRUE" ? "green" : "orange"}>
+                      目标品牌事实：{strategyView.productTruthRefs?.status === "TRUE" ? "已确认" : "待确认"}
+                    </Tag>
+                    <Tag color="orange">合格支撑证据：无</Tag>
+                  </Space>}
+                  description={`当前 ${strategyView.decisionReasonIds.length} 个决策理由没有形成满足 Phase 2A lineage 的合格支撑证据；该候选不计入 Benchmark，也不代表已选定第 8 步的具体渠道或资产。`}
+                />}
+                {!useSynthesisDecisionView && strategyView.decisionSpace && <Alert
                   type={strategyView.decisionSpace.worth_level === "WORTH_PURSUING" ? "success" : strategyView.decisionSpace.worth_level === "LOW_WORTH" ? "warning" : "info"}
                   showIcon
                   style={{ marginBottom: 12 }}
@@ -4369,6 +6689,7 @@ export default function App() {
                   description={strategyView.decisionSpace.worth_note}
                 />}
                 <Row gutter={[12,12]}>
+                  {!useSynthesisDecisionView && <>
                   <Col xs={24} md={8}>
                     <Card size="small" title="AI 决策机会" style={{background:"#f6ffed", height:"100%"}}>
                       <Space direction="vertical" size={8} style={{width:"100%"}}>
@@ -4423,7 +6744,7 @@ export default function App() {
                         </div>}
                         {strategyView.requiredSignals.length > 0
                           ? strategyView.requiredSignals.map((item:any, index:number) => <Alert
-                              key={`${item.capability_label || index}`}
+                              key={`${item.capability_label || "signal"}-${index}`}
                               type="info"
                               showIcon
                               message={item.signal || `目标品牌明确支持「${item.capability_label || "该能力"}」`}
@@ -4470,6 +6791,7 @@ export default function App() {
                       </Space>
                     </Card>
                   </Col>
+                  </>}
                   <Col xs={24}>
                     <Card
                       size="small"
@@ -5169,38 +7491,271 @@ export default function App() {
       </Content>
     </Layout>
     <Modal
+      title="第 8 步：执行方案审核"
+      open={step8ModalOpen}
+      onCancel={() => {
+        if (step8Submitting) return;
+        setStep8ModalOpen(false);
+        setStep8Candidate(null);
+        setStep8ProposalData(null);
+        setStep8ProposalEdits({});
+        setStep8ValidationResult(null);
+      }}
+      footer={null}
+      width={1080}
+      destroyOnHidden
+      maskClosable={!step8Submitting}
+      closable={!step8Submitting}
+    >
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Alert
+          type="info"
+          showIcon
+          message={`Strategy Candidate #${step8Candidate?.id || "-"} 已确认，执行方案待选择/确认`}
+          description="本页只审核 PR5-A 已生成的合法执行建议。策略事实、渠道 Role、Reason Scope、Baseline 和指标均为只读；本轮不会创建 Action 或 Experiment。"
+        />
+        {step8AssetsLoading && <div style={{ padding: 32, textAlign: "center" }}><Progress type="circle" percent={65} size={56} status="active" /></div>}
+        {!step8AssetsLoading && !step8ProposalData && <Empty description="执行建议未加载" />}
+        {(step8ProposalData?.active_proposals || []).map((proposal: any) => {
+          const edit = step8ProposalEdits[proposal.proposal_key] || {};
+          const packageKey = edit.selected_asset_package_key;
+          const selectedPlan = (proposal.section_plan_candidates || []).find((item: any) => item.asset_package_key === packageKey);
+          const eligibleSections = selectedPlan?.section_plan || [];
+          const selectedSectionIds: string[] = edit.section_order || [];
+          const portfolioDraft = (step8ValidationResult?.proposal_drafts || []).find((item: any) => item.canonical_proposal?.proposal_key === proposal.proposal_key);
+          const singleDraft = step8ValidationResult?.single_results?.[proposal.proposal_key];
+          const draft = portfolioDraft || singleDraft;
+          const allowedClaims = (proposal.claim_usage_policy || []).filter((item: any) => item.policy === "TARGET_ASSERTION_ALLOWED");
+          const restrictedClaims = (proposal.claim_usage_policy || []).filter((item: any) => ["TARGET_ASSERTION_FORBIDDEN", "UNKNOWN_MUST_REMAIN_UNKNOWN", "COMPARISON_RESTRICTED"].includes(item.policy));
+          const disabled = edit.execute_this_proposal === false;
+          const moveSection = (sectionId: string, delta: number) => {
+            const current = [...selectedSectionIds];
+            const index = current.indexOf(sectionId);
+            const target = index + delta;
+            if (index < 0 || target < 0 || target >= current.length) return;
+            [current[index], current[target]] = [current[target], current[index]];
+            updateStep8Edit(proposal.proposal_key, { section_order: current });
+          };
+          return <Card
+            key={proposal.proposal_key}
+            size="small"
+            title={<Space wrap><Text strong>{proposal.channel_label || proposal.channel}</Text><Tag color={proposal.channel_role === "PRIMARY" ? "green" : "gold"}>{proposal.channel_role}</Tag><Tag>{proposal.proposal_type === "AUTHORITATIVE_ASSET_INTERVENTION" ? "官方权威资产干预" : "渠道验证实验"}</Tag></Space>}
+            extra={<Segmented
+              value={edit.execute_this_proposal === true ? "EXECUTE" : edit.execute_this_proposal === false ? "DEFER" : ""}
+              options={[{ label: "本轮执行", value: "EXECUTE" }, { label: "暂缓", value: "DEFER" }]}
+              onChange={(value) => updateStep8Edit(proposal.proposal_key, { execute_this_proposal: value === "EXECUTE" })}
+            />}
+          >
+            <Space direction="vertical" size={14} style={{ width: "100%" }}>
+              <Descriptions size="small" column={{ xs: 1, sm: 3 }}>
+                <Descriptions.Item label="资产操作">{proposal.asset_operation === "CREATE_NEW" ? "新建资产" : "更新已有资产"}</Descriptions.Item>
+                <Descriptions.Item label="方案目标">{(proposal.asset_purpose || proposal.execution_constraint?.asset_purpose) === "AUTHORITATIVE_PRODUCT_TRUTH" ? "权威产品事实承载" : "最小渠道验证"}</Descriptions.Item>
+                <Descriptions.Item label="Baseline">{proposal.baseline_ref?.baseline_run_ids?.length || 0} Runs（只读）</Descriptions.Item>
+              </Descriptions>
+
+              {proposal.channel_role === "TEST" && <Alert
+                type="warning"
+                showIcon
+                message={proposal.intervention_hypothesis?.pattern || "渠道验证"}
+                description={proposal.intervention_hypothesis?.text}
+              />}
+
+              <div>
+                <Text strong>资产覆盖方案</Text>
+                <Radio.Group
+                  value={packageKey}
+                  disabled={disabled}
+                  onChange={(event) => {
+                    const nextKey = event.target.value;
+                    const nextPlan = (proposal.section_plan_candidates || []).find((item: any) => item.asset_package_key === nextKey);
+                    updateStep8Edit(proposal.proposal_key, {
+                      selected_asset_package_key: nextKey,
+                      section_order: (nextPlan?.section_plan || []).map((item: any) => item.section_id),
+                    });
+                  }}
+                  style={{ display: "grid", gap: 8, marginTop: 8 }}
+                >
+                  {(proposal.asset_package_candidates || []).map((item: any) => <Radio key={item.package_key} value={item.package_key}>
+                    <Text strong>{item.package_scope_mode}</Text>
+                    <Text type="secondary"> · Theme {item.theme_titles?.join(" / ") || "-"} · Reason {item.reason_ids?.length || 0} · Product Truth {item.product_truth_labels?.join(" / ") || "-"}</Text>
+                    {!!item.excluded_theme_titles?.length && <Text type="secondary"> · 暂不覆盖 {item.excluded_theme_titles.join(" / ")}</Text>}
+                  </Radio>)}
+                </Radio.Group>
+              </div>
+
+              <div>
+                <Text strong>资产类型</Text>
+                <Radio.Group
+                  value={edit.selected_asset_type}
+                  disabled={disabled}
+                  options={(proposal.asset_type_candidates || []).map((value: string) => ({ label: value, value }))}
+                  onChange={(event) => updateStep8Edit(proposal.proposal_key, { selected_asset_type: event.target.value })}
+                  style={{ display: "block", marginTop: 8 }}
+                />
+              </div>
+
+              <div>
+                <Text strong>安全标题</Text>
+                <Input
+                  value={edit.title}
+                  disabled={disabled}
+                  style={{ marginTop: 8 }}
+                  onChange={(event) => updateStep8Edit(proposal.proposal_key, { title: event.target.value })}
+                  onBlur={() => void revalidateStep8Proposal(proposal)}
+                />
+              </div>
+
+              <div>
+                <Text strong>内容 Sections</Text>
+                {!packageKey && <Alert style={{ marginTop: 8 }} type="warning" message="请先选择资产覆盖方案" />}
+                <Space direction="vertical" size={6} style={{ width: "100%", marginTop: 8 }}>
+                  {eligibleSections.map((section: any) => {
+                    const checked = selectedSectionIds.includes(section.section_id);
+                    const selectedIndex = selectedSectionIds.indexOf(section.section_id);
+                    return <div key={section.section_id} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f0f0f0" }}>
+                      <Checkbox
+                        checked={checked}
+                        disabled={disabled}
+                        onChange={(event) => {
+                          const next = event.target.checked
+                            ? [...selectedSectionIds, section.section_id]
+                            : selectedSectionIds.filter((value) => value !== section.section_id);
+                          updateStep8Edit(proposal.proposal_key, { section_order: next });
+                        }}
+                      >
+                        <Text strong>{section.display_title}</Text>
+                        <Text type="secondary"> · {section.section_purpose} · {section.section_rationale_code}</Text>
+                      </Checkbox>
+                      <Space size={4}>
+                        <Tooltip title="上移"><Button aria-label="上移 Section" size="small" icon={<ArrowUp size={15} />} disabled={disabled || !checked || selectedIndex <= 0} onClick={() => moveSection(section.section_id, -1)} /></Tooltip>
+                        <Tooltip title="下移"><Button aria-label="下移 Section" size="small" icon={<ArrowDown size={15} />} disabled={disabled || !checked || selectedIndex < 0 || selectedIndex >= selectedSectionIds.length - 1} onClick={() => moveSection(section.section_id, 1)} /></Tooltip>
+                      </Space>
+                    </div>;
+                  })}
+                </Space>
+              </div>
+
+              <Row gutter={12}>
+                <Col xs={24} md={8}><Text strong>发布账号</Text><Input disabled={disabled} value={edit.publishing_metadata?.publishing_account} placeholder="发布主体" onChange={(event) => updateStep8Edit(proposal.proposal_key, { publishing_metadata: { ...edit.publishing_metadata, publishing_account: event.target.value } })} /></Col>
+                <Col xs={24} md={8}><Text strong>发布位置</Text><Input disabled={disabled} value={edit.publishing_metadata?.publishing_location} placeholder="栏目或目录" onChange={(event) => updateStep8Edit(proposal.proposal_key, { publishing_metadata: { ...edit.publishing_metadata, publishing_location: event.target.value } })} /></Col>
+                <Col xs={24} md={8}><Text strong>URL slug</Text><Input disabled={disabled} value={edit.publishing_metadata?.url_slug} placeholder="content-slug" onChange={(event) => updateStep8Edit(proposal.proposal_key, { publishing_metadata: { ...edit.publishing_metadata, url_slug: event.target.value } })} /></Col>
+              </Row>
+
+              <div>
+                <Text strong>观察窗口</Text>
+                <Select
+                  value={edit.selected_observation_window_index}
+                  disabled={disabled}
+                  style={{ width: "100%", marginTop: 8 }}
+                  options={(proposal.validation_plan?.observation_window_candidates || []).map((item: any, index: number) => ({
+                    value: index,
+                    label: `${item.default_sample_count || "-"} 次独立采集 · ${item.collection_mode || "观察计划"}`,
+                  }))}
+                  onChange={(value) => updateStep8Edit(proposal.proposal_key, { selected_observation_window_index: value })}
+                />
+              </div>
+
+              <Row gutter={12}>
+                <Col xs={24} md={12}>
+                  <Text strong>可写入事实</Text>
+                  <div style={{ marginTop: 6 }}>{allowedClaims.length ? allowedClaims.map((item: any) => <Tag color="green" key={item.claim_id}>{item.proposition?.object}</Tag>) : <Text type="secondary">无可肯定写入的目标品牌事实</Text>}</div>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Text strong>限制事实</Text>
+                  <div style={{ marginTop: 6 }}>{restrictedClaims.map((item: any) => <Tag color="red" key={item.claim_id}>{item.proposition?.object}</Tag>)}</div>
+                </Col>
+              </Row>
+
+              <div>
+                <Text strong>成功指标</Text>
+                <div style={{ marginTop: 6 }}>{(proposal.eligible_metrics || []).map((item: any) => <Tag key={item.metric_key} color={item.baseline_status === "NOT_MEASURABLE_YET" ? "default" : "blue"}>{item.metric_key} · {item.measurement_level} · {item.baseline_status}</Tag>)}</div>
+              </div>
+
+              {draft && <Alert
+                type={draft.draft_status === "VALID" ? "success" : "error"}
+                showIcon
+                message={draft.proposal_readiness || draft.draft_status}
+                description={(draft.edit_errors || []).map((item: any) => `${item.error_code}: ${item.message}${item.offending_phrase ? `（${item.offending_phrase}）` : ""}`).join("；") || "8 个硬校验器均已通过"}
+              />}
+
+              <Collapse size="small" items={[{
+                key: "audit",
+                label: "审计详情",
+                children: <Descriptions size="small" column={1}>
+                  <Descriptions.Item label="Proposal ID">{proposal.proposal_key}</Descriptions.Item>
+                  <Descriptions.Item label="Theme IDs">{proposal.theme_ids?.join(", ") || "-"}</Descriptions.Item>
+                  <Descriptions.Item label="Reason IDs">{proposal.reason_ids?.join(", ") || "-"}</Descriptions.Item>
+                  <Descriptions.Item label="Product Truth IDs">{proposal.product_truth_ids?.join(", ") || "-"}</Descriptions.Item>
+                  <Descriptions.Item label="Channel Signals">{proposal.channel_signal_ids?.join(", ") || "-"}</Descriptions.Item>
+                  <Descriptions.Item label="Validators">{draft ? Object.entries(draft.validator_results || {}).map(([key, value]: [string, any]) => <Tag color={value.status === "VALID" ? "green" : "red"} key={key}>{key}: {value.status}</Tag>) : "待重校验"}</Descriptions.Item>
+                </Descriptions>,
+              }]} />
+            </Space>
+          </Card>;
+        })}
+
+        {step8ValidationResult?.portfolio_readiness && <Alert
+          type={step8ValidationResult.ready_for_freeze ? "success" : step8ValidationResult.portfolio_readiness === "HAS_INVALID_EDIT" ? "error" : "warning"}
+          showIcon
+          message={`Portfolio：${step8ValidationResult.portfolio_readiness}`}
+          description={step8ValidationResult.ready_for_freeze ? "已具备进入 PR5-C 冻结的条件；本页仍未写入数据库。" : "请完成必选项或修复卡片中的非法编辑。"}
+        />}
+        <Divider style={{ margin: 0 }} />
+        <Space style={{ justifyContent: "flex-end", width: "100%" }}>
+          <Button disabled={step8Submitting} onClick={() => {
+            setStep8ModalOpen(false);
+            setStep8Candidate(null);
+            setStep8ProposalData(null);
+            setStep8ProposalEdits({});
+            setStep8ValidationResult(null);
+          }}>关闭</Button>
+          <Button type="primary" icon={<ShieldCheck size={16} />} loading={step8Submitting} disabled={!step8ProposalData} onClick={() => void submitStep8ExecutionPlan()}>重新校验执行方案</Button>
+        </Space>
+      </Space>
+    </Modal>
+    <Modal
       title="人工审核工作台"
       open={workflowReviewOpen}
-      onCancel={()=>{setWorkflowReviewOpen(false);setReviewQueue(null);setCompetitorCandidates([]);}}
+      onCancel={()=>{setWorkflowReviewOpen(false);setReviewQueue(null);setReviewQueueLoading(false);setReviewAnalysisLoading(false);setConfirmingAlignmentGroupKeys(new Set());setCompetitorCandidates([]);}}
       footer={null}
       width={820}
     >
       <Space direction="vertical" size={12} style={{width:"100%"}}>
         {reviewQueue?.status !== "NOT_ANALYZED" && <Alert type="info" showIcon message="机器分析已完成，请按顺序人工确认：先确认答案中的竞品/候选对象，再校验 AI 说法和证据关系。相同答案只审核一次，确认后自动应用到全部采集样本。" />}
-        {!reviewQueue && <Button type="primary" loading={loading} onClick={async()=>{
-          setLoading(true);
+        {!reviewQueue && <Button type="primary" loading={reviewQueueLoading} onClick={async()=>{
+          const pid = currentWorkflowData?.prompt_id || activePromptId;
+          if (!projectId || !pid) {
+            message.warning("请先选择一个具体 Prompt");
+            return;
+          }
+          setReviewQueueLoading(true);
+          setConfirmingAlignmentGroupKeys(new Set());
           try{
             const [q, cc] = await Promise.all([
-              (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData?.prompt_id}/review-queue`)).json(),
-              (await fetch(`/api/optimization/workflow/${projectId}/${currentWorkflowData?.prompt_id}/competitor-candidates`)).json(),
+              fetchReviewJson(`/api/optimization/workflow/${projectId}/${pid}/review-queue`, 10000),
+              fetchReviewJson(`/api/optimization/workflow/${projectId}/${pid}/competitor-candidates`, 10000),
             ]);
             setReviewQueue(q); setCompetitorCandidates(cc);
             if (q?.status !== "NOT_ANALYZED" && (q?.unique_events || []).length === 0 && (q?.alignments || []).length === 0 && (cc || []).length === 0) {
-              await refreshWorkflowStatus();
+              await refreshWorkflowStatusForPrompt(pid);
               message.info("当前没有待审核项，主链路状态已刷新");
               setWorkflowReviewOpen(false);
               setReviewQueue(null);
               setCompetitorCandidates([]);
             }
           }catch(e:any){message.error(e.message)}
-          finally{setLoading(false)}
+          finally{setReviewQueueLoading(false)}
         }}>加载待审核项</Button>}
         {reviewQueue?.status==="NOT_ANALYZED" && <Space direction="vertical" size={8} style={{width:"100%"}}>
           <Alert type="warning" showIcon message="该 Prompt 尚未执行机器分析——不是「审核完成」，而是还没有可审核的数据。" />
-          <Button type="primary" loading={loading} onClick={async()=>{
-            setLoading(true);
+          <Button type="primary" loading={reviewAnalysisLoading} onClick={async()=>{
+            setReviewAnalysisLoading(true);
             try{
-              const pid = currentWorkflowData?.prompt_id;
+              const pid = currentWorkflowData?.prompt_id || activePromptId;
+              if (!projectId || !pid) {
+                message.warning("请先选择一个具体 Prompt");
+                return;
+              }
               const r = await (await fetch(`/api/optimization/workflow/${projectId}/${pid}/run-analysis`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({use_answer_binding_v1_1:true})})).json();
               if (r.started === false) {
                 message.info("该 Prompt 的机器分析已在后台运行中，稍后点击「加载待审核项」查看进度");
@@ -5234,7 +7789,7 @@ export default function App() {
                 } catch { /* 忽略 */ }
               })();
             }catch(e:any){message.error(e.message)}
-            finally{setLoading(false)}
+            finally{setReviewAnalysisLoading(false)}
           }}>运行机器分析（后台运行，约 2-10 分钟）</Button>
         </Space>}
         {reviewQueue && reviewQueue.status !== "NOT_ANALYZED" && <Space direction="vertical" size={12} style={{width:"100%"}}>
@@ -5271,27 +7826,38 @@ export default function App() {
             {(e.reasons||[]).map((r:any,ri:number)=><Text key={ri} type="secondary" style={{display:"block",marginTop:2}}>理由{ri+1}：{r.normalized_reason}</Text>)}
             <Space style={{marginTop:8}}>
               <Button size="small" type="primary" onClick={async()=>{
-                await fetch("/api/optimization/workflow/review/events/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
-                message.success("已确认 AI 说法无误");
-                setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
-                await refreshWorkflowStatus();
-                const pid = currentWorkflowData?.prompt_id || citationTargetPromptId;
-                if (pid) await loadCitationDecisionV1(pid, true);
+                try {
+                  const response = await fetchReviewAction("/api/optimization/workflow/review/events/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
+                  await assertWorkflowResponse(response, "确认 AI 说法失败");
+                  message.success("已确认 AI 说法无误");
+                  setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
+                  const pid = currentWorkflowData?.prompt_id || citationTargetPromptId;
+                  if (pid) void refreshWorkflowStatusForPrompt(pid);
+                } catch (error: any) {
+                  message.error(error.message || "确认 AI 说法失败，请稍后重试");
+                }
               }}>AI 确实这样说了</Button>
               <Button size="small" onClick={async()=>{
-                await fetch("/api/optimization/workflow/review/events/reject-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
-                message.success("已标记错误");
-                setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
-                await refreshWorkflowStatus();
-                const pid = currentWorkflowData?.prompt_id || citationTargetPromptId;
-                if (pid) await loadCitationDecisionV1(pid, true);
+                try {
+                  const response = await fetchReviewAction("/api/optimization/workflow/review/events/reject-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_ids:e.event_ids})});
+                  await assertWorkflowResponse(response, "标记 AI 说法失败");
+                  message.success("已标记错误");
+                  setReviewQueue({...reviewQueue, unique_events: reviewQueue.unique_events.filter((x:any)=>x!==e)});
+                  const pid = currentWorkflowData?.prompt_id || citationTargetPromptId;
+                  if (pid) void refreshWorkflowStatusForPrompt(pid);
+                } catch (error: any) {
+                  message.error(error.message || "标记 AI 说法失败，请稍后重试");
+                }
               }}>判断有误</Button>
             </Space>
           </Card>)}
           {/* Evidence 对齐审核：同一语义证据组只展示一张卡，底层 Run-level Alignment 仍逐条保留。 */}
           {reviewQueue.alignments.map((a:any, idx:number)=>{
             const alignmentIds = a.alignment_ids || [a.alignment_id];
-            return <Card key={`al-${idx}`} size="small" title={<Space wrap><Tag color="purple">证据语义关系校验 {idx+1}/{reviewQueue.alignments.length}</Tag><Tag>{a.alignment_count || alignmentIds.length} 条同组证据</Tag><Tag>{a.run_count || (a.run_ids || []).length} 个 Runs</Tag></Space>}>
+            const alignmentGroupKey = a.review_group_key || alignmentIds.join(",");
+            const confirmingGroup = confirmingAlignmentGroupKeys.has(alignmentGroupKey);
+            const sourceClaimCount = (a.source_claim_ids || []).length || (a.source_claim_id ? 1 : 0);
+            return <Card key={`al-${alignmentGroupKey}`} size="small" title={<Space wrap><Tag color="purple">证据语义关系校验 {idx+1}/{reviewQueue.alignments.length}</Tag><Tag>{a.alignment_count || alignmentIds.length} 条同组证据</Tag><Tag>{sourceClaimCount} 条同义来源主张</Tag><Tag>{a.run_count || (a.run_ids || []).length} 个 Runs</Tag></Space>}>
             <Alert type="warning" showIcon style={{marginBottom:8}} message="这里校验的是「来源原文是否真的支持这条 AI 理由」的语义关系，不判断竞品能力真伪。竞品证据只用于建立市场标准基线。" />
             <Text strong>AI 选择理由：</Text><Text>{a.reason_text}</Text>
             <Divider style={{margin:6}}/>
@@ -5303,13 +7869,28 @@ export default function App() {
             {a.semantic_observed_run_count > (a.run_count || 0) && <Text type="secondary" style={{display:"block",marginTop:4}}>该理由在 {(a.semantic_observed_run_ids || []).join("、")} 中出现；当前按钮只确认本组待审证据。</Text>}
             {a.evidence_role && <Text type="secondary" style={{display:"block",marginTop:4}}>证据角色：{a.evidence_role}</Text>}
             <Space style={{marginTop:8}}>
-              <Button size="small" type="primary" onClick={async()=>{
-                await fetch("/api/optimization/workflow/review/alignments/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({alignment_ids:alignmentIds,relation:"SUPPORTS"})});
-                message.success(`已确认这一组 ${alignmentIds.length} 条支持证据`);
-                setReviewQueue({...reviewQueue, alignments: reviewQueue.alignments.filter((x:any)=>x!==a)});
-                await refreshWorkflowStatus();
-                const pid = currentWorkflowData?.prompt_id || citationTargetPromptId;
-                if (pid) await loadCitationDecisionV1(pid, true);
+              <Button size="small" type="primary" loading={confirmingGroup} disabled={confirmingGroup} onClick={async()=>{
+                if (confirmingGroup) return;
+                setConfirmingAlignmentGroupKeys((prev) => new Set(prev).add(alignmentGroupKey));
+                try {
+                  const response = await fetchReviewAction("/api/optimization/workflow/review/alignments/confirm-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({alignment_ids:alignmentIds,relation:"SUPPORTS"})});
+                  await assertWorkflowResponse(response, "确认这一组支持证据失败");
+                  message.success(`已确认这一组 ${alignmentIds.length} 条支持证据`);
+                  const pid = currentWorkflowData?.prompt_id || citationTargetPromptId;
+                  setReviewQueue((prevQueue:any) => prevQueue ? {
+                    ...prevQueue,
+                    alignments: (prevQueue.alignments || []).filter((row:any) => row.review_group_key !== alignmentGroupKey),
+                  } : prevQueue);
+                  if (pid) void refreshWorkflowStatusForPrompt(pid);
+                } catch (error: any) {
+                  message.error(error.message || "确认这一组支持证据失败，请稍后重试");
+                } finally {
+                  setConfirmingAlignmentGroupKeys((prev) => {
+                    const next = new Set(prev);
+                    next.delete(alignmentGroupKey);
+                    return next;
+                  });
+                }
               }}>确认这一组支持</Button>
             </Space>
           </Card>})}

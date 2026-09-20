@@ -3,7 +3,8 @@ from __future__ import annotations
 import threading
 import hashlib
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -82,6 +83,19 @@ from app.modules.optimization.service import (
     update_action,
 )
 from app.modules.optimization.ranking import run_citation_evidence_ranking_v0
+from app.modules.optimization.source_mapping import source_mapping_health_for_prompt
+from app.modules.optimization.channel_evidence import build_channel_evidence_landscape
+from app.modules.optimization.channel_resolution_shadow import (
+    build_channel_resolution_shadow,
+    run_channel_resolver_golden_replay,
+)
+from app.modules.optimization.strategy_synthesis_shadow import run_strategy_synthesis_shadow
+from app.modules.optimization.execution_proposal_shadow import (
+    run_execution_proposal_portfolio_revalidation,
+    run_execution_proposal_revalidation,
+    run_execution_proposal_shadow,
+)
+from app.services.url_identity import url_identity_fields
 from app.modules.optimization.answer_evidence_shadow import (
     latest_answer_evidence_shadow_run,
     run_answer_evidence_shadow_chain,
@@ -883,9 +897,12 @@ def golden_case_refetch(payload: dict, db: Session = Depends(get_db)):
     results = fetch_page_playwright(urls)
     for r in results:
         existing = _find_source_document_by_url(db, r["url"])
+        identity = url_identity_fields(r["url"], r.get("canonical_url", r["url"]))
         if existing:
-            existing.url = r.get("canonical_url", r["url"])
-            existing.canonical_url = r.get("canonical_url", "")
+            existing.url = identity["canonical_url"] or r.get("canonical_url", r["url"])
+            existing.canonical_url = identity["canonical_url"]
+            existing.canonical_url_hash = identity["canonical_url_hash"]
+            existing.canonicalization_version = identity["canonicalization_version"]
             existing.domain = r.get("domain", existing.domain)
             existing.clean_text = r["clean_text"][:200000]
             existing.raw_html = r.get("raw_html", "")[:500000]
@@ -896,8 +913,8 @@ def golden_case_refetch(payload: dict, db: Session = Depends(get_db)):
             existing.fetch_time = r.get("fetch_time")
         elif r["fetch_status"] == "SUCCESS" and len(r["clean_text"]) > 50:
             doc = SourceDocument(
-                url=r.get("canonical_url", r["url"]), original_url=r["url"],
-                canonical_url=r.get("canonical_url", ""), domain=r["domain"], source_type="CITED",
+                url=identity["canonical_url"] or r.get("canonical_url", r["url"]), original_url=r["url"],
+                **identity, domain=r["domain"], source_type="CITED",
                 fetch_status=r["fetch_status"], title=r["title"],
                 raw_html=r.get("raw_html", "")[:500000],
                 clean_text=r["clean_text"][:200000],
@@ -1076,10 +1093,8 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
         title = payload.get("title", url)
 
     # Normalize URL for matching: extract path+query as the resource key
-    from urllib.parse import urlparse as _up
     def _url_key(u: str) -> str:
-        p = _up(u if "://" in u else "https://"+u)
-        return (p.netloc.replace("www.","").lower() + p.path.rstrip("/") + ("?"+p.query if p.query else "")).lower()
+        return url_identity_fields(u, u)["canonical_url"]
 
     target_key = _url_key(url)
     # Find ALL documents sharing the same normalized URL key (http/https/www variants)
@@ -1100,8 +1115,10 @@ def add_manual_document(payload: dict, db: Session = Depends(get_db)):
             if updated == 1:
                 doc = d
     if updated == 0:
+        identity = url_identity_fields(url, url)
         doc = SourceDocument(
-            url=url, original_url=url, domain=urlparse(url).netloc.lower() if url else "",
+            url=identity["canonical_url"] or url, original_url=url, **identity,
+            domain=urlparse(url).netloc.lower() if url else "",
             source_type=payload.get("source_type", "CITED"),
             fetch_status="MANUAL_EMPTY" if is_empty_page else "SUCCESS", title=title,
             failure_reason="页面已删除或无可用正文（人工标记）" if is_empty_page else "",
@@ -1162,6 +1179,122 @@ def workflow_status_endpoint(project_id: int, prompt_id: int, db: Session = Depe
     return workflow_status(db, project, prompt_id)
 
 
+@router.get("/workflow/{project_id}/{prompt_id}/source-mapping-health")
+def workflow_source_mapping_health_endpoint(
+    project_id: int,
+    prompt_id: int,
+    evidence_package_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    try:
+        return source_mapping_health_for_prompt(db, project_id, prompt_id, evidence_package_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/channel-evidence-landscape")
+def workflow_channel_evidence_landscape_endpoint(
+    project_id: int,
+    prompt_id: int,
+    evidence_package_id: int | None = Query(default=None),
+    include_observations: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    """Read-only observed evidence roles; this endpoint never resolves a channel."""
+    try:
+        return build_channel_evidence_landscape(
+            db,
+            project_id,
+            prompt_id,
+            evidence_package_id,
+            include_observations=include_observations,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/channel-resolution-shadow")
+def workflow_channel_resolution_shadow_endpoint(
+    project_id: int,
+    prompt_id: int,
+    evidence_package_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """PR3-A read-only resolver comparison; never changes Step 7/8 state."""
+    try:
+        return build_channel_resolution_shadow(db, project_id, prompt_id, evidence_package_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/workflow/channel-resolution-shadow/golden-replay")
+def workflow_channel_resolution_shadow_golden_replay_endpoint():
+    return run_channel_resolver_golden_replay()
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/strategy-synthesis-shadow")
+def workflow_strategy_synthesis_shadow_endpoint(
+    project_id: int,
+    prompt_id: int,
+    candidate_id: int | None = Query(default=None),
+    use_llm: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    """PR4-A.1 deterministic-first replay; LLM runs only for explicit ambiguity."""
+    try:
+        return run_strategy_synthesis_shadow(
+            db,
+            project_id,
+            prompt_id,
+            candidate_id,
+            use_llm=use_llm,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/execution-proposal-shadow")
+def workflow_execution_proposal_shadow_endpoint(
+    project_id: int,
+    prompt_id: int,
+    candidate_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """PR5-A deterministic read-only execution proposal replay."""
+    try:
+        return run_execution_proposal_shadow(db, project_id, prompt_id, candidate_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/workflow/{project_id}/{prompt_id}/execution-proposal/revalidate")
+def workflow_execution_proposal_revalidate_endpoint(
+    project_id: int,
+    prompt_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+):
+    """PR5-B ephemeral single-proposal rebuild and revalidation."""
+    try:
+        return run_execution_proposal_revalidation(db, project_id, prompt_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/workflow/{project_id}/{prompt_id}/execution-proposal/portfolio/revalidate")
+def workflow_execution_proposal_portfolio_revalidate_endpoint(
+    project_id: int,
+    prompt_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+):
+    """PR5-B ephemeral portfolio rebuild and revalidation."""
+    try:
+        return run_execution_proposal_portfolio_revalidation(db, project_id, prompt_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/workflow/{project_id}/{prompt_id}/review-queue")
 def workflow_review_queue_endpoint(project_id: int, prompt_id: int, db: Session = Depends(get_db)):
     from app.models import Project
@@ -1170,6 +1303,40 @@ def workflow_review_queue_endpoint(project_id: int, prompt_id: int, db: Session 
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return review_queue(db, project, prompt_id)
+
+
+@router.get("/workflow/{project_id}/{prompt_id}/materialization-plan")
+def workflow_materialization_plan_endpoint(
+    project_id: int,
+    prompt_id: int,
+    run_ids: list[int] | None = Query(default=None),
+    top_k: int = Query(default=5, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    """Read-only V1.1 incremental materialization planner."""
+    from app.models import Project
+    from app.modules.optimization.incremental_materialization import build_incremental_materialization_plan
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return build_incremental_materialization_plan(db, project, prompt_id, run_ids=run_ids, top_k=top_k)
+
+
+@router.get("/workflow/{project_id}/v1-1-final-acceptance")
+def workflow_v1_1_final_acceptance_endpoint(
+    project_id: int,
+    prompt_ids: list[int] | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Read-only Phase E readiness report for V1.1 final acceptance."""
+    from app.models import Project
+    from app.modules.optimization.readiness_report import build_v1_1_final_acceptance_report
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return build_v1_1_final_acceptance_report(db, project, prompt_ids=prompt_ids or [19, 40])
 
 
 @router.get("/workflow/{project_id}/{prompt_id}/competitor-candidates")
@@ -1228,7 +1395,16 @@ def decision_market_entity_resolve_endpoint(project_id: int, prompt_id: int, pay
 @router.post("/workflow/review/events/confirm-batch")
 def batch_confirm_events_endpoint(payload: dict, db: Session = Depends(get_db)):
     from app.modules.optimization.workflow import batch_confirm_events
-    return batch_confirm_events(db, payload.get("event_ids", []), payload.get("reviewer", "human"))
+    try:
+        return batch_confirm_events(db, payload.get("event_ids", []), payload.get("reviewer", "human"))
+    except OperationalError as exc:
+        db.rollback()
+        if "database is locked" in str(exc).lower():
+            raise HTTPException(
+                status_code=409,
+                detail="当前主链后台任务正在写入本地数据库，请稍后刷新重试。若长时间不恢复，请重新运行当前主链。",
+            ) from exc
+        raise
 
 
 @router.post("/workflow/review/events/reject-batch")
@@ -1248,12 +1424,21 @@ def batch_reject_events_endpoint(payload: dict, db: Session = Depends(get_db)):
 @router.post("/workflow/review/alignments/confirm-batch")
 def batch_confirm_alignments_endpoint(payload: dict, db: Session = Depends(get_db)):
     from app.modules.optimization.workflow import batch_confirm_alignments
-    return batch_confirm_alignments(
-        db,
-        payload.get("alignment_ids", []),
-        payload.get("relation", "SUPPORTS"),
-        payload.get("reviewer", "human"),
-    )
+    try:
+        return batch_confirm_alignments(
+            db,
+            payload.get("alignment_ids", []),
+            payload.get("relation", "SUPPORTS"),
+            payload.get("reviewer", "human"),
+        )
+    except OperationalError as exc:
+        db.rollback()
+        if "database is locked" in str(exc).lower():
+            raise HTTPException(
+                status_code=409,
+                detail="当前主链后台任务正在写入本地数据库，请稍后刷新重试。若长时间不恢复，请重新运行当前主链。",
+            ) from exc
+        raise
 
 
 @router.post("/workflow/review/alignments/{alignment_id}/confirm")
@@ -1798,11 +1983,24 @@ _analysis_running: set[tuple[int, int]] = set()
 _analysis_lock = threading.Lock()
 
 
+def _mark_analysis_stage(db: Session, analysis_run, stage: str, message: str = "") -> None:
+    """Persist lightweight progress so status refresh is diagnosable while work runs."""
+    if analysis_run is None:
+        return
+    analysis_run.errors_json = dumps({
+        "stage": stage,
+        "message": message,
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+    db.commit()
+
+
 def _run_analysis_pipeline(
     project_id: int,
     prompt_id: int,
     run_ids: list[int],
     use_answer_binding_v1_1: bool = False,
+    analysis_run_id: int | None = None,
 ) -> None:
     """后台线程执行五层分析管道；结果落库，前端轮询 review-queue/status 感知进度。"""
     import logging
@@ -1814,6 +2012,7 @@ def _run_analysis_pipeline(
     from app.modules.optimization.source_claim import run_source_claim_extraction
     from app.modules.optimization.evidence_alignment import run_evidence_alignment
     from app.modules.optimization.answer_evidence_shadow import run_answer_evidence_shadow_chain
+    from app.modules.optimization.passage_retrieval import _cited_document_ids_for_runs
     from app.modules.optimization.passage_service import acquire_cited_sources, segment_all_documents
 
     logger = logging.getLogger("uvicorn.error")
@@ -1824,20 +2023,22 @@ def _run_analysis_pipeline(
         prompt = db.get(Prompt, prompt_id)
         if not project or not prompt:
             return
-        from app.models import PromptAnalysisRun
+        from app.models import PromptAnalysisRun, SourceDocument
         from app.services.serialization import dumps as _dumps
 
-        analysis_run = PromptAnalysisRun(
-            project_id=project_id,
-            prompt_id=prompt_id,
-            status="RUNNING",
-            events_created=0,
-            runs_associated=len(run_ids),
-            errors_json=_dumps([]),
-        )
-        db.add(analysis_run)
-        db.commit()
-        db.refresh(analysis_run)
+        analysis_run = db.get(PromptAnalysisRun, analysis_run_id) if analysis_run_id else None
+        if analysis_run is None:
+            analysis_run = PromptAnalysisRun(
+                project_id=project_id,
+                prompt_id=prompt_id,
+                status="RUNNING",
+                events_created=0,
+                runs_associated=len(run_ids),
+                errors_json=_dumps([]),
+            )
+            db.add(analysis_run)
+            db.commit()
+            db.refresh(analysis_run)
         logger.info(
             "机器分析后台任务开始 project=%s prompt=%s run_ids=%s v1_1_formal_input=%s",
             project_id,
@@ -1845,17 +2046,27 @@ def _run_analysis_pipeline(
             run_ids,
             use_answer_binding_v1_1,
         )
+        _mark_analysis_stage(db, analysis_run, "ANSWER_SEMANTIC", "正在识别答案里的推荐对象和推荐理由")
         layer1 = run_answer_semantic(db, project, prompt, run_ids)
+        db.commit()
+        _mark_analysis_stage(db, analysis_run, "SOURCE_QUALIFICATION", "正在判断引用来源正文状态")
         run_source_qualification(db, project)
+        db.commit()
         # 补齐所有引用资料的原文内容（老流程必备步骤）：抓取缺失的引用页原文并分段，
         # 保证 Layer 3 检索、Layer 4 Claim 与 Layer 5 对齐基于完整原文
+        _mark_analysis_stage(db, analysis_run, "CITATION_CONTENT", "正在补齐引用正文和来源页面内容")
         acquisition = acquire_cited_sources(db, run_ids)
-        segment_all_documents(db)
+        db.commit()
+        cited_doc_ids = sorted(_cited_document_ids_for_runs(db, run_ids, db.query(SourceDocument).all()))
+        _mark_analysis_stage(db, analysis_run, "DOCUMENT_SEGMENTATION", "正在把来源正文切分成可对齐片段")
+        segment_all_documents(db, doc_ids=cited_doc_ids)
+        db.commit()
         logger.info(
             "机器分析引用原文补齐 project=%s prompt=%s acquisition=%s",
             project_id, prompt_id, acquisition,
         )
         if use_answer_binding_v1_1:
+            _mark_analysis_stage(db, analysis_run, "ANSWER_BINDING", "正在把答案能力点绑定到推荐理由")
             shadow = run_answer_evidence_shadow_chain(
                 db,
                 project_id,
@@ -1863,6 +2074,7 @@ def _run_analysis_pipeline(
                 run_ids=run_ids,
                 top_k=3,
                 use_llm_binding=True,
+                run_source_chain=False,
             )
             logger.info(
                 "机器分析 V1.1 Answer Binding 输入完成 project=%s prompt=%s shadow_run_id=%s status=%s",
@@ -1871,20 +2083,62 @@ def _run_analysis_pipeline(
                 shadow.get("id") or shadow.get("shadow_run_id"),
                 shadow.get("status"),
             )
+            db.commit()
+        _mark_analysis_stage(db, analysis_run, "SOURCE_CLAIM", "正在从来源正文中抽取可落地的来源主张")
+        def _source_claim_progress(progress: dict) -> None:
+            processed = int(progress.get("processed") or 0)
+            total = int(progress.get("total") or 0)
+            failed = int(progress.get("failed_retryable") or 0) + int(progress.get("failed_final") or 0)
+            _mark_analysis_stage(
+                db,
+                analysis_run,
+                "SOURCE_CLAIM",
+                (
+                    f"正在从来源正文中抽取可落地的来源主张：{processed}/{total}；"
+                    f"ledger HIT {int(progress.get('materialization_hit_count') or 0)}；"
+                    f"外部调用 {int(progress.get('actual_source_claim_llm_calls') or 0)}；"
+                    f"失败 {failed}"
+                ),
+            )
+
         run_source_claim_extraction(
             db,
             project,
             prompt_id,
             run_ids,
             include_answer_binding_reasons=use_answer_binding_v1_1,
+            doc_id_filter=cited_doc_ids if use_answer_binding_v1_1 else None,
+            progress_callback=_source_claim_progress,
         )
+        db.commit()
+        _mark_analysis_stage(db, analysis_run, "EVIDENCE_ALIGNMENT", "正在判断推荐理由与来源主张的支撑关系")
+
+        def _evidence_alignment_progress(progress: dict) -> None:
+            processed = int(progress.get("processed") or 0)
+            total = int(progress.get("total") or 0)
+            failed = int(progress.get("failed_retryable") or 0) + int(progress.get("failed_final") or 0)
+            _mark_analysis_stage(
+                db,
+                analysis_run,
+                "EVIDENCE_ALIGNMENT",
+                (
+                    f"正在判断推荐理由与来源主张的支撑关系：{processed}/{total}；"
+                    f"ledger HIT {int(progress.get('materialization_hit_count') or 0)}；"
+                    f"外部调用 {int(progress.get('actual_alignment_llm_calls') or 0)}；"
+                    f"失败 {failed}"
+                ),
+            )
+
         run_evidence_alignment(
             db,
             project,
             prompt_id,
             run_ids,
             include_answer_binding_reasons=use_answer_binding_v1_1,
+            doc_id_filter=cited_doc_ids if use_answer_binding_v1_1 else None,
+            progress_callback=_evidence_alignment_progress,
         )
+        db.commit()
         # 更新分析运行记录：区分「运行中 / 分析过但 0 事件 / 失败」。
         analysis_run.status = "COMPLETED"
         analysis_run.events_created = layer1.get("events_created", 0)
@@ -1917,7 +2171,8 @@ def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Se
 
     分析耗时较长（逐条 LLM 比对），改为后台线程执行并立即返回；前端轮询 review-queue 感知进度。
     """
-    from app.models import Project, Prompt, BrowserMonitorRun, OptimizationEvidencePackage
+    from app.models import Project, Prompt, BrowserMonitorRun, OptimizationEvidencePackage, PromptAnalysisRun
+    from app.services.serialization import dumps as _dumps
 
     project = db.get(Project, project_id)
     prompt = db.get(Prompt, prompt_id)
@@ -1950,7 +2205,22 @@ def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Se
 
     with _analysis_lock:
         if (project_id, prompt_id) in _analysis_running:
-            return {"started": False, "already_running": True, "message": "该 Prompt 的机器分析已在后台运行中"}
+            running_row = (
+                db.query(PromptAnalysisRun)
+                .filter(
+                    PromptAnalysisRun.project_id == project_id,
+                    PromptAnalysisRun.prompt_id == prompt_id,
+                    PromptAnalysisRun.status == "RUNNING",
+                )
+                .order_by(PromptAnalysisRun.id.desc())
+                .first()
+            )
+            return {
+                "started": False,
+                "already_running": True,
+                "analysis_run_id": running_row.id if running_row else None,
+                "message": "该 Prompt 的机器分析已在后台运行中",
+            }
         _analysis_running.add((project_id, prompt_id))
 
     settings = get_settings()
@@ -1958,10 +2228,21 @@ def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Se
         payload.get("use_answer_binding_v1_1")
         or settings.citation_decision_v1_1_formal_input_enabled
     )
+    analysis_run = PromptAnalysisRun(
+        project_id=project_id,
+        prompt_id=prompt_id,
+        status="RUNNING",
+        events_created=0,
+        runs_associated=len(run_ids),
+        errors_json=_dumps([]),
+    )
+    db.add(analysis_run)
+    db.commit()
+    db.refresh(analysis_run)
 
     threading.Thread(
         target=_run_analysis_pipeline,
-        args=(project_id, prompt_id, run_ids, use_answer_binding_v1_1),
+        args=(project_id, prompt_id, run_ids, use_answer_binding_v1_1, analysis_run.id),
         daemon=True,
         name=f"analysis-{project_id}-{prompt_id}",
     ).start()
@@ -1971,4 +2252,5 @@ def workflow_run_analysis(project_id: int, prompt_id: int, payload: dict, db: Se
         "prompt_id": prompt_id,
         "run_ids": run_ids,
         "use_answer_binding_v1_1": use_answer_binding_v1_1,
+        "analysis_run_id": analysis_run.id,
     }

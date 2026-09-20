@@ -196,6 +196,407 @@ export type BrowserQueueSummary = {
   latest_error_type: string;
 };
 
+export type SinglePromptV2Run = {
+  run_id: number;
+  run_sequence: number;
+  sample_index: number;
+  status: string;
+  stage: string;
+  answer_text: string;
+  answer_char_count: number;
+  reference_complete: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number;
+  references: Array<{ reference_id: number; index: number; title: string; url: string; canonical_url: string; domain: string }>;
+  retrieval_candidates: Array<{ candidate_id: number; rank: number; title: string; url: string; canonical_url: string; domain: string; snippet: string }>;
+  error: { stage: string; type: string; message: string; blocked_type: string; blocked_reason: string } | null;
+};
+
+export type SinglePromptV2Status = {
+  analysis: {
+    analysis_id: string;
+    project_id: number;
+    prompt_id: number;
+    task_id: number;
+    prompt_text: string;
+    sampling_plan_hash: string;
+  };
+  sampling: {
+    status: string;
+    planned_run_count: number;
+    terminal_run_count: number;
+    valid_run_count: number;
+    failed_run_count: number;
+    attempt_count: number;
+  };
+  result_version: string | null;
+  context_id: string | null;
+  result_source: "LIVE_TASK_PROGRESS" | "FROZEN_ANALYSIS_CONTEXT" | string;
+  blocker: { code: string; detail: string } | null;
+  allowed_operations: string[];
+  active_task: { task_id: number; status: string; active_attempt_token: string | null } | null;
+  runs: SinglePromptV2Run[];
+  failures: Array<{ run_id: number; status: string; error: SinglePromptV2Run["error"] }>;
+  warnings: Array<{ code: string; detail: string }>;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type SinglePromptV2DiagnosisEdit = {
+  target_type: "RECOMMENDATION_EVENT" | "EVIDENCE_RELATION" | "TRUTH_RELATION";
+  target_id: string;
+  value: string;
+  reason: string;
+};
+
+export type SinglePromptV2DiagnosisStatus = {
+  diagnosis: {
+    diagnosis_id: string;
+    analysis_id: string;
+    context_id: string;
+    project_id: number;
+    prompt_id: number;
+    input_fingerprint: string;
+    raw_output_hash: string;
+    brand_snapshot_hash: string;
+    truth_set_hash: string;
+    contract_config_hash: string;
+  };
+  compute_status: string;
+  overall_status: string;
+  progress: { stage?: string; completed?: number; total?: number; detail?: string };
+  blocker: { code: string; detail: string } | null;
+  attempt_count: number;
+  usage: { external_llm_calls: number; llm_cache_hits: number; external_token_usage: number };
+  current_safety_advisories: Array<{
+    code: string;
+    count: number;
+    historical_content_ready: number;
+    maximum_currently_eligible: number;
+    message: string;
+  }>;
+  effective_evidence_eligibility: {
+    contract_version: string;
+    historical_content_ready: number;
+    content_blocked_current: number;
+    maximum_currently_eligible: number;
+    all_remaining_sources_quality_verified: boolean;
+    eligible_snapshot_ids: string[];
+    blocked_snapshots: Array<{ snapshot_id: string; source_key: string; title: string; reason: string }>;
+    effective_evidence_relation_ids: string[];
+    blocked_historical_relation_ids: string[];
+    effective_relation_count: number;
+  };
+  source_content_status_summary: {
+    reference_records: number;
+    unique_sources: number;
+    content_ready: number;
+    not_fetched: number;
+    fetch_failed: number;
+    content_blocked: number;
+    passage_count: number;
+  };
+  current_truth_relation_eligibility: null | {
+    contract_version: string;
+    effective_relationships: any[];
+    cross_subject_relation_ids: string[];
+    cross_subject_relation_count: number;
+  };
+  answer_semantic_eligibility: null | {
+    contract_version: string;
+    total_answer_count: number;
+    admitted_answer_count: number;
+    failed_answer_count: number;
+    valid_zero_answer_count: number;
+    failure_record_count: number;
+    no_consumable_answer_semantic_result: boolean;
+    partial_failure: boolean;
+    status: "NO_CONSUMABLE_RESULT" | "PARTIAL" | "ADMITTED" | string;
+  };
+  result: null | {
+    result_version: string;
+    version_number: number;
+    parent_result_version: string | null;
+    output_hash: string;
+    reviewable_set_hash: string;
+    output: {
+      input: Record<string, any>;
+      answer_diagnosis: { events: any[]; market_criteria?: any[]; unresolved_items: any[]; failures: any[]; answer_jobs?: any[] };
+      source_diagnosis: { summary: Record<string, number>; snapshots: any[] };
+      evidence_diagnosis: { source_claim_jobs: any[]; source_claims: any[]; source_claim_failures: any[]; source_relations: any[]; alignment_failures: any[]; reason_inputs_requiring_review: any[] };
+      truth_diagnosis: { truth_snapshot: any[]; relationships: any[] };
+      limitations: any[];
+      stats: Record<string, number>;
+      usage: Record<string, number>;
+    };
+    limitations: any[];
+    stats: Record<string, number>;
+    created_at: string;
+  };
+  review: null | {
+    review_id: string;
+    decision: string;
+    result_version: string;
+    result_hash: string;
+    reviewable_set_hash: string;
+    decisions: any[];
+    reviewer: string;
+    note: string;
+    created_at: string;
+  };
+  allowed_operations: string[];
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type SinglePromptV2StrategyDirection = {
+  direction_id: string;
+  direction_type: "FOUNDATION" | "CHANNEL";
+  channel_key: string | null;
+  channel_label: string | null;
+  channel_role: "PRIMARY" | "TEST" | null;
+  level: "ACTIONABLE" | "VERIFY_FIRST" | "OBSERVE" | "BLOCKED";
+  reason_ids: string[];
+  truth_ids: number[];
+  evidence_relation_ids: string[];
+  rationale: string;
+  hypothesis: string | null;
+  effect_status: string;
+  priority_order: number | null;
+  priority_basis: string;
+};
+
+export type SinglePromptV2StrategyReadiness = {
+  contract_version: string;
+  classification: "A" | "B" | "C";
+  can_create_strategy: boolean;
+  blocker: { code: string; detail: string } | null;
+  legal_next_steps: string[];
+  input_identity: Record<string, any>;
+  input_projection_hash: string;
+  review_id: string | null;
+  review_snapshot_hash: string | null;
+  validation_contract_version: string;
+  current_observation: Record<string, number>;
+  foundation: { state: "REQUIRED" | "NOT_REQUIRED" | "UNKNOWN"; assessment_id: string | null; basis_ids: string[]; reason: string };
+  channel_assessments: Array<Record<string, any>>;
+  observed_themes: Array<Record<string, any>>;
+  actionable_themes: Array<Record<string, any>>;
+  qualified_directions: SinglePromptV2StrategyDirection[];
+  qualified_direction_count: number;
+  blocked_directions: Array<Record<string, any>>;
+  verification_items: Array<{ code: string; detail: string }>;
+  needs_human_prioritization: boolean;
+  limitations: any[];
+  advisories: any[];
+  effective_evidence_eligibility: Record<string, any>;
+  boundary: Record<string, boolean | number>;
+};
+
+export type SinglePromptV2StrategyStatus = {
+  strategy: {
+    strategy_id: string;
+    analysis_id: string;
+    context_id: string;
+    diagnosis_id: string;
+    project_id: number;
+    prompt_id: number;
+    input_fingerprint: string;
+    diagnosis_result_version: string;
+    diagnosis_result_hash: string;
+    diagnosis_review_id: string;
+    review_snapshot_hash: string;
+    validation_contract_version: string;
+    input_snapshot_hash: string;
+    status: string;
+  };
+  result: null | {
+    result_version: string;
+    version_number: number;
+    parent_result_version: string | null;
+    output_hash: string;
+    reviewable_set_hash: string;
+    output: {
+      input_identity: Record<string, any>;
+      current_observation: Record<string, number>;
+      themes: Array<Record<string, any>>;
+      directions: SinglePromptV2StrategyDirection[];
+      foundation: SinglePromptV2StrategyReadiness["foundation"];
+      needs_human_prioritization: boolean;
+      unresolved: { blocked_directions: Array<Record<string, any>>; verification_items: Array<{ code: string; detail: string }> };
+      limitations: any[];
+      advisories: any[];
+      effective_evidence_eligibility: Record<string, any>;
+      provenance: Record<string, any>;
+      boundary: Record<string, boolean | number>;
+    };
+    limitations: any[];
+    created_at: string;
+  };
+  review: null | { review_id: string; review_snapshot_hash: string; decision: string; reviewer: string; note: string; result_version: string; created_at: string };
+  applicability: { is_current_input: boolean; checks: Record<string, boolean> };
+  allowed_operations: string[];
+  created_at: string;
+};
+
+export type SinglePromptV2ExecutionStatus = {
+  proposal: {
+    proposal_id: string;
+    strategy_id: string;
+    analysis_id: string;
+    context_id: string;
+    diagnosis_id: string;
+    project_id: number;
+    prompt_id: number;
+    direction_id: string;
+    strategy_result_version: string;
+    strategy_result_hash: string;
+    strategy_review_id: string;
+    strategy_review_snapshot_hash: string;
+    input_snapshot_hash: string;
+    status: string;
+  };
+  result: null | {
+    result_version: string;
+    version_number: number;
+    parent_result_version: string | null;
+    output_hash: string;
+    reviewable_set_hash: string;
+    output: {
+      direction: SinglePromptV2StrategyDirection;
+      strategy_channel: { channel_key: string | null; channel_label: string | null; channel_role: string | null; immutable: boolean };
+      asset_operation: "CREATE_NEW";
+      asset_type_candidates: Array<{ asset_type: string; label: string }>;
+      publication_surface_candidates: Array<{ surface_key: string; label: string; asset_type: string }>;
+      package_candidates: Array<{ package_key: string; label: string; direction_id: string; truth_ids: number[] }>;
+      title_candidates: Array<{ title_id: string; title: string; truth_ids: number[] }>;
+      public_content_candidates: Array<Record<string, any>>;
+      selected_public_content: Array<Record<string, any>>;
+      internal_checklist: Array<{ code: string; detail: any }>;
+      selection: {
+        asset_operation: "CREATE_NEW";
+        asset_type: string | null;
+        package_key: string;
+        publication_surface: string | null;
+        publishing_account: string;
+        publishing_location: string;
+        account_control_status: "UNVERIFIED" | "USER_REPORTED_CONTROL";
+        title: string;
+        section_order: string[];
+        execution_note: string;
+      };
+      baseline: Record<string, any>;
+      limitations: any[];
+      advisories: any[];
+      validation: { status: "READY_FOR_CONFIRMATION" | "NEEDS_HUMAN_SELECTION"; errors: string[]; validators: Record<string, string> };
+      boundary: Record<string, any>;
+    };
+    created_at: string;
+  };
+  confirmations: Array<{ confirmation_id: string; result_version: string; confirmation_snapshot_hash: string; confirmer: string; note: string; created_at: string }>;
+  publications: Array<{
+    publication_id: string;
+    confirmation_id: string;
+    prior_publication_id: string | null;
+    revision_number: number;
+    publication_status: "USER_REPORTED";
+    conformance: "MATCHED" | "VALIDATED_VARIATION" | "OUTSIDE_CONFIRMED_SCOPE" | "NOT_EVALUABLE";
+    report_hash: string;
+    report: Record<string, any>;
+    conformance_detail: Record<string, any>;
+    recorder: string;
+    created_at: string;
+  }>;
+  applicability: { is_current_input: boolean; checks: Record<string, boolean> };
+  allowed_operations: string[];
+  boundary: Record<string, any>;
+};
+
+export type SinglePromptV2RetestReadiness = {
+  contract_version: string;
+  sampling_eligible: boolean;
+  comparison_eligible?: { temporal_order: boolean; status: string };
+  pre_post_temporal_order_verified?: boolean;
+  blocker: { code: string; detail: string } | null;
+  publication?: Record<string, any>;
+  baseline?: Record<string, any>;
+  identity_default?: {
+    canonical_brand_name: string;
+    accepted_aliases: string[];
+    official_domains: string[];
+    official_urls: string[];
+    identity_source: string;
+  };
+  allowed_actions: string[];
+  boundary?: Record<string, any>;
+};
+
+export type SinglePromptV2Metric = {
+  metric_key: string;
+  planned_count: number;
+  valid_raw_count: number;
+  evaluable_run_ids: number[];
+  evaluable_count: number;
+  hit_run_ids: number[];
+  hit_count: number;
+  unevaluated: Array<{ run_id: number; reason: string }>;
+  unevaluated_count: number;
+  value: number | null;
+  status: "COMPLETE" | "PARTIAL" | "NOT_COMPUTABLE";
+};
+
+export type SinglePromptV2RetestStatus = {
+  contract_version: string;
+  retest: {
+    retest_id: string;
+    confirmation_id: string;
+    publication_id: string;
+    proposal_id: string;
+    project_id: number;
+    prompt_id: number;
+    baseline_analysis_id: string;
+    baseline_context_id: string;
+    retest_analysis_id: string;
+    input_fingerprint: string;
+    status: string;
+    retest_plan_hash: string;
+    measurement_identity_hash: string;
+    measurement_contract_hash: string;
+  };
+  baseline: Record<string, any>;
+  retest_plan: Record<string, any>;
+  measurement_identity: Record<string, any>;
+  measurement_contract: Record<string, any>;
+  planned_conditions: Record<string, any>;
+  observed_conditions: Record<string, any>;
+  unobservable_conditions: any[];
+  authorization: Record<string, any>;
+  semantic_measurement: Record<string, any>;
+  sampling: SinglePromptV2Status;
+  comparison_result: null | {
+    result_version: string;
+    version_number: number;
+    output_hash: string;
+    baseline_measurement: { metrics: Record<string, SinglePromptV2Metric> };
+    retest_measurement: { metrics: Record<string, SinglePromptV2Metric> };
+    comparison: {
+      temporal_order: Record<string, any>;
+      publication: Record<string, any>;
+      metrics: Record<string, { comparison_eligible: boolean; comparison_mode: string; delta_percentage_points: number | null; reasons: string[]; causal_conclusion: null }>;
+      limitations: any[];
+      conclusion_policy: string;
+    };
+    limitations: any[];
+    created_at: string;
+  };
+  blocker: { code: string; detail: string } | null;
+  allowed_actions: string[];
+  boundary: Record<string, any>;
+};
+
 export type BrowserMonitorRunDetail = BrowserMonitorRun & {
   references: Array<{
     id: number;
@@ -559,6 +960,10 @@ export type StrategyCandidate = {
   experiment_plan: Record<string, any>;
   candidate_origin?: string;
   strategy_context?: Record<string, any>;
+  strategy_decision_view?: Record<string, any>;
+  strategy_audit_view?: Record<string, any>;
+  strategy_synthesis?: Record<string, any>;
+  strategy_view_mode?: "SYNTHESIS_DECISION_VIEW" | "LEGACY";
   strategy_schema_complete?: boolean;
   eligible_for_current_step7?: boolean;
   current_step7_ineligibility_reasons?: string[];

@@ -25,6 +25,8 @@ from app.models import (
 )
 from app.modules.optimization.answer_evidence_shadow import (
     SHADOW_PIPELINE_VERSION,
+    _build_answer_units,
+    _build_decision_bindings,
     _split_claim_units,
     run_answer_evidence_shadow_chain,
 )
@@ -490,6 +492,104 @@ def test_recommended_brand_feature_defaults_to_supporting_reason(db):
     assert result["summary"]["binding_count"] >= 1
     assert {binding.decision_role for binding in bindings} == {"SUPPORTING_REASON"}
     assert {binding.scope_type for binding in bindings} <= {"SAME_SENTENCE", "ENTITY_HEADING_SCOPE"}
+
+
+def test_reason_span_anchor_binds_include_as_option_without_llm(db):
+    project, prompt, run, package = _seed_project_prompt(db)
+    run.answer_text = (
+        "抖音跳转微信可通过商加加外链等第三方工具，"
+        "填写目标微信信息自动生成加密短链，规避平台拦截。"
+    )
+    db.add(AnswerClaim(
+        id=520,
+        run_id=run.id,
+        claim_index=1,
+        raw_text="抖音跳转微信：可通过商加加外链等第三方工具，填写目标微信信息自动生成加密短链",
+        provenance="RULE_DERIVED",
+        review_status="PENDING",
+    ))
+    db.add(RecommendationEvent(
+        id=620,
+        project_id=project.id,
+        prompt_id=prompt.id,
+        run_id=run.id,
+        entity_text="商加加",
+        entity_type="BRAND",
+        speech_act="INCLUDE_AS_OPTION",
+        recommendation_strength="MODERATE",
+        answer_span="可通过商加加外链等第三方工具",
+        reasons_json=dumps([{
+            "normalized_reason": "可以自动生成加密短链",
+            "reason_scope": "ENTITY_SPECIFIC",
+            "reason_span": "自动生成加密短链",
+        }]),
+        review_status="HUMAN_CONFIRMED",
+    ))
+    shadow_run = AnswerEvidenceShadowRun(
+        id=920,
+        project_id=project.id,
+        prompt_id=prompt.id,
+        evidence_package_id=package.id,
+        source_run_ids_json=dumps([run.id]),
+        pipeline_version=SHADOW_PIPELINE_VERSION,
+        status="running",
+        formal_output_impact="NONE",
+    )
+    db.add(shadow_run)
+    db.commit()
+
+    class RaisingBindingJudge:
+        def judge(self, event, unit, db=None):
+            raise AssertionError("reason-span anchor must not call the binding LLM")
+
+    units = _build_answer_units(db, shadow_run, {run.id: run})
+    bindings, errors = _build_decision_bindings(
+        db,
+        shadow_run,
+        units,
+        use_llm_binding=True,
+        binding_judge=RaisingBindingJudge(),
+    )
+
+    assert errors == []
+    assert len(bindings) == 1
+    binding = bindings[0]
+    payload = loads(binding.judge_payload_json, {})
+    assert binding.decision_role == "DIRECT_REASON"
+    assert binding.binding_method == "RULE_REASON_SPAN_ANCHOR"
+    assert binding.scope_reason == "ANSWER_UNIT_OVERLAPS_RECOMMENDATION_EVENT_REASON"
+    assert payload["rule_candidate"]["reason_anchor_text"] == "自动生成加密短链"
+
+
+def test_shadow_chain_can_generate_formal_binding_input_without_source_chain(db):
+    _seed_project_prompt(db)
+    _seed_xiaoma_claim_event_and_source(db)
+
+    class RaisingSourceClaimJudge:
+        def judge_passage(self, passage_text: str, db=None):
+            raise AssertionError("binding-only formal input mode must not run shadow SourceClaim")
+
+    class RaisingAlignmentJudge:
+        def judge(self, reason_text: str, source_claim_text: str, db=None):
+            raise AssertionError("binding-only formal input mode must not run shadow Alignment")
+
+    result = run_answer_evidence_shadow_chain(
+        db,
+        3,
+        40,
+        evidence_package_id=15,
+        use_llm_binding=False,
+        source_claim_judge=RaisingSourceClaimJudge(),
+        alignment_judge=RaisingAlignmentJudge(),
+        run_source_chain=False,
+    )
+
+    summary = result["summary"]
+    assert summary["binding_count"] >= 1
+    assert summary["run_source_chain"] is False
+    assert summary["shadow_result_count"] == 0
+    assert db.query(AnswerDecisionBinding).count() >= 1
+    assert db.query(AnswerEvidenceShadowResult).count() == 0
 
 
 def test_procedure_answer_unit_does_not_bind_as_recommendation_reason(db):

@@ -14,6 +14,7 @@ from app.modules.monitoring.collectors.base import CollectorResult
 from app.modules.monitoring.collectors.registry import get_collector
 from app.modules.monitoring.collectors.wenxin.exceptions import WenxinCollectorError
 from app.services.serialization import dumps
+from app.services.url_identity import url_identity_fields
 
 
 class MonitoringTaskExecutor:
@@ -286,14 +287,16 @@ class MonitoringTaskExecutor:
 
     def _save_references(self, db: Session, run_id: int, references: list[dict]) -> None:
         for index, item in enumerate(references, start=1):
+            raw_url = item.get("url") or ""
+            identity = url_identity_fields(raw_url, item.get("canonical_url") or raw_url)
             db.add(
                 ReferenceSource(
                     run_id=run_id,
                     reference_index=item.get("reference_index") or index,
                     display_title=item.get("display_title") or "",
                     matched_title=item.get("matched_title") or item.get("display_title") or "",
-                    url=item.get("url") or "",
-                    canonical_url=item.get("canonical_url") or item.get("url") or "",
+                    url=raw_url,
+                    **identity,
                     domain=item.get("domain") or "",
                     platform_name="文心助手",
                     resolution_method=item.get("resolution_method") or "unresolved",
@@ -308,14 +311,16 @@ class MonitoringTaskExecutor:
 
     def _save_candidates(self, db: Session, run_id: int, candidates: list[dict]) -> None:
         for index, item in enumerate(candidates, start=1):
+            raw_url = item.get("url") or ""
+            identity = url_identity_fields(raw_url, item.get("canonical_url") or raw_url)
             db.add(
                 RetrievalCandidate(
                     run_id=run_id,
                     retrieval_query=item.get("retrieval_query") or "",
                     rank=item.get("rank") or index,
                     title=item.get("title") or "",
-                    url=item.get("url") or "",
-                    canonical_url=item.get("canonical_url") or item.get("url") or "",
+                    url=raw_url,
+                    **identity,
                     domain=item.get("domain") or "",
                     snippet=item.get("snippet") or "",
                     evidence_path=item.get("evidence_path") or "",

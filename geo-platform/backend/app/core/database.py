@@ -8,7 +8,7 @@ from app.models import Base
 
 
 settings = get_settings()
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False, "timeout": 30} if settings.database_url.startswith("sqlite") else {}
 engine = create_engine(settings.database_url, connect_args=connect_args)
 
 if settings.database_url.startswith("sqlite"):
@@ -16,6 +16,8 @@ if settings.database_url.startswith("sqlite"):
     def _set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA journal_mode=WAL")
         cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -27,6 +29,11 @@ def init_db() -> None:
         _ensure_sqlite_columns()
         _ensure_sqlite_shadow_result_nullable_columns()
         _ensure_sqlite_indexes()
+        _ensure_sqlite_v2_context_immutability()
+        _ensure_sqlite_v2_diagnosis_immutability()
+        _ensure_sqlite_v2_strategy_immutability()
+        _ensure_sqlite_v2_execution_immutability()
+        _ensure_sqlite_v2_retest_immutability()
 
 
 def _ensure_sqlite_columns() -> None:
@@ -108,6 +115,9 @@ def _ensure_sqlite_indexes() -> None:
         "CREATE INDEX IF NOT EXISTS ix_strategy_candidates_project_status ON optimization_strategy_candidates (project_id, review_status)",
         "CREATE INDEX IF NOT EXISTS ix_strategy_candidates_experiment_status ON optimization_strategy_candidates (experiment_id, review_status)",
         "CREATE INDEX IF NOT EXISTS ix_release_audit_records_experiment_status ON release_audit_records (experiment_id, online_verification_status)",
+        "CREATE INDEX IF NOT EXISTS ix_reference_sources_canonical_url_hash ON reference_sources (canonical_url_hash)",
+        "CREATE INDEX IF NOT EXISTS ix_retrieval_candidates_canonical_url_hash ON retrieval_candidates (canonical_url_hash)",
+        "CREATE INDEX IF NOT EXISTS ix_source_documents_canonical_url_hash ON source_documents (canonical_url_hash)",
     ]
     with engine.begin() as connection:
         for statement in statements:
@@ -118,9 +128,154 @@ def _ensure_sqlite_indexes() -> None:
                 continue
 
 
+def _ensure_sqlite_v2_context_immutability() -> None:
+    table_name = "single_prompt_analysis_contexts"
+    with engine.begin() as connection:
+        if table_name not in set(inspect(connection).get_table_names()):
+            return
+        connection.execute(text(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_single_prompt_context_no_update
+            BEFORE UPDATE ON single_prompt_analysis_contexts
+            BEGIN
+              SELECT RAISE(ABORT, 'ANALYSIS_CONTEXT_IMMUTABLE');
+            END
+            """
+        ))
+        connection.execute(text(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_single_prompt_context_no_delete
+            BEFORE DELETE ON single_prompt_analysis_contexts
+            BEGIN
+              SELECT RAISE(ABORT, 'ANALYSIS_CONTEXT_IMMUTABLE');
+            END
+            """
+        ))
+
+
+def _ensure_sqlite_v2_diagnosis_immutability() -> None:
+    immutable_tables = (
+        "single_prompt_source_snapshots",
+        "single_prompt_diagnosis_results",
+        "single_prompt_diagnosis_reviews",
+    )
+    with engine.begin() as connection:
+        tables = set(inspect(connection).get_table_names())
+        for table_name in immutable_tables:
+            if table_name not in tables:
+                continue
+            connection.execute(text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS trg_{table_name}_no_update
+                BEFORE UPDATE ON {table_name}
+                BEGIN
+                  SELECT RAISE(ABORT, 'V2_DIAGNOSIS_HISTORY_IMMUTABLE');
+                END
+                """
+            ))
+            connection.execute(text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS trg_{table_name}_no_delete
+                BEFORE DELETE ON {table_name}
+                BEGIN
+                  SELECT RAISE(ABORT, 'V2_DIAGNOSIS_HISTORY_IMMUTABLE');
+                END
+                """
+            ))
+
+
+def _ensure_sqlite_v2_strategy_immutability() -> None:
+    immutable_tables = (
+        "single_prompt_strategy_results",
+        "single_prompt_strategy_reviews",
+    )
+    with engine.begin() as connection:
+        tables = set(inspect(connection).get_table_names())
+        for table_name in immutable_tables:
+            if table_name not in tables:
+                continue
+            connection.execute(text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS trg_{table_name}_no_update
+                BEFORE UPDATE ON {table_name}
+                BEGIN
+                  SELECT RAISE(ABORT, 'V2_STRATEGY_HISTORY_IMMUTABLE');
+                END
+                """
+            ))
+            connection.execute(text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS trg_{table_name}_no_delete
+                BEFORE DELETE ON {table_name}
+                BEGIN
+                  SELECT RAISE(ABORT, 'V2_STRATEGY_HISTORY_IMMUTABLE');
+                END
+                """
+            ))
+
+
+def _ensure_sqlite_v2_execution_immutability() -> None:
+    immutable_tables = (
+        "single_prompt_execution_proposal_results",
+        "single_prompt_execution_confirmations",
+        "single_prompt_publication_records",
+    )
+    with engine.begin() as connection:
+        tables = set(inspect(connection).get_table_names())
+        for table_name in immutable_tables:
+            if table_name not in tables:
+                continue
+            connection.execute(text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS trg_{table_name}_no_update
+                BEFORE UPDATE ON {table_name}
+                BEGIN
+                  SELECT RAISE(ABORT, 'V2_EXECUTION_HISTORY_IMMUTABLE');
+                END
+                """
+            ))
+            connection.execute(text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS trg_{table_name}_no_delete
+                BEFORE DELETE ON {table_name}
+                BEGIN
+                  SELECT RAISE(ABORT, 'V2_EXECUTION_HISTORY_IMMUTABLE');
+                END
+                """
+            ))
+
+
+def _ensure_sqlite_v2_retest_immutability() -> None:
+    table_name = "single_prompt_comparison_results"
+    with engine.begin() as connection:
+        if table_name not in set(inspect(connection).get_table_names()):
+            return
+        connection.execute(text(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_single_prompt_comparison_results_no_update
+            BEFORE UPDATE ON single_prompt_comparison_results
+            BEGIN
+              SELECT RAISE(ABORT, 'V2_COMPARISON_HISTORY_IMMUTABLE');
+            END
+            """
+        ))
+        connection.execute(text(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_single_prompt_comparison_results_no_delete
+            BEFORE DELETE ON single_prompt_comparison_results
+            BEGIN
+              SELECT RAISE(ABORT, 'V2_COMPARISON_HISTORY_IMMUTABLE');
+            END
+            """
+        ))
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

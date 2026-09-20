@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -20,6 +22,70 @@ from app.services.semantic_llm.base import SemanticLLMClient, SemanticLLMError
 from app.services.semantic_llm.cache import LLMCallCache
 
 logger = logging.getLogger("semantic_llm.deepseek")
+
+
+def _audit_excerpt(content: str, limit: int = 240) -> str:
+    compact = " ".join((content or "").split())
+    compact = re.sub(r"(?i)bearer\s+[a-z0-9._-]+", "Bearer [REDACTED]", compact)
+    compact = re.sub(r"(?i)\bsk-[a-z0-9_-]+", "[REDACTED_KEY]", compact)
+    return compact[:limit]
+
+
+def _response_error(
+    message: str,
+    *,
+    code: str = "FAILED_PARSE",
+    source: str,
+    content: str,
+    finish_reason: str = "",
+    raw_response_hash: str = "",
+    validation_errors: list[dict[str, Any]] | None = None,
+) -> SemanticLLMError:
+    exc = SemanticLLMError(message)
+    exc.code = code
+    exc.audit = {
+        "response_source": source,
+        "raw_response_hash": raw_response_hash or hashlib.sha256((content or "").encode("utf-8")).hexdigest(),
+        "finish_reason": finish_reason or "unknown",
+        "response_length": len(content or ""),
+        "response_excerpt": _audit_excerpt(content),
+        "validation_errors": validation_errors or [],
+    }
+    return exc
+
+
+def _validate_response_payload(
+    payload: Any,
+    validator: Callable[[Any], dict[str, Any]] | None,
+    *,
+    source: str,
+    content: str,
+    finish_reason: str = "",
+    raw_response_hash: str = "",
+) -> dict[str, Any]:
+    if validator is None:
+        return payload
+    try:
+        return validator(payload)
+    except SemanticLLMError as exc:
+        audit = dict(getattr(exc, "audit", {}) or {})
+        audit.update({
+            "response_source": source,
+            "raw_response_hash": raw_response_hash or hashlib.sha256((content or "").encode("utf-8")).hexdigest(),
+            "finish_reason": finish_reason or audit.get("finish_reason") or "unknown",
+            "response_length": len(content or ""),
+            "response_excerpt": _audit_excerpt(content),
+        })
+        exc.audit = audit
+        raise
+    except Exception as exc:
+        raise _response_error(
+            f"模型响应未通过适用准入校验: {exc}",
+            source=source,
+            content=content,
+            finish_reason=finish_reason,
+            raw_response_hash=raw_response_hash,
+        ) from exc
 
 
 def _extract_json_object(content: str) -> dict | None:
@@ -54,21 +120,42 @@ def _extract_json_object(content: str) -> dict | None:
     return None
 
 
-def _input_hash(system_prompt: str, user_payload: dict, prompt_version: str, schema_version: str) -> str:
-    raw = json.dumps(
-        {"system": system_prompt, "payload": user_payload, "pv": prompt_version, "sv": schema_version},
-        ensure_ascii=False, sort_keys=True,
-    )
+def _input_hash(
+    system_prompt: str,
+    user_payload: dict,
+    prompt_version: str,
+    schema_version: str,
+    thinking_mode: str | None = None,
+) -> str:
+    identity: dict[str, Any] = {
+        "system": system_prompt,
+        "payload": user_payload,
+        "pv": prompt_version,
+        "sv": schema_version,
+    }
+    # Preserve every legacy cache identity unless a caller explicitly opts in.
+    if thinking_mode:
+        identity["generation"] = {"thinking": {"type": thinking_mode}}
+    raw = json.dumps(identity, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class DeepSeekClient(SemanticLLMClient):
     provider = "deepseek"
 
-    def __init__(self) -> None:
+    def __init__(self, *, thinking_mode: str | None = None, max_attempts: int = 3, cache_only: bool = False) -> None:
+        if thinking_mode not in {None, "enabled", "disabled"}:
+            raise ValueError("thinking_mode 必须是 enabled、disabled 或 None")
+        if max_attempts < 1:
+            raise ValueError("max_attempts 必须至少为 1")
         self.settings = get_settings()
+        self.thinking_mode = thinking_mode
+        self.max_attempts = max_attempts
+        self.cache_only = cache_only
         self._calls = 0
         self._tokens = 0
+        self._external_calls = 0
+        self._external_tokens = 0
 
     @property
     def api_key(self) -> str:
@@ -100,6 +187,8 @@ class DeepSeekClient(SemanticLLMClient):
         schema_version: str = "v1",
         max_tokens: int = 4096,
         db=None,
+        strict_json: bool = False,
+        response_validator: Callable[[Any], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self._assert_budget(db)
 
@@ -107,7 +196,13 @@ class DeepSeekClient(SemanticLLMClient):
         # v4-flash 是推理模型：reasoning 会消耗 token 预算，
         # 实际可用 max_tokens 需给足（默认 4096，调用方可覆盖）。
         effective_max_tokens = max_tokens if max_tokens >= 2048 else 2048
-        input_key = _input_hash(system_prompt, user_payload, prompt_version, schema_version)
+        input_key = _input_hash(
+            system_prompt,
+            user_payload,
+            prompt_version,
+            schema_version,
+            self.thinking_mode,
+        )
 
         # cache hit
         if db is not None:
@@ -120,9 +215,25 @@ class DeepSeekClient(SemanticLLMClient):
                 input_hash=input_key,
             )
             if cached is not None:
+                cached_content = json.dumps(cached["parsed_payload"], ensure_ascii=False, sort_keys=True)
+                parsed = _validate_response_payload(
+                    cached["parsed_payload"],
+                    response_validator,
+                    source="LLM_CALL_CACHE",
+                    content=cached_content,
+                    raw_response_hash=str(cached.get("raw_response_hash") or ""),
+                )
                 self._calls += 1
                 self._tokens += cached.get("token_usage", 0)
-                return cached["parsed_payload"]
+                return parsed
+
+        if self.cache_only:
+            raise _response_error(
+                "当前语义测量仅允许兼容缓存，但没有可消费缓存",
+                code="CACHE_MISS",
+                source="LLM_CALL_CACHE",
+                content="",
+            )
 
         url = f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions"
         body = {
@@ -135,14 +246,17 @@ class DeepSeekClient(SemanticLLMClient):
             "max_tokens": effective_max_tokens,
             "response_format": {"type": "json_object"},
         }
+        if self.thinking_mode:
+            body["thinking"] = {"type": self.thinking_mode}
         headers = {
             "Authorization": f"Bearer {self.api_key}",  # key 只出现在内存 header，不落日志
             "Content-Type": "application/json",
         }
         # 有限重试（最多 3 次，指数退避）——覆盖网络断连与推理模型偶发的非 JSON 输出；不无限 retry
         last_error: Exception | None = None
-        for attempt in range(3):
+        for attempt in range(self.max_attempts):
             try:
+                self._external_calls += 1
                 with httpx.Client(timeout=self.settings.deepseek_timeout_seconds) as client:
                     resp = client.post(url, headers=headers, json=body)
                 if resp.status_code != 200:
@@ -150,33 +264,74 @@ class DeepSeekClient(SemanticLLMClient):
                     detail = resp.text[:300]
                     raise SemanticLLMError(f"DeepSeek HTTP {resp.status_code} (model={model_name}): {detail}")
                 data = resp.json()
-                content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+                choice = (data.get("choices") or [{}])[0]
+                finish_reason = str(choice.get("finish_reason") or "unknown")
+                content = choice.get("message", {}).get("content", "")
                 usage = data.get("usage") or {}
                 prompt_tokens = int(usage.get("prompt_tokens") or 0)
                 completion_tokens = int(usage.get("completion_tokens") or 0)
                 total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
+                self._external_tokens += total_tokens
+                if strict_json and finish_reason == "length":
+                    raise _response_error(
+                        "模型响应因长度限制被截断",
+                        source="EXTERNAL_LLM",
+                        content=content,
+                        finish_reason=finish_reason,
+                    )
+                if strict_json and not content.strip():
+                    raise _response_error(
+                        "模型返回空白响应",
+                        source="EXTERNAL_LLM",
+                        content=content,
+                        finish_reason=finish_reason,
+                    )
                 try:
                     parsed = json.loads(content)
                 except json.JSONDecodeError:
+                    if strict_json:
+                        raise _response_error(
+                            "模型响应不是完整 JSON",
+                            source="EXTERNAL_LLM",
+                            content=content,
+                            finish_reason=finish_reason,
+                        )
                     # 推理模型偶发在 JSON 前后附带文本，提取第一个完整 JSON 对象容错
                     parsed = _extract_json_object(content)
                     if parsed is None:
-                        raise SemanticLLMError("DeepSeek 返回非 JSON 内容且无法提取")
+                        message = choice.get("message") or {}
+                        reasoning = message.get("reasoning_content") or ""
+                        raise SemanticLLMError(
+                            "DeepSeek 返回非 JSON 内容且无法提取"
+                            f" (finish_reason={choice.get('finish_reason') or 'unknown'},"
+                            f" content_length={len(content)}, reasoning_length={len(reasoning)},"
+                            f" total_tokens={total_tokens})"
+                        )
+                parsed = _validate_response_payload(
+                    parsed,
+                    response_validator,
+                    source="EXTERNAL_LLM",
+                    content=content,
+                    finish_reason=finish_reason,
+                )
                 break  # 成功拿到可解析结果
             except SemanticLLMError as e:
                 last_error = e
-                if attempt < 2:
+                if attempt < self.max_attempts - 1:
                     import time
                     time.sleep(1.5 * (attempt + 1))
             except httpx.HTTPError as e:
                 last_error = e
-                if attempt < 2:
+                if attempt < self.max_attempts - 1:
                     import time
                     time.sleep(1.5 * (attempt + 1))
         else:
             if isinstance(last_error, SemanticLLMError):
                 raise last_error
-            raise SemanticLLMError(f"DeepSeek 网络错误（重试3次后）: {last_error.__class__.__name__ if last_error else 'unknown'}") from last_error
+            raise SemanticLLMError(
+                f"DeepSeek 网络错误（尝试{self.max_attempts}次后）: "
+                f"{last_error.__class__.__name__ if last_error else 'unknown'}"
+            ) from last_error
 
         self._calls += 1
         self._tokens += total_tokens
@@ -202,3 +357,11 @@ class DeepSeekClient(SemanticLLMClient):
     @property
     def token_count(self) -> int:
         return self._tokens
+
+    @property
+    def external_call_count(self) -> int:
+        return self._external_calls
+
+    @property
+    def external_token_count(self) -> int:
+        return self._external_tokens

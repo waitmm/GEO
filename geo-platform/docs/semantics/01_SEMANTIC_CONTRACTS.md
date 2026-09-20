@@ -1,0 +1,599 @@
+# GEO Semantic Contracts
+
+状态：ACTIVE REGISTRY
+日期：2026-09-08
+
+## 1. Registry 规则
+
+- 本文件登记当前可审计 Contract；登记不等于冻结。
+- `maturity` 与 `implementation_status` 独立维护，不得互相推导。
+- `OBSERVED + PRODUCTION` 只说明代码当前如此运行，不代表 Product Owner 已重新确认定义。
+- 只有 Definition Review 明确批准后才能标为 `FROZEN`。
+- `APPROVED RFC` 只授权实现、Shadow 和 Replay；替换生产语义仍需独立 Production Cutover 批准。
+- FROZEN Contract 与实现冲突时返回 `SEMANTIC_CONTRACT_CONFLICT`，不得静默选择代码或旧文档。
+
+## 2. 首批 Contract
+
+### SC-PT-001 Target Brand Product Truth Isolation
+
+```yaml
+contract_id: SC-PT-001
+contract_name: Target Brand Product Truth Isolation
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: Product Truth 只确认目标品牌自己的真实能力，并保留 TRUE/FALSE/UNKNOWN 与人工来源边界。
+allowed_inferences:
+  - MANUAL_CONFIRMED 且正向的目标品牌能力可进入安全内容事实集合。
+forbidden_inferences:
+  - 由竞品、Benchmark、SourceClaim 或模型常识自动推出目标品牌能力。
+  - 将 UNKNOWN 改写为 TRUE。
+unknown_behavior: 保持 UNKNOWN，阻止确定性目标品牌能力陈述并进入人工确认。
+step_boundary: Step 3 产生；Step 6-8 只读消费。
+source_references:
+  - 产品纲要.md::目标品牌事实边界
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::Product Truth
+observed_implementation_refs:
+  - backend/app/models/db.py::TargetBrandCapabilityTruth
+  - backend/app/modules/optimization/service.py::formal gap/strategy assembly
+enforcement_refs:
+  - backend/tests/test_source_gap_v1.py::product truth matching tests
+  - backend/tests/test_execution_proposal_shadow.py::claim grounding tests
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-001, CASE-REAL-019]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-UNKNOWN-001 Unknown Preservation
+
+```yaml
+contract_id: SC-UNKNOWN-001
+contract_name: Unknown Preservation
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: UNKNOWN 表示当前正式输入无法证明真或假，是合法业务状态，不是待代码猜测的空值。
+allowed_inferences:
+  - 请求人工确认、补充证据或保持不确定。
+forbidden_inferences:
+  - 静默升级 TRUE/SUPPORTED/eligible/ready。
+  - 用竞品事实、LLM 常识或 fallback 填补。
+unknown_behavior: 原样保留 UNKNOWN，并阻止依赖确定事实的下游动作。
+step_boundary: 贯穿 Step 3-8；每一步只能消费，不能跨步骤升级。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::unknown and human confirmation boundaries
+observed_implementation_refs:
+  - backend/app/modules/optimization/service.py
+  - backend/app/modules/optimization/execution_proposal_shadow.py
+enforcement_refs:
+  - backend/tests/test_source_gap_v1.py::unknown product truth tests
+  - backend/tests/test_strategy_step7_v1.py::unknown strategy tests
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-001, CASE-SYN-006]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-EVIDENCE-001 Retrieval-Only Is Not Decision Citation
+
+```yaml
+contract_id: SC-EVIDENCE-001
+contract_name: Retrieval-Only Is Not Decision Citation
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: Retrieval observation 只证明来源进入某次检索候选环境，不能单独证明其被引用或支持答案决策理由。
+allowed_inferences:
+  - 作为 Channel Evidence exposure 和受限 TEST 输入。
+forbidden_inferences:
+  - RETRIEVAL_ONLY => DECISION_CITATION/SUPPORTS/PRIMARY。
+unknown_behavior: 缺少 Citation/Alignment 时保持 retrieval-only。
+step_boundary: Step 1 产生；Step 4/7 受限消费。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::retrieval and citation boundary
+observed_implementation_refs:
+  - backend/app/modules/optimization/channel_evidence.py
+  - backend/app/modules/optimization/channel_resolution_shadow.py
+enforcement_refs:
+  - backend/tests/test_channel_evidence.py
+  - backend/tests/test_channel_resolution_shadow.py
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-004, CASE-REAL-040]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-EVIDENCE-002 Peripheral Citation Is Not Decision Citation
+
+```yaml
+contract_id: SC-EVIDENCE-002
+contract_name: Peripheral Citation Is Not Decision Citation
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: 被观察到的外围引用可以描述引用环境，但在未绑定到同一 Decision Reason 前不是 Decision Citation。
+allowed_inferences:
+  - 作为 reference environment/exposure 观察。
+forbidden_inferences:
+  - PERIPHERAL_CITATION => DECISION_CITATION/SUPPORTS/PRIMARY。
+unknown_behavior: 绑定不足时维持 peripheral/unproven，不扩展 prompt-scope cross-product。
+step_boundary: Step 1/4；只在满足 lineage 后升级为正式 Evidence 关系。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::citation decision eligibility
+observed_implementation_refs:
+  - backend/app/modules/optimization/evidence_lineage.py
+  - backend/app/modules/optimization/evidence_alignment_candidates.py
+enforcement_refs:
+  - backend/tests/test_answer_evidence_shadow.py
+  - backend/tests/test_evidence_alignment.py
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-002, CASE-REAL-019, CASE-REAL-040]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-EVIDENCE-003 Phase 2A Evidence Lineage
+
+```yaml
+contract_id: SC-EVIDENCE-003
+contract_name: Phase 2A Evidence Lineage
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: 只有属于当前固定 Run scope 且满足 Phase 2A lineage 的 AnswerUnit-SourceClaim 关系可进入正式 V1.1。
+allowed_inferences:
+  - 对候选范围内具体 pair 保存并人工审核 SUPPORTS/CONTRADICTS/非支持关系。
+forbidden_inferences:
+  - 使用 prompt-scope 历史全库 cross-product 补齐关系。
+  - 将 HUMAN_CONFIRMED 用作未来候选召回白名单。
+unknown_behavior: 无可验证 lineage 时排除正式关系并显式报告。
+step_boundary: Step 4；不决定 Benchmark、Channel Role 或 Strategy。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::Phase 2A
+  - docs/v1_1_incremental_materialization.md
+observed_implementation_refs:
+  - backend/app/modules/optimization/evidence_alignment.py::run_evidence_alignment
+  - backend/app/modules/optimization/evidence_alignment_candidates.py
+  - backend/app/modules/optimization/evidence_lineage.py
+enforcement_refs:
+  - backend/tests/test_evidence_alignment.py
+  - backend/tests/test_materialization_executor.py
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-002, CASE-REAL-019, CASE-REAL-040]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-BENCHMARK-001 Benchmark Isolation
+
+```yaml
+contract_id: SC-BENCHMARK-001
+contract_name: Benchmark Isolation
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: Benchmark 是相同理由上符合资格的外部证据比较，不是引用热度、目标品牌事实或执行渠道选择。
+allowed_inferences:
+  - 描述符合资格来源在同一 capability/reason 上的可比较证据。
+forbidden_inferences:
+  - Citation Prominence 决定 Benchmark。
+  - Benchmark 平台自动成为执行平台。
+  - Benchmark 能力自动成为 Product Truth。
+unknown_behavior: 无 eligible Benchmark 时仍允许形成其他类型 Gap，但不得伪造 Benchmark。
+step_boundary: Step 5 产生；Step 6/7 受限消费。
+source_references:
+  - 产品纲要.md::Benchmark 边界
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::Step 5
+observed_implementation_refs:
+  - backend/app/modules/optimization/service.py::formal evidence and strategy assembly
+enforcement_refs:
+  - backend/tests/test_source_gap_v1.py::benchmark boundary assertions
+  - backend/tests/test_strategy_step7_v1.py::benchmark channel boundary assertions
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-003, CASE-REAL-040]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-GAP-001 Reason-Level Gap Diagnosis
+
+```yaml
+contract_id: SC-GAP-001
+contract_name: Reason-Level Gap Diagnosis
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: Gap 在 capability/reason 层结合答案选择、Product Truth、Evidence 与可选 Benchmark 分类。
+allowed_inferences:
+  - 无 eligible SUPPORTS 但有已确认 Product Truth 时形成 ANSWER_DECISION_EVIDENCE_GAP。
+forbidden_inferences:
+  - 无 Benchmark 等价为无 Gap。
+  - 将其他 Reason 的证据或 Product Truth 串入当前 Reason。
+unknown_behavior: 输入事实不足时保留 UNKNOWN/HUMAN_REVIEW_REQUIRED，不生成确定执行结论。
+step_boundary: Step 6；不创建 StrategyCandidate、Action 或 Experiment。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::Step 6
+  - docs/09_PRODUCT_ITERATION_LOG.md::2026-09-04 evidence gap correction
+observed_implementation_refs:
+  - backend/app/modules/optimization/service.py::gap diagnosis paths
+enforcement_refs:
+  - backend/tests/test_source_gap_v1.py
+  - backend/tests/test_strategy_step7_v1.py::answer decision evidence gap tests
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-001, CASE-REAL-019]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-CHANNEL-001 Current Channel Resolver Roles
+
+```yaml
+contract_id: SC-CHANNEL-001
+contract_name: Current Channel Resolver Roles
+contract_version: 1.1.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: Resolver 依据 reason-level Evidence、Product Truth、资产权威性与渠道资格确定 PRIMARY/SECONDARY/TEST/OBSERVE；Role 与执行优先级分离。
+allowed_inferences:
+  - 符合当前 Path A/B/C/D 门槛的渠道进入对应角色候选。
+  - TEST 仅表示值得验证，不表示已证明有效。
+forbidden_inferences:
+  - Benchmark 或引用数量自动决定 Role。
+  - Step 8 修改 Role。
+  - LLM 新增渠道或升级 Role。
+unknown_behavior: 资格不足时 OBSERVE 或 HUMAN_REVIEW_REQUIRED，不猜测渠道效果。
+step_boundary: Step 7；只确定渠道职责，不选择账号、URL、标题、section 或资产实例。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::Step 7
+  - docs/STRATEGY_SYNTHESIS_PR4_CHECKPOINT.md
+observed_implementation_refs:
+  - backend/app/modules/optimization/channel_resolution_shadow.py::resolve_channel_shadow
+  - backend/app/modules/optimization/strategy_synthesis_shadow.py::run_strategy_synthesis_core
+enforcement_refs:
+  - backend/tests/test_channel_resolution_shadow.py
+  - backend/tests/test_strategy_synthesis_shadow.py
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-003, CASE-SYN-004, CASE-REAL-019, CASE-REAL-040]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-STRATEGY-001 Step 7 Strategy Truth
+
+```yaml
+contract_id: SC-STRATEGY-001
+contract_name: Step 7 Strategy Truth
+contract_version: 1.1.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: Step 7 确定并人工确认 Reasons、Themes、Gaps、Channel Roles 和策略范围；结构优先确定性生成。
+allowed_inferences:
+  - Theme coverage 等于成员 Reason observed Run IDs 的并集除以 analyzable Runs。
+  - 已确认 Candidate 允许进入 Step 8 审核。
+forbidden_inferences:
+  - Step 7 创建 Action/Experiment。
+  - 历史 Candidate 计入当前 Evidence Package 状态。
+  - LLM 改 ID、Role、事实、coverage 或渠道集合。
+unknown_behavior: 确定性输入有真实歧义时可标记 needs_human_*；LLM 失败回退且不阻塞 Strategy Truth。
+step_boundary: Step 7 产生 StrategyCandidate；具体资产执行参数属于 Step 8。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::Step 7
+  - docs/STRATEGY_SYNTHESIS_PR4_CHECKPOINT.md
+observed_implementation_refs:
+  - backend/app/modules/optimization/strategy_synthesis_shadow.py
+  - backend/app/modules/optimization/service.py::review_strategy_candidate
+enforcement_refs:
+  - backend/tests/test_strategy_step7_v1.py
+  - backend/tests/test_strategy_synthesis_shadow.py
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-005, CASE-REAL-019, CASE-REAL-040]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-STEP7-001 Step 7 Ownership Boundary
+
+```yaml
+contract_id: SC-STEP7-001
+contract_name: Step 7 Ownership Boundary
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: Step 7 只生成和人工确认 StrategyCandidate，不创建具体执行事实。
+allowed_inferences:
+  - 已确认 StrategyCandidate 允许用户进入 Step 8 审核。
+forbidden_inferences:
+  - 创建 Action、Experiment、具体资产实例、URL、标题或 section。
+unknown_behavior: Strategy 未确认时 Step 8 保持锁定，不使用历史对象绕过。
+step_boundary: Step 7 producer；Step 8 只读消费已确认 Strategy Truth。
+source_references:
+  - 产品纲要.md::Step 7/8 boundary
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::Step 7
+observed_implementation_refs:
+  - backend/app/modules/optimization/service.py::review_strategy_candidate
+  - backend/app/modules/optimization/workflow.py
+enforcement_refs:
+  - backend/tests/test_strategy_step7_v1.py
+  - backend/tests/test_workflow_review_queue.py
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-REAL-019, CASE-REAL-040]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-STEP8-001 Step 8 Execution Proposal Isolation
+
+```yaml
+contract_id: SC-STEP8-001
+contract_name: Step 8 Execution Proposal Isolation
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: ExecutionProposal 只把已确认 Strategy Truth 编译成一资产一渠道的可审核建议；人工编辑是 overlay 并必须 canonical rebuild + revalidation。
+allowed_inferences:
+  - 用户在系统给出的合法 package/type/title/sections/window 中选择或暂缓。
+forbidden_inferences:
+  - 修改 Role、Theme/Reason Scope、Product Truth、Baseline 或 metric eligibility。
+  - 将 ready_for_freeze 解释为已创建 Action/Experiment。
+  - 自动选择第一个合法方案。
+unknown_behavior: 缺少人工选择时 NEEDS_HUMAN_SELECTION；非法 overlay 整体拒绝，不宽松修复。
+step_boundary: Step 8 审核；PR5-B 不进行 PR5-C 持久化。
+source_references:
+  - docs/EXECUTION_PROPOSAL_PR5_A.md
+  - docs/EXECUTION_PROPOSAL_PR5_B.md
+observed_implementation_refs:
+  - backend/app/modules/optimization/execution_proposal_shadow.py::build_execution_proposal_portfolio
+  - backend/app/modules/optimization/execution_proposal_shadow.py::revalidate_execution_proposal_portfolio
+enforcement_refs:
+  - backend/tests/test_execution_proposal_shadow.py
+  - backend/app/modules/optimization/execution_proposal_shadow.py::validate_execution_proposal
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-006, CASE-REAL-019]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-EXPERIMENT-001 Experiment Snapshot Freeze
+
+```yaml
+contract_id: SC-EXPERIMENT-001
+contract_name: Experiment Snapshot Freeze
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PARTIAL
+definition: 每个 Experiment 绑定一个具体 Action，并冻结 strategy/gap/action/selected asset/baseline runs/baseline metrics 快照。
+allowed_inferences:
+  - 冻结后用相同口径复测和比较。
+forbidden_inferences:
+  - 用后续 Candidate、Gap 或资产变化重写历史实验。
+  - 一个 Experiment 合并多个独立渠道 Proposal。
+  - PR5-B ready_for_freeze 自动创建 Experiment。
+unknown_behavior: 缺少任一必需快照时阻止创建并返回明确校验错误。
+step_boundary: Step 8；发布、复测、结论不新增 Step 9。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::Step 8
+  - 产品纲要.md::Experiment freeze
+observed_implementation_refs:
+  - backend/app/modules/optimization/service.py::confirm_strategy_execution_plan
+  - backend/app/modules/optimization/service.py::create_experiment
+enforcement_refs:
+  - backend/tests/test_source_gap_v1.py::strategy snapshot and baseline tests
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-007]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-HISTORY-001 Accepted History Is Immutable
+
+```yaml
+contract_id: SC-HISTORY-001
+contract_name: Accepted History Is Immutable
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: 已接受或已生效的历史语义对象不可原地覆盖；更改必须创建新版本并显式 supersede，原对象继续可审计。
+allowed_inferences:
+  - 新 Candidate/Contract/Experiment snapshot 通过 version/supersedes 关系替代旧对象。
+forbidden_inferences:
+  - 原地重写已接受 Candidate 的核心 payload、已冻结实验快照或已生效 Contract。
+unknown_behavior: 无法证明对象是否已接受/生效时阻止覆盖并进入人工审查。
+step_boundary: 贯穿 Step 1-8 的版本化与历史审计。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::current workflow state
+  - docs/09_PRODUCT_ITERATION_LOG.md::history isolation decisions
+observed_implementation_refs:
+  - backend/app/modules/optimization/service.py::candidate supersede and review paths
+enforcement_refs:
+  - backend/tests/test_strategy_step7_v1.py::candidate supersede tests
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-REAL-019, CASE-REAL-040]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-SCOPE-001 Current Scope History Isolation
+
+```yaml
+contract_id: SC-SCOPE-001
+contract_name: Current Scope History Isolation
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: 当前主链状态只读取当前 Prompt、固定 Evidence Package/Run scope 和 current Candidate lineage；历史与 Shadow 对象只作审计。
+allowed_inferences:
+  - superseded Candidate、Action、Experiment 可展示为历史记录。
+forbidden_inferences:
+  - 历史 StrategyCandidate/Experiment 点亮当前 Step 7/8。
+  - Shadow 结果决定 production 状态。
+  - latest-by-id 替代固定 package/candidate identity。
+unknown_behavior: 无法证明 current lineage 时显示未加载/需确认，不回退历史对象。
+step_boundary: 贯穿 Step 1-8 的状态读取，不改变各步骤归属。
+source_references:
+  - docs/05_OPTIMIZATION_LOOP_SPEC.md::current workflow state
+  - docs/09_PRODUCT_ITERATION_LOG.md::history isolation decisions
+observed_implementation_refs:
+  - backend/app/modules/optimization/workflow.py
+  - backend/app/modules/optimization/api.py
+enforcement_refs:
+  - backend/tests/test_workflow_review_queue.py
+  - backend/tests/test_strategy_step7_v1.py::current candidate isolation tests
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-REAL-019, CASE-REAL-040]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-DECISION-STABILITY-001 Sidecar Observation Only
+
+```yaml
+contract_id: SC-DECISION-STABILITY-001
+contract_name: Decision Stability Sidecar
+contract_version: 1.0.0
+maturity: OBSERVED
+implementation_status: PRODUCTION
+definition: Decision Stability 只作为旁路观测指标。
+allowed_inferences:
+  - 在不改变主链状态的详情或报告中展示稳定性。
+forbidden_inferences:
+  - 决定 Step 1-8 是否完成、锁定、生成 Strategy 或创建 Experiment。
+unknown_behavior: 无法计算时显示不可用，不阻塞主链。
+step_boundary: 旁路，只读。
+source_references:
+  - 产品纲要.md::Decision Stability boundary
+observed_implementation_refs:
+  - backend/app/modules/optimization/workflow.py
+enforcement_refs: []
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: []
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-FOUNDATION-001 Foundation/Citation Semantic Split
+
+```yaml
+contract_id: SC-FOUNDATION-001
+contract_name: Foundation/Citation Semantic Split
+contract_version: 0.1.0
+maturity: CANDIDATE
+implementation_status: NOT_IMPLEMENTED
+definition: Product Truth 可建立 Foundation Requirement，但不得单独证明 Citation Intervention；两者是否拆分为正式策略层级仍待 Definition Review。
+allowed_inferences:
+  - 仅用于 RFC、Shadow 设计和 Golden Case 讨论。
+forbidden_inferences:
+  - 覆盖当前 production Resolver Path C。
+  - 据此修改 #19/#40 Candidate、Role、Step 8 或数据库。
+unknown_behavior: 保留当前 production 行为并报告待决冲突。
+step_boundary: 候选定义涉及 Step 6-7；尚未获生产切换授权。
+source_references:
+  - docs/semantics/rfcs/RFC-FOUNDATION-CITATION-SPLIT.md
+observed_implementation_refs: []
+enforcement_refs: []
+approved_by: null
+approved_at: null
+approval_reference: null
+golden_case_ids: [CASE-SYN-001, CASE-REAL-019]
+effective_from: null
+supersedes: null
+last_verified_at: 2026-09-08
+```
+
+### SC-RUNTIME-001 Analysis Context And Stage Lifecycle
+
+```yaml
+contract_id: SC-RUNTIME-001
+contract_name: Analysis Context And Stage Lifecycle
+contract_version: 0.1.0
+maturity: FROZEN
+implementation_status: PARTIAL
+definition: 单个 Prompt 的分析由不可变 AnalysisContext Root 与固定 16 节点 Stage DAG 表达；Stage 输入、输出、审核、失效、当前选择和 legacy 投影均绑定确定性 identity/hash，不能通过 latest/current fallback 拼接。
+allowed_inferences:
+  - 固定 Manifest、固定数据库身份与 Frozen Legacy Projection Profile 可生成只读 VIRTUAL_RUNTIME_PROJECTION。
+  - legacy 缺失、可恢复但不完整、歧义分别保持 UNAVAILABLE、PARTIAL、UNSAFE。
+forbidden_inferences:
+  - 以最新 EvidencePackage、Candidate、AnalysisRun、Strategy 或 Experiment 替代固定对象。
+  - 将 virtual projection 写入或用于 production current pointer、Review、Strategy、Action、Experiment、PR5 或 cache。
+  - 将 mutable legacy review 状态升级为 immutable authoritative ReviewDecision。
+unknown_behavior: 无法唯一恢复 lineage 时保留 null/missing refs 并输出 UNSAFE 或 UNAVAILABLE，不选择历史 winner。
+step_boundary: 横跨 Step 1-8 的 runtime identity/lifecycle；不改变任何步骤业务语义，也不新增 Step 9。
+source_references:
+  - docs/semantics/rfcs/RFC-RUNTIME-001.md
+  - docs/semantics/approvals/RFC-RUNTIME-001.definition-freeze.md
+  - docs/semantics/reviews/RFC-RUNTIME-001.review-005.md
+observed_implementation_refs:
+  - docs/semantics/05_RUNTIME_SEMANTIC_MAP.md
+  - backend/app/modules/runtime_persistence
+enforcement_refs:
+  - backend/app/modules/runtime_projection
+  - backend/scripts/runtime_projection_spike.py
+  - backend/tests/test_runtime_projection_spike.py
+  - backend/app/modules/runtime_persistence
+  - backend/alembic/versions/20260910_01_runtime_persistence_spine.py
+  - backend/tests/test_runtime_persistence_spine.py
+  - docs/semantics/spikes/RFC-RUNTIME-001.read-only-projection-spike.md
+  - docs/semantics/shadows/RFC-RUNTIME-001.phase-1a-persistence-spine.md
+approved_by: Product Owner
+approved_at: 2026-09-09T15:25:02+08:00
+approval_reference: docs/semantics/approvals/RFC-RUNTIME-001.definition-freeze.md
+golden_case_ids: [CASE-REAL-019, CASE-REAL-040]
+effective_from: 2026-09-09T15:25:02+08:00
+supersedes: null
+last_verified_at: 2026-09-10
+```
+
+## 3. Definition Freeze Queue
+
+`SC-RUNTIME-001@0.1.0` 已由 Product Owner 在独立 Review 005 通过后正式
+Definition Freeze；Phase 1A 后其 `implementation_status=PARTIAL`，仅表示隔离的
+persistence spine 已实现，不代表 live Shadow capture 或 Production Cutover。
+
+可提交 Product Owner 首轮 Freeze Review 的稳定边界候选：`SC-HISTORY-001`、`SC-PT-001`、`SC-UNKNOWN-001`、`SC-EVIDENCE-001/002/003`、`SC-BENCHMARK-001`、`SC-STEP7-001`、`SC-STEP8-001`、`SC-EXPERIMENT-001`、`SC-SCOPE-001`、`SC-DECISION-STABILITY-001`。
+
+暂不建议冻结、仍需定义收敛：`SC-GAP-001`、`SC-CHANNEL-001`、`SC-STRATEGY-001`。`SC-FOUNDATION-001` 仍是 RFC Candidate。

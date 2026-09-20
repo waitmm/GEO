@@ -17,6 +17,7 @@ import re
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
@@ -31,6 +32,7 @@ from app.models import (
 from app.modules.monitoring.collectors.wenxin.url_normalizer import canonicalize_url, domain_from_url
 from app.modules.optimization.service import _infer_platform_from_domain, DOMAIN_PLATFORM_MAP
 from app.services.serialization import dumps, loads
+from app.services.url_identity import url_identity_fields
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +177,7 @@ def _extract_baidu_redirect_target(html: str) -> str | None:
     return None
 
 
-def fetch_page_playwright(urls: list[str]) -> list[dict]:
+def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int], None] | None = None) -> list[dict]:
     """Fetch multiple URLs using Playwright with full page rendering."""
     results = []
     try:
@@ -184,7 +186,12 @@ def fetch_page_playwright(urls: list[str]) -> list[dict]:
             try:
                 browser, context, fetch_method = _launch_browser_context_for_fetch(p)
             except Exception as exc:
-                return [_with_browser_fallback_reason(str(exc), fetch_page(url)) for url in urls]
+                fallback_results = []
+                for index, url in enumerate(urls, start=1):
+                    fallback_results.append(_with_browser_fallback_reason(str(exc), fetch_page(url)))
+                    if progress_callback:
+                        progress_callback(index, len(urls))
+                return fallback_results
             page = context.new_page()
             for url in urls:
                 normalized = _normalize_url_for_fetch(url)
@@ -228,12 +235,16 @@ def fetch_page_playwright(urls: list[str]) -> list[dict]:
                             result["fetch_status"] = "FETCH_FAILED"
                             result["failure_reason"] = str(e)[:200]
                 results.append(result)
+                if progress_callback:
+                    progress_callback(len(results), len(urls))
             context.close()
             if browser is not None:
                 browser.close()
     except ImportError:
-        for url in urls:
+        for index, url in enumerate(urls, start=1):
             results.append(_with_browser_fallback_reason("未安装 Playwright", fetch_page(url)))
+            if progress_callback:
+                progress_callback(index, len(urls))
     return results
 
 
@@ -324,8 +335,10 @@ def acquire_cited_sources(db: Session, run_ids: list[int]) -> dict:
         results = fetch_page_playwright(new_urls)
         for i, (url, domain, src_type) in enumerate([(u, d, s) for u, d, s in unique_urls if u in new_urls]):
             result = results[i] if i < len(results) else fetch_page(url)
+            identity = url_identity_fields(url, result.get("canonical_url", url))
             doc = SourceDocument(
-                url=result.get("canonical_url", url), original_url=url,
+                url=identity["canonical_url"] or result.get("canonical_url", url), original_url=url,
+                **identity,
                 domain=domain, source_type=src_type,
                 fetch_status=result["fetch_status"], failure_reason=result["failure_reason"],
                 title=result["title"], raw_html=result.get("raw_html", "")[:500000],
@@ -348,8 +361,10 @@ def acquire_brand_asset(db: Session, url: str) -> dict:
     if existing:
         return {"status": "EXISTS", "doc_id": existing.id}
     result = fetch_page(url)
+    identity = url_identity_fields(url, result.get("canonical_url", url))
     doc = SourceDocument(
-        url=url, domain=urlparse(url).netloc.lower(), source_type="BRAND_ASSET",
+        url=identity["canonical_url"] or url, original_url=url, **identity,
+        domain=urlparse(url).netloc.lower(), source_type="BRAND_ASSET",
         fetch_status=result["fetch_status"], failure_reason=result["failure_reason"],
         title=result["title"], raw_html=result["raw_html"][:500000],
         clean_text=result["clean_text"][:200000],
@@ -464,9 +479,16 @@ def segment_document(doc: SourceDocument) -> list[dict]:
     return blocks
 
 
-def segment_all_documents(db: Session) -> dict:
-    """Segment all fetched source documents."""
-    docs = db.query(SourceDocument).filter(SourceDocument.fetch_status.in_(["SUCCESS", "PARTIAL"])).all()
+def segment_all_documents(db: Session, doc_ids: list[int] | None = None) -> dict:
+    """Segment fetched source documents.
+
+    ``doc_ids`` keeps current-chain reruns scoped to the active Prompt/Run
+    lineage. Omitting it preserves the legacy maintenance behavior.
+    """
+    query = db.query(SourceDocument).filter(SourceDocument.fetch_status.in_(["SUCCESS", "PARTIAL"]))
+    if doc_ids is not None:
+        query = query.filter(SourceDocument.id.in_([int(item) for item in doc_ids]))
+    docs = query.all()
     count = 0
     for doc in docs:
         blocks = segment_document(doc)

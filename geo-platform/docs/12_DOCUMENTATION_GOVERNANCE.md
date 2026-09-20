@@ -16,6 +16,30 @@
 主链变化必须强预警
 ```
 
+本文件负责文档维护纪律。业务对象定义、允许/禁止推断、Definition Freeze、RFC、Golden Case 和语义冲突由 `docs/semantics/` 管理；两套规则互补，不能用普通开发日志替代 Semantic Contract。
+
+## 1.1 语义治理入口
+
+核心业务开发前必须读取：
+
+```text
+docs/semantics/00_DOMAIN_MODEL.md
+docs/semantics/01_SEMANTIC_CONTRACTS.md
+docs/semantics/02_GOLDEN_SEMANTIC_CASES.md
+docs/semantics/03_DEFINITION_REVIEW_CHECKLIST.md
+docs/semantics/04_CONFLICT_REGISTER.md
+```
+
+并把工作分类为：
+
+```text
+IMPLEMENTATION_CHANGE
+SEMANTIC_CHANGE
+SEMANTIC_RISK
+```
+
+`SEMANTIC_CHANGE` 必须先走 `docs/semantics/rfcs/TEMPLATE.md`；未获批准返回 `SEMANTIC_CONTRACT_REVIEW_REQUIRED`。`SEMANTIC_RISK` 只允许调查和 Shadow/Replay。Definition Freeze、实现授权、Production Cutover 是三个独立 Gate。
+
 ## 2. 必须维护的文档
 
 ### 2.1 产品迭代记录
@@ -118,6 +142,15 @@ docs/09_OPEN_ISSUES_AND_RISKS.md
 - 改变单 Prompt 主链步骤数量、顺序或阶段名称。
 - 新增顶层模块，而不是融入既有主链或模块详情页。
 - 改变任一卡片的唯一事实来源。
+
+此外，下列变化必须进入 Semantic RFC，而不能只写产品/开发日志：
+
+- 改变核心对象定义、identity 或状态含义。
+- 新增或删除允许推断、禁止推断、unknown behavior。
+- 改变 Step 1-8 的事实归属或跨步骤推断。
+- 改变 Product Truth、Evidence、Benchmark、Gap、Channel Role、Strategy、ExecutionProposal、Action 或 Experiment 的边界。
+
+当前 effective FROZEN Contract 与实现冲突时必须返回 `SEMANTIC_CONTRACT_CONFLICT` 并登记 Conflict。代码和数据库只能作为 observed implementation evidence，不能自行覆盖 Contract。
 - 让 Citation Prominence、历史 RELATED、标题相似等信号进入正式 Benchmark / Gap / Strategy。
 - 让未确认 Product Truth 生成确定性执行策略。
 - 让 StrategyCandidate 跳过人工确认创建 Action 或 Experiment。

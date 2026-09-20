@@ -11,7 +11,6 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy.orm import Session
 
@@ -26,6 +25,7 @@ from app.models import (
     SourceQuality,
 )
 from app.services.serialization import loads
+from app.services.url_identity import canonicalize_url
 
 RETRIEVAL_VERSION = "passage_retrieval.v1_bm25"
 FORMAL_V1_1_INPUT_VERSION = "citation_decision_v1_1_formal_input.v1"
@@ -53,18 +53,57 @@ def _clean_reason_text(text: str) -> str:
     return _INVISIBLE_CHARS.sub("", text or "").strip()
 
 
+def _reason_text_matches_anchor(reason: dict, anchor_text: str) -> bool:
+    if not anchor_text:
+        return False
+    anchor = _clean_reason_text(anchor_text)
+    for key in ("reason_span", "normalized_reason", "text", "reason"):
+        value = _clean_reason_text(str(reason.get(key) or ""))
+        if value and (anchor in value or value in anchor):
+            return True
+    return False
+
+
+def _binding_reason_anchor_text(binding: AnswerDecisionBinding) -> str:
+    payload = loads(binding.judge_payload_json, {})
+    if not isinstance(payload, dict):
+        payload = {}
+    candidate = payload.get("rule_candidate") if isinstance(payload, dict) else {}
+    if not isinstance(candidate, dict):
+        candidate = {}
+    return _clean_reason_text(
+        candidate.get("reason_anchor_text")
+        or candidate.get("normalized_reason")
+        or payload.get("reason_anchor_text")
+        or ""
+    )
+
+
+def _binding_formal_reason_text(
+    binding: AnswerDecisionBinding,
+    unit: AnswerUnit,
+    event: RecommendationEvent,
+) -> tuple[str, str]:
+    """Return the atomic formal reason for an AnswerDecisionBinding.
+
+    The binding is created against a recommendation reason span. Evidence
+    Alignment must judge that atomic reason, not the whole answer unit sentence;
+    otherwise composite answer text can make valid capability evidence look only
+    RELATED.
+    """
+    anchor_text = _binding_reason_anchor_text(binding)
+    if anchor_text:
+        for reason in loads(event.reasons_json, []):
+            if isinstance(reason, dict) and _reason_text_matches_anchor(reason, anchor_text):
+                normalized = _clean_reason_text(str(reason.get("normalized_reason") or ""))
+                if normalized:
+                    return normalized, anchor_text
+        return anchor_text, anchor_text
+    return _clean_reason_text(unit.unit_text_normalized or unit.unit_text_original or ""), ""
+
+
 def _normalize_url_key(url: str) -> str:
-    if not url:
-        return ""
-    try:
-        parsed = urlsplit(url.strip())
-    except ValueError:
-        return url.strip().lower()
-    host = (parsed.netloc or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    path = parsed.path.rstrip("/") or "/"
-    return urlunsplit((parsed.scheme.lower() or "https", host, path, "", ""))
+    return canonicalize_url(url)
 
 
 class BM25:
@@ -201,7 +240,7 @@ def answer_binding_reason_inputs(
     )
     result: list[dict] = []
     for binding, unit, event in rows:
-        reason_text = _clean_reason_text(unit.unit_text_normalized or unit.unit_text_original or "")
+        reason_text, anchor_text = _binding_formal_reason_text(binding, unit, event)
         if not reason_text:
             continue
         result.append({
@@ -215,6 +254,8 @@ def answer_binding_reason_inputs(
             "decision_role": binding.decision_role,
             "binding_strength": binding.binding_strength,
             "scope_type": binding.scope_type,
+            "reason_anchor_text": anchor_text,
+            "answer_unit_text": _clean_reason_text(unit.unit_text_normalized or unit.unit_text_original or ""),
             "shadow_run_id": shadow_run.id,
             "answer_unit_id": unit.id,
             "decision_binding_id": binding.id,
@@ -284,12 +325,12 @@ def run_reason_driven_retrieval(
     quality_by_doc_id: dict[int, SourceQuality] = {}
     for quality in db.query(SourceQuality).order_by(SourceQuality.id.desc()).all():
         quality_by_doc_id.setdefault(quality.source_document_id, quality)
-    allowed_doc_ids = {int(item) for item in doc_id_filter or []}
+    allowed_doc_ids = None if doc_id_filter is None else {int(item) for item in doc_id_filter}
     docs = [
         doc
         for doc in db.query(SourceDocument).all()
         if derive_content_status(doc, quality_by_doc_id.get(doc.id)).get("content_status") == "CONTENT_VALID"
-        and (not allowed_doc_ids or doc.id in allowed_doc_ids)
+        and (allowed_doc_ids is None or doc.id in allowed_doc_ids)
     ]
     doc_passages: dict[int, list[dict]] = {}
     for doc in docs:
@@ -402,7 +443,7 @@ def run_reason_driven_retrieval(
         "include_answer_binding_reasons": include_answer_binding_reasons,
         "valid_documents": len(docs),
         "passages_retrieved": total_pages,
-        "doc_id_filter": sorted(allowed_doc_ids),
+        "doc_id_filter": sorted(allowed_doc_ids) if allowed_doc_ids is not None else [],
         "by_reason": result,
         "version": RETRIEVAL_VERSION,
         "formal_input_version": FORMAL_V1_1_INPUT_VERSION if include_answer_binding_reasons else "",

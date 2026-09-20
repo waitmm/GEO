@@ -1,17 +1,63 @@
 # GEO Platform Agent Guide
 
-## Fact Priority
+## Authorization And Durable Truth
 
-Use this order when project facts conflict:
+The latest explicit Product Owner instruction authorizes the current change,
+pause, RFC, shadow, or review. Chat is not a durable semantic truth source and
+must be written into the repository before future work can depend on it.
 
-1. Latest user instruction in the active thread.
-2. `docs/01_PRODUCT_DIRECTION.md` if marked `ACTIVE`.
-3. `docs/07_DECISION_LOG.md`.
-4. `docs/09_PRODUCT_ITERATION_LOG.md`.
-5. `docs/05_OPTIMIZATION_LOOP_SPEC.md`.
-6. `docs/02_CURRENT_STATUS.md`.
-7. Current code and SQLite data.
-8. Older implementation logs.
+Use this order for durable semantic facts when repository sources conflict:
+
+1. Current effective `FROZEN` contract in `docs/semantics/01_SEMANTIC_CONTRACTS.md`.
+2. `FROZEN` Semantic RFC. An `APPROVED` RFC is implementation/shadow
+   authorization only until a separate production cutover is approved.
+3. Current Product Definition sources, using each file's real status:
+   - `../产品纲要.md`: `SINGLE_PROMPT_GEO_V1_FROZEN`
+   - `docs/00_PROJECT_BRIEF.md`: `ACTIVE`
+   - `docs/01_PRODUCT_DIRECTION.md`: `ACTIVE`
+4. `docs/07_DECISION_LOG.md`.
+5. `docs/09_PRODUCT_ITERATION_LOG.md`.
+6. Detailed Specs, using each file's real status:
+   - `docs/05_OPTIMIZATION_LOOP_SPEC.md`: `ACTIVE`
+   - `docs/PRODUCT_FUNCTION_SPEC.md`: `ACTIVE`
+7. Current implementation and SQLite data as observed implementation evidence.
+8. Historical or superseded logs.
+
+If two sources at the controlling level conflict, do not resolve the conflict
+from code age, row ID, frontend wording, or conversation recency. Register it in
+`docs/semantics/04_CONFLICT_REGISTER.md` and request definition review.
+
+## Semantic Change Guard
+
+Before changing core business logic, read:
+
+1. `docs/semantics/00_DOMAIN_MODEL.md`
+2. `docs/semantics/01_SEMANTIC_CONTRACTS.md`
+3. `docs/semantics/02_GOLDEN_SEMANTIC_CASES.md`
+4. `docs/semantics/03_DEFINITION_REVIEW_CHECKLIST.md`
+5. `docs/semantics/04_CONFLICT_REGISTER.md`
+
+Classify the change before implementation:
+
+```text
+IMPLEMENTATION_CHANGE
+SEMANTIC_CHANGE
+SEMANTIC_RISK
+```
+
+- `IMPLEMENTATION_CHANGE` must preserve every applicable contract.
+- `SEMANTIC_CHANGE` requires a Semantic RFC. Without an approved RFC, stop with
+  `SEMANTIC_CONTRACT_REVIEW_REQUIRED`.
+- `SEMANTIC_RISK` allows investigation, fixtures, planner, shadow, and replay
+  only. It cannot cut over production behavior.
+- A conflict with a current `FROZEN` contract stops with
+  `SEMANTIC_CONTRACT_CONFLICT`.
+- Contract maturity and implementation status are orthogonal. In particular,
+  `OBSERVED + PRODUCTION` is not equivalent to `FROZEN`.
+- Definition freeze, implementation authorization, and production cutover are
+  separate approvals. Never infer the last from the first two.
+- A hotfix may restore known frozen behavior. If semantic neutrality cannot be
+  proven, handle it as `SEMANTIC_RISK` and do not cut over.
 
 ## Current Product Focus
 
@@ -82,3 +128,6 @@ in recent local run notes.
   change touches product semantics or a previously encountered pitfall, update
   the corresponding documentation in the same checkpoint instead of leaving the
   decision only in chat.
+- Real semantic regression cases must bind immutable IDs and hashes through
+  `docs/semantics/snapshots/*.manifest.json`. Never replace a missing fixed
+  input with a `latest` query.

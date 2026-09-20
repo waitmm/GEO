@@ -2,6 +2,415 @@
 
 Status: ACTIVE
 
+## 2026-09-04 Phase E Workflow Status Orphan Failure Handling
+
+### Product Decision
+
+`CURRENT_ANALYSIS_FAILED` continues to mean the current V1.1 generation path is
+blocked by a real failure. A local dev-service restart interruption is treated
+as an orphan run only when the same Prompt already has a completed analysis run
+and all current review gates are complete.
+
+### User Impact
+
+For #19, a restart-interrupted latest run no longer hides the completed evidence
+review state or blocks Step 7 when the authoritative current package is ready.
+Users should see the next real gate instead of being asked to rerun V1.1 for an
+already completed chain.
+
+### Binding Readiness
+
+#19 also exposed a separate V1.1 formal-input issue: Shadow AnswerUnits existed
+but no AnswerDecisionBindings were produced, so formal EvidenceAlignment still
+had no `ANSWER_DECISION_BINDING` reasons. The Binding builder now recognizes
+`INCLUDE_AS_OPTION` as a recommendation event and can use explicit
+RecommendationEvent reason-span overlap as a deterministic same-run binding
+anchor without calling LLM.
+
+Formal V1.1 generation now uses the Shadow module in binding-input mode only.
+The audit-only Shadow Source Chain remains available for manual shadow audits,
+but it is not run inside the formal V1.1 background path because formal
+SourceClaim and EvidenceAlignment materialization own the production evidence
+work and progress reporting.
+
+During formal V1.1 generation, Step 7 may remain locked while SourceClaim
+materialization or EvidenceAlignment materialization is still running. The
+product requirement is that this state must be visibly live: status should
+expose processed/total jobs, ledger reuse, external LLM attempts, and failures,
+so operators can distinguish "still working" from "page has stopped
+responding".
+
+After evidence review is complete, Step 7 readiness is owned by
+`workflow/status`. A slow or timed-out full `citation-decision-v1` detail view
+must not overwrite the main cards with empty derived values such as
+`0 current sources` or `no strategy`. Operators should still be able to see
+`READY_TO_GENERATE` and trigger StrategyCandidate generation from the current
+Evidence Package context.
+
+When the current workflow is already ready, a failed or unloaded full Citation
+Decision detail is an auxiliary display issue, not a main-chain business
+failure. The UI may ask the operator to refresh the full detail view, but it
+must keep Step 7 in the actionable StrategyCandidate generation state.
+
+The Step 7 generation action must also be lightweight from the operator's
+perspective. If `workflow/status` already provides the current Evidence Package
+and `READY_TO_GENERATE` gate, the UI should submit StrategyCandidate generation
+directly and then refresh current workflow/strategy state; full Citation
+Decision detail refresh remains optional.
+
+## 2026-09-03 Phase C2-A.3 Final Cutover Gate
+
+### Product Decision
+
+The remaining #19 blocker is a score boundary issue, not a failure of the
+Binding-aware Recall Ladder. When L3 Prompt-scope fallback uses TopK, equal
+scores at the Kth boundary must not be broken by arbitrary row order.
+
+The selected shadow policy is:
+
+```text
+POLICY_D_TOPK_WITH_BOUNDARY_TIES
+```
+
+It preserves all candidates in the same score bucket as the Kth candidate. This
+is preferred over a generic score-margin rule because the observed blocker is
+exactly `rank5_score == rank6_score`.
+
+### Gate Result
+
+Real #19/#40 read-only shadow validation:
+
+```text
+#19
+TRUE_POSITIVE_RECALL_LOSS=0
+Policy D candidates=92
+external_llm_estimate=61
+LEGACY_UNPROVEN_CROSS_PRODUCT retained=3
+Benchmark core unchanged
+Gap unchanged
+Strategy unchanged
+C2_CUTOVER_READY=true
+
+#40
+critical_old_only=0
+Policy D candidates=65
+external_llm_estimate=15
+Benchmark core unchanged
+Gap unchanged
+Strategy unchanged
+C2_CUTOVER_READY=true
+```
+
+The #19 Evidence relation summary changes because 11 old-only critical semantic
+groups remain outside Policy D and are classified as
+`LEGACY_UNPROVEN_CROSS_PRODUCT`. This is not treated as downstream semantic
+migration because eligible Benchmark core fields, Gap, and Strategy are
+unchanged in the final shadow re-aggregation.
+
+### Boundary
+
+This is only a shadow cutover gate pass. The system still does not switch formal
+EvidenceAlignment execution. `cutover_allowed=false` remains in the planner
+payload until a separate C2-B cutover instruction.
+
+## 2026-09-03 V1.1 Incremental Materialization Phase C1
+
+### Product Decision
+
+Phase C1 只解决 EvidenceAlignment semantic materialization，不进入完整
+Binding-aware Recall execution。昂贵判断单位是：
+
+```text
+Resolved AnswerUnit / Reason Semantic Proposition
++
+Resolved SourceClaim Semantic Proposition
++
+ALIGNMENT_V1 contract
+```
+
+它不绑定 `run_id`、Evidence Package、StrategyCandidate、raw AnswerUnit row id、
+raw SourceClaim row id 或 Prompt Intent Embedding。
+
+### Identity Rule
+
+当前 EvidenceAlignment LLM 真实输入只包含：
+
+```text
+{"reason": normalized_reason_text, "source_claim": normalized_source_claim_text}
+```
+
+`reason_scope / reason_entity` 和 SourceClaim 的 resolved subject / polarity /
+claim_type 会影响 deterministic precheck 或 semantic pair identity，因此纳入
+materialization hash。Prompt Intent 继续不进入 key，因为 Fact Support 不是
+query-relative decision relevance。
+
+### Boundary
+
+C1 不改变候选生成、Explicit Binding、Answer-context Relaxation、Run Scope Recall、
+Prompt Scope Recall、Structural Passage Expansion、Benchmark、Gap、Strategy、Step
+7/8 或 Phase B SourceClaim 设计。C2 仍未开始。
+
+## 2026-09-02 V1.1 Incremental Materialization Phase B Closure
+
+### Product Decision
+
+Phase B 冻结前必须满足 SourceClaim required object 守恒：
+
+```text
+required_unique_inputs
+= materialization_hit
++ legacy_reuse
++ missing
++ stale
++ in_progress
++ failed_retryable
++ failed_final
++ incompatible
+```
+
+`missing_count` 与 `lookup_first_llm_required` 的差值也必须有明确分类。当前
+#19 / #40 的固定差值 `8` 已确认为 `missing_llm_call_cache_hit=8`：这些对象
+缺少 SourceClaim ledger，但已有相同 LLM input hash 的旧 LLMCallCache，因此不需要
+新增外部 LLM 调用。
+
+### Identity Rule
+
+当前 SourceClaim extraction 的 LLM 语义输入只包含：
+
+```text
+{"passage": normalized_passage_text}
+```
+
+所以 `SOURCE_CLAIM_V1 + passage_content_hash` 可以作为 extraction
+materialization identity。文档 URL/domain 只用于抽取后的 owner provenance 和回指
+主体归一化，属于 SourceClaim row binding，不属于 LLM extraction identity。
+
+### Closure Status
+
+Phase B 代码路径、Planner 守恒和单测级验收通过。真实 DB 小样本 production smoke
+已按 #19 / #40 capped key set 启动，但外部 DeepSeek 调用被当前环境权限阻止，
+产生 9 条 `FAILED_RETRYABLE` ledger 记录。它证明失败路径守恒；未完成项是外部
+策略阻止，不是代码失败。
+
+```text
+Phase B Implementation: FROZEN
+Phase B Automated Tests: PASS
+Phase B Planner Conservation: PASS
+Phase B Production Smoke: BLOCKED_EXTERNAL_POLICY
+Phase B Overall: CONDITIONALLY_ACCEPTED
+```
+
+保留 `PHASE_B_PRODUCTION_SMOKE_DEFERRED`，范围固定为当前 9 条
+`FAILED_RETRYABLE` keys，不重新选择样本。
+
+## 2026-09-02 V1.1 Incremental Materialization Phase B
+
+### Product Decision
+
+Phase B 只解决 SourceClaim incremental materialization。昂贵计算单位不是
+`SourceClaim` 行，而是一次 Passage SourceClaim extraction：
+
+```text
+Passage Semantic Input
+-> ClaimExtractionMaterialization
+-> 0..N SourceClaim rows
+```
+
+同一个 Passage 语义输入在同一个 `SOURCE_CLAIM_V1` contract 下只能完成一次昂贵
+提取。重复 Run、重复引用、重复 passage row、重复执行当前主链，都不能线性增加
+SourceClaim LLM 调用。
+
+### User-Facing Rule
+
+系统允许第一次补齐大量从未物化的 passage，但同一 Run Scope 立即第二次运行时，
+SourceClaim LLM 调用应接近 0。若存在失败、stale 或无法确认的 legacy 对象，必须
+能解释原因，不能表现成数百次重复计算。
+
+### Implementation Rule
+
+- `source_claim_materializations` 记录 SourceClaim extraction DONE / FAILED /
+  stale 状态。
+- `claim_count=0` 是合法 DONE，代表 LLM 成功判断没有有效 SourceClaim。
+- materialization key 不包含 Run、Prompt、Evidence Package 或 SourceClaim row id。
+- SourceClaim 行写入必须幂等；复用 materialization 可以为当前文档/passage 补齐
+  SourceClaim 行，但不能重复插入同一语义 claim。
+- 历史 SourceClaim 只在 prompt/schema metadata 和 SourceDocument snapshot metadata
+  可确认时 lazy backfill，否则宁可重新物化。
+
+### Boundary
+
+本阶段不进入 EvidenceAlignment semantic cache、Binding-aware Recall、全链并发、
+StrategyCandidate、Action、Experiment 或 Step 9。
+
+## 2026-09-02 V1.1 Incremental Materialization Phase A
+
+### Product Decision
+
+Single Prompt GEO V1.1 enters an independent performance stage:
+
+```text
+V1.1 Incremental Materialization
+```
+
+The product goal is not to make the old long chain faster by concurrency. The
+goal is to make expensive semantic work depend on newly missing or stale
+semantic objects:
+
+```text
+CURRENT PROMPT RUN SCOPE
+-> REQUIRED_OBJECT_SET
+-> EXISTING_OBJECT / CONTRACT CHECK
+-> MISSING / STALE ONLY
+-> CHEAP RE-AGGREGATION
+```
+
+### Phase A Scope
+
+Phase A adds only a read-only planner. It shows how many objects are required,
+reusable, missing, stale, or still expensive before any generation is triggered.
+
+The planner reports:
+
+```text
+AnswerUnit observations vs semantic objects
+SourceDocument / Passage scope
+SourceClaim HIT / MISSING / LLM required
+EvidenceAlignment naive pairs / binding pairs / fallback / filter / recall / cache miss
+reuse rates and LLM amplification ratio
+```
+
+### Product Boundary
+
+This phase does not change:
+
+```text
+Product Truth
+SUPPORTS / NO_SUPPORT / CONTRADICTS
+Evidence Package scope
+Benchmark
+Gap
+Citation Decision Value
+Strategy Channel Resolver
+Step 7
+Step 8
+human review rules
+historical object immutability
+```
+
+Semantic cache reuse may share a materialized result, but current Prompt, Run
+Scope, Evidence Package membership, and StrategyCandidate membership must still
+be rebound to the current workflow context.
+
+### Regression Focus
+
+Prompt `#19` remains the current-scope and duplicate-review regression case.
+Prompt `#40` remains the current candidate and historical pollution isolation
+regression case.
+
+## 2026-09-02 Current-Lineage Materialization And Evidence Review Groups
+
+### Product Decision
+
+当前单 Prompt 主链需要补齐 V1.1 上下文时，产品语义是：
+
+```text
+重新物化当前 Prompt / 当前 Run / 当前引用证据上下文
+```
+
+不是：
+
+```text
+全量重算所有历史正文、来源主张和证据关系
+```
+
+因此第 7 步出现“待生成 V1.1 输入”时，系统必须尽量只恢复当前链路缺失的
+formal input，不应让用户为已经确认过的同一语义证据重复审核，也不应把当前
+Prompt 的小范围恢复扩成历史库扫描。
+
+### User-Facing Rule
+
+证据审核按一组语义证据展示：
+
+```text
+AI 选择理由
++ 来源文档
++ 来源原文主张
++ 支撑关系
+```
+
+多 Run 下相同语义证据只需要用户确认一次。底层仍保留每条 Run-level
+EvidenceAlignment，用于审计 run coverage / observed_run_ids。
+
+如果主链重新运行后生成的是同一组语义证据，已确认状态应继承；只有新增或变化的
+语义证据才需要用户再次确认。
+
+确认一组证据成功后，页面必须重新读取后端审核队列作为唯一事实源。不能只在前端
+本地删除一张卡片，否则删除第一组后第二组可能因为组件复用或旧 loading 状态而看似
+一直等待，但实际上没有新的确认请求发出。
+
+### Pitfall Recorded
+
+`doc_id_filter=[]` 不能被当作“不过滤”。空当前引用范围代表当前链路没有可消费的
+引用文档，不能退回扫描所有历史 SourceDocument。否则几十个 Prompt 或几百个 Run
+会把一次恢复操作拖成按天计算的全库重算。
+
+SourceDocument / SourceClaim 是文档级事实，可以跨 Run 复用；用户审核的是
+“来源原文是否支撑这条 AI 理由”的语义关系，不是每个技术行 ID。重复 SourceClaim
+ID 不应制造重复审核工作。
+
+## 2026-09-01 Current Analysis Running State And Lock Visibility
+
+### Product Decision
+
+当前主链后台运行中时，第 7 步必须明确显示运行态或失败态，不能让用户点击确认/
+重新运行后继续看到旧状态，从而误以为按钮无效。
+
+### User-Facing Rule
+
+当当前 Prompt 的主链后台任务正在运行：
+
+```text
+第 7 步 = 主链运行中
+第 8 步 = 等待主链
+```
+
+当后台任务因本地数据库锁、异常或超时未完成：
+
+```text
+第 7 步 = 主链运行失败
+第 8 步 = 等待重新运行
+```
+
+人类审核按钮遇到本地数据库写锁时，必须返回清楚的中文提示，而不是静默失败或
+继续显示“生成中”。
+
+工作流状态接口只能展示当前主链状态，不能在刷新状态时现场执行 Citation Decision
+重分析。生成/重跑必须由明确操作按钮触发。
+
+运行中状态应尽量说明当前阶段，例如答案识别、正文补齐、来源主张抽取或证据对齐，
+避免用户只能看到泛化的“生成中”。
+
+单 Prompt 页面刷新主链路时，必须同时刷新工作流步骤状态。只刷新 Citation
+Decision 数据会导致第 7/8 步继续显示旧的“主链运行中”，即使后端已经完成并进入
+证据人工确认等下一道 Gate。
+
+### Pitfall Recorded
+
+本地 Alpha 使用 SQLite。长时间的 Evidence / Alignment 后台任务如果持有写事务，
+会阻塞推荐事件确认、证据确认和状态刷新。后台任务必须阶段性提交释放锁，重复 URL
+元数据缓存必须幂等处理。
+
+前端也可能形成“假运行中”：后台任务已经完成，但页面没有重新读取
+`workflow/status`，仍然使用点击重跑后留下的本地旧状态。所有主链刷新入口都必须
+同步刷新当前 Prompt 的工作流状态。
+
+证据人工审核必须按业务语义合并，而不是按内部 `SourceClaim` ID 展示。多 Run 或
+重复抽取产生的同义来源主张，应在 UI 中显示为一组可批量确认的证据，同时保留
+Run-level EvidenceAlignment 作为审计事实。
+
+审核按钮必须以后端写入成功为准。若后端返回锁冲突或错误，前端不得提示成功、
+不得移除待审卡片，避免用户以为确认生效但刷新后又恢复。
+
 ## 2026-09-01 Step 7 Current Analysis State Fix
 
 ### Product Decision
@@ -21,9 +430,9 @@ vs
 当已有答案决策/证据线索但缺少当前 V1.1 正式输入时：
 
 ```text
-第 7 步 = 需重跑主链
-第 8 步 = 等待主链
-主操作 = 重新运行当前主链
+第 7 步 = 待生成输入
+第 8 步 = 等待输入
+主操作 = 生成 V1.1 输入
 ```
 
 点击后必须进入可见运行态：
@@ -2495,3 +2904,1309 @@ Gap Diagnosis
 Strategy Channel Resolver
 Step 8 Action / Experiment
 ```
+
+## 2026-09-01 单 Prompt 状态加载完整性
+
+### 用户问题
+
+Prompt `#19` 切换后页面看起来只有第 1 步为绿色，且没有进入下一步的操作入口。
+
+### 产品口径
+
+单 Prompt 主链在加载当前 Prompt 的 workflow/status 期间，不能展示由空
+`workflowData` 推导出的假步骤状态。加载态必须明确告诉用户：
+
+```text
+正在读取当前 Prompt 工作流状态
+```
+
+加载完成后再展示真实下一步。对 `#19` 而言，真实下一步不是重新采集，也不是生成策略，而是：
+
+```text
+证据人工确认：72/504 条已审
+```
+
+### 本轮修正
+
+- 单 Prompt 页面增加当前 Prompt 工作流加载态。
+- 切换 Prompt 后统一重拉 dashboard 和 workflow/status。
+- 后端 workflow/status 的 SUPPORTS 统计改为聚合读取，避免历史证据多的 Prompt
+  因状态接口过慢而造成前端误判。
+- 第 4 步引用证据在存在未审核 SUPPORTS 时，直接显示
+  `待人工确认 / 审核证据关系`，后续对标来源和缺口诊断显示等待证据确认。
+  这样用户能从主链卡片进入当前真实卡点，而不是只看到“查看证据正文”。
+
+### 边界
+
+不改变 1-8 主链顺序，不改变证据、对标、缺口或策略规则。
+
+## 2026-09-01 证据组确认即时反馈
+
+### 用户问题
+
+Prompt `#19` 点击 `确认这一组支持` 后看起来没有反应，用户无法判断是否已经提交。
+
+### 产品口径
+
+证据组确认是一个写操作，页面必须即时反馈：
+
+```text
+点击确认
+-> 当前组进入确认中
+-> 写入成功后立即从待审列表移除
+-> 工作流总状态后台刷新
+```
+
+不能让用户等待后续状态/引用决策刷新完成后才看到变化，否则会误以为确认卡住。
+
+### 本轮修正
+
+- 每个合并证据组增加独立提交态。
+- 同一组提交中禁止重复点击。
+- 确认成功后立即从弹窗待审列表移除。
+- 后续 workflow/status 和 Citation Decision 刷新改为后台同步。
+
+### 边界
+
+不改变证据关系判断、不改变批量确认范围、不改变正式 V1 决策链。
+
+## 2026-09-01 证据组确认写入性能
+
+### 用户问题
+
+Prompt `#19` 的证据组已合并展示后，点击 `确认这一组支持` 仍可能长时间转圈。
+
+### 产品口径
+
+一组语义相同的证据可能覆盖多个 Run 和多条底层对齐记录。用户只需要确认这一组语义关系，系统应一次性完成底层记录确认，而不是让用户感知到逐条写入。
+
+### 本轮修正
+
+- 后端批量确认接口改为一次批量写入。
+- 保留底层 Run-level EvidenceAlignment，不做合并删除。
+- 保留缺失 ID 回传，便于后续排查异常数据。
+
+### 边界
+
+不改变 Evidence 支撑关系、不改变对标/缺口/策略判断，只改善确认动作的响应速度和可操作性。
+
+## 2026-09-01 工作流状态读取不能触发重算
+
+### 用户问题
+
+Prompt `#19` 最后一组证据确认成功后，页面仍长时间停留在转圈状态。
+
+### 产品口径
+
+`workflow/status` 只能回答“当前走到哪一步、下一步入口是什么”。它不能为了判断第
+7 步有没有策略候选而现场运行 Citation Decision / Gap / Strategy 的重型派生逻辑。
+
+正式生成必须来自明确的用户动作：
+
+```text
+证据审核完成
+-> 第 7 步显示可生成策略候选
+-> 用户点击生成策略候选
+-> 后端执行 StrategyCandidate 生成
+```
+
+### 本轮修正
+
+- 状态接口不再调用 Citation Decision 重算。
+- 审核完成后，如果 V1.1 输入存在且没有当前策略候选，第 7 步显示
+  `证据审核完成，可生成策略候选`。
+- 是否实际产出 StrategyCandidate，仍由 Step 7 显式生成接口决定。
+
+### 边界
+
+不改变 Citation / Benchmark / Gap / Strategy 规则，只修正状态读取与生成动作的边界。
+
+## 2026-09-02 主链重跑后的证据审核继承
+
+### 用户问题
+
+Prompt `#19` 已完成证据审核后重新运行当前主链，运行结束后第 4 步又回到
+`0/480 条已审`，用户被迫重复确认同类证据。
+
+### 产品口径
+
+重新运行主链可以重新生成 EvidenceAlignment，但不能让用户重复审核已经确认过的同一语义证据。
+
+可以继承的范围必须严格限定：
+
+```text
+同一 AI 理由
+同一来源文档
+同一来源主张语义文本
+同一证据关系
+```
+
+不满足上述条件的新证据仍需人工审核。
+
+### 本轮修正
+
+- EvidenceAlignment 重跑前记录已人工审核的语义签名。
+- 重跑后相同语义证据继承人工审核状态。
+- 继承来源写入审计 payload，便于追溯。
+
+### 边界
+
+不改变 Evidence 判断、不降低 SUPPORTS 标准、不把新证据自动确认为人工审核通过。
+
+## 2026-09-02 第 4/7 步加载态与 V1.1 输入口径
+
+### 用户问题
+
+Prompt `#19` 的证据确认完成后，前端仍可能看起来像第 4 步和第 7 步同时
+在转圈。
+
+### 产品口径
+
+第 4 步代表“引用证据/证据关系审核”。如果后端已经显示：
+
+```text
+证据人工确认 = 4/4 组已审
+review-queue = 空
+```
+
+第 4 步就不应该因为第 7 步的后台动作而显示 loading。
+
+第 7 步的 `NEEDS_CURRENT_ANALYSIS` 不应再面向用户表达成“重跑主链”。它的
+准确含义是：
+
+```text
+上游已有答案决策/证据线索，
+但当前 V1.1 正式证据输入尚未生成，
+需要先生成 V1.1 输入，才能进入策略候选生成。
+```
+
+### 本轮修正
+
+- 前端拆分主链按钮 loading 作用域：第 4 步、第 7 步不再共享一个转圈状态。
+- 第 7 步入口文案改为“生成 V1.1 输入 / 重新生成 V1.1 输入”。
+- 后端状态详情同步改为“尚未生成 V1.1 正式证据输入”。
+
+### 边界
+
+这不是策略规则变更，也不是把旧证据升级为 V1.1。当前如果只有旧
+`RECOMMENDATION_EVENT_REASONS_JSON` 证据，第 7 步仍不能直接生成当前 V1.1
+策略候选。
+
+## 2026-09-03 Phase C2-A 候选裁剪影子对比
+
+### 产品口径
+
+Binding-aware Candidate Builder 不能直接切换到正式 EvidenceAlignment 执行。
+在 cutover 前，系统必须先证明 proposed 候选集合不会静默丢掉已有的重要证据关系。
+
+因此 Phase C2-A 只做 shadow comparison：
+
+```text
+current production candidate set
+vs
+proposed binding-aware candidate set
+```
+
+比较粒度使用 C1 的 `ALIGNMENT_V1 materialization_key`，避免把重复 Run 行误判为
+不同语义候选。
+
+### 本轮输出
+
+- #19:
+  - current=583
+  - proposed=188
+  - old_only=395
+  - old_only 中已有 SUPPORTS/CONTRADICTS：15 个语义组，覆盖 360 条底层
+    EvidenceAlignment 行
+- #40:
+  - current=65
+  - proposed=65
+  - old_only=0
+  - old_only SUPPORTS/CONTRADICTS=0
+
+### 边界
+
+本次不改变正式 EvidenceAlignment execution，不修改 Benchmark、Gap、Strategy、
+Step 7 或 Step 8。#19 的 15 个 old_only SUPPORTS/CONTRADICTS 语义组必须先审计，
+才能考虑 C2-B cutover。
+
+## 2026-09-03 Phase C2-A.1 关键召回损失诊断
+
+### 产品口径
+
+C2-B 不能只看 `old_only SUPPORTS/CONTRADICTS` 的数量，也不能默认旧
+SUPPORTS 全部正确。必须区分：
+
+```text
+人工确认过的真实召回损失
+旧 prompt-scope 交叉判断污染
+旧 Alignment false positive
+仍需人工判断的模糊项
+```
+
+### 本轮诊断
+
+#19 的 15 个 critical old_only 集中在 3 个 reason：
+
+```text
+可以自动生成加密短链: 1
+可以规避平台拦截: 8
+支持加粉数据回传优化投放效果: 6
+```
+
+最终归类：
+
+```text
+TRUE_POSITIVE_RECALL_LOSS = 1
+LEGACY_UNPROVEN_CROSS_PRODUCT = 14
+LEGACY_ALIGNMENT_FALSE_POSITIVE = 0
+AMBIGUOUS_REQUIRES_HUMAN_REVIEW = 0
+```
+
+其中唯一真实 blocker 是人工确认过的旧 SUPPORTS：
+
+```text
+reason = 可以自动生成加密短链
+claim_id = 267
+final_exclusion_reason = TOPK_TRUNCATION
+rank_before_topk = 6
+top_k = 5
+```
+
+14 个 machine-only old_only 组没有同 Run 引用锚点，也没有 AnswerUnit context，
+属于旧 prompt-scope cross-product 造成的污染，不应自动阻止 proposed builder。
+
+### 边界
+
+本轮仍未切换正式执行。C2-B 前必须先处理唯一
+`TRUE_POSITIVE_RECALL_LOSS`：采用泛化召回修复或明确人工删除决定，不能 pair
+whitelist，也不能盲目提高 TopK。
+
+## 2026-09-03 Phase C2-A.2 最终影子验证
+
+### 产品口径
+
+C2 Candidate Builder 必须证明自己不是简单 pruning。缺少明确 Binding 时，系统应
+先看同 Run 实际引用过的 SourceDocument，再考虑 Prompt-scope fallback。
+
+当前可接受的 shadow ladder 是：
+
+```text
+L0 Explicit Binding
+-> L1 Answer Context
+-> L2 Run Scope
+-> L3 Prompt Scope
+```
+
+L1 当前标记为 `L1_UNAVAILABLE_BY_SCHEMA`，因为 AnswerUnit 还没有稳定的
+句子/段落级 citation co-location 字段。L2 已在 shadow 中真实实现。
+
+### 本轮诊断结论
+
+#19 的唯一人工确认 blocker 重新审计后仍是真实召回损失，不是旧误判：
+
+```text
+reason = 可以自动生成加密短链
+claim_id = 267
+source context = 系统会自动生成加密的跳转链接
+new_audit_decision = TRUE_POSITIVE_RECALL_LOSS
+```
+
+最终分类：
+
+```text
+TRUE_POSITIVE_RECALL_LOSS = 1
+LEGACY_ALIGNMENT_FALSE_POSITIVE = 0
+LEGACY_UNPROVEN_CROSS_PRODUCT = 14
+LEGACY_SCOPE_ARTIFACT = 0
+HUMAN_REVIEW_REQUIRED = 0
+```
+
+14 个 machine-only old_only 组只能说明“旧全 Prompt 交叉判断曾给出过
+SUPPORTS/CONTRADICTS”，不能证明它们属于当前正确 scope，因此用中性
+`LEGACY_UNPROVEN_CROSS_PRODUCT`。
+
+### Policy 模拟
+
+```text
+Policy A Hard TopK=5:
+candidates=79, critical_loss=1, external_llm_estimate=60
+
+Policy B Threshold+cap25:
+candidates=145, critical_loss=0, external_llm_estimate=69
+
+Policy C TopK+margin0.05:
+candidates=92, critical_loss=0, external_llm_estimate=61
+```
+
+Policy C 目前是最小增量的候选方向，但本轮不切换。C2-B 前仍需把它作为泛化规则
+实现并再次 shadow 验证。
+
+## 2026-09-03 Phase C2-B 正式候选构建器切换
+
+### 产品口径
+
+Phase C2-B 只切换 EvidenceAlignment 的候选成员资格，不改变证据判定语义。
+正式执行现在使用 Binding-aware Candidate Builder，并采用
+`POLICY_D_TOPK_WITH_BOUNDARY_TIES`：TopK 截断时保留第 K 名同分桶，避免同分候选被
+数据库顺序或 id 顺序任意裁掉。
+
+### 本轮结论
+
+Planner 与 production dry-run 已共用同一个候选构建器，真实本地 DB 验证：
+
+```text
+#19 production_candidate_keys = 92
+#19 planner_vs_production_diff = 0
+#19 claim_267_present = true
+#19 recall = L0 0 / L1 0 / L2 28 / L3 64
+
+#40 production_candidate_keys = 65
+#40 planner_vs_production_diff = 0
+#40 recall = L0 65 / L1 0 / L2 0 / L3 0
+```
+
+L1 仍是 `L1_UNAVAILABLE_BY_SCHEMA`；这不是本轮新增 schema 的范围。L2 已在 #19
+真实成立，#40 因全部由 L0 Explicit Binding 覆盖而不触发 L2/L3。
+
+### 边界
+
+本轮不进入 Phase D，不改 Benchmark / Gap / Strategy，不改第 7/8 步，不调用 LLM。
+历史 Alignment 和人工审核记录保留；当前候选由新 builder 决定，历史
+materialization 只作为 verdict cache 使用。
+
+## 2026-09-03 Phase D 执行可靠性
+
+### 产品口径
+
+Phase D 不改变用户看到的主链含义，只保证昂贵语义计算不会因为重复 Run、重复任务、
+并发 worker、失败重试或进程中断而重复收费。
+
+同一个 materialization_key 现在遵循 single-flight：
+
+```text
+DONE -> 复用
+IN_PROGRESS + lease 有效 -> 等待 owner，不重复调用外部 LLM
+FAILED_RETRYABLE / MISSING / expired lease -> 同一 ledger row 抢占执行权
+FAILED_FINAL -> 普通重跑不再重试
+```
+
+### 本轮结论
+
+SourceClaim 与 EvidenceAlignment 仍使用各自独立的业务 ledger；Phase D 只新增
+claim / lease / wait / retry / resume 执行保障。Legacy 和 LLMCallCache 继续只是
+迁移/恢复来源，最终仍收敛到 materialization ledger。
+
+真实本地 DB dry validation 证明 C2 候选语义未变化：
+
+```text
+#19 candidate_keys = 92
+#19 planner_diff = 0
+#19 claim_267 = true
+
+#40 candidate_keys = 65
+#40 planner_diff = 0
+```
+
+### 边界
+
+本轮不改 Product Truth / Benchmark / Gap / Strategy / Step 7 / Step 8，不进入
+Phase E。真实 DeepSeek 并发 smoke 因当前环境策略保留为 deferred；fake/spy 测试已覆盖
+single-flight、lease、resume、retry 和 concurrency cap。
+
+## 2026-09-03 Phase E 产品就绪与最终验收
+
+### 产品口径
+
+Phase E 不新增主链能力，不改变 A-D 冻结语义；只把 V1.1 的当前执行成本、物化进度、
+恢复语义和最终门禁变成产品可读状态。
+
+单 Prompt 工作台现在显示 SourceClaim / EvidenceAlignment 的 Required、Ledger HIT、
+legacy recovery、LLMCallCache recovery、Missing、Retrying、Failed、守恒状态和预计新增
+LLM 判断数。恢复入口的口径统一为：
+
+```text
+只处理 Missing / Failed / Stale
+DONE ledger 不重算
+```
+
+### 本轮结论
+
+最终验收文档已生成：`docs/v1_1_final_acceptance.md`。
+
+真实本地 DB read-only 验证：
+
+```text
+#19:
+Runs = 40
+Evidence Package = #12 v8
+Candidate keys = 92
+Planner vs Production diff = 0
+SourceClaim external_required = 1385
+Alignment naive/candidates/external_required = 9666 / 92 / 61
+Step 7 = NOT_READY
+Step 8 = LOCKED
+
+#40:
+Runs = 6
+Evidence Package = #15 v2
+Candidate keys = 65
+Planner vs Production diff = 0
+SourceClaim external_required = 529
+Alignment naive/candidates/external_required = 230 / 65 / 15
+Step 7 = PENDING_REVIEW
+Step 8 = LOCKED
+```
+
+内部产品验收通过：
+
+```text
+INTERNAL_PRODUCT_READY = true
+```
+
+外部生产 smoke 仍因当前环境策略延期：
+
+```text
+EXTERNAL_PRODUCTION_VERIFIED = false
+remaining_blockers = [ENVIRONMENT_POLICY_EXTERNAL_LLM_SMOKE_DEFERRED]
+```
+
+### 边界
+
+本轮不调用外部 LLM，不跑 #19/#40 全量物化，不改 Candidate Builder / Recall Ladder /
+Policy D，不改 Product Truth / Benchmark / Gap / Strategy / Step 7 / Step 8，不进入 V1.2。
+
+## 2026-09-03 Phase E 证据审核响应性修复
+
+### 产品口径
+
+物化进度是后台诊断信息，不能阻塞人工证据确认。#19 的 materialization planner 约需
+一分钟，若把它串到每次审核确认后的状态刷新里，用户会看到“确认已成功但按钮仍像在转圈”。
+
+### 本轮结论
+
+已将物化进度刷新拆成独立后台/手动刷新；证据语义关系确认后只刷新 review-queue 和
+workflow/status。现场确认后端 `confirm-batch` 已返回 200，#19 已推进到 `7/20` 组已审。
+
+### 边界
+
+本次只修复前端交互响应，不改证据语义、候选构建、Benchmark、Gap、Strategy、第 7 步或
+第 8 步。
+
+## 2026-09-03 Phase E 物化诊断改为手动触发
+
+### 产品口径
+
+物化进度是诊断面板，不是证据审核入口的必需数据。页面刷新或切换 Prompt 时不应自动请求
+`materialization-plan`，否则大 Prompt 会把诊断请求堆积成后端连接池压力，让待审队列等轻量
+操作也表现为转圈。
+
+### 本轮结论
+
+已取消 Prompt 主链加载后的自动物化 Planner 请求；用户需要查看时可点击 `查看物化进度`，
+已有面板中仍可点击 `刷新物化进度`。
+
+### 边界
+
+本次只调整诊断请求触发时机，不改 SourceClaim、EvidenceAlignment、Candidate Builder、
+Benchmark、Gap、Strategy、第 7 步或第 8 步。
+
+## 2026-09-03 Phase E 证据确认后不自动刷新重型主链视图
+
+### 产品口径
+
+人工审核工作台的核心体验是连续判断证据组。确认一组证据后，只需要更新待审队列和主链状态；
+完整 Citation Decision 视图应由 `刷新主链路` 显式触发，不能夹在每次确认之后。
+
+### 本轮结论
+
+已取消证据组确认、AI 说法确认/拒绝后的自动 `citation-decision-v1` 请求，避免第一组确认后
+留下重型后台刷新，导致第二组确认继续转圈。
+
+### 边界
+
+本次只调整确认后的刷新范围，不改证据语义、候选构建、Benchmark、Gap、Strategy、第 7 步或
+第 8 步。
+
+## 2026-09-03 Phase E 证据未审完时不自动加载完整决策视图
+
+### 产品口径
+
+证据人工审核未完成时，第 7 步本来就应锁住；此时页面不需要自动刷新完整 Citation Decision
+视图来判断策略。审核入口和进度应以 `workflow/status` 为准，连续审核保持轻量。
+
+### 本轮结论
+
+已为页面级自动加载增加证据审核 guard：只有匹配 Prompt 的 workflow 状态已加载，且
+`evidence_review` 完成后，才自动加载完整 `citation-decision-v1`。人工审核期间完整主链展示
+仍可通过 `刷新主链路` 手动触发。
+
+### 边界
+
+本次只调整自动加载条件，不改 EvidenceAlignment、Candidate Builder、Benchmark、Gap、
+Strategy、第 7 步或第 8 步语义。
+
+## 2026-09-04 Phase E 证据审核加载请求必须可释放
+
+### 产品口径
+
+生成 V1.1 正式证据后，待审证据组可能从 `20/20` 变为 `20/23`。此时产品应立即回到轻量
+证据审核路径，不能让旧的完整 `citation-decision-v1` 请求继续占用页面 loading，让用户误以为
+`加载待审核项` 卡住。
+
+### 本轮结论
+
+已为 Citation Decision 自动/手动刷新增加 20 秒前端超时；当 `workflow/status` 显示
+`evidence_review` 未完成时，前端主动失效旧 Citation Decision 请求并释放 loading。`加载待审核项`
+也改为有界请求：#19 当前真实状态为 `20/23` 组已审，队列返回 3 个待审核证据组。
+
+### 边界
+
+本次只修复加载态和请求生命周期，不改证据语义、候选构建、Benchmark、Gap、Strategy、第 7 步或
+第 8 步。
+
+## 2026-09-04 Phase E #40 当前策略状态以 workflow/status 为准
+
+### 产品口径
+
+第 7 步是否已有当前策略候选，必须优先听 `workflow/status` 的
+`current_strategy_candidate_ids`。完整策略列表或 Citation Decision 视图加载失败时，不能把
+“当前候选列表暂未加载”误写成“无策略”。
+
+### 本轮结论
+
+#40 的真实状态为 `PENDING_REVIEW`，当前策略候选为 `#50`，证据包为 `#15`；前端已改为用后端
+当前候选 ID 兜底显示“待审核”。同时，已有策略候选/已确认/无需策略/运行中/失败/待输入等状态下，
+页面不再自动拉完整 `citation-decision-v1`，避免切换 Prompt 时重型请求干扰轻量状态。
+
+### 边界
+
+本次只调整状态显示和请求触发时机；历史候选仍不计入当前主链，Step 7 仍只确认
+StrategyCandidate，Step 8 才进入执行方案/实验草案。
+
+## 2026-09-04 Phase E Step 7 生成入口与正式证据口径对齐
+
+### 产品口径
+
+Legacy SUPPORTS 或历史人工确认可以解释过去为什么有证据组，但不能让当前 V1.1 主链进入策略生成。
+
+策略生成本身也不能依赖完整 `citation-decision-v1` 详情服务。详情服务用于查看重型诊断；第 7 步生成
+只应读取当前证据包、正式证据关系、Product Truth 和缺口规则，生成待审核 StrategyCandidate。
+
+### 已废弃结论
+
+曾把 #19 的 formal V1.1 已生成但无 SUPPORTS 解读为：
+
+```text
+formal_v1_1_alignment_count = 408
+formal_v1_1_support_count = 0
+legacy_support_count = 484
+strategy_step_status = NO_STRATEGY
+```
+
+这个口径不符合 GEO 产品价值，已撤销。`formal_v1_1_support_count = 0` 只能说明当前没有
+eligible Benchmark Evidence，不能自动推出“没有策略”。若当前答案已有决策理由，且目标品牌
+Product Truth 已确认支持对应能力，则应生成证据采纳/证据承载缺口策略候选。
+
+### 边界
+
+Step 7 仍不能用 legacy SUPPORTS 点亮当前主链，也不能伪造 Benchmark。无 eligible SUPPORTS
+时允许的策略候选必须显式标记为 `ANSWER_DECISION_EVIDENCE_GAP`，依据为当前答案决策理由 +
+SUPPORTED Product Truth，且 `benchmark_evidence_ids` 为空。
+
+## 2026-09-04 Phase E #19 无策略回归修复
+
+### 产品口径
+
+GEO 的核心价值不是在证据断裂时告诉用户“无策略”，而是识别断裂发生在哪一层，并给出可审核的
+策略方向。当前答案已经反复采用某些竞品/候选理由，而目标品牌 Product Truth 又支持对应能力时，
+“没有 eligible SUPPORTS”应落为 `EVIDENCE_GAP`，不是终局。
+
+### 本轮结论
+
+#19 已生成当前策略候选 `#52`：
+
+```text
+strategy_step_status = PENDING_REVIEW
+gap_type = EVIDENCE_GAP
+candidate_class = ANSWER_DECISION_EVIDENCE_GAP
+benchmark_evidence_ids = []
+product_truth_ids = [1, 2, 3]
+```
+
+该候选不会把引用显著性升级为 Benchmark，也不会把竞品证据改写为目标品牌事实；它只建议为爱短链
+已确认支持的能力补齐可摘录证据、案例和场景表达。
+
+## 2026-09-04 Phase E 答案决策证据缺口保护条件
+
+`ANSWER_DECISION_EVIDENCE_GAP` 是正式的 Step 7 策略依据类型，不是“没有普通策略时”的万能兜底。
+它必须同时满足：当前答案存在真实决策理由、该理由匹配已确认 `SUPPORTED` 的目标品牌 Product Truth、
+该理由没有 Phase 2A eligible SUPPORTS，且没有 Phase 2A eligible CONTRADICTS。
+
+若存在 eligible SUPPORTS，应回到 Benchmark/Evidence-backed 策略；若存在 eligible CONTRADICTS，
+则属于证据或事实冲突，不能伪装成普通 Evidence Gap。Product Truth 为 FALSE 时属于产品/能力缺口，
+UNKNOWN 时应先完成人工事实确认；仅有目标品牌能力而没有当前答案决策理由时，不生成此类策略。
+
+该类候选必须显式保存决策理由、Product Truth 和缺口原因，同时保持 Benchmark 计数为 0。Step 7
+仍只生成人工待审 StrategyCandidate，Step 8 继续锁定至策略确认完成。
+
+### 最终运行态
+
+#19 当前唯一主链候选已收敛为 `#54`，状态为 `PENDING_REVIEW`。中间候选 `#52`、`#53` 已标记为
+`DEFERRED/SUPERSEDED`，不会继续计入当前主链。`#54` 明确保存 5 个当前答案决策理由 ID、
+`NO_ELIGIBLE_SUPPORT_WITH_REQUIRED_LINEAGE` 缺口原因、已确认 Product Truth 引用、0 个 eligible
+SUPPORTS、0 个 eligible CONTRADICTS 和空 Benchmark Evidence。前端分别展示这些事实，不再把
+“没有 Benchmark”错误显示为“没有策略”。Step 8 仍锁定，未创建 Action 或 Experiment。
+
+## 2026-09-04 Step 7 渠道修复 PR1：来源映射健康度
+
+本轮只修复 `Reference/Retrieval URL -> SourceDocument` 数据入口，不修改渠道聚合和 Resolver。
+策略机会与渠道是否已确定继续保持独立；引用平台只表示被观察到，不等于推荐去该平台。
+
+URL identity 统一为版本化 `canonical_url + canonical_url_hash + canonicalization_version`，并保留
+原始 URL。每个当前 Run Scope URL 都必须进入显式 Mapping Outcome，且满足：
+
+```text
+total unique URLs = mapped + unmapped
+```
+
+若存在引用而映射结果为 0，数据状态必须是 `INVALID`，不能静默变成空渠道信号。#19 当前真实结果为
+203/203 映射、#40 为 29/29 映射，均为 `HEALTHY`。本轮没有重算 #54；渠道 Evidence Landscape
+与取消官网兜底分别留在 PR2、PR3，不能越阶段提前下结论。
+
+## 2026-09-04 Step 7 渠道修复 PR2：渠道证据环境
+
+### 产品口径
+
+`Observed Channel != Recommended Channel`。PR2 只回答当前 AI 回答环境中各渠道承担了决策引用、
+答案支撑引用、外围引用还是仅检索角色，不输出 PRIMARY / SECONDARY / OBSERVE，也不修改策略候选。
+重复 Run 是稳定性 observation，不是多份独立语义证据；同 URL 的多个正文快照也不能放大 Citation 数。
+
+### 真实结论
+
+#19 的 1,207 个 Citation observations 全部为 Peripheral。知乎、B站、百家号、商加加、抖音、搜狐和
+官网虽然都被观察到，但当前没有任何渠道通过 Phase 2A lineage 进入 Decision Layer；192 条 formal
+SUPPORTS 均因 `SOURCE_NOT_REFERENCED_IN_RUN` 被排除。#40 则保留知乎 6 个 Decision Citation
+observations，覆盖 6/6 Runs、1 个 URL 和 6 个语义关系。
+
+`203 URL -> 204 documents` 的 #19 数据实际包含 207 个 URL-document memberships 和 204 个唯一
+文档；`29 URL -> 31 documents` 的 #40 数据则不是 1:N，而是 29 个引用文档加 2 个仅检索文档。
+映射 membership、文档 identity、Citation observation 和 semantic relation 已分别计数。
+
+### 边界
+
+#54、#50、Channel Resolver、planned_channels、Step 7/8、Benchmark、Gap 和 Product Truth 均未改变；
+External LLM calls = 0。PR2 完成后停止，PR3 未开始。
+
+## 2026-09-04 Step 7 渠道修复 PR3-A：证据渠道与实验渠道分离
+
+### 产品口径
+
+Step 7 不只回答“哪个渠道已经被证明参与 AI 决策”，还要在强证据不足时回答“下一步最值得验证哪个
+渠道”。正式区分：
+
+```text
+Path A/B/C 强依据 -> PRIMARY / SECONDARY
+Path D 可验证机会 -> TEST
+仅环境信号 -> OBSERVE
+无有效假设 -> UNRESOLVED
+数据异常 -> INPUT_INVALID
+```
+
+`TEST` 表示 `CHANNEL_VALIDATION_HYPOTHESIS`，不是弱版 PRIMARY。它必须同时具备真实 Exposure、当前
+Decision Reason 相关性、明确 Target Gap 和可执行 Intervention Fit。引用量只能证明 Exposure，不能
+单独产生 TEST。TEST 若未来进入 Step 8，也只能形成渠道验证实验，不能宣称该渠道已被证明有效。
+
+### Shadow 真实结论
+
+#19 当前 Data Health 为 HEALTHY。官网通过 Path C 成为 Shadow PRIMARY：五个当前 Decision Reason
+分别覆盖已确认 Product Truth，并明确缺少承载这些理由的一方权威资产，资产状态为
+`MISSING_BUT_REQUIRED_ASSET`。这与旧 #54 的空渠道信号 fallback 不是同一理由，#54 仍不能确认，
+Cutover 时仍需 supersede。
+
+#19 同时形成四个 Path D TEST 假设：百家号、B站、知乎、搜狐。它们不是因为引用量靠前，而是各自的
+真实来源标题/摘要/正文/SourceClaim 对至少一个当前理由达到跨 Run 或跨 URL 的强相关，同时目标品牌
+在该渠道没有 eligible Decision/Support 采纳，且存在可验证内容形态。抖音、CSDN 相关性不足，保持
+OBSERVE；商加加虽高度相关，但属于竞品一方域名，不是目标品牌可执行渠道，也只保持 OBSERVE。
+
+#40 保持官网 PRIMARY、知乎 SECONDARY。知乎的 6 个 Decision Citations、6/6 Run 覆盖与 eligible
+Benchmark 同时满足 Path A/B，没有被新增 TEST 语义降级；强证据渠道存在时，不再扩张其它 Path D
+实验渠道。
+
+### 状态与边界
+
+#19/#40 的 Strategy Opportunity 都仍为 `PENDING_REVIEW`，因此 Execution Readiness 均为
+`NOT_READY`。本轮只生成只读 Shadow 和 Golden Replay，没有修改正式 Resolver、#54/#50、Step 8、
+Action、Experiment、Benchmark、Gap、Product Truth 或 Phase 2A eligibility，也没有调用 LLM。
+
+PR3-A 通过后仍必须单独批准 Cutover；Cutover 前应人工抽查 Path D 的 reason-level 词法相关信号，
+避免把主题词共现误当成可执行渠道机会。
+
+## 2026-09-05 Step 7 渠道修复 PR3-B：正式切换
+
+### 正式语义
+
+当前 Single Prompt Step 7 已启用 PR3 Resolver，Shadow 与 Production 共用同一确定性核心。Path C 和
+Path D 都必须下钻到 Decision Reason：官网只能承接与该 Reason 直接关联且已确认的 Product Truth；
+TEST 只能承接该渠道真实通过相关性 Gate 的 Reason，不能默认覆盖整条 StrategyCandidate。
+
+策略待人工审核时只允许保存 `proposed_intervention_mode`，`active_intervention_mode` 必须为空。
+渠道已解析不等于执行已确认；`ExecutionReadiness=NOT_READY` 时 Step 8 继续锁定，不能创建 Action 或
+Experiment。
+
+### 真实 Cutover
+
+#19 的旧候选 #54 保留为历史，并以
+`CHANNEL_RESOLUTION_INVALID_DUE_TO_SOURCE_MAPPING_FAILURE` 标记 superseded。当前候选已收敛为 #56：
+
+```text
+StrategyOpportunity = PENDING_REVIEW
+ChannelResolution = RESOLVED
+ExecutionReadiness = NOT_READY
+proposed mode = CONFIRMED_CHANNEL_INTERVENTION
+active mode = NONE
+
+PRIMARY = OFFICIAL_SITE (Path C)
+TEST = BAIJIAHAO / BILIBILI / ZHIHU / SOHU (Path D)
+OBSERVE = 43
+```
+
+官网五个 Reason 均分别保存 Product Truth、资产状态与 authority rationale；B站只绑定它实际命中的
+一个 Reason。#40 不做重生成，当前仍为 #50，平台角色保持官网 PRIMARY + 知乎 SECONDARY，TEST 为空。
+#19/#40 Production 与 Shadow 的角色/路径结果一致，未调用 LLM。
+
+完整 OBSERVE 结果保留在后端审计字段，主审核区的 `planned_channels` 只保存
+PRIMARY/SECONDARY/TEST，避免环境信号淹没真实决策。PR3-B 完成后停止，等待人工审核 #56；尚未进入
+PR3-C，也没有创建 Action/Experiment。
+
+## 2026-09-07 Step 7 PR4-A：受限策略综合 Shadow
+
+### 产品决策
+
+在 Strategy Opportunity 和 Channel Resolution 之后、人工策略确认之前增加 Step 7 内部的只读
+Strategy Synthesis Shadow。它不新增主链步骤，也不改变 Step 7 的 StrategyCandidate 真相源；作用仅是
+把原子理由、Theme、渠道角色与执行优先级组织成人类可审核的最小策略组合。
+
+正式原则：LLM 不是策略真相引擎，只是对已经完成事实确认、证据判定和渠道约束的策略对象进行受限综合。
+LLM 可以组织系统已经知道的东西，但绝不能补出系统不知道的东西。
+
+### 当前结果
+
+#19/#56 的五条原子理由在确定性兼容图内形成三个 Theme，覆盖统一使用 15 个策略可分析 Run：两条高频
+理由分别为 12/15，三个低频理由分别为 1/15。官网角色仍为 PRIMARY；百家号和知乎进入优先验证，
+B站和搜狐保留 TEST 角色但延后；43 个渠道继续 OBSERVE。该组合没有把 TEST 改成 PRIMARY，也没有要求
+四个 TEST 同时执行。
+
+#40/#50 继续保持 Benchmark-backed 语义、官网 PRIMARY 与知乎 SECONDARY；三个 AnswerUnit 理由均为
+6/6，PR4 没有把 Benchmark 改写成 Evidence Gap。
+
+### 边界与验收
+
+本轮只提供 Shadow Decision/Audit 输出，不覆盖 #56/#50，不创建 #57，不确认 Strategy，不创建 Action
+或 Experiment，不修改正式前端。外部 DeepSeek 因缺少本轮单独的数据出境授权而未执行，故真实模型
+Hallucination Audit 尚不能宣称通过；确定性 Contract、Validator 与恶意输出 Golden Cases 已通过。
+PR4-A 完成后停止，Cutover 必须另行批准。
+
+## 2026-09-07 Step 7 PR4-A.1：确定性优先与 LLM 安全验收
+
+### 产品决策
+
+策略综合最高原则正式收紧为：
+
+```text
+DETERMINISTIC FIRST, LLM ONLY WHEN NECESSARY
+```
+
+事实、Reason/Theme coverage、Product Truth、Gap、Resolver role、eligibility、指标和能够唯一决定的
+Theme/TEST/portfolio 均由确定性系统完成。只有系统先识别出明确的结构歧义，才允许 LLM 对当前歧义提出
+bounded proposal；模型不能重新读取并决定整套 Strategy。
+
+Theme coverage 固定为 member reason `observed_run_ids` 的集合并集，禁止相加或由 LLM 推断。Theme title
+使用 member capability family 的确定性 label；无法验证的新能力、实体或限定词不得进入标题。
+
+任何模型输出只要包含新渠道、Role mutation、新 Product Truth/能力/资产/指标、假 coverage、未知 ID、
+非法 Theme merge、无依据因果或 malformed schema，整次 proposal 必须拒绝。系统返回 deterministic
+baseline 或 `needs_human_*`，不得宽松修复部分字段，也不得把 Strategy Opportunity 标成失败。
+
+### 当前结果
+
+#19/#56 与 #40/#50 均由规则得到唯一结果，所以即使显式请求 LLM，runtime 仍为
+`SKIPPED_NOT_NECESSARY`、external calls=0。#19 两个 13/15 Theme 已按真实 Run ID union 验证，#40 保持
+三个 6/6 Theme；两者渠道角色、Benchmark、strategy basis、Candidate 和 Step 8 状态均未改变。
+
+Synthetic/non-sensitive DeepSeek replay 真实完成一次。模型返回了“`NEEDS_HUMAN` 同时选择三个渠道”的
+冲突 JSON，系统按 semantic schema 整次拒绝并恢复 deterministic baseline。该结果证明真实 provider 的
+错误输出不能进入 Strategy Truth；它不等于真实 #19/#40 数据回放。真实项目数据外发仍未授权，继续延期。
+
+### 边界
+
+PR4-A.1 只增强 Shadow 安全层，不覆盖 #56/#50、不确认 Strategy、不创建 Action/Experiment、不修改正式
+前端、不进入 Step 8，也不执行 Cutover。
+
+## 2026-09-07 Step 7 PR4-B：Constraint-First 正式切换
+
+### 正式语义
+
+Step 7 正式生成与 Shadow 现共用同一个确定性 Strategy Synthesis core。系统先冻结 Reason、Product Truth、
+Gap、Resolver Role、Run coverage 与 eligible metrics，再确定 Theme 和最小渠道组合；只有真实结构歧义才允许
+bounded LLM，且生产默认关闭外部 Strategy LLM。所有生产 validator 通过前，不得替换当前 Candidate。
+
+Candidate 正式保存原子 Reasons、Intervention Themes、Theme Run-ID union、PRIMARY/SECONDARY、优先 TEST、
+暂缓 TEST、OBSERVE、Success Metrics，以及分离的运营 Decision View 与审计 Audit View。Synthesis 不能改变
+Resolver Role、Benchmark、Product Truth、Evidence 或 Gap。
+
+### 真实状态
+
+#19 已由历史 #56 切换到新 current #57。#56 payload 未覆盖，仅以
+`SUPERSEDED_BY_VALIDATED_STRATEGY_SYNTHESIS_V1` 转为历史；#57 为待人工审核，结构是 5 Reasons → 3 Themes，
+覆盖 13/15、13/15、1/15，官网 PRIMARY，百家号/知乎为优先 TEST，B站/搜狐为暂缓 TEST，43 个渠道继续
+OBSERVE。生产与 Shadow 输出 hash 相同，外部 LLM 调用为 0。
+
+#40 的新 replay 与 #50 原语义完全一致，因此保留 #50 current，不制造无意义候选。当前 #19/#40 都没有
+自动确认 Strategy；Step 8 继续锁定，没有创建 Action 或 Experiment。
+
+## 2026-09-07 Step 7 PR4-B.1：Strategy Decision View 正式切换
+
+### 产品决策
+
+存在有效 `STRATEGY_SYNTHESIS_V1` 的策略候选时，最终策略审核主区域必须以
+`StrategyDecisionView` 为唯一展示真相；Legacy StrategyCandidate 字段只允许作为历史兼容 fallback，
+Resolver、证据 ID、路径与校验信息进入默认折叠的 `StrategyAuditView`。两种 View 不得在主区域混排。
+
+前端是纯 View：不得重新合并 Reason、计算 Theme coverage、决定渠道 Role、选择优先 TEST 或新增 KPI。
+主区域面向操盘手展示 AI 决策机会、目标变化、Theme、主/辅助干预、优先验证、后续验证与成功指标；
+OBSERVE 默认折叠，工程枚举只在审计详情出现。
+
+### 当前结果
+
+#19 当前仍为 Candidate #57，主页面显示 3 个 Theme，而不是 5 条 Reason：短链生成 13/15、加粉数据回传
+优化投放效果 13/15、抖音跳转微信 1/15；官网为主干预，百家号/知乎为优先验证，B站/搜狐为后续验证，
+43 个观察渠道折叠。主页面不再显示旧 12/12、1/12、四个同级 TEST、Resolver 路径枚举或重复推荐依据。
+
+#40 当前仍为 Candidate #50。只读兼容 View 显示点击统计、自定义分享标题、营销场景使用三个 6/6 Theme，
+官网为主干预、知乎为辅助干预、无 TEST；Candidate payload 与 Benchmark-backed 语义均未改变。
+
+本轮未创建或确认 Strategy，不进入 Step 8，不创建 Action/Experiment，不调用外部 LLM。
+
+## 2026-09-07 Step 8：已确认策略的配置入口必须可执行
+
+### 问题与产品判断
+
+#19 当前 Candidate #57 已完成人工策略确认，主链也明确返回 Step 8
+`READY_TO_CREATE`，但“进入第 8 步配置”只会查找已经存在的 Action/Experiment；在草案尚未创建这一正常状态下，
+前端提示后直接返回。按钮文案承诺进入配置，实际却没有配置界面，这是操作链路缺失，不是业务锁定或后端运行慢。
+
+### 正式行为
+
+已确认且尚无草案的当前 Candidate，点击入口必须立即打开 Step 8 配置。执行渠道只读取后端已校验的
+PRIMARY、SECONDARY 和优先 TEST 组合；具体资产、URL、标题、Section、内容结构与固定 Baseline 由人工在
+Step 8 选择。更新已有资产只能绑定抓取成功的真实 PageSnapshot；新建资产必须形成明确 proposal。
+
+提交前必须确认：本操作只创建 Action / Experiment Draft 并冻结 strategy、asset、action 与 baseline
+快照，不自动发布。打开或取消弹窗不得产生任何数据库写入，也不得修改 Step 7 已确认的 Product Truth、Gap、
+Resolver Role、Scope 或 Strategy Truth。
+
+### 当前验证
+
+真实 #19/#57 页面点击已通过：弹窗立即出现，默认渠道为后端给出的“官网 · 主干预 · P1”，Baseline 为
+Evidence Package #12 的 40 个固定 Runs。验收没有提交表单，因此 Candidate #57 仍无 Experiment，现有
+Action/Experiment 数量没有变化。
+
+## 2026-09-07 PR5-A：证据受限的执行方案 Shadow
+
+### 产品决策
+
+Step 8 不应是空表单，而应是系统把已确认 Strategy 编译成执行草案后，由用户选择、合法编辑并确认。
+Execution Proposal 无权创造产品事实，只能组织已确认 Product Truth；竞品事实只能进入规划上下文，未知能力
+必须继续保持未知。能由确定性输入唯一决定的内容由系统完成，资产类型、资产打包或纳管资产存在真实多选时，
+明确交给人，不能为了自动化率任意拍板。
+
+PR5-A 只建立只读逻辑对象，不新增 ManagedAsset 表。PageSnapshot 不等于已纳管资产；客户没有历史资产清单
+不是 Step 8 blocker，此时直接推导 `CREATE_NEW + NewAssetSpec`。每个 Intervention Proposal 固定对应一个
+selected AssetPackage、一个具体资产、一个 Action 和一个 Experiment，Portfolio 不能把官网与多个 TEST
+渠道混成一个实验。
+
+### 当前结果
+
+#19/#57 已确定性生成三个独立 Shadow Proposal：官网 PRIMARY、百家号 TEST、知乎 TEST；B站和搜狐仅保留
+为 deferred planning data。官网当前没有 Managed Asset，因此是 CREATE_NEW；PRODUCT_PAGE、FEATURE_PAGE、
+HELP_DOC 和两种单资产 scope 均合法，readiness 正确为 `NEEDS_HUMAN_SELECTION`。百家号和知乎分别形成最小
+ARTICLE 验证 Proposal，均只承接当前渠道最强相关 Theme，不生成大而全品牌内容。
+
+标题只使用“抖音跳转微信、短链生成、加粉数据回传优化投放效果”等 Product Truth 原词。自动生成加密短链、
+平台备案、白名单、防封、7 天有效率 95% 以上均没有被写成爱短链事实；内部规划问题与可公开 FAQ 严格分离。
+40 个 Evidence Package baseline Runs 与 15 个 Strategy coverage Runs 保持独立，新资产的 asset-level 历史
+指标是 `NOT_MEASURABLE_YET`，不是 0。
+
+#40/#50 只做 `READ_ONLY_COMPATIBILITY_PROJECTION`，保持官网 PRIMARY、知乎 SECONDARY 和
+`BENCHMARK_BACKED_STRATEGY`。本轮不写库、不调用外部 LLM、不创建 Action/Experiment、不修改 Step 8，
+也未进入 PR5-B/C/D。
+
+## 2026-09-07 PR5-A.2：执行方案质量修复与冻结
+
+### 产品决策
+
+安全且可追溯不等于可执行。Asset Package 必须脱离外围对象后仍能独立说明包含/排除的 Theme、Reason、
+Product Truth、可选资产类型、合并依据和结构化取舍；一个 Package 仍严格对应一个具体资产。官网 FULL 与
+P1 两个方案都合法时，系统分别生成内容结构候选并保留人工二选一，不能暗中默认 FULL 或 P1。
+
+Section 不再按七段模板复制全量 provenance。每段只消费完成其目的所需的最小事实与上下文；未知限定进入
+BOUNDARY，未确认操作流程不生成 OPERATION，内部 Planning Question 不进入公开 FAQ。TEST 假设必须读取
+各渠道自己的 Evidence Profile，不能只替换渠道名。
+
+### 当前结果
+
+#19/#57 官网两个 Package 已成为自包含的一资产候选；P1 方案只消费 T1/T2、PT#2/#3 及对应 required
+signals，不带入被排除 T3。百家号依据 40 次 Reference、16 次 Retrieval、2 个 SourceClaim、11 个文档生成
+“已有 Retrieval exposure”的验证假设；知乎依据 40/0/1/6 生成“有引用环境但尚无 Retrieval”的验证假设。
+两者仍只覆盖 T1/当前两个 Reasons，角色仍是 TEST，资产类型仍是 ARTICLE。
+
+Final Quality Audit 七项全部 PASS，八类安全 Validator 全部 VALID；40 baseline Runs、15 Strategy Runs、
+标题、Claim Policy、Metrics、Observation Window、Resolver Role 与 Strategy #57 均未改变。#40/#50 的
+Benchmark-backed 兼容回放同样 VALID/PASS。零 LLM、零写库、未创建 Action/Experiment/ManagedAsset，
+未修改 Step 8。`PR5-A = FROZEN`，停止，不进入 PR5-B。
+
+## 2026-09-07 PR5-B：人工审核、合法编辑与重新校验
+
+### 产品决策
+
+Step 8 不再让用户从空白设计执行方案。页面读取冻结的 PR5-A Proposal，用户只能选择本轮执行/暂缓、合法
+Asset Package、合法 Asset Type、Product Truth 允许的标题、当前 Package 已生成的 Sections、发布元数据和
+候选观察窗口。Role、Theme/Reason、Product Truth、Baseline、Metrics 等系统事实只读，后端同样拒绝越权请求。
+
+每次编辑形成独立 Human Edit Overlay，并以原 Proposal 做 canonical rebuild 后重跑八类硬校验。非法编辑返回
+具体错误，不自动修正；暂缓只改变本轮执行状态，不改变渠道 Role。Portfolio 通过后只表示
+`ready_for_freeze=true`，不等于已创建 Action/Experiment，正式冻结仍属于 PR5-C。
+
+### 当前结果
+
+真实 #19/#57 回放中，官网选择 P1_FOCUS + FEATURE_PAGE、百家号执行、知乎暂缓，三者分别成为
+READY_FOR_CONFIRMATION、READY_FOR_CONFIRMATION、DEFERRED_BY_HUMAN，Portfolio 为
+READY_FOR_CONFIRMATION。每个 Proposal 8/8 Validator 通过，Safety Audit 全零，外部 LLM、DB 写入、
+Candidate 修改、Action/Experiment 创建均为 0。Step 8 前端已改成 Proposal Review 工作台，不再调用旧的
+草案创建接口。`PR5-B = FROZEN`，未进入 PR5-C。
+
+## 2026-09-08 Semantic Governance Phase 1：建立持久语义真相层
+
+### 产品决策
+
+暂停扩展 PR5-C，先把“业务定义是否成熟”和“代码实现到什么阶段”拆成两个正交状态。聊天中的 Product Owner 指令可以授权当前变更，但只有回写仓库的 Semantic Contract、RFC、Product Definition 和明确批准记录才能成为后续开发依赖的持久语义来源。
+
+Definition Freeze、实现/Shadow 授权和 Production Cutover 是三个独立 Gate。历史文档或代码中的“已冻结/已上线”不自动满足新的 Semantic Freeze；首批生产行为统一先登记为 `OBSERVED`，等待 Product Owner Definition Review。
+
+### 影响范围
+
+新增 Domain Model、16 条首批 Contract、7 个 Synthetic Cases、#19/#40 固定 Golden Snapshot、Definition Review、Conflict Register 和 RFC 流程。Foundation/Citation Split 只登记为首个 DRAFT RFC Candidate；现行 Resolver Path C 与候选定义的分歧保持 OPEN，不裁决。
+
+### 不做什么
+
+不改变 Step 1-8、Channel Resolver、Strategy Synthesis、#57/#50、PR5-A/B、数据库或前端；不开发 PR5-C，不创建 Action/Experiment，不自动冻结 Contract，不进入 Cutover、CI gate 或 Reviewer Agent runtime。
+
+### 后续边界
+
+Product Owner 下一步只审核首批 Freeze Review 候选、两个 OPEN Conflict、#19/#40 Manifest 与 Contract traceability。相关定义明确前，PR5-C 继续按 `SEMANTIC_RISK` 只允许依赖梳理与只读调查。
+
+## 2026-09-08 Foundation/Citation Split 第一次独立 Definition Review
+
+Reviewer 按首套治理流程只审不设计、不改 RFC、不改代码。结论为 `NEEDS_REVISION`，Freeze Recommendation 为 `NO`。当前 Path C 将一方事实/权威资产需要直接映射为 OFFICIAL_SITE PRIMARY，确认存在需要拆解的 CATEGORY_ERROR；但 DRAFT 尚未定义 FoundationRequirement 与 CitationIntervention 的独立 identity、状态、事实源、消费者和 UNKNOWN，也未明确允许 `Foundation REQUIRED + Citation PRIMARY NONE`。
+
+#19 固定 Case 可以保护旧 #57 不被重写，但 proposed assertion 仍不完整；#40 尚未被 RFC 用作“知乎 6/6 Decision Citation 与 Foundation 独立决策”的反向挑战。RFC 返回 Author 修订，`SEM-CONFLICT-001` 保持 OPEN。本轮没有 Definition Freeze、Shadow 或 Cutover；PR5-C 继续 BLOCKED。
+
+## 2026-09-09 Runtime Definition Freeze 与只读真实数据验证
+
+### 产品决策
+
+Product Owner 正式冻结 `RFC-RUNTIME-001 / SC-RUNTIME-001@0.1.0`。冻结只确认
+AnalysisContext、16 节点 Stage DAG、确定性 identity/hash、review/current/invalidation
+边界和 legacy projection 定义成熟，不表示生产 Runtime 已实现或切换。实现状态继续为
+`NOT_IMPLEMENTED`，Production Cutover 未批准。
+
+### 验证结果
+
+获授权的只读 Spike 仅使用固定 #19/#40 Manifest 和固定数据库，完整实现 16 个 legacy
+selector 与 `virtual:` identity。两次回放的所有 hash 和状态一致，#19 Stage 分布为
+`0 COMPLETE / 6 PARTIAL / 9 UNSAFE / 1 UNAVAILABLE`，#40 为 `0/7/8/1`，均与
+Frozen RFC 零差异。两者 current projection 都保持 UNRESOLVED，未把历史 ACCEPTED、
+CONFIRMED 或较新对象升级为当前权威状态。
+
+### 边界
+
+本轮 latest substitution、语义猜测和 DB 写入均为 0，数据库 SHA 前后不变。Spike
+结果为 `SPIKE_PASS`，但它只是证明定义可机械执行；未创建正式 Context/Stage/Review/
+Pointer，未接 API/前端，未进入 Runtime Shadow、Production Cutover 或 PR5-C。
+
+## 2026-09-10 Runtime Shadow Phase 1A：持久化骨架
+
+### 产品判断
+
+Frozen Runtime Contract 已能被独立持久化，但仍未接管生产主链。`AnalysisContext`、
+`StageExecution`、`StageAttempt`、`StageReviewDecision`、显式 Current pointer、显式
+Stage selection、Manifest、依赖边和 validity event 已分别拥有可审计 identity 与生命周期。
+相同 fingerprint 不合并独立 Context；Retry 不创建新 Execution；Recompute 不自动晋升；
+成功的零输出是合法结果；Review、Pointer、Selection 和 invalidation 均不能靠 latest 决定。
+
+### 当前状态
+
+`SC-RUNTIME-001` 保持 `maturity=FROZEN`，实现状态从 `NOT_IMPLEMENTED` 更新为
+`PARTIAL`。这里的 PARTIAL 仅代表 Persistence Spine 及隔离测试通过；真实数据库没有
+migration，现有 Workflow 没有 dual-write，#19/#40 仍只是只读 virtual projection。
+
+### 边界
+
+本轮不改变 Step 1-8、产品状态、Review 入口、Strategy、PR5、Action/Experiment、API
+或前端。Phase 1B live Shadow capture、真实 migration、Production Cutover 和 legacy
+backfill 都必须由 Product Owner 另行授权。
+
+## 2026-09-10 Single-Prompt Core V2：第一段可用控制面
+
+### 产品决策
+
+新增一条与 V1/V1.1 并列、互不解释的单 Prompt V2 入口。一次发起操作固定分析身份和采样计划，
+只消费其明确创建的采集 Task；计划 Run 全部终止且至少有一个有效回答后，才冻结 Run Scope 和
+原始输出版本。V2 页面不再从历史 Package、Candidate 或“最新分析”猜测当前状态。
+
+### 当前能力
+
+用户可以在 `单问题分析 V2` 页面选择任意 Prompt 和 1-10 次采样，创建一次持久分析，查看每条
+回答、引用、检索观测和失败原因。刷新通过 URL 中的明确 analysis identity 恢复；服务重启把不确定
+外部调用标记为中断并等待明确重试；冻结后的 Context 不接受原地重采样。
+
+### 验收边界
+
+控制面、API、页面和 fixture 验收已完成。当前 Wenxin collector 的独立会话 reset 基线测试失败，
+且 Retrieval 输出被固定为空，因此真实采集仍标记 `BLOCKED_BY_COLLECTOR_CONTRACT`，不能用 mock
+结果宣称完整闭环通过。本轮不进入诊断、Product Truth、Strategy、Execution、发布或复测。
+
+真实控制面 smoke 使用新 Prompt #44：1 次 Wenxin 采样产生 1 条有效回答和 30 条引用，并冻结唯一
+Context/结果版本；重复发起复用同一 Analysis/Task，错 Prompt 读取与冻结后原地重试均被拒绝。该结果
+证明入口、持久任务、冻结和页面链路真实可运行，但 Retrieval 缺失及独立会话证据 UNKNOWN 仍使完整
+采集契约保持未验收。
+
+最终页面直接展示后端给出的“独立会话证明不可用”和“检索观测不可用”，不再让用户把配置意图或空数组
+误解为已证明的采集事实。冻结结果仍可查看，但下一分析阶段明确标记为本段未接入；V2 第一段至此停止。
+
+## 2026-09-11 Single-Prompt Core V2：第二段诊断与审核
+
+### 产品决策
+
+第二段只消费第一段冻结的 AnalysisContext，独立拥有 DiagnosisExecution、不可变结果版本和追加审核。
+推荐/提及、理由、引用出现、原文锚点、候选召回、证据判断、品牌事实与关系不再压成一个状态。审核完成
+只表示用户完成了本版审核，不会把 `UNRESOLVED`、`UNPROVEN`、抓取失败或未评估自动改成事实。
+
+### 用户可见结果
+
+固定 #44 真实重放识别出条码全能王、草料二维码、互联二维码、码上游二维码四个推荐对象及四条原文理由；
+目标品牌 Geo 没有被模型凭空判为推荐对象。30 条引用去重为 29 个来源，所有 116 个 Reason/Source 关系
+都明确保留 `anchor_binding=UNPROVEN`。项目事实集合为空，因此四条 Reason→Truth 都是待补事实的
+`UNRESOLVED`，不是 FALSE，也不导致诊断失败。
+
+### 授权与限制
+
+本次授权只允许将固定 Prompt 和冻结回答发送到当前 DeepSeek。实际调用一次、缓存命中 0、记录总 token
+2,417；没有重抓网页，也没有把引用正文发送到外部模型。系统本地召回八个 passage，但 SourceClaim 和
+Alignment 均保持未评估。独立会话证明、Retrieval 观测、四个历史抓取失败、全部未证明锚点和空 Truth
+限制继续显示；没有自动完成人工审核。
+
+正文质量审计另发现 25 个技术成功快照中有一个 CSDN 安全验证页。当前不可变结果如实保留原值，同时
+后续 V2 已增加 `CONTENT_BLOCKED` 确定性 Gate；不能把本次 25 个技术成功解释成 25 个有效证据来源。
+
+### 本段停止点
+
+用户现在可以查看、修改并形成新 ResultVersion，或对精确版本追加 REVIEW_COMPLETED；过期提交返回
+409。第二段不生成 Strategy、Proposal、Action、Experiment，不恢复 Runtime 扩建，也不修改 V1 历史。
+
+## 2026-09-11 Single-Prompt Core V2：LLM 输出安全准入修补
+
+### 产品口径
+
+V2 的模型输出只有在完整 JSON、严格 Schema 和当前 grounding/语义投影 Gate 全部通过后，才是可消费的
+诊断输入。`{}`、缺字段、未知字段、非法枚举、截断或错误类型是失败，不再等价于“没有事件”“没有
+Claim”或 `NONE`。协议明确返回空数组仍是合法零结果；失败、零结果和待语义审核分别保留。
+
+`normalized_reason`、`normalized_claim` 只是展示投影。答案原文与来源原文中的固定 span 才是事实依据；
+自由改写增加免费、永久、加密、防封、数字承诺，或改变否定、条件、比较范围时，不能进入 Evidence、
+Truth 或后续业务消费。复杂歧义保留 `SEMANTIC_REVIEW_REQUIRED`，不由少量关键词伪装成完整语义裁决。
+
+### 历史结果边界
+
+#44 不可变结果、当前选择和审核状态均未改写。GET 新增只读安全投影，将历史 25 个正文技术成功与当前
+1 个验证页拦截分开，给出“当前有效正文最多 24”及证据关系白名单；该数字不表示其余 24 个来源均已
+完成质量核验。审核完成也不能解除当前内容安全限制。
+
+### 验收边界
+
+本轮只完成 synthetic malicious-output 与缓存/权限隔离测试，没有调用外部模型或重抓网页。真实模型抗
+注入能力、真实 SourceClaim 和 Alignment 继续标记 `NOT VERIFIED`；未进入 Strategy、Proposal、Action、
+Experiment 或第三段。
+
+## 2026-09-11 Single-Prompt Core V2：审核后诊断到策略候选
+
+### 用户新增能力
+
+V2 页面现在会先展示策略资格，而不是把所有诊断结果都包装成策略。未审核的精确诊断版本属于 A 类，
+页面直接引导完成对应版本审核；审核完成但没有合法方向属于 B 类，页面展示具体待核实事项且不创建空候选；
+至少一个方向通过 Gate 的 C 类，才允许用户显式生成并审核策略候选。
+
+### 产品口径
+
+Foundation 与渠道干预独立。空 Truth 不会推导 Foundation REQUIRED，Foundation 也不会把官网抬成
+PRIMARY；没有 PRIMARY 不等于没有策略。渠道方向必须消费可写入事实、Reason→Truth 完整承接、当前可消费
+证据关系及执行适配。UNPROVEN 锚点只能生成尚未证明效果的 TEST 假设，不能冒充 Decision Citation。
+
+方向仅分 ACTIONABLE、VERIFY_FIRST、OBSERVE、BLOCKED，不计算综合分。多个同层合法方向无法由规则唯一排序
+时，页面要求人工排序并生成新版本，不以引用次数或显示顺序暗中产生 P1。策略保存精确诊断、审核、安全
+白名单及限制快照；输入变化后旧候选仍可查看，但不可继续修改或审核。
+
+### 真实边界
+
+#44 当前没有诊断审核，因此真实验收为 A 类：Foundation UNKNOWN、0 个合格方向、0 个新增策略候选；29 个
+来源不会触发官网或第三方渠道兜底。页面仍显示空 Truth、未评估证据、UNPROVEN 锚点及 CONTENT_BLOCKED。
+本轮没有替用户审核 #44，没有外部模型调用、正文重抓或进入执行方案。
+
+## 2026-09-11 Single-Prompt Core V2：已确认策略到人工发布登记
+
+### 用户新增能力
+
+V2 页面可以把一条已确认的合格策略方向编译成“执行内容骨架、资产制作简报、发布方案”。用户选择新建
+资产类型和发布位置，安全修改标题、选择及排序公开 Section，填写账号/栏目后保存并重新校验；确认后状态
+是“待人工发布”，实际发布完成后再登记 URL、时间和差异。系统不声称生成了完整文章，也不自动发布。
+
+### 产品口径
+
+Foundation 的官网产品页、功能页或帮助中心只是事实承载位置，策略渠道仍为空，不能反向升级成官网
+PRIMARY。渠道方向严格继承已确认 Role；零 PRIMARY 的合格 TEST 也可形成方案。当前只支持 CREATE_NEW，
+采集来源和调用方传入的资产 ID 都不能变成可更新资产。
+
+公开内容只允许消费人工确认且由 FULLY_COVERS 承接的目标品牌 Truth。PARTIALLY_COVERS、未知限定、
+Planning Question、账号权限检查和测量限制留在 INTERNAL_CHECKLIST。Baseline 只来自精确 V2 AnalysisContext
+的完整有效 Run 集，并保留 planned/valid/failed 和采集能力限制。
+
+方案确认、实际发布事实、方案符合性是三个不同状态。发布记录固定为 USER_REPORTED；内容材料不足时为
+NOT_EVALUABLE，偏离方案也保留实际发生记录。修改发布报告追加修订，不覆盖历史。本轮没有线上抓取，
+任何状态都不是 SYSTEM_VERIFIED。
+
+### 真实边界
+
+#44 仍无诊断审核和策略，因此不能生成执行方案、确认或发布记录；系统没有替用户补状态。完整正向链只在
+隔离 fixture 验证，不代表真实项目已发布或完成复测。本轮外部 LLM、网页抓取、自动发布和历史回填均为 0。
+
+## 2026-09-12 Single-Prompt Core V2：人工发布记录到描述性变化比较
+
+### 用户新增能力
+
+用户可明确选择一条执行确认下的具体发布修订，确认目标品牌别名和官方域名/URL，冻结复测计划后再显式
+启动采样。采样、推荐语义判断和比较是分开的动作；推荐语义可先仅检查兼容缓存，缓存缺失不会偷跑 DeepSeek。
+采样失败可重试原 Run，或由用户明确保留失败并冻结，不会不断追加样本。
+
+### 测量口径
+
+Baseline 与 Retest 统一使用冻结 MeasurementIdentity 和测量契约。首版只计算 Run-level 品牌提及、合格 V2
+推荐语义、目标品牌官方来源引用和精确发布 URL 引用；重复引用不膨胀命中数，未评估、观测不完整和身份缺失
+保持不可计算，只有有效分母存在时才允许 0/n。计划条件、实际捕获条件与平台不可观测条件分别保存；明确
+条件冲突时保留两侧数值但不计算差值。
+
+### 结论边界
+
+报告只表达两批样本的描述性观察。发布时间顺序未证明时不得称为发布前后改善；USER_REPORTED 不升级为
+SYSTEM_VERIFIED；MATCHED 也不证明渠道有效。系统不输出策略成功、因果提升、显著性或下一轮策略。
+
+### 真实边界
+
+#44 仍无已确认策略、执行确认和发布记录，因此复测入口返回精确阻断且新增 Retest 为 0。完整正向链只由
+隔离 fixture 验证。本轮真实浏览器采样、DeepSeek 调用、网页重抓、历史迁移和 V1 语义修改均为 0。
+
+## 2026-09-14 Single-Prompt Core V2：真实闭环 Baseline
+
+经用户单独授权，Project #3 / Prompt #40 通过正式 V2 入口完成 3 次真实文心采样并冻结不可变
+AnalysisContext。三次均成功且未重试，回答和引用分别绑定 Run 260/261/262；77 条引用形成 35 个唯一 URL，
+后续外发范围可以按精确 Context、回答 Hash 和 URL 清单另行授权，不再依赖 latest 或历史回答。
+
+本次页面证据显示每条采集的当前对话只有一个提问，但采集器实际仍记录 `single_continuous` 且
+`sampling_mode=UNKNOWN`，因此只保留案例级页面证据，不宣称独立会话能力或可比采样已经通过。诊断、
+DeepSeek、引用正文抓取、事实、审核、策略、发布和复测均未启动。
+
+## 2026-09-14 Single-Prompt Core V2：真实 Answer Semantic 验收
+
+经单独授权，固定 #40 Baseline 的三个回答各调用一次当前 DeepSeek，并通过正式 V2 Diagnosis 入口冻结结果。
+三次提供方响应均正常结束，但非空 `selection_criteria` 不符合当前严格协议，因此全部被安全 Gate 拒绝；系统
+保留三条 `FAILED_SCHEMA`，没有把失败解释成零推荐、零理由或目标品牌未被推荐。
+
+固定原文显示：Run 260/261 的“爱短链”只在参考资料标题中出现；Run 262 还在正文营销推广场景中与其他工具
+并列出现。但由于本轮没有任何通过准入的语义对象，这些只能作为待重新分析的原文观察，不能成为已确认推荐
+或跨 Run Reason。正文没有逐句引用标记，35 个来源也未获抓取/外发授权，因此锚点、SourceClaim、Alignment
+和 Reason→Truth 均保持未证明或未评估。本轮不创建审核、策略或复测。
+
+## 2026-09-14 Single-Prompt Core V2：Answer 协议与结果消费对齐
+
+V2 的市场选择标准现在只有一种正式结构：必填规范化展示、固定回答原文 span 和
+`MARKET_CRITERION` scope。生产 Prompt 直接包含严格响应模型导出的协议与可校验示例；旧字段、字符串条目、
+缺失或空 scope 不会被静默转换。通过准入的标准以独立对象展示，不挂到品牌推荐、不增加品牌 Reason，也不
+进入 Truth 或引用支持关系；未解决字符串同样没有事实资格。
+
+回答级状态正式区分合法零事件与分析失败。全部回答失败时，页面明确显示失败数量及原因，后端仅允许查看，
+拒绝修订、完成审核和策略消费；部分成功时只审核合格集合并永久保留失败限制。固定 #40 的旧失败结果没有
+被覆盖，只读资格为 0/3 成功、3/3 失败。新协议尚未真实调用 DeepSeek，正式入口会覆盖固定 Context 的
+Run 260/261/262，等待新的完整范围授权。
+
+## 2026-09-14 Single-Prompt Core V2：修复后真实 Answer 重放
+
+经新的三 Run 授权，固定 #40 Context 使用修复后的 Prompt/Schema 完成正式重放。新结果为部分成功：Run 260
+保留 7 个候选项事件，其中 4 个机器保守通过、3 个需要语义复核，并独立保存 1 条市场选择标准；市场标准没有
+挂到品牌事件、Truth 或引用证据。Run 261/262 因模型返回的 span 丢失原文不可见分隔字符而被严格 grounding
+拒绝，没有部分捞取、自动补调或降级成零事件。
+
+爱短链在 Run 260/261 只出现在引用标题；Run 262 正文把它列为营销场景候选，但该 Run 响应未通过 grounding，
+因此目前仍没有可消费的爱短链推荐事件。结果可以审核已经准入的子集，同时永久保留 2 条 Answer 失败、35 个
+正文不可用、245 条关系未评估和锚点未证明。没有自动审核、策略或事实写入。
+
+### 2026-09-14：V2 原文定位与关系消费边界最小修补
+
+真实差异已确认：Run 261/262 的首个模型 span 只遗漏了原文中的一个 `U+200C ZERO WIDTH NON-JOINER`，
+对应局部没有文字、数字、标点、否定或条件变化。V2 现在只允许“单行、连续、唯一、仅忽略 U+200C”的
+格式等价；不会删除其他控制字符，不做模糊匹配，也不会拼接段落。定位后仍以原始片段和上下文执行主体、
+否定、条件和限定检查。
+
+壹伴助手 Reason 与爱短链 Truth #2 的旧 lexical PARTIAL 仅保留为未确认的目标能力适配建议：竞品陈述主体、
+目标品牌事实和建议关系分别展示，当前可消费关系为 UNRESOLVED。它不能证明壹伴助手陈述，也不能进入策略
+或公开内容。35 个来源同时改为当前只读显示“本次未授权、未抓取”，不再误称为 35 次抓取失败。
+
+旧诊断结果和 hash 保持不变；完整失败响应未保存，因此当前只证明已确认首个 span 的本地修复，Run 261/262
+全部语义对象仍需新的授权重放后才能真实验收。本轮零外部调用、零真实业务写入。
+
+### 2026-09-15：V2 原文定位修补完成真实重放
+
+固定 Project #3 / Prompt #40 的三个回答经精确版本核对后，通过正式 V2 全 Context 入口重新诊断。Run 260
+使用通过当前准入契约的兼容缓存，Run 261/262 各执行一次 DeepSeek；三条回答均通过 Schema、原文定位和结果
+准入，已知 U+200C 差异不再造成误拒绝。新结果为 `diag-v1:dbbbd68addd737f9`，没有覆盖旧结果。
+
+结果包含 22 个 `INCLUDE_AS_OPTION` 事件和 3 条独立市场选择标准。13 个事件因场景列表缺少显式选择词而保留
+人工语义复核，这属于可审核的不确定状态，不是失败，也没有为了全绿放宽规则。爱短链仅在 Run 262 正文作为
+营销场景候选出现，仍待审核；Run 260/261 的引用标题不会自动转成推荐。
+
+引用证据阶段继续关闭：35 个来源为未授权、未抓取，SourceClaim/Alignment 未调用，锚点和关系保持未评估。
+系统没有自动审核、修改 Truth、生成策略或进入后续步骤。真实案例现已从 Answer Semantic 接入失败推进到
+“3/3 可消费、包含待人工复核项”的诊断审核入口。
+
+### 2026-09-15：V2 候选语义逐项审核入口
+
+诊断页现在把 13 个“场景列表中缺少显式选择词”的候选判断独立置顶，展示 Run、对象、原文上下文、模型理由
+和具体待审原因；九个机器保守准入事件与三条市场选择标准分别展示。用户逐项选择“确认是候选、仅为提及、
+保留不确定、抽取错误”，不再通过一条整版按钮掩盖实际语义判断。
+
+人工确认解决的是高影响语义的授权与审计，不是让用户替模型重新抽取。确认候选只认可原有
+`INCLUDE_AS_OPTION`，不会升级为推荐、目标品牌事实或引用证据。后端同时要求每个待审事件都有明确处置，并且
+只有逐项确认的候选才可进入策略输入；保留不确定仍可完成整版审核，但不获得事实消费资格。
+
+### 2026-09-16：V2 引用正文前置流程整改（待 Product Owner 审批）
+
+只读核查确认，第二段文档原本要求先冻结引用 SourceSnapshot、再做推荐语义和证据诊断，但实际产品把 Answer
+Semantic、正文处理和证据判断合并在一次“开始诊断”中，代码还先执行 Answer Semantic。该偏差使真实 #40 在
+35 个唯一引用正文全部未抓取时仍完成了回答语义审核，形成“后置语义已做、前置证据输入未完成”的错误使用顺序。
+
+拟议的 V2 用户流程改为：采集和 Raw Result 冻结后，先展示引用清单，系统复用/抓取正文；失败项由用户补充
+同一来源正文或明确放弃并保留限制；全部来源有明确处置并冻结 Source Completion Manifest 后，才启动 Answer
+Semantic。回答审核后再按候选召回运行 SourceClaim/Alignment，不对全部 passage 盲跑模型。
+
+本次只登记待审批方案，不修改 V1 Step 1-8，不执行代码、迁移、网页抓取或 LLM。详细状态、Gate、API、页面、
+迁移兼容、测试矩阵和五阶段停止点见 `SINGLE_PROMPT_CORE_V2_SOURCE_COMPLETION_PLAN.md`。审批前 #40 停止在
+`BLOCKED_BY_SOURCE_COMPLETION_PATH`，不得生成 Strategy，也不得要求用户重复 Answer 审核。

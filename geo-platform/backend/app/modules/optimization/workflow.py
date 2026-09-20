@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
+import hashlib
 
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -31,7 +33,6 @@ from app.models import (
 )
 from app.services.serialization import dumps, loads
 from app.modules.optimization.service import (
-    citation_decision_vertical_slice,
     current_step7_candidate_eligibility,
 )
 from app.modules.optimization.passage_retrieval import (
@@ -58,10 +59,28 @@ VALID_DECISION_EVENT_STATUSES = {
 ACCEPTED_STRATEGY_REVIEW_STATUSES = {"ACCEPTED", "ACCEPTED_WITH_EDITS"}
 STEP7_EFFECTIVE_PAYLOAD_STATUSES = {"VALIDATED", "PENDING_HUMAN_CHANNEL_REVIEW"}
 CURRENT_ANALYSIS_DECISION_ACTS = {"RECOMMEND", "INCLUDE_AS_OPTION", "COMPARE"}
+CURRENT_ANALYSIS_STALE_AFTER = timedelta(minutes=30)
+REVIEWED_EVIDENCE_ALIGNMENT_STATUSES = {"HUMAN_CONFIRMED", "HUMAN_REJECTED"}
+ANALYSIS_STAGE_LABELS = {
+    "ANSWER_SEMANTIC": "正在识别答案里的推荐对象和推荐理由",
+    "SOURCE_QUALIFICATION": "正在判断引用来源正文状态",
+    "CITATION_CONTENT": "正在补齐引用正文和来源页面内容",
+    "DOCUMENT_SEGMENTATION": "正在把来源正文切分成可对齐片段",
+    "ANSWER_BINDING": "正在把答案能力点绑定到推荐理由",
+    "SOURCE_CLAIM": "正在从来源正文中抽取可落地的来源主张",
+    "EVIDENCE_ALIGNMENT": "正在判断推荐理由与来源主张的支撑关系",
+}
 
 
 def _compact_review_text(value: str) -> str:
     return " ".join((value or "").split())
+
+
+def _review_claim_key(claim: SourceClaim | None) -> str:
+    """用来源主张文本做审核分组，避免同一语义被重复 SourceClaim ID 拆开。"""
+    if not claim:
+        return ""
+    return _compact_review_text(claim.normalized_claim or claim.source_span or "")
 
 
 def _review_reason_text(alignment: EvidenceAlignment, machine_payload: dict) -> str:
@@ -84,6 +103,54 @@ def _semantic_observed_run_ids(alignment: EvidenceAlignment, machine_payload: di
 
 def _alignment_run_ids(alignment: EvidenceAlignment) -> list[int]:
     return [int(alignment.run_id)] if alignment.run_id else []
+
+
+def _support_review_group_key(alignment: EvidenceAlignment, claim: SourceClaim | None, machine_payload: dict) -> tuple:
+    evidence_role = machine_payload.get("evidence_role") or machine_payload.get("classification") or ""
+    return (
+        _review_reason_text(alignment, machine_payload),
+        alignment.source_document_id,
+        _review_claim_key(claim),
+        alignment.relation,
+        evidence_role,
+    )
+
+
+def _support_review_group_progress(db: Session, project_id: int, prompt_id: int) -> dict:
+    """Count human work by semantic evidence groups, not Run-level rows.
+
+    The same reason/source-claim relation can be observed in dozens of Runs.
+    Operators should confirm the semantic relation once; Run-level rows remain
+    underneath for lineage and coverage.
+    """
+    rows = db.query(EvidenceAlignment).filter(
+        EvidenceAlignment.project_id == project_id,
+        EvidenceAlignment.prompt_id == prompt_id,
+        EvidenceAlignment.relation == "SUPPORTS",
+    ).all()
+    claim_ids = {row.source_claim_id for row in rows if row.source_claim_id}
+    claims = {
+        claim.id: claim
+        for claim in db.query(SourceClaim).filter(SourceClaim.id.in_(claim_ids)).all()
+    } if claim_ids else {}
+    groups: dict[tuple, dict] = {}
+    for row in rows:
+        payload = loads(row.machine_payload_json, {})
+        key = _support_review_group_key(row, claims.get(row.source_claim_id), payload)
+        group = groups.setdefault(key, {"row_count": 0, "reviewed_rows": 0, "has_pending": False})
+        group["row_count"] += 1
+        if row.review_status in REVIEWED_EVIDENCE_ALIGNMENT_STATUSES:
+            group["reviewed_rows"] += 1
+        else:
+            group["has_pending"] = True
+
+    reviewed_groups = sum(1 for group in groups.values() if not group["has_pending"])
+    return {
+        "group_count": len(groups),
+        "reviewed_group_count": reviewed_groups,
+        "row_count": len(rows),
+        "reviewed_row_count": sum(group["reviewed_rows"] for group in groups.values()),
+    }
 
 
 def _current_v1_1_input_state(
@@ -116,30 +183,42 @@ def _current_v1_1_input_state(
         }
 
     formal_alignment_count = 0
+    formal_support_count = 0
     legacy_support_count = 0
     legacy_related_count = 0
     if run_ids:
-        alignments = (
-            db.query(EvidenceAlignment)
-            .filter(
-                EvidenceAlignment.project_id == project.id,
-                EvidenceAlignment.prompt_id == prompt_id,
-                EvidenceAlignment.run_id.in_(run_ids),
-            )
-            .all()
+        # workflow/status 是高频读模型，不能为了展示状态逐条加载并解析
+        # EvidenceAlignment JSON；完整 eligibility 仍由正式 Evidence/Benchmark
+        # 链路负责，这里只做是否存在 V1.1 输入和 legacy 线索的轻量判断。
+        base_alignment_filters = (
+            EvidenceAlignment.project_id == project.id,
+            EvidenceAlignment.prompt_id == prompt_id,
+            EvidenceAlignment.run_id.in_(run_ids),
         )
-        for alignment in alignments:
-            payload = loads(alignment.machine_payload_json, {})
-            is_v1_1_input = (
-                payload.get("reason_source") == ANSWER_BINDING_REASON_SOURCE
-                or payload.get("formal_input_version") == FORMAL_V1_1_INPUT_VERSION
-            )
-            if is_v1_1_input:
-                formal_alignment_count += 1
-            elif alignment.relation == "SUPPORTS":
-                legacy_support_count += 1
-            elif alignment.relation == "RELATED":
-                legacy_related_count += 1
+        v1_1_payload_filter = or_(
+            EvidenceAlignment.machine_payload_json.like(f'%"reason_source": "{ANSWER_BINDING_REASON_SOURCE}"%'),
+            EvidenceAlignment.machine_payload_json.like(f'%"formal_input_version": "{FORMAL_V1_1_INPUT_VERSION}"%'),
+        )
+        formal_alignment_count = db.query(func.count(EvidenceAlignment.id)).filter(
+            *base_alignment_filters,
+            v1_1_payload_filter,
+        ).scalar() or 0
+        formal_support_count = db.query(func.count(EvidenceAlignment.id)).filter(
+            *base_alignment_filters,
+            v1_1_payload_filter,
+            EvidenceAlignment.relation == "SUPPORTS",
+            EvidenceAlignment.review_status.in_(REVIEWED_EVIDENCE_ALIGNMENT_STATUSES | {"MACHINE_GROUNDED"}),
+        ).scalar() or 0
+        legacy_support_count = db.query(func.count(EvidenceAlignment.id)).filter(
+            *base_alignment_filters,
+            EvidenceAlignment.relation == "SUPPORTS",
+            ~v1_1_payload_filter,
+        ).scalar() or 0
+        legacy_related_count = db.query(func.count(EvidenceAlignment.id)).filter(
+            *base_alignment_filters,
+            EvidenceAlignment.relation == "RELATED",
+            ~v1_1_payload_filter,
+        ).scalar() or 0
 
     event_query = db.query(RecommendationEvent).filter(
         RecommendationEvent.project_id == project.id,
@@ -164,19 +243,26 @@ def _current_v1_1_input_state(
     shadow_run_count = shadow_query.count()
 
     has_upstream_signal = bool(decision_events or legacy_support_count or legacy_related_count)
-    needs_current_analysis = (
-        has_upstream_signal
-        and formal_alignment_count == 0
+    supportless_formal_input_needs_rebuild = (
+        formal_alignment_count > 0
+        and formal_support_count == 0
+        and bool(decision_events or event_reason_count or legacy_support_count)
+    )
+    needs_current_analysis = has_upstream_signal and (
+        formal_alignment_count == 0
+        or supportless_formal_input_needs_rebuild
     )
     return {
         "run_ids": sorted(run_ids),
         "decision_event_count": len(decision_events),
         "event_reason_count": event_reason_count,
         "formal_v1_1_alignment_count": formal_alignment_count,
+        "formal_v1_1_support_count": formal_support_count,
         "legacy_support_count": legacy_support_count,
         "legacy_related_count": legacy_related_count,
         "shadow_run_count": shadow_run_count,
         "has_upstream_signal": has_upstream_signal,
+        "supportless_formal_input_needs_rebuild": supportless_formal_input_needs_rebuild,
         "needs_current_analysis": needs_current_analysis,
     }
 
@@ -247,6 +333,7 @@ def _current_strategy_chain_state(
     prompt_id: int,
     *,
     reviews_done: bool,
+    support_count: int = 0,
 ) -> dict:
     package = _latest_prompt_evidence_package(db, project.id, prompt_id)
     candidates: list[OptimizationStrategyCandidate] = []
@@ -303,26 +390,22 @@ def _current_strategy_chain_state(
         current_candidate = confirmed_candidate
         detail = f"当前策略 #{confirmed_candidate.id} 已人工确认"
     elif reviews_done:
-        proposal = citation_decision_vertical_slice(
-            db,
-            project.id,
-            prompt_id,
-            package.id if package is not None else None,
-            use_answer_binding_v1_1=True,
-        ) if package is not None else {}
-        generatable_actions = [
-            action
-            for action in (proposal.get("recommended_actions") or [])
-            if action.get("route") in {"CONTENT", "EVIDENCE"}
-        ]
         current_ids = []
         current_candidate = None
-        if generatable_actions:
-            strategy_status = "READY_TO_GENERATE"
-            detail = f"{len(generatable_actions)} 个缺口可生成策略候选"
-        elif v1_1_input_state.get("needs_current_analysis"):
+        if v1_1_input_state.get("needs_current_analysis"):
             strategy_status = "NEEDS_CURRENT_ANALYSIS"
-            detail = "当前有答案决策/证据线索，但尚未生成 V1.1 正式证据与缺口，请重新运行当前主链"
+            if v1_1_input_state.get("supportless_formal_input_needs_rebuild"):
+                detail = "当前 V1.1 正式证据输入未形成可用 SUPPORTS，请重新生成证据语义关系后再进入策略确认"
+            else:
+                detail = "当前有答案决策/证据线索，但尚未生成 V1.1 正式证据输入，请生成 V1.1 输入后再进入策略确认"
+        elif package is not None and int(v1_1_input_state.get("formal_v1_1_support_count") or 0) > 0:
+            # workflow/status 是只读 Gate，不在状态刷新里现场重算 Citation Decision。
+            # 是否真的产出 StrategyCandidate 由显式“生成策略候选”动作决定。
+            strategy_status = "READY_TO_GENERATE"
+            detail = "证据审核完成，可生成策略候选"
+        elif int(v1_1_input_state.get("formal_v1_1_alignment_count") or 0) > 0:
+            strategy_status = "NO_STRATEGY"
+            detail = "当前正式 V1.1 证据输入已生成，但没有 SUPPORTS 证据缺口可生成策略"
         else:
             strategy_status = "NO_STRATEGY"
             detail = "当前正式链已完成，没有可生成策略的内容/证据缺口"
@@ -358,7 +441,7 @@ def _current_strategy_chain_state(
         execution_detail = "本轮没有策略候选，无需创建实验草案"
     elif strategy_status == "NEEDS_CURRENT_ANALYSIS":
         execution_status = "LOCKED"
-        execution_detail = "等待重新运行当前主链生成正式证据与策略候选"
+        execution_detail = "等待 V1.1 正式证据输入生成策略候选"
     else:
         execution_status = "LOCKED"
         execution_detail = "等待当前策略确认"
@@ -408,6 +491,67 @@ def _current_strategy_chain_state(
             and not _workflow_confirmation_context(confirmation)
         ),
     }
+
+
+def _analysis_run_chain_state(
+    package: OptimizationEvidencePackage | None,
+    prompt_id: int,
+    strategy_status: str,
+    strategy_detail: str,
+    execution_detail: str,
+) -> dict:
+    return {
+        "context": {
+            "prompt_id": prompt_id,
+            "evidence_package_id": package.id if package else None,
+            "package_version": package.version if package else None,
+        },
+        "strategy_step_status": strategy_status,
+        "strategy_step_detail": strategy_detail,
+        "current_strategy_candidate_id": None,
+        "current_strategy_candidate_ids": [],
+        "current_strategy_confirmed": False,
+        "current_effective_payload_status": None,
+        "current_effective_payload_valid": False,
+        "current_v1_1_input_state": {},
+        "execution_step_status": "LOCKED",
+        "execution_step_detail": execution_detail,
+        "current_action_id": None,
+        "current_experiment_id": None,
+        "current_experiment_status": None,
+        "historical_strategy_candidate_ids": [],
+        "historical_strategy_candidate_count": 0,
+        "ineligible_strategy_candidates": [],
+        "historical_experiment_ids": [],
+        "historical_experiment_count": 0,
+        "legacy_action_confirmation_ignored": False,
+    }
+
+
+def _analysis_run_progress_text(row: PromptAnalysisRun) -> str:
+    payload = loads(row.errors_json, [])
+    if isinstance(payload, dict):
+        stage = str(payload.get("stage") or "")
+        message = str(payload.get("message") or "")
+        return message or ANALYSIS_STAGE_LABELS.get(stage, "")
+    return ""
+
+
+def _analysis_run_error_text(row: PromptAnalysisRun, *, is_stale_running: bool = False) -> str:
+    if is_stale_running:
+        return "后台分析超时未收口，请重新生成 V1.1 正式证据输入"
+    error_items = loads(row.errors_json, [])
+    if isinstance(error_items, list) and error_items:
+        return str(error_items[0])
+    if isinstance(error_items, dict):
+        return str(error_items.get("message") or error_items.get("stage") or "")
+    return ""
+
+
+def _is_restart_interrupted_analysis(row: PromptAnalysisRun, error_text: str) -> bool:
+    if row.status != "FAILED":
+        return False
+    return "服务重启中断" in error_text
 
 
 # ---------------------------------------------------------------------------
@@ -583,12 +727,9 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     }
     validation_failed_events = [e for e in all_events if e.review_status == "VALIDATION_FAILED"]
 
-    supports = db.query(EvidenceAlignment).filter(
-        EvidenceAlignment.project_id == project.id,
-        EvidenceAlignment.prompt_id == prompt_id,
-        EvidenceAlignment.relation == "SUPPORTS",
-    ).all()
-    supports_reviewed = sum(1 for a in supports if a.review_status in {"HUMAN_CONFIRMED", "HUMAN_REJECTED"})
+    support_progress = _support_review_group_progress(db, project.id, prompt_id)
+    support_count = support_progress["group_count"]
+    supports_reviewed = support_progress["reviewed_group_count"]
 
     truths = db.query(TargetBrandCapabilityTruth).filter(
         TargetBrandCapabilityTruth.project_id == project.id,
@@ -605,10 +746,20 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         .order_by(PromptAnalysisRun.id.desc())
         .first()
     )
+    latest_completed_analysis_run = (
+        db.query(PromptAnalysisRun.id)
+        .filter(
+            PromptAnalysisRun.project_id == project.id,
+            PromptAnalysisRun.prompt_id == prompt_id,
+            PromptAnalysisRun.status == "COMPLETED",
+        )
+        .order_by(PromptAnalysisRun.id.desc())
+        .first()
+    )
     analyzed = bool(all_events) or analysis_run is not None
 
     # 无 SUPPORTS 对齐时证据审核视为已通过（没有可审项，不阻塞流程）
-    evidence_review_done = supports_reviewed >= len(supports)
+    evidence_review_done = supports_reviewed >= support_count
     # 只有可人工审核的事件才进入审核分母；VALIDATION_FAILED 等机器失败事件不能造成空队列死循环。
     event_review_done = (
         bool(reviewable_events) and len(reviewed_event_keys) >= len(reviewable_event_keys)
@@ -648,27 +799,49 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
     shelved = shelved_row is not None
     shelved_note = shelved_row.decision_note if shelved_row else ""
 
-    current_chain = _current_strategy_chain_state(db, project, prompt_id, reviews_done=reviews_done)
-    if analysis_run and current_chain["strategy_step_status"] == "NEEDS_CURRENT_ANALYSIS":
-        if analysis_run.status == "RUNNING":
-            current_chain = {
-                **current_chain,
-                "strategy_step_status": "CURRENT_ANALYSIS_RUNNING",
-                "strategy_step_detail": "当前主链正在后台运行：生成 V1.1 正式证据、缺口和策略候选状态",
-                "execution_step_status": "LOCKED",
-                "execution_step_detail": "等待当前主链运行完成",
-            }
-        elif analysis_run.status == "FAILED":
-            error_items = loads(analysis_run.errors_json, [])
-            error_text = str(error_items[0]) if error_items else "后台分析失败，请查看日志"
-            current_chain = {
-                **current_chain,
-                "strategy_step_status": "CURRENT_ANALYSIS_FAILED",
-                "strategy_step_detail": f"当前主链运行失败：{error_text[:160]}",
-                "execution_step_status": "LOCKED",
-                "execution_step_detail": "先重新运行当前主链，成功后才能进入策略确认",
-            }
-    elif current_chain["strategy_step_status"] == "NOT_READY":
+    latest_package = _latest_prompt_evidence_package(db, project.id, prompt_id)
+    current_chain = None
+    if analysis_run:
+        is_stale_running = (
+            analysis_run.status == "RUNNING"
+            and analysis_run.created_at
+            and datetime.utcnow() - analysis_run.created_at > CURRENT_ANALYSIS_STALE_AFTER
+        )
+        if analysis_run.status == "RUNNING" and not is_stale_running:
+            progress_text = _analysis_run_progress_text(analysis_run) or "生成 V1.1 正式证据、缺口和策略候选状态"
+            current_chain = _analysis_run_chain_state(
+                latest_package,
+                prompt_id,
+                "CURRENT_ANALYSIS_RUNNING",
+                f"当前主链正在后台运行：{progress_text}",
+                "等待当前主链运行完成",
+            )
+        elif analysis_run.status == "FAILED" or is_stale_running:
+            error_text = _analysis_run_error_text(
+                analysis_run,
+                is_stale_running=is_stale_running,
+            )
+            if (
+                not _is_restart_interrupted_analysis(analysis_run, error_text)
+                or not latest_completed_analysis_run
+                or not reviews_done
+            ):
+                current_chain = _analysis_run_chain_state(
+                    latest_package,
+                    prompt_id,
+                    "CURRENT_ANALYSIS_FAILED",
+                    f"当前主链运行失败：{(error_text or '后台分析失败，请查看日志')[:160]}",
+                    "先重新生成 V1.1 正式证据输入，成功后才能进入策略确认",
+                )
+    if current_chain is None:
+        current_chain = _current_strategy_chain_state(
+            db,
+            project,
+            prompt_id,
+            reviews_done=reviews_done,
+            support_count=support_count,
+        )
+    if current_chain["strategy_step_status"] == "NOT_READY":
         if not event_review_done:
             current_chain = {
                 **current_chain,
@@ -694,8 +867,8 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         {"key": "collection", "label": "数据采集", "done": total_runs >= 1, "detail": f"{total_runs} Runs"},
         {"key": "answer_semantic", "label": "推荐行为分析", "done": answer_semantic_done, "detail": f"{len(unique_event_keys)} 组有效选择事件" if unique_event_keys else (f"已分析：0 组有效选择事件（{len(validation_failed_events)} 条机器校验未通过）" if validation_failed_events else (f"已分析：0 组有效选择事件（答案中无推荐或已被人工排除）" if analyzed else "未分析"))},
         {"key": "event_review", "label": "推荐行为人工确认", "done": event_review_done, "detail": f"{min(len(reviewed_event_keys), len(reviewable_event_keys))}/{len(reviewable_event_keys)} 组已审" if reviewable_events else ("无可审核事件，无需审核" if analyzed else "待分析")},
-        {"key": "evidence", "label": "证据分析", "done": bool(supports), "detail": f"{len(supports)} 条支持对齐" if supports else "无支持对齐（AI 理由无来源证据支持）"},
-        {"key": "evidence_review", "label": "证据人工确认", "done": evidence_review_done, "detail": f"{supports_reviewed}/{len(supports)} 条已审" if supports else "无需审核"},
+        {"key": "evidence", "label": "证据分析", "done": support_count > 0, "detail": f"{support_count} 组支持证据" if support_count else "无支持对齐（AI 理由无来源证据支持）"},
+        {"key": "evidence_review", "label": "证据人工确认", "done": evidence_review_done, "detail": f"{supports_reviewed}/{support_count} 组已审" if support_count else "无需审核"},
         {"key": "product_truth", "label": "目标品牌能力确认", "done": bool(truths) and not truths_pending, "detail": f"{len(truths)-len(truths_pending)}/{len(truths)} 条已确认" if truths else "0 条"},
         {"key": "gap", "label": "缺口诊断", "done": gap_confirmed, "detail": ("人工搁置-无法分析" if shelved else "已人工确认" if gap_confirmed else ("待答案决策识别修正" if analyzed and not answer_semantic_done else ("可生成（点「继续分析」）" if reviews_done else "待审核完成后生成")))},
         {"key": "action", "label": "策略确认", "done": strategy_done, "detail": ("人工搁置-无法分析" if shelved else current_chain["strategy_step_detail"] if answer_semantic_done else "待答案决策识别修正")},
@@ -713,6 +886,7 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         "answer_semantic_done": answer_semantic_done,
         "ready_to_continue": reviews_done,
         "current_state_context": current_chain["context"],
+        "current_v1_1_input_state": current_chain.get("current_v1_1_input_state", {}),
         "strategy_step_status": current_chain["strategy_step_status"],
         "execution_step_status": current_chain["execution_step_status"],
         "current_strategy_candidate_id": current_chain["current_strategy_candidate_id"],
@@ -720,6 +894,10 @@ def workflow_status(db: Session, project: Project, prompt_id: int) -> dict:
         "current_strategy_confirmed": current_chain["current_strategy_confirmed"],
         "current_effective_payload_status": current_chain["current_effective_payload_status"],
         "current_effective_payload_valid": current_chain["current_effective_payload_valid"],
+        "support_alignment_row_count": support_progress["row_count"],
+        "support_alignment_reviewed_row_count": support_progress["reviewed_row_count"],
+        "support_review_group_count": support_progress["group_count"],
+        "support_reviewed_group_count": support_progress["reviewed_group_count"],
         "current_action_id": current_chain["current_action_id"],
         "current_experiment_id": current_chain["current_experiment_id"],
         "current_experiment_status": current_chain["current_experiment_status"],
@@ -979,7 +1157,7 @@ def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
         key = (
             reason_text,
             a.source_document_id,
-            a.source_claim_id,
+            _review_claim_key(claim),
             a.relation,
             evidence_role,
         )
@@ -989,6 +1167,7 @@ def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
             "reason_text": reason_text,
             "source_document_id": a.source_document_id,
             "source_claim_id": a.source_claim_id,
+            "source_claim_ids": set(),
             "claim_text": claim_text,
             "claim_span": claim_span,
             "relation": a.relation,
@@ -997,19 +1176,23 @@ def review_queue(db: Session, project: Project, prompt_id: int) -> dict:
             "semantic_observed_run_ids": set(),
         })
         row["alignment_ids"].append(a.id)
+        if a.source_claim_id:
+            row["source_claim_ids"].add(a.source_claim_id)
         row["run_ids"].update(_alignment_run_ids(a))
         row["semantic_observed_run_ids"].update(_semantic_observed_run_ids(a, machine_payload))
 
     align_items = [
         {
-            **{k: v for k, v in row.items() if k not in {"run_ids", "semantic_observed_run_ids"}},
+            **{k: v for k, v in row.items() if k not in {"run_ids", "semantic_observed_run_ids", "source_claim_ids"}},
+            "review_group_key": hashlib.sha1("|".join(str(part) for part in key).encode("utf-8")).hexdigest()[:16],
+            "source_claim_ids": sorted(row["source_claim_ids"]),
             "run_ids": sorted(row["run_ids"]),
             "run_count": len(row["run_ids"]),
             "semantic_observed_run_ids": sorted(row["semantic_observed_run_ids"]),
             "semantic_observed_run_count": len(row["semantic_observed_run_ids"]),
             "alignment_count": len(row["alignment_ids"]),
         }
-        for row in align_groups.values()
+        for key, row in align_groups.items()
     ]
 
     # 「尚未分析」的判定依据：该 Prompt 是否执行过机器分析
@@ -1076,16 +1259,32 @@ def batch_confirm_alignments(db: Session, alignment_ids: list[int], relation: st
     只更新人工审核字段和人工确认后的 relation，不合并、不删除底层
     Run-level EvidenceAlignment。
     """
+    unique_ids = sorted({int(alignment_id) for alignment_id in alignment_ids if alignment_id})
+    if not unique_ids:
+        return {"status": "CONFIRMED", "updated": 0, "missing_ids": [], "relation": relation}
+
+    existing_ids = {
+        row[0]
+        for row in db.query(EvidenceAlignment.id)
+        .filter(EvidenceAlignment.id.in_(unique_ids))
+        .all()
+    }
+    missing_ids = [alignment_id for alignment_id in unique_ids if alignment_id not in existing_ids]
+
+    # 一组证据可能覆盖几十到上百条 Run-level 对齐，必须批量写入避免前端长时间转圈。
     updated = 0
-    missing_ids: list[int] = []
-    for alignment_id in alignment_ids:
-        a = db.get(EvidenceAlignment, alignment_id)
-        if not a:
-            missing_ids.append(alignment_id)
-            continue
-        a.review_status = "HUMAN_CONFIRMED"
-        a.relation = relation
-        a.reviewer = reviewer
-        updated += 1
+    if existing_ids:
+        updated = (
+            db.query(EvidenceAlignment)
+            .filter(EvidenceAlignment.id.in_(existing_ids))
+            .update(
+                {
+                    EvidenceAlignment.review_status: "HUMAN_CONFIRMED",
+                    EvidenceAlignment.relation: relation,
+                    EvidenceAlignment.reviewer: reviewer,
+                },
+                synchronize_session=False,
+            )
+        )
     db.commit()
     return {"status": "CONFIRMED", "updated": updated, "missing_ids": missing_ids, "relation": relation}

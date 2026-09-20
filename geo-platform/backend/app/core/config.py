@@ -38,6 +38,23 @@ class Settings(BaseSettings):
     # Citation Decision V1.1 Phase 1：默认关闭。仅在显式开启时，正式
     # Evidence Chain 才会消费已审计的 AnswerUnit / AnswerDecisionBinding。
     citation_decision_v1_1_formal_input_enabled: bool = False
+    # Phase C2-B：EvidenceAlignment 正式使用 Binding-aware Candidate Builder。
+    # 只切换候选生成，不改变 verdict/materialization 语义；设为 false 可回滚旧候选路径。
+    use_binding_aware_alignment_candidates_v1_1: bool = True
+    # Step 7 PR3-B：生产与 Shadow 共用 Channel Resolver v1.1；false 仅用于短期回滚。
+    use_strategy_channel_resolver_v1_1: bool = True
+    # Step 7 PR4-B：生产与 Shadow 共用 Constraint-First Strategy Synthesis。
+    use_constraint_first_strategy_synthesis_v1: bool = True
+    # 仅允许显式歧义进入 bounded LLM；默认关闭，确定性结果不依赖外部服务。
+    allow_external_llm_strategy_synthesis: bool = False
+    # Phase D：Materialization execution reliability。只控制 claim/lease/wait/retry。
+    use_materialization_executor_v1_1: bool = True
+    materialization_lease_seconds: int = 300
+    materialization_wait_timeout_seconds: float = 2.0
+    materialization_poll_interval_seconds: float = 0.05
+    materialization_batch_size: int = 10
+    materialization_max_attempts: int = 3
+    max_external_llm_concurrency: int = 2
 
     class Config:
         env_file = ".env"

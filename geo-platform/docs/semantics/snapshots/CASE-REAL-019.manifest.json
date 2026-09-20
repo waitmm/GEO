@@ -1,0 +1,80 @@
+{
+  "snapshot_schema_version": "1.0.0",
+  "case_id": "CASE-REAL-019",
+  "snapshot_id": "CASE-REAL-019@2026-09-08",
+  "replayability_status": "LOCAL_DB_REQUIRED",
+  "captured_at": "2026-09-08T17:10:07+08:00",
+  "repository": {
+    "git_head": "2376c053153ad042c170d8f924256cc2a4f0de00",
+    "worktree_dirty": true,
+    "note": "The manifest identifies fixed database objects; uncommitted production changes are not included in git_head."
+  },
+  "database_identity": {
+    "relative_path": "backend/geo_v0.db",
+    "sha256": "fb24d2f074912415219397e7325007439644432cbfa6250b694137d1834900d3",
+    "identity_policy": "Exact local database file required; do not substitute latest records."
+  },
+  "fixed_input": {
+    "project_id": 3,
+    "prompt_id": 19,
+    "evidence_package_id": 12,
+    "evidence_package_version": 8,
+    "evidence_package_hash": "1fe639daa1d25ccef90bab5c32ed0a7b04abd6f611b32b07057f53b4b91f13a4",
+    "strategy_candidate_id": 57,
+    "strategy_candidate_status": "ACCEPTED",
+    "source_run_ids": [53, 54, 61, 62, 72, 73, 74, 84, 85, 86, 93, 94, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184],
+    "source_run_ids_sha256": "1254321b5900bd5753775717af2301ebf26dac90ad4e61c262a9c76a402178ab",
+    "run_scope_hash": "1254321b5900bd5753775717af2301ebf26dac90ad4e61c262a9c76a402178ab",
+    "analysis_contract_version": "citation_decision_vertical_slice.v1",
+    "analysis_contract_versions": {
+      "citation_decision": "citation_decision_vertical_slice.v1",
+      "strategy_input": "citation_decision_v1_1_formal_input.v1"
+    },
+    "strategy_input_version": "citation_decision_v1_1_formal_input.v1",
+    "strategy_schema_version": "single_prompt_strategy_v1_1",
+    "channel_resolver_version": "strategy_channel_resolver.v1_1",
+    "resolver_version": "strategy_channel_resolver.v1_1",
+    "strategy_synthesis_contract": "STRATEGY_SYNTHESIS_V1",
+    "strategy_synthesis_version": "strategy_synthesis.v1.1",
+    "strategy_input_hash": "db6687315b8eb8356fee388a95601d371de0ae7bf19f2c8427cac9bf3787e6f7",
+    "candidate_input_contract_hash": "db6687315b8eb8356fee388a95601d371de0ae7bf19f2c8427cac9bf3787e6f7",
+    "source_strategy_candidate_version": "effective_payload.v1",
+    "strategy_structural_output_hash": "553e3ccc9c3296dbce5e062c1d7f3362e4bee984d8e526443aa5b31a94d36e4e"
+  },
+  "required_object_ids": {
+    "evidence_package_ids": [12],
+    "strategy_candidate_ids": [57],
+    "run_ids": [53, 54, 61, 62, 72, 73, 74, 84, 85, 86, 93, 94, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184]
+  },
+  "expected_contract_ids": [
+    "SC-PT-001@1.0.0",
+    "SC-EVIDENCE-003@1.0.0",
+    "SC-GAP-001@1.0.0",
+    "SC-CHANNEL-001@1.1.0",
+    "SC-STRATEGY-001@1.1.0",
+    "SC-STEP7-001@1.0.0",
+    "SC-STEP8-001@1.0.0",
+    "SC-SCOPE-001@1.0.0"
+  ],
+  "expected_assertions": [
+    "candidate:57:status=ACCEPTED",
+    "themes=3",
+    "theme_coverage=13/15,13/15,1/15",
+    "OFFICIAL_SITE=PRIMARY",
+    "BAIJIAHAO=TEST:P1",
+    "ZHIHU=TEST:P1",
+    "BILIBILI=TEST:DEFERRED",
+    "SOHU=TEST:DEFERRED",
+    "step7=CONFIRMED",
+    "pr5b_action_count=0",
+    "pr5b_experiment_count=0"
+  ],
+  "expected_assertions_sha256": "07427f675c9d35379f31cd74fa659fa5636c2f2c236cc2a801418e7dfb1a31af",
+  "forbidden_assertions": [
+    "Foundation/Citation candidate contract changed production role",
+    "PR5-B created Action or Experiment",
+    "historical candidate determined current status"
+  ],
+  "missing_immutable_inputs": [],
+  "replay_query": "Use fixed IDs only: SELECT * FROM optimization_evidence_packages WHERE id=12; SELECT * FROM optimization_strategy_candidates WHERE id=57; SELECT * FROM browser_monitor_runs WHERE id IN (53,54,61,62,72,73,74,84,85,86,93,94,135,136,137,138,139,140,141,142,143,144,145,146,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184);"
+}

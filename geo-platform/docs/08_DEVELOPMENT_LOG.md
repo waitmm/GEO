@@ -2,6 +2,656 @@
 
 Status: ACTIVE
 
+## 2026-09-04 Phase E Workflow Status Orphan Failure Fallback
+
+- Fixed `workflow/status` so a latest `PromptAnalysisRun(status=FAILED)` caused
+  by local service restart cleanup does not permanently mask an already
+  completed current chain. The fallback is intentionally narrow: the failed run
+  must contain the restart-interruption marker, a completed analysis run for the
+  same Prompt must already exist, and current human review gates must be done.
+- Non-restart failures, parse/model errors, and missing-review states still
+  surface as `CURRENT_ANALYSIS_FAILED` / locked Step 7. This keeps real current
+  analysis failures visible while allowing orphan restart rows to fall through
+  to the authoritative current evidence/package/strategy state.
+- Added regression coverage for a completed formal V1.1 chain followed by a
+  restart-interrupted failed run.
+- Diagnosed #19's remaining V1.1 blocker: latest Shadow runs created
+  `AnswerUnit` rows but zero `AnswerDecisionBinding` rows. Two conservative
+  Binding fixes were added:
+  - `INCLUDE_AS_OPTION` is now treated as a recommendation event speech act in
+    the V1.1 Shadow binding builder.
+  - When entity inheritance is unavailable, a same-run grounded AnswerUnit can
+    bind through an explicit `RecommendationEvent.reasons_json` reason span /
+    normalized reason substring overlap. This deterministic
+    `RULE_REASON_SPAN_ANCHOR` path does not call the binding LLM and still
+    excludes `PROCEDURE` units.
+- Fixed the frontend "no response" symptom during #19 V1.1 generation. The
+  formal V1.1 run used `run_answer_evidence_shadow_chain(...)` to produce
+  AnswerUnit / AnswerDecisionBinding input, but the helper also executed the
+  audit-only Shadow Source Chain. That chain can call SourceClaim / Alignment
+  LLM while the visible stage remains `ANSWER_BINDING`, making the page look
+  stuck before formal SourceClaim / EvidenceAlignment begins. Added
+  `run_source_chain=False` for the formal V1.1 pipeline; manual Shadow audit
+  still defaults to the full source chain.
+- Added SourceClaim production-stage progress reporting. Formal V1.1
+  `run-analysis` now passes a lightweight `progress_callback` into
+  `run_source_claim_extraction(...)`, and the backend writes processed/total
+  materialization jobs, ledger HITs, external LLM attempts, and failures into
+  the active `PromptAnalysisRun.errors_json` stage payload. Failed DeepSeek
+  attempts are counted as external calls so the status does not falsely report
+  `0` while a real model call is timing out or returning invalid JSON.
+  `workflow/status` can therefore show SourceClaim movement during a long run
+  instead of leaving Step 7 with a static spinner while the backend is still
+  processing.
+- Added the same observational progress channel for formal
+  `run_evidence_alignment(...)`: processed/total candidate pairs, ledger HITs,
+  external Alignment LLM attempts, and failures are written into the active
+  analysis stage payload. This does not change the Binding-aware candidate
+  builder, verdict materialization, review carry-forward, Benchmark, Gap,
+  Strategy, Action, or Experiment semantics.
+- Fixed the post-review #19 frontend state derivation. After evidence review
+  reached 24/24, `workflow/status` correctly returned `READY_TO_GENERATE`, but
+  the full `citation-decision-v1` detail request could still time out on #19.
+  The single-Prompt cards treated the missing detail payload as an empty
+  Citation Decision and rendered `0 current sources / no strategy`. Step 4-8
+  cards now treat `workflow/status` as the authoritative gate source; full
+  Citation Decision data is used only when it actually loaded.
+- Tightened the same fallback in the workflow footer and strategy detail mini
+  Steps. A non-blocking `citation-decision-v1` detail failure now shows
+  "full detail not loaded" while preserving `READY_TO_GENERATE`; it no longer
+  emits a red citation-chain business error or a "waiting/no strategy" Step 7
+  state when `workflow/status` already proves the current evidence package is
+  ready for StrategyCandidate generation.
+- Decoupled the Step 7 "generate StrategyCandidate" button from the heavy
+  `citation-decision-v1` detail refresh. When `workflow/status` is already
+  `READY_TO_GENERATE`, the frontend now posts directly to the current Step 7
+  generation endpoint with the current Evidence Package id, and refreshes only
+  workflow/status plus strategy lists afterward. This prevents #19 from spinning
+  for a full detail preflight/post-refresh before the actual Step 7 result is
+  visible.
+
+## 2026-09-03 Phase C2-A.3 Final Cutover Gate
+
+- Added shadow-only `POLICY_D_TOPK_WITH_BOUNDARY_TIES` to the Binding-aware
+  Candidate Builder planner. The policy keeps the plain TopK set plus all
+  candidates in the Kth score tie bucket, using the planner's 4-decimal score
+  bucket and an explicit epsilon instead of candidate id, insertion order, or
+  database row order.
+- Added L3 boundary-tie diagnostics:
+
+```text
+candidate_count_before_topk
+top_k
+cutoff_score
+boundary_tie_count
+boundary_rank_start / boundary_rank_end
+candidate_count_after_plain_topk
+candidate_count_after_tie_expansion
+```
+
+- Added strict L0 status and semantics explanation. For #19 the change from
+  earlier diagnostic `L0=107` to current `L0=0` is classified as
+  `SHADOW_LOGIC_CHANGED_AS_DESIGNED`: L0 now only means high/medium explicit
+  AnswerDecisionBinding; broad run-local recall is owned by L2.
+- Added read-only final shadow re-aggregation:
+  - Evidence relation summary from current vs selected Policy D candidate keys;
+  - Benchmark core summary using existing eligible EvidenceAlignment lineage;
+  - current persisted Gap and Strategy summaries without recomputation or writes.
+- Local real DB shadow:
+
+```text
+#19
+current=583, proposed=92, shared=92, old_only=491, new_only=0
+Policy A: candidates=79, TRUE_POSITIVE_RECALL_LOSS=1, external_llm_estimate=60
+Policy B: candidates=145, TRUE_POSITIVE_RECALL_LOSS=0, external_llm_estimate=69, LEGACY_UNPROVEN retained=7
+Policy C: candidates=92, TRUE_POSITIVE_RECALL_LOSS=0, external_llm_estimate=61, LEGACY_UNPROVEN retained=3
+Policy D: candidates=92, TRUE_POSITIVE_RECALL_LOSS=0, external_llm_estimate=61, LEGACY_UNPROVEN retained=3
+boundary_tie claim #267: rank=6, score=0.2222, cutoff=0.2222, tie bucket=rank 5..10
+Recall: L0=0, L1=0, L2=28, L3=64
+Downstream: Evidence changed=true, Benchmark core changed=false, Gap changed=false, Strategy changed=false
+C2_CUTOVER_READY=true, cutover_allowed=false
+
+#40
+current=65, proposed=65, shared=65, old_only=0, new_only=0
+Policy A/B/C/D: candidates=65, TRUE_POSITIVE_RECALL_LOSS=0, external_llm_estimate=15
+Recall: L0=65, L1=0, L2=0, L3=0
+Downstream: Evidence changed=false, Benchmark core changed=false, Gap changed=false, Strategy changed=false
+C2_CUTOVER_READY=true, cutover_allowed=false
+```
+
+- Boundary:
+  - formal `run_evidence_alignment(...)` was not changed;
+  - no LLM calls;
+  - no formal EvidenceAlignment rows written;
+  - no historical Alignment review/verdict mutation;
+  - no Benchmark / Gap / Strategy / Step 7 / Step 8 behavior changed;
+  - no C2-B cutover.
+
+## 2026-09-03 V1.1 Incremental Materialization Phase C1 EvidenceAlignment Ledger
+
+- Recorded Phase B as conditionally accepted and implementation-frozen:
+
+```text
+Phase B Implementation: FROZEN
+Phase B Automated Tests: PASS
+Phase B Planner Conservation: PASS
+Phase B Production Smoke: BLOCKED_EXTERNAL_POLICY
+Phase B Overall: CONDITIONALLY_ACCEPTED
+PHASE_B_PRODUCTION_SMOKE_DEFERRED remains open for the existing 9 FAILED_RETRYABLE keys
+```
+
+- Started Phase C1 only. No EvidenceAlignment candidate generation, Binding
+  Recall Ladder, Benchmark, Gap, Strategy, Step 7, Step 8, or SourceClaim Phase
+  B semantics were changed.
+- Added `EvidenceAlignmentMaterialization` as the C1 verdict ledger:
+
+```text
+materialization_key
+answer_unit_semantic_hash
+source_claim_semantic_hash
+contract_version
+status
+verdict
+rationale / confidence_raw / output_payload_json
+source_alignment_ids_json
+observed_prompt_ids_json
+observed_run_ids_json
+judge_impl_version
+prompt_version / schema_version
+provider / model
+attempt_count
+started_at / completed_at
+```
+
+- Confirmed current EvidenceAlignment LLM semantic input:
+
+```text
+system_prompt=ALIGNMENT_SYSTEM
+user_payload={"reason": normalized_reason_text, "source_claim": normalized_source_claim_text}
+prompt_version=evidence_alignment.v1
+schema_version=v1
+model=settings.deepseek_model
+```
+
+  Run ID, Evidence Package, StrategyCandidate, raw AnswerUnit ID, raw
+  SourceClaim ID, Prompt Intent, Prompt Intent Embedding, Benchmark, Gap, and
+  experiment context are excluded from the materialization identity.
+- Rewired the existing `run_evidence_alignment(...)` service to use lookup-first
+  materialization for judge-needed pairs:
+
+```text
+current candidate pair
+-> compatible DONE ledger hit
+-> safe legacy EvidenceAlignment row backfill
+-> LLMCallCache recovery into DONE ledger
+-> existing EvidenceAlignmentJudge call for missing / failed
+-> current EvidenceAlignment observation rows
+```
+
+- `SUPPORTS`, `NO_SUPPORT` / `NONE`, `RELATED`, and `CONTRADICTS` are all
+  successful `DONE` materializations when returned by the judge.
+- Planner now reports C1 ledger-aware fields:
+
+```text
+unique_alignment_inputs
+alignment_materialization_dedupe_ratio
+materialization_hit_count
+legacy_reuse_count
+missing_llm_call_cache_hit
+lookup_first_llm_required
+object_conservation
+missing_conservation
+llm_input_contract
+```
+
+- Local real DB read-only planner baseline:
+
+```text
+#19 / Evidence Package #12 v8 / 40 Runs
+Alignment: semantic_reasons=27, source_claim_candidates=358
+Alignment: naive_pairs=9666, after_recall=188, unique_alignment_inputs=188
+Alignment: materialization_hit_count=0, legacy_reuse_count=19, missing_count=169
+Alignment: missing_llm_call_cache_hit=0, lookup_first_llm_required=169
+Alignment: object_conservation.is_balanced=true
+Alignment: missing_conservation.is_balanced=true
+
+#40 / Evidence Package #15 v2 / 6 Runs
+Alignment: semantic_reasons=5, source_claim_candidates=46
+Alignment: naive_pairs=230, after_recall=65, unique_alignment_inputs=65
+Alignment: materialization_hit_count=0, legacy_reuse_count=50, missing_count=15
+Alignment: missing_llm_call_cache_hit=0, lookup_first_llm_required=15
+Alignment: object_conservation.is_balanced=true
+Alignment: missing_conservation.is_balanced=true
+```
+
+- Added C1 tests for SUPPORTS / NO_SUPPORT / CONTRADICTS second-run 0 LLM,
+  repeated semantic AnswerUnit reuse, repeated semantic SourceClaim reuse,
+  entity/polarity key separation, implementation upgrade compatibility,
+  breaking-contract staleness, LLMCallCache recovery into ledger, legacy
+  alignment recovery into ledger, and historical materialization not creating
+  current membership.
+
+Validation:
+
+```text
+.venv/bin/python -m pytest -q tests/test_incremental_materialization_planner.py tests/test_evidence_alignment.py tests/test_source_claim.py tests/test_workflow_review_queue.py
+54 passed
+```
+
+## 2026-09-02 V1.1 Incremental Materialization Phase B Closure
+
+- Added explicit SourceClaim planner conservation fields:
+
+```text
+object_conservation
+missing_no_external_llm_breakdown
+missing_conservation
+llm_input_contract
+```
+
+- The previous fixed `missing_count - lookup_first_llm_required = 8` delta is
+  now explained as `missing_llm_call_cache_hit=8`, not an unknown planner loss.
+- Local real DB read-only planner check before production-smoke attempt:
+
+```text
+#19
+missing_count=1393
+missing_unique_llm_inputs=1393
+lookup_first_llm_required=1385
+missing_llm_call_cache_hit=8
+missing_conservation.is_balanced=true
+object_conservation: 1462 = 0 materialization_hit + 69 legacy_reuse + 1393 missing
+
+#40
+missing_count=537
+missing_unique_llm_inputs=537
+lookup_first_llm_required=529
+missing_llm_call_cache_hit=8
+missing_conservation.is_balanced=true
+object_conservation: 547 = 0 materialization_hit + 10 legacy_reuse + 537 missing
+```
+
+- Confirmed current SourceClaim LLM semantic input:
+
+```text
+system_prompt=SOURCE_CLAIM_SYSTEM
+user_payload={"passage": normalized_passage_text}
+prompt_version=source_claim.v1
+schema_version=v1
+model=settings.deepseek_model
+```
+
+  No URL, title, heading, section, source metadata, Prompt text, Run ID, target
+  brand, or evidence context is sent to the SourceClaim LLM. URL/domain only
+  participate in post-extraction ownership provenance and referential-subject
+  SourceClaim row binding.
+- Added a deterministic production-smoke limiter to the formal
+  `run_source_claim_extraction(...)` service:
+
+```text
+materialization_key_filter
+max_materialization_jobs
+external_llm_required_only
+```
+
+  This does not create a mock path; it still uses the same retrieval, ledger,
+  LLM cache, SourceClaimJudge, and SourceClaim persistence flow.
+- Attempted a small real production smoke:
+
+```text
+#19: selected 5 external-LLM-required keys
+#40: selected 4 external-LLM-required keys
+```
+
+  The local sandboxed run could not reach DeepSeek and wrote retryable failures:
+
+```text
+DeepSeek 网络错误（重试3次后）: ConnectError
+ledger_status_counts={FAILED_RETRYABLE: 9}
+```
+
+  Post-failure planner state remains conserved:
+
+```text
+#19: MISSING=1388, LEGACY_REUSABLE=69, FAILED_RETRYABLE=5
+#40: MISSING=533, LEGACY_REUSABLE=10, FAILED_RETRYABLE=4
+```
+
+- External privileged rerun was blocked by environment policy because it would
+  send real project passages to DeepSeek. Phase B is therefore not marked
+  frozen yet; it is waiting only on an explicitly approved small external LLM
+  smoke using the existing 9 retryable keys or another capped key set.
+
+Validation:
+
+```text
+.venv/bin/python -m pytest -q tests/test_incremental_materialization_planner.py tests/test_source_claim.py
+16 passed
+```
+
+## 2026-09-02 V1.1 Incremental Materialization Phase B SourceClaim Ledger
+
+- Implemented Phase B for SourceClaim incremental materialization only.
+- Added `SourceClaimMaterialization` as a SourceClaim-specific extraction
+  ledger with a unique `materialization_key`.
+- Rewired the existing `run_source_claim_extraction(...)` service to:
+
+```text
+required passage rows
+-> group by SourceClaim materialization key
+-> reuse compatible DONE ledger output
+-> reuse completed zero-claim DONE output
+-> lazily backfill safe legacy SourceClaim rows
+-> call the existing SourceClaimJudge only for missing/stale/failed keys
+-> persist 0..N SourceClaim rows idempotently
+```
+
+- Zero-claim extraction is now represented as:
+
+```text
+status=DONE
+claim_count=0
+output_payload_json={"claims":[]}
+```
+
+  so the second identical run does not call LLM again.
+- The materialization key is based on `SOURCE_CLAIM_V1` and the normalized
+  passage extraction input hash. It deliberately excludes `run_id`,
+  `prompt_id`, `evidence_package_id`, and `SourceClaim.id`.
+- Implementation metadata (`extractor_impl_version`, prompt/schema, provider,
+  model) is recorded for audit. The compatibility resolver treats same-contract
+  implementation upgrades as compatible and contract breaks as `STALE_SCHEMA`.
+- Legacy backfill is conservative: existing SourceClaim rows must carry current
+  prompt/schema metadata and must not be older than the current SourceDocument
+  snapshot metadata. Otherwise the executor/planner refuses to guess a HIT.
+- Phase A planner now reads the real SourceClaim materialization ledger and
+  reports Phase B metrics:
+
+```text
+required_passage_rows
+unique_extraction_inputs
+materialization_hit_count
+zero_claim_hit_count
+legacy_reuse_count
+stale_count
+missing_count
+actual_source_claim_llm_calls
+claims_created
+claims_reused
+source_claim_dedupe_ratio
+source_claim_cache_hit_rate
+```
+
+- Added Phase B regression coverage for lookup-first reuse, unique passage
+  materialization, zero-claim caching, duplicate passages across documents,
+  same-content refresh reuse, changed-content invalidation, implementation
+  upgrade compatibility, breaking-contract staleness, safe legacy backfill, and
+  `doc_id_filter=[]` protection.
+- Initialized the local SQLite table. Current ledger row count before any #19 /
+  #40 Phase B materialization execution:
+
+```text
+source_claim_materializations=0
+```
+
+- Captured current local planner baseline after Phase B schema/executor wiring:
+
+```text
+#19 / Evidence Package #12 v8 / 40 Runs
+SourceClaim: required_passage_rows=1875, unique_extraction_inputs=1462
+SourceClaim: materialization_hit_count=0, legacy_reuse_count=69, missing_count=1393
+SourceClaim: missing_unique_llm_inputs=1393, lookup_first_llm_required=1385
+SourceClaim: source_claim_dedupe_ratio=0.220267, source_claim_cache_hit_rate=0.047196
+EvidenceAlignment remains Phase C: naive_pairs=9666, after_recall=188, actual_llm_required=169
+
+#40 / Evidence Package #15 v2 / 6 Runs
+SourceClaim: required_passage_rows=630, unique_extraction_inputs=547
+SourceClaim: materialization_hit_count=0, legacy_reuse_count=10, missing_count=537
+SourceClaim: missing_unique_llm_inputs=537, lookup_first_llm_required=529
+SourceClaim: source_claim_dedupe_ratio=0.131746, source_claim_cache_hit_rate=0.018282
+EvidenceAlignment remains Phase C: naive_pairs=230, after_recall=65, actual_llm_required=15
+```
+
+Validation:
+
+```text
+.venv/bin/python -m pytest -q tests/test_incremental_materialization_planner.py tests/test_source_claim.py tests/test_evidence_alignment.py tests/test_workflow_review_queue.py
+42 passed
+
+.venv/bin/python -m compileall app
+passed
+
+git diff --check
+passed
+```
+
+Boundary:
+
+```text
+No EvidenceAlignment cache or recall execution changes.
+No full-chain concurrency changes.
+No Product Truth / Benchmark / Gap / Strategy / Step 7 / Step 8 changes.
+No historical SourceClaim deletion.
+```
+
+## 2026-09-02 V1.1 Incremental Materialization Phase A Planner
+
+- Started the independent performance stage `V1.1 Incremental Materialization`.
+- Added a read-only planner module:
+
+```text
+backend/app/modules/optimization/incremental_materialization.py
+```
+
+- Added a read-only API endpoint:
+
+```text
+GET /api/optimization/workflow/{project_id}/{prompt_id}/materialization-plan
+```
+
+- The planner reports current Prompt Run Scope, required SourceDocuments,
+  passages, SourceClaim reuse, EvidenceAlignment candidate amplification,
+  existing semantic/materialization hits, missing unique LLM inputs, LLM cache
+  hits, missing pairs, and LLM amplification ratio.
+- The planner does not call LLM, fetch source pages, write SourceClaim,
+  regenerate EvidenceAlignment, change workflow status, or create Strategy /
+  Action / Experiment rows.
+- Added regression coverage for:
+
+```text
+planner remains read-only
+current cited SourceDocuments do not expand into historical SourceClaims
+duplicate Runs increase observations without increasing semantic AnswerUnit count
+```
+
+- Captured current local API baseline:
+
+```text
+#19 / Evidence Package #12 v8 / 40 Runs
+AnswerUnit: raw_observations=2100, semantic_objects=35
+SourceDocument: observed_citation_records=1207, unique_canonical_urls=158, required_documents=156
+Passage: required=1875
+SourceClaim: hit=80, missing=1795, missing_unique_llm_inputs=1396, lookup_first_llm_required=1385
+EvidenceAlignment: semantic_reasons=27, source_claim_candidates=358, naive_pairs=9666, after_recall=188, actual_llm_required=169
+Primary bottleneck: SOURCE_CLAIM
+
+#40 / Evidence Package #15 v2 / 6 Runs
+AnswerUnit: raw_observations=1296, semantic_objects=85
+SourceDocument: observed_citation_records=174, unique_canonical_urls=26, required_documents=26
+Passage: required=630
+SourceClaim: hit=10, missing=620, missing_unique_llm_inputs=537, lookup_first_llm_required=529
+EvidenceAlignment: semantic_reasons=5, source_claim_candidates=46, naive_pairs=230, after_recall=65, actual_llm_required=15
+Primary bottleneck: SOURCE_CLAIM
+```
+
+Boundary:
+
+```text
+No Product Truth changes.
+No Evidence verdict semantics changes.
+No Benchmark / Gap / Strategy changes.
+No Step 7/8 redesign.
+No database migration in Phase A.
+```
+
+## 2026-09-02 Current-Lineage Materialization And Evidence Review Dedupe
+
+- Fixed the #19/#40 recovery path where "重新运行当前主链" could behave like a
+  full Evidence library recompute instead of current-context materialization.
+  V1.1 SourceClaim extraction and EvidenceAlignment now scope formal input to
+  SourceDocuments actually cited by the selected current `run_ids`.
+- `doc_id_filter=[]` is now treated as an empty scope rather than "no filter" in
+  passage retrieval, SourceClaim extraction, EvidenceAlignment, and document
+  segmentation. This prevents a Prompt with missing current citation lineage
+  from scanning every historical SourceDocument in the local database.
+- SourceClaim extraction now deduplicates document-level semantic claims by:
+
+```text
+project + SourceDocument + passage + normalized/source span + claim type + polarity
+```
+
+  Re-running the current chain no longer creates new SourceClaim rows for the
+  same grounded source sentence just because the run was re-materialized.
+- EvidenceAlignment now deduplicates SourceClaims before matching. Run-level
+  coverage remains on EvidenceAlignment observations; duplicate document facts
+  must not multiply judge calls or review workload.
+- EvidenceAlignment reruns carry forward human review for the same semantic
+  relation:
+
+```text
+AI reason + SourceDocument + normalized SourceClaim text + relation
+```
+
+  The formal `review_status` remains compatible with existing consumers, while
+  `human_payload_json.review_carry_forward` records provenance.
+- Workflow status and review queue now count evidence review by semantic groups
+  instead of raw Run-level rows. For #19 local data, 480 underlying SUPPORTS rows
+  collapse into 4 review groups while preserving the 480 rows for lineage and
+  coverage audit.
+- Review queue responses now include a stable `review_group_key` for each
+  semantic evidence group. The frontend uses this key for card identity and
+  loading state instead of array index or a huge alignment-id string.
+- After a group is confirmed, the frontend reloads the review queue from the
+  backend as the source of truth. It no longer only filters local state, which
+  could leave the second group in a stale loading/no-request state after the
+  first group was removed.
+- Batch evidence confirmation now updates a full semantic group in one database
+  statement, avoiding long spinner behavior from per-row confirmation loops.
+- Added regression tests for:
+
+```text
+empty doc filter does not expand to all documents
+alignment consumes one SourceClaim per semantic fact
+SourceClaim semantic key ignores row id
+workflow evidence review group counts and batch confirmation
+```
+
+Validation:
+
+```text
+.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py tests/test_source_claim.py tests/test_evidence_alignment.py tests/test_evidence_lineage_v1.py tests/test_source_gap_v1.py
+88 passed
+
+.venv/bin/python -m compileall app
+passed
+```
+
+Boundary:
+
+```text
+No Strategy rule changes.
+No Gap decision tree changes.
+No Step 7/8 redesign.
+No Step 9 changes.
+No historical Evidence deletion or rebinding.
+```
+
+## 2026-09-01 Current Analysis Lock And Running State Fix
+
+- Fixed a local SQLite blocking issue where clicking human confirmation while
+  `run-analysis` was writing could fail with:
+
+```text
+sqlite3.OperationalError: database is locked
+```
+
+The UI then looked like it was still "generating" because the backend task had
+left `PromptAnalysisRun(status=RUNNING)` as the latest state.
+
+- `get_db()` now explicitly rolls back request sessions on exceptions before
+  closing them.
+- SQLite connections now use:
+
+```text
+busy_timeout = 30000
+journal_mode = WAL
+```
+
+This keeps local development reads/writes more tolerant of short concurrent
+workflow writes.
+
+- `run-analysis` now creates `PromptAnalysisRun(status=RUNNING)` synchronously
+  in the request before starting the background thread, and passes that id into
+  the thread. The background thread updates the same row instead of creating a
+  second run record.
+- `PromptAnalysisRun.errors_json` now carries lightweight progress metadata
+  while running, so the workflow card can show the current stage instead of a
+  generic unchanged "generating" state.
+- The analysis pipeline now commits between major stages:
+
+```text
+Answer Semantic
+Source Qualification
+Citation Content Acquisition
+Document Segmentation
+Answer Binding Shadow Input
+Source Claim
+Evidence Alignment
+```
+
+This releases SQLite write locks between long-running stages.
+
+- Batch event/alignment confirmation now catches SQLite lock conflicts and
+  returns a Chinese `409` response instead of surfacing as an opaque 500.
+- Workflow status now surfaces `CURRENT_ANALYSIS_RUNNING` regardless of whether
+  Step 7 was otherwise `NEEDS_CURRENT_ANALYSIS` or blocked by pending review.
+  Stale `RUNNING` records older than 30 minutes are displayed as recoverable
+  `CURRENT_ANALYSIS_FAILED` so an old crashed thread does not permanently block
+  the Prompt.
+- Workflow status now short-circuits latest `RUNNING` / `FAILED` analysis
+  records before computing heavy Citation Decision read models. Status refresh
+  must remain a lightweight read; explicit buttons trigger generation.
+- Source metadata cache insertion is now idempotent for duplicate URLs; a
+  concurrent/duplicate `source_metadata_cache.url` no longer rolls the overview
+  request into a failed transaction.
+- Follow-up: the single Prompt page now refreshes `workflow/status` together
+  with Citation Decision refreshes and polls the workflow state while
+  `CURRENT_ANALYSIS_RUNNING`. This prevents the UI from keeping an old local
+  "主链运行中" card after the backend run has already completed and moved to the
+  next gate, such as evidence review.
+- Follow-up: evidence review grouping now groups by semantic review key:
+
+```text
+AI reason + SourceDocument + normalized source claim text + relation + role
+```
+
+It no longer uses `source_claim_id` as part of the grouping key. Repeated runs
+or repeated SourceClaim extraction IDs for the same source sentence are shown as
+one review card while preserving every underlying run-level EvidenceAlignment.
+- Frontend review buttons now check HTTP failure responses before showing
+  success or removing a card. A SQLite lock or backend error must keep the card
+  visible and show a Chinese error instead of creating a fake "confirmed" UI
+  state that reappears after refresh.
+
+Boundary:
+
+```text
+No Strategy rule changes.
+No Gap rule changes.
+No Step 8 or Step 9 changes.
+No historical data deletion.
+```
+
 ## 2026-09-01 Step 7 Current Analysis State Fix
 
 - Fixed a workflow state bug where a Prompt with upstream answer-decision or
@@ -2644,3 +3294,1932 @@ Validation performed:
 
 - `.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py`
   passed: `12 passed`.
+
+## 2026-09-01 Prompt Switch Workflow Loading State Bugfix
+
+- Fixed a single Prompt workflow display issue observed on Prompt `#19`.
+- Symptom:
+  - after switching to Prompt `#19`, the single Prompt page could temporarily
+    show only Step 1 as completed and provide no meaningful next-step entrance;
+  - backend status for the same Prompt actually showed the chain had progressed
+    to evidence review:
+
+```text
+collection: 40 Runs
+answer_semantic: 23 effective decision-event groups
+event_review: 31/31 reviewed
+evidence: 504 SUPPORTS
+evidence_review: 72/504 reviewed
+strategy_step_status: NOT_READY
+next gate: evidence human review
+```
+
+- Root cause:
+  - switching Prompt clears `workflowData` for context hygiene;
+  - `workflow/status` for historical Prompts with many EvidenceAlignment rows
+    could be slow;
+  - during that empty loading window, the frontend rendered pending/default
+    cards from `workflowData = null`, which looked like a real product state.
+- Fix:
+  - frontend now has an explicit `workflowLoading` state and renders a Chinese
+    loading notice instead of fake empty workflow cards while the current Prompt
+    status is being read;
+  - Prompt context changes now reload both dashboard and workflow status from a
+    single effect instead of relying on the selector handler;
+  - Step 4 now surfaces pending evidence review directly as
+    `待人工确认 / 审核证据关系`; Steps 5-6 wait for evidence confirmation
+    instead of looking complete while Step 7 remains locked;
+  - workflow status now counts SUPPORTS / reviewed SUPPORTS with SQL aggregate
+    queries instead of loading all matching EvidenceAlignment rows into Python.
+- Boundary:
+  - no workflow order changed;
+  - no Evidence / Benchmark / Gap / Strategy / Experiment rules changed;
+  - this only fixes state display integrity and status-read performance.
+
+## 2026-09-01 Evidence Review Confirmation Feedback Bugfix
+
+- Fixed a UX/state issue where clicking `确认这一组支持` could feel like it
+  had no effect even though the backend wrote successfully.
+- Verified backend logs for Prompt `#19` showed repeated successful writes:
+
+```text
+POST /api/optimization/workflow/review/alignments/confirm-batch 200 OK
+```
+
+- Verified Prompt `#19` status advanced from:
+
+```text
+72/504 -> 168/504 -> 240/504
+```
+
+and review queue shrank from `6` groups to `3` groups.
+- Root cause:
+  - the confirm button had no per-group submitting state;
+  - users could click repeatedly while waiting;
+  - follow-up workflow/citation refreshes could be slow enough that the UI felt
+    unchanged.
+- Fix:
+  - each evidence review group now has its own `确认中` loading state;
+  - duplicate clicks for the same group are disabled while submitting;
+  - after a successful `confirm-batch`, the confirmed group is removed from the
+    modal immediately using functional React state;
+  - slower workflow/citation refreshes run in the background and no longer block
+    the user from continuing with the next group.
+- Boundary:
+  - no evidence grouping semantics changed;
+  - no backend review write logic changed;
+  - no Strategy or Experiment behavior changed.
+
+## 2026-09-01 Evidence Review Batch Write Performance Bugfix
+
+- Fixed a backend performance issue where `确认这一组支持` still spent too long
+  writing large semantic groups.
+- Root cause:
+  - `batch_confirm_alignments` loaded and updated each `EvidenceAlignment` one
+    by one via ORM `db.get`;
+  - Prompt `#19` groups can contain dozens to hundreds of Run-level alignments,
+    so the button could keep spinning even though the request was valid.
+- Fix:
+  - deduplicate submitted alignment IDs;
+  - read existing IDs in one query;
+  - update `review_status / relation / reviewer` in one SQL bulk update;
+  - keep `missing_ids` in the response for compatibility.
+- Validation:
+  - `.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py`
+    passed: `17 passed`;
+  - `.venv/bin/python -m compileall app` passed.
+- Boundary:
+  - no evidence semantics changed;
+  - no review group semantics changed;
+  - no Benchmark / Gap / Strategy / Experiment behavior changed.
+
+## 2026-09-01 Workflow Status Heavy Recompute Removal
+
+- Fixed a second confirmation UX issue where the final evidence group could be
+  confirmed successfully but the page still kept spinning during follow-up
+  status refresh.
+- Root cause:
+  - after all evidence reviews were completed, `workflow/status` called
+    `citation_decision_vertical_slice(...)` to decide whether Step 7 had
+    generatable actions;
+  - that made a status read execute heavy Citation Decision read-model logic.
+- Fix:
+  - `workflow/status` now remains a lightweight Gate/status endpoint;
+  - when upstream reviews are complete and V1.1 input exists, Step 7 reports
+    `READY_TO_GENERATE` without recomputing Citation Decision;
+  - the actual StrategyCandidate generation still happens only through the
+    explicit Step 7 generation action.
+- Test coverage:
+  - added a regression test that fails if `workflow/status` tries to recompute
+    Citation Decision while determining Step 7 readiness.
+- Validation:
+  - `.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py`
+    passed: `17 passed`;
+  - `.venv/bin/python -m compileall app` passed.
+- Boundary:
+  - no Citation Decision formula changed;
+  - no Benchmark / Gap / Strategy generation rule changed;
+  - this only separates read-only workflow status from explicit generation.
+
+## 2026-09-02 Evidence Review Carry-Forward On Alignment Rerun
+
+- Fixed a rerun loop observed on Prompt `#19`.
+- Symptom:
+  - user completed evidence review: `504/504`;
+  - clicked `重新运行当前主链`;
+  - the pipeline completed after about 25 minutes and generated new
+    `EvidenceAlignment` rows;
+  - Step 4 reset to `0/480` because the new alignments were all
+    `MACHINE_GROUNDED`.
+- Root cause:
+  - `run_evidence_alignment` deletes current Prompt alignments before rerun;
+  - new alignments were created without preserving prior human review state;
+  - duplicate SourceClaim IDs can be regenerated for the same source sentence,
+    so carrying by `source_claim_id` would not be reliable.
+- Fix:
+  - before deleting old alignments, capture human-reviewed semantic signatures:
+
+```text
+semantic_reason_key / recommendation_reason_id
++ SourceDocument
++ normalized SourceClaim text
++ relation
+```
+
+  - after rerun, if a new alignment has the same signature, carry forward
+    `HUMAN_CONFIRMED` / `HUMAN_REJECTED` and reviewer;
+  - write carry-forward provenance into `human_payload_json` for audit.
+- Validation:
+  - `.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py`
+    passed: `18 passed`;
+  - `.venv/bin/python -m compileall app` passed.
+- Boundary:
+  - no machine evidence relation is changed;
+  - no new SUPPORTS are auto-created;
+  - only previously human-reviewed same-semantic evidence inherits review state.
+
+## 2026-09-02 Workflow Step Loading Scope And V1.1 Input Wording
+
+- Fixed a frontend status feedback issue observed on Prompt `#19`.
+- Symptom:
+  - backend reported Step 4 evidence review completed: `4/4` groups reviewed;
+  - backend latest `PromptAnalysisRun` was `COMPLETED`, not `RUNNING`;
+  - the single Prompt page could still make Step 4 and Step 7 both look like
+    they were spinning because their buttons shared the same
+    `citationDecisionLoading` flag.
+- Data finding:
+  - Prompt `#19` has `480` reviewed SUPPORTS rows, grouped into `4` reviewed
+    semantic evidence groups;
+  - those rows are legacy `RECOMMENDATION_EVENT_REASONS_JSON` alignments, not
+    V1.1 `ANSWER_DECISION_BINDING` formal input;
+  - therefore Step 7 may still require V1.1 formal input generation, but Step 4
+    itself is not running and should not display as if it is.
+- Fix:
+  - added a workflow action loading scope in the frontend so Citation evidence,
+    Strategy generation, and V1.1 input generation no longer light each other;
+  - changed user-facing Step 7 text from "重新运行当前主链" to "生成 V1.1 输入"
+    when the backend status is `NEEDS_CURRENT_ANALYSIS`;
+  - updated backend workflow detail text to describe the missing dependency as
+    V1.1 formal evidence input rather than a generic main-chain rerun.
+- Validation:
+  - `.venv/bin/python -m pytest -q tests/test_workflow_review_queue.py`
+    passed: `18 passed`;
+  - `.venv/bin/python -m compileall app` passed;
+  - `git diff --check` passed.
+- Boundary:
+  - no Evidence / Benchmark / Gap / Strategy rule changed;
+  - no legacy evidence is promoted into V1.1 formal input;
+  - this only fixes loading-state ownership and user-facing workflow wording.
+
+## 2026-09-03 Phase C2-A Binding-aware Candidate Builder Shadow
+
+- Added read-only shadow comparison to the V1.1 incremental materialization
+  planner for EvidenceAlignment candidate generation.
+- The new `evidence_alignment.candidate_builder_shadow` compares:
+
+```text
+current = production_all_viable_pairs.v1
+proposed = binding_aware_candidate_builder.v1
+identity = ALIGNMENT_V1 materialization_key
+```
+
+- The implementation reports shared / old_only / new_only semantic candidate
+  counts and audits old_only candidates that already have current
+  SUPPORTS/CONTRADICTS EvidenceAlignment rows.
+- `old_only_supports_contradicts` is grouped by unique semantic
+  `materialization_key + relation`; each group includes all row-level
+  `alignment_ids`, row count, review-status counts, reason text, SourceClaim,
+  document, and source URL.
+- Real local DB shadow results:
+
+```text
+#19: current=583, proposed=188, shared=188, old_only=395, new_only=0
+#19 old_only SUPPORTS/CONTRADICTS: 15 semantic groups / 360 row-level alignments
+
+#40: current=65, proposed=65, shared=65, old_only=0, new_only=0
+#40 old_only SUPPORTS/CONTRADICTS: 0
+```
+
+- Validation:
+  - `.venv/bin/python -m pytest -q tests/test_incremental_materialization_planner.py tests/test_evidence_alignment.py`
+    passed: `24 passed`;
+  - `.venv/bin/python -m compileall app` passed.
+- Boundary:
+  - no formal `run_evidence_alignment(...)` execution path changed;
+  - no EvidenceAlignment cutover enabled;
+  - no Benchmark / Gap / Strategy / Step 7 / Step 8 behavior changed;
+  - Phase C2-A stops at shadow comparison and audit output only.
+
+## 2026-09-03 Phase C2-A.1 Critical Recall Loss Diagnosis
+
+- Extended the read-only EvidenceAlignment candidate-builder shadow with
+  per-critical-pair recall traces and reason-cluster summaries.
+- Added diagnostics for binding status, same-run citation anchor availability,
+  hard filter result, lexical score, rank before TopK, final exclusion reason,
+  diagnosis classification, and proposed generalized fix layer.
+- Explicitly reports unavailable fields instead of guessing:
+
+```text
+BM25_score=unavailable
+semantic_score=unavailable
+structural_passage_distance=unavailable
+section_relation=unavailable
+same_answer_context=unavailable
+```
+
+- Real local DB diagnosis for #19:
+
+```text
+critical_old_only=15 semantic groups / 360 row-level alignments
+TRUE_POSITIVE_RECALL_LOSS=1
+LEGACY_UNPROVEN_CROSS_PRODUCT=14
+TOPK_TRUNCATION=10
+BELOW_SCORE_THRESHOLD=5
+L0_EXPLICIT=107
+L1_ANSWER_CONTEXT=0
+L2_RUN_SCOPE=0
+L3_PROMPT_SCOPE=81
+```
+
+- TopK is not applied to L0 Explicit Binding. It is only active on L3
+  Prompt-scope fallback in the current shadow builder.
+- The #19 true-positive blocker is the HUMAN_CONFIRMED SUPPORTS pair:
+
+```text
+reason=可以自动生成加密短链
+claim_id=267
+final_exclusion_reason=TOPK_TRUNCATION
+rank_before_topk=6
+top_k=5
+```
+
+- The remaining 14 groups are machine-only and have no same-run citation anchor
+  or AnswerUnit context, so they are classified as
+  `LEGACY_UNPROVEN_CROSS_PRODUCT`.
+- #40 remains clean: `old_only=0`, `critical_old_only=0`.
+- Validation:
+  - `.venv/bin/python -m pytest -q tests/test_incremental_materialization_planner.py tests/test_evidence_alignment.py`
+    passed: `24 passed`;
+  - `.venv/bin/python -m compileall app` passed.
+- Boundary:
+  - no formal EvidenceAlignment candidate generation changed;
+  - no old Alignment rows deleted or verdicts changed;
+  - no LLM calls;
+  - no Benchmark / Gap / Strategy / Step 7 / Step 8 behavior changed.
+
+## 2026-09-03 Phase C2-A.2 Final Shadow Validation
+
+- Re-audited the only HUMAN_CONFIRMED #19 blocker by reading SourceClaim #267,
+  its passage, source context, and historical Alignment metadata.
+- Source context explicitly states the system automatically generates encrypted
+  jump links, so the blocker remains a true recall loss:
+
+```text
+reason=可以自动生成加密短链
+claim_id=267
+original_verdict=SUPPORTS
+original_review_status=HUMAN_CONFIRMED
+new_audit_decision=TRUE_POSITIVE_RECALL_LOSS
+```
+
+- Renamed machine-only old-only classification from legacy pollution wording to
+  neutral `LEGACY_UNPROVEN_CROSS_PRODUCT`.
+- Implemented shadow-only L2 Run-scope recall in the proposed candidate
+  builder. L1 is explicitly marked `L1_UNAVAILABLE_BY_SCHEMA` because current
+  AnswerUnit rows do not store reliable sentence/paragraph-level citation
+  co-location.
+- The shadow ladder now short-circuits:
+
+```text
+L0 Explicit Binding
+-> L1 Answer Context
+-> L2 Run Scope
+-> L3 Prompt Scope
+```
+
+- Final local DB shadow:
+
+```text
+#19: current=583, proposed=79, shared=79, old_only=504, new_only=0
+#19 critical: TRUE_POSITIVE_RECALL_LOSS=1, LEGACY_UNPROVEN_CROSS_PRODUCT=14
+#19 recall: L0=0, L1=0, L2=28, L3=51
+#19 fallback triggers: binding_missing=27, no_viable_candidate=20, below_threshold=1
+
+#40: current=65, proposed=65, shared=65, old_only=0, critical=0
+#40 recall: L0=65, L1=0, L2=0, L3=0
+```
+
+- Policy simulation for #19 true-loss blocker:
+
+```text
+Policy A Hard TopK=5: candidates=79, critical_loss=1, external_llm_estimate=60
+Policy B Threshold+cap25: candidates=145, critical_loss=0, external_llm_estimate=69
+Policy C TopK+margin0.05: candidates=92, critical_loss=0, external_llm_estimate=61
+```
+
+- Validation:
+  - `.venv/bin/python -m pytest -q tests/test_incremental_materialization_planner.py tests/test_evidence_alignment.py`
+    passed: `24 passed`;
+  - `.venv/bin/python -m compileall app` passed.
+- Boundary:
+  - formal EvidenceAlignment execution was not changed;
+  - no LLM calls were made;
+  - no historical Alignment verdicts were changed;
+  - no C2-B cutover.
+
+## 2026-09-03 Phase C2-B Production Candidate Builder Cutover
+
+- Cut over formal `run_evidence_alignment(...)` candidate membership to the
+  shared Binding-aware Candidate Builder with
+  `POLICY_D_TOPK_WITH_BOUNDARY_TIES`.
+- Added runtime rollback flag:
+  `use_binding_aware_alignment_candidates_v1_1=true` by default. Setting it to
+  false restores the frozen legacy all-viable-pairs candidate path.
+- Extracted the candidate builder into
+  `app/modules/optimization/evidence_alignment_candidates.py` and made the
+  read-only planner and production execution call the same implementation.
+- Added production `candidate_dry_run=true` support for candidate-key parity
+  checks without DB writes or external LLM calls.
+- Preserved historical `EvidenceAlignment` rows on the cutover path. Current
+  candidate observation rows are reused by deterministic observation signature;
+  old-only historical rows and human review metadata are not deleted.
+- Real local DB dry validation:
+
+```text
+#19: production_candidate_keys=92, planner_vs_production_diff=0,
+     claim_267_present=true, L0=0, L1=0, L2=28, L3=64
+#40: production_candidate_keys=65, planner_vs_production_diff=0,
+     L0=65, L1=0, L2=0, L3=0
+```
+
+- Validation:
+  - `.venv/bin/python -m compileall app/modules/optimization app/core` passed.
+  - `.venv/bin/python -m pytest -q tests/test_incremental_materialization_planner.py tests/test_evidence_alignment.py`
+    passed: `26 passed`.
+
+- Boundary:
+  - no EvidenceAlignment verdict semantics changed;
+  - no C1 materialization key/ledger/legacy/LLMCallCache recovery changed;
+  - no LLM calls were made during validation;
+  - no Benchmark / Gap / Strategy / Step 7 / Step 8 behavior changed;
+  - no Phase D work started.
+
+## 2026-09-03 Phase D Materialization Execution Reliability
+
+- Added a minimal shared materialization execution primitive in
+  `app/modules/optimization/materialization_executor.py`.
+- Added `owner_id` and `lease_expires_at` to both
+  `SourceClaimMaterialization` and `EvidenceAlignmentMaterialization`; existing
+  `status`, `attempt_count`, `error_message`, `started_at`, `completed_at`, and
+  `updated_at` remain the execution truth.
+- Added Phase D configuration:
+  `use_materialization_executor_v1_1`,
+  `materialization_lease_seconds`,
+  `materialization_wait_timeout_seconds`,
+  `materialization_poll_interval_seconds`,
+  `materialization_batch_size`,
+  `materialization_max_attempts`, and
+  `max_external_llm_concurrency`.
+- Wired SourceClaim extraction and EvidenceAlignment execution through atomic
+  claim/lease when the Phase D flag is enabled. Frozen legacy execution remains
+  available by disabling the flag.
+- Preserved Phase B/C semantics:
+  - SourceClaim and EvidenceAlignment materialization keys unchanged;
+  - C2 candidate builder and Policy D unchanged;
+  - LLMCallCache and legacy recovery remain recovery sources only;
+  - legacy recovery now writes through the claimed ledger row on the executor
+    path rather than becoming a second truth source.
+- Added execution metrics for required/unique jobs, ledger hits, claim owner,
+  owned-by-other, lease reclaim, retry, failed retryable/final, batch count,
+  observed concurrency, and executor id.
+- Added concurrency and reliability tests covering:
+  - same key with 10 workers -> one ledger row and one owner external section;
+  - 100 duplicate work items -> one unique job;
+  - 10 distinct keys with max concurrency 2 -> observed max <= 2;
+  - valid lease blocks duplicate execution;
+  - expired lease reclaims the same row and increments attempts;
+  - crash/resume uses DONE hits and reclaims expired work;
+  - FAILED_RETRYABLE retries the same row;
+  - FAILED_FINAL does not retry.
+- Real local DB dry validation after Phase D:
+
+```text
+#19: candidate_keys=92, planner_diff=0, claim_267=true, writes=0
+#40: candidate_keys=65, planner_diff=0, writes=0
+```
+
+- Validation:
+  - `.venv/bin/python -m compileall app/modules/optimization app/core app/models` passed.
+  - `.venv/bin/python -m pytest -q tests/test_materialization_executor.py tests/test_evidence_alignment.py tests/test_source_claim.py tests/test_incremental_materialization_planner.py`
+    passed: `47 passed`.
+  - `git diff --check` passed.
+- External production DeepSeek concurrency smoke was not run in this environment;
+  record as `PHASE_D_EXTERNAL_CONCURRENCY_SMOKE_DEFERRED`.
+- Boundary:
+  - no Candidate Builder / Policy D / Recall Ladder changes;
+  - no SourceClaim or EvidenceAlignment semantic identity changes;
+  - no Benchmark / Gap / Strategy / Step 7 / Step 8 behavior changed;
+  - no Phase E work started.
+
+## 2026-09-03 Phase E Product Readiness & Final Acceptance
+
+- Added a read-only V1.1 final acceptance report module:
+  `app/modules/optimization/readiness_report.py`.
+- Added API endpoint:
+  `GET /api/optimization/workflow/{project_id}/v1-1-final-acceptance`.
+- Added script:
+  `scripts/v1_1_final_acceptance.py`, which writes
+  `docs/v1_1_final_acceptance.md` from the current local DB.
+- Added single Prompt workflow UI materialization progress:
+  SourceClaim and EvidenceAlignment now show Required, Ledger HIT, legacy
+  recovery, LLMCallCache recovery, Missing, Retrying, Failed, conservation, and
+  estimated new LLM work. The UI text explicitly says resume only processes
+  Missing / Failed / Stale materializations and does not recompute DONE ledger
+  rows.
+- Added Phase E guardrail tests for duplicate Run and citation explosion
+  stress behavior.
+- Real local DB read-only final acceptance:
+
+```text
+#19: Runs=40, Evidence Package #12 v8, candidate_keys=92,
+     planner_vs_production_diff=0, SourceClaim external_required=1385,
+     Alignment naive=9666 -> candidates=92, external_required=61,
+     Step7=NOT_READY, Step8=LOCKED
+#40: Runs=6, Evidence Package #15 v2, candidate_keys=65,
+     planner_vs_production_diff=0, SourceClaim external_required=529,
+     Alignment naive=230 -> candidates=65, external_required=15,
+     Step7=PENDING_REVIEW, Step8=LOCKED
+Immediate rerun external production smoke: DEFERRED_BY_ENVIRONMENT_POLICY
+INTERNAL_PRODUCT_READY=true
+EXTERNAL_PRODUCTION_VERIFIED=false
+remaining_blockers=[ENVIRONMENT_POLICY_EXTERNAL_LLM_SMOKE_DEFERRED]
+```
+
+- Validation:
+  - `.venv/bin/python -m compileall app/modules/optimization app/core app/models` passed.
+  - `.venv/bin/python -m pytest -q tests/test_v1_1_final_readiness.py tests/test_materialization_executor.py tests/test_evidence_alignment.py tests/test_source_claim.py tests/test_incremental_materialization_planner.py`
+    passed: `49 passed`.
+  - frontend `npm run build` passed after loading Node with nvm; Vite emitted
+    only the existing large chunk warning.
+- Boundary:
+  - no SourceClaim / EvidenceAlignment materialization identity changes;
+  - no Candidate Builder / Recall Ladder / Policy D changes;
+  - no Product Truth / Benchmark / Gap / Strategy / Step 7 / Step 8 semantic
+    changes;
+  - no external LLM call was made;
+  - Phase E stops here and does not start V1.2.
+
+## 2026-09-03 Phase E UX Hotfix: Evidence Review Confirmation Responsiveness
+
+- Fixed a frontend responsiveness regression introduced by the Phase E
+  materialization progress panel.
+- Root cause: `refreshWorkflowStatusForPrompt(...)` synchronously fetched
+  `/materialization-plan` after every workflow status refresh. On #19 the
+  read-only planner can take about one minute, so a successful evidence
+  `confirm-batch` could appear to keep spinning while the slow planner refresh
+  was still in flight.
+- Change:
+  - workflow status refresh now only fetches `/status`;
+  - materialization planner refresh runs through a separate
+    `refreshWorkflowMaterializationPlan(...)` path;
+  - the materialization panel has its own loading tag and manual refresh button;
+  - stale planner responses are guarded by a request sequence so switching
+    Prompt cannot overwrite the current Prompt's state.
+- Real state check during the incident:
+
+```text
+POST /api/optimization/workflow/review/alignments/confirm-batch -> 200
+#19 evidence_review progressed to 7/20 groups reviewed
+review-queue now has 13 remaining alignment groups
+```
+
+- Validation:
+  - frontend `npm run build` passed after loading Node with nvm; Vite emitted
+    only the existing large chunk warning.
+- Boundary:
+  - no backend workflow semantics changed;
+  - no SourceClaim / EvidenceAlignment / Candidate Builder / Benchmark / Gap /
+    Strategy / Step 7 / Step 8 behavior changed.
+
+## 2026-09-03 Phase E UX Hotfix: Review Queue Loading Isolation
+
+- Investigated a follow-up frontend issue where clicking `加载待审核项` in the
+  human review modal could keep spinning.
+- Real API checks showed the backend was healthy:
+
+```text
+GET /api/optimization/workflow/3/19/review-queue -> READY, 13 alignment groups remaining
+GET /api/optimization/workflow/3/19/competitor-candidates -> []
+```
+
+- Root cause: the review modal reused the app-wide `loading` state, which is
+  also used by project refresh, evidence generation, strategy actions, and other
+  long-running UI tasks. A global loading owner can therefore make the review
+  queue button spin even when the review queue endpoints are fast.
+- Change:
+  - added `reviewQueueLoading` for `加载待审核项`;
+  - added `reviewAnalysisLoading` for `运行机器分析`;
+  - closing the modal clears only review-modal loading and local review state;
+  - review queue loading falls back to `activePromptId` when `currentWorkflowData`
+    is still loading.
+- Validation:
+  - frontend `npm run build` passed after loading Node with nvm; Vite emitted
+    only the existing large chunk warning.
+- Boundary:
+  - frontend loading-state isolation only;
+  - no review API, database state, EvidenceAlignment semantics, Candidate
+    Builder, Benchmark, Gap, Strategy, Step 7, or Step 8 behavior changed.
+
+## 2026-09-03 Phase E UX Hotfix: Materialization Planner Manual-Only
+
+- Investigated a persisted "refresh then still spinning" issue in #19 evidence
+  review.
+- Real backend logs showed SQLAlchemy pool exhaustion while slow
+  `/materialization-plan` requests were still running:
+
+```text
+QueuePool limit of size 5 overflow 10 reached, connection timed out
+```
+
+- Root cause: `loadWorkflowForPrompt(...)` still auto-triggered the read-only
+  materialization planner after every Prompt/page load. On #19 this diagnostic
+  endpoint can take about one minute; repeated browser refreshes can stack
+  concurrent planner requests and starve normal endpoints such as
+  `review-queue`, `channels`, `experiments`, and `decision-market`.
+- Change:
+  - removed automatic `/materialization-plan` loading from Prompt workflow load;
+  - kept materialization progress as an explicit manual action only;
+  - added visible `查看物化进度` / `刷新物化进度` buttons in workflow action
+    areas so diagnostics remain available without blocking review work.
+- Boundary:
+  - frontend request scheduling only;
+  - no backend planner, SourceClaim, EvidenceAlignment, Candidate Builder,
+    Benchmark, Gap, Strategy, Step 7, or Step 8 semantics changed.
+
+## 2026-09-03 Phase E UX Hotfix: Review Confirmation Post-Refresh Scope
+
+- Investigated a remaining #19 issue where the first evidence group confirmed
+  quickly, but the next confirmation could spin again.
+- Real log sequence showed the confirmation POST and lightweight review/status
+  refreshes returned `200 OK`; the stall happened after the first confirmation
+  when the frontend background refresh entered
+  `/projects/{project_id}/prompts/{prompt_id}/citation-decision-v1`, which is a
+  heavier current-chain decision view on #19.
+- Change:
+  - evidence alignment confirmation no longer auto-runs `citation-decision-v1`;
+  - recommendation event confirm/reject no longer auto-runs
+    `citation-decision-v1`;
+  - review modal confirmations only post the review decision, update the local
+    queue, and refresh lightweight workflow/review state.
+- Product behavior:
+  - users can continue confirming evidence groups without waiting for a full
+    Citation Decision view refresh after every group;
+  - the main chain display remains refreshable via the explicit `刷新主链路`
+    action.
+- Boundary:
+  - frontend post-confirm refresh scope only;
+  - no review API, database schema, EvidenceAlignment semantics, Candidate
+    Builder, Benchmark, Gap, Strategy, Step 7, or Step 8 behavior changed.
+
+## 2026-09-03 Phase E UX Hotfix: Citation Decision Auto-Load Guard
+
+- Investigated a further #19 continuous-review issue: after two successful
+  group confirmations, the next group could still spin.
+- Real state:
+
+```text
+#19 evidence_review advanced to 10/20
+confirm-batch POSTs returned 200
+review-queue / competitor-candidates / status returned 200
+```
+
+- Remaining root cause: the page-level `useEffect` still auto-loaded
+  `citation-decision-v1` whenever the validation/optimization page and
+  workflow state changed. While evidence review is incomplete this full
+  decision view cannot unlock Step 7, and on #19 it is heavy enough to interfere
+  with continuous review.
+- Change:
+  - page-level auto `citation-decision-v1` now waits until the matching
+    `workflow/status` has loaded;
+  - it short-circuits while `evidence_review` exists and is not done;
+  - the evidence step's UI readiness can use `workflow/status` evidence state
+    instead of requiring full Citation Decision data.
+- Added a bounded review-action request wrapper for human review POSTs. If a
+  local DB lock or request queue issue prevents a response for 20 seconds, the
+  button is released with an explicit retry/state-refresh message instead of
+  spinning indefinitely.
+- Boundary:
+  - frontend auto-load guard only;
+  - explicit `刷新主链路`, Product Truth rerun, and Strategy generation paths can
+    still run the formal Citation Decision view;
+  - no backend, EvidenceAlignment, Candidate Builder, Benchmark, Gap, Strategy,
+    Step 7, or Step 8 semantics changed.
+
+## 2026-09-04 Phase E UX Hotfix: Stale Citation Decision Request Release
+
+- Investigated a #19 follow-up where V1.1 evidence generation completed and the
+  workflow correctly returned to evidence review, but clicking `加载待审核项`
+  still appeared to spin.
+- Real API checks showed the review path was healthy:
+
+```text
+GET /api/optimization/workflow/3/19/review-queue -> READY, 3 alignment groups, ~0.16s
+GET /api/optimization/workflow/3/19/competitor-candidates -> [], ~0.11s
+GET /api/optimization/workflow/3/19/status -> evidence_review 20/23, ~1.8s
+```
+
+- Root cause: a previously started heavy `citation-decision-v1` request could
+  remain in flight after the workflow changed from `20/20` reviewed to `20/23`
+  reviewed. Even though the evidence-review guard prevented new automatic loads,
+  the stale request could keep `citationDecisionLoading` active and make the
+  page look like the review loader was stuck.
+- Change:
+  - `loadCitationDecisionV1` now uses an AbortController and releases after 20
+    seconds;
+  - when `workflow/status` says `evidence_review` is incomplete, the frontend
+    invalidates stale Citation Decision requests and clears
+    `citationDecisionLoading`;
+  - `加载待审核项` uses bounded GET requests for review queue and competitor
+    candidates, so the modal loader cannot spin indefinitely on auxiliary
+    endpoint stalls.
+- Validation:
+  - frontend `npm run build` passed with Node v18.20.8; Vite emitted only the
+    existing large chunk warning;
+  - `git diff --check` passed;
+  - #19 real endpoints continued to report `20/23` reviewed and 3 pending
+    alignment groups.
+- Boundary:
+  - frontend request cancellation/loading isolation only;
+  - no backend, SourceClaim, EvidenceAlignment, Candidate Builder, Benchmark,
+    Gap, Strategy, Step 7, or Step 8 semantics changed.
+
+## 2026-09-04 Phase E UX Hotfix: #40 Current Strategy Display And Orphan Run Cleanup
+
+- Investigated a #40 switch issue where the main-chain card showed:
+
+```text
+Step 7 = 无策略
+Step 8 = 未创建 / 当前主链仍需先完成策略确认
+```
+
+- Real API/DB checks showed the frontend display was wrong:
+
+```text
+GET /api/optimization/workflow/3/40/status
+strategy_step_status = PENDING_REVIEW
+current_strategy_candidate_ids = [50]
+evidence_package_id = 15
+review_queue = READY
+```
+
+- Root causes:
+  - the Step 7 card derived pending/confirmed strategy counts from locally
+    loaded `strategyData.candidates`; when heavy current-chain requests failed
+    or had not loaded yet, the card ignored the backend
+    `current_strategy_candidate_ids` and fell through to `无策略`;
+  - after a dev-server restart, orphaned `PromptAnalysisRun.status=RUNNING`
+    rows remained in SQLite. The frontend then kept polling nonexistent #19
+    background work, and because prompt overview refreshed on every
+    `workflowData` change, those polls could stack enough requests to exhaust
+    the local SQLAlchemy pool.
+- Change:
+  - Step 7 counts now trust `workflow/status` `current_strategy_candidate_ids`
+    as the current-chain fallback, so #40 shows the current pending strategy
+    even before the full strategy list finishes loading;
+  - page-level automatic `citation-decision-v1` no longer runs when
+    `workflow/status` already reports `PENDING_REVIEW`, `CONFIRMED`,
+    `NO_STRATEGY`, `NEEDS_CURRENT_ANALYSIS`, `CURRENT_ANALYSIS_RUNNING`, or
+    `CURRENT_ANALYSIS_FAILED`;
+  - prompt overview no longer reloads on every workflow status update;
+  - backend startup marks orphaned `PromptAnalysisRun.RUNNING` rows as `FAILED`
+    with the existing restart-interruption message.
+- Validation:
+  - `geo-platform/backend/.venv/bin/python -m compileall geo-platform/backend/app`
+    passed;
+  - frontend `npm run build` passed with Node v18.20.8; Vite emitted only the
+    existing large chunk warning;
+  - `git diff --check` passed;
+  - after restart, #40 status returned in ~0.84s with
+    `strategy_step_status=PENDING_REVIEW` and candidate `#50`.
+- Boundary:
+  - status ownership and request scheduling only;
+  - no SourceClaim, EvidenceAlignment, Candidate Builder, Benchmark, Gap,
+    Strategy generation, Step 7 semantics, Step 8 semantics, or historical
+    candidate eligibility rules changed.
+
+## 2026-09-04 Phase E Step 7 Generation Spinner Root Cause
+
+- Investigated a #19 Step 7 generation spinner after evidence review completed.
+- Real API/DB checks showed two separate issues:
+  - `generate-current-v1` still delegated to
+    `confirm_citation_decision_vertical_slice()`, which rebuilt the full
+    `citation-decision-v1` source analysis before creating StrategyCandidate
+    rows;
+  - `workflow/status` allowed `READY_TO_GENERATE` from legacy SUPPORTS review
+    progress even when current formal V1.1 alignments existed but had
+    `formal_v1_1_support_count=0`.
+- Change:
+  - added a lightweight current Step 7 strategy-row builder that consumes only
+    the current Evidence Package run scope and already materialized
+    EvidenceAlignment/SourceDocument state; it does not call
+    `_source_analysis_for_package`;
+  - `generate_current_step7_strategy_candidates()` now uses the lightweight
+    Step 7 path instead of the full Citation Decision detail path;
+  - `workflow/status` now exposes `current_v1_1_input_state` and only reports
+    `READY_TO_GENERATE` when current formal V1.1 SUPPORTS exist;
+  - frontend Step 7 generation failures refresh workflow status so stale
+    `READY_TO_GENERATE` UI cannot keep reappearing after a fast 400.
+- Real #19 state after the fix:
+  - `formal_v1_1_alignment_count=408`;
+  - `formal_v1_1_support_count=0`;
+  - `legacy_support_count=484`;
+  - `strategy_step_status=NO_STRATEGY`;
+  - `execution_step_status=NO_EXPERIMENT`.
+- Validation:
+  - backend `pytest tests/test_workflow_review_queue.py tests/test_strategy_step7_v1.py -q`
+    passed: 37 tests;
+  - backend compileall for `workflow.py` and `service.py` passed;
+  - frontend `npm run build` passed; Vite emitted only the existing large chunk
+    warning;
+  - `git diff --check` passed.
+- Boundary:
+  - no EvidenceAlignment execution, Candidate Builder, SourceClaim prompt,
+    Benchmark, Gap, Strategy payload semantics, Step 8, or historical cleanup
+    changed;
+  - legacy SUPPORTS remain audit/history only and do not unlock current Step 7.
+
+## 2026-09-04 Phase E Step 7 NO_STRATEGY Regression Fix
+
+- Corrected the previous Step 7 interpretation: `formal_v1_1_support_count=0`
+  is not, by itself, a terminal `NO_STRATEGY`.
+- Real #19 checks showed current V1.1 formal SUPPORTS were blocked by Phase 2A
+  lineage: the current runs cited `shangjiajia.com/4626.html`, while SUPPORTS
+  evidence came from other source documents. That means there is no eligible
+  Benchmark Evidence, but the answer still contains repeated decision reasons
+  that match supported target Product Truth.
+- Change:
+  - current Step 7 strategy-row building now includes observed run-scope
+    citation/retrieval documents as evidence-adoption context, instead of
+    building the whole table only from eligible SUPPORTS;
+  - when no source row yields a recommended action, Step 7 can generate an
+    `ANSWER_DECISION_EVIDENCE_GAP` action from current answer decision reasons
+    plus `SUPPORTED` Product Truth;
+  - candidate eligibility now explicitly allows this action class to have
+    `benchmark_evidence_ids=[]` only when it declares
+    `NO_ELIGIBLE_BENCHMARK`, `EVIDENCE_GAP`, `proposed_direction=EVIDENCE`,
+    and `product_truth_refs.status=TRUE`.
+- Real validation:
+  - #19 generated current StrategyCandidate `#52`;
+  - `workflow/status` now resolves #19 as `strategy_step_status=PENDING_REVIEW`
+    with `current_strategy_candidate_id=52`;
+  - #40 remains `strategy_step_status=PENDING_REVIEW` with candidate `#50`.
+- Boundary:
+  - no EvidenceAlignment execution, SourceClaim prompt, Benchmark promotion,
+    Step 8, historical cleanup, or Phase C/D behavior changed;
+  - Citation Prominence still cannot decide Benchmark, and the fallback action
+    carries no fake Benchmark evidence.
+
+## 2026-09-04 Phase E Step 7 Evidence-Gap Guardrails
+
+- Tightened `ANSWER_DECISION_EVIDENCE_GAP` so it cannot become a generic
+  fallback whenever a normal Benchmark-backed action is unavailable.
+- Generation now checks each current answer decision reason independently:
+  - a matching eligible `SUPPORTS` removes that reason from this gap class;
+  - a matching eligible `CONTRADICTS` also removes it, because an evidence
+    conflict cannot be represented as a simple missing-evidence gap;
+  - legacy/non-eligible relations remain audit history and do not trigger either
+    branch.
+- Candidate payloads now persist explicit provenance:
+  `strategy_basis`, `decision_reason_ids`, `decision_reason_event_ids`,
+  `evidence_gap_reason`, `eligible_support_count`, and
+  `eligible_contradiction_ids`. `benchmark_evidence_ids` remains empty.
+- Corrected the Candidate explanation so this gap class no longer claims to be
+  based on Phase 2A eligible Benchmark Evidence.
+- The Strategy review UI now displays four separate facts for this class:
+  no Benchmark, observed answer decision reasons, confirmed target Product
+  Truth, and missing eligible support evidence.
+- Real #19 read-only validation:
+  - eligible SUPPORTS = 0;
+  - eligible CONTRADICTS = 0;
+  - the 49 current-scope CONTRADICTS rows are legacy/non-eligible and do not
+    block the evidence-gap candidate;
+  - five current decision-reason identities match supported Product Truth.
+- Final runtime closure:
+  - #19 current StrategyCandidate is `#54` with
+    `strategy_basis=ANSWER_DECISION_EVIDENCE_GAP`, five persisted decision
+    reason IDs, `eligible_support_count=0`, and no eligible contradiction IDs;
+  - intermediate candidates `#52` and `#53` are `DEFERRED/SUPERSEDED`, so they
+    cannot remain parallel current Step 7 truths after the schema guard changed;
+  - workflow status resolves only `#54` as current `PENDING_REVIEW`; Step 8 is
+    still `LOCKED`, and no Action or Experiment was created;
+  - focused backend tests, frontend production build, and localhost Playwright
+    rendering all passed. The strategy review displays the evidence-gap basis,
+    no-Benchmark state, Product Truth state, and Step 8 boundary separately.
+- Data/schema impact: structured payload fields only; no database migration.
+- Boundary: no EvidenceAlignment mutation, Benchmark promotion, Step 8 object,
+  historical cleanup, or main-chain order change.
+
+## 2026-09-04 Step 7 Channel Resolution PR1: URL Identity And Mapping Health
+
+- Scope is PR1 only. No Channel Evidence Aggregation or Channel Resolver policy
+  was changed, and no StrategyCandidate was generated, reviewed, or superseded.
+- Added shared `canonicalize_url()` with `url_identity.v1`, deterministic
+  canonical URL hash, stable sorting/removal of tracking parameters, and an
+  explicit idempotency contract. Wenxin collection, source acquisition, formal
+  evidence URL lookup, ranking URL grouping, and lightweight Step 7 mapping now
+  delegate to the shared identity instead of maintaining separate rules.
+- Added `canonical_url_hash` and `canonicalization_version` to
+  `ReferenceSource`, `RetrievalCandidate`, and `SourceDocument`. Raw observed
+  URLs remain in the existing `url` / `original_url` fields.
+- Replaced the invalid `normalized URL IN raw SourceDocument URL` query with a
+  staged mapper:
+  same-version canonical hash, raw URL exact, current-rule legacy
+  recanonicalization, optional redirect outcome, then explicit unmapped
+  outcomes. The mapper only returns documents matched to the current package
+  Run Scope; it does not admit unrelated historical documents.
+- Added structured `MappingCoverageReport`, per-URL `SourceMappingOutcome`,
+  retry/manual-review metadata, conservation, and `DataHealthState`. The
+  read-only endpoint is
+  `/api/optimization/workflow/{project_id}/{prompt_id}/source-mapping-health`.
+- Required implementation constraints:
+  1. Strategy opportunity existence is independent from channel resolution.
+  2. Broken mapping is `INPUT_INVALID` data health, not absence of channel
+     evidence.
+  3. An observed citation platform is not automatically a recommended channel.
+  4. Every future PRIMARY channel, including official site, needs a current
+     Decision Reason intervention rationale.
+  5. Insufficient healthy channel evidence must eventually resolve to
+     `UNRESOLVED`, never default official site. Items 3-5 are PR2/PR3 gates and
+     were not implemented as resolver changes in PR1.
+- Real current-package results after deterministic identity backfill:
+  - #19 package #12: 1,207 reference records, 203 observed unique URLs,
+    203 mapped, 0 unmapped, 100% coverage, 204 citation/retrieval input
+    documents, `HEALTHY`; outcomes = 55 exact + 148 canonical.
+  - #40 package #15: 174 reference records, 29 observed unique URLs, 29 mapped,
+    0 unmapped, 100% coverage, 31 citation/retrieval input documents,
+    `HEALTHY`; outcomes = 11 exact + 18 canonical.
+  - Both reports conserve `total = mapped + unmapped`; neither requires manual
+    review.
+- Current-chain boundary after PR1: #19 candidate #54 and #40 candidate #50 are
+  unchanged. #54 remains unfit for confirmation because its channel decision
+  predates repaired mapping; superseding/regenerating it belongs to PR3.
+- Validation:
+  - 128 focused URL identity, mapping, ranking, source qualification, passage
+    retrieval, evidence lineage, incremental planner, Step 7, and workflow tests
+    passed;
+  - `compileall app` and `git diff --check` passed;
+  - the full backend suite currently has 5 independently reproducible failures
+    outside PR1: two stale batch-delete contract assertions, one Wenxin
+    conversation-reset assertion, and two legacy Step 8 fixtures rejected by
+    current V1.1 candidate eligibility. These were not changed under PR1.
+
+## 2026-09-04 Step 7 Channel Resolution PR2: Channel Evidence Landscape
+
+- Scope is PR2 only. Added the read-only endpoint
+  `/api/optimization/workflow/{project_id}/{prompt_id}/channel-evidence-landscape`;
+  no Channel Resolver, `planned_channels`, StrategyCandidate, Step 7/8 state,
+  Benchmark, Gap, Product Truth, or EvidenceAlignment verdict semantics changed.
+- The endpoint returns aggregate provenance by default. Per-observation audit
+  rows are opt-in with `include_observations=true`, preventing #19's 2,061
+  Citation/Retrieval-only observations from turning ordinary reads into another
+  heavy diagnostic request.
+- Citation observations are deduplicated by `Run + canonical URL`, while raw
+  parser rows remain visible. Citation roles are mutually exclusive with
+  priority `DECISION_CITATION > ANSWER_SUPPORT_CITATION > PERIPHERAL_CITATION`.
+  `RETRIEVAL_ONLY` is counted separately and requires no same-Run Citation.
+- Semantic evidence is derived only from existing formal V1.1
+  `eligible_evidence_alignments_for_v1()` SUPPORTS. No Citation Role judge,
+  prompt, confidence, or external LLM call was added. Every role carries its
+  basis and typed source IDs; semantic relation count deduplicates by current
+  semantic Decision Reason plus semantic SourceClaim, not row count.
+- Decision-Reason drilldown is joined by existing `decision_binding_id` /
+  `answer_unit_id`, not loose text matching. Peripheral and Retrieval-only
+  observations are intentionally not attributed to a Decision Reason without
+  an exact eligible relation.
+- URL-to-document membership is reported independently from evidence counts:
+  - #19 has 203 unique reference URLs, 207 URL-document memberships, and 204
+    unique reference documents. Four URLs map to two distinct content
+    snapshots each; canonical/raw URL variants also share document identities,
+    so memberships are not evidence observations.
+  - #40 has no 1:N reference mapping: all 29 reference URLs map one-to-one to
+    29 reference documents. The previously reported 31 aggregation documents
+    are 29 reference documents plus two additional retrieval-only documents.
+- Real #19 package #12:
+  - 40 Runs, 1,207 raw reference rows, 1,207 unique Citation observations,
+    203 unique URLs, 899 retrieval rows, and 854 Retrieval-only observations;
+  - Citation conservation is `1,207 = 0 Decision + 0 Answer Support + 1,207
+    Peripheral`; AggregationHealth is `HEALTHY`;
+  - 192 formal SUPPORTS candidates are all excluded by the existing Phase 2A
+    rule `SOURCE_NOT_REFERENCED_IN_RUN`, so no channel currently enters the
+    formal Decision Layer. This is reported, not repaired or relaxed by PR2;
+  - major observed channels: B站 251 Peripheral; 知乎 207 Peripheral + 9
+    Retrieval-only; 百家号 285 Peripheral + 424 Retrieval-only; 商加加 74
+    Peripheral; 抖音 118 Peripheral; 搜狐 53 Peripheral + 14 Retrieval-only;
+    官网 5 Peripheral + 34 Retrieval-only.
+- Real #40 package #15:
+  - 6 Runs, 174 Citation observations, 29 unique reference URLs, 258 retrieval
+    observations, and 228 Retrieval-only observations;
+  - Citation conservation is `174 = 6 Decision + 0 Answer Support + 168
+    Peripheral`; AggregationHealth is `HEALTHY`;
+  - 知乎 keeps six Decision Citation observations across 6/6 Runs, one unique
+    URL, and six semantic relations. The reason-level split is two relations
+    for click statistics, one for custom sharing title, and three for marketing
+    use. Existing #40 channel evidence therefore remains present.
+- Entity dimensions reuse existing project brand aliases, Competitor records,
+  RecommendationEvent entities, and source ownership. No BrandNormalizer or
+  alias registry was introduced. URL-less retrieval rows whose `domain` field
+  is actually an author/source label remain `UNKNOWN` instead of becoming a
+  fabricated channel.
+- Validation:
+  - 9 PR2 tests cover row explosion, 1:N mapping, role precedence,
+    Retrieval-only, Prompt/Reason isolation, read-only Strategy behavior, and
+    six-Run regression stability;
+  - PR2 + mapping tests: 19 passed; Step 7/EvidenceAlignment/Workflow focused
+    regression: 69 passed; full backend: 370 passed with the same five
+    pre-existing unrelated failures and no PR2 failure;
+  - `compileall app`, `git diff --check`, and real FastAPI HTTP response passed.
+- Frozen boundary after PR2: #19 candidate #54 and #40 candidate #50 remain
+  unchanged. Observed Channel is not Recommended Channel; PR3 has not started.
+
+## 2026-09-04 Step 7 Channel Resolution PR3-A: Resolver Shadow
+
+- Scope is Shadow only. The production `_resolve_strategy_channels()` path,
+  StrategyCandidate persistence, workflow state, Step 8, Action, and Experiment
+  execution were not changed. Candidate #54 was not superseded.
+- Reused the frozen PR1 URL mapping, PR2 Channel Evidence Landscape, current
+  lightweight Step 7 action/candidate payload, Product Truth, Relevant Asset,
+  and eligible Benchmark inputs. Added one read-only resolver implementation
+  and endpoint:
+  `/api/optimization/workflow/{project_id}/{prompt_id}/channel-resolution-shadow`.
+- The resolver separates three orthogonal states:
+  `StrategyOpportunityState`, `ChannelResolutionState`, and
+  `ExecutionReadiness`. It also emits `InterventionMode` without creating any
+  execution object.
+- Evidence-backed channels can only come from:
+  `OBSERVED_DECISION_CHANNEL`, `BENCHMARK_INTERVENTION_PATTERN`, or
+  `AUTHORITATIVE_PRODUCT_TRUTH_INTERVENTION`. There is no default-official path
+  in the Shadow resolver. An official PRIMARY must carry concrete
+  `authority_asset_evidence`, Decision Reason IDs, and Product Truth refs.
+- Added opportunity-backed `RETRIEVAL_EXPOSURE_OPPORTUNITY` for `TEST` only.
+  It independently requires Exposure, reason-level relevance, Target Gap, and
+  Intervention Fit. Citation/SourceClaim text is used only for deterministic
+  relevance diagnosis; excluded/non-eligible SourceClaims are never promoted
+  to Decision Citation, Answer Support, or Benchmark.
+- Path D uses the existing Chinese bigram tokenizer and explicit PASS/WEAK/FAIL
+  conditions, not a weighted channel score. High Peripheral volume alone can
+  only produce OBSERVE. Competitor first-party domains cannot become executable
+  target-brand TEST channels.
+- Real #19 package #12 Shadow:
+  - Strategy Opportunity `PENDING_REVIEW`, Data Health `HEALTHY`;
+  - PRIMARY = `OFFICIAL_SITE` through Path C with
+    `MISSING_BUT_REQUIRED_ASSET`, five Decision Reason IDs, and Product Truth
+    #1/#2/#3; this is an explicit authority intervention rationale, not the old
+    empty-signal fallback;
+  - TEST = `BAIJIAHAO`, `BILIBILI`, `ZHIHU`, `SOHU`; each has sustained
+    Exposure, at least one reason-level strong relevance signal, a target-brand
+    Decision/Support gap, and an executable content hypothesis;
+  - `DOUYIN` and `CSDN` remain OBSERVE because current reason relevance is only
+    WEAK; `COMPETITOR_SHANGJIAJIA_COM` remains OBSERVE despite strong relevance
+    because Intervention Fit is invalid for a target-brand action;
+  - Channel Resolution `RESOLVED`, Execution Readiness `NOT_READY` because the
+    Strategy Opportunity is not yet confirmed;
+  - old #54 and the Shadow both name official site PRIMARY, but the rationale
+    changed from `FIRST_PARTY_EVIDENCE_STRENGTHENING` fallback-shaped output to
+    audited Path C. #54 still requires superseding at Cutover with
+    `CHANNEL_RESOLUTION_INVALID_DUE_TO_SOURCE_MAPPING_FAILURE`.
+- Real #40 package #15 Shadow:
+  - PRIMARY = `OFFICIAL_SITE` via Path C and SECONDARY = `ZHIHU` via both Path A
+    and Path B;
+  - the six Zhihu Decision Citations across 6/6 Runs remain formal evidence and
+    are not downgraded to TEST;
+  - no additional TEST is emitted once a current observed Decision/Benchmark
+    path exists; old channel assignments are unchanged and the rationale-path
+    change is explicit;
+  - Strategy Opportunity remains `PENDING_REVIEW`, so Execution Readiness is
+    `NOT_READY`.
+- Added an eight-case Golden Replay covering official/third-party Benchmark
+  resolution, evidence-backed answer gaps, TEST, OBSERVE-only, UNRESOLVED,
+  INPUT_INVALID, and Product Truth UNKNOWN. Added 11 targeted tests for the
+  role, readiness, and authority gates.
+- Validation:
+  - PR3-A + PR2 + Step 7 focused regression: 41 passed;
+  - full backend: 381 passed with the same five pre-existing unrelated failures
+    (two batch-delete contracts, one Wenxin reset expectation, two legacy Step 8
+    fixtures);
+  - real #19/#40 read-only audits preserved candidate ID sets exactly;
+  - External LLM calls = 0; frontend was not touched.
+- PR3-A stops here. No Cutover, candidate regeneration, Action/Experiment
+  creation, or TEST-to-Step-8 integration was performed.
+
+## 2026-09-05 Step 7 Channel Resolution PR3-B: Production Cutover
+
+- Added the two required semantic guards before Cutover:
+  - Path C now evaluates every Decision Reason independently. Each row stores
+    its directly linked confirmed Product Truth refs, authority asset status/ref,
+    authority rationale, and eligibility. One Reason cannot borrow another
+    Reason's Product Truth.
+  - Path D TEST rows persist only the Reasons that actually pass relevance,
+    plus exposure signals, reason relevance, target gap, intervention fit,
+    `why_test`, and `why_not_primary`.
+- Split intervention state into `proposed_intervention_mode` and
+  `active_intervention_mode`. A `PENDING_REVIEW` StrategyCandidate may propose
+  `CONFIRMED_CHANNEL_INTERVENTION`, but active mode remains null while
+  `ExecutionReadiness=NOT_READY`.
+- The current Single Prompt `generate-current-v1` path now explicitly enables
+  the PR3 resolver. Shadow and production call the same deterministic
+  `resolve_channel_shadow()` core. `use_strategy_channel_resolver_v1_1=true`
+  is the default rollback flag; false routes to the frozen legacy resolver.
+  The legacy `confirm-citation-decision` compatibility endpoint keeps the
+  frozen resolver and is not part of this Cutover.
+- Production persistence keeps only PRIMARY/SECONDARY/TEST in
+  `planned_channels`, while the full resolver output, including OBSERVE, is
+  retained in `channels`. This preserves auditability without rendering 43
+  low-value OBSERVE rows in the main strategy review panel.
+- Real #19 Cutover:
+  - #54 was preserved as `DEFERRED` with immutable supersede semantic/reason
+    `SUPERSEDED / CHANNEL_RESOLUTION_INVALID_DUE_TO_SOURCE_MAPPING_FAILURE`;
+  - an initial migration candidate #55 exposed an incomplete frozen-action
+    reconstruction and was retained as superseded history;
+  - the reconstruction was corrected to preserve evidence-gap reason,
+    Citation Decision summary, no-Benchmark source marker, contradiction IDs,
+    and channel aggregation; current candidate #56 then passed the existing
+    V1.1 eligibility Gate as `PENDING_REVIEW`;
+  - #56 resolves OFFICIAL_SITE PRIMARY by reason-level Path C and BAIJIAHAO,
+    BILIBILI, ZHIHU, SOHU TEST by reason-level Path D; 43 remaining channels are
+    OBSERVE. `ExecutionReadiness=NOT_READY`, active mode is null, and no Action
+    or Experiment was created. Step 8 remains LOCKED.
+- Real #40 was read-only: current candidate remains #50; PRIMARY OFFICIAL_SITE,
+  SECONDARY ZHIHU, TEST none. Role-level old/new semantic diff is zero.
+- Production-vs-Shadow role/path diff is zero for #19 and #40. External LLM
+  calls were zero.
+- Validation:
+  - focused PR3/Step 7/Step 8 regression: 93 passed;
+  - full backend: 384 passed with the same five pre-existing unrelated failures
+    and no PR3-B failure;
+  - `compileall app` and `git diff --check` passed; frontend was not changed.
+- Operational finding: invoking the ordinary #19 current-generation HTTP
+  endpoint before the Cutover migration still spent over 120 seconds in the
+  pre-resolver Step 7 source-row reconstruction. The request was terminated
+  before any DB write, and the Cutover reused #54's frozen action through the
+  same production StrategyCandidate service. This is a known pre-resolver
+  performance risk, not an LLM or Channel Resolver delay.
+- PR3-B stops here. Candidate #56 is not auto-confirmed; PR3-C, Action,
+  Experiment, and TEST-to-CHANNEL_VALIDATION_EXPERIMENT integration did not run.
+
+## 2026-09-07 PR4-A Constraint-First Strategy Synthesis Shadow
+
+- Added the read-only `strategy_synthesis_shadow.py` layer and
+  `/api/optimization/workflow/{project_id}/{prompt_id}/strategy-synthesis-shadow`.
+  It consumes only the current StrategyCandidate payload and scoped database
+  objects; it does not rebuild Citation Decision, EvidenceAlignment, Gap, or
+  Channel Resolution.
+- Implemented `STRATEGY_SYNTHESIS_V1` as a closed-world contract. Stable reason,
+  Product Truth, Gap, Source, Signal, Metric, and candidate-scoped Channel
+  Resolution IDs form the only allowed object set.
+- Added deterministic Reason compatibility constraints over capability family,
+  scenario, intervention mechanism, and required asset type. A multi-reason
+  Theme must be a clique in the allowed merge graph. `KEEP_SEPARATE` is a first
+  class result.
+- Separated frozen Resolver role from execution priority. TEST P1 eligibility
+  uses explicit Exposure, reason coverage, target gap, intervention fit,
+  measurability, and information-value Gates; no weighted score is used and the
+  minimum portfolio budget is at most two priority tests.
+- Added strict Structural, Provenance, Business Rule, and Unsupported Claim
+  validators. Unknown fields are rejected, so a model cannot hide a new Product
+  Truth, asset, channel, role, metric, or free fact in an otherwise plausible
+  JSON object. Structural failure never falls back to free-form strategy text.
+- Added optional versioned DeepSeek adapters for structural synthesis and
+  presentation. `use_llm=false` is the Shadow default; model failure leaves the
+  deterministic source objects available and returns a failed synthesis rather
+  than failing Strategy Opportunity.
+- Real deterministic replay:
+  - #19/#56: five atomic reasons became three Themes; denominator is 15,
+    reason coverages are 12/15, 12/15, 1/15, 1/15, 1/15; OFFICIAL_SITE remains
+    PRIMARY; BAIJIAHAO/ZHIHU are TEST P1; BILIBILI/SOHU remain TEST and are
+    deferred; 43 channels remain OBSERVE.
+  - #40/#50: three AnswerUnit reasons remain separate 6/6 Themes;
+    OFFICIAL_SITE remains PRIMARY and ZHIHU remains SECONDARY. Benchmark-backed
+    semantics are unchanged.
+- Both replays passed all four validators with zero new facts, unknown source
+  IDs, role mutations, new channels/assets, or unsupported causal claims.
+  Candidate hashes and project object counts remained unchanged; no Candidate,
+  Action, or Experiment was created.
+- Validation: 12 PR4 Golden/guard tests passed; combined PR4 + PR3 Resolver +
+  Step 7 regression is 47 passed; full backend is 396 passed with the same five
+  pre-existing unrelated failures (two batch-delete contracts, one Wenxin reset
+  expectation, and two legacy Step 8 fixtures); compileall passed. No migration
+  or frontend change was required.
+- A real external DeepSeek replay was attempted inside the managed environment
+  but blocked before data transmission because this turn did not contain
+  explicit authorization to send #19 strategy objects to the external service.
+  Do not record external LLM Hallucination Audit as passed.
+- PR4-A stops at Shadow. #56/#50 were not superseded or edited; Step 8 remains
+  untouched and no Cutover was performed.
+
+## 2026-09-07 PR4-A.1 LLM Safety Acceptance & Deterministic-First Synthesis
+
+- Upgraded the Shadow contract to `strategy_synthesis.v1.1` and made
+  `DETERMINISTIC_FIRST_LLM_ONLY_WHEN_NECESSARY` executable. Reason identity,
+  Run coverage, Theme coverage/title, frozen channel role, eligibility, metric
+  selection, and uniquely determined Theme/TEST/portfolio decisions are now
+  completed without LLM calls.
+- Removed the callable whole-Strategy structural prompt. The only external
+  structural path now consumes one explicit `AMBIGUOUS_THEME_GROUPING` or
+  `AMBIGUOUS_TEST_PRIORITY` object with the minimum relevant Reasons/channels
+  and a closed allowed ID/option set. Inputs no longer include all channels,
+  references, Product Truths, or the full Strategy payload.
+- Added strict bounded-response validation and fail-closed application. Unknown
+  IDs/channels, illegal partition/selection, duplicate keys, extra fields, and
+  contradictory `NEEDS_HUMAN` selections reject the entire proposal. No field
+  is repaired and reused. Invalid/timeout results preserve the deterministic
+  baseline and never fail the underlying Strategy Opportunity.
+- Added `ThemeCoverageValidator`: each Theme stores and validates the exact
+  member-Reason Run-ID union, count, and ratio. Added `ThemeTitleValidator`:
+  titles use deterministic capability-family labels and cannot introduce new
+  qualifiers. Presentation remains deterministic unless a future explicit
+  ambiguity contract exists; causal, unsupported capability/asset/numeric,
+  unknown-source, schema, or wording drift falls back to the deterministic
+  reference.
+- Real read-only DB replay:
+  - #19/#56 and #40/#50 both detected zero structural ambiguities;
+  - calling the endpoint with `use_llm=true` returned
+    `SKIPPED_NOT_NECESSARY`, external LLM calls 0;
+  - #19 Theme unions are T1 `[73, 173..184] = 13/15` and T2
+    `[74, 173..184] = 13/15`; #40's three Themes remain 6/6;
+  - all six validators passed, Resolver roles/Benchmark/strategy basis and
+    Candidate hashes stayed unchanged, and Candidate/Action/Experiment writes
+    were all zero.
+- Synthetic-only real DeepSeek replay used one non-sensitive three-TEST
+  ambiguity. DeepSeek returned parseable JSON but combined `NEEDS_HUMAN` with
+  three selected channel keys. The semantic schema rejected the whole output;
+  external calls=1, deterministic fallback preserved=true, final structure
+  valid=true. No #19/#40 data was sent externally.
+- Validation: 30 PR4-A.1 tests passed; PR4 + PR3 Resolver + Step 7 regression
+  65 passed; full backend 414 passed with the same five pre-existing unrelated
+  failures; `compileall app` and `git diff --check` passed.
+- PR4-A.1 remains Shadow-only. #56/#50 were not edited or superseded, no
+  Strategy was confirmed, Step 8 stayed locked, and Cutover was not started.
+
+## 2026-09-07 PR4-B Constraint-First Strategy Synthesis Production Cutover
+
+- Extracted one shared `run_strategy_synthesis_core()` for Shadow and
+  Production. Production now builds the grounded context, runs deterministic
+  synthesis, and passes Structural, Provenance, Business Rule, Theme Coverage,
+  Theme Title, and Unsupported Claim validators before it can supersede or
+  persist a current Candidate.
+- Added production flags with defaults `use_constraint_first_strategy_synthesis_v1=true`
+  and `allow_external_llm_strategy_synthesis=false`. An unambiguous Strategy
+  therefore uses deterministic synthesis and presentation with zero external
+  calls; unresolved ambiguity preserves the Strategy truth and records a human
+  requirement instead of returning no strategy.
+- Formal Candidate payloads now persist the synthesis contract, mode, stable
+  input IDs/hash, output hash, validator results, atomic Decision Reasons,
+  Intervention Themes, portfolio, and separate Decision/Audit views. Prompt and
+  model versions are stored only when an external synthesis call actually ran.
+- The write order is fail-closed: all synthesis payloads are prepared and
+  validated before any old current Candidate is superseded. A rejected result
+  leaves the previous current Candidate and its payload unchanged.
+- Real #19 Cutover reused the already-frozen #56 grounded payload to avoid the
+  unrelated heavy Step 7 source-row reconstruction. #56 remains immutable and
+  is now `DEFERRED` with reason
+  `SUPERSEDED_BY_VALIDATED_STRATEGY_SYNTHESIS_V1`; #57 is the new
+  `PENDING_REVIEW` current Candidate.
+- #57 contains five atomic Reasons and three Themes with coverage 13/15,
+  13/15, and 1/15. OFFICIAL_SITE is PRIMARY; BAIJIAHAO/ZHIHU are priority TEST;
+  BILIBILI/SOHU are deferred TEST; 43 channels remain OBSERVE. Production and
+  Shadow output hashes match exactly and all six validators are VALID.
+- #40 remained on #50. Read-only shared-core replay preserved three 6/6 Themes,
+  OFFICIAL_SITE PRIMARY, ZHIHU SECONDARY, no TEST, Benchmark-backed semantics,
+  and zero external calls.
+- No Strategy was auto-confirmed. #57 has no Experiment or experiment plan;
+  workflow API reports Step 7 `PENDING_REVIEW` and Step 8 `LOCKED`.
+- Validation: 57 focused PR4/Step 7 tests passed; full backend 420 passed with
+  the same five pre-existing failures and no new failure. `compileall` and
+  `git diff --check` passed; frontend was not changed.
+- Operational note: a read-only #19 current-action rebuild was stopped after
+  more than three minutes in Evidence lineage URL matching before any write.
+  PR4-B did not expand scope to fix that known pre-synthesis performance risk.
+
+## 2026-09-07 PR4-B.1 Strategy Decision View Production Cutover
+
+- Traced the final Strategy page to the strategy-candidate list API and
+  `strategyData.candidates`. Although #57 already exposed valid PR4 Decision
+  and Audit objects, `App.tsx` unconditionally rendered the legacy effective /
+  structured payload through `strategyDisplayPayload()`.
+- Extended the existing StrategyCandidate response with an explicit
+  `strategy_view_mode`. A candidate with `STRATEGY_SYNTHESIS_V1` and all six
+  valid synthesis validators returns `SYNTHESIS_DECISION_VIEW`; invalid or
+  historical candidates remain `LEGACY`.
+- Added a backend product-view adapter. It exposes validated Themes, Theme
+  coverage labels, the frozen portfolio split, channel business rationale,
+  related Themes/Reasons, success metrics, and a product-language OBSERVE
+  summary. Resolver internals, rationale paths, source IDs, and strategy basis
+  remain available only through the separate Audit View.
+- Candidate #50 has no persisted PR4 view and is intentionally immutable. Its
+  list response therefore uses the shared deterministic core as a read-only
+  compatibility projection. It performs no external LLM call and no DB write;
+  #50 remains current with the same Benchmark-backed semantics.
+- Replaced the valid-synthesis main review body with a pure frontend view of
+  the API response. It no longer groups Reasons, calculates coverage, ranks
+  channels, or mixes legacy fields with the PR4 main view. Legacy rendering is
+  retained only as the invalid/missing-synthesis fallback.
+- Real API and browser verification passed. #19/#57 shows three Themes
+  (13/15, 13/15, 1/15), OFFICIAL_SITE PRIMARY, BAIJIAHAO/ZHIHU priority TEST,
+  BILIBILI/SOHU deferred TEST, and 43 folded OBSERVE channels. #40/#50 shows
+  three 6/6 Themes, OFFICIAL_SITE PRIMARY, ZHIHU SECONDARY, and no TEST.
+- Validation: 59 focused PR4/Step 7 tests passed; full backend reached 422
+  passed with the same five pre-existing unrelated failures; frontend TypeScript/Vite
+  build, `compileall`, and `git diff --check` passed. Localhost Playwright
+  assertions and screenshots passed for #19 and #40. Candidate #57/#50 payload
+  hashes remained unchanged and external LLM calls were zero.
+- No Candidate, Action, Experiment, or Step 8 object was created or modified.
+
+## 2026-09-07 Step 8 Configuration Entry No-op Fix
+
+- Reproduced the confirmed #19/#57 state against the real API: Step 7 is
+  `CONFIRMED`, Step 8 is `READY_TO_CREATE`, while Candidate #57 has no
+  `action_id` or `experiment_id`. The frontend button only searched for an
+  already-created draft; when neither ID existed it displayed a transient
+  message and returned, so the advertised configuration action was a no-op.
+- Wired the existing official
+  `POST /strategy-candidates/{id}/execution-plan` path into an explicit Step 8
+  configuration modal. It collects the concrete channel, CREATE_NEW versus
+  UPDATE_EXISTING asset operation, successful PageSnapshot when updating,
+  title/URL/section/content structure, account/location, fixed Evidence
+  Package baseline Run IDs, confirmation note, and the Draft-only boundary.
+- The backend Strategy Decision View now exposes
+  `execution_channel_options`, derived only from its validated PRIMARY,
+  SECONDARY, and priority TEST portfolio. The frontend consumes this list
+  directly and cannot promote deferred TEST/OBSERVE channels or recompute
+  Resolver roles.
+- Opening the modal is immediate; PageSnapshot loading runs independently so
+  a slow asset request cannot make the button appear unresponsive. The modal
+  does not submit automatically and clearly states that Step 7 Strategy Truth
+  is immutable and publication is outside this action.
+- Real localhost Playwright verification opened #19 Candidate #57 and clicked
+  `进入第 8 步配置`. The modal rendered the backend-selected
+  `官网 · 主干预 · P1`, all required fields, and the 40 fixed baseline Runs.
+  The test intentionally did not submit. Candidate #57 remained unbound and
+  Action/Experiment counts remained unchanged.
+- Validation: 84 focused Step 7/8 tests passed, frontend TypeScript/Vite build
+  passed, `compileall app` passed, and `git diff --check` passed.
+
+## 2026-09-07 PR5-A Evidence-Constrained Execution Proposal Shadow
+
+- Added an isolated deterministic compiler in
+  `optimization/execution_proposal_shadow.py` and a read-only
+  `GET /workflow/{project_id}/{prompt_id}/execution-proposal-shadow` endpoint.
+  PR5-A reads confirmed effective Strategy structure, frozen Resolver roles,
+  the Evidence Package, and confirmed Product Truth; it does not consume the
+  frontend Decision View as planning truth.
+- Added ephemeral `ExecutionInputSnapshot`, minimum consumed evidence
+  projection, semantic `input_contract_hash`, execution constraints,
+  independent Intervention Proposals, categorical managed-asset fit,
+  `NewAssetSpec`, asset type/package candidates, Claim Usage Policy, canonical
+  titles, provenance-backed sections/content blocks, metric eligibility, and
+  the existing three-sample independent resampling plan. PageSnapshot is not
+  treated as ManagedAsset and no asset table was added.
+- Truth eligibility separates value from provenance. Current
+  `SUPPORTED + MANUAL_CONFIRMED` rows are accepted; an empty external
+  `source_reference` is legal. Since the schema has no approved aliases,
+  factual titles and sections use exact `capability_label` wording only.
+- Added eight independent validators for Snapshot, Channel Role, Asset Fit,
+  Claim Grounding, Title Claim, Section Provenance, Baseline, and Metric
+  Eligibility. Validator validity is separate from proposal readiness, so a
+  safe proposal may correctly remain `NEEDS_HUMAN_SELECTION`.
+- Real #19/#57 replay produced three independent active proposals:
+  OFFICIAL_SITE PRIMARY, BAIJIAHAO TEST, and ZHIHU TEST. BILIBILI/SOHU remain
+  deferred. Managed assets are zero, so all operations are `CREATE_NEW`.
+  Official asset type (PRODUCT_PAGE / FEATURE_PAGE / HELP_DOC) and packaging
+  remain human selections; each TEST is one minimal ARTICLE proposal scoped to
+  Theme T1 and one future Action/Experiment identity.
+- Package #12 v8's 40 baseline Runs remain separate from the 15 Strategy Runs.
+  Existing brand metrics retain package baselines; new external asset-level
+  retrieval/citation metrics are `NOT_MEASURABLE_YET`, not zero. No metric or
+  observation-window preset was invented.
+- Automatic encrypted short link, platform filing, whitelist, anti-blocking,
+  and seven-day 95% effectiveness all remain forbidden target assertions.
+  All eight validators passed and the safety audit reported zero unsupported
+  target assertions, new facts/channels, role mutations, fake assets, invented
+  metrics, baseline drift, ungrounded sections, or implicit unknown claims.
+- #40/#50 runs through `READ_ONLY_COMPATIBILITY_PROJECTION`; OFFICIAL_SITE
+  PRIMARY, ZHIHU SECONDARY, and `BENCHMARK_BACKED_STRATEGY` remain unchanged.
+  Repeated #57 replay produced the same semantic input hash.
+- Validation: 18 PR5-A tests (including A-O adversarial/golden cases) passed;
+  77 focused PR4/Step 7/PR5 tests passed; full backend 440 passed with the same
+  five pre-existing unrelated failures and no new failure. `compileall app`
+  and `git diff --check` passed. Candidate #57/#50 hashes, Action/Experiment
+  counts, Step 8 state, and external LLM calls all remained unchanged/zero.
+- PR5-B/C/D, formal proposal persistence, ManagedAsset persistence, Action /
+  Experiment creation, and Step 8 UI prefill were not started.
+
+## 2026-09-07 PR5-A.2 Execution Proposal Quality Remediation
+
+- Replaced minimal package rows with self-contained `AssetPackageCandidate`
+  projections: explicit FULL/P1/minimum scope mode, included and excluded
+  Themes, Reasons, Product Truth labels, one-asset count, eligible types,
+  deterministic merge basis, structured tradeoffs, and selection implication.
+  The #57 official FULL/P1 choice remains `NEEDS_HUMAN_SELECTION`.
+- Replaced the fixed Section template with package-specific, purpose-specific
+  synthesis. PRODUCT_TRUTH is one-truth scoped, SCENARIO consumes only planning
+  context, BOUNDARY contains restricted/unknown policy, VALIDATION contains
+  only package metrics/signals/baseline, FAQ excludes planning questions, and
+  unsupported OPERATION is omitted. Content Blocks now exactly inherit Section
+  provenance. An unresolved package exposes Section Plan candidates instead of
+  a silently selected top-level plan.
+- Added deterministic TEST `ChannelOpportunityProfile` and evidence-pattern
+  hypotheses. Real #57 BAIJIAHAO is 40 reference / 16 retrieval / 2 claim / 11
+  document with `EXISTING_RETRIEVAL_EXPOSURE`; ZHIHU is 40 / 0 / 1 / 6 with
+  `REFERENCE_ENVIRONMENT_WITHOUT_RETRIEVAL`. Both retain T1 and two Reasons,
+  ARTICLE, TEST role, and Path-D-only/non-primary boundaries.
+- Added separate Asset Package and Channel Hypothesis quality checks plus the
+  full seven-part `proposal_quality_audit`. Added quality tests for standalone
+  packages, minimal Section provenance, FAQ/OPERATION boundaries, channel
+  distinction, and generic-template rejection.
+- Real #19/#57 and #40/#50 replay: all eight safety validators VALID and all
+  seven quality checks PASS. #57 input hash remained
+  `ac733bf1b2e20ff6a87708365487f3d3d4d9574d3d12a7d8cd70ad0fe4b90cfb`;
+  baseline 40 Runs and Strategy coverage 15 Runs remained distinct. #40 kept
+  its Benchmark-backed semantics and Resolver roles.
+- Validation: 24 PR5-A tests passed; full backend reached 446 passed with the
+  same five pre-existing unrelated failures. `compileall` and
+  `git diff --check` passed. External LLM calls, DB writes, Candidate changes,
+  Action/Experiment/ManagedAsset creation, and Step 8 modification were all 0.
+- `PR5-A = FROZEN`. PR5-B was not started.
+
+## 2026-09-07 PR5-B Human Review / Edit / Revalidation
+
+- Added deterministic PR5-B overlay/rebuild functions to the PR5-A execution
+  proposal module and two read-only POST APIs for single-proposal and portfolio
+  revalidation. Source proposals are deep-copied; human edits never mutate the
+  PR5-A baseline.
+- Enforced backend immutable-field gates for Resolver Role, proposal type,
+  Theme/Reason/Product Truth scope, claim policy, Evidence Package/baseline,
+  metrics, strategy identity, and proposal merging. Illegal edits return
+  structured reason codes and are never silently corrected.
+- Canonical rebuild resolves only backend-provided package/type candidates,
+  exact Product Truth title wording, package-specific provenance-backed
+  sections, publishing metadata, and allowed observation windows. Every edit
+  reruns all eight PR5-A validators and emits an ephemeral `human_edit_diff`.
+- Replaced the old blank Step 8 creation form with proposal review cards. The
+  UI now exposes official FULL/P1 tradeoffs, TEST evidence patterns, legal
+  asset types, safe title, section controls, allowed/restricted claims,
+  metric measurement levels, baseline, and audit details. Its primary action
+  only revalidates; it cannot create Action/Experiment.
+- Real #19/#57 API replay selected official P1 + FEATURE_PAGE and BAIJIAHAO
+  execution while deferring ZHIHU. The portfolio reached
+  `READY_FOR_CONFIRMATION`, every proposal passed 8/8 validators, all safety
+  counters were zero, and Candidate/Action/Experiment state was unchanged.
+- Validation: 32 focused tests passed, frontend production build passed,
+  FastAPI real-data replay passed, and `git diff --check` passed. PR5-B is
+  frozen; PR5-C was not started.
+- Browser acceptance caught and fixed an Ant Design Segmented uncontrolled
+  default: the first `execute` option looked selected while no boolean entered
+  the overlay. The control now uses explicit `EXECUTE` / `DEFER` UI values and
+  one boolean conversion point. The repeated real #57 UI flow reached
+  `READY_FOR_CONFIRMATION` and did not display or create an Experiment draft.
+- Full backend validation finished with 454 passed and the same five
+  pre-existing unrelated failures. Desktop and 390px browser replays both
+  completed the same real #57 portfolio flow successfully.
+
+## 2026-09-08 Semantic Governance Phase 1
+
+- Change classification: `IMPLEMENTATION_CHANGE` for repository governance only. The embedded Foundation/Citation proposal is separately classified `SEMANTIC_CHANGE`, remains `DRAFT + CANDIDATE + NOT_IMPLEMENTED`, and was not implemented.
+- Added `docs/semantics/` with the domain model, 16 versioned Semantic Contracts, Golden Case registry, Definition Review checklist, Conflict Register, RFC template, first real RFC candidate, ADR placeholder, and immutable #19/#40 snapshot manifests.
+- Updated workspace/project `AGENTS.md` and Documentation Governance so change authorization is distinct from durable truth; effective FROZEN Contract, RFC implementation authorization, Product Definition, Spec, and observed implementation now have explicit roles.
+- Recorded maturity and implementation status independently. Initial registry: 15 `OBSERVED`, 1 `CANDIDATE`; 14 `PRODUCTION`, 1 `PARTIAL`, 1 `NOT_IMPLEMENTED`; no Contract was automatically FROZEN.
+- Snapshot capture fixed #19 to Package `12@v8`, Candidate `57`, 40 explicit Runs and #40 to Package `15@v2`, Candidate `50`, 6 explicit Runs. Both bind local DB SHA-256 and reject latest-object substitution; #40's unavailable PR4 contract hashes remain `null` with a reason.
+- Data impact: none. No production module, API, frontend, migration, database row, Candidate, Action, Experiment, Resolver, Strategy Synthesis, PR5-A/B, or Step 1-8 behavior changed.
+- Validation: Ruby JSON parse and expected-assertion SHA-256 replay passed for both manifests; fixed package/version/hash and Run IDs matched `backend/geo_v0.db`; Contract maturity/status field counts matched; `git diff --check` passed. `jq` was unavailable, so Ruby provided JSON validation. Production tests were not rerun because this checkpoint changes documentation/governance only.
+- Stop gate: PR5-C remains `SEMANTIC_RISK`; no Foundation/Citation implementation, production cutover, Contract freeze, CI gate, reviewer agent, or agent runtime was started.
+
+## 2026-09-08 Foundation/Citation RFC Definition Review 001
+
+- Performed the first independent Semantic Review under the Phase 1 process. Classification: `SEMANTIC_RISK`; review-only, with zero production code or database writes.
+- Verified all 16 Contract approval triplets remain `null`; no historical PR freeze was imported as Semantic Freeze approval.
+- Reviewed the DRAFT RFC against `SC-PT-001`, `SC-GAP-001`, `SC-CHANNEL-001`, `SC-STRATEGY-001`, history/scope contracts, the Definition Review checklist, current Resolver Path C, and immutable #19/#40 manifests.
+- Result: `NEEDS_REVISION`, `Freeze Recommendation = NO`. Blocking gaps are independent object identity/source/state definitions, legal `Foundation REQUIRED + Citation PRIMARY NONE`, complete Citation eligibility, #40 proposed challenge, Foundation Step 8 prohibitions, UNKNOWN behavior, and historical/shadow lineage.
+- Added only `docs/semantics/reviews/RFC-FOUNDATION-CITATION-SPLIT.review-001.md` and linked the result from `SEM-CONFLICT-001`. The RFC itself was not modified; no Shadow, Freeze, Cutover, PR5-C, or Agent Runtime was started.
+
+## 2026-09-09 RFC-RUNTIME-001 Definition Freeze And Read-only Projection Spike
+
+- Product Owner Definition Freeze changed `RFC-RUNTIME-001` and
+  `SC-RUNTIME-001@0.1.0` from CANDIDATE to FROZEN while keeping
+  `implementation_status=NOT_IMPLEMENTED` and all production cutover metadata
+  empty. The durable approval is
+  `docs/semantics/approvals/RFC-RUNTIME-001.definition-freeze.md`.
+- Recorded Review-005's incorrect `source_ref_set_hash` ending in `d831` as
+  `NON_SEMANTIC_REVIEW_PROMPT_TRANSCRIPTION_ERROR`; the RFC canonical bytes,
+  Frozen vector and independent result ending in `a483` remain authoritative.
+- Added an isolated `app/modules/runtime_projection` canonicalizer/projector,
+  a read-only CLI, and focused tests. The projector accepts only fixed #19/#40
+  Manifests, opens SQLite read-only with a write-denying authorizer, implements
+  all 16 Frozen legacy selectors, and emits only `virtual:` identities.
+- Real two-pass replay returned `SPIKE_PASS`. #19 matched 0 COMPLETE / 6
+  PARTIAL / 9 UNSAFE / 1 UNAVAILABLE; #40 matched 0/7/8/1. Both Stage
+  expectation diff counts were zero, current projection remained UNRESOLVED,
+  and all formal missing manifests/reviews remained null.
+- Added `SC-RUNTIME-001@0.1.0` to both real Golden Case registries with separate
+  `runtime_frozen_expected` assertions, preserving the existing production
+  `current_expected` assertions as a different concern.
+- The three normative vectors matched exactly. #19 replay hash was
+  `fa7cfc02...562f2a` twice; #40 was `e99ecfdc...1e3e57` twice. Latest
+  substitutions, semantic inventions and DB writes were zero; database SHA-256
+  remained `fb24d2...4900d3`.
+- Validation: 8 focused tests passed, `compileall app` and `git diff --check`
+  passed, and the standalone CLI completed against the fixed database. No API,
+  frontend, schema, migration, production Runtime,
+  Candidate, Action, Experiment or PR5 behavior changed. Stop gate: no Runtime
+  Shadow implementation or production cutover was started.
+
+## 2026-09-10 RFC-RUNTIME-001 Runtime Shadow Phase 1A Persistence Spine
+
+- Implemented the Frozen Runtime persistence primitives in an isolated
+  `app/modules/runtime_persistence` package: immutable Manifest and
+  AnalysisContext roots; independent StageExecution and StageAttempt history;
+  append-only exact-target Review decisions; explicit CurrentContextPointer and
+  ContextStageSelection with event history; exact Stage input edges; and
+  explicit invalidation/reactivation history with dependency-derived STALE.
+- Added generation-fenced atomic Stage publication, single successful
+  completion, zero-member successful output, optimistic CAS for Review,
+  Current pointer, Stage selection and validity, plus SQLite triggers protecting
+  immutable history even when repository methods are bypassed.
+- Added Alembic revision `20260910_01`, but did not apply it to the real GEO
+  database. The Runtime models deliberately use an isolated `RuntimeBase` and
+  are not registered with production `Base`, preventing `init_db()` from
+  silently creating Phase 1A tables.
+- Validation: all Frozen canonical vectors matched; 16 persistence/projection
+  tests passed; a single clean temporary revision and the full Alembic chain to
+  head both passed; Runtime compileall and diff checks passed. The complete
+  backend run was 470 passed / 5 pre-existing unrelated failures, each
+  reproduced alone and left unchanged under the Phase 1A production-edit ban.
+- #19/#40 projection expectation diff, latest substitution and semantic
+  invention remained zero. Real DB SHA stayed
+  `fb24d2f0...4900d3`, with zero writes and zero production call-sites.
+- `SC-RUNTIME-001` implementation status is now `PARTIAL`: Persistence Spine is
+  ready for owner review, but live Phase 1B capture, real migration, API,
+  frontend, cutover, backfill and PR5-C were not started.
+
+## 2026-09-10 RFC-RUNTIME-001 Runtime Shadow Phase 1B Stop Gate
+
+- Audited the prospective Legacy capture boundaries without changing code or
+  database state. The existing pipeline has observable commits, but it does not
+  carry the exact formal Stage manifests and dependency edges required by the
+  Frozen Runtime profile.
+- Registered `SEM-CONFLICT-003`: `ANSWER_SEMANTIC` requires a closed-enum
+  `member_kind`, but no literal registry exists, and Legacy successful-zero vs
+  failed/unmaterialized Runs are not distinguishable from row absence.
+- Registered `SEM-CONFLICT-004`: Frozen `BINDING` consumes an upstream
+  AnswerUnit/Reason output, while Legacy creates AnswerUnits from AnswerClaims
+  inside the Binding call itself. Capturing that as a prior upstream edge would
+  be reconstruction, not prospective observation.
+- #19 fixed Package 12 has 40 Runs, with RecommendationEvent / AnswerClaim /
+  AnswerUnit / Binding populations spanning 37 / 12 / 12 / 12 Runs. #40 fixed
+  Package 15 has 6 / 6 / 6 / 6, but count equality still does not establish an
+  immutable upstream edge.
+- Stop result:
+  `BLOCKED_BY_FROZEN_STAGE_OUTPUT_AND_BINDING_LINEAGE_MAPPING_GAPS`. No Runtime
+  call-site, migration, API, frontend or production behavior was changed;
+  Runtime tables and Phase 1B writes in `geo_v0.db` remain zero.
+- Validation: 16 Phase 1A persistence/projection tests passed; the standalone
+  fixed #19/#40 replay remained `SPIKE_PASS`, all three normative vectors
+  matched, both stage expectation diffs were zero, two-pass hashes were stable,
+  and latest substitutions, semantic inventions and DB writes remained zero.
+  Runtime compileall and `git diff --check` passed; the real DB SHA remained
+  `fb24d2f0...4900d3`.
+
+## 2026-09-10 RFC-RUNTIME-001 Semantic Mapping Gap Review
+
+- Kept Phase 1B stopped and completed a code-first, read-only mapping audit for
+  all 16 Frozen Stages. No Runtime capture hook, Legacy semantic change,
+  migration, schema patch, backfill, API/frontend change or production write
+  was made.
+- Distinguished execution-time facts from post-hoc inference. Nine Stages have
+  candidate outputs that could be captured with non-semantic instrumentation,
+  but only `RUN_METRICS` is independent of the unresolved upstream chain.
+- Confirmed Frozen contract gaps in Answer Semantic member/zero identity,
+  AnswerUnit ownership across Answer Semantic and Binding, and the actual
+  Qualification/Fetch order. Confirmed stronger Legacy ambiguities in
+  project-wide Source Qualification, heuristic Product Truth binding,
+  Prompt-level unbound Gap confirmation and implicit latest Candidate selection
+  for Execution Proposal.
+- Read-only #19/#40 SQL preserved the fixed 40/6 Run scopes and showed 13/1
+  PromptAnalysisRun envelopes, 13/7 ShadowRun envelopes, cache-ledger
+  observation unions and unbound Gap review state. Latest/current/post-hoc
+  mappings were explicitly rejected.
+- Decision:
+  `BLOCKED_BY_LEGACY_SEMANTIC_AMBIGUITY`. A targeted RFC amendment is required
+  but is not sufficient without separately authorized Legacy semantic fixes.
+  Phase 1B, Phase 1C, Cutover and PR5-C remain stopped.
+- Validation: the read-only projection remained `SPIKE_PASS`, all three
+  normative vectors matched, #19/#40 stage expectation diffs stayed zero,
+  latest substitution/semantic invention/DB writes stayed zero, and all 16
+  Phase 1A persistence/projection tests passed. The production DB SHA-256
+  remained `fb24d2f0...4900d3`.
+
+## 2026-09-10 Single-Prompt Core V2 First Slice
+
+- Added an isolated V2 control plane with stable analysis identity, immutable
+  sampling-plan hash, exact BrowserMonitorTask ownership, atomic worker claim,
+  explicit retry history and restart-to-`INTERRUPTED` recovery. It does not
+  import the gated Runtime persistence spine or read V1 latest/current objects.
+- Added write-once AnalysisContext persistence. Context creation waits for all
+  planned Runs to terminate and requires at least one usable answer; the frozen
+  payload includes the exact Run scope plus answer, reference, Retrieval,
+  artifact metadata and failure details. Later live-row edits or new sampling
+  do not change the returned frozen version.
+- Added `/api/v2/single-prompt/analyses` create/read/retry endpoints and a
+  separate `单问题分析 V2` page. The page restores only an explicit URL-bound
+  analysis identity and renders backend status without Candidate/Package
+  inference.
+- Added an independent Alembic branch `20260910_v2`, avoiding dependency on
+  the unauthorized Runtime migration artifact.
+- Validation: 7 V2 tests passed; compileall, frontend build and diff check
+  passed. Combined monitoring tests were 22 passed / 1 known collector failure.
+  Current collector code cannot prove independent conversation reset and emits
+  no Retrieval candidates, so real collection acceptance remains blocked and
+  was not replaced with a mock PASS.
+- Real control-plane smoke used new Prompt #44 and created Analysis
+  `001da937-0baa-498a-a7e9-9d8801324fb3`, Task #52 and Run #259. One Wenxin
+  sample completed in 24.379 seconds and froze
+  `raw-v1:4213d19507cb840c` / Context
+  `ctx-8e284b02-6d7b-45f1-931a-ff18bda92562`, containing a 1,902-character
+  answer and 30 references. Exact duplicate create returned the same analysis
+  and task; wrong-Prompt read and post-freeze retry both returned 409.
+  Retrieval remained absent and sampling proof remained `UNKNOWN`, preserving
+  the collector-contract blocker.
+- Desktop and 390px mobile Playwright renders passed after removing V2's wait
+  on legacy Workflow/Dashboard loads. Mobile body width was exactly 390px with
+  no horizontal overflow; the data table scrolls within its own surface.
+- Final closure added backend-authored warnings for unavailable independent
+  session proof and Retrieval observations, plus SQLite write/delete guards on
+  frozen AnalysisContext rows. The live #44 result exposes both warnings;
+  focused V2 tests remain 7/7, frontend production build and compileall pass,
+  and final desktop/mobile renders have no navigation-title overlap.
+
+## 2026-09-11 Single-Prompt Core V2 Second Slice
+
+- Added isolated DiagnosisExecution, immutable DiagnosisResultVersion,
+  immutable SourceSnapshot and append-only DiagnosisReview persistence on the
+  V2 migration branch. Diagnosis identity freezes raw Context, brand, empty or
+  populated Truth set, and full pipeline config hashes; restart/retry and stale
+  review CAS are explicit.
+- Added a narrow V2 adapter around AnswerSemantic, SourceClaim, Alignment,
+  deterministic passage recall and conservative Truth relation logic. It does
+  not invoke V1 runners, scan latest Package/Candidate, carry historical review
+  or write V1 business state.
+- Citation output now preserves reference observation, anchor binding,
+  candidate recall and alignment evaluation independently. Candidate sources
+  are restricted to the Reason's own Run; fetch failure, non-recall, zero Claim,
+  judge failure and not-authorized evaluation remain distinct.
+- Added local-only immutable snapshot reuse with content/passages hash checks,
+  explicit `REUSE_ONLY` and evidence `CACHE_ONLY` execution policies, and a
+  deterministic challenge-page gate. DeepSeek V2 structured extraction uses
+  explicit non-thinking mode and one HTTP attempt while legacy callers retain
+  their defaults; generation controls participate in cache identity and actual
+  external HTTP attempts/tokens are recorded.
+- Authorized #44 replay created Diagnosis
+  `296e1e1b-bf14-402d-89c1-bb963f1cdea9` and immutable Result
+  `diag-v1:1449c44916fe5c55`: one external `deepseek-v4-flash` call, zero cache
+  hits, 2,417 total tokens, four grounded recommendations/four Reasons, 30
+  references/29 sources, eight locally recalled passages, zero external
+  SourceClaim/Alignment calls, four empty-Truth `UNRESOLVED` relations and no
+  human review. Retrieval, independent-session proof, unproven anchors, four
+  prior fetch failures and evidence not evaluated remain visible limitations.
+- The authorized replay performed no page fetch. It locally reused 25 success
+  and four failure snapshots. A later read-only quality audit identified one
+  reused CSDN security-verification page among the 25 technical successes; the
+  immutable result was not rewritten or replayed, and the new challenge gate is
+  covered for future executions.
+- Validation: 59 focused V2/retrieval/SourceClaim/Alignment tests passed;
+  compileall, V2 fresh migration, frontend production build and diff check
+  passed. Three GETs produced no execution/result/snapshot/review mutation.
+  Desktop and 390px mobile Playwright checks passed after fixing Ant Table's
+  auto-layout row expansion. Strategy, Proposal, Action and Experiment remain
+  out of scope.
+
+## 2026-09-11 Single-Prompt Core V2 LLM Safety Patch
+
+- Added V2-only strict Pydantic response contracts for AnswerSemantic,
+  SourceClaim and Alignment. The shared DeepSeek client exposes a default-off
+  `strict_json`/`response_validator` path and validates both cache recovery and
+  new provider output before successful cache persistence; legacy V1 behavior
+  remains opt-out and unchanged.
+- Separated invalid structure, valid zero output, deterministic grounding
+  failure and `SEMANTIC_REVIEW_REQUIRED`. Invalid `{}` no longer becomes zero
+  events/claims or `NONE`; a schema-valid Answer whose events all fail span
+  grounding is `FAILED_VALIDATION`, and a repeated failed Answer is attempted
+  only once within the diagnosis execution.
+- Made frozen answer/source spans the only fact-bearing text for V2 recall,
+  Alignment and Truth matching. Normalized projections that add numeric or
+  high-impact qualifiers, alter explicit scope, or lack a conservative lexical
+  bridge remain visible but are not consumable. Model messages now mark all
+  answer/page/pair material as untrusted data.
+- Added a read-only current safety projection over immutable results. It
+  preserves historical stats while publishing current blocked snapshot IDs,
+  currently eligible snapshot IDs and an effective evidence-relation whitelist.
+  The actual #44 projection remains result `diag-v1:1449c44916fe5c55`, reports
+  25 historical technical successes, one blocked verification page and a
+  maximum of 24 currently eligible sources; no ResultVersion or Review changed.
+- Validation: 53 V2/DeepSeek contract tests passed, including Schema,
+  Grounding, Semantic Projection and Recovery/Authority negatives; compileall
+  and frontend production build passed. The broader SourceClaim/Alignment/V2
+  regression set passed 90/90. The full backend suite remained at its known
+  baseline of 521 passed / 5 unrelated failures (two batch-delete contracts,
+  one Wenxin conversation-reset contract and two legacy Step 8 tests). Tests
+  made no external LLM calls or real-data writes. Real provider injection
+  resistance and real external SourceClaim/Alignment remain not verified.
+
+## 2026-09-11 Single-Prompt Core V2 Third Slice
+
+- Added a V2-only `StrategyInputProjection` and A/B/C
+  `StrategyReadinessReport`. Unreviewed and reviewed-but-ineligible inputs
+  return explicit blockers without creating empty StrategyCandidate rows.
+- Added deterministic Foundation/channel separation, four-level direction
+  handling, closed-world provenance validation, pure Theme grouping and Run-ID
+  union coverage. No PRIMARY is required; Foundation cannot select a channel;
+  UNPROVEN source support can form only a bounded TEST hypothesis.
+- Added isolated strategy execution, immutable result versions and append-only
+  reviews. Exact diagnosis/review/safety hashes are frozen; the producer returns
+  its exact ID, priority edits create child versions, and stale inputs become
+  view-only with HTTP 409 on writes.
+- Added V2 GET/POST APIs and a strategy area on the existing V2 page. GET and
+  refresh only read readiness/exact strategy identity; generation and review
+  require explicit user actions and never enter Step 8.
+- Real #44 read-only acceptance is class A: no review, Foundation UNKNOWN,
+  zero qualified directions/candidates, 29 source snapshots, four grounded
+  Reasons, zero eligible evidence relations, historical content-ready 25 and
+  current blocked content 1/max eligible 24. No real #44 rows were changed.
+- Validation: 63 combined V2 tests passed, including 12 third-slice strategy
+  tests; 68 V1 Channel/Resolver/PR4 regressions also passed. Compileall, a fresh
+  V2 migration through `20260911_v2_strategy`, frontend production build,
+  desktop/narrow-page rendering and diff check passed. No external LLM call or
+  page fetch was made.
+
+## 2026-09-11 Single-Prompt Core V2 Fourth Slice
+
+- Added isolated execution proposal, immutable proposal result, append-only
+  confirmation and append-only publication record models plus migration
+  `20260911_v2_execution`. SQLite migration and local `init_db` paths both add
+  no-update/no-delete guards to result, confirmation and publication history.
+- Added one V2-only deterministic compiler from an exact accepted StrategyResult
+  direction. It freezes strategy/review/diagnosis identities, consumed Truth and
+  limitations, and the exact AnalysisContext baseline after raw, sampling-plan and
+  run-scope hash/manifest validation. It does not call V1 Step 8 runners or latest
+  Package/Candidate/Truth lookup paths.
+- Added CREATE_NEW-only asset briefs, approved title/Section candidates, separate
+  PUBLIC_CONTENT and INTERNAL_CHECKLIST collections, safe edit/revalidation,
+  immutable child versions and idempotent confirmation. Foundation publication
+  surfaces leave strategy channel fields null; PARTIALLY_COVERS is internal only.
+- Added USER_REPORTED publication registration and append-only revision history.
+  Conformance is backend-derived and separated from publication fact; incomplete
+  or unstructured content is NOT_EVALUABLE, scope deviations remain recorded, and
+  no report can become SYSTEM_VERIFIED.
+- Added V2 APIs and page controls for direction selection, skeleton generation,
+  asset/surface choice, title and Section editing/reordering, confirmation,
+  publication registration/revision and history display. GET/refresh does not
+  compute or write.
+- Real #44 read-only acceptance remains blocked before strategy: diagnosis review
+  count 0 and strategy count 0, with no real proposal/confirmation/publication.
+  Eleven isolated fourth-slice tests cover the positive chain; the combined V2
+  and reused-kernel regression set passed 162 tests. A fresh database migrated
+  through both current Alembic heads successfully, compileall/diff check and the
+  frontend production build passed. Live #44 desktop and 390px read-only renders
+  showed the precise review blocker without horizontal overflow or a proposal
+  action. No external LLM call, page fetch, auto-publication, retest or V1 state
+  mutation occurred.
+
+## 2026-09-12 Single-Prompt Core V2 Fifth Slice
+
+- Added a V2 frozen sampling adapter that creates exact BrowserMonitorTask/Run
+  rows from the immutable RetestPlan, verifies each `original_query` hash and
+  keeps the mutable V1 task-creation default unchanged. Retest failure recovery
+  reuses planned Run IDs, preserves successful outputs and supports explicit
+  finalization with recorded failures.
+- Added RetestExecution and immutable ComparisonResultVersion persistence plus
+  the `20260911_v2_retest` migration. The exact handoff freezes confirmation,
+  selected publication revision, baseline AnalysisContext, Prompt, sampling
+  plan, MeasurementIdentity and metric contract; no latest Strategy/Publication
+  or current Project identity lookup is used.
+- Added pure frozen-DTO Run-level measurement for brand mention, V2 semantic
+  recommendation, target-brand official references and exact published URL
+  references. Missing semantics/official identity/observation remains null;
+  duplicate references cannot inflate Run hits. Baseline and Retest always use
+  the same identity and contract.
+- Added separate sampling and semantic-measurement authorization. DeepSeek
+  `cache_only` is default-off for V1, revalidates V2 cache hits and rejects a miss
+  before API-key/HTTP access. Comparison preserves planned, observed and
+  unobservable conditions; explicit observed conflicts keep side values but
+  suppress the delta.
+- Added V2 APIs and page controls for exact publication selection, measurement
+  identity confirmation, frozen plan creation, explicit sampling/retry/finalize,
+  cache-only or explicitly authorized semantics, and descriptive comparison.
+  GET/refresh/polling are read-only and the UI states that USER_REPORTED is not
+  system verification or causal evidence.
+- Real #44 read-only acceptance remains blocked with zero Strategy,
+  ExecutionConfirmation and PublicationRecord rows, so no Retest was created.
+  Combined V2/DeepSeek tests passed 87/87; focused fifth-slice/execution tests
+  passed 24/24; a fresh database migrated through both heads, compileall and the
+  frontend production build passed. V1 monitoring regression passed 15/16; the
+  pre-existing Wenxin conversation-reset assertion remains failing and is not
+  changed by this slice. The full backend suite passed 555 tests with seven
+  existing out-of-scope failures: two batch-delete contract tests, one Wenxin
+  reset test, two Legacy Step 8 tests and two Runtime Projection Spike tests.
+  No external browser or LLM call occurred.
+
+## 2026-09-14 Single-Prompt Core V2 Real E2E Baseline
+
+- With explicit Baseline-only authorization, created Analysis
+  `ecb4ff1a-fbc7-4aa4-93cc-ed8172ffa811`, Task 53 and exact planned Runs
+  260/261/262 for Project 3 / Prompt 40 through the production V2 API.
+- All three Runs submitted the frozen text `长链接缩短` and succeeded on their
+  first attempt with 1,653/1,800/1,725 answer characters and 24/26/27 complete
+  reference observations. The immutable result is
+  `raw-v1:79ea2aca2cb58ca4`, Context
+  `ctx-807c3737-2ee3-42d4-87a8-cb466755555f`.
+- Captured HTML contains one current question node per Run and local collector
+  conversation UUIDs differ. The collector nevertheless records
+  `single_continuous`, `sampling_mode=UNKNOWN`; independent-session proof and
+  Retrieval observation therefore remain unavailable and are not reported as
+  successful independent/comparable sampling.
+- Frozen references contain 77 observations / 35 canonical URL identities.
+  No diagnosis, DeepSeek call, source fetch, Truth/review, Strategy, publication
+  or Retest was started. The exact future authorization scope is recorded in
+  `docs/SINGLE_PROMPT_CORE_V2_REAL_E2E_ACCEPTANCE.md`.
+
+## 2026-09-14 Single-Prompt Core V2 Real E2E Answer Semantic
+
+- With a separate Answer-Semantic-only authorization, submitted the exact
+  frozen #40 Analysis/Context through the production V2 Diagnosis API. The
+  immutable execution is `40cdde15-f4ba-4ce8-803e-7e04ddd44931` and its result
+  is `diag-v1:8d44fcac42659f31`; all input and answer hashes matched before the
+  request and no latest substitution was used.
+- DeepSeek `deepseek-v4-flash` received one request for each Run, for exactly
+  three external requests, zero cache hits and 10,163 provider-reported total
+  tokens. Automatic retry was disabled. Provider-billed cost is not persisted
+  and remains unknown.
+- All three responses finished normally at the provider but failed the V2
+  strict Schema gate. Non-empty `selection_criteria` used unsupported
+  `criterion/criterion_scope/answer_span` fields instead of the admitted
+  contract. The result records three `FAILED_SCHEMA` items, zero effective
+  events/Reasons and zero Truth relations; failures were not rewritten as a
+  valid empty semantic result.
+- Evidence remained closed with `REUSE_ONLY + CACHE_ONLY`. All 35 sources are
+  `FETCH_DISABLED`, with zero passages, SourceClaims, candidates or Alignment
+  calls. No DiagnosisReview, Strategy or Retest was created and no Truth or
+  frozen source input was modified.
+
+## 2026-09-14 V2 Answer Semantic Contract Alignment Repair
+
+- Replaced the mixed string/object `selection_criteria` protocol with one strict
+  object array. `normalized_reason`, grounded `reason_span` and the literal
+  `MARKET_CRITERION` scope are required; legacy aliases and unknown fields remain
+  rejected rather than translated.
+- Made the production Answer prompt embed the schema generated from
+  `AnswerSemanticResponse`, with grounded non-empty and legal-zero examples.
+  Prompt, Schema, admission, projection and Diagnosis contracts were versioned
+  so incompatible cache results cannot reuse the new identity.
+- Completed the criterion consumption path through grounding, conservative
+  normalization, independent result persistence, API projection and V2 UI.
+  Market criteria and unresolved strings cannot become brand Reasons, Truth or
+  Evidence relations.
+- Added a backend eligibility Gate that distinguishes all-failed, legal-zero and
+  partial-success Answer sets. All-failed results are view-only; revision,
+  review and Strategy creation are rejected before writes. The frozen #40
+  ResultVersion now projects 0/3 admitted, 3/3 failed and the Strategy blocker
+  `NO_CONSUMABLE_ANSWER_SEMANTIC_RESULT` without changing historical rows.
+- Focused V2 Safety/Diagnosis/Strategy tests passed 69 tests; the broader V2 and
+  DeepSeek-contract set passed 101; V1 Answer regressions passed 27. Backend
+  compileall and the frontend production build passed. No external LLM,
+  sampling, source fetch, Truth/Review/Strategy write or real replay occurred.
+
+## 2026-09-14 V2 Answer Semantic Authorized Replay
+
+- Preflight matched Project 3 / Prompt 40, immutable Context
+  `ctx-807c3737-2ee3-42d4-87a8-cb466755555f`, Raw Result/hash and all three
+  authorized Run answer hashes. The deployed contract was Prompt `safety.v2`,
+  Schema `strict.v2`, admission v2 and `max_attempts=1`.
+- Created Diagnosis `c48054e3-1f4a-4cb5-b21c-9d6f584af273` through the formal
+  whole-Context API with source `REUSE_ONLY` and evidence LLM `CACHE_ONLY`.
+  Three DeepSeek `deepseek-v4-flash` requests completed with zero cache hits,
+  no retries and 12,714 total provider-reported tokens.
+- Published immutable ResultVersion `diag-v1:5a9bf1bd51178074`. Run 260 admitted
+  seven option events and one independent market criterion, with three events
+  retained for semantic review. Runs 261/262 failed exact grounding because the
+  returned span omitted an invisible source separator; neither response was
+  partially consumed or rewritten as zero events.
+- Evidence remained closed: zero source fetches, zero SourceClaim/Alignment
+  calls and 35 reused failure snapshots. The old failed ResultVersion/hash is
+  unchanged; Review, Strategy and Retest counts for the new execution remain
+  zero, and Product Truth rows were not modified.
+
+## 2026-09-14 V2 Answer Raw-Span Grounding Patch
+
+- Inspected the frozen Run 261/262 answers and retained failure excerpts. Both
+  first-event mismatches are exactly one omitted `U+200C ZERO WIDTH NON-JOINER`
+  at local span index 6; no semantic or punctuation change exists in those
+  inspected spans. Full failed responses were not retained, so no full-response
+  recovery claim was made.
+- Added V2-only `locate_v2_answer_span`: exact unique match first, then only a
+  unique, contiguous, same-line U+200C matching view. It rejects ambiguity,
+  cross-line concatenation, other control characters and text changes. Stored
+  projection metadata contains model/raw span, offsets, raw SHA-256, raw line
+  context and the exact rule/version.
+- Advanced only affected contracts: admission v3, Answer projection
+  `v3_grounded_raw_span`, grounding `u200c.v1`, Truth relation
+  `v2_subject_aware`. Answer Prompt safety.v2 and Schema strict.v2 are unchanged.
+- Cross-brand lexical matches now remain unconfirmed capability-fit suggestions:
+  machine PARTIAL is retained for audit, current effective relation is
+  UNRESOLVED, and downstream Strategy input uses the current projection.
+- Split disabled/not-authorized source content from actual fetch failure. The
+  fixed #40 read-only projection now reports 35 not fetched and zero actual
+  fetch failures; the immutable historical ResultVersion was not rewritten.
+- V2 test suite passed 111 tests; focused Safety/Diagnosis/Strategy/Execution
+  suite passed 104. Backend compileall and frontend production build passed.
+  No external LLM, browser sample, source fetch, real Diagnosis, Truth, Review
+  or Strategy write occurred.
+
+## 2026-09-15 V2 Answer Raw-Span Production Replay
+
+- Revalidated the exact Project 3 / Prompt 40 Analysis, Context, Raw Result and
+  Run 260/261/262 answer hashes, then created Diagnosis
+  `bd154212-9291-42ab-8966-b981136e10f0` through the formal V2 whole-Context API.
+- The execution froze Prompt `safety.v2`, Schema `strict.v2`, admission v3 and
+  grounding `u200c.v1`; source policy was `REUSE_ONLY`, evidence policy was
+  `CACHE_ONLY`, and external max attempts remained one.
+- Published `diag-v1:dbbbd68addd737f9`. Run 260 passed current validation from
+  one compatible cache hit; Runs 261/262 used two new DeepSeek requests and
+  8,598 provider-reported tokens. Run 262 exercised the restricted U+200C rule.
+- Answer admission is now 3/3 with zero failures: 22 option events and three
+  independent market criteria. Thirteen events remain explicitly review-required
+  because their scenario-list wording lacks an explicit option cue.
+- Evidence remained closed: 35 sources not fetched, zero actual fetch failures,
+  zero SourceClaim/Alignment external calls and zero evaluated relations. No
+  Review, Truth mutation, Strategy, publication or Retest followed the replay;
+  the prior immutable result remains unchanged.
+
+## 2026-09-15 V2 Answer Event Review Visibility and Consumption Gate
+
+- Fixed the V2 diagnosis page to read event-level
+  `semantic_validation_status` instead of inferring review state only from each
+  Reason. The 13 review-required #40 events now appear in a dedicated table with
+  Run/Event identity, raw context, extracted Reasons, concrete review cause and
+  four explicit dispositions; the nine conservative admissions remain separate.
+- Diagnosis review now requires one explicit disposition for every review-held
+  event. A reviewer may confirm the existing option act, save a correction to
+  MENTION, keep it unresolved or exclude the extraction. Completing the whole
+  review may preserve uncertainty, but cannot silently omit an event decision.
+- Closed a V2 strategy handoff gap: event-held Reasons are no longer consumable
+  merely because their nested Reason projection passed. Only an exact
+  `CONFIRM_INCLUDE_AS_OPTION` review decision can make that event eligible; it
+  does not upgrade the speech act, create Product Truth or establish evidence.
+  Strategy input validation advanced to
+  `single_prompt_strategy_input.v3_event_review_gate`.
+- Focused Diagnosis/Strategy tests passed 41 tests and the frontend production
+  build passed. Read-only production checks still show #40 ResultVersion
+  `diag-v1:dbbbd68addd737f9` as unreviewed with 13 held and nine conservative
+  events; no real Review or downstream object was written.
+
+## 2026-09-16 V2 Source-First Workflow Audit and Remediation Plan
+
+- Performed a read-only comparison of the V2 second-slice contract, current
+  production code, frontend invocation and fixed #40 API state.
+- Confirmed an implementation-order divergence: the contract says immutable
+  SourceSnapshot first, while `compute_diagnosis()` runs `ANSWER_SEMANTIC ->
+  SOURCE_SNAPSHOT -> EVIDENCE_DIAGNOSIS`. The frontend exposes one diagnosis
+  action and omits stage-specific policies; backend request defaults can combine
+  source fetching and external evidence LLM work.
+- Confirmed the reviewed #40 result is 3/3 Answer-admitted with review
+  `review-52312343-ec21-4214-94ae-20368eca5e86`, but still has 77 reference
+  observations / 35 unique sources, zero content-ready snapshots, zero passages,
+  zero SourceClaims and 770 not-evaluated relations.
+- Added `SINGLE_PROMPT_CORE_V2_SOURCE_COMPLETION_PLAN.md` as a detailed Product
+  Owner review draft. It specifies source-state conservation, automatic fetch,
+  same-source manual supplementation, explicit waiver, immutable manifest,
+  source-first backend gate, separate external authorization and reviewed
+  Answer-to-Evidence continuation.
+- Code changes: none. Migration: none. Business data writes: none. External
+  calls/fetches: none. Tests were not run because this checkpoint changes
+  documentation only.
+- Formal classification is `SEMANTIC_RISK / IMPLEMENTATION_DIVERGENCE_REMEDIATION`.
+  Implementation and production cutover remain unauthorized pending review.

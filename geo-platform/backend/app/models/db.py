@@ -288,6 +288,389 @@ class BrowserMonitorTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class SinglePromptAnalysis(Base):
+    __tablename__ = "single_prompt_analyses"
+    __table_args__ = (
+        UniqueConstraint("project_id", "idempotency_key", name="uq_single_prompt_analysis_idempotency"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    analysis_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_tasks.id"), unique=True, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    prompt_text_snapshot: Mapped[str] = mapped_column(Text)
+    sampling_plan_json: Mapped[str] = mapped_column(Text)
+    sampling_plan_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    blocker_code: Mapped[str] = mapped_column(String(80), default="")
+    blocker_detail: Mapped[str] = mapped_column(Text, default="")
+    retry_history_json: Mapped[str] = mapped_column(Text, default="[]")
+    active_attempt_token: Mapped[str] = mapped_column(String(64), default="")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SinglePromptAnalysisContext(Base):
+    __tablename__ = "single_prompt_analysis_contexts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    context_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    analysis_id: Mapped[str] = mapped_column(
+        ForeignKey("single_prompt_analyses.analysis_id"), unique=True, index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_tasks.id"), unique=True, index=True)
+    result_version: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    run_scope_json: Mapped[str] = mapped_column(Text)
+    run_scope_hash: Mapped[str] = mapped_column(String(64))
+    raw_output_json: Mapped[str] = mapped_column(Text)
+    raw_output_hash: Mapped[str] = mapped_column(String(64))
+    valid_run_count: Mapped[int] = mapped_column(Integer)
+    failed_run_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptDiagnosisExecution(Base):
+    __tablename__ = "single_prompt_diagnosis_executions"
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "idempotency_key", name="uq_single_prompt_diagnosis_idempotency"),
+        Index("ix_single_prompt_diagnosis_analysis", "analysis_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    diagnosis_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    input_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    raw_output_hash: Mapped[str] = mapped_column(String(64))
+    brand_snapshot_json: Mapped[str] = mapped_column(Text)
+    brand_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    truth_snapshot_json: Mapped[str] = mapped_column(Text)
+    truth_set_hash: Mapped[str] = mapped_column(String(64))
+    contract_config_json: Mapped[str] = mapped_column(Text)
+    contract_config_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    progress_json: Mapped[str] = mapped_column(Text, default="{}")
+    blocker_code: Mapped[str] = mapped_column(String(80), default="")
+    blocker_detail: Mapped[str] = mapped_column(Text, default="")
+    active_attempt_token: Mapped[str] = mapped_column(String(64), default="")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    external_llm_calls: Mapped[int] = mapped_column(Integer, default=0)
+    llm_cache_hits: Mapped[int] = mapped_column(Integer, default=0)
+    external_token_usage: Mapped[int] = mapped_column(Integer, default=0)
+    active_result_version: Mapped[str] = mapped_column(String(96), default="", index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SinglePromptSourceSnapshot(Base):
+    __tablename__ = "single_prompt_source_snapshots"
+    __table_args__ = (
+        UniqueConstraint("diagnosis_id", "source_key", name="uq_single_prompt_source_snapshot_key"),
+        Index("ix_single_prompt_source_snapshot_diagnosis", "diagnosis_id", "fetch_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    diagnosis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_diagnosis_executions.diagnosis_id"), index=True)
+    source_key: Mapped[str] = mapped_column(String(64))
+    canonical_url: Mapped[str] = mapped_column(String(1200), default="")
+    original_urls_json: Mapped[str] = mapped_column(Text, default="[]")
+    reference_observations_json: Mapped[str] = mapped_column(Text, default="[]")
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=0)
+    fetch_status: Mapped[str] = mapped_column(String(40), default="PENDING", index=True)
+    failure_reason: Mapped[str] = mapped_column(Text, default="")
+    fetched_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    title: Mapped[str] = mapped_column(String(500), default="")
+    content_hash: Mapped[str] = mapped_column(String(64), default="")
+    clean_text: Mapped[str] = mapped_column(Text, default="")
+    passages_json: Mapped[str] = mapped_column(Text, default="[]")
+    passages_hash: Mapped[str] = mapped_column(String(64), default="")
+    parser_version: Mapped[str] = mapped_column(String(80), default="")
+    fetch_source: Mapped[str] = mapped_column(String(40), default="EXTERNAL_FETCH")
+    reused_from_snapshot_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptDiagnosisResult(Base):
+    __tablename__ = "single_prompt_diagnosis_results"
+    __table_args__ = (
+        UniqueConstraint("diagnosis_id", "version_number", name="uq_single_prompt_diagnosis_result_version"),
+        Index("ix_single_prompt_diagnosis_result_diagnosis", "diagnosis_id", "version_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    result_version: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    diagnosis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_diagnosis_executions.diagnosis_id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    parent_result_version: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
+    output_json: Mapped[str] = mapped_column(Text)
+    output_hash: Mapped[str] = mapped_column(String(64))
+    reviewable_set_hash: Mapped[str] = mapped_column(String(64))
+    limitations_json: Mapped[str] = mapped_column(Text, default="[]")
+    stats_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptDiagnosisReview(Base):
+    __tablename__ = "single_prompt_diagnosis_reviews"
+    __table_args__ = (
+        UniqueConstraint("result_version", name="uq_single_prompt_diagnosis_review_result"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    review_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    diagnosis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_diagnosis_executions.diagnosis_id"), index=True)
+    result_version: Mapped[str] = mapped_column(ForeignKey("single_prompt_diagnosis_results.result_version"), index=True)
+    result_hash: Mapped[str] = mapped_column(String(64))
+    reviewable_set_hash: Mapped[str] = mapped_column(String(64))
+    prior_review_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    decision: Mapped[str] = mapped_column(String(40), default="REVIEW_COMPLETED")
+    decisions_json: Mapped[str] = mapped_column(Text, default="[]")
+    reviewer: Mapped[str] = mapped_column(String(120))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptStrategyExecution(Base):
+    __tablename__ = "single_prompt_strategy_executions"
+    __table_args__ = (
+        UniqueConstraint("diagnosis_id", "idempotency_key", name="uq_single_prompt_strategy_idempotency"),
+        Index("ix_single_prompt_strategy_diagnosis", "diagnosis_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    strategy_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    diagnosis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_diagnosis_executions.diagnosis_id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    input_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    diagnosis_result_version: Mapped[str] = mapped_column(String(96), index=True)
+    diagnosis_result_hash: Mapped[str] = mapped_column(String(64))
+    diagnosis_review_id: Mapped[str] = mapped_column(String(80), index=True)
+    review_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    validation_contract_version: Mapped[str] = mapped_column(String(120))
+    input_snapshot_json: Mapped[str] = mapped_column(Text)
+    input_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), default="READY_FOR_REVIEW", index=True)
+    active_result_version: Mapped[str] = mapped_column(String(96), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SinglePromptStrategyResult(Base):
+    __tablename__ = "single_prompt_strategy_results"
+    __table_args__ = (
+        UniqueConstraint("strategy_id", "version_number", name="uq_single_prompt_strategy_result_version"),
+        Index("ix_single_prompt_strategy_result_strategy", "strategy_id", "version_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    result_version: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    strategy_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_strategy_executions.strategy_id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    parent_result_version: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
+    output_json: Mapped[str] = mapped_column(Text)
+    output_hash: Mapped[str] = mapped_column(String(64))
+    reviewable_set_hash: Mapped[str] = mapped_column(String(64))
+    limitations_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptStrategyReview(Base):
+    __tablename__ = "single_prompt_strategy_reviews"
+    __table_args__ = (
+        UniqueConstraint("result_version", name="uq_single_prompt_strategy_review_result"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    review_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    strategy_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_strategy_executions.strategy_id"), index=True)
+    result_version: Mapped[str] = mapped_column(ForeignKey("single_prompt_strategy_results.result_version"), index=True)
+    result_hash: Mapped[str] = mapped_column(String(64))
+    reviewable_set_hash: Mapped[str] = mapped_column(String(64))
+    decision: Mapped[str] = mapped_column(String(40))
+    reviewer: Mapped[str] = mapped_column(String(120))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptExecutionProposal(Base):
+    __tablename__ = "single_prompt_execution_proposals"
+    __table_args__ = (
+        UniqueConstraint("strategy_id", "idempotency_key", name="uq_single_prompt_execution_proposal_idempotency"),
+        Index("ix_single_prompt_execution_proposal_strategy", "strategy_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    proposal_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    strategy_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_strategy_executions.strategy_id"), index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    diagnosis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_diagnosis_executions.diagnosis_id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    direction_id: Mapped[str] = mapped_column(String(96), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    input_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    strategy_result_version: Mapped[str] = mapped_column(ForeignKey("single_prompt_strategy_results.result_version"), index=True)
+    strategy_result_hash: Mapped[str] = mapped_column(String(64))
+    strategy_review_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_strategy_reviews.review_id"), index=True)
+    strategy_review_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    validation_contract_version: Mapped[str] = mapped_column(String(120))
+    input_snapshot_json: Mapped[str] = mapped_column(Text)
+    input_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), default="NEEDS_HUMAN_SELECTION", index=True)
+    active_result_version: Mapped[str] = mapped_column(String(96), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SinglePromptExecutionProposalResult(Base):
+    __tablename__ = "single_prompt_execution_proposal_results"
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "version_number", name="uq_single_prompt_execution_proposal_result_version"),
+        Index("ix_single_prompt_execution_proposal_result", "proposal_id", "version_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    result_version: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_execution_proposals.proposal_id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    parent_result_version: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
+    output_json: Mapped[str] = mapped_column(Text)
+    output_hash: Mapped[str] = mapped_column(String(64))
+    reviewable_set_hash: Mapped[str] = mapped_column(String(64))
+    limitations_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptExecutionConfirmation(Base):
+    __tablename__ = "single_prompt_execution_confirmations"
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "idempotency_key", name="uq_single_prompt_execution_confirmation_idempotency"),
+        UniqueConstraint("result_version", name="uq_single_prompt_execution_confirmation_result"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    confirmation_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_execution_proposals.proposal_id"), index=True)
+    result_version: Mapped[str] = mapped_column(ForeignKey("single_prompt_execution_proposal_results.result_version"), index=True)
+    result_hash: Mapped[str] = mapped_column(String(64))
+    reviewable_set_hash: Mapped[str] = mapped_column(String(64))
+    input_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    confirmation_snapshot_json: Mapped[str] = mapped_column(Text)
+    confirmation_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    confirmer: Mapped[str] = mapped_column(String(120))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptPublicationRecord(Base):
+    __tablename__ = "single_prompt_publication_records"
+    __table_args__ = (
+        UniqueConstraint("confirmation_id", "idempotency_key", name="uq_single_prompt_publication_idempotency"),
+        Index("ix_single_prompt_publication_confirmation", "confirmation_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    publication_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    confirmation_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_execution_confirmations.confirmation_id"), index=True)
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_execution_proposals.proposal_id"), index=True)
+    prior_publication_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    revision_number: Mapped[int] = mapped_column(Integer, default=1)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    publication_status: Mapped[str] = mapped_column(String(40), default="USER_REPORTED")
+    conformance: Mapped[str] = mapped_column(String(40))
+    report_json: Mapped[str] = mapped_column(Text)
+    report_hash: Mapped[str] = mapped_column(String(64))
+    conformance_json: Mapped[str] = mapped_column(Text)
+    recorder: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptRetestExecution(Base):
+    __tablename__ = "single_prompt_retest_executions"
+    __table_args__ = (
+        UniqueConstraint("publication_id", "idempotency_key", name="uq_single_prompt_retest_idempotency"),
+        Index("ix_single_prompt_retest_publication", "publication_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    retest_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    confirmation_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_execution_confirmations.confirmation_id"), index=True)
+    publication_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_publication_records.publication_id"), index=True)
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_execution_proposals.proposal_id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    baseline_analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    baseline_context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    retest_analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), unique=True, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    input_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    confirmation_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    publication_report_hash: Mapped[str] = mapped_column(String(64))
+    baseline_snapshot_json: Mapped[str] = mapped_column(Text)
+    baseline_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    retest_plan_json: Mapped[str] = mapped_column(Text)
+    retest_plan_hash: Mapped[str] = mapped_column(String(64))
+    measurement_identity_json: Mapped[str] = mapped_column(Text)
+    measurement_identity_hash: Mapped[str] = mapped_column(String(64))
+    measurement_contract_json: Mapped[str] = mapped_column(Text)
+    measurement_contract_hash: Mapped[str] = mapped_column(String(64))
+    planned_conditions_json: Mapped[str] = mapped_column(Text)
+    observed_conditions_json: Mapped[str] = mapped_column(Text, default="{}")
+    unobservable_conditions_json: Mapped[str] = mapped_column(Text, default="[]")
+    authorization_json: Mapped[str] = mapped_column(Text, default="{}")
+    semantic_result_json: Mapped[str] = mapped_column(Text, default="{}")
+    semantic_result_hash: Mapped[str] = mapped_column(String(64), default="")
+    semantic_history_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(40), default="PLANNED", index=True)
+    blocker_code: Mapped[str] = mapped_column(String(100), default="")
+    blocker_detail: Mapped[str] = mapped_column(Text, default="")
+    active_comparison_version: Mapped[str] = mapped_column(String(96), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SinglePromptComparisonResult(Base):
+    __tablename__ = "single_prompt_comparison_results"
+    __table_args__ = (
+        UniqueConstraint("retest_id", "version_number", name="uq_single_prompt_comparison_version"),
+        UniqueConstraint("retest_id", "input_hash", name="uq_single_prompt_comparison_input"),
+        Index("ix_single_prompt_comparison_retest", "retest_id", "version_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    result_version: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    retest_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_retest_executions.retest_id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    input_hash: Mapped[str] = mapped_column(String(64))
+    baseline_context_id: Mapped[str] = mapped_column(String(80))
+    retest_context_id: Mapped[str] = mapped_column(String(80))
+    baseline_measurement_json: Mapped[str] = mapped_column(Text)
+    retest_measurement_json: Mapped[str] = mapped_column(Text)
+    comparison_json: Mapped[str] = mapped_column(Text)
+    output_hash: Mapped[str] = mapped_column(String(64))
+    limitations_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class BrowserMonitorRun(Base):
     __tablename__ = "browser_monitor_runs"
 
@@ -357,6 +740,8 @@ class ReferenceSource(Base):
     matched_title: Mapped[str] = mapped_column(String(500), default="")
     url: Mapped[str] = mapped_column(String(1200), default="")
     canonical_url: Mapped[str] = mapped_column(String(1200), default="")
+    canonical_url_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    canonicalization_version: Mapped[str] = mapped_column(String(40), default="")
     domain: Mapped[str] = mapped_column(String(255), default="")
     platform_name: Mapped[str] = mapped_column(String(160), default="")
     resolution_method: Mapped[str] = mapped_column(String(120), default="")
@@ -379,6 +764,8 @@ class RetrievalCandidate(Base):
     title: Mapped[str] = mapped_column(String(500), default="")
     url: Mapped[str] = mapped_column(String(1200), default="")
     canonical_url: Mapped[str] = mapped_column(String(1200), default="")
+    canonical_url_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    canonicalization_version: Mapped[str] = mapped_column(String(40), default="")
     domain: Mapped[str] = mapped_column(String(255), default="")
     snippet: Mapped[str] = mapped_column(Text, default="")
     evidence_path: Mapped[str] = mapped_column(String(800), default="")
@@ -1033,6 +1420,8 @@ class SourceDocument(Base, TimestampMixin):
     url: Mapped[str] = mapped_column(String(1200), index=True)
     original_url: Mapped[str] = mapped_column(String(1200), default="")
     canonical_url: Mapped[str] = mapped_column(String(1200), default="")
+    canonical_url_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    canonicalization_version: Mapped[str] = mapped_column(String(40), default="")
     domain: Mapped[str] = mapped_column(String(255), default="", index=True)
     source_type: Mapped[str] = mapped_column(String(40), default="CITED", index=True)
     fetch_status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
@@ -1325,6 +1714,85 @@ class SourceClaim(Base, TimestampMixin):
     review_status: Mapped[str] = mapped_column(String(40), default="MACHINE_CANDIDATE", index=True)
     reviewer: Mapped[str] = mapped_column(String(120), default="")
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class SourceClaimMaterialization(Base, TimestampMixin):
+    """SourceClaim extraction ledger keyed by semantic passage input."""
+
+    __tablename__ = "source_claim_materializations"
+    __table_args__ = (
+        UniqueConstraint("materialization_key", name="uq_source_claim_materializations_key"),
+        Index("ix_source_claim_materializations_status", "status"),
+        Index("ix_source_claim_materializations_contract", "contract_version"),
+        Index("ix_source_claim_materializations_input", "passage_content_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    materialization_key: Mapped[str] = mapped_column(String(64))
+    passage_id: Mapped[str] = mapped_column(String(120), default="")
+    passage_content_hash: Mapped[str] = mapped_column(String(64), default="")
+    source_document_id: Mapped[int] = mapped_column(ForeignKey("source_documents.id"), index=True)
+    source_document_content_hash: Mapped[str] = mapped_column(String(64), default="")
+    observed_source_document_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    observed_passage_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    contract_version: Mapped[str] = mapped_column(String(80), default="")
+    status: Mapped[str] = mapped_column(String(40), default="MISSING")
+    compatibility_status: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
+    claim_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_claim_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    output_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    output_hash: Mapped[str] = mapped_column(String(64), default="")
+    extractor_impl_version: Mapped[str] = mapped_column(String(80), default="")
+    prompt_version: Mapped[str] = mapped_column(String(80), default="")
+    schema_version: Mapped[str] = mapped_column(String(40), default="v1")
+    provider: Mapped[str] = mapped_column(String(40), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    owner_id: Mapped[str] = mapped_column(String(120), default="")
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EvidenceAlignmentMaterialization(Base, TimestampMixin):
+    """EvidenceAlignment verdict ledger keyed by semantic reason/claim input."""
+
+    __tablename__ = "evidence_alignment_materializations"
+    __table_args__ = (
+        UniqueConstraint("materialization_key", name="uq_evidence_alignment_materializations_key"),
+        Index("ix_evidence_alignment_materializations_status", "status"),
+        Index("ix_evidence_alignment_materializations_contract", "contract_version"),
+        Index("ix_evidence_alignment_materializations_answer", "answer_unit_semantic_hash"),
+        Index("ix_evidence_alignment_materializations_claim", "source_claim_semantic_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    materialization_key: Mapped[str] = mapped_column(String(64))
+    answer_unit_semantic_hash: Mapped[str] = mapped_column(String(64), default="")
+    source_claim_semantic_hash: Mapped[str] = mapped_column(String(64), default="")
+    contract_version: Mapped[str] = mapped_column(String(80), default="")
+    status: Mapped[str] = mapped_column(String(40), default="MISSING")
+    compatibility_status: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
+    verdict: Mapped[str] = mapped_column(String(40), default="NONE")
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    confidence_raw: Mapped[float] = mapped_column(Float, default=0.0)
+    output_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    output_hash: Mapped[str] = mapped_column(String(64), default="")
+    source_alignment_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    observed_prompt_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    observed_run_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    judge_impl_version: Mapped[str] = mapped_column(String(80), default="")
+    prompt_version: Mapped[str] = mapped_column(String(80), default="")
+    schema_version: Mapped[str] = mapped_column(String(40), default="v1")
+    provider: Mapped[str] = mapped_column(String(40), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    owner_id: Mapped[str] = mapped_column(String(120), default="")
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class EvidenceAlignment(Base, TimestampMixin):

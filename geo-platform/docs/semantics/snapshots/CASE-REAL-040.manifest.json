@@ -1,0 +1,84 @@
+{
+  "snapshot_schema_version": "1.0.0",
+  "case_id": "CASE-REAL-040",
+  "snapshot_id": "CASE-REAL-040@2026-09-08",
+  "replayability_status": "LOCAL_DB_REQUIRED",
+  "captured_at": "2026-09-08T17:10:07+08:00",
+  "repository": {
+    "git_head": "2376c053153ad042c170d8f924256cc2a4f0de00",
+    "worktree_dirty": true,
+    "note": "The manifest identifies fixed database objects; uncommitted production changes are not included in git_head."
+  },
+  "database_identity": {
+    "relative_path": "backend/geo_v0.db",
+    "sha256": "fb24d2f074912415219397e7325007439644432cbfa6250b694137d1834900d3",
+    "identity_policy": "Exact local database file required; do not substitute latest records."
+  },
+  "fixed_input": {
+    "project_id": 3,
+    "prompt_id": 40,
+    "evidence_package_id": 15,
+    "evidence_package_version": 2,
+    "evidence_package_hash": "fc626672105d7ec29b9c1d5ce599ad9fd03e6299d4ea918cd76c9a4b19e06d82",
+    "strategy_candidate_id": 50,
+    "strategy_candidate_status": "PENDING_REVIEW",
+    "source_run_ids": [238, 239, 240, 253, 254, 255],
+    "source_run_ids_sha256": "6155abc71b8268a956791e363b495485d479f2326c351f7063637975a96050cf",
+    "run_scope_hash": "6155abc71b8268a956791e363b495485d479f2326c351f7063637975a96050cf",
+    "analysis_contract_version": "citation_decision_vertical_slice.v1",
+    "analysis_contract_versions": {
+      "citation_decision": "citation_decision_vertical_slice.v1",
+      "strategy_input": "citation_decision_v1_1_formal_input.v1"
+    },
+    "strategy_input_version": "citation_decision_v1_1_formal_input.v1",
+    "strategy_schema_version": "single_prompt_strategy_v1_1",
+    "channel_resolver_version": "strategy_channel_resolver.v1",
+    "resolver_version": "strategy_channel_resolver.v1",
+    "strategy_synthesis_contract": null,
+    "strategy_synthesis_version": null,
+    "strategy_input_hash": null,
+    "candidate_input_contract_hash": null,
+    "source_strategy_candidate_version": null,
+    "strategy_structural_output_hash": null
+  },
+  "required_object_ids": {
+    "evidence_package_ids": [15],
+    "strategy_candidate_ids": [50],
+    "run_ids": [238, 239, 240, 253, 254, 255]
+  },
+  "expected_contract_ids": [
+    "SC-EVIDENCE-001@1.0.0",
+    "SC-EVIDENCE-002@1.0.0",
+    "SC-EVIDENCE-003@1.0.0",
+    "SC-BENCHMARK-001@1.0.0",
+    "SC-CHANNEL-001@1.1.0",
+    "SC-STRATEGY-001@1.1.0",
+    "SC-STEP7-001@1.0.0",
+    "SC-SCOPE-001@1.0.0"
+  ],
+  "expected_assertions": [
+    "candidate:50:status=PENDING_REVIEW",
+    "themes=3:compatibility_projection",
+    "theme_coverage=6/6,6/6,6/6",
+    "OFFICIAL_SITE=PRIMARY",
+    "ZHIHU=SECONDARY",
+    "test_channels=0",
+    "step7=PENDING_REVIEW",
+    "step8=LOCKED",
+    "current_action_count=0",
+    "current_experiment_count=0"
+  ],
+  "expected_assertions_sha256": "f63a99400eb83b85aa2cf9d114ca3ebaebdad63f096e109fcfc54e87e7e788d2",
+  "forbidden_assertions": [
+    "benchmark channel automatically became execution channel",
+    "candidate 50 was rewritten to PR4 schema",
+    "step 8 unlocked before strategy confirmation"
+  ],
+  "missing_immutable_inputs": [
+    {
+      "field": "source_strategy_candidate_version/strategy_synthesis_contract/version/candidate_input_contract_hash/output_hash",
+      "reason": "Candidate #50 predates the PR4 synthesis contract fields and has an empty effective payload version. The compatibility projection is observable, but no immutable persisted PR4 contract or candidate-input hash may be invented."
+    }
+  ],
+  "replay_query": "Use fixed IDs only: SELECT * FROM optimization_evidence_packages WHERE id=15; SELECT * FROM optimization_strategy_candidates WHERE id=50; SELECT * FROM browser_monitor_runs WHERE id IN (238,239,240,253,254,255);"
+}

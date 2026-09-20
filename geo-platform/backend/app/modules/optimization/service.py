@@ -8,11 +8,12 @@ import ipaddress
 import json
 import re
 import subprocess
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 import urllib.request
 
 from fastapi import HTTPException
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -53,8 +54,10 @@ from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.services import create_browser_task, update_task_status_from_runs
 from app.modules.optimization.evidence_lineage import eligible_evidence_alignments_for_v1
 from app.modules.optimization.passage_retrieval import ANSWER_BINDING_REASON_SOURCE, FORMAL_V1_1_INPUT_VERSION
+from app.modules.optimization.source_mapping import build_source_mapping_report
 from app.modules.optimization.source_qualification import derive_content_status
 from app.services.serialization import dumps, loads
+from app.services.url_identity import canonicalize_url
 
 
 VALID_RUN_STATUSES = {"success", "partial_success"}
@@ -116,6 +119,8 @@ CURRENT_STEP7_STRATEGY_SCHEMA_VERSION = "single_prompt_strategy_v1_1"
 CURRENT_STEP7_CANDIDATE_ORIGIN = "USER_FLOW"
 CURRENT_STEP7_GENERATOR_FAMILY = "citation_optimization_decision"
 CURRENT_STEP7_MODEL = "citation-optimization-decision-v1"
+ANSWER_DECISION_EVIDENCE_GAP_BASIS = "ANSWER_DECISION_EVIDENCE_GAP"
+ANSWER_DECISION_EVIDENCE_GAP_CAUSE = "NO_ELIGIBLE_SUPPORT_WITH_REQUIRED_LINEAGE"
 CURRENT_STEP7_REQUIRED_CORE_FIELDS = (
     "target_decision_change",
     "priority_capabilities",
@@ -518,9 +523,21 @@ def release_audit_to_read(record: ReleaseAuditRecord) -> dict:
 def strategy_candidate_to_read(
     candidate: OptimizationStrategyCandidate,
     package_context: OptimizationEvidencePackage | None = None,
+    strategy_view_projection: dict | None = None,
 ) -> dict:
     eligibility = current_step7_candidate_eligibility(candidate, package_context)
     strategy_payload = _strategy_payload_for_candidate(candidate)
+    projection = strategy_view_projection or {}
+    raw_decision_view = projection.get("strategy_decision_view") or strategy_payload.get("strategy_decision_view", {})
+    raw_audit_view = projection.get("strategy_audit_view") or strategy_payload.get("strategy_audit_view", {})
+    synthesis = projection.get("strategy_synthesis") or strategy_payload.get("strategy_synthesis", {})
+    valid_synthesis_view = _is_valid_strategy_synthesis_view(synthesis, raw_decision_view)
+    decision_view = _strategy_decision_view_for_api(
+        strategy_payload,
+        raw_decision_view,
+        projection.get("intervention_themes") or strategy_payload.get("intervention_themes", []),
+        projection.get("strategy_portfolio") or strategy_payload.get("strategy_portfolio", {}),
+    ) if valid_synthesis_view else {}
     return {
         "id": candidate.id,
         "project_id": candidate.project_id,
@@ -558,6 +575,10 @@ def strategy_candidate_to_read(
         "experiment_plan": loads(candidate.experiment_plan_json, {}),
         "candidate_origin": eligibility["candidate_origin"],
         "strategy_context": strategy_payload.get("strategy_context", {}),
+        "strategy_decision_view": decision_view,
+        "strategy_audit_view": raw_audit_view if valid_synthesis_view else {},
+        "strategy_synthesis": synthesis if valid_synthesis_view else {},
+        "strategy_view_mode": "SYNTHESIS_DECISION_VIEW" if valid_synthesis_view else "LEGACY",
         "strategy_schema_complete": eligibility["schema_complete"],
         "eligible_for_current_step7": eligibility["eligible"],
         "current_step7_ineligibility_reasons": eligibility["ineligibility_reasons"],
@@ -569,6 +590,150 @@ def strategy_candidate_to_read(
 def _strategy_payload_for_candidate(candidate: OptimizationStrategyCandidate) -> dict:
     payload = loads(candidate.structured_payload_json, {})
     return payload if isinstance(payload, dict) else {}
+
+
+def _is_valid_strategy_synthesis_view(synthesis: dict, decision_view: dict) -> bool:
+    if not isinstance(synthesis, dict) or not isinstance(decision_view, dict) or not decision_view:
+        return False
+    if synthesis.get("strategy_synthesis_contract_version") != "STRATEGY_SYNTHESIS_V1":
+        return False
+    if synthesis.get("validator_status") != "VALID":
+        return False
+    validators = synthesis.get("validators") or {}
+    required = {
+        "structural",
+        "provenance",
+        "business_rules",
+        "theme_coverage",
+        "theme_title",
+        "unsupported_claim",
+    }
+    return required.issubset(validators) and all(
+        (validators.get(key) or {}).get("status") == "VALID" for key in required
+    )
+
+
+def _strategy_channel_business_view(payload: dict, item: dict) -> dict:
+    key = str(item.get("channel_key") or "").upper()
+    source_channels = payload.get("channels") or payload.get("planned_channels") or []
+    source = next(
+        (
+            row for row in source_channels
+            if str(row.get("channel_key") or row.get("channel") or "").upper() == key
+        ),
+        {},
+    )
+    reason_count = len(item.get("decision_reason_ids") or [])
+    role = str(item.get("frozen_role") or "").upper()
+    if role == "PRIMARY":
+        rationale = "目标品牌事实已经确认，本轮优先通过该渠道建立可检索、可引用的一方事实资产。"
+    elif role == "SECONDARY":
+        rationale = "当前证据支持该渠道作为辅助干预，与主干预共同覆盖本轮目标理由。"
+    elif role == "TEST":
+        rationale = (
+            f"该渠道已在当前信息环境中出现，并与 {reason_count} 条本轮理由存在相关信号；"
+            "用于验证是否形成新的检索或引用机会。"
+        )
+    else:
+        rationale = "保留为环境观察信号，不进入本轮最小干预组合。"
+    test_hypothesis = source.get("test_hypothesis") or {}
+    return {
+        "channel_key": key,
+        "channel_label": item.get("channel_label") or source.get("channel_label") or key,
+        "decision_role_label": {
+            "PRIMARY": "主干预",
+            "SECONDARY": "辅助干预",
+            "TEST": "验证渠道",
+            "OBSERVE": "观察渠道",
+        }.get(role, "执行渠道"),
+        "execution_priority": item.get("execution_priority"),
+        "business_rationale": rationale,
+        "related_reasons": item.get("decision_reason_texts") or [],
+        "why_not_primary": (
+            "当前只证明值得验证，尚不能证明该渠道已直接影响 AI 决策。"
+            if role == "TEST"
+            else ""
+        ),
+        "validation_question": (
+            "验证该渠道是否能让目标品牌更稳定地进入检索、引用或推荐理由。"
+            if role == "TEST"
+            else ""
+        ),
+        "test_metric": test_hypothesis.get("success_metric"),
+    }
+
+
+def _strategy_decision_view_for_api(
+    payload: dict,
+    decision_view: dict,
+    themes: list[dict],
+    portfolio: dict,
+) -> dict:
+    normalized_themes = [
+        {
+            **theme,
+            "coverage_label": str(theme.get("coverage") or "").replace("/", " / "),
+        }
+        for theme in themes
+    ]
+    normalized_portfolio = {
+        key: [_strategy_channel_business_view(payload, item) for item in portfolio.get(key) or []]
+        for key in (
+            "primary_interventions",
+            "secondary_interventions",
+            "priority_tests",
+            "deferred_tests",
+            "observe_channels",
+        )
+    }
+    normalized_portfolio.update({
+        "selected_success_metrics": portfolio.get("selected_success_metrics") or [],
+        "target_outcome": portfolio.get("target_outcome"),
+        "needs_human_prioritization": bool(portfolio.get("needs_human_prioritization")),
+    })
+    execution_channel_options = [
+        *normalized_portfolio["primary_interventions"],
+        *normalized_portfolio["secondary_interventions"],
+        *normalized_portfolio["priority_tests"],
+    ]
+    for key in (
+        "primary_interventions",
+        "secondary_interventions",
+        "priority_tests",
+        "deferred_tests",
+        "observe_channels",
+    ):
+        source_items = portfolio.get(key) or []
+        for item, source_item in zip(normalized_portfolio[key], source_items):
+            reason_ids = set(source_item.get("decision_reason_ids") or [])
+            item["related_themes"] = [
+                {"theme_key": theme.get("theme_key"), "title": theme.get("title")}
+                for theme in normalized_themes
+                if reason_ids.intersection(theme.get("reason_ids") or [])
+            ]
+    strategy_basis = payload.get("strategy_basis") or ""
+    opportunity = decision_view.get("current_ai_decision_opportunity") or {}
+    if strategy_basis == ANSWER_DECISION_EVIDENCE_GAP_BASIS:
+        opportunity = {
+            **opportunity,
+            "text": (
+                "AI 在当前 Prompt 的回答中反复使用若干能力解释方案选择。"
+                "目标品牌已确认具备相应能力，但目前尚未形成满足正式证据规则的品牌支撑信号。"
+            ),
+        }
+    observe_count = len(normalized_portfolio["observe_channels"])
+    return {
+        **decision_view,
+        "view_schema_version": "strategy_decision_view.pr4_b_1.v1",
+        "current_ai_decision_opportunity": opportunity,
+        "observe_summary": {
+            **(decision_view.get("observe_summary") or {}),
+            "text": f"其余 {observe_count} 个渠道作为环境观察信号，不进入本轮最小实验组合。",
+        },
+        "themes": normalized_themes,
+        "portfolio": normalized_portfolio,
+        "execution_channel_options": execution_channel_options,
+    }
 
 
 def _current_step7_context_for_package(
@@ -632,7 +797,40 @@ def _strategy_core_schema_complete(payload: dict) -> bool:
             return False
     gap_ids = payload.get("gap_item_ids") or []
     benchmark_ids = payload.get("benchmark_evidence_ids") or []
-    return bool(gap_ids and benchmark_ids)
+    if gap_ids and benchmark_ids:
+        return True
+    if gap_ids and _is_answer_decision_evidence_gap_payload(payload):
+        return True
+    return False
+
+
+def _is_answer_decision_evidence_gap_payload(payload: dict) -> bool:
+    summary = payload.get("citation_value_summary") if isinstance(payload.get("citation_value_summary"), dict) else {}
+    evidence_summary = payload.get("evidence_summary") if isinstance(payload.get("evidence_summary"), dict) else {}
+    source = payload.get("benchmark_source") if isinstance(payload.get("benchmark_source"), dict) else {}
+    if not source:
+        source = evidence_summary.get("benchmark_source") if isinstance(evidence_summary.get("benchmark_source"), dict) else {}
+    gap_type = (payload.get("gap_type") or evidence_summary.get("gap_type") or "").upper()
+    product_truth_refs = payload.get("product_truth_refs") if isinstance(payload.get("product_truth_refs"), dict) else {}
+    decision_reason_ids = payload.get("decision_reason_ids") if isinstance(payload.get("decision_reason_ids"), list) else []
+    eligible_contradiction_ids = (
+        payload.get("eligible_contradiction_ids")
+        if isinstance(payload.get("eligible_contradiction_ids"), list)
+        else []
+    )
+    return (
+        payload.get("strategy_basis") == ANSWER_DECISION_EVIDENCE_GAP_BASIS
+        and payload.get("evidence_gap_reason") == ANSWER_DECISION_EVIDENCE_GAP_CAUSE
+        and gap_type == "EVIDENCE_GAP"
+        and (payload.get("proposed_direction") or "").upper() == "EVIDENCE"
+        and (summary.get("class") or "").upper() == "ANSWER_DECISION_EVIDENCE_GAP"
+        and (source.get("benchmark_tier") or "").upper() == "NO_ELIGIBLE_BENCHMARK"
+        and product_truth_refs.get("status") == "TRUE"
+        and bool(decision_reason_ids)
+        and payload.get("benchmark_evidence_ids") == []
+        and payload.get("eligible_support_count") == 0
+        and payload.get("eligible_contradiction_ids") == eligible_contradiction_ids == []
+    )
 
 
 def _candidate_analysis_context(candidate: OptimizationStrategyCandidate) -> dict:
@@ -687,7 +885,10 @@ def current_step7_candidate_eligibility(
         reasons.append("ANSWER_BINDING_CONTEXT_MISMATCH")
     if not _strategy_core_schema_complete(payload):
         reasons.append("MISSING_STRATEGY_CORE")
-    if not payload.get("gap_item_ids") or not payload.get("benchmark_evidence_ids"):
+    if not payload.get("gap_item_ids") or (
+        not payload.get("benchmark_evidence_ids")
+        and not _is_answer_decision_evidence_gap_payload(payload)
+    ):
         reasons.append("EVIDENCE_CONTEXT_MISMATCH")
     if candidate.review_status == "DEFERRED" and "SUPERSEDED" in (candidate.review_note or "").upper():
         reasons.append("SUPERSEDED")
@@ -1030,7 +1231,82 @@ def list_strategy_candidates(db: Session, project_id: int, experiment_id: int | 
         query = query.filter(OptimizationStrategyCandidate.evidence_package_id == evidence_package_id)
     rows = query.order_by(OptimizationStrategyCandidate.created_at.desc(), OptimizationStrategyCandidate.id.desc()).limit(80).all()
     package = db.get(OptimizationEvidencePackage, evidence_package_id) if evidence_package_id else None
-    return [strategy_candidate_to_read(row, package) for row in rows]
+    result = []
+    for row in rows:
+        projection = _read_only_strategy_synthesis_view_projection(db, row, package)
+        result.append(strategy_candidate_to_read(row, package, projection))
+    return result
+
+
+def _read_only_strategy_synthesis_view_projection(
+    db: Session,
+    candidate: OptimizationStrategyCandidate,
+    package: OptimizationEvidencePackage | None,
+) -> dict:
+    payload = _strategy_payload_for_candidate(candidate)
+    if _is_valid_strategy_synthesis_view(
+        payload.get("strategy_synthesis") or {},
+        payload.get("strategy_decision_view") or {},
+    ):
+        return {}
+    if not package or not current_step7_candidate_eligibility(candidate, package)["eligible"]:
+        return {}
+
+    from app.modules.optimization.strategy_synthesis_shadow import (
+        build_strategy_synthesis_context_from_payload,
+        run_strategy_synthesis_core,
+    )
+
+    project = db.get(Project, candidate.project_id)
+    prompt = db.get(Prompt, package.prompt_id)
+    if not project or not prompt:
+        return {}
+    try:
+        context = build_strategy_synthesis_context_from_payload(
+            db,
+            project,
+            prompt,
+            package,
+            payload,
+            input_scope_id=int(candidate.id),
+        )
+        result = run_strategy_synthesis_core(context, use_llm=False)
+    except ValueError:
+        return {}
+    if not result.get("can_persist_current_candidate"):
+        return {}
+    structure = (result.get("structural_synthesis") or {}).get("validated_structure") or {}
+    validators = result.get("validators") or {}
+    return {
+        "strategy_decision_view": (result.get("presentation") or {}).get("decision_view") or {},
+        "strategy_audit_view": {
+            **(result.get("audit_view") or {}),
+            "validators": validators,
+            "projection_mode": "READ_ONLY_COMPATIBILITY_VIEW",
+        },
+        "strategy_synthesis": {
+            "strategy_synthesis_contract_version": "STRATEGY_SYNTHESIS_V1",
+            "contract_version": (result.get("contract") or {}).get("version"),
+            "synthesis_mode": "HUMAN_REQUIRED" if result.get("needs_human_synthesis") else "DETERMINISTIC",
+            "external_llm_calls": 0,
+            "validator_status": "VALID",
+            "validators": validators,
+            "input_object_ids": (result.get("version_audit") or {}).get("input_object_ids") or [],
+            "structural_output_hash": (result.get("version_audit") or {}).get("output_hash") or "",
+            "projection_mode": "READ_ONLY_COMPATIBILITY_VIEW",
+        },
+        "intervention_themes": structure.get("themes") or [],
+        "strategy_portfolio": {
+            "primary_interventions": structure.get("primary_interventions") or [],
+            "secondary_interventions": structure.get("secondary_interventions") or [],
+            "priority_tests": structure.get("priority_tests") or [],
+            "deferred_tests": structure.get("deferred_tests") or [],
+            "observe_channels": structure.get("observe_channels") or [],
+            "selected_success_metrics": structure.get("selected_success_metrics") or [],
+            "target_outcome": structure.get("target_outcome"),
+            "needs_human_prioritization": bool(structure.get("needs_human_prioritization")),
+        },
+    }
 
 
 def generate_strategy_candidates(db: Session, project_id: int, payload) -> list[dict]:
@@ -1114,7 +1390,8 @@ def review_strategy_candidate(db: Session, candidate_id: int, payload) -> dict:
             )
     db.commit()
     db.refresh(candidate)
-    return strategy_candidate_to_read(candidate, package)
+    projection = _read_only_strategy_synthesis_view_projection(db, candidate, package)
+    return strategy_candidate_to_read(candidate, package, projection)
 
 
 def _set_effective_payload_review_status(candidate: OptimizationStrategyCandidate, effective: dict) -> None:
@@ -4143,19 +4420,70 @@ def confirm_citation_decision_vertical_slice(
     package = db.get(OptimizationEvidencePackage, proposal["evidence_package_id"])
     if not project or not prompt or not package:
         raise HTTPException(status_code=404, detail="Project/Prompt/Evidence Package 不存在")
+    legacy_payload = dict(payload or {})
+    legacy_payload.setdefault("use_strategy_channel_resolver_v1_1", False)
+    return _create_step7_strategy_candidates_from_actions(
+        db,
+        project=project,
+        prompt=prompt,
+        package=package,
+        actions=actions,
+        payload=legacy_payload,
+    )
 
+
+def _create_step7_strategy_candidates_from_actions(
+    db: Session,
+    *,
+    project: Project,
+    prompt: Prompt,
+    package: OptimizationEvidencePackage,
+    actions: list[dict],
+    payload: dict,
+) -> dict:
+    if not actions:
+        raise HTTPException(status_code=400, detail="没有可生成策略候选的 Content/Evidence Gap。Product/Unresolved 需要先人工补充 Product Truth 或资产信息。")
+
+    reviewer = str(payload.get("reviewer") or "human")
     explicit_origin = str(payload.get("candidate_origin") or "").strip().upper()
     inferred_origin = _candidate_origin_from_text(
         " ".join([str(payload.get("reviewer") or ""), str(payload.get("review_note") or "")])
     )
     candidate_origin = explicit_origin or inferred_origin or CURRENT_STEP7_CANDIDATE_ORIGIN
+    use_constraint_synthesis = bool(
+        candidate_origin == CURRENT_STEP7_CANDIDATE_ORIGIN
+        and payload.get("use_constraint_first_strategy_synthesis_v1", False)
+    )
+
+    prepared_payloads = []
+    for action in actions:
+        strategy_payload = _strategy_payload_from_vertical_action(project, prompt, package, action, payload, db=db)
+        if use_constraint_synthesis:
+            strategy_payload = _attach_constraint_first_strategy_synthesis(
+                db,
+                project,
+                prompt,
+                package,
+                strategy_payload,
+            )
+        prepared_payloads.append((action, strategy_payload))
+
     if candidate_origin == CURRENT_STEP7_CANDIDATE_ORIGIN:
-        _supersede_current_pending_step7_candidates(db, package, reviewer)
+        _supersede_current_pending_step7_candidates(
+            db,
+            package,
+            reviewer,
+            supersede_reason=(
+                "SUPERSEDED_BY_VALIDATED_STRATEGY_SYNTHESIS_V1"
+                if use_constraint_synthesis
+                else None
+            ),
+        )
 
     _upsert_workflow_confirmation(
         db,
-        project_id,
-        prompt_id,
+        project.id,
+        prompt.id,
         "strategy_candidate",
         "PENDING_REVIEW",
         payload.get("review_note") or f"已生成 {len(actions)} 个待审核策略候选。",
@@ -4163,19 +4491,18 @@ def confirm_citation_decision_vertical_slice(
     )
 
     created = []
-    for action in actions:
-        strategy_payload = _strategy_payload_from_vertical_action(project, prompt, package, action, payload)
+    for action, strategy_payload in prepared_payloads:
         strategy = _create_vertical_strategy_candidate(db, project, package, strategy_payload, reviewer)
         created.append({
             "action_key": action["action_key"],
-            "strategy_candidate": strategy_candidate_to_read(strategy),
+            "strategy_candidate": strategy_candidate_to_read(strategy, package),
             "experiment_plan": None,
         })
     return {
         "status": "STRATEGY_CANDIDATES_CREATED",
         "version": VERTICAL_SLICE_VERSION,
-        "project_id": project_id,
-        "prompt_id": prompt_id,
+        "project_id": project.id,
+        "prompt_id": prompt.id,
         "evidence_package_id": package.id,
         "intervention_plan": None,
         "created": created,
@@ -4192,9 +4519,42 @@ def generate_current_step7_strategy_candidates(
     step7_payload = dict(payload or {})
     step7_payload["candidate_origin"] = CURRENT_STEP7_CANDIDATE_ORIGIN
     step7_payload.setdefault("use_answer_binding_v1_1", True)
+    step7_payload.setdefault("use_strategy_channel_resolver_v1_1", True)
+    step7_payload["use_constraint_first_strategy_synthesis_v1"] = bool(
+        get_settings().use_constraint_first_strategy_synthesis_v1
+    )
     step7_payload.setdefault("reviewer", "human")
     step7_payload.setdefault("review_note", "当前单 Prompt V1.1 Step 7 用户生成待审核策略候选。")
-    return confirm_citation_decision_vertical_slice(db, project_id, prompt_id, step7_payload)
+
+    project = db.get(Project, project_id)
+    prompt = db.get(Prompt, prompt_id)
+    if not project or not prompt or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Project/Prompt 不存在")
+    package = _resolve_vertical_slice_package(db, project_id, prompt_id, step7_payload.get("evidence_package_id"))
+    rows = _current_step7_strategy_rows_for_package(
+        db,
+        project,
+        prompt,
+        package,
+        include_answer_binding_v1_1=bool(step7_payload.get("use_answer_binding_v1_1", True)),
+    )
+    actions = [
+        row["recommended_action"]
+        for row in rows
+        if row.get("recommended_action")
+    ][: int(step7_payload.get("max_actions") or 5)]
+    selected_keys = set(step7_payload.get("action_keys") or [])
+    if selected_keys:
+        actions = [action for action in actions if action.get("action_key") in selected_keys]
+    actions = [action for action in actions if action.get("route") in {"CONTENT", "EVIDENCE"}]
+    return _create_step7_strategy_candidates_from_actions(
+        db,
+        project=project,
+        prompt=prompt,
+        package=package,
+        actions=actions,
+        payload=step7_payload,
+    )
 
 
 def _resolve_vertical_slice_package(
@@ -4245,6 +4605,547 @@ def _source_analysis_for_package(
         valid_run_ids=valid_run_ids,
         include_answer_binding_v1_1=include_answer_binding_v1_1,
     )
+
+
+def _current_step7_strategy_rows_for_package(
+    db: Session,
+    project: Project,
+    prompt: Prompt,
+    package: OptimizationEvidencePackage,
+    include_answer_binding_v1_1: bool = True,
+) -> list[dict]:
+    """Build the minimal current Step 7 input from already materialized evidence.
+
+    Unlike citation_decision_vertical_slice(), this path must not rebuild the
+    full source-analysis detail. It only consumes the frozen Evidence Package
+    run scope plus eligible EvidenceAlignment rows that have already passed
+    review/materialization.
+    """
+    run_ids = loads(package.source_run_ids_json, [])
+    runs = _runs_by_ids(db, run_ids, project.id)
+    run_by_id = {run.id: run for run in runs}
+    valid_run_ids = [run.id for run in runs if run.status in VALID_RUN_STATUSES]
+    if not valid_run_ids:
+        return []
+
+    support_alignments = db.query(EvidenceAlignment).filter(
+        EvidenceAlignment.project_id == project.id,
+        EvidenceAlignment.prompt_id == prompt.id,
+        EvidenceAlignment.run_id.in_(valid_run_ids),
+        EvidenceAlignment.relation == "SUPPORTS",
+        EvidenceAlignment.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
+        EvidenceAlignment.source_document_id.isnot(None),
+    ).all()
+    eligible_supports, _ = eligible_evidence_alignments_for_v1(
+        db,
+        support_alignments,
+        allowed_run_ids=set(valid_run_ids),
+        include_answer_binding_v1_1=include_answer_binding_v1_1,
+    )
+    doc_ids = sorted({int(alignment.source_document_id) for alignment in eligible_supports if alignment.source_document_id})
+
+    references = db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(valid_run_ids)).all()
+    retrievals = db.query(RetrievalCandidate).filter(RetrievalCandidate.run_id.in_(valid_run_ids)).all()
+    scoped_doc_ids = _source_document_ids_for_current_step7_scope(db, references, retrievals)
+    doc_ids = sorted(set(doc_ids) | scoped_doc_ids)
+    if not doc_ids:
+        return _current_answer_decision_evidence_gap_rows(
+            db,
+            project,
+            prompt,
+            package,
+            valid_run_ids,
+            channel_aggregation=[],
+            eligible_supports=eligible_supports,
+            include_answer_binding_v1_1=include_answer_binding_v1_1,
+        )
+
+    docs = db.query(SourceDocument).filter(SourceDocument.id.in_(doc_ids)).all()
+    citation_stats = _citation_stats(references, len(valid_run_ids) or 1)
+
+    competitors = []
+    try:
+        competitors = list(project.competitors)
+    except Exception:
+        competitors = []
+    brand_domain = host_from_url(project.website_url) if project.website_url else ""
+    supports_by_doc_id: dict[int, list[EvidenceAlignment]] = defaultdict(list)
+    for alignment in eligible_supports:
+        if alignment.source_document_id:
+            supports_by_doc_id[int(alignment.source_document_id)].append(alignment)
+
+    rows: list[dict] = []
+    for doc in docs:
+        url = doc.url or doc.canonical_url or doc.original_url or ""
+        title = doc.title or ""
+        domain = doc.domain or host_from_url(url) if url else doc.domain or ""
+        matching_refs = [
+            ref for ref in references
+            if _source_record_matches_document(
+                doc,
+                ref.url or ref.canonical_url or "",
+                ref.canonical_url or "",
+                ref.domain or "",
+                ref.display_title or ref.matched_title or "",
+            )
+        ]
+        matching_retrievals = [
+            item for item in retrievals
+            if _source_record_matches_document(
+                doc,
+                item.url or item.canonical_url or "",
+                item.canonical_url or "",
+                item.domain or "",
+                item.title or "",
+            )
+        ]
+        support_run_ids = {int(item.run_id) for item in supports_by_doc_id.get(int(doc.id), []) if item.run_id}
+        citation_run_ids = {int(ref.run_id) for ref in matching_refs if ref.run_id}
+        retrieval_run_ids = {int(item.run_id) for item in matching_retrievals if item.run_id}
+        observed_run_ids = sorted(support_run_ids | citation_run_ids | retrieval_run_ids)
+        representative_ref = sorted(matching_refs, key=lambda item: (int(item.reference_index or 999), int(item.id or 0)))[0] if matching_refs else None
+        representative_retrieval = sorted(matching_retrievals, key=lambda item: (int(item.rank or 999), int(item.id or 0)))[0] if matching_retrievals else None
+        representative_run_id = (
+            int(representative_ref.run_id)
+            if representative_ref
+            else int(representative_retrieval.run_id)
+            if representative_retrieval
+            else observed_run_ids[0]
+            if observed_run_ids
+            else 0
+        )
+        retrieval_ranks = [int(item.rank) for item in matching_retrievals if item.rank is not None]
+        row_title = (
+            (representative_ref.display_title or representative_ref.matched_title or "")
+            if representative_ref
+            else (representative_retrieval.title if representative_retrieval else title)
+        ) or title
+        row_url = (
+            (representative_ref.url or representative_ref.canonical_url or "")
+            if representative_ref
+            else (representative_retrieval.url or representative_retrieval.canonical_url if representative_retrieval else url)
+        ) or url
+        row_domain = (
+            (representative_ref.domain or "")
+            if representative_ref
+            else (representative_retrieval.domain if representative_retrieval else domain)
+        ) or domain
+        stats = citation_stats.get(_global_source_key(row_url, row_domain, row_title), _empty_citation_stats(len(valid_run_ids) or 1))
+        row = _source_analysis_row(
+            source_kind="citation" if matching_refs else "retrieval_candidate",
+            source_id=int(representative_ref.id) if representative_ref else int(representative_retrieval.id) if representative_retrieval else int(doc.id),
+            run_id=representative_run_id,
+            cited=bool(matching_refs),
+            retrieval_rank=min(retrieval_ranks) if retrieval_ranks else None,
+            title=row_title,
+            url=row_url,
+            domain=row_domain,
+            snippet=representative_retrieval.snippet if representative_retrieval else "",
+            answer_text=run_by_id.get(representative_run_id).answer_text if run_by_id.get(representative_run_id) else "",
+            citation_stats=stats,
+            prompt_text=prompt.prompt_text or prompt.title or "",
+            project=project,
+            competitors=competitors,
+            brand_domain=brand_domain,
+            is_official=bool(representative_ref.is_official_domain) if representative_ref else False,
+            is_competitor=bool(representative_ref.is_competitor_domain) if representative_ref else False,
+        )
+        row.update({
+            "source_document_id": int(doc.id),
+            "run_ids": observed_run_ids,
+            "run_count": len(observed_run_ids),
+            "citation_run_ids": sorted(citation_run_ids),
+            "retrieval_run_ids": sorted(retrieval_run_ids),
+            "cited": bool(citation_run_ids),
+        })
+        rows.append(row)
+
+    rows = _attach_decision_support_benchmarks(
+        db,
+        project,
+        prompt,
+        rows,
+        valid_run_ids=valid_run_ids,
+        include_answer_binding_v1_1=include_answer_binding_v1_1,
+    )
+    rows = _attach_citation_decision_values(rows, db)
+    rows = _attach_source_gap_analysis(db, project, rows, prompt=prompt, retrievals=retrievals, references=references)
+    rows = _attach_capability_gap_items(rows)
+    rows = _attach_priority_action_routes(rows)
+    rows = _attach_channel_opportunities(rows)
+    channel_aggregation = _channel_aggregation_for_rows(rows, valid_run_ids)
+    rows = _attach_recommended_actions(rows, project, prompt, channel_aggregation)
+    rows = _attach_cross_source_comparison(rows)
+    if not any(row.get("recommended_action") for row in rows):
+        fallback_rows = _current_answer_decision_evidence_gap_rows(
+            db,
+            project,
+            prompt,
+            package,
+            valid_run_ids,
+            channel_aggregation=channel_aggregation,
+            eligible_supports=eligible_supports,
+            include_answer_binding_v1_1=include_answer_binding_v1_1,
+        )
+        if fallback_rows:
+            return fallback_rows
+    return sorted(rows, key=_source_analysis_sort_key)
+
+
+def _source_document_ids_for_current_step7_scope(
+    db: Session,
+    references: list[ReferenceSource],
+    retrievals: list[RetrievalCandidate],
+) -> set[int]:
+    """Return SourceDocuments observed in the frozen run scope.
+
+    Current Step 7 must not rebuild the full citation-decision source detail,
+    but it also must not derive the whole candidate table only from SUPPORTS.
+    Unsupported cited/retrieved sources are still important as evidence-adoption
+    context; they just remain REFERENCE_ONLY/NOT_EVALUABLE unless eligible
+    SUPPORTS independently promotes them to Benchmark.
+    """
+    report = build_source_mapping_report(db, references, retrievals)
+    return set(report["source_document_ids"])
+
+
+def _current_answer_decision_evidence_gap_rows(
+    db: Session,
+    project: Project,
+    prompt: Prompt,
+    package: OptimizationEvidencePackage,
+    valid_run_ids: list[int],
+    channel_aggregation: list[dict] | None = None,
+    eligible_supports: list[EvidenceAlignment] | None = None,
+    include_answer_binding_v1_1: bool = True,
+) -> list[dict]:
+    action = _current_answer_decision_evidence_gap_action(
+        db,
+        project,
+        prompt,
+        package,
+        valid_run_ids,
+        channel_aggregation or [],
+        eligible_supports=eligible_supports,
+        include_answer_binding_v1_1=include_answer_binding_v1_1,
+    )
+    if not action:
+        return []
+    return [{
+        "source_document_id": None,
+        "title": "当前答案决策理由证据缺口",
+        "url": "",
+        "domain": "",
+        "source_kind": "answer_decision_gap",
+        "benchmark_tier": "NO_ELIGIBLE_BENCHMARK",
+        "decision_support_level": "ANSWER_DECISION_REASON_WITHOUT_ELIGIBLE_SOURCE_SUPPORT",
+        "source_gap_type": "EVIDENCE_GAP",
+        "source_gap_label": _source_gap_label("EVIDENCE_GAP"),
+        "source_gap_precondition": "READY",
+        "source_gap_reason": "当前答案已出现可优化的决策理由，但正式 V1.1 证据未形成 Phase 2A eligible SUPPORTS；应生成证据补强策略，而不是返回无策略。",
+        "priority_level": action["priority_level"],
+        "action_route": action["route"],
+        "capability_gap_items": action["gap_items"],
+        "recommended_action": action,
+    }]
+
+
+def _current_answer_decision_evidence_gap_action(
+    db: Session,
+    project: Project,
+    prompt: Prompt,
+    package: OptimizationEvidencePackage,
+    valid_run_ids: list[int],
+    channel_aggregation: list[dict],
+    *,
+    eligible_supports: list[EvidenceAlignment] | None = None,
+    include_answer_binding_v1_1: bool = True,
+) -> dict | None:
+    if not valid_run_ids:
+        return None
+    events = db.query(RecommendationEvent).filter(
+        RecommendationEvent.project_id == project.id,
+        RecommendationEvent.prompt_id == prompt.id,
+        RecommendationEvent.run_id.in_(valid_run_ids),
+        RecommendationEvent.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
+    ).all()
+    choice_speech_acts = {"RECOMMEND", "INCLUDE_AS_OPTION", "PRAISE", "COMPARE"}
+    choice_events = [
+        event for event in events
+        if (event.speech_act or "").upper() in choice_speech_acts
+        and (event.polarity or "").upper() != "NEGATIVE"
+    ]
+    if not choice_events:
+        return None
+
+    truths = db.query(TargetBrandCapabilityTruth).filter(
+        TargetBrandCapabilityTruth.project_id == project.id,
+        TargetBrandCapabilityTruth.product_truth_status == "SUPPORTED",
+    ).all()
+    if not truths:
+        return None
+
+    reason_rows: dict[str, dict] = {}
+    for event in choice_events:
+        for reason in loads(event.reasons_json, []):
+            if not isinstance(reason, dict):
+                continue
+            reason_text = _clean_display_text(reason.get("normalized_reason") or reason.get("reason_text") or "")
+            if not reason_text:
+                continue
+            matched_truths = _match_product_truths(reason_text, truths)
+            if not matched_truths:
+                continue
+            reason_id = str(
+                reason.get("reason_id")
+                or reason.get("id")
+                or f"reason:{reason_text[:60]}"
+            )[:120]
+            row = reason_rows.setdefault(reason_text, {
+                "reason_text": reason_text,
+                "reason_id": reason_id,
+                "event_entities": set(),
+                "observed_run_ids": set(),
+                "recommendation_event_ids": set(),
+                "product_truth_ids": set(),
+                "product_truth_labels": set(),
+            })
+            row["event_entities"].add(event.entity_text or "")
+            row["observed_run_ids"].add(int(event.run_id))
+            row["recommendation_event_ids"].add(int(event.id))
+            for truth in matched_truths:
+                row["product_truth_ids"].add(int(truth.id))
+                row["product_truth_labels"].add(truth.capability_label or truth.capability_key or reason_text)
+
+    if not reason_rows:
+        return None
+
+    relevant_event_ids = {
+        event_id
+        for row in reason_rows.values()
+        for event_id in row["recommendation_event_ids"]
+    }
+    if eligible_supports is None:
+        support_rows = db.query(EvidenceAlignment).filter(
+            EvidenceAlignment.project_id == project.id,
+            EvidenceAlignment.prompt_id == prompt.id,
+            EvidenceAlignment.run_id.in_(valid_run_ids),
+            EvidenceAlignment.recommendation_event_id.in_(relevant_event_ids),
+            EvidenceAlignment.relation == "SUPPORTS",
+            EvidenceAlignment.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
+            EvidenceAlignment.source_document_id.isnot(None),
+        ).all()
+        eligible_supports, _ = eligible_evidence_alignments_for_v1(
+            db,
+            support_rows,
+            allowed_run_ids=set(valid_run_ids),
+            include_answer_binding_v1_1=include_answer_binding_v1_1,
+        )
+    eligible_supports = [
+        alignment
+        for alignment in eligible_supports
+        if alignment.recommendation_event_id in relevant_event_ids
+    ]
+    contradiction_rows = db.query(EvidenceAlignment).filter(
+        EvidenceAlignment.project_id == project.id,
+        EvidenceAlignment.prompt_id == prompt.id,
+        EvidenceAlignment.run_id.in_(valid_run_ids),
+        EvidenceAlignment.recommendation_event_id.in_(relevant_event_ids),
+        EvidenceAlignment.relation == "CONTRADICTS",
+        EvidenceAlignment.review_status.in_(["MACHINE_GROUNDED", "HUMAN_CONFIRMED"]),
+        EvidenceAlignment.source_document_id.isnot(None),
+    ).all()
+    eligible_contradictions, _ = eligible_evidence_alignments_for_v1(
+        db,
+        contradiction_rows,
+        allowed_run_ids=set(valid_run_ids),
+        include_answer_binding_v1_1=include_answer_binding_v1_1,
+    )
+
+    def alignment_ids_for_reason(alignments: list[EvidenceAlignment], row: dict) -> list[int]:
+        event_ids = row["recommendation_event_ids"]
+        reason_id = row["reason_id"]
+        reason_key = _compact_key(row["reason_text"])
+        result = []
+        for alignment in alignments:
+            if alignment.recommendation_event_id not in event_ids:
+                continue
+            alignment_reason_id = str(alignment.recommendation_reason_id or "")
+            payload = loads(alignment.machine_payload_json, {})
+            semantic_reason = str(payload.get("semantic_reason_key") or "").split("|", 1)[0]
+            alignment_reason_keys = {
+                _compact_key(alignment_reason_id.removeprefix("reason:")),
+                _compact_key(semantic_reason),
+            }
+            if alignment_reason_id == reason_id or (reason_key and reason_key in alignment_reason_keys):
+                result.append(int(alignment.id))
+        return sorted(set(result))
+
+    eligible_reason_rows = []
+    for row in reason_rows.values():
+        row["eligible_support_alignment_ids"] = alignment_ids_for_reason(eligible_supports, row)
+        row["eligible_contradiction_alignment_ids"] = alignment_ids_for_reason(eligible_contradictions, row)
+        if not row["eligible_support_alignment_ids"] and not row["eligible_contradiction_alignment_ids"]:
+            eligible_reason_rows.append(row)
+    if not eligible_reason_rows:
+        return None
+
+    denominator = len(set(valid_run_ids))
+    top_rows = sorted(
+        eligible_reason_rows,
+        key=lambda item: (-len(item["observed_run_ids"]), item["reason_text"]),
+    )[:5]
+    gap_items = []
+    for row in top_rows:
+        labels = sorted(label for label in row["product_truth_labels"] if label)
+        capability_label = " / ".join(labels[:2]) if labels else row["reason_text"]
+        observed_run_ids = sorted(row["observed_run_ids"])
+        raw_key = "|".join(str(part or "") for part in [
+            package.id,
+            row["reason_text"],
+            ",".join(str(item) for item in sorted(row["product_truth_ids"])),
+        ])
+        gap_items.append({
+            "gap_item_id": hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16],
+            "source_document_id": None,
+            "capability_label": capability_label,
+            "capability_source": "ANSWER_DECISION_REASON_PRODUCT_TRUTH",
+            "answer_decision_reason": row["reason_text"],
+            "decision_reason_id": row["reason_id"],
+            "event_entities": sorted(entity for entity in row["event_entities"] if entity),
+            "recommendation_event_ids": sorted(row["recommendation_event_ids"]),
+            "gap_type": "EVIDENCE_GAP",
+            "gap_label": _source_gap_label("EVIDENCE_GAP"),
+            "gap_precondition": "READY",
+            "gap_layer": "EVIDENCE_ADOPTION",
+            "benchmark_tier": "NO_ELIGIBLE_BENCHMARK",
+            "decision_support_level": "ANSWER_DECISION_REASON_WITHOUT_ELIGIBLE_SOURCE_SUPPORT",
+            "benchmark_evidence_ids": [],
+            "eligible_support_alignment_ids": [],
+            "eligible_contradiction_alignment_ids": [],
+            "benchmark_source": {
+                "source_document_id": None,
+                "title": "当前答案决策理由",
+                "platform": "ANSWER",
+                "platform_label": "AI 答案",
+                "benchmark_tier": "NO_ELIGIBLE_BENCHMARK",
+                "decision_support_level": "ANSWER_DECISION_REASON_WITHOUT_ELIGIBLE_SOURCE_SUPPORT",
+                "supporting_alignment_ids": [],
+            },
+            "product_truth_ids": sorted(row["product_truth_ids"]),
+            "product_truth_status": "TRUE",
+            "relevant_asset_snapshot": None,
+            "retrieval_candidate_context": {"status": "NOT_CHECKED"},
+            "evidence_adoption_context": {
+                "status": "NO_ELIGIBLE_SUPPORTS",
+                "reason": "当前答案决策理由没有形成 Phase 2A eligible SUPPORTS。",
+                "evidence_gap_cause": ANSWER_DECISION_EVIDENCE_GAP_CAUSE,
+            },
+            "observed_run_ids": observed_run_ids,
+            "run_coverage_count": len(observed_run_ids),
+            "run_coverage_denominator": denominator,
+            "lineage_source": "ANSWER_DECISION_REASON_WITH_PRODUCT_TRUTH",
+        })
+
+    capability_text = _capability_label_for_strategy_items(gap_items) or "已确认能力"
+    observed_runs = sorted({
+        run_id
+        for item in gap_items
+        for run_id in item.get("observed_run_ids", [])
+    })
+    priority = "PRIORITY_HIGH" if len(observed_runs) >= max(2, denominator // 3) else "PRIORITY_MEDIUM"
+    raw_action_key = "|".join([
+        "answer-decision-evidence-gap",
+        str(package.id),
+        ",".join(item["gap_item_id"] for item in gap_items),
+    ])
+    return {
+        "action_key": hashlib.sha256(raw_action_key.encode("utf-8")).hexdigest()[:16],
+        "status": "PROPOSAL_ONLY",
+        "route": "EVIDENCE",
+        "route_label": _action_route_label("EVIDENCE"),
+        "priority_level": priority,
+        "priority_label": _priority_label(priority),
+        "gap_type": "EVIDENCE_GAP",
+        "strategy_basis": ANSWER_DECISION_EVIDENCE_GAP_BASIS,
+        "decision_reason_ids": sorted({item["decision_reason_id"] for item in gap_items}),
+        "decision_reason_event_ids": sorted({
+            event_id
+            for item in gap_items
+            for event_id in item.get("recommendation_event_ids", [])
+        }),
+        "evidence_gap_reason": ANSWER_DECISION_EVIDENCE_GAP_CAUSE,
+        "evidence_gap_cause": ANSWER_DECISION_EVIDENCE_GAP_CAUSE,
+        "eligible_support_count": 0,
+        "eligible_contradiction_ids": [],
+        "gap_label": _source_gap_label("EVIDENCE_GAP"),
+        "title": f"补强「{capability_text}」的目标品牌证据表达。",
+        "summary": f"当前答案已反复采用竞品/候选的相关决策理由；为「{project.brand_name}」补齐「{capability_text}」的可摘录证据、案例和场景表达。",
+        "planned_change": "先在目标品牌可控资产中补强已确认 Product Truth 的证据承载；具体资产、URL、标题和 section 留到第 8 步选择。",
+        "decision_support_level": "ANSWER_DECISION_REASON_WITHOUT_ELIGIBLE_SOURCE_SUPPORT",
+        "benchmark_source": {
+            "source_document_id": None,
+            "title": "当前答案决策理由",
+            "platform": "ANSWER",
+            "platform_label": "AI 答案",
+            "benchmark_tier": "NO_ELIGIBLE_BENCHMARK",
+            "decision_support_level": "ANSWER_DECISION_REASON_WITHOUT_ELIGIBLE_SOURCE_SUPPORT",
+            "supporting_alignment_ids": [],
+        },
+        "benchmark_evidence_ids": [],
+        "citation_decision_values": [],
+        "citation_value_summary": {
+            "class": "ANSWER_DECISION_EVIDENCE_GAP",
+            "label": "答案决策理由证据缺口",
+            "reason": "该候选不把引用显著性升级为 Benchmark；它只说明当前答案决策理由与目标品牌 Product Truth 之间存在证据承载/采纳缺口。",
+            "decision_citation_count": 0,
+            "answer_support_count": 0,
+            "support_run_ids": observed_runs,
+            "supported_entities": sorted({
+                entity
+                for item in gap_items
+                for entity in item.get("event_entities", [])
+            }),
+            "supported_capabilities": [item.get("capability_label") for item in gap_items],
+        },
+        "channel_aggregation": channel_aggregation,
+        "product_truth_status": "TRUE",
+        "product_truth_ids": sorted({
+            truth_id
+            for item in gap_items
+            for truth_id in item.get("product_truth_ids", [])
+        }),
+        "content_requirements": ["目标品牌能力事实", "可核验案例/数据/步骤", "适用场景与限制条件", "引用友好的问答结构"],
+        "gap_items": gap_items,
+    }
+
+
+def _source_record_matches_document(
+    doc: SourceDocument,
+    url: str,
+    canonical_url: str,
+    domain: str,
+    title: str,
+) -> bool:
+    doc_url_keys = {
+        _normalize_source_url(value)
+        for value in (doc.url, doc.original_url, doc.canonical_url)
+        if value
+    }
+    record_url_keys = {
+        _normalize_source_url(value)
+        for value in (url, canonical_url)
+        if value
+    }
+    if doc_url_keys and record_url_keys and doc_url_keys.intersection(record_url_keys):
+        return True
+    if doc_url_keys or record_url_keys:
+        return False
+    doc_title = re.sub(r"\s+", " ", (doc.title or "").strip().lower())
+    record_title = re.sub(r"\s+", " ", (title or "").strip().lower())
+    doc_domain = (doc.domain or "").strip().lower()
+    record_domain = (domain or "").strip().lower()
+    return bool(doc_title and record_title and doc_title == record_title and doc_domain == record_domain)
 
 
 def _dedupe_channel_opportunities(rows: list[dict]) -> list[dict]:
@@ -4396,6 +5297,7 @@ def _supersede_current_pending_step7_candidates(
     db: Session,
     package: OptimizationEvidencePackage,
     reviewer: str,
+    supersede_reason: str | None = None,
 ) -> None:
     rows = (
         db.query(OptimizationStrategyCandidate)
@@ -4407,17 +5309,184 @@ def _supersede_current_pending_step7_candidates(
         .all()
     )
     for row in rows:
-        if not current_step7_candidate_eligibility(row, package)["eligible"]:
+        context = _candidate_analysis_context(row)
+        if infer_strategy_candidate_origin(row) != CURRENT_STEP7_CANDIDATE_ORIGIN:
             continue
+        if (
+            int(context.get("prompt_id") or 0) != int(package.prompt_id or 0)
+            or int(context.get("evidence_package_id") or 0) != int(package.id)
+            or int(context.get("evidence_package_version") or 0) != int(package.version or 0)
+            or context.get("analysis_version") != VERTICAL_SLICE_VERSION
+        ):
+            continue
+        payload = loads(row.structured_payload_json, {})
+        planned = payload.get("planned_channels") or []
+        primary = next(
+            (item for item in planned if isinstance(item, dict) and item.get("intervention_priority") == "PRIMARY"),
+            {},
+        )
+        resolver_version = str((payload.get("strategy_channel_resolver") or {}).get("version") or "")
+        invalid_channel_resolution = bool(
+            resolver_version != "strategy_channel_resolver.v1_1"
+            and primary.get("channel") == "OFFICIAL_SITE"
+            and int(primary.get("decision_citation_run_count") or 0) == 0
+            and not bool((primary.get("brand_asset_basis") or {}).get("has_relevant_asset_snapshot"))
+        )
+        row_supersede_reason = (
+            supersede_reason
+            or (
+                "CHANNEL_RESOLUTION_INVALID_DUE_TO_SOURCE_MAPPING_FAILURE"
+                if invalid_channel_resolution
+                else "NEW_CURRENT_STEP7_GENERATION"
+            )
+        )
         row.review_status = "DEFERRED"
         row.reviewed_by = reviewer
         row.reviewed_at = datetime.utcnow()
         row.review_note = dumps({
-            "semantic": "SUPERSEDED_BY_NEW_CURRENT_STEP7_GENERATION",
+            "semantic": "SUPERSEDED",
+            "reason": row_supersede_reason,
             "superseded_at": datetime.utcnow().isoformat(),
             "evidence_package_id": package.id,
             "prompt_id": package.prompt_id,
         })
+
+
+def _attach_constraint_first_strategy_synthesis(
+    db: Session,
+    project: Project,
+    prompt: Prompt,
+    package: OptimizationEvidencePackage,
+    payload: dict,
+) -> dict:
+    from app.modules.optimization.strategy_synthesis_shadow import (
+        build_strategy_synthesis_context_from_payload,
+        run_strategy_synthesis_core,
+    )
+
+    action_key = str(payload.get("source_action_key") or "current")
+    scope_digest = hashlib.sha256(f"{package.id}|{action_key}".encode("utf-8")).hexdigest()[:16]
+    input_scope_id = f"package:{package.id}:strategy:{scope_digest}"
+    context = build_strategy_synthesis_context_from_payload(
+        db,
+        project,
+        prompt,
+        package,
+        payload,
+        input_scope_id=input_scope_id,
+    )
+    settings = get_settings()
+    result = run_strategy_synthesis_core(
+        context,
+        use_llm=bool(settings.allow_external_llm_strategy_synthesis),
+    )
+    validators = result.get("validators") or {}
+    validator_status = {
+        key: str((validators.get(key) or {}).get("status") or "NOT_RUN")
+        for key in (
+            "structural",
+            "provenance",
+            "business_rules",
+            "theme_coverage",
+            "theme_title",
+            "unsupported_claim",
+        )
+    }
+    all_valid = bool(
+        result.get("can_persist_current_candidate")
+        and all(value == "VALID" for value in validator_status.values())
+    )
+    if not all_valid:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "STRATEGY_SYNTHESIS_VALIDATION_FAILED",
+                "message": "Constraint-First Strategy Synthesis 未通过正式校验，未修改当前候选。",
+                "validator_status": validator_status,
+            },
+        )
+
+    structure = (result.get("structural_synthesis") or {}).get("validated_structure") or {}
+    structural_runtime = (result.get("structural_synthesis") or {}).get("runtime") or {}
+    presentation_runtime = (result.get("presentation") or {}).get("runtime") or {}
+    external_llm_calls = int(structural_runtime.get("external_llm_calls") or 0) + int(
+        presentation_runtime.get("external_llm_calls") or 0
+    )
+    unresolved = (result.get("ambiguity_resolution") or {}).get("unresolved_types") or []
+    synthesis_mode = (
+        "HUMAN_REQUIRED"
+        if unresolved
+        else ("BOUNDED_LLM" if external_llm_calls else "DETERMINISTIC")
+    )
+    version_audit = result.get("version_audit") or {}
+    contract = result.get("contract") or {}
+    system_fixed = {
+        "resolver_roles": (result.get("input") or {}).get("channel_roles") or {},
+        "decision_reason_ids": [
+            item.get("reason_id") for item in (result.get("input") or {}).get("decision_reasons") or []
+        ],
+        "product_truth_ids": [
+            item.get("id") for item in (result.get("input") or {}).get("product_truths") or []
+        ],
+        "strategy_basis": (result.get("input") or {}).get("strategy_basis"),
+        "eligible_metrics": (result.get("input") or {}).get("eligible_metrics") or [],
+    }
+    synthesis_decisions = {
+        "reason_to_theme_map": structure.get("reason_to_theme_map") or {},
+        "theme_priority": {
+            item.get("theme_key"): item.get("priority") for item in structure.get("themes") or []
+        },
+        "priority_test_channels": [item.get("channel_key") for item in structure.get("priority_tests") or []],
+        "deferred_test_channels": [item.get("channel_key") for item in structure.get("deferred_tests") or []],
+    }
+    synthesis_audit = {
+        "strategy_synthesis_contract_version": "STRATEGY_SYNTHESIS_V1",
+        "contract_version": contract.get("version"),
+        "input_scope_id": input_scope_id,
+        "synthesis_mode": synthesis_mode,
+        "needs_human_synthesis": bool(result.get("needs_human_synthesis")),
+        "structural_prompt_version": version_audit.get("structural_prompt_version") if external_llm_calls else None,
+        "presentation_prompt_version": version_audit.get("presentation_prompt_version") if external_llm_calls else None,
+        "model": structural_runtime.get("model") if external_llm_calls else None,
+        "external_llm_calls": external_llm_calls,
+        "validator_status": "VALID",
+        "validators": validators,
+        "input_object_ids": version_audit.get("input_object_ids") or [],
+        "input_hash": version_audit.get("input_hash") or "",
+        "structural_output_hash": version_audit.get("output_hash") or "",
+        "ambiguity_resolution": result.get("ambiguity_resolution") or {},
+        "llm_acceptance": result.get("llm_acceptance") or {},
+        "hallucination_audit": result.get("hallucination_audit") or {},
+        "system_fixed": system_fixed,
+        "synthesis_decisions": synthesis_decisions,
+    }
+    enriched = dict(payload)
+    enriched["strategy_synthesis"] = synthesis_audit
+    enriched["decision_reasons"] = (result.get("input") or {}).get("decision_reasons") or []
+    enriched["intervention_themes"] = structure.get("themes") or []
+    enriched["strategy_portfolio"] = {
+        "primary_interventions": structure.get("primary_interventions") or [],
+        "secondary_interventions": structure.get("secondary_interventions") or [],
+        "priority_tests": structure.get("priority_tests") or [],
+        "deferred_tests": structure.get("deferred_tests") or [],
+        "observe_channels": structure.get("observe_channels") or [],
+        "selected_success_metrics": structure.get("selected_success_metrics") or [],
+        "target_outcome": structure.get("target_outcome"),
+        "needs_human_prioritization": bool(structure.get("needs_human_prioritization")),
+    }
+    enriched["strategy_decision_view"] = (result.get("presentation") or {}).get("decision_view") or {}
+    enriched["strategy_audit_view"] = {
+        **(result.get("audit_view") or {}),
+        "system_fixed": system_fixed,
+        "synthesis_decisions": synthesis_decisions,
+        "synthesis_contract": synthesis_audit,
+        "validators": validators,
+        "provenance": {
+            "decision_reasons": enriched["decision_reasons"],
+            "themes": enriched["intervention_themes"],
+        },
+    }
+    return enriched
 
 
 def _create_vertical_strategy_candidate(
@@ -4480,9 +5549,20 @@ def _strategy_fields_from_vertical_action(
     action: dict,
     gap_items: list[dict],
     evidence_run_ids: list[int],
+    *,
+    db: Session | None = None,
+    package: OptimizationEvidencePackage | None = None,
 ) -> dict:
     priority_capabilities = _strategy_priority_capabilities(gap_items, action)
-    channel_resolution = _resolve_strategy_channels(project, action, gap_items, priority_capabilities)
+    channel_resolution = _resolve_strategy_channels(
+        project,
+        action,
+        gap_items,
+        priority_capabilities,
+        db=db,
+        prompt=prompt,
+        package=package,
+    )
     planned_channels = channel_resolution["planned_channels"]
     channel_roles = channel_resolution["channel_roles"]
     primary_path = channel_resolution["primary_intervention_path"]
@@ -4506,6 +5586,14 @@ def _strategy_fields_from_vertical_action(
         "channel_roles": channel_roles,
         "channel_rationales": channel_resolution["channel_rationales"],
         "strategy_channel_resolver": channel_resolution["resolver"],
+        "strategy_opportunity_state": channel_resolution.get("strategy_opportunity_state", "PENDING_REVIEW"),
+        "channel_resolution_state": channel_resolution.get("channel_resolution_state", "UNRESOLVED"),
+        "execution_readiness": channel_resolution.get("execution_readiness", "NOT_READY"),
+        "proposed_intervention_mode": channel_resolution.get("proposed_intervention_mode"),
+        "active_intervention_mode": channel_resolution.get("active_intervention_mode"),
+        "intervention_mode": channel_resolution.get("active_intervention_mode"),
+        "channels": channel_resolution.get("channels", planned_channels),
+        "intervention_need": channel_resolution.get("intervention_need", {}),
         "channel_aggregation": action.get("channel_aggregation", []),
         "citation_decision_values": action.get("citation_decision_values", []),
         "citation_value_summary": action.get("citation_value_summary", {}),
@@ -4523,6 +5611,132 @@ def _strategy_fields_from_vertical_action(
 
 
 def _resolve_strategy_channels(
+    project: Project,
+    action: dict,
+    gap_items: list[dict],
+    priority_capabilities: list[dict],
+    *,
+    db: Session | None = None,
+    prompt: Prompt | None = None,
+    package: OptimizationEvidencePackage | None = None,
+) -> dict:
+    """Resolve Step 7 channels through v1.1, with a frozen legacy rollback."""
+    if (
+        not get_settings().use_strategy_channel_resolver_v1_1
+        or db is None
+        or not hasattr(db, "query")
+        or prompt is None
+        or package is None
+    ):
+        return _resolve_strategy_channels_legacy(project, action, gap_items, priority_capabilities)
+
+    from app.modules.optimization.channel_resolution_shadow import (
+        build_channel_resolution_context,
+        resolve_channel_shadow,
+    )
+
+    context, _landscape = build_channel_resolution_context(
+        db,
+        project,
+        prompt,
+        package,
+        action,
+        strategy_opportunity_state="PENDING_REVIEW",
+        step8_other_gates_pass=False,
+    )
+    resolved = resolve_channel_shadow(context)
+    aggregation_by_channel = _strategy_channel_aggregation_by_channel(action)
+    priority_labels = {
+        item.get("capability_label")
+        for item in priority_capabilities
+        if item.get("capability_label")
+    }
+    planned_channels = []
+    for channel in resolved["channels"]:
+        if channel.get("role") not in {"PRIMARY", "SECONDARY", "TEST"}:
+            continue
+        channel_key = str(channel.get("channel_key") or "OTHER").upper()
+        role = str(channel.get("role") or "OBSERVE").upper()
+        rationale_path = str(channel.get("rationale_path") or "UNRESOLVED")
+        if role == "PRIMARY":
+            channel_role = channel.get("why_primary") or "该渠道通过当前证据 Gate，作为本轮主要干预渠道。"
+        elif role == "TEST":
+            channel_role = channel.get("why_test") or "该渠道只进入受控验证，不代表已形成正式决策证据。"
+        else:
+            channel_role = channel.get("why_not_primary") or "该渠道有正式依据，但由更优先渠道承接主路径。"
+        selection_basis = (
+            channel.get("why_primary")
+            or channel.get("why_test")
+            or channel.get("why_not_primary")
+            or "由 Channel Resolver v1.1 的证据 Gate 确定。"
+        )
+        plan = _strategy_channel_plan(
+            channel_key,
+            role,
+            rationale_path,
+            context["intervention_need"].get("gap_type") or "UNKNOWN",
+            channel_role,
+            selection_basis,
+            aggregate=aggregation_by_channel.get(channel_key),
+            priority_labels=priority_labels,
+            gap_items=gap_items,
+        )
+        plan.update({
+            "rationale_path": rationale_path,
+            "decision_reason_ids": channel.get("decision_reason_ids") or [],
+            "supporting_signal_ids": channel.get("supporting_signal_ids") or [],
+            "blocking_signals": channel.get("blocking_signals") or [],
+            "why_primary": channel.get("why_primary") or "",
+            "why_not_primary": channel.get("why_not_primary") or "",
+            "why_test": channel.get("why_test") or "",
+            "authority_asset_evidence": channel.get("authority_asset_evidence"),
+            "exposure_signals": channel.get("exposure_signals"),
+            "reason_relevance": channel.get("reason_relevance"),
+            "target_gap": channel.get("target_gap"),
+            "intervention_fit": channel.get("intervention_fit"),
+            "test_hypothesis": channel.get("test_hypothesis"),
+        })
+        planned_channels.append(plan)
+    primary = next((item for item in planned_channels if item.get("intervention_priority") == "PRIMARY"), None)
+    if primary:
+        primary_path = f"{primary.get('rationale_path')}:{primary.get('channel')}"
+        primary_rationale = primary.get("selection_basis") or ""
+    else:
+        primary_path = "CHANNEL_VALIDATION_EXPERIMENT" if any(
+            item.get("intervention_priority") == "TEST" for item in planned_channels
+        ) else "NEED_MORE_EVIDENCE"
+        primary_rationale = "没有通过 Path A/B/C 的正式主渠道；仅保留可审计的验证或观察结果。"
+    return {
+        "resolver": {
+            "name": "resolve_strategy_channels",
+            "version": resolved["resolver_version"],
+            "decision_mode": "DETERMINISTIC_POLICY_ENGINE",
+            "scope": "STEP_7_CHANNEL_ROLE_AND_INTERVENTION_PATH_ONLY",
+            "rollout_flag": "use_strategy_channel_resolver_v1_1",
+            "does_not_decide": ["account", "url", "title", "section", "asset_instance", "draft"],
+            "shared_shadow_production_core": "resolve_channel_shadow",
+        },
+        "gap_type": context["intervention_need"].get("gap_type") or "UNKNOWN",
+        "primary_intervention_path": primary_path,
+        "planned_channels": planned_channels,
+        "channel_roles": _strategy_channel_roles(planned_channels),
+        "channels": resolved["channels"],
+        "intervention_need": context["intervention_need"],
+        "strategy_opportunity_state": resolved["strategy_opportunity_state"],
+        "channel_resolution_state": resolved["channel_resolution_state"],
+        "execution_readiness": resolved["execution_readiness"],
+        "proposed_intervention_mode": resolved["proposed_intervention_mode"],
+        "active_intervention_mode": resolved["active_intervention_mode"],
+        "channel_rationales": {
+            "primary_decision": primary_rationale,
+            "gap_type": context["intervention_need"].get("gap_type") or "UNKNOWN",
+            "benchmark_channel_boundary": "Benchmark 来源平台不能自动成为 Strategy 执行平台；必须通过 Path A/B/C/D 的对应 Gate。",
+            "step8_boundary": "Resolver 只决定 Step 7 平台角色；具体账号、URL、页面、标题、section、资产实例和 Draft 属于 Step 8。",
+        },
+    }
+
+
+def _resolve_strategy_channels_legacy(
     project: Project,
     action: dict,
     gap_items: list[dict],
@@ -4925,6 +6139,7 @@ def _strategy_brand_asset_basis(gap_items: list[dict]) -> dict:
         item.get("relevant_asset_snapshot")
         for item in gap_items
         if isinstance(item.get("relevant_asset_snapshot"), dict)
+        and item.get("relevant_asset_snapshot")
     ]
     return {
         "has_relevant_asset_snapshot": bool(snapshots),
@@ -4974,6 +6189,18 @@ def _strategy_channel_roles(planned_channels: list[dict]) -> dict:
             "brand_asset_basis": item.get("brand_asset_basis", {}),
             "rationale": item.get("rationale"),
             "citation_decision_value_basis": item.get("citation_decision_value_basis", {}),
+            "rationale_path": item.get("rationale_path"),
+            "decision_reason_ids": item.get("decision_reason_ids", []),
+            "supporting_signal_ids": item.get("supporting_signal_ids", []),
+            "blocking_signals": item.get("blocking_signals", []),
+            "why_primary": item.get("why_primary", ""),
+            "why_not_primary": item.get("why_not_primary", ""),
+            "why_test": item.get("why_test", ""),
+            "authority_asset_evidence": item.get("authority_asset_evidence"),
+            "exposure_signals": item.get("exposure_signals"),
+            "reason_relevance": item.get("reason_relevance"),
+            "target_gap": item.get("target_gap"),
+            "intervention_fit": item.get("intervention_fit"),
         }
         for item in planned_channels
         if isinstance(item, dict) and item.get("channel")
@@ -5049,7 +6276,12 @@ def _strategy_primary_intervention_path(action: dict, planned_channels: list[dic
 
 
 def _strategy_asset_direction(action: dict, gap_items: list[dict], planned_channels: list[dict]) -> dict:
-    snapshots = [item.get("relevant_asset_snapshot") for item in gap_items if isinstance(item.get("relevant_asset_snapshot"), dict)]
+    snapshots = [
+        item.get("relevant_asset_snapshot")
+        for item in gap_items
+        if isinstance(item.get("relevant_asset_snapshot"), dict)
+        and item.get("relevant_asset_snapshot")
+    ]
     primary_channel = next((item.get("channel") for item in planned_channels if item.get("intervention_priority") == "PRIMARY"), None)
     operation = "UPDATE_EXISTING" if snapshots else "CREATE_NEW"
     first_snapshot = snapshots[0] if snapshots else {}
@@ -5259,6 +6491,8 @@ def _strategy_payload_from_vertical_action(
     package: OptimizationEvidencePackage,
     action: dict,
     confirm_payload: dict,
+    *,
+    db: Session | None = None,
 ) -> dict:
     benchmark = action.get("benchmark_source") or {}
     channel = str(confirm_payload.get("target_platform") or "").lower()
@@ -5297,7 +6531,17 @@ def _strategy_payload_from_vertical_action(
         use_answer_binding_v1_1=use_answer_binding_v1_1,
     )
     strategy_context["candidate_origin"] = candidate_origin
-    strategy_fields = _strategy_fields_from_vertical_action(project, prompt, action, gap_items, evidence_run_ids)
+    resolver_db = db if bool(confirm_payload.get("use_strategy_channel_resolver_v1_1", False)) else None
+    strategy_fields = _strategy_fields_from_vertical_action(
+        project,
+        prompt,
+        action,
+        gap_items,
+        evidence_run_ids,
+        db=resolver_db,
+        package=package if resolver_db is not None else None,
+    )
+    is_answer_decision_evidence_gap = action.get("strategy_basis") == ANSWER_DECISION_EVIDENCE_GAP_BASIS
     mechanism = strategy_fields.get("intervention_mechanism") or (
         "如果目标品牌已真实具备这些能力，但当前相关资产没有形成可被引用和摘录的能力表达，"
         "则补齐能力说明、适用场景和证据表达，可能提高后续 AI 回答中目标品牌进入候选/推荐理由的机会。"
@@ -5310,6 +6554,13 @@ def _strategy_payload_from_vertical_action(
         "strategy_context": strategy_context,
         **strategy_fields,
         "prompt_id": prompt.id,
+        "strategy_basis": action.get("strategy_basis") or "BENCHMARK_BACKED_STRATEGY",
+        "decision_reason_ids": action.get("decision_reason_ids", []),
+        "decision_reason_event_ids": action.get("decision_reason_event_ids", []),
+        "evidence_gap_reason": action.get("evidence_gap_reason") or "",
+        "evidence_gap_cause": action.get("evidence_gap_cause") or "",
+        "eligible_support_count": int(action.get("eligible_support_count") or 0),
+        "eligible_contradiction_ids": action.get("eligible_contradiction_ids", []),
         "gap_item_ids": gap_item_ids,
         "target_capability_or_reason": capability_labels,
         "target_capabilities": [
@@ -5323,14 +6574,21 @@ def _strategy_payload_from_vertical_action(
             }
             for item in gap_items
         ],
-        "observed_problem": f"Prompt #{prompt.id} 的对标来源显示 {action.get('gap_label') or action.get('gap_type')}。",
+        "observed_problem": (
+            f"Prompt #{prompt.id} 的当前答案决策理由存在目标品牌证据缺口。"
+            if is_answer_decision_evidence_gap
+            else f"Prompt #{prompt.id} 的对标来源显示 {action.get('gap_label') or action.get('gap_type')}。"
+        ),
         "hypothesized_cause": (
             f"可能因为当前品牌资产未充分覆盖对标来源中影响推荐选择的证据：{action.get('summary', '')}"
         ),
         "core_mechanism": mechanism,
         "mechanism": mechanism,
         "why_candidate": (
-            "该候选只来自已完成的 capability-level Gap、Phase 2A eligible Benchmark Evidence、"
+            "该候选来自当前答案中的真实决策理由、已确认的目标品牌 Product Truth，以及该理由缺少满足 Phase 2A lineage 的 eligible SUPPORTS；"
+            "它不包含 Benchmark Evidence，也不把引用显著性升级为 Benchmark。"
+            if is_answer_decision_evidence_gap
+            else "该候选只来自已完成的 capability-level Gap、Phase 2A eligible Benchmark Evidence、"
             "Product Truth 和冻结的 Relevant Asset Snapshot；Step 7 不重新执行 Citation/Evidence/Gap 推理。"
         ),
         "intervention_type": intervention_type,
@@ -5352,6 +6610,7 @@ def _strategy_payload_from_vertical_action(
         "evidence_run_ids": evidence_run_ids,
         "evidence_citation_ids": [],
         "benchmark_evidence_ids": benchmark_evidence_ids,
+        "benchmark_source": benchmark,
         "evidence_summary": {
             "benchmark_source": benchmark,
             "priority_level": action.get("priority_level"),
@@ -9163,7 +10422,21 @@ def _source_metadata_for_url(
     if not cache:
         cache = SourceMetadataCache(url=cache_url, domain=domain, title=fallback_title, status="pending")
         db.add(cache)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError:
+            # 并发请求可能同时缓存同一 URL；复用已存在记录，不能让页面状态接口失败。
+            db.rollback()
+            cache = db.query(SourceMetadataCache).filter(SourceMetadataCache.url == cache_url).first()
+            if cache and cache.fetched_at:
+                return {
+                    "author_name": cache.author_name,
+                    "published_date": cache.published_date,
+                    "title": cache.title,
+                    "status": cache.status,
+                }
+            if not cache:
+                return {}
     try:
         metadata = _fetch_source_metadata(fetch_url, fallback_title)
         cache.author_name = metadata.get("author_name", "")
@@ -9596,21 +10869,7 @@ def _global_source_key(url: str, domain: str, title: str) -> tuple:
 
 
 def _normalize_source_url(url: str) -> str:
-    raw = (url or "").strip()
-    if not raw:
-        return ""
-    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
-    host = (parsed.netloc or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    path = re.sub(r"/+", "/", parsed.path or "/").rstrip("/")
-    query_pairs = [
-        (key, value)
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if not key.lower().startswith("utm_") and key.lower() not in {"from", "spm", "share_source", "share_medium", "share_plat", "share_session_id"}
-    ]
-    query = urlencode(sorted(query_pairs), doseq=True)
-    return urlunparse(("", host, path, "", query, "")).lower().rstrip("/")
+    return canonicalize_url(url)
 
 
 def _citation_stats(references: list[ReferenceSource], sample_count: int) -> dict[tuple, dict]:

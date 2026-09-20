@@ -5,6 +5,8 @@ import re
 import urllib.parse
 from typing import Optional
 
+from app.services.url_identity import canonicalize_url
+
 
 STATIC_DOMAINS = (
     "t7.baidu.com",
@@ -53,23 +55,6 @@ def clean_resolved_url(value: str) -> str:
     if url.startswith("//"):
         url = f"https:{url}"
     return url
-
-
-def canonicalize_url(value: str) -> str:
-    url = clean_resolved_url(value)
-    if not url:
-        return ""
-    parsed = urllib.parse.urlparse(url if "://" in url else f"https://{url}")
-    scheme = parsed.scheme.lower() or "https"
-    netloc = parsed.netloc.lower().removeprefix("www.")
-    path = parsed.path or ""
-    query_pairs = [
-        pair
-        for pair in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        if not pair[0].lower().startswith(("utm_", "spm", "from"))
-    ]
-    query = urllib.parse.urlencode(query_pairs)
-    return urllib.parse.urlunparse((scheme, netloc, path, "", query, ""))
 
 
 def domain_from_url(value: str) -> str:

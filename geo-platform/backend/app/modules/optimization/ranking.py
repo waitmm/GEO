@@ -17,7 +17,6 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from math import log2, sqrt
 from typing import Any, Callable
-from urllib.parse import parse_qsl, urlparse, urlunparse
 
 from sqlalchemy.orm import Session
 
@@ -29,6 +28,7 @@ from app.models import (
     RetrievalCandidate,
 )
 from app.services.serialization import loads
+from app.services.url_identity import canonicalize_url
 
 from app.modules.optimization.ranking_config import (
     SCORING_SPEC_VERSION,
@@ -48,7 +48,6 @@ from app.modules.optimization.ranking_config import (
     MINIMUM_COMPLETENESS_GATE,
     COMPLETENESS_LINEAR_PENALTY_RATE,
     CONFIDENCE_THRESHOLDS,
-    URL_STRIP_PARAMS,
     compute_spec_fingerprint,
     KNOWN_LIMITATIONS,
     USAGE_WARNINGS,
@@ -133,25 +132,7 @@ def canonicalize_citation_url(url: str) -> str:
 
     Strips tracking params, fragments, normalizes scheme/path.
     """
-    if not url:
-        return ""
-    try:
-        parsed = urlparse(url if "://" in url else f"https://{url}")
-        # Normalize scheme
-        scheme = parsed.scheme or "https"
-        # Normalize netloc
-        netloc = parsed.netloc.lower()
-        if netloc.startswith("www."):
-            netloc = netloc[4:]
-        # Strip tracking params
-        query_pairs = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=False)
-                       if k.lower() not in URL_STRIP_PARAMS]
-        query = "&".join(f"{k}={v}" for k, v in sorted(query_pairs))
-        # Normalize path (trailing slash)
-        path = parsed.path.rstrip("/") or "/"
-        return urlunparse((scheme, netloc, path, parsed.params, query, ""))
-    except Exception:
-        return url.lower().strip().rstrip("/")
+    return canonicalize_url(url)
 
 
 def canonicalize_citation_urls(urls: list[str]) -> dict[str, list[str]]:

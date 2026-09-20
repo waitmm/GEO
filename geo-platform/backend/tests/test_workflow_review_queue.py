@@ -43,6 +43,10 @@ from app.modules.optimization.workflow import (
     review_queue,
     workflow_status,
 )
+from app.modules.optimization.evidence_alignment import (
+    _alignment_review_signature,
+    _review_carry_forward_index,
+)
 from app.services.serialization import dumps, loads
 
 
@@ -300,6 +304,14 @@ def test_review_queue_groups_duplicate_run_level_alignments_and_batch_confirms_g
             source_span="小码短链接可以查看每个链接的点击次数。",
             review_status="MACHINE_GROUNDED",
         )
+        duplicate_claim = SourceClaim(
+            id=702,
+            project_id=3,
+            source_document_id=601,
+            normalized_claim="小码短链接可以查看每个链接的点击次数",
+            source_span="小码短链接可以查看每个链接的点击次数。",
+            review_status="MACHINE_GROUNDED",
+        )
         alignment_a = EvidenceAlignment(
             id=801,
             project_id=3,
@@ -334,7 +346,24 @@ def test_review_queue_groups_duplicate_run_level_alignments_and_batch_confirms_g
             }),
             review_status="MACHINE_GROUNDED",
         )
-        db.add_all([Organization(id=1, name="测试组织"), project, prompt, task, run_a, run_b, event_a, event_b, doc, claim, alignment_a, alignment_b])
+        alignment_c = EvidenceAlignment(
+            id=803,
+            project_id=3,
+            prompt_id=40,
+            run_id=401,
+            recommendation_event_id=501,
+            recommendation_reason_id="answer_unit:1001:binding:2001",
+            source_document_id=601,
+            source_claim_id=702,
+            relation="SUPPORTS",
+            machine_payload_json=dumps({
+                "semantic_reason_key": "小码短链接自带点击统计|ENTITY_SPECIFIC|小码短链接",
+                "observed_run_ids": [401, 402],
+                "reason_source": "ANSWER_DECISION_BINDING",
+            }),
+            review_status="MACHINE_GROUNDED",
+        )
+        db.add_all([Organization(id=1, name="测试组织"), project, prompt, task, run_a, run_b, event_a, event_b, doc, claim, duplicate_claim, alignment_a, alignment_b, alignment_c])
         db.commit()
 
         queue = review_queue(db, project, 40)
@@ -343,8 +372,9 @@ def test_review_queue_groups_duplicate_run_level_alignments_and_batch_confirms_g
         assert queue["unique_events"] == []
         assert len(queue["alignments"]) == 1
         group = queue["alignments"][0]
-        assert group["alignment_ids"] == [801, 802]
-        assert group["alignment_count"] == 2
+        assert group["review_group_key"]
+        assert group["alignment_ids"] == [801, 802, 803]
+        assert group["alignment_count"] == 3
         assert group["run_ids"] == [401, 402]
         assert group["run_count"] == 2
         assert group["semantic_observed_run_ids"] == [401, 402]
@@ -352,13 +382,114 @@ def test_review_queue_groups_duplicate_run_level_alignments_and_batch_confirms_g
         assert group["reason_text"] == "小码短链接自带点击统计"
         assert group["source_document_id"] == 601
         assert group["source_claim_id"] == 701
+        assert group["source_claim_ids"] == [701, 702]
+        status_before = workflow_status(db, project, 40)
+        evidence_step_before = next(step for step in status_before["steps"] if step["key"] == "evidence")
+        evidence_review_step_before = next(step for step in status_before["steps"] if step["key"] == "evidence_review")
+        assert evidence_step_before["detail"] == "1 组支持证据"
+        assert evidence_review_step_before["detail"] == "0/1 组已审"
+        assert status_before["support_alignment_row_count"] == 3
+        assert status_before["support_review_group_count"] == 1
 
         result = batch_confirm_alignments(db, group["alignment_ids"], reviewer="human")
 
-        assert result["updated"] == 2
+        assert result["updated"] == 3
         refreshed = db.query(EvidenceAlignment).order_by(EvidenceAlignment.id).all()
-        assert [row.review_status for row in refreshed] == ["HUMAN_CONFIRMED", "HUMAN_CONFIRMED"]
-        assert [row.reviewer for row in refreshed] == ["human", "human"]
+        assert [row.review_status for row in refreshed] == ["HUMAN_CONFIRMED", "HUMAN_CONFIRMED", "HUMAN_CONFIRMED"]
+        assert [row.reviewer for row in refreshed] == ["human", "human", "human"]
+        status_after = workflow_status(db, project, 40)
+        evidence_review_step_after = next(step for step in status_after["steps"] if step["key"] == "evidence_review")
+        assert evidence_review_step_after["detail"] == "1/1 组已审"
+        assert status_after["support_alignment_reviewed_row_count"] == 3
+        assert status_after["support_reviewed_group_count"] == 1
+    finally:
+        db.close()
+
+
+def test_evidence_review_carry_forward_uses_semantic_signature_not_source_claim_id():
+    db = _session()
+    try:
+        project = Project(id=3, organization_id=1, name="爱短链品牌监测", brand_name="爱短链")
+        prompt = Prompt(id=40, project_id=3, prompt_text="长链接缩短", title="长链接缩短")
+        task = BrowserMonitorTask(id=1, project_id=3, status="success")
+        run = BrowserMonitorRun(id=401, task_id=1, project_id=3, prompt_id=40, status="success", answer_text="可以优先考虑小码短链接。")
+        event = RecommendationEvent(
+            id=501,
+            project_id=3,
+            prompt_id=40,
+            run_id=401,
+            answer_hash="hash-a",
+            entity_text="小码短链接",
+            speech_act="RECOMMEND",
+            recommendation_strength="STRONG",
+            polarity="POSITIVE",
+            answer_span="小码短链接自带点击统计",
+            review_status="HUMAN_CONFIRMED",
+        )
+        doc = SourceDocument(id=601, url="https://zhuanlan.zhihu.com/p/test", canonical_url="https://zhuanlan.zhihu.com/p/test", domain="zhuanlan.zhihu.com", fetch_status="SUCCESS")
+        old_claim = SourceClaim(
+            id=701,
+            project_id=3,
+            source_document_id=601,
+            normalized_claim="小码短链接可以查看每个链接的点击次数",
+            source_span="小码短链接可以查看每个链接的点击次数。",
+            review_status="MACHINE_GROUNDED",
+        )
+        new_duplicate_claim = SourceClaim(
+            id=702,
+            project_id=3,
+            source_document_id=601,
+            normalized_claim="小码短链接可以查看每个链接的点击次数",
+            source_span="小码短链接可以查看每个链接的点击次数。",
+            review_status="MACHINE_GROUNDED",
+        )
+        reviewed_alignment = EvidenceAlignment(
+            id=801,
+            project_id=3,
+            prompt_id=40,
+            run_id=401,
+            recommendation_event_id=501,
+            recommendation_reason_id="answer_unit:1001:binding:2001",
+            source_document_id=601,
+            source_claim_id=701,
+            relation="SUPPORTS",
+            machine_payload_json=dumps({
+                "semantic_reason_key": "小码短链接自带点击统计|ENTITY_SPECIFIC|小码短链接",
+                "reason_source": "ANSWER_DECISION_BINDING",
+            }),
+            review_status="HUMAN_CONFIRMED",
+            reviewer="human",
+        )
+        db.add_all([Organization(id=1, name="测试组织"), project, prompt, task, run, event, doc, old_claim, new_duplicate_claim, reviewed_alignment])
+        db.commit()
+
+        carry_index = _review_carry_forward_index(db, 3, 40)
+        new_alignment = EvidenceAlignment(
+            project_id=3,
+            prompt_id=40,
+            run_id=401,
+            recommendation_event_id=501,
+            recommendation_reason_id="answer_unit:2002:binding:3003",
+            source_document_id=601,
+            source_claim_id=702,
+            relation="SUPPORTS",
+        )
+        signature = _alignment_review_signature(
+            new_alignment,
+            new_duplicate_claim,
+            relation="SUPPORTS",
+            payload={"semantic_reason_key": "小码短链接自带点击统计|ENTITY_SPECIFIC|小码短链接"},
+        )
+        relation_mismatch = _alignment_review_signature(
+            new_alignment,
+            new_duplicate_claim,
+            relation="RELATED",
+            payload={"semantic_reason_key": "小码短链接自带点击统计|ENTITY_SPECIFIC|小码短链接"},
+        )
+
+        assert carry_index[signature]["review_status"] == "HUMAN_CONFIRMED"
+        assert carry_index[signature]["source_alignment_id"] == 801
+        assert relation_mismatch not in carry_index
     finally:
         db.close()
 
@@ -631,7 +762,7 @@ def test_reviewed_workflow_with_upstream_signal_without_current_v1_1_input_needs
         assert action_step["done"] is False
         assert "尚未生成 V1.1 正式证据" in action_step["detail"]
         assert experiment_step["done"] is False
-        assert experiment_step["detail"] == "等待重新运行当前主链生成正式证据与策略候选"
+        assert experiment_step["detail"] == "等待 V1.1 正式证据输入生成策略候选"
         assert status["historical_strategy_candidate_count"] == 1
         assert status["ineligible_strategy_candidates"][0]["id"] == legacy_pending.id
         assert "LEGACY_STRATEGY_GENERATOR" in status["ineligible_strategy_candidates"][0]["ineligibility_reasons"]
@@ -639,7 +770,7 @@ def test_reviewed_workflow_with_upstream_signal_without_current_v1_1_input_needs
         db.close()
 
 
-def test_reviewed_workflow_with_current_v1_1_input_and_no_gap_is_no_strategy():
+def test_reviewed_workflow_with_supportless_current_v1_1_input_needs_rebuild():
     db = _session()
     try:
         project, prompt, _package = _ready_strategy_workflow_base(db)
@@ -682,12 +813,77 @@ def test_reviewed_workflow_with_current_v1_1_input_and_no_gap_is_no_strategy():
         action_step = next(step for step in status["steps"] if step["key"] == "action")
         experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
 
-        assert status["strategy_step_status"] == "NO_STRATEGY"
-        assert status["execution_step_status"] == "NO_EXPERIMENT"
-        assert action_step["done"] is True
-        assert action_step["detail"] == "当前正式链已完成，没有可生成策略的内容/证据缺口"
-        assert experiment_step["done"] is True
-        assert experiment_step["detail"] == "本轮没有策略候选，无需创建实验草案"
+        assert status["strategy_step_status"] == "NEEDS_CURRENT_ANALYSIS"
+        assert status["execution_step_status"] == "LOCKED"
+        assert status["current_v1_1_input_state"]["formal_v1_1_support_count"] == 0
+        assert status["current_v1_1_input_state"]["supportless_formal_input_needs_rebuild"] is True
+        assert action_step["done"] is False
+        assert action_step["detail"] == "当前 V1.1 正式证据输入未形成可用 SUPPORTS，请重新生成证据语义关系后再进入策略确认"
+        assert experiment_step["done"] is False
+        assert experiment_step["detail"] == "等待 V1.1 正式证据输入生成策略候选"
+    finally:
+        db.close()
+
+
+def test_legacy_support_does_not_make_step7_ready_when_formal_v1_1_has_no_support():
+    db = _session()
+    try:
+        project, prompt, _package = _ready_strategy_workflow_base(db)
+        doc = SourceDocument(
+            id=3711,
+            url="https://example.com/formal-related",
+            canonical_url="https://example.com/formal-related",
+            domain="example.com",
+            fetch_status="SUCCESS",
+            clean_text="正式 V1.1 只判断为相关，legacy 行曾判断为支持。",
+        )
+        claim = SourceClaim(
+            id=3712,
+            project_id=project.id,
+            source_document_id=doc.id,
+            normalized_claim="正式 V1.1 只判断为相关",
+            source_span="正式 V1.1 只判断为相关。",
+            review_status="MACHINE_GROUNDED",
+        )
+        formal_related = EvidenceAlignment(
+            id=3713,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3001,
+            recommendation_event_id=3002,
+            recommendation_reason_id="answer_unit:3710:binding:3710",
+            source_document_id=doc.id,
+            source_claim_id=claim.id,
+            relation="RELATED",
+            machine_payload_json=dumps({
+                "formal_input_version": FORMAL_V1_1_INPUT_VERSION,
+                "reason_source": "ANSWER_DECISION_BINDING",
+            }),
+            review_status="MACHINE_GROUNDED",
+        )
+        legacy_support = EvidenceAlignment(
+            id=3714,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3001,
+            recommendation_event_id=3002,
+            recommendation_reason_id="legacy:3710",
+            source_document_id=doc.id,
+            source_claim_id=claim.id,
+            relation="SUPPORTS",
+            machine_payload_json=dumps({"reason_source": "RECOMMENDATION_EVENT_REASONS_JSON"}),
+            review_status="HUMAN_CONFIRMED",
+        )
+        db.add_all([doc, claim, formal_related, legacy_support])
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+
+        assert status["strategy_step_status"] == "NEEDS_CURRENT_ANALYSIS"
+        assert status["current_v1_1_input_state"]["formal_v1_1_alignment_count"] == 1
+        assert status["current_v1_1_input_state"]["formal_v1_1_support_count"] == 0
+        assert status["current_v1_1_input_state"]["legacy_support_count"] == 1
+        assert status["current_v1_1_input_state"]["supportless_formal_input_needs_rebuild"] is True
     finally:
         db.close()
 
@@ -739,7 +935,95 @@ def test_current_analysis_failed_is_visible_in_step7():
         assert status["execution_step_status"] == "LOCKED"
         assert action_step["done"] is False
         assert "database is locked" in action_step["detail"]
-        assert experiment_step["detail"] == "先重新运行当前主链，成功后才能进入策略确认"
+        assert experiment_step["detail"] == "先重新生成 V1.1 正式证据输入，成功后才能进入策略确认"
+    finally:
+        db.close()
+
+
+def test_restart_interrupted_analysis_does_not_mask_completed_current_chain():
+    db = _session()
+    try:
+        project, prompt, package = _ready_strategy_workflow_base(db)
+        source_document = SourceDocument(
+            id=3051,
+            url="https://example.com/restart",
+            canonical_url="https://example.com/restart",
+            domain="example.com",
+            title="竞品短链点击统计",
+            fetch_status="SUCCESS",
+        )
+        source_claim = SourceClaim(
+            id=3052,
+            project_id=project.id,
+            source_document_id=source_document.id,
+            normalized_claim="竞品短链支持点击统计",
+            source_span="竞品短链支持点击统计",
+        )
+        alignment = EvidenceAlignment(
+            id=3053,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3001,
+            recommendation_event_id=3002,
+            source_document_id=source_document.id,
+            source_claim_id=source_claim.id,
+            relation="SUPPORTS",
+            review_status="HUMAN_CONFIRMED",
+            machine_payload_json=dumps({
+                "formal_input_version": FORMAL_V1_1_INPUT_VERSION,
+                "evidence_package_id": package.id,
+            }),
+        )
+        completed_run = PromptAnalysisRun(
+            project_id=project.id,
+            prompt_id=prompt.id,
+            status="COMPLETED",
+            runs_associated=1,
+            errors_json=dumps([]),
+        )
+        restart_failed_run = PromptAnalysisRun(
+            project_id=project.id,
+            prompt_id=prompt.id,
+            status="FAILED",
+            runs_associated=1,
+            errors_json=dumps(["服务重启中断了本次后台分析，请重新运行当前主链"]),
+        )
+        db.add_all([source_document, source_claim, alignment, completed_run, restart_failed_run])
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in status["steps"] if step["key"] == "action")
+
+        assert status["strategy_step_status"] == "READY_TO_GENERATE"
+        assert status["execution_step_status"] == "LOCKED"
+        assert action_step["detail"] == "证据审核完成，可生成策略候选"
+    finally:
+        db.close()
+
+
+def test_current_analysis_running_masks_pending_event_review():
+    db = _session()
+    try:
+        project, prompt, _package = _ready_strategy_workflow_base(db)
+        event = db.get(RecommendationEvent, 3002)
+        event.review_status = "MACHINE_CANDIDATE"
+        db.add(PromptAnalysisRun(
+            project_id=project.id,
+            prompt_id=prompt.id,
+            status="RUNNING",
+            runs_associated=1,
+            errors_json=dumps([]),
+        ))
+        db.commit()
+
+        status = workflow_status(db, project, prompt.id)
+        action_step = next(step for step in status["steps"] if step["key"] == "action")
+        experiment_step = next(step for step in status["steps"] if step["key"] == "experiment")
+
+        assert status["strategy_step_status"] == "CURRENT_ANALYSIS_RUNNING"
+        assert action_step["done"] is False
+        assert "后台运行" in action_step["detail"]
+        assert experiment_step["detail"] == "等待当前主链运行完成"
     finally:
         db.close()
 
@@ -763,17 +1047,50 @@ def test_step7_not_ready_detail_points_to_pending_event_review():
         db.close()
 
 
-def test_citation_decision_action_unlocks_strategy_generation(monkeypatch):
+def test_reviewed_support_evidence_unlocks_strategy_generation_without_recomputing_citation(monkeypatch):
     db = _session()
     try:
-        project, prompt, _package = _ready_strategy_workflow_base(db)
+        project, prompt, package = _ready_strategy_workflow_base(db)
+        source_document = SourceDocument(
+            id=3005,
+            url="https://example.com/a",
+            canonical_url="https://example.com/a",
+            domain="example.com",
+            title="竞品短链点击统计",
+            fetch_status="SUCCESS",
+        )
+        source_claim = SourceClaim(
+            id=3006,
+            project_id=project.id,
+            source_document_id=source_document.id,
+            normalized_claim="竞品短链支持点击统计",
+            source_span="竞品短链支持点击统计",
+        )
+        alignment = EvidenceAlignment(
+            id=3007,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            run_id=3001,
+            recommendation_event_id=3002,
+            source_document_id=source_document.id,
+            source_claim_id=source_claim.id,
+            relation="SUPPORTS",
+            review_status="HUMAN_CONFIRMED",
+            machine_payload_json=dumps({
+                "formal_input_version": FORMAL_V1_1_INPUT_VERSION,
+                "evidence_package_id": package.id,
+            }),
+        )
+        db.add_all([source_document, source_claim, alignment])
+        db.commit()
 
         def fake_citation_decision(*args, **kwargs):
-            return {"recommended_actions": [{"route": "CONTENT", "action_key": "gap-1"}]}
+            raise AssertionError("workflow/status must not recompute Citation Decision")
 
         monkeypatch.setattr(
             "app.modules.optimization.workflow.citation_decision_vertical_slice",
             fake_citation_decision,
+            raising=False,
         )
 
         status = workflow_status(db, project, prompt.id)
@@ -781,7 +1098,7 @@ def test_citation_decision_action_unlocks_strategy_generation(monkeypatch):
 
         assert status["strategy_step_status"] == "READY_TO_GENERATE"
         assert status["execution_step_status"] == "LOCKED"
-        assert action_step["detail"] == "1 个缺口可生成策略候选"
+        assert action_step["detail"] == "证据审核完成，可生成策略候选"
     finally:
         db.close()
 

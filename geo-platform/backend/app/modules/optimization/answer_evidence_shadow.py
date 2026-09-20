@@ -12,7 +12,6 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy.orm import Session
 
@@ -42,6 +41,7 @@ from app.modules.optimization.source_qualification import derive_content_status,
 from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import DeepSeekClient
 from app.services.serialization import dumps, loads
+from app.services.url_identity import canonicalize_url
 
 SHADOW_PIPELINE_VERSION = "citation_decision_v1_1_shadow"
 ANSWER_UNIT_VERSION = "answer_unit.v1_1_shadow"
@@ -105,6 +105,7 @@ _LIMITATION_WORDS = ("不支持", "无法", "不能", "风险", "限制", "失�
 _DIRECT_REASON_CUES = ("因为", "所以", "因此", "如果", "需要", "优先", "更推荐", "建议选择", "推荐理由", "选择依据")
 _RECOMMEND_SPEECH_ACTS = {
     "RECOMMEND",
+    "INCLUDE_AS_OPTION",
     "POSITIVE_RECOMMENDATION",
     "TOP_RECOMMENDATION",
     "CANDIDATE",
@@ -143,17 +144,7 @@ class AnswerEvidenceBindingJudge:
 
 
 def _normalize_url_key(url: str) -> str:
-    if not url:
-        return ""
-    try:
-        parsed = urlsplit(url.strip())
-    except ValueError:
-        return url.strip().lower()
-    host = (parsed.netloc or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    path = parsed.path.rstrip("/") or "/"
-    return urlunsplit((parsed.scheme.lower() or "https", host, path, "", ""))
+    return canonicalize_url(url)
 
 
 def _latest_package(db: Session, project_id: int, prompt_id: int) -> OptimizationEvidencePackage | None:
@@ -319,6 +310,10 @@ def _same_entity(a: str, b: str) -> bool:
     return a == b or a in b or b in a
 
 
+def _compact_text(text: str) -> str:
+    return re.sub(r"[\s\u200b-\u200f\ufeff\u00ad]+", "", text or "")
+
+
 def _is_recommendation_event(event: RecommendationEvent) -> bool:
     return (event.speech_act or "").upper() in _RECOMMEND_SPEECH_ACTS and event.review_status in {
         "MACHINE_GROUNDED",
@@ -395,6 +390,29 @@ def _rule_binding(event: RecommendationEvent, unit: AnswerUnit) -> dict | None:
         **scope,
         "rationale": "同一答案中该原子事实解释或补充了推荐实体的能力/场景。",
     }
+
+
+def _reason_span_anchor_binding(event: RecommendationEvent, unit: AnswerUnit) -> dict | None:
+    """Bind a grounded AnswerUnit to an already extracted recommendation reason."""
+    if unit.semantic_type == "PROCEDURE":
+        return None
+    unit_text = _compact_text(unit.unit_text_normalized or unit.unit_text_original)
+    if not unit_text:
+        return None
+    for reason in loads(event.reasons_json, []):
+        reason_text = _compact_text(reason.get("reason_span") or reason.get("normalized_reason") or "")
+        if len(reason_text) < 4:
+            continue
+        if reason_text in unit_text or unit_text in reason_text:
+            return {
+                "decision_role": "DIRECT_REASON",
+                "binding_strength": "HIGH",
+                "scope_type": "SAME_PARAGRAPH",
+                "scope_reason": "ANSWER_UNIT_OVERLAPS_RECOMMENDATION_EVENT_REASON",
+                "rationale": "答案原子事实与已识别推荐理由文本重叠，作为该推荐事件的正式理由输入。",
+                "reason_anchor_text": reason.get("reason_span") or reason.get("normalized_reason") or "",
+            }
+    return None
 
 
 def _build_answer_units(db: Session, shadow_run: AnswerEvidenceShadowRun, runs_by_id: dict[int, BrowserMonitorRun]) -> list[AnswerUnit]:
@@ -509,6 +527,10 @@ def _build_decision_bindings(
                         return bindings, errors
                 continue
             rule = _rule_binding(event, unit)
+            deterministic_anchor = False
+            if not rule:
+                rule = _reason_span_anchor_binding(event, unit)
+                deterministic_anchor = rule is not None
             if not rule:
                 continue
             payload = {"rule_candidate": rule}
@@ -516,8 +538,8 @@ def _build_decision_bindings(
             strength = rule["binding_strength"]
             scope_type = rule.get("scope_type") or "SAME_PARAGRAPH"
             scope_reason = rule.get("scope_reason") or ""
-            method = "RULE_SHADOW_CANDIDATE"
-            if judge:
+            method = "RULE_REASON_SPAN_ANCHOR" if deterministic_anchor else "RULE_SHADOW_CANDIDATE"
+            if judge and not deterministic_anchor:
                 try:
                     judged = judge.judge(event, unit, db=db)
                     payload["judge"] = judged
@@ -1051,6 +1073,7 @@ def run_answer_evidence_shadow_chain(
     binding_judge: AnswerEvidenceBindingJudge | None = None,
     source_claim_judge: SourceClaimJudge | Any | None = None,
     alignment_judge: EvidenceAlignmentJudge | Any | None = None,
+    run_source_chain: bool = True,
 ) -> dict:
     project = db.get(Project, project_id)
     prompt = db.get(Prompt, prompt_id)
@@ -1083,6 +1106,7 @@ def run_answer_evidence_shadow_chain(
             "max_bindings": max_bindings,
             "include_procedural_context": include_procedural_context,
             "include_unbound_answer_units": include_unbound_answer_units,
+            "run_source_chain": run_source_chain,
         }),
     )
     db.add(shadow_run)
@@ -1116,7 +1140,7 @@ def run_answer_evidence_shadow_chain(
             max(1, min(int(top_k or 3), 8)),
             source_claim_judge,
             alignment_judge,
-        )
+        ) if run_source_chain else (0, [])
         _, unbound_errors = _run_unbound_answer_unit_source_chain(
             db,
             shadow_run,
@@ -1126,13 +1150,14 @@ def run_answer_evidence_shadow_chain(
             max(1, min(int(top_k or 3), 8)),
             source_claim_judge,
             alignment_judge,
-        ) if include_unbound_answer_units else (0, [])
+        ) if run_source_chain and include_unbound_answer_units else (0, [])
         errors = binding_errors + chain_errors + unbound_errors
         summary = _shadow_run_summary(db, shadow_run, before_counts)
         summary["entity_filter"] = entity_filter or ""
         summary["max_bindings"] = max_bindings
         summary["include_procedural_context"] = include_procedural_context
         summary["include_unbound_answer_units"] = include_unbound_answer_units
+        summary["run_source_chain"] = run_source_chain
         if errors:
             summary["errors"] = errors[:10]
         shadow_run.summary_json = dumps(summary)

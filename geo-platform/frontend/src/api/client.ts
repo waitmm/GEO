@@ -1,4 +1,4 @@
-import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, StrategyCandidate, Topic, ValidationDashboard } from "../types";
+import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
 
 const API_BASE = "";
 
@@ -52,6 +52,78 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listProjects: () => request<Project[]>("/api/projects"),
+  createSinglePromptV2Analysis: (payload: { project_id: number; prompt_id: number; sample_count: number; idempotency_key: string }) =>
+    request<SinglePromptV2Status>("/api/v2/single-prompt/analyses", { method: "POST", body: JSON.stringify(payload) }),
+  getSinglePromptV2Analysis: (analysisId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2Status>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}?project_id=${projectId}&prompt_id=${promptId}`),
+  retrySinglePromptV2Analysis: (analysisId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2Status>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/retry?project_id=${projectId}&prompt_id=${promptId}`, { method: "POST" }),
+  createSinglePromptV2Diagnosis: (analysisId: string, payload: { project_id: number; prompt_id: number; idempotency_key: string }) =>
+    request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses`, { method: "POST", body: JSON.stringify(payload) }),
+  getSinglePromptV2Diagnosis: (analysisId: string, diagnosisId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}?project_id=${projectId}&prompt_id=${promptId}`),
+  retrySinglePromptV2Diagnosis: (analysisId: string, diagnosisId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/retry?project_id=${projectId}&prompt_id=${promptId}`, { method: "POST" }),
+  reviseSinglePromptV2Diagnosis: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; base_result_version: string; base_result_hash: string;
+    reviewable_set_hash: string; editor: string; edits: SinglePromptV2DiagnosisEdit[];
+  }) => request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/revisions`, { method: "POST", body: JSON.stringify(payload) }),
+  reviewSinglePromptV2Diagnosis: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; result_hash: string; reviewable_set_hash: string;
+    reviewer: string; note: string; decisions: any[];
+  }) => request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/reviews`, { method: "POST", body: JSON.stringify(payload) }),
+  getSinglePromptV2StrategyReadiness: (analysisId: string, diagnosisId: string, resultVersion: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2StrategyReadiness>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/strategy-readiness?project_id=${projectId}&prompt_id=${promptId}`),
+  createSinglePromptV2Strategy: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; idempotency_key: string; diagnosis_result_hash: string;
+    reviewable_set_hash: string; review_id: string; review_snapshot_hash: string; input_projection_hash: string;
+  }) => request<SinglePromptV2StrategyStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/strategies`, { method: "POST", body: JSON.stringify(payload) }),
+  getSinglePromptV2Strategy: (analysisId: string, diagnosisId: string, strategyId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2StrategyStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/strategies/${encodeURIComponent(strategyId)}?project_id=${projectId}&prompt_id=${promptId}`),
+  reviseSinglePromptV2StrategyPriority: (analysisId: string, diagnosisId: string, strategyId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; base_result_version: string; base_result_hash: string;
+    reviewable_set_hash: string; ordered_direction_ids: string[]; editor: string; reason: string;
+  }) => request<SinglePromptV2StrategyStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/strategies/${encodeURIComponent(strategyId)}/results/${encodeURIComponent(resultVersion)}/priority-revisions`, { method: "POST", body: JSON.stringify(payload) }),
+  reviewSinglePromptV2Strategy: (analysisId: string, diagnosisId: string, strategyId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; result_hash: string; reviewable_set_hash: string;
+    decision: "ACCEPTED" | "REJECTED"; reviewer: string; note: string;
+  }) => request<SinglePromptV2StrategyStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/strategies/${encodeURIComponent(strategyId)}/results/${encodeURIComponent(resultVersion)}/reviews`, { method: "POST", body: JSON.stringify(payload) }),
+  createSinglePromptV2ExecutionProposal: (analysisId: string, diagnosisId: string, strategyId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; direction_id: string; idempotency_key: string;
+    strategy_result_hash: string; strategy_review_id: string; strategy_review_snapshot_hash: string;
+  }) => request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/strategies/${encodeURIComponent(strategyId)}/results/${encodeURIComponent(resultVersion)}/execution-proposals`, { method: "POST", body: JSON.stringify(payload) }),
+  getSinglePromptV2ExecutionProposal: (strategyId: string, proposalId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/strategies/${encodeURIComponent(strategyId)}/execution-proposals/${encodeURIComponent(proposalId)}?project_id=${projectId}&prompt_id=${promptId}`),
+  reviseSinglePromptV2ExecutionProposal: (strategyId: string, proposalId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; base_result_version: string; base_result_hash: string;
+    reviewable_set_hash: string; editor: string; edit: Record<string, any>;
+  }) => request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/strategies/${encodeURIComponent(strategyId)}/execution-proposals/${encodeURIComponent(proposalId)}/results/${encodeURIComponent(resultVersion)}/revisions`, { method: "POST", body: JSON.stringify(payload) }),
+  confirmSinglePromptV2ExecutionProposal: (strategyId: string, proposalId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; result_hash: string; reviewable_set_hash: string;
+    idempotency_key: string; confirmer: string; note: string;
+  }) => request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/strategies/${encodeURIComponent(strategyId)}/execution-proposals/${encodeURIComponent(proposalId)}/results/${encodeURIComponent(resultVersion)}/confirmations`, { method: "POST", body: JSON.stringify(payload) }),
+  recordSinglePromptV2Publication: (strategyId: string, proposalId: string, confirmationId: string, payload: Record<string, any>) =>
+    request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/strategies/${encodeURIComponent(strategyId)}/execution-proposals/${encodeURIComponent(proposalId)}/confirmations/${encodeURIComponent(confirmationId)}/publications`, { method: "POST", body: JSON.stringify(payload) }),
+  getSinglePromptV2RetestReadiness: (projectId: number, promptId: number, confirmationId?: string, publicationId?: string) => {
+    const params = new URLSearchParams({ project_id: String(projectId), prompt_id: String(promptId) });
+    if (confirmationId) params.set("confirmation_id", confirmationId);
+    if (publicationId) params.set("publication_id", publicationId);
+    return request<SinglePromptV2RetestReadiness>(`/api/v2/single-prompt/retests/readiness?${params.toString()}`);
+  },
+  createSinglePromptV2Retest: (payload: Record<string, any>) =>
+    request<SinglePromptV2RetestStatus>("/api/v2/single-prompt/retests", { method: "POST", body: JSON.stringify(payload) }),
+  getSinglePromptV2Retest: (retestId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2RetestStatus>(`/api/v2/single-prompt/retests/${encodeURIComponent(retestId)}?project_id=${projectId}&prompt_id=${promptId}`),
+  startSinglePromptV2RetestSampling: (retestId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2RetestStatus>(`/api/v2/single-prompt/retests/${encodeURIComponent(retestId)}/sampling`, { method: "POST", body: JSON.stringify({ project_id: projectId, prompt_id: promptId }) }),
+  retrySinglePromptV2RetestSampling: (retestId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2RetestStatus>(`/api/v2/single-prompt/retests/${encodeURIComponent(retestId)}/sampling/retry`, { method: "POST", body: JSON.stringify({ project_id: projectId, prompt_id: promptId }) }),
+  finalizeSinglePromptV2RetestSampling: (retestId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2RetestStatus>(`/api/v2/single-prompt/retests/${encodeURIComponent(retestId)}/sampling/finalize`, { method: "POST", body: JSON.stringify({ project_id: projectId, prompt_id: promptId }) }),
+  startSinglePromptV2SemanticMeasurement: (retestId: string, projectId: number, promptId: number, authorizeExternalLlm: boolean) =>
+    request<SinglePromptV2RetestStatus>(`/api/v2/single-prompt/retests/${encodeURIComponent(retestId)}/semantic-measurement`, { method: "POST", body: JSON.stringify({ project_id: projectId, prompt_id: promptId, authorize_external_llm: authorizeExternalLlm }) }),
+  createSinglePromptV2Comparison: (retestId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2RetestStatus>(`/api/v2/single-prompt/retests/${encodeURIComponent(retestId)}/comparisons`, { method: "POST", body: JSON.stringify({ project_id: projectId, prompt_id: promptId }) }),
   createProject: (payload: unknown) =>
     request<Project>("/api/projects", { method: "POST", body: JSON.stringify(payload) }),
   updateProject: (id: number, payload: unknown) =>
@@ -129,11 +201,11 @@ export const api = {
     request<any>(`/api/optimization/projects/${projectId}/strategy-candidates/generate-v2`, { method: "POST", body: JSON.stringify(payload) }),
   generateCurrentStep7StrategyCandidateV1: (projectId: number, promptId: number, payload: unknown) =>
     request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/strategy-candidates/generate-current-v1`, { method: "POST", body: JSON.stringify(payload) }),
-  getCitationDecisionV1: (projectId: number, promptId: number, evidencePackageId?: number, useAnswerBindingV11?: boolean) =>
+  getCitationDecisionV1: (projectId: number, promptId: number, evidencePackageId?: number, useAnswerBindingV11?: boolean, init?: RequestInit) =>
     request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/citation-decision-v1${[
       evidencePackageId ? `evidence_package_id=${evidencePackageId}` : "",
       typeof useAnswerBindingV11 === "boolean" ? `use_answer_binding_v1_1=${useAnswerBindingV11 ? "true" : "false"}` : "",
-    ].filter(Boolean).join("&").replace(/^(.+)/, "?$1")}`),
+    ].filter(Boolean).join("&").replace(/^(.+)/, "?$1")}`, init),
   getDecisionStability: (projectId: number, promptId: number, evidencePackageId?: number) =>
     request<any>(`/api/optimization/projects/${projectId}/prompts/${promptId}/decision-stability${[
       evidencePackageId ? `evidence_package_id=${evidencePackageId}` : "",
@@ -195,6 +267,12 @@ export const api = {
     request<Record<string, any>>(`/api/optimization/strategy-candidates/${candidateId}/experiment-plan`, { method: "POST" }),
   confirmStrategyExecutionPlan: (candidateId: number, payload: unknown) =>
     request<Record<string, any>>(`/api/optimization/strategy-candidates/${candidateId}/execution-plan`, { method: "POST", body: JSON.stringify(payload) }),
+  getExecutionProposalShadow: (projectId: number, promptId: number, candidateId?: number) =>
+    request<any>(`/api/optimization/workflow/${projectId}/${promptId}/execution-proposal-shadow${candidateId ? `?candidate_id=${candidateId}` : ""}`),
+  revalidateExecutionProposal: (projectId: number, promptId: number, payload: unknown) =>
+    request<any>(`/api/optimization/workflow/${projectId}/${promptId}/execution-proposal/revalidate`, { method: "POST", body: JSON.stringify(payload) }),
+  revalidateExecutionProposalPortfolio: (projectId: number, promptId: number, payload: unknown) =>
+    request<any>(`/api/optimization/workflow/${projectId}/${promptId}/execution-proposal/portfolio/revalidate`, { method: "POST", body: JSON.stringify(payload) }),
   listPageSnapshots: (projectId: number, experimentId?: number) =>
     request<any[]>(`/api/optimization/projects/${projectId}/page-snapshots${experimentId ? `?experiment_id=${experimentId}` : ""}`),
   capturePageSnapshot: (projectId: number, payload: unknown) =>

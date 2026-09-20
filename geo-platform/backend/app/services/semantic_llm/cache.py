@@ -43,6 +43,7 @@ class LLMCallCache:
         return {
             "parsed_payload": json.loads(row.parsed_payload_json or "{}"),
             "token_usage": row.token_usage,
+            "raw_response_hash": row.raw_response_hash,
         }
 
     @staticmethod

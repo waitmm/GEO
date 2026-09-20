@@ -1,0 +1,2203 @@
+"""V2 second-slice diagnosis with explicit frozen input and append-only review.
+
+This module deliberately reuses narrow semantic judges and deterministic
+retrieval helpers. It does not call the V1 Package/Shadow/Workflow runners.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+from datetime import datetime
+from typing import Any, Callable
+from uuid import uuid4
+
+from fastapi import HTTPException
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.core.config import get_settings
+from app.core.database import SessionLocal
+from app.models import (
+    LLMCallCache,
+    Project,
+    SinglePromptAnalysis,
+    SinglePromptAnalysisContext,
+    SinglePromptDiagnosisExecution,
+    SinglePromptDiagnosisResult,
+    SinglePromptDiagnosisReview,
+    SinglePromptSourceSnapshot,
+    TargetBrandCapabilityTruth,
+)
+from app.modules.optimization.answer_semantic import (
+    locate_span,
+)
+from app.modules.optimization.passage_retrieval import RETRIEVAL_VERSION, retrieve_passages_for_reason, tokenize_zh
+from app.modules.optimization.passage_service import fetch_page_playwright
+from app.modules.single_prompt_v2.llm_safety import (
+    V2_ADMISSION_CONTRACT_VERSION,
+    V2_ANSWER_GROUNDING_VERSION,
+    V2_ALIGNMENT_PROMPT_VERSION,
+    V2_ALIGNMENT_SCHEMA_VERSION,
+    V2_ALIGNMENT_SYSTEM,
+    V2_ANSWER_PROMPT_VERSION,
+    V2_ANSWER_SCHEMA_VERSION,
+    V2_ANSWER_SYSTEM,
+    V2_SOURCE_CLAIM_PROMPT_VERSION,
+    V2_SOURCE_CLAIM_SCHEMA_VERSION,
+    V2_SOURCE_CLAIM_SYSTEM,
+    V2AlignmentJudge,
+    V2AnswerSemanticJudge,
+    V2ResponseAdmissionError,
+    V2SourceClaimJudge,
+    admit_alignment_response,
+    admit_answer_for_input,
+    admit_source_claim_response,
+    alignment_user_payload,
+    answer_user_payload,
+    assess_alignment_relation,
+    assess_answer_event,
+    assess_normalized_projection,
+    contains_untrusted_instruction,
+    locate_v2_answer_span,
+    source_claim_user_payload,
+    source_subject_is_grounded,
+)
+from app.services.semantic_llm.base import SemanticLLMError
+from app.services.semantic_llm.deepseek import DeepSeekClient
+from app.services.url_identity import canonicalize_url
+from app.services.serialization import dumps, loads
+
+
+DIAGNOSIS_CONTRACT_VERSION = "single_prompt_diagnosis.v2_second_slice_safety.v2"
+ANSWER_RESULT_PROJECTION_VERSION = "single_prompt_answer_semantic_projection.v3_grounded_raw_span"
+SOURCE_SNAPSHOT_PARSER_VERSION = "single_prompt_source_snapshot.v1"
+SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v1"
+PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
+TRUTH_MATCH_VERSION = "single_prompt_truth_relation.v2_subject_aware"
+REVIEW_CONTRACT_VERSION = "single_prompt_diagnosis_review.v1"
+V2_LLM_THINKING_MODE = "disabled"
+ACTIVE_STATUSES = {"QUEUED", "RUNNING"}
+
+_SPEECH_ACTS = {"RECOMMEND", "INCLUDE_AS_OPTION", "PRAISE", "COMPARE", "MENTION", "DISCOURAGE", "REJECT"}
+_RECOMMENDATION_STRENGTHS = {"STRONG", "MODERATE", "WEAK", "NONE"}
+_POLARITIES = {"POSITIVE", "NEUTRAL", "NEGATIVE"}
+_REASON_SCOPES = {"ENTITY_SPECIFIC", "MARKET_CRITERION"}
+_CLAIM_TYPES = {"CAPABILITY", "LIMITATION", "SCENARIO", "PRICE", "POLICY", "COMPARISON", "EVALUATION", "USAGE", "OTHER"}
+_ALIGNMENT_RELATIONS = {"SUPPORTS", "CONTRADICTS", "RELATED", "NONE"}
+_TRUTH_RELATIONS = {"FULLY_COVERS", "PARTIALLY_COVERS", "CONFLICTS", "UNRESOLVED"}
+_ADMITTED_ANSWER_JOB_STATUSES = {
+    "DONE",
+    "DONE_ZERO_EVENTS",
+    "DONE_WITH_FAILURES",
+    "DONE_WITH_REVIEW_REQUIRED",
+    "SEMANTIC_REVIEW_REQUIRED",
+}
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _hash(value: Any) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _iso(value: datetime | None) -> str | None:
+    return f"{value.isoformat()}Z" if value else None
+
+
+def answer_semantic_eligibility(output: dict[str, Any]) -> dict[str, Any]:
+    diagnosis = output.get("answer_diagnosis") or {}
+    jobs = diagnosis.get("answer_jobs") or []
+    if not jobs:
+        projected_objects = [
+            *(diagnosis.get("events") or []),
+            *(diagnosis.get("market_criteria") or []),
+        ]
+        projected_run_ids = {
+            row.get("run_id") for row in projected_objects if row.get("run_id") is not None
+        }
+        admitted_count = len(projected_run_ids) or (1 if projected_objects else 0)
+        return {
+            "contract_version": ANSWER_RESULT_PROJECTION_VERSION,
+            "total_answer_count": admitted_count,
+            "admitted_answer_count": admitted_count,
+            "failed_answer_count": 0,
+            "valid_zero_answer_count": 0,
+            "failure_record_count": len(diagnosis.get("failures") or []),
+            "no_consumable_answer_semantic_result": not projected_objects,
+            "partial_failure": False,
+            "status": "ADMITTED_LEGACY_PROJECTION" if projected_objects else "NO_CONSUMABLE_RESULT",
+        }
+    admitted = [row for row in jobs if row.get("status") in _ADMITTED_ANSWER_JOB_STATUSES]
+    failed = [row for row in jobs if row.get("status") not in _ADMITTED_ANSWER_JOB_STATUSES]
+    zero = [row for row in admitted if row.get("status") == "DONE_ZERO_EVENTS"]
+    total = len(jobs)
+    no_consumable = total == 0 or not admitted
+    return {
+        "contract_version": ANSWER_RESULT_PROJECTION_VERSION,
+        "total_answer_count": total,
+        "admitted_answer_count": len(admitted),
+        "failed_answer_count": len(failed),
+        "valid_zero_answer_count": len(zero),
+        "failure_record_count": len(diagnosis.get("failures") or []),
+        "no_consumable_answer_semantic_result": no_consumable,
+        "partial_failure": bool(admitted and failed),
+        "status": (
+            "NO_CONSUMABLE_RESULT" if no_consumable
+            else "PARTIAL" if failed
+            else "ADMITTED"
+        ),
+    }
+
+
+def _require_consumable_answer_semantic(output: dict[str, Any], operation: str) -> None:
+    eligibility = answer_semantic_eligibility(output)
+    if eligibility["no_consumable_answer_semantic_result"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NO_CONSUMABLE_ANSWER_SEMANTIC_RESULT",
+                "operation": operation,
+                "detail": "回答语义没有任何通过当前准入契约的结果；失败不能通过审核或修订升级为有效输入。",
+                "answer_semantic_eligibility": eligibility,
+            },
+        )
+
+
+def _snapshot_truth(row: TargetBrandCapabilityTruth) -> dict[str, Any]:
+    return {
+        "truth_id": row.id,
+        "brand_id": row.brand_id,
+        "capability_key": row.capability_key,
+        "capability_label": row.capability_label,
+        "product_truth_status": row.product_truth_status,
+        "truth_source": row.truth_source,
+        "source_reference": row.source_reference,
+        "reviewed_by": row.reviewed_by,
+        "reviewed_at": _iso(row.reviewed_at),
+        "note": row.note,
+        "row_updated_at": _iso(row.updated_at),
+    }
+
+
+def _contract_config(
+    *,
+    source_snapshot_policy: str = "REUSE_OR_FETCH",
+    evidence_llm_policy: str = "ALLOW_EXTERNAL",
+) -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "diagnosis_contract": DIAGNOSIS_CONTRACT_VERSION,
+        "llm_admission_contract_version": V2_ADMISSION_CONTRACT_VERSION,
+        "answer_result_projection_version": ANSWER_RESULT_PROJECTION_VERSION,
+        "answer_grounding_version": V2_ANSWER_GROUNDING_VERSION,
+        "answer_semantic_prompt_version": V2_ANSWER_PROMPT_VERSION,
+        "answer_semantic_schema_version": V2_ANSWER_SCHEMA_VERSION,
+        "source_snapshot_parser_version": SOURCE_SNAPSHOT_PARSER_VERSION,
+        "source_content_gate_version": SOURCE_CONTENT_GATE_VERSION,
+        "passage_split_version": PASSAGE_SPLIT_VERSION,
+        "passage_retrieval_version": RETRIEVAL_VERSION,
+        "source_claim_prompt_version": V2_SOURCE_CLAIM_PROMPT_VERSION,
+        "source_claim_schema_version": V2_SOURCE_CLAIM_SCHEMA_VERSION,
+        "alignment_prompt_version": V2_ALIGNMENT_PROMPT_VERSION,
+        "alignment_schema_version": V2_ALIGNMENT_SCHEMA_VERSION,
+        "truth_match_version": TRUTH_MATCH_VERSION,
+        "review_contract_version": REVIEW_CONTRACT_VERSION,
+        "model_provider": "deepseek",
+        "model": settings.deepseek_model,
+        "llm_thinking_mode": V2_LLM_THINKING_MODE,
+        "llm_max_attempts": 1,
+        "source_snapshot_policy": source_snapshot_policy,
+        "evidence_llm_policy": evidence_llm_policy,
+        "candidate_passages_per_reason": 2,
+        "alignment_claims_per_source_reason": 3,
+    }
+
+
+def create_diagnosis(
+    db: Session,
+    *,
+    analysis_id: str,
+    project_id: int,
+    prompt_id: int,
+    idempotency_key: str,
+    source_snapshot_policy: str = "REUSE_OR_FETCH",
+    evidence_llm_policy: str = "ALLOW_EXTERNAL",
+) -> tuple[SinglePromptDiagnosisExecution, bool]:
+    analysis = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.analysis_id == analysis_id).one_or_none()
+    if not analysis:
+        raise HTTPException(status_code=404, detail="V2 分析不存在")
+    if analysis.project_id != project_id or analysis.prompt_id != prompt_id:
+        raise HTTPException(status_code=409, detail="分析身份与当前 Project/Prompt 不匹配")
+    context = db.query(SinglePromptAnalysisContext).filter(SinglePromptAnalysisContext.analysis_id == analysis_id).one_or_none()
+    if not context:
+        raise HTTPException(status_code=409, detail="采样结果尚未冻结，不能开始诊断")
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    truths = (
+        db.query(TargetBrandCapabilityTruth)
+        .filter(TargetBrandCapabilityTruth.project_id == project_id)
+        .order_by(TargetBrandCapabilityTruth.id)
+        .all()
+    )
+    brand_snapshot = {
+        "project_id": project.id,
+        "brand_name": project.brand_name,
+        "project_updated_at": _iso(project.updated_at),
+    }
+    truth_snapshot = [_snapshot_truth(row) for row in truths]
+    config = _contract_config(
+        source_snapshot_policy=source_snapshot_policy,
+        evidence_llm_policy=evidence_llm_policy,
+    )
+    identity = {
+        "analysis_id": analysis_id,
+        "context_id": context.context_id,
+        "raw_output_hash": context.raw_output_hash,
+        "brand_snapshot_hash": _hash(brand_snapshot),
+        "truth_set_hash": _hash(truth_snapshot),
+        "contract_config_hash": _hash(config),
+    }
+    fingerprint = _hash(identity)
+    existing = (
+        db.query(SinglePromptDiagnosisExecution)
+        .filter(
+            SinglePromptDiagnosisExecution.analysis_id == analysis_id,
+            SinglePromptDiagnosisExecution.idempotency_key == idempotency_key,
+        )
+        .first()
+    )
+    if existing:
+        if existing.input_fingerprint != fingerprint:
+            raise HTTPException(status_code=409, detail="幂等键已用于不同的诊断输入")
+        return existing, False
+
+    execution = SinglePromptDiagnosisExecution(
+        diagnosis_id=str(uuid4()),
+        analysis_id=analysis_id,
+        context_id=context.context_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        idempotency_key=idempotency_key,
+        input_fingerprint=fingerprint,
+        raw_output_hash=context.raw_output_hash,
+        brand_snapshot_json=_canonical_json(brand_snapshot),
+        brand_snapshot_hash=identity["brand_snapshot_hash"],
+        truth_snapshot_json=_canonical_json(truth_snapshot),
+        truth_set_hash=identity["truth_set_hash"],
+        contract_config_json=_canonical_json(config),
+        contract_config_hash=identity["contract_config_hash"],
+        status="QUEUED",
+        progress_json=_canonical_json({"stage": "QUEUED", "completed": 0, "total": 1}),
+    )
+    db.add(execution)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent = (
+            db.query(SinglePromptDiagnosisExecution)
+            .filter(
+                SinglePromptDiagnosisExecution.analysis_id == analysis_id,
+                SinglePromptDiagnosisExecution.idempotency_key == idempotency_key,
+            )
+            .first()
+        )
+        if concurrent and concurrent.input_fingerprint == fingerprint:
+            return concurrent, False
+        raise
+    db.refresh(execution)
+    return execution, True
+
+
+def claim_diagnosis(db: Session, diagnosis_id: str) -> str | None:
+    token = uuid4().hex
+    claimed = db.execute(
+        update(SinglePromptDiagnosisExecution)
+        .where(
+            SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id,
+            SinglePromptDiagnosisExecution.status == "QUEUED",
+        )
+        .values(
+            status="RUNNING",
+            blocker_code="",
+            blocker_detail="",
+            active_attempt_token=token,
+            attempt_count=SinglePromptDiagnosisExecution.attempt_count + 1,
+            started_at=datetime.utcnow(),
+            finished_at=None,
+        )
+    )
+    db.commit()
+    return token if claimed.rowcount == 1 else None
+
+
+def _set_progress(db: Session, execution: SinglePromptDiagnosisExecution, stage: str, completed: int, total: int, detail: str = "") -> None:
+    execution.progress_json = _canonical_json({
+        "stage": stage,
+        "completed": completed,
+        "total": total,
+        "detail": detail,
+    })
+    db.commit()
+
+
+def _llm_input_hash(
+    system_prompt: str,
+    user_payload: dict,
+    prompt_version: str,
+    schema_version: str,
+    thinking_mode: str | None = None,
+) -> str:
+    identity: dict[str, Any] = {
+        "system": system_prompt,
+        "payload": user_payload,
+        "pv": prompt_version,
+        "sv": schema_version,
+    }
+    if thinking_mode:
+        identity["generation"] = {"thinking": {"type": thinking_mode}}
+    raw = json.dumps(identity, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _cache_row(db: Session, input_hash: str, prompt_version: str, schema_version: str) -> LLMCallCache | None:
+    settings = get_settings()
+    return (
+        db.query(LLMCallCache)
+        .filter(
+            LLMCallCache.provider == "deepseek",
+            LLMCallCache.model == settings.deepseek_model,
+            LLMCallCache.prompt_version == prompt_version,
+            LLMCallCache.schema_version == schema_version,
+            LLMCallCache.input_hash == input_hash,
+        )
+        .order_by(LLMCallCache.id.desc())
+        .first()
+    )
+
+
+def _call_with_usage(
+    db: Session,
+    usage: dict[str, int],
+    *,
+    input_hash: str,
+    prompt_version: str,
+    schema_version: str,
+    call: Callable[[], dict],
+) -> tuple[dict, str]:
+    before = _cache_row(db, input_hash, prompt_version, schema_version)
+    if before:
+        usage["llm_cache_hits"] += 1
+    else:
+        usage["external_llm_calls"] += 1
+    result = call()
+    if not before:
+        after = _cache_row(db, input_hash, prompt_version, schema_version)
+        if after:
+            usage["external_token_usage"] += int(after.token_usage or 0)
+    return result, "LLM_CALL_CACHE" if before else "EXTERNAL_LLM"
+
+
+def _llm_failure(exc: SemanticLLMError, *, default_code: str = "FAILED") -> dict[str, Any]:
+    audit = dict(getattr(exc, "audit", {}) or {})
+    code = str(getattr(exc, "code", "") or default_code)
+    if audit.get("response_source") == "LLM_CALL_CACHE":
+        code = "CACHE_REJECTED_BY_V2_VALIDATION"
+    return {
+        "status": code,
+        "error": str(exc)[:500],
+        "audit": {
+            "raw_response_hash": audit.get("raw_response_hash", ""),
+            "finish_reason": audit.get("finish_reason", "unknown"),
+            "response_length": int(audit.get("response_length") or 0),
+            "response_excerpt": str(audit.get("response_excerpt") or "")[:240],
+            "validation_errors": list(audit.get("validation_errors") or []),
+            "response_source": audit.get("response_source", "UNKNOWN"),
+        },
+    }
+
+
+def _event_identity(run_id: int, event: dict, located: dict) -> str:
+    raw_identity = {
+        "raw_text_sha256": located.get("raw_text_sha256"),
+        "raw_start": located.get("raw_start"),
+        "raw_end": located.get("raw_end"),
+    }
+    return f"evt-{_hash({'run_id': run_id, 'entity': event.get('entity_text'), 'span': raw_identity})[:20]}"
+
+
+def _diagnose_answers(
+    db: Session,
+    *,
+    raw_output: dict,
+    prompt_text: str,
+    brand_name: str,
+    usage: dict[str, int],
+    judge: Any,
+    thinking_mode: str | None,
+) -> dict:
+    events: list[dict] = []
+    market_criteria: list[dict] = []
+    failures: list[dict] = []
+    unresolved_items: list[dict] = []
+    answer_cache: dict[str, dict] = {}
+    answer_jobs: dict[str, dict] = {}
+    for run in raw_output.get("runs") or []:
+        answer = str(run.get("answer_text") or "")
+        if run.get("status") not in {"success", "partial_success"} or not answer.strip():
+            continue
+        answer_hash = hashlib.sha256(answer.encode("utf-8")).hexdigest()
+        if answer_hash not in answer_cache and answer_hash not in answer_jobs:
+            payload = answer_user_payload(prompt_text, answer, brand_name)
+            input_hash = _llm_input_hash(
+                V2_ANSWER_SYSTEM,
+                payload,
+                V2_ANSWER_PROMPT_VERSION,
+                V2_ANSWER_SCHEMA_VERSION,
+                thinking_mode,
+            )
+            try:
+                raw_result, result_source = _call_with_usage(
+                    db,
+                    usage,
+                    input_hash=input_hash,
+                    prompt_version=V2_ANSWER_PROMPT_VERSION,
+                    schema_version=V2_ANSWER_SCHEMA_VERSION,
+                    call=lambda: judge.judge_answer(answer, prompt_text, brand_name, db=db),
+                )
+                answer_cache[answer_hash] = admit_answer_for_input(raw_result, answer)
+                answer_jobs[answer_hash] = {
+                    "answer_hash": answer_hash,
+                    "semantic_input_hash": input_hash,
+                    "status": "ADMITTED_PENDING_PROJECTION",
+                    "result_source": result_source,
+                }
+            except SemanticLLMError as exc:
+                failure = _llm_failure(exc)
+                answer_jobs[answer_hash] = {
+                    "answer_hash": answer_hash,
+                    "semantic_input_hash": input_hash,
+                    **failure,
+                    "result_source": failure["audit"].get("response_source") or "EXTERNAL_LLM_OR_PROVIDER_FAILURE",
+                }
+                failures.append({"run_id": run.get("run_id"), "stage": "ANSWER_SEMANTIC", **failure})
+                continue
+        if answer_hash not in answer_cache:
+            continue
+        result = answer_cache[answer_hash]
+        accepted_event_count = 0
+        failed_event_count = 0
+        review_required_event_count = 0
+        accepted_criterion_count = 0
+        review_required_criterion_count = 0
+        unresolved_items.extend({"run_id": run.get("run_id"), "item": item} for item in result.get("unresolved_items") or [])
+        for criterion_index, criterion in enumerate(result.get("selection_criteria") or []):
+            reason_text = str(criterion.get("normalized_reason") or "").strip()
+            reason_span = str(criterion.get("reason_span") or "")
+            located = locate_v2_answer_span(answer, reason_span)
+            if not located:
+                failures.append({
+                    "run_id": run.get("run_id"),
+                    "stage": "ANSWER_SEMANTIC_VALIDATION",
+                    "criterion_index": criterion_index,
+                    "status": "FAILED_GROUNDING",
+                    "error": "市场选择标准原文定位失败",
+                })
+                continue
+            projection = assess_normalized_projection(reason_text, located["raw_span"])
+            criterion_id = f"mkt-{_hash({'run_id': run.get('run_id'), 'index': criterion_index, 'text': reason_text, 'span': {'raw_text_sha256': located['raw_text_sha256'], 'raw_start': located['raw_start'], 'raw_end': located['raw_end']}})[:20]}"
+            requires_review = not projection["fact_consumption_eligible"]
+            market_criteria.append({
+                "criterion_id": criterion_id,
+                "run_id": run.get("run_id"),
+                "normalized_reason": reason_text,
+                "effective_grounded_text": located["raw_span"],
+                "reason_span": located["raw_span"],
+                "raw_start": located["raw_start"],
+                "raw_end": located["raw_end"],
+                "grounding": located,
+                "reason_scope": "MARKET_CRITERION",
+                "normalization_admission": projection,
+                "semantic_validation_status": (
+                    "NORMALIZATION_REVIEW_REQUIRED" if requires_review else "VERIFIED_CONSERVATIVE"
+                ),
+                "normalization_eligible": not requires_review,
+                "brand_reason_eligible": False,
+                "truth_relation_eligible": False,
+            })
+            accepted_criterion_count += 1
+            if requires_review:
+                review_required_criterion_count += 1
+                unresolved_items.append({
+                    "run_id": run.get("run_id"),
+                    "criterion_id": criterion_id,
+                    "item": criterion,
+                    "reason": "市场选择标准的模型概括超出可确定性验证的原文范围",
+                    "admission": projection,
+                })
+        for index, event in enumerate(result.get("events") or []):
+            located = locate_v2_answer_span(answer, str(event.get("answer_span") or ""))
+            enums_valid = (
+                str(event.get("speech_act") or "") in _SPEECH_ACTS
+                and str(event.get("recommendation_strength") or "") in _RECOMMENDATION_STRENGTHS
+                and str(event.get("polarity") or "") in _POLARITIES
+            )
+            if not located or not enums_valid:
+                failures.append({
+                    "run_id": run.get("run_id"),
+                    "stage": "ANSWER_SEMANTIC_VALIDATION",
+                    "event_index": index,
+                    "error": "事件原文定位失败或枚举越界",
+                })
+                failed_event_count += 1
+                continue
+            event_admission = assess_answer_event(event, located["context_span"])
+            if event_admission["status"] == "FAILED_SEMANTIC_SCOPE":
+                failures.append({
+                    "run_id": run.get("run_id"),
+                    "stage": "ANSWER_SEMANTIC_VALIDATION",
+                    "event_index": index,
+                    "status": "FAILED_SEMANTIC_SCOPE",
+                    "error": ";".join(event_admission["failures"]),
+                })
+                failed_event_count += 1
+                continue
+            event_id = _event_identity(int(run.get("run_id") or 0), event, located)
+            reasons: list[dict] = []
+            for reason_index, reason in enumerate(event.get("reasons") or []):
+                reason_text = str(reason.get("normalized_reason") or "").strip()
+                reason_span = str(reason.get("reason_span") or "")
+                reason_located = locate_v2_answer_span(answer, reason_span)
+                scope = str(reason.get("reason_scope") or "")
+                if not reason_text or not reason_located or scope not in _REASON_SCOPES:
+                    unresolved_items.append({
+                        "run_id": run.get("run_id"),
+                        "event_id": event_id,
+                        "item": reason,
+                        "reason": "理由原文定位失败或 scope 越界",
+                    })
+                    continue
+                projection = assess_normalized_projection(reason_text, reason_located["raw_span"])
+                reason_id = f"rsn-{_hash({'event_id': event_id, 'index': reason_index, 'text': reason_text, 'span': {'raw_text_sha256': reason_located['raw_text_sha256'], 'raw_start': reason_located['raw_start'], 'raw_end': reason_located['raw_end']}})[:20]}"
+                reasons.append({
+                    "reason_id": reason_id,
+                    "run_id": run.get("run_id"),
+                    "normalized_reason": reason_text,
+                    "effective_grounded_text": reason_located["raw_span"],
+                    "reason_scope": scope,
+                    "reason_span": reason_located["raw_span"],
+                    "raw_start": reason_located["raw_start"],
+                    "raw_end": reason_located["raw_end"],
+                    "grounding": reason_located,
+                    "entity": str(event.get("entity_text") or "") if scope == "ENTITY_SPECIFIC" else "",
+                    "normalization_admission": projection,
+                    "semantic_validation_status": projection["status"],
+                    "fact_consumption_eligible": projection["fact_consumption_eligible"],
+                })
+                if not projection["fact_consumption_eligible"]:
+                    unresolved_items.append({
+                        "run_id": run.get("run_id"),
+                        "event_id": event_id,
+                        "reason_id": reason_id,
+                        "item": reason,
+                        "reason": "模型概括超出可确定性验证的原文范围",
+                        "admission": projection,
+                    })
+            event_requires_review = (
+                event_admission["status"] == "SEMANTIC_REVIEW_REQUIRED"
+                or any(not reason["fact_consumption_eligible"] for reason in reasons)
+            )
+            events.append({
+                "event_id": event_id,
+                "run_id": run.get("run_id"),
+                "entity_text": str(event.get("entity_text") or ""),
+                "entity_type": str(event.get("entity_type") or "UNKNOWN"),
+                "machine_speech_act": event.get("speech_act"),
+                "effective_speech_act": event.get("speech_act"),
+                "recommendation_strength": event.get("recommendation_strength"),
+                "polarity": event.get("polarity"),
+                "answer_span": located["raw_span"],
+                "raw_start": located["raw_start"],
+                "raw_end": located["raw_end"],
+                "grounding": located,
+                "reasons": reasons,
+                "semantic_admission": event_admission,
+                "semantic_validation_status": "SEMANTIC_REVIEW_REQUIRED" if event_requires_review else "VERIFIED_CONSERVATIVE",
+                "fact_consumption_eligible": not event_requires_review,
+                "review_status": "SEMANTIC_REVIEW_REQUIRED" if event_requires_review else "MACHINE_GROUNDED",
+            })
+            accepted_event_count += 1
+            if event_requires_review:
+                review_required_event_count += 1
+        accepted_item_count = accepted_event_count + accepted_criterion_count
+        review_required_count = (
+            review_required_event_count
+            + review_required_criterion_count
+            + len(result.get("unresolved_items") or [])
+        )
+        if failed_event_count and not accepted_item_count:
+            status = "FAILED_VALIDATION"
+        elif failed_event_count:
+            status = "DONE_WITH_FAILURES"
+        elif review_required_count and not accepted_item_count:
+            status = "SEMANTIC_REVIEW_REQUIRED"
+        elif review_required_count:
+            status = "DONE_WITH_REVIEW_REQUIRED"
+        elif accepted_item_count:
+            status = "DONE"
+        else:
+            status = "DONE_ZERO_EVENTS"
+        answer_jobs[answer_hash].update({
+            "status": status,
+            "accepted_event_count": accepted_event_count,
+            "failed_event_count": failed_event_count,
+            "review_required_event_count": review_required_event_count,
+            "accepted_market_criterion_count": accepted_criterion_count,
+            "review_required_market_criterion_count": review_required_criterion_count,
+            "unresolved_item_count": len(result.get("unresolved_items") or []),
+        })
+    return {
+        "events": events,
+        "market_criteria": market_criteria,
+        "unresolved_items": unresolved_items,
+        "failures": failures,
+        "answer_jobs": list(answer_jobs.values()),
+        "unique_answers_judged": len(answer_jobs),
+    }
+
+
+def _source_key(reference: dict) -> tuple[str, str]:
+    canonical = canonicalize_url(str(reference.get("canonical_url") or reference.get("url") or ""))
+    fallback = "|".join([str(reference.get("domain") or ""), str(reference.get("title") or "")])
+    identity = canonical or fallback
+    return _hash({"source_identity": identity}), canonical
+
+
+def _group_references(raw_output: dict) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for run in raw_output.get("runs") or []:
+        for reference in run.get("references") or []:
+            key, canonical = _source_key(reference)
+            row = grouped.setdefault(key, {
+                "source_key": key,
+                "canonical_url": canonical,
+                "original_urls": set(),
+                "observations": [],
+            })
+            if reference.get("url"):
+                row["original_urls"].add(str(reference["url"]))
+            row["observations"].append({
+                "run_id": run.get("run_id"),
+                "reference_id": reference.get("reference_id"),
+                "reference_index": reference.get("index"),
+                "title": reference.get("title") or "",
+                "domain": reference.get("domain") or "",
+            })
+    return [
+        {**row, "original_urls": sorted(row["original_urls"])}
+        for _, row in sorted(grouped.items())
+    ]
+
+
+def _split_passages(clean_text: str, source_key: str) -> list[dict]:
+    passages: list[dict] = []
+    paragraphs = [part.strip() for part in re.split(r"\n+", clean_text or "") if len(part.strip()) >= 20]
+    for paragraph in paragraphs:
+        chunks = [paragraph[i:i + 1500] for i in range(0, len(paragraph), 1500)]
+        for chunk in chunks:
+            content_hash = hashlib.sha256(chunk.encode("utf-8")).hexdigest()
+            passages.append({
+                "passage_id": f"psg-{source_key[:10]}-{len(passages) + 1}-{content_hash[:10]}",
+                "text": chunk,
+                "content_hash": content_hash,
+            })
+    return passages
+
+
+_SOURCE_CHALLENGE_MARKERS = (
+    "验证码",
+    "安全验证",
+    "请完成验证",
+    "人机验证",
+    "security verification",
+    "access denied",
+    "are you a robot",
+)
+
+
+def _source_content_block_reason(title: str, clean_text: str) -> str:
+    sample = f"{title}\n{clean_text[:2000]}".lower()
+    marker = next((item for item in _SOURCE_CHALLENGE_MARKERS if item.lower() in sample), "")
+    return f"疑似验证/拦截页面（marker={marker}）" if marker else ""
+
+
+def _load_or_fetch_snapshots(
+    db: Session,
+    execution: SinglePromptDiagnosisExecution,
+    grouped_references: list[dict],
+    fetcher: Callable[[list[str]], list[dict]],
+    source_snapshot_policy: str = "REUSE_OR_FETCH",
+) -> list[SinglePromptSourceSnapshot]:
+    existing = {
+        row.source_key: row
+        for row in db.query(SinglePromptSourceSnapshot).filter(
+            SinglePromptSourceSnapshot.diagnosis_id == execution.diagnosis_id
+        ).all()
+    }
+    missing = [row for row in grouped_references if row["source_key"] not in existing]
+    reusable_by_key: dict[str, SinglePromptSourceSnapshot] = {}
+    reusable_failure_by_key: dict[str, SinglePromptSourceSnapshot] = {}
+    if missing:
+        missing_keys = [row["source_key"] for row in missing]
+        reusable_rows = (
+            db.query(SinglePromptSourceSnapshot)
+            .filter(
+                SinglePromptSourceSnapshot.diagnosis_id != execution.diagnosis_id,
+                SinglePromptSourceSnapshot.source_key.in_(missing_keys),
+                SinglePromptSourceSnapshot.parser_version == SOURCE_SNAPSHOT_PARSER_VERSION,
+            )
+            .order_by(SinglePromptSourceSnapshot.created_at.desc())
+            .all()
+        )
+        for prior in reusable_rows:
+            block_reason = _source_content_block_reason(prior.title, prior.clean_text)
+            if block_reason and prior.fetch_status in {"SUCCESS", "PARTIAL"}:
+                if source_snapshot_policy == "REUSE_ONLY" and prior.source_key not in reusable_failure_by_key:
+                    reusable_failure_by_key[prior.source_key] = prior
+                continue
+            if prior.fetch_status not in {"SUCCESS", "PARTIAL"}:
+                if source_snapshot_policy == "REUSE_ONLY" and prior.source_key not in reusable_failure_by_key:
+                    reusable_failure_by_key[prior.source_key] = prior
+                continue
+            if prior.source_key in reusable_by_key:
+                continue
+            content_hash = hashlib.sha256((prior.clean_text or "").encode("utf-8")).hexdigest()
+            passages = loads(prior.passages_json, [])
+            if not prior.clean_text or content_hash != prior.content_hash or _hash(passages) != prior.passages_hash:
+                continue
+            reusable_by_key[prior.source_key] = prior
+
+    still_missing: list[dict] = []
+    for row in missing:
+        prior = reusable_by_key.get(row["source_key"])
+        if not prior and source_snapshot_policy == "REUSE_ONLY":
+            prior = reusable_failure_by_key.get(row["source_key"])
+        if not prior:
+            still_missing.append(row)
+            continue
+        block_reason = _source_content_block_reason(prior.title, prior.clean_text)
+        is_content_reuse = prior.fetch_status in {"SUCCESS", "PARTIAL"} and not block_reason
+        effective_status = prior.fetch_status if is_content_reuse else (
+            "CONTENT_BLOCKED" if block_reason else prior.fetch_status
+        )
+        passages_json = prior.passages_json if is_content_reuse else "[]"
+        db.add(SinglePromptSourceSnapshot(
+            snapshot_id=f"src-{uuid4()}",
+            diagnosis_id=execution.diagnosis_id,
+            source_key=row["source_key"],
+            canonical_url=row["canonical_url"],
+            original_urls_json=_canonical_json(row["original_urls"]),
+            reference_observations_json=_canonical_json(row["observations"]),
+            occurrence_count=len(row["observations"]),
+            fetch_status=effective_status,
+            failure_reason="" if is_content_reuse else (block_reason or prior.failure_reason),
+            fetched_at=prior.fetched_at,
+            title=prior.title,
+            content_hash=prior.content_hash,
+            clean_text=prior.clean_text,
+            passages_json=passages_json,
+            passages_hash=prior.passages_hash if is_content_reuse else _hash([]),
+            parser_version=prior.parser_version,
+            fetch_source="V2_SNAPSHOT_REUSE" if is_content_reuse else "V2_FAILURE_SNAPSHOT_REUSE",
+            reused_from_snapshot_id=prior.snapshot_id,
+        ))
+    if len(still_missing) != len(missing):
+        db.commit()
+    missing = still_missing
+    if source_snapshot_policy == "REUSE_ONLY":
+        for row in missing:
+            db.add(SinglePromptSourceSnapshot(
+                snapshot_id=f"src-{uuid4()}",
+                diagnosis_id=execution.diagnosis_id,
+                source_key=row["source_key"],
+                canonical_url=row["canonical_url"],
+                original_urls_json=_canonical_json(row["original_urls"]),
+                reference_observations_json=_canonical_json(row["observations"]),
+                occurrence_count=len(row["observations"]),
+                fetch_status="FETCH_FAILED",
+                failure_reason="本次执行禁止外部正文抓取，且没有可复用的不可变快照",
+                fetched_at=None,
+                title=str(row["observations"][0].get("title") if row["observations"] else "")[:500],
+                content_hash="",
+                clean_text="",
+                passages_json="[]",
+                passages_hash=_hash([]),
+                parser_version=SOURCE_SNAPSHOT_PARSER_VERSION,
+                fetch_source="FETCH_DISABLED",
+                reused_from_snapshot_id=None,
+            ))
+        if missing:
+            db.commit()
+        missing = []
+    urls = [row["canonical_url"] or (row["original_urls"][0] if row["original_urls"] else "") for row in missing]
+    fetchable_positions = [index for index, url in enumerate(urls) if url]
+    fetched_by_position: dict[int, dict] = {}
+    if fetchable_positions:
+        requested = [urls[index] for index in fetchable_positions]
+        try:
+            if fetcher is fetch_page_playwright:
+                fetched = fetcher(
+                    requested,
+                    progress_callback=lambda completed, total: _set_progress(
+                        db,
+                        execution,
+                        "SOURCE_SNAPSHOT",
+                        completed,
+                        total,
+                        f"已处理 {completed}/{total} 个唯一引用来源",
+                    ),
+                )
+            else:
+                fetched = fetcher(requested)
+        except Exception as exc:
+            fetched = [{"fetch_status": "FETCH_FAILED", "failure_reason": str(exc)[:500]} for _ in requested]
+        for requested_index, position in enumerate(fetchable_positions):
+            fetched_by_position[position] = fetched[requested_index] if requested_index < len(fetched) else {
+                "fetch_status": "FETCH_FAILED",
+                "failure_reason": "正文抓取器未返回对应结果",
+            }
+
+    for position, row in enumerate(missing):
+        result = fetched_by_position.get(position) or {
+            "fetch_status": "FETCH_FAILED",
+            "failure_reason": "引用缺少可抓取 URL",
+        }
+        status = str(result.get("fetch_status") or "FETCH_FAILED").upper()
+        clean_text = str(result.get("clean_text") or "")
+        if status in {"SUCCESS", "PARTIAL"} and not clean_text.strip():
+            status = "FETCH_FAILED"
+            result = {**result, "failure_reason": "抓取结果没有可用正文"}
+        block_reason = _source_content_block_reason(str(result.get("title") or ""), clean_text)
+        if status in {"SUCCESS", "PARTIAL"} and block_reason:
+            status = "CONTENT_BLOCKED"
+            result = {**result, "failure_reason": block_reason}
+        passages = _split_passages(clean_text, row["source_key"]) if status in {"SUCCESS", "PARTIAL"} else []
+        fetched_at = result.get("fetch_time")
+        if isinstance(fetched_at, str):
+            try:
+                fetched_at = datetime.fromisoformat(fetched_at.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                fetched_at = None
+        snapshot = SinglePromptSourceSnapshot(
+            snapshot_id=f"src-{uuid4()}",
+            diagnosis_id=execution.diagnosis_id,
+            source_key=row["source_key"],
+            canonical_url=row["canonical_url"],
+            original_urls_json=_canonical_json(row["original_urls"]),
+            reference_observations_json=_canonical_json(row["observations"]),
+            occurrence_count=len(row["observations"]),
+            fetch_status=status,
+            failure_reason=str(result.get("failure_reason") or "")[:2000],
+            fetched_at=fetched_at or datetime.utcnow(),
+            title=str(result.get("title") or (row["observations"][0].get("title") if row["observations"] else ""))[:500],
+            content_hash=hashlib.sha256(clean_text.encode("utf-8")).hexdigest() if clean_text else "",
+            clean_text=clean_text,
+            passages_json=_canonical_json(passages),
+            passages_hash=_hash(passages),
+            parser_version=SOURCE_SNAPSHOT_PARSER_VERSION,
+            fetch_source="EXTERNAL_FETCH",
+            reused_from_snapshot_id=None,
+        )
+        db.add(snapshot)
+    if missing:
+        db.commit()
+    return (
+        db.query(SinglePromptSourceSnapshot)
+        .filter(SinglePromptSourceSnapshot.diagnosis_id == execution.diagnosis_id)
+        .order_by(SinglePromptSourceSnapshot.source_key)
+        .all()
+    )
+
+
+def _reference_anchor_status(reason: dict, snapshot: SinglePromptSourceSnapshot) -> str:
+    span = str(reason.get("reason_span") or "")
+    for observation in loads(snapshot.reference_observations_json, []):
+        if int(observation.get("run_id") or 0) != int(reason.get("run_id") or 0):
+            continue
+        index = observation.get("reference_index")
+        if index and re.search(rf"\[{int(index)}\]", span):
+            return "EXPLICIT"
+    return "UNPROVEN"
+
+
+def _validated_source_claims(passage: dict, result: dict) -> tuple[list[dict], list[dict]]:
+    claims: list[dict] = []
+    failures: list[dict] = []
+    for index, claim in enumerate(result.get("claims") or []):
+        claim_type = str(claim.get("claim_type") or "OTHER").upper()
+        polarity = str(claim.get("polarity") or "NEUTRAL").upper()
+        span = str(claim.get("source_span") or "")
+        located = locate_span(passage["text"], span)
+        if not located or claim_type not in _CLAIM_TYPES or polarity not in _POLARITIES:
+            failures.append({"claim_index": index, "error": "SourceClaim 原文定位失败或枚举越界"})
+            continue
+        normalized = str(claim.get("normalized_claim") or "").strip()
+        if not normalized:
+            failures.append({"claim_index": index, "error": "SourceClaim 缺少 normalized_claim"})
+            continue
+        if contains_untrusted_instruction(located["raw_span"]):
+            failures.append({
+                "claim_index": index,
+                "status": "FAILED_SEMANTIC_SCOPE",
+                "error": "外部正文中的指令文本不能物化为 SourceClaim",
+            })
+            continue
+        if not source_subject_is_grounded(str(claim.get("subject_text") or ""), located["raw_span"]):
+            failures.append({
+                "claim_index": index,
+                "status": "FAILED_SEMANTIC_SCOPE",
+                "error": "SourceClaim 主体无法在原文片段中定位",
+            })
+            continue
+        projection = assess_normalized_projection(normalized, located["raw_span"])
+        claims.append({
+            "claim_id": f"clm-{_hash({'passage': passage['passage_id'], 'claim': claim, 'located': located})[:20]}",
+            "normalized_claim": normalized,
+            "effective_grounded_text": located["raw_span"],
+            "subject_text": str(claim.get("subject_text") or ""),
+            "predicate": str(claim.get("predicate") or ""),
+            "object_text": str(claim.get("object_text") or ""),
+            "claim_type": claim_type,
+            "polarity": polarity,
+            "source_span": located["raw_span"],
+            "passage_id": passage["passage_id"],
+            "normalization_admission": projection,
+            "semantic_validation_status": projection["status"],
+            "fact_consumption_eligible": projection["fact_consumption_eligible"],
+            "review_status": "MACHINE_GROUNDED" if projection["fact_consumption_eligible"] else "SEMANTIC_REVIEW_REQUIRED",
+        })
+    return claims, failures
+
+
+def _claim_score(reason_text: str, claim: dict) -> float:
+    reason_tokens = set(tokenize_zh(reason_text))
+    claim_tokens = set(tokenize_zh(" ".join([
+        claim.get("effective_grounded_text") or "",
+        claim.get("source_span") or "",
+    ])))
+    return len(reason_tokens & claim_tokens) / max(len(reason_tokens), 1) if reason_tokens and claim_tokens else 0.0
+
+
+def _entity_precheck(reason: dict, claim: dict) -> str:
+    if reason.get("reason_scope") == "MARKET_CRITERION":
+        return "PASS_MARKET"
+    entity = str(reason.get("entity") or "").strip()
+    subject = str(claim.get("subject_text") or "").strip()
+    if not entity:
+        return "PASS"
+    if subject and subject not in {"UNKNOWN", "该工具", "该产品", "该平台", "它", "其"}:
+        return "PASS" if entity in subject or subject in entity else "ENTITY_SCOPE_MISMATCH"
+    source_text = str(claim.get("effective_grounded_text") or claim.get("source_span") or "")
+    return "PASS_INFERRED_FROM_SPAN" if entity in source_text else "ENTITY_SCOPE_UNRESOLVED"
+
+
+def _diagnose_evidence(
+    db: Session,
+    *,
+    answer_diagnosis: dict,
+    snapshots: list[SinglePromptSourceSnapshot],
+    usage: dict[str, int],
+    source_claim_judge: Any,
+    alignment_judge: Any,
+    config: dict,
+) -> dict:
+    all_reasons = [reason for event in answer_diagnosis["events"] for reason in event["reasons"]]
+    reasons = [reason for reason in all_reasons if reason.get("fact_consumption_eligible") is True]
+    review_required_reasons = [
+        {
+            "reason_id": reason["reason_id"],
+            "status": reason.get("semantic_validation_status") or "SEMANTIC_REVIEW_REQUIRED",
+            "admission": reason.get("normalization_admission") or {},
+        }
+        for reason in all_reasons
+        if reason.get("fact_consumption_eligible") is not True
+    ]
+    all_passages = [
+        {**passage, "snapshot_id": snapshot.snapshot_id, "source_key": snapshot.source_key}
+        for snapshot in snapshots
+        if snapshot.fetch_status in {"SUCCESS", "PARTIAL"}
+        and not _source_content_block_reason(snapshot.title, snapshot.clean_text)
+        for passage in loads(snapshot.passages_json, [])
+    ]
+    observed_source_keys_by_run: dict[int, set[str]] = {}
+    for snapshot in snapshots:
+        for observation in loads(snapshot.reference_observations_json, []):
+            observed_source_keys_by_run.setdefault(int(observation.get("run_id") or 0), set()).add(snapshot.source_key)
+    selected: dict[str, list[dict]] = {}
+    for reason in reasons:
+        observed_source_keys = observed_source_keys_by_run.get(int(reason.get("run_id") or 0), set())
+        run_passages = [passage for passage in all_passages if passage["source_key"] in observed_source_keys]
+        selected[reason["reason_id"]] = retrieve_passages_for_reason(
+            reason["effective_grounded_text"],
+            run_passages,
+            top_k=int(config["candidate_passages_per_reason"]),
+        )
+    selected_passages = {
+        passage["passage_id"]: passage
+        for passages in selected.values()
+        for passage in passages
+    }
+    claims_by_passage: dict[str, list[dict]] = {}
+    extracted_claims: list[dict] = []
+    claim_failures: list[dict] = []
+    claim_jobs: list[dict] = []
+    for passage in selected_passages.values():
+        input_hash = _llm_input_hash(
+            V2_SOURCE_CLAIM_SYSTEM,
+            source_claim_user_payload(passage["text"]),
+            V2_SOURCE_CLAIM_PROMPT_VERSION,
+            V2_SOURCE_CLAIM_SCHEMA_VERSION,
+            str(config.get("llm_thinking_mode") or "") or None,
+        )
+        if config.get("evidence_llm_policy") == "CACHE_ONLY" and not _cache_row(
+            db, input_hash, V2_SOURCE_CLAIM_PROMPT_VERSION, V2_SOURCE_CLAIM_SCHEMA_VERSION
+        ):
+            claims_by_passage[passage["passage_id"]] = []
+            claim_jobs.append({
+                "passage_id": passage["passage_id"],
+                "source_snapshot_id": passage["snapshot_id"],
+                "semantic_input_hash": input_hash,
+                "status": "NOT_EVALUATED",
+                "result_source": "CACHE_MISS_EXTERNAL_NOT_AUTHORIZED",
+                "claim_count": 0,
+                "empty_result": False,
+            })
+            continue
+        try:
+            result, result_source = _call_with_usage(
+                db,
+                usage,
+                input_hash=input_hash,
+                prompt_version=V2_SOURCE_CLAIM_PROMPT_VERSION,
+                schema_version=V2_SOURCE_CLAIM_SCHEMA_VERSION,
+                call=lambda p=passage: source_claim_judge.judge_passage(p["text"], db=db),
+            )
+            result = admit_source_claim_response(result)
+            claims, failures = _validated_source_claims(passage, result)
+            claims_by_passage[passage["passage_id"]] = claims
+            extracted_claims.extend(claims)
+            claim_failures.extend({**failure, "passage_id": passage["passage_id"]} for failure in failures)
+            review_required_count = sum(not claim["fact_consumption_eligible"] for claim in claims)
+            valid_count = sum(claim["fact_consumption_eligible"] for claim in claims)
+            if not result["claims"]:
+                job_status = "DONE_ZERO_CLAIMS"
+            elif failures and not claims:
+                job_status = "FAILED_VALIDATION"
+            elif failures:
+                job_status = "DONE_WITH_FAILURES"
+            elif review_required_count and not valid_count:
+                job_status = "SEMANTIC_REVIEW_REQUIRED"
+            elif review_required_count:
+                job_status = "DONE_WITH_REVIEW_REQUIRED"
+            else:
+                job_status = "DONE"
+            claim_jobs.append({
+                "passage_id": passage["passage_id"],
+                "source_snapshot_id": passage["snapshot_id"],
+                "semantic_input_hash": input_hash,
+                "status": job_status,
+                "result_source": result_source,
+                "claim_count": len(claims),
+                "consumable_claim_count": valid_count,
+                "review_required_count": review_required_count,
+                "empty_result": not result["claims"],
+            })
+        except SemanticLLMError as exc:
+            failure = _llm_failure(exc)
+            claims_by_passage[passage["passage_id"]] = []
+            claim_failures.append({"passage_id": passage["passage_id"], **failure})
+            claim_jobs.append({
+                "passage_id": passage["passage_id"],
+                "source_snapshot_id": passage["snapshot_id"],
+                "semantic_input_hash": input_hash,
+                "status": failure["status"],
+                "result_source": failure["audit"].get("response_source") or "EXTERNAL_LLM_OR_PROVIDER_FAILURE",
+                "claim_count": 0,
+                "consumable_claim_count": 0,
+                "review_required_count": 0,
+                "empty_result": False,
+                "error": failure["error"],
+                "audit": failure["audit"],
+            })
+
+    snapshot_by_id = {row.snapshot_id: row for row in snapshots}
+    source_relations: list[dict] = []
+    alignment_failures: list[dict] = []
+    for reason in reasons:
+        selected_for_reason = selected.get(reason["reason_id"], [])
+        selected_by_source: dict[str, list[dict]] = {}
+        for passage in selected_for_reason:
+            selected_by_source.setdefault(passage["snapshot_id"], []).append(passage)
+        for snapshot in snapshots:
+            passages = selected_by_source.get(snapshot.snapshot_id, [])
+            observed_in_reason_run = any(
+                int(observation.get("run_id") or 0) == int(reason.get("run_id") or 0)
+                for observation in loads(snapshot.reference_observations_json, [])
+            )
+            relation_id = f"evr-{_hash({'reason': reason['reason_id'], 'source': snapshot.source_key})[:20]}"
+            row = {
+                "relation_id": relation_id,
+                "reason_id": reason["reason_id"],
+                "source_snapshot_id": snapshot.snapshot_id,
+                "reference_observation": "OBSERVED" if observed_in_reason_run else "NOT_OBSERVED_IN_REASON_RUN",
+                "anchor_binding": _reference_anchor_status(reason, snapshot),
+                "candidate_recall": "RECALLED" if passages else "NOT_RECALLED",
+                "alignment_evaluation": "NOT_EVALUATED",
+                "machine_relation": None,
+                "effective_relation": None,
+                "claim_relations": [],
+            }
+            if not observed_in_reason_run or not passages:
+                source_relations.append(row)
+                continue
+            if snapshot.fetch_status not in {"SUCCESS", "PARTIAL"}:
+                row["alignment_evaluation"] = "UPSTREAM_FETCH_FAILED"
+                source_relations.append(row)
+                continue
+            all_candidate_claims = [claim for passage in passages for claim in claims_by_passage.get(passage["passage_id"], [])]
+            candidate_claims = [claim for claim in all_candidate_claims if claim.get("fact_consumption_eligible") is True]
+            if not candidate_claims:
+                failed_passage_ids = {
+                    job["passage_id"]
+                    for job in claim_jobs
+                    if str(job["status"]).startswith("FAILED") or job["status"] == "CACHE_REJECTED_BY_V2_VALIDATION"
+                }
+                not_evaluated_passage_ids = {
+                    job["passage_id"] for job in claim_jobs if job["status"] == "NOT_EVALUATED"
+                }
+                if any(p["passage_id"] in failed_passage_ids for p in passages):
+                    row["alignment_evaluation"] = "UPSTREAM_CLAIM_FAILED"
+                elif any(p["passage_id"] in not_evaluated_passage_ids for p in passages):
+                    row["alignment_evaluation"] = "UPSTREAM_CLAIM_NOT_EVALUATED"
+                elif all_candidate_claims:
+                    row["alignment_evaluation"] = "UPSTREAM_CLAIM_REVIEW_REQUIRED"
+                else:
+                    row["alignment_evaluation"] = "DONE_ZERO_CLAIMS"
+                source_relations.append(row)
+                continue
+            ranked_claims = sorted(
+                candidate_claims,
+                key=lambda claim: (-_claim_score(reason["normalized_reason"], claim), claim["claim_id"]),
+            )[:int(config["alignment_claims_per_source_reason"])]
+            evaluated = 0
+            for claim in ranked_claims:
+                precheck = _entity_precheck(reason, claim)
+                claim_relation = {
+                    "claim_id": claim["claim_id"],
+                    "precheck": precheck,
+                    "evaluation": "NOT_EVALUATED",
+                    "relation": None,
+                    "rationale": "",
+                }
+                if precheck in {"ENTITY_SCOPE_MISMATCH", "ENTITY_SCOPE_UNRESOLVED"}:
+                    row["claim_relations"].append(claim_relation)
+                    continue
+                input_hash = _llm_input_hash(
+                    V2_ALIGNMENT_SYSTEM,
+                    alignment_user_payload(reason["effective_grounded_text"], claim["effective_grounded_text"]),
+                    V2_ALIGNMENT_PROMPT_VERSION,
+                    V2_ALIGNMENT_SCHEMA_VERSION,
+                    str(config.get("llm_thinking_mode") or "") or None,
+                )
+                if config.get("evidence_llm_policy") == "CACHE_ONLY" and not _cache_row(
+                    db, input_hash, V2_ALIGNMENT_PROMPT_VERSION, V2_ALIGNMENT_SCHEMA_VERSION
+                ):
+                    claim_relation["semantic_input_hash"] = input_hash
+                    claim_relation["result_source"] = "CACHE_MISS_EXTERNAL_NOT_AUTHORIZED"
+                    row["claim_relations"].append(claim_relation)
+                    continue
+                try:
+                    result, result_source = _call_with_usage(
+                        db,
+                        usage,
+                        input_hash=input_hash,
+                        prompt_version=V2_ALIGNMENT_PROMPT_VERSION,
+                        schema_version=V2_ALIGNMENT_SCHEMA_VERSION,
+                        call=lambda r=reason, c=claim: alignment_judge.judge(r["effective_grounded_text"], c["effective_grounded_text"], db=db),
+                    )
+                    result = admit_alignment_response(result)
+                    relation = str(result["relation"]).upper()
+                    relation_admission = assess_alignment_relation(
+                        relation,
+                        reason["effective_grounded_text"],
+                        claim["effective_grounded_text"],
+                    )
+                    if not relation_admission["fact_consumption_eligible"]:
+                        claim_relation.update({
+                            "evaluation": "SEMANTIC_REVIEW_REQUIRED",
+                            "relation": None,
+                            "machine_proposal": relation,
+                            "rationale": str(result["rationale"]),
+                            "semantic_admission": relation_admission,
+                            "semantic_input_hash": input_hash,
+                            "result_source": result_source,
+                        })
+                        row["claim_relations"].append(claim_relation)
+                        continue
+                    claim_relation.update({
+                        "evaluation": "EVALUATED",
+                        "relation": relation,
+                        "rationale": str(result["rationale"]),
+                        "confidence_raw": result["confidence_raw"],
+                        "semantic_admission": relation_admission,
+                        "semantic_input_hash": input_hash,
+                        "result_source": result_source,
+                    })
+                    evaluated += 1
+                except SemanticLLMError as exc:
+                    failure = _llm_failure(exc)
+                    claim_relation["evaluation"] = failure["status"]
+                    claim_relation["semantic_input_hash"] = input_hash
+                    claim_relation["result_source"] = failure["audit"].get("response_source") or "EXTERNAL_LLM_OR_PROVIDER_FAILURE"
+                    claim_relation["error"] = failure["error"]
+                    claim_relation["audit"] = failure["audit"]
+                    alignment_failures.append({
+                        "relation_id": relation_id,
+                        "claim_id": claim["claim_id"],
+                        **failure,
+                    })
+                row["claim_relations"].append(claim_relation)
+            relations = [item["relation"] for item in row["claim_relations"] if item["evaluation"] == "EVALUATED"]
+            if evaluated:
+                aggregate = (
+                    "SOURCE_SUPPORTS_REASON" if "SUPPORTS" in relations
+                    else "SOURCE_CONTRADICTS_REASON" if "CONTRADICTS" in relations
+                    else "RELATED" if "RELATED" in relations
+                    else "NONE"
+                )
+                row["alignment_evaluation"] = "EVALUATED"
+                row["machine_relation"] = aggregate
+                row["effective_relation"] = aggregate
+            elif any(
+                str(item["evaluation"]).startswith("FAILED")
+                or item["evaluation"] == "CACHE_REJECTED_BY_V2_VALIDATION"
+                for item in row["claim_relations"]
+            ):
+                row["alignment_evaluation"] = "FAILED"
+            elif any(item["evaluation"] == "SEMANTIC_REVIEW_REQUIRED" for item in row["claim_relations"]):
+                row["alignment_evaluation"] = "SEMANTIC_REVIEW_REQUIRED"
+            else:
+                row["alignment_evaluation"] = "HARD_FILTERED"
+            source_relations.append(row)
+    return {
+        "source_claim_jobs": claim_jobs,
+        "source_claims": extracted_claims,
+        "source_claim_failures": claim_failures,
+        "source_relations": source_relations,
+        "alignment_failures": alignment_failures,
+        "reason_inputs_requiring_review": review_required_reasons,
+    }
+
+
+def _normalize_truth_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", (value or "").lower())
+
+
+def _truth_relation(reason: dict, truth: dict) -> tuple[str, str]:
+    status = str(truth.get("product_truth_status") or "UNKNOWN").upper()
+    reason_text = _normalize_truth_text(reason.get("effective_grounded_text") or reason.get("reason_span") or "")
+    label = _normalize_truth_text(truth.get("capability_label") or truth.get("capability_key") or "")
+    if not reason_text or not label:
+        return "UNRESOLVED", "MISSING_SEMANTIC_LABEL"
+    if status in {"FALSE", "UNSUPPORTED"} and reason_text == label:
+        return "CONFLICTS", "EXACT_REVIEWED_FALSE"
+    if status not in {"TRUE", "SUPPORTED"}:
+        return "UNRESOLVED", "TRUTH_NOT_POSITIVE"
+    if reason_text == label:
+        return "FULLY_COVERS", "EXACT_CAPABILITY_LABEL"
+    if label in reason_text or reason_text in label:
+        return "PARTIALLY_COVERS", "LEXICAL_CONTAINMENT_REQUIRES_REVIEW"
+    return "UNRESOLVED", "NO_APPROVED_MAPPING"
+
+
+def _diagnose_truths(
+    answer_diagnosis: dict,
+    truth_snapshot: list[dict],
+    *,
+    target_brand: dict[str, Any] | None = None,
+) -> dict:
+    reasons = [reason for event in answer_diagnosis["events"] for reason in event["reasons"]]
+    target_brand = target_brand or {}
+    target_subject_labels = {
+        _normalize_truth_text(str(value))
+        for value in [target_brand.get("brand_name"), *(target_brand.get("aliases") or [])]
+        if str(value or "").strip()
+    }
+    relationships: list[dict] = []
+    for reason in reasons:
+        if reason.get("fact_consumption_eligible") is not True:
+            relationships.append({
+                "relationship_id": f"trl-{_hash({'reason': reason['reason_id'], 'truth': 'semantic-review'})[:20]}",
+                "reason_id": reason["reason_id"],
+                "truth_id": None,
+                "machine_relation": "UNRESOLVED",
+                "effective_relation": "UNRESOLVED",
+                "method": "SEMANTIC_INPUT_REVIEW_REQUIRED",
+                "review_status": "SEMANTIC_REVIEW_REQUIRED",
+            })
+            continue
+        if not truth_snapshot:
+            relationships.append({
+                "relationship_id": f"trl-{_hash({'reason': reason['reason_id'], 'truth': None})[:20]}",
+                "reason_id": reason["reason_id"],
+                "truth_id": None,
+                "machine_relation": "UNRESOLVED",
+                "effective_relation": "UNRESOLVED",
+                "method": "EMPTY_TRUTH_SET",
+                "review_status": "NEEDS_FACT_INPUT",
+            })
+            continue
+        for truth in truth_snapshot:
+            relation, method = _truth_relation(reason, truth)
+            if relation == "UNRESOLVED" and method == "NO_APPROVED_MAPPING":
+                continue
+            source_subject = str(reason.get("entity") or "").strip()
+            source_subject_key = _normalize_truth_text(source_subject)
+            is_cross_subject = bool(
+                source_subject_key
+                and target_subject_labels
+                and source_subject_key not in target_subject_labels
+            )
+            effective_relation = "UNRESOLVED" if is_cross_subject else relation
+            relationships.append({
+                "relationship_id": f"trl-{_hash({'reason': reason['reason_id'], 'truth': truth['truth_id']})[:20]}",
+                "reason_id": reason["reason_id"],
+                "truth_id": truth["truth_id"],
+                "machine_relation": relation,
+                "effective_relation": effective_relation,
+                "method": (
+                    "CROSS_SUBJECT_TARGET_CAPABILITY_FIT_REQUIRES_REVIEW"
+                    if is_cross_subject else method
+                ),
+                "review_status": (
+                    "SEMANTIC_REVIEW_REQUIRED" if is_cross_subject else "MACHINE_SUGGESTION"
+                ),
+                "relation_purpose": (
+                    "TARGET_CAPABILITY_FIT_SUGGESTION" if is_cross_subject else "REASON_TRUTH_COVERAGE"
+                ),
+                "source_subject": source_subject,
+                "target_subject": str(target_brand.get("brand_name") or ""),
+                "source_reason_span": str(
+                    reason.get("effective_grounded_text") or reason.get("reason_span") or ""
+                ),
+                "cross_subject": is_cross_subject,
+            })
+    return {"truth_snapshot": truth_snapshot, "relationships": relationships}
+
+
+def current_truth_relation_eligibility(output: dict[str, Any]) -> dict[str, Any]:
+    answer = output.get("answer_diagnosis") or {}
+    truth_diagnosis = output.get("truth_diagnosis") or {}
+    brand = (output.get("input") or {}).get("brand_snapshot") or {}
+    target_subject_labels = {
+        _normalize_truth_text(str(value))
+        for value in [brand.get("brand_name"), *(brand.get("aliases") or [])]
+        if str(value or "").strip()
+    }
+    reasons = {
+        str(reason.get("reason_id")): reason
+        for event in answer.get("events") or []
+        for reason in event.get("reasons") or []
+        if reason.get("reason_id")
+    }
+    effective_relationships: list[dict[str, Any]] = []
+    blocked_relation_ids: list[str] = []
+    for historical in truth_diagnosis.get("relationships") or []:
+        row = copy.deepcopy(historical)
+        reason = reasons.get(str(row.get("reason_id"))) or {}
+        source_subject = str(reason.get("entity") or "").strip()
+        source_subject_key = _normalize_truth_text(source_subject)
+        is_cross_subject = bool(
+            row.get("truth_id") is not None
+            and source_subject_key
+            and target_subject_labels
+            and source_subject_key not in target_subject_labels
+        )
+        row["historical_effective_relation"] = historical.get("effective_relation")
+        row["current_effective_relation"] = (
+            "UNRESOLVED" if is_cross_subject else historical.get("effective_relation")
+        )
+        row["effective_relation"] = row["current_effective_relation"]
+        row["source_subject"] = source_subject
+        row["target_subject"] = str(brand.get("brand_name") or "")
+        row["cross_subject"] = is_cross_subject
+        if is_cross_subject:
+            row["method"] = "CROSS_SUBJECT_TARGET_CAPABILITY_FIT_REQUIRES_REVIEW"
+            row["review_status"] = "SEMANTIC_REVIEW_REQUIRED"
+            row["relation_purpose"] = "TARGET_CAPABILITY_FIT_SUGGESTION"
+            blocked_relation_ids.append(str(row.get("relationship_id") or ""))
+        else:
+            row.setdefault("relation_purpose", "REASON_TRUTH_COVERAGE")
+        effective_relationships.append(row)
+    return {
+        "contract_version": TRUTH_MATCH_VERSION,
+        "effective_relationships": effective_relationships,
+        "cross_subject_relation_ids": sorted(value for value in blocked_relation_ids if value),
+        "cross_subject_relation_count": len(blocked_relation_ids),
+    }
+
+
+def _source_was_not_fetched(row: SinglePromptSourceSnapshot) -> bool:
+    if row.fetch_source == "FETCH_DISABLED":
+        return True
+    if row.fetch_source != "V2_FAILURE_SNAPSHOT_REUSE":
+        return False
+    reason = str(row.failure_reason or "")
+    return "禁止外部正文抓取" in reason or "未授权" in reason
+
+
+def _source_summary(snapshots: list[SinglePromptSourceSnapshot]) -> dict:
+    not_fetched = sum(_source_was_not_fetched(row) for row in snapshots)
+    content_blocked = sum(row.fetch_status == "CONTENT_BLOCKED" for row in snapshots)
+    fetch_failed = sum(
+        row.fetch_status not in {"SUCCESS", "PARTIAL", "CONTENT_BLOCKED"}
+        and not _source_was_not_fetched(row)
+        for row in snapshots
+    )
+    return {
+        "reference_records": sum(row.occurrence_count for row in snapshots),
+        "unique_sources": len(snapshots),
+        "content_ready": sum(row.fetch_status in {"SUCCESS", "PARTIAL"} for row in snapshots),
+        "not_fetched": not_fetched,
+        "fetch_failed": fetch_failed,
+        "content_blocked": content_blocked,
+        "passage_count": sum(len(loads(row.passages_json, [])) for row in snapshots),
+    }
+
+
+def current_evidence_eligibility(
+    snapshots: list[SinglePromptSourceSnapshot],
+    *,
+    historical_content_ready: int,
+    historical_output: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    blocked: list[dict[str, Any]] = []
+    eligible_ids: list[str] = []
+    for snapshot in snapshots:
+        current_block_reason = _source_content_block_reason(snapshot.title, snapshot.clean_text)
+        if snapshot.fetch_status == "CONTENT_BLOCKED" or current_block_reason:
+            blocked.append({
+                "snapshot_id": snapshot.snapshot_id,
+                "source_key": snapshot.source_key,
+                "title": snapshot.title,
+                "reason": current_block_reason or snapshot.failure_reason or "CONTENT_BLOCKED",
+            })
+            continue
+        if snapshot.fetch_status in {"SUCCESS", "PARTIAL"}:
+            eligible_ids.append(snapshot.snapshot_id)
+
+    advisories: list[dict[str, Any]] = []
+    if blocked:
+        advisories.append({
+            "code": "CURRENT_CONTENT_QUALITY_BLOCKED",
+            "count": len(blocked),
+            "historical_content_ready": historical_content_ready,
+            "maximum_currently_eligible": len(eligible_ids),
+            "message": "历史技术成功数保持不变；当前识别出的验证/拦截页不得作为有效正文证据。",
+        })
+    eligible_snapshot_ids = set(eligible_ids)
+    blocked_snapshot_ids = {row["snapshot_id"] for row in blocked}
+    historical_relations = (
+        ((historical_output or {}).get("evidence_diagnosis") or {}).get("source_relations") or []
+    )
+    effective_relation_ids = sorted(
+        str(row.get("relation_id"))
+        for row in historical_relations
+        if row.get("source_snapshot_id") in eligible_snapshot_ids
+        and row.get("effective_relation") is not None
+    )
+    blocked_relation_ids = sorted(
+        str(row.get("relation_id"))
+        for row in historical_relations
+        if row.get("source_snapshot_id") in blocked_snapshot_ids
+    )
+    return advisories, {
+        "contract_version": SOURCE_CONTENT_GATE_VERSION,
+        "historical_content_ready": historical_content_ready,
+        "content_blocked_current": len(blocked),
+        "maximum_currently_eligible": len(eligible_ids),
+        "all_remaining_sources_quality_verified": False,
+        "eligible_snapshot_ids": sorted(eligible_ids),
+        "blocked_snapshots": blocked,
+        "effective_evidence_relation_ids": effective_relation_ids,
+        "blocked_historical_relation_ids": blocked_relation_ids,
+        "effective_relation_count": len(effective_relation_ids),
+    }
+
+
+def _snapshot_reads(snapshots: list[SinglePromptSourceSnapshot]) -> list[dict]:
+    return [{
+        "snapshot_id": row.snapshot_id,
+        "source_key": row.source_key,
+        "canonical_url": row.canonical_url,
+        "reference_observations": loads(row.reference_observations_json, []),
+        "occurrence_count": row.occurrence_count,
+        "fetch_status": row.fetch_status,
+        "failure_reason": row.failure_reason,
+        "fetched_at": _iso(row.fetched_at),
+        "title": row.title,
+        "content_hash": row.content_hash,
+        "passages_hash": row.passages_hash,
+        "passage_count": len(loads(row.passages_json, [])),
+        "parser_version": row.parser_version,
+        "fetch_source": row.fetch_source,
+        "reused_from_snapshot_id": row.reused_from_snapshot_id,
+    } for row in snapshots]
+
+
+def _limitations(raw_output: dict, answer: dict, snapshots: list[SinglePromptSourceSnapshot], evidence: dict, truths: dict) -> list[dict]:
+    limitations: list[dict] = []
+    runs = raw_output.get("runs") or []
+    if runs and all((run.get("environment") or {}).get("sampling_mode") in {None, "", "UNKNOWN"} for run in runs):
+        limitations.append({"code": "INDEPENDENT_SESSION_PROOF_UNAVAILABLE", "impact": "不能声称独立采样或推荐稳定性已验证"})
+    reference_count = sum(len(run.get("references") or []) for run in runs)
+    retrieval_count = sum(len(run.get("retrieval_candidates") or []) for run in runs)
+    if reference_count and retrieval_count == 0:
+        limitations.append({"code": "RETRIEVAL_OBSERVATION_UNAVAILABLE", "impact": "不能把 Retrieval 记为 0 或计算 Retrieval→Citation 转化"})
+    if answer["failures"]:
+        limitations.append({"code": "ANSWER_SEMANTIC_PARTIAL_FAILURE", "count": len(answer["failures"])})
+    answer_review_required = sum(
+        reason.get("fact_consumption_eligible") is not True
+        for event in answer["events"]
+        for reason in event["reasons"]
+    )
+    if answer_review_required:
+        limitations.append({
+            "code": "ANSWER_SEMANTIC_REVIEW_REQUIRED",
+            "count": answer_review_required,
+            "impact": "相关原文保留，但不会进入 Evidence Alignment 或 Product Truth 覆盖判断",
+        })
+    criterion_review_required = sum(
+        row.get("normalization_eligible") is not True
+        for row in answer.get("market_criteria") or []
+    )
+    if criterion_review_required:
+        limitations.append({
+            "code": "MARKET_CRITERIA_NORMALIZATION_REVIEW_REQUIRED",
+            "count": criterion_review_required,
+            "impact": "市场选择标准保留原文，但其规范化投影不能作为召回辅助或品牌事实消费",
+        })
+    external_not_authorized = sum(
+        job.get("result_source") == "CACHE_MISS_EXTERNAL_NOT_AUTHORIZED"
+        for job in evidence["source_claim_jobs"]
+    )
+    if external_not_authorized:
+        limitations.append({
+            "code": "EVIDENCE_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
+            "count": external_not_authorized,
+            "impact": "候选正文未发送给外部模型，相关 SourceClaim/Alignment 保持未评估",
+        })
+    rejected_claim_jobs = sum(
+        job.get("status") in {
+            "FAILED_SCHEMA", "FAILED_PARSE", "FAILED_VALIDATION", "CACHE_REJECTED_BY_V2_VALIDATION",
+        }
+        for job in evidence["source_claim_jobs"]
+    )
+    if rejected_claim_jobs:
+        limitations.append({"code": "SOURCE_CLAIM_ADMISSION_FAILED", "count": rejected_claim_jobs})
+    claim_review_required = sum(
+        claim.get("fact_consumption_eligible") is not True
+        for claim in evidence.get("source_claims") or []
+    )
+    if claim_review_required:
+        limitations.append({
+            "code": "SOURCE_CLAIM_SEMANTIC_REVIEW_REQUIRED",
+            "count": claim_review_required,
+            "impact": "相关原文片段未进入 Alignment 正向结论",
+        })
+    not_fetched_sources = sum(_source_was_not_fetched(row) for row in snapshots)
+    if not_fetched_sources:
+        limitations.append({
+            "code": "SOURCE_CONTENT_NOT_FETCHED",
+            "count": not_fetched_sources,
+            "impact": "本次未获正文抓取授权且没有可复用正文；这不是抓取失败，也不能据此形成证据结论",
+        })
+    failed_sources = sum(
+        row.fetch_status not in {"SUCCESS", "PARTIAL", "CONTENT_BLOCKED"}
+        and not _source_was_not_fetched(row)
+        for row in snapshots
+    )
+    if failed_sources:
+        limitations.append({"code": "SOURCE_CONTENT_PARTIAL_FAILURE", "count": failed_sources})
+    blocked_sources = sum(row.fetch_status == "CONTENT_BLOCKED" for row in snapshots)
+    if blocked_sources:
+        limitations.append({"code": "SOURCE_CONTENT_QUALITY_BLOCKED", "count": blocked_sources})
+    not_evaluated = sum(row["alignment_evaluation"] != "EVALUATED" for row in evidence["source_relations"])
+    if not_evaluated:
+        limitations.append({"code": "EVIDENCE_RELATIONS_NOT_EVALUATED", "count": not_evaluated})
+    unproven = sum(row["anchor_binding"] == "UNPROVEN" for row in evidence["source_relations"])
+    if unproven:
+        limitations.append({"code": "REFERENCE_ANCHOR_UNPROVEN", "count": unproven})
+    if not truths["truth_snapshot"]:
+        limitations.append({"code": "TARGET_BRAND_TRUTH_MISSING", "impact": "不能推断目标品牌具备或不具备这些能力"})
+    return limitations
+
+
+def _reviewable_set(output: dict) -> dict:
+    return {
+        "event_ids": sorted(event["event_id"] for event in output["answer_diagnosis"]["events"]),
+        "market_criterion_ids": sorted(
+            criterion["criterion_id"]
+            for criterion in output["answer_diagnosis"].get("market_criteria") or []
+        ),
+        "reason_ids": sorted(
+            reason["reason_id"]
+            for event in output["answer_diagnosis"]["events"]
+            for reason in event["reasons"]
+        ),
+        "evidence_relation_ids": sorted(row["relation_id"] for row in output["evidence_diagnosis"]["source_relations"]),
+        "truth_relationship_ids": sorted(row["relationship_id"] for row in output["truth_diagnosis"]["relationships"]),
+    }
+
+
+def _publish_result(db: Session, execution: SinglePromptDiagnosisExecution, token: str, output: dict) -> SinglePromptDiagnosisResult:
+    db.refresh(execution)
+    if execution.status != "RUNNING" or execution.active_attempt_token != token:
+        raise RuntimeError("诊断执行租约已失效")
+    existing = (
+        db.query(SinglePromptDiagnosisResult)
+        .filter(SinglePromptDiagnosisResult.diagnosis_id == execution.diagnosis_id)
+        .order_by(SinglePromptDiagnosisResult.version_number)
+        .first()
+    )
+    if existing:
+        return existing
+    output_hash = _hash(output)
+    reviewable_set_hash = _hash(_reviewable_set(output))
+    result = SinglePromptDiagnosisResult(
+        result_version=f"diag-v1:{output_hash[:16]}",
+        diagnosis_id=execution.diagnosis_id,
+        version_number=1,
+        parent_result_version=None,
+        output_json=_canonical_json(output),
+        output_hash=output_hash,
+        reviewable_set_hash=reviewable_set_hash,
+        limitations_json=_canonical_json(output["limitations"]),
+        stats_json=_canonical_json(output["stats"]),
+    )
+    db.add(result)
+    db.flush()
+    execution.active_result_version = result.result_version
+    execution.status = "READY_FOR_REVIEW"
+    execution.blocker_code = ""
+    execution.blocker_detail = ""
+    execution.active_attempt_token = ""
+    execution.external_llm_calls = int(output["usage"]["external_llm_calls"])
+    execution.llm_cache_hits = int(output["usage"]["llm_cache_hits"])
+    execution.external_token_usage = int(output["usage"]["external_token_usage"])
+    execution.finished_at = datetime.utcnow()
+    execution.progress_json = _canonical_json({"stage": "RESULT_PUBLISHED", "completed": 1, "total": 1})
+    db.commit()
+    db.refresh(result)
+    return result
+
+
+def compute_diagnosis(
+    db: Session,
+    execution: SinglePromptDiagnosisExecution,
+    token: str,
+    *,
+    answer_judge: Any | None = None,
+    source_claim_judge: Any | None = None,
+    alignment_judge: Any | None = None,
+    fetcher: Callable[[list[str]], list[dict]] | None = None,
+) -> SinglePromptDiagnosisResult:
+    context = db.query(SinglePromptAnalysisContext).filter(
+        SinglePromptAnalysisContext.context_id == execution.context_id
+    ).one_or_none()
+    if not context or context.raw_output_hash != execution.raw_output_hash:
+        raise RuntimeError("冻结的 AnalysisContext 与诊断输入不一致")
+    raw_output = loads(context.raw_output_json, {})
+    brand = loads(execution.brand_snapshot_json, {})
+    truths = loads(execution.truth_snapshot_json, [])
+    config = loads(execution.contract_config_json, {})
+    usage = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
+    if answer_judge is None:
+        answer_judge = V2AnswerSemanticJudge(DeepSeekClient(
+            thinking_mode=V2_LLM_THINKING_MODE,
+            max_attempts=int(config.get("llm_max_attempts") or 1),
+        ))
+    if source_claim_judge is None:
+        source_claim_judge = V2SourceClaimJudge(DeepSeekClient(
+            thinking_mode=V2_LLM_THINKING_MODE,
+            max_attempts=int(config.get("llm_max_attempts") or 1),
+        ))
+    if alignment_judge is None:
+        alignment_judge = V2AlignmentJudge(DeepSeekClient(
+            thinking_mode=V2_LLM_THINKING_MODE,
+            max_attempts=int(config.get("llm_max_attempts") or 1),
+        ))
+
+    _set_progress(db, execution, "ANSWER_SEMANTIC", 0, 1, "识别推荐对象与理由")
+    answer = _diagnose_answers(
+        db,
+        raw_output=raw_output,
+        prompt_text=str(raw_output.get("prompt_text") or ""),
+        brand_name=str(brand.get("brand_name") or ""),
+        usage=usage,
+        judge=answer_judge,
+        thinking_mode=str(config.get("llm_thinking_mode") or "") or None,
+    )
+
+    grouped_references = _group_references(raw_output)
+    _set_progress(db, execution, "SOURCE_SNAPSHOT", 0, len(grouped_references), "冻结引用正文版本")
+    snapshots = _load_or_fetch_snapshots(
+        db,
+        execution,
+        grouped_references,
+        fetcher or fetch_page_playwright,
+        source_snapshot_policy=str(config.get("source_snapshot_policy") or "REUSE_OR_FETCH"),
+    )
+
+    _set_progress(db, execution, "EVIDENCE_DIAGNOSIS", 0, 1, "候选召回、SourceClaim 与证据关系判断")
+    evidence = _diagnose_evidence(
+        db,
+        answer_diagnosis=answer,
+        snapshots=snapshots,
+        usage=usage,
+        source_claim_judge=source_claim_judge,
+        alignment_judge=alignment_judge,
+        config=config,
+    )
+    truth_diagnosis = _diagnose_truths(answer, truths, target_brand=brand)
+    limitations = _limitations(raw_output, answer, snapshots, evidence, truth_diagnosis)
+    source_summary = _source_summary(snapshots)
+    real_clients = {
+        id(client): client
+        for client in (
+            getattr(answer_judge, "client", None),
+            getattr(source_claim_judge, "client", None),
+            getattr(alignment_judge, "client", None),
+        )
+        if isinstance(client, DeepSeekClient)
+    }
+    if real_clients:
+        usage["external_llm_calls"] = sum(client.external_call_count for client in real_clients.values())
+        usage["external_token_usage"] = sum(client.external_token_count for client in real_clients.values())
+    stats = {
+        "valid_runs": sum(
+            run.get("status") in {"success", "partial_success"} and bool(str(run.get("answer_text") or "").strip())
+            for run in raw_output.get("runs") or []
+        ),
+        "recommendation_events": len(answer["events"]),
+        "reasons": sum(len(event["reasons"]) for event in answer["events"]),
+        "market_criteria": len(answer.get("market_criteria") or []),
+        **source_summary,
+        "candidate_recalled": sum(row["candidate_recall"] == "RECALLED" for row in evidence["source_relations"]),
+        "alignment_evaluated": sum(row["alignment_evaluation"] == "EVALUATED" for row in evidence["source_relations"]),
+        "alignment_not_evaluated": sum(row["alignment_evaluation"] != "EVALUATED" for row in evidence["source_relations"]),
+        "truth_facts": len(truths),
+        "truth_relationships": len(truth_diagnosis["relationships"]),
+    }
+    output = {
+        "contract_version": DIAGNOSIS_CONTRACT_VERSION,
+        "input": {
+            "analysis_id": execution.analysis_id,
+            "context_id": execution.context_id,
+            "raw_output_hash": execution.raw_output_hash,
+            "brand_snapshot": brand,
+            "brand_snapshot_hash": execution.brand_snapshot_hash,
+            "truth_set_hash": execution.truth_set_hash,
+            "contract_config": config,
+            "contract_config_hash": execution.contract_config_hash,
+        },
+        "answer_diagnosis": answer,
+        "source_diagnosis": {"summary": source_summary, "snapshots": _snapshot_reads(snapshots)},
+        "evidence_diagnosis": evidence,
+        "truth_diagnosis": truth_diagnosis,
+        "limitations": limitations,
+        "stats": stats,
+        "usage": usage,
+    }
+    output["answer_semantic_eligibility"] = answer_semantic_eligibility(output)
+    return _publish_result(db, execution, token, output)
+
+
+def execute_diagnosis(diagnosis_id: str) -> None:
+    db = SessionLocal()
+    token = claim_diagnosis(db, diagnosis_id)
+    if not token:
+        db.close()
+        return
+    try:
+        execution = db.query(SinglePromptDiagnosisExecution).filter(
+            SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id
+        ).one()
+        compute_diagnosis(db, execution, token)
+    except Exception as exc:
+        db.rollback()
+        db.execute(
+            update(SinglePromptDiagnosisExecution)
+            .where(
+                SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id,
+                SinglePromptDiagnosisExecution.status == "RUNNING",
+                SinglePromptDiagnosisExecution.active_attempt_token == token,
+            )
+            .values(
+                status="FAILED",
+                blocker_code="DIAGNOSIS_EXECUTION_FAILED",
+                blocker_detail=str(exc)[:2000],
+                active_attempt_token="",
+                finished_at=datetime.utcnow(),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def retry_diagnosis(db: Session, diagnosis_id: str) -> SinglePromptDiagnosisExecution:
+    execution = db.query(SinglePromptDiagnosisExecution).filter(
+        SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id
+    ).one_or_none()
+    if not execution:
+        raise HTTPException(status_code=404, detail="诊断执行不存在")
+    if execution.active_result_version:
+        raise HTTPException(status_code=409, detail="诊断结果已经发布；重跑请创建新的诊断执行")
+    if execution.status not in {"FAILED", "INTERRUPTED"}:
+        raise HTTPException(status_code=409, detail=f"当前状态 {execution.status} 不允许重试")
+    execution.status = "QUEUED"
+    execution.blocker_code = ""
+    execution.blocker_detail = ""
+    execution.active_attempt_token = ""
+    execution.finished_at = None
+    execution.progress_json = _canonical_json({"stage": "QUEUED", "completed": 0, "total": 1})
+    db.commit()
+    db.refresh(execution)
+    return execution
+
+
+def _active_result(db: Session, execution: SinglePromptDiagnosisExecution) -> SinglePromptDiagnosisResult | None:
+    if not execution.active_result_version:
+        return None
+    return db.query(SinglePromptDiagnosisResult).filter(
+        SinglePromptDiagnosisResult.result_version == execution.active_result_version,
+        SinglePromptDiagnosisResult.diagnosis_id == execution.diagnosis_id,
+    ).one_or_none()
+
+
+def get_diagnosis_status(
+    db: Session,
+    *,
+    analysis_id: str,
+    diagnosis_id: str,
+    project_id: int,
+    prompt_id: int,
+) -> dict[str, Any]:
+    execution = db.query(SinglePromptDiagnosisExecution).filter(
+        SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id,
+        SinglePromptDiagnosisExecution.analysis_id == analysis_id,
+    ).one_or_none()
+    if not execution:
+        raise HTTPException(status_code=404, detail="诊断执行不存在")
+    if execution.project_id != project_id or execution.prompt_id != prompt_id:
+        raise HTTPException(status_code=409, detail="诊断身份与当前 Project/Prompt 不匹配")
+    result = _active_result(db, execution)
+    review = None
+    if result:
+        review = db.query(SinglePromptDiagnosisReview).filter(
+            SinglePromptDiagnosisReview.result_version == result.result_version
+        ).one_or_none()
+    snapshots = (
+        db.query(SinglePromptSourceSnapshot)
+        .filter(SinglePromptSourceSnapshot.diagnosis_id == execution.diagnosis_id)
+        .order_by(SinglePromptSourceSnapshot.source_key)
+        .all()
+    ) if result else []
+    result_stats = loads(result.stats_json, {}) if result else {}
+    result_output = loads(result.output_json, {}) if result else {}
+    safety_advisories, evidence_eligibility = current_evidence_eligibility(
+        snapshots,
+        historical_content_ready=int(result_stats.get("content_ready") or 0),
+        historical_output=result_output,
+    )
+    answer_eligibility = answer_semantic_eligibility(result_output) if result else None
+    source_content_status_summary = _source_summary(snapshots)
+    truth_relation_eligibility = current_truth_relation_eligibility(result_output) if result else None
+    overall_status = "REVIEW_COMPLETED" if review else execution.status
+    return {
+        "diagnosis": {
+            "diagnosis_id": execution.diagnosis_id,
+            "analysis_id": execution.analysis_id,
+            "context_id": execution.context_id,
+            "project_id": execution.project_id,
+            "prompt_id": execution.prompt_id,
+            "input_fingerprint": execution.input_fingerprint,
+            "raw_output_hash": execution.raw_output_hash,
+            "brand_snapshot_hash": execution.brand_snapshot_hash,
+            "truth_set_hash": execution.truth_set_hash,
+            "contract_config_hash": execution.contract_config_hash,
+        },
+        "compute_status": execution.status,
+        "overall_status": overall_status,
+        "progress": loads(execution.progress_json, {}),
+        "blocker": {"code": execution.blocker_code, "detail": execution.blocker_detail} if execution.blocker_code else None,
+        "attempt_count": execution.attempt_count,
+        "usage": {
+            "external_llm_calls": execution.external_llm_calls,
+            "llm_cache_hits": execution.llm_cache_hits,
+            "external_token_usage": execution.external_token_usage,
+        },
+        "current_safety_advisories": safety_advisories,
+        "effective_evidence_eligibility": evidence_eligibility,
+        "source_content_status_summary": source_content_status_summary,
+        "current_truth_relation_eligibility": truth_relation_eligibility,
+        "answer_semantic_eligibility": answer_eligibility,
+        "result": {
+            "result_version": result.result_version,
+            "version_number": result.version_number,
+            "parent_result_version": result.parent_result_version,
+            "output_hash": result.output_hash,
+            "reviewable_set_hash": result.reviewable_set_hash,
+            "output": result_output,
+            "limitations": loads(result.limitations_json, []),
+            "stats": loads(result.stats_json, {}),
+            "created_at": _iso(result.created_at),
+        } if result else None,
+        "review": {
+            "review_id": review.review_id,
+            "decision": review.decision,
+            "result_version": review.result_version,
+            "result_hash": review.result_hash,
+            "reviewable_set_hash": review.reviewable_set_hash,
+            "decisions": loads(review.decisions_json, []),
+            "reviewer": review.reviewer,
+            "note": review.note,
+            "created_at": _iso(review.created_at),
+        } if review else None,
+        "allowed_operations": (
+            ["VIEW"] if result and answer_eligibility and answer_eligibility["no_consumable_answer_semantic_result"]
+            else ["VIEW", "REVISE", "COMPLETE_REVIEW"] if result and not review
+            else ["VIEW"] if result
+            else ["VIEW", "RETRY"] if execution.status in {"FAILED", "INTERRUPTED"}
+            else ["VIEW"]
+        ),
+        "created_at": _iso(execution.created_at),
+        "started_at": _iso(execution.started_at),
+        "finished_at": _iso(execution.finished_at),
+    }
+
+
+def revise_diagnosis_result(
+    db: Session,
+    *,
+    diagnosis_id: str,
+    base_result_version: str,
+    base_result_hash: str,
+    reviewable_set_hash: str,
+    edits: list[dict],
+    editor: str,
+) -> SinglePromptDiagnosisResult:
+    execution = db.query(SinglePromptDiagnosisExecution).filter(
+        SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id
+    ).one_or_none()
+    if not execution:
+        raise HTTPException(status_code=404, detail="诊断执行不存在")
+    if execution.active_result_version != base_result_version:
+        raise HTTPException(status_code=409, detail="诊断结果版本已变化，请重新加载")
+    base = db.query(SinglePromptDiagnosisResult).filter(
+        SinglePromptDiagnosisResult.result_version == base_result_version,
+        SinglePromptDiagnosisResult.diagnosis_id == diagnosis_id,
+    ).one_or_none()
+    if not base or base.output_hash != base_result_hash or base.reviewable_set_hash != reviewable_set_hash:
+        raise HTTPException(status_code=409, detail="审核目标集合已变化，请重新加载")
+    _require_consumable_answer_semantic(loads(base.output_json, {}), "REVISE")
+    if db.query(SinglePromptDiagnosisReview).filter(SinglePromptDiagnosisReview.result_version == base_result_version).first():
+        raise HTTPException(status_code=409, detail="已审核结果不可修改；请发起新的诊断执行")
+
+    output = copy.deepcopy(loads(base.output_json, {}))
+    applied: list[dict] = []
+    for edit in edits:
+        target_type = str(edit.get("target_type") or "")
+        target_id = str(edit.get("target_id") or "")
+        value = str(edit.get("value") or "")
+        reason = str(edit.get("reason") or "").strip()
+        if not reason:
+            raise HTTPException(status_code=422, detail="每项语义修改都必须填写原因")
+        target = None
+        allowed: set[str] = set()
+        field = ""
+        if target_type == "RECOMMENDATION_EVENT":
+            target = next((row for row in output["answer_diagnosis"]["events"] if row["event_id"] == target_id), None)
+            allowed, field = _SPEECH_ACTS, "effective_speech_act"
+        elif target_type == "EVIDENCE_RELATION":
+            target = next((row for row in output["evidence_diagnosis"]["source_relations"] if row["relation_id"] == target_id), None)
+            allowed, field = {"SOURCE_SUPPORTS_REASON", "SOURCE_CONTRADICTS_REASON", "RELATED", "NONE"}, "effective_relation"
+            if target and target.get("alignment_evaluation") != "EVALUATED":
+                raise HTTPException(status_code=422, detail="未完成判断的证据关系不能被编辑成 verdict")
+        elif target_type == "TRUTH_RELATION":
+            target = next((row for row in output["truth_diagnosis"]["relationships"] if row["relationship_id"] == target_id), None)
+            allowed, field = _TRUTH_RELATIONS, "effective_relation"
+            if target and target.get("truth_id") is None and value != "UNRESOLVED":
+                raise HTTPException(status_code=422, detail="空品牌事实不能被编辑成已覆盖或冲突")
+        if not target or value not in allowed:
+            raise HTTPException(status_code=422, detail=f"非法诊断修改：{target_type}/{target_id}/{value}")
+        before = target.get(field)
+        target[field] = value
+        target["human_override"] = {"editor": editor, "reason": reason, "before": before, "after": value}
+        applied.append({"target_type": target_type, "target_id": target_id, "field": field, "before": before, "after": value, "reason": reason})
+
+    version_number = base.version_number + 1
+    output["revision"] = {
+        "parent_result_version": base.result_version,
+        "editor": editor,
+        "applied_edits": applied,
+    }
+    output_hash = _hash(output)
+    new_result = SinglePromptDiagnosisResult(
+        result_version=f"diag-v{version_number}:{output_hash[:16]}",
+        diagnosis_id=diagnosis_id,
+        version_number=version_number,
+        parent_result_version=base.result_version,
+        output_json=_canonical_json(output),
+        output_hash=output_hash,
+        reviewable_set_hash=_hash(_reviewable_set(output)),
+        limitations_json=base.limitations_json,
+        stats_json=base.stats_json,
+    )
+    db.add(new_result)
+    db.flush()
+    updated = db.execute(
+        update(SinglePromptDiagnosisExecution)
+        .where(
+            SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id,
+            SinglePromptDiagnosisExecution.active_result_version == base_result_version,
+        )
+        .values(active_result_version=new_result.result_version)
+    )
+    if updated.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="诊断结果版本已变化，请重新加载")
+    db.commit()
+    db.refresh(new_result)
+    return new_result
+
+
+def complete_diagnosis_review(
+    db: Session,
+    *,
+    diagnosis_id: str,
+    result_version: str,
+    result_hash: str,
+    reviewable_set_hash: str,
+    reviewer: str,
+    note: str,
+    decisions: list[dict],
+) -> SinglePromptDiagnosisReview:
+    execution = db.query(SinglePromptDiagnosisExecution).filter(
+        SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id
+    ).one_or_none()
+    if not execution:
+        raise HTTPException(status_code=404, detail="诊断执行不存在")
+    if execution.active_result_version != result_version:
+        raise HTTPException(status_code=409, detail="诊断结果版本已变化，请重新加载")
+    result = db.query(SinglePromptDiagnosisResult).filter(
+        SinglePromptDiagnosisResult.result_version == result_version,
+        SinglePromptDiagnosisResult.diagnosis_id == diagnosis_id,
+    ).one_or_none()
+    if not result or result.output_hash != result_hash or result.reviewable_set_hash != reviewable_set_hash:
+        raise HTTPException(status_code=409, detail="审核目标集合已变化，请重新加载")
+    result_output = loads(result.output_json, {})
+    _require_consumable_answer_semantic(result_output, "COMPLETE_REVIEW")
+    validate_answer_event_review_decisions(result_output, decisions)
+    if db.query(SinglePromptDiagnosisReview).filter(SinglePromptDiagnosisReview.result_version == result_version).first():
+        raise HTTPException(status_code=409, detail="该诊断结果已经完成审核")
+    review = SinglePromptDiagnosisReview(
+        review_id=f"review-{uuid4()}",
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        result_hash=result_hash,
+        reviewable_set_hash=reviewable_set_hash,
+        prior_review_id=None,
+        decision="REVIEW_COMPLETED",
+        decisions_json=_canonical_json(decisions),
+        reviewer=reviewer,
+        note=note,
+    )
+    db.add(review)
+    db.commit()
+    db.refresh(review)
+    return review
+
+
+_ANSWER_EVENT_REVIEW_DECISIONS = {
+    "CONFIRM_INCLUDE_AS_OPTION",
+    "CORRECT_TO_MENTION",
+    "KEEP_UNRESOLVED",
+    "EXCLUDE_EXTRACTION",
+}
+
+
+def validate_answer_event_review_decisions(output: dict[str, Any], decisions: list[dict]) -> dict[str, str]:
+    """Require an explicit disposition for every event held for semantic review."""
+    pending = {
+        str(event.get("event_id")): event
+        for event in (output.get("answer_diagnosis") or {}).get("events") or []
+        if event.get("event_id") and event.get("semantic_validation_status") == "SEMANTIC_REVIEW_REQUIRED"
+    }
+    if not pending:
+        return {}
+
+    reviewed: dict[str, str] = {}
+    for row in decisions:
+        if row.get("scope") != "ANSWER_SEMANTIC_EVENT":
+            continue
+        event_id = str(row.get("event_id") or "")
+        decision = str(row.get("decision") or "")
+        if event_id not in pending:
+            raise HTTPException(status_code=422, detail=f"审核决定引用了非待审事件：{event_id or 'EMPTY'}")
+        if event_id in reviewed:
+            raise HTTPException(status_code=422, detail=f"待审事件存在重复决定：{event_id}")
+        if decision not in _ANSWER_EVENT_REVIEW_DECISIONS:
+            raise HTTPException(status_code=422, detail=f"待审事件决定非法：{event_id}/{decision or 'EMPTY'}")
+        event = pending[event_id]
+        if row.get("run_id") is not None and int(row["run_id"]) != int(event.get("run_id") or 0):
+            raise HTTPException(status_code=422, detail=f"待审事件 Run 不匹配：{event_id}")
+        speech_act = str(event.get("effective_speech_act") or event.get("machine_speech_act") or "")
+        if decision == "CONFIRM_INCLUDE_AS_OPTION" and speech_act != "INCLUDE_AS_OPTION":
+            raise HTTPException(status_code=422, detail=f"只有当前 INCLUDE_AS_OPTION 事件可以确认候选：{event_id}")
+        if decision == "CORRECT_TO_MENTION" and speech_act != "MENTION":
+            raise HTTPException(status_code=422, detail=f"更正为仅提及前必须先保存 MENTION 结果版本：{event_id}")
+        reviewed[event_id] = decision
+
+    missing = sorted(set(pending) - set(reviewed))
+    if missing:
+        raise HTTPException(status_code=422, detail={
+            "code": "ANSWER_SEMANTIC_EVENT_REVIEW_INCOMPLETE",
+            "detail": "每个待审候选都必须确认、修正、保留不确定或排除后，才能完成本版审核。",
+            "missing_event_ids": missing,
+        })
+    return reviewed
+
+
+def recover_interrupted_diagnoses(db: Session) -> int:
+    rows = db.query(SinglePromptDiagnosisExecution).filter(
+        SinglePromptDiagnosisExecution.status.in_(ACTIVE_STATUSES)
+    ).all()
+    for row in rows:
+        row.status = "INTERRUPTED"
+        row.blocker_code = "SERVICE_RESTART_INTERRUPTED"
+        row.blocker_detail = "服务重启中断了诊断执行；未静默重算，请人工确认后重试"
+        row.active_attempt_token = ""
+        row.finished_at = datetime.utcnow()
+    if rows:
+        db.commit()
+    return len(rows)

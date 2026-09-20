@@ -323,6 +323,56 @@ def test_manual_source_completion_freezes_exact_content_and_waiver_limitations(t
         assert [row.snapshot_id for row in snapshots] == [snapshot.snapshot_id]
         assert [row["code"] for row in limitations] == ["SOURCE_WAIVED_WITH_LIMITATION"]
         assert db.query(SinglePromptPreparedSourceSnapshot).count() == 1
+        with pytest.raises(HTTPException) as cross_context:
+            source_preparation.validate_completion_for_evidence(
+                db,
+                analysis_id=analysis.analysis_id,
+                context_id="ctx-from-another-analysis",
+                citation_manifest_id=preparation.citation_manifest_id,
+                citation_manifest_hash=preparation.citation_manifest_hash,
+                completion_manifest_id=completion.manifest_id,
+                completion_manifest_hash=completion.payload_hash,
+            )
+        assert cross_context.value.detail["code"] == "CITATION_MANIFEST_INPUT_MISMATCH"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_source_preparation_status_read_has_no_business_writes(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    try:
+        analysis = _seed_frozen_analysis(db, reference_urls=["https://example.com/only"])
+        preparation, first = _create_preparation(db, analysis)
+        before = {
+            table.__tablename__: db.query(table).count()
+            for table in (
+                source_preparation.SinglePromptCitationManifest,
+                source_preparation.SinglePromptSourcePreparation,
+                source_preparation.SinglePromptSourceDisposition,
+                source_preparation.SinglePromptPreparedSourceSnapshot,
+                source_preparation.SinglePromptSourceCompletionManifest,
+            )
+        }
+        second = source_preparation.get_source_preparation_status(
+            db,
+            preparation_id=preparation.preparation_id,
+        )
+        after = {
+            table.__tablename__: db.query(table).count()
+            for table in (
+                source_preparation.SinglePromptCitationManifest,
+                source_preparation.SinglePromptSourcePreparation,
+                source_preparation.SinglePromptSourceDisposition,
+                source_preparation.SinglePromptPreparedSourceSnapshot,
+                source_preparation.SinglePromptSourceCompletionManifest,
+            )
+        }
+        assert second == first
+        assert after == before
+        assert not db.dirty
+        assert not db.new
     finally:
         db.close()
         engine.dispose()

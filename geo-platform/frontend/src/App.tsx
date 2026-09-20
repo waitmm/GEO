@@ -4331,6 +4331,7 @@ export default function App() {
   const v2AnswerJobs = v2DiagnosisOutput?.answer_diagnosis?.answer_jobs || [];
   const v2AnswerEligibility = v2Diagnosis?.answer_semantic_eligibility;
   const v2NoConsumableAnswerSemantic = Boolean(v2AnswerEligibility?.no_consumable_answer_semantic_result);
+  const v2MixedAnswerBoundary = v2AnswerEligibility?.status === "BLOCKED_MIXED_ANSWER_BOUNDARY";
   const v2DiagnosisReasons = v2DiagnosisEvents.flatMap((event: any) => event.reasons || []);
   const v2DiagnosisReasonById = new Map(v2DiagnosisReasons.map((reason: any) => [reason.reason_id, reason]));
   const v2DiagnosisSnapshots = v2DiagnosisOutput?.source_diagnosis?.snapshots || [];
@@ -4450,8 +4451,8 @@ export default function App() {
                   className="v2-sampling-explanation"
                   type="info"
                   showIcon
-                  message="每行是一轮独立采样"
-                  description="平台自报搜索词来自文心回答文本：同一轮内可报告多个搜索词，但只生成下方一条最终综合回答；这些词不是系统已验证的 Retrieval 轨迹。"
+                  message="每行是一轮独立回答"
+                  description="每轮只提交一次当前 Prompt，并保存一条最终回答正文。文心生成过程中的平台搜索词单独保存为只读观察，暂不进入回答语义、证据判断或策略，也不是系统已验证的 Retrieval 轨迹。"
                 />
                 <Table
                   rowKey="run_id"
@@ -4463,14 +4464,19 @@ export default function App() {
                   columns={[
                     { title: "样本", width: 76, render: (_: unknown, row: any) => `第 ${row.run_sequence} 次` },
                     { title: "状态", dataIndex: "status", width: 100, render: statusTag },
-                    { title: "平台自报搜索词", width: 330, render: (_: unknown, row: any) => {
+                    { title: "平台搜索词（观察）", width: 330, render: (_: unknown, row: any) => {
                       const terms = row.platform_reported_search?.terms || [];
                       return terms.length ? <Space size={6}>
                         <Tag>{terms.length} 个</Tag>
                         <Text ellipsis={{ tooltip: terms.join(" / ") }} style={{ maxWidth: 250 }}>{terms.join(" / ")}</Text>
-                      </Space> : <Text type="secondary">未在回答中识别到</Text>;
+                      </Space> : <Text type="secondary">本轮未单独采集</Text>;
                     } },
-                    { title: "最终综合回答", width: 150, render: (_: unknown, row: any) => row.answer_text ? <Space size={6}><Tag color="blue">1 条</Tag><Text type="secondary">{row.answer_char_count || row.answer_text.length} 字</Text></Space> : <Text type="secondary">尚无回答</Text> },
+                    { title: "回答正文", width: 180, render: (_: unknown, row: any) => row.answer_text ? <Space size={6}>
+                      <Tag color={row.answer_content_boundary?.status === "FINAL_ANSWER_ONLY" ? "blue" : "gold"}>
+                        {row.answer_content_boundary?.status === "FINAL_ANSWER_ONLY" ? "独立 1 条" : "历史混合文本"}
+                      </Tag>
+                      <Text type="secondary">{row.answer_char_count || row.answer_text.length} 字</Text>
+                    </Space> : <Text type="secondary">尚无回答</Text> },
                     { title: "引用", width: 72, render: (_: unknown, row: any) => row.references?.length || 0 },
                     { title: "检索", width: 72, render: (_: unknown, row: any) => row.retrieval_candidates?.length || 0 },
                     { title: "耗时", width: 92, render: (_: unknown, row: any) => row.duration_ms ? `${Math.round(row.duration_ms / 1000)} 秒` : "-" },
@@ -4481,13 +4487,20 @@ export default function App() {
                       <Text strong>本轮实际提交 Prompt</Text>
                       <div><Text>{row.observed_conditions?.original_query?.value || v2Analysis.analysis.prompt_text}</Text></div>
                       <Space wrap size={[6, 6]}>
-                        <Text strong>平台自报搜索词</Text>
+                        <Text strong>平台搜索词观察</Text>
+                        <Tag color="default">暂不处理</Tag>
                         <Tag color="gold">未验证检索轨迹</Tag>
                         {(row.platform_reported_search?.terms || []).map((term: string) => <Tag key={term}>{term}</Tag>)}
-                        {!row.platform_reported_search?.terms?.length && <Text type="secondary">未在回答文本中识别到</Text>}
+                        {!row.platform_reported_search?.terms?.length && <Text type="secondary">本轮未单独采集</Text>}
                       </Space>
                     </div>
-                    {row.answer_text && <div><Text strong>最终综合回答 · 1 条</Text><Typography.Paragraph className="v2-answer-text">{row.answer_text}</Typography.Paragraph></div>}
+                    {row.answer_content_boundary?.status === "LEGACY_MIXED_CONTAINER" && <Alert
+                      type="warning"
+                      showIcon
+                      message="历史回答边界未分离"
+                      description="该冻结 Run 的回答文本包含平台搜索过程，只保留作历史记录；系统不会静默清洗或将其作为新的独立回答重新分析。"
+                    />}
+                    {row.answer_text && <div><Text strong>{row.answer_content_boundary?.status === "FINAL_ANSWER_ONLY" ? "最终回答正文 · 独立 1 条" : "历史采集文本"}</Text><Typography.Paragraph className="v2-answer-text">{row.answer_text}</Typography.Paragraph></div>}
                     <div className="v2-output-columns">
                       <div><Text strong>引用资料 · {row.references?.length || 0}</Text>{(row.references || []).map((item: any) => <div key={item.reference_id}><Link href={item.canonical_url || item.url} target="_blank">{item.index}. {item.title || item.domain || item.url}</Link></div>)}</div>
                       <div><Text strong>检索观测 · {row.retrieval_candidates?.length || 0}</Text>{(row.retrieval_candidates || []).map((item: any) => <div key={item.candidate_id}><Link href={item.canonical_url || item.url} target="_blank">{item.rank}. {item.title || item.domain || item.url}</Link></div>)}</div>
@@ -4559,7 +4572,7 @@ export default function App() {
 
               {v2Analysis.context_id && <Card size="small" title={<Space><ShieldCheck size={18} />回答语义与证据诊断</Space>} extra={<Space wrap>
                 {v2Diagnosis && <Tag color={v2NoConsumableAnswerSemantic ? "red" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "green" : ["QUEUED", "RUNNING", "EVIDENCE_QUEUED", "EVIDENCE_RUNNING"].includes(v2Diagnosis.compute_status) ? "blue" : ["FAILED", "EVIDENCE_FAILED"].includes(v2Diagnosis.compute_status) ? "red" : "gold"}>
-                  {v2NoConsumableAnswerSemantic ? "回答语义失败" : v2Diagnosis.compute_status === "EVIDENCE_QUEUED" ? "等待证据计算" : v2Diagnosis.compute_status === "EVIDENCE_RUNNING" ? "证据计算中" : v2Diagnosis.compute_status === "EVIDENCE_FAILED" ? "证据计算失败" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "审核完成" : v2Diagnosis.compute_status === "READY_FOR_REVIEW" ? "待审核" : v2Diagnosis.compute_status === "RUNNING" ? "诊断中" : v2Diagnosis.compute_status === "QUEUED" ? "等待诊断" : v2Diagnosis.compute_status === "INTERRUPTED" ? "诊断中断" : v2Diagnosis.compute_status}
+                  {v2MixedAnswerBoundary ? "回答边界不合格" : v2NoConsumableAnswerSemantic ? "回答语义失败" : v2Diagnosis.compute_status === "EVIDENCE_QUEUED" ? "等待证据计算" : v2Diagnosis.compute_status === "EVIDENCE_RUNNING" ? "证据计算中" : v2Diagnosis.compute_status === "EVIDENCE_FAILED" ? "证据计算失败" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "审核完成" : v2Diagnosis.compute_status === "READY_FOR_REVIEW" ? "待审核" : v2Diagnosis.compute_status === "RUNNING" ? "诊断中" : v2Diagnosis.compute_status === "QUEUED" ? "等待诊断" : v2Diagnosis.compute_status === "INTERRUPTED" ? "诊断中断" : v2Diagnosis.compute_status}
                 </Tag>}
                 {!v2Diagnosis ? <Space wrap><Select value={v2AnswerPolicy} onChange={setV2AnswerPolicy} options={[{ value: "CACHE_ONLY", label: "仅兼容缓存" }, { value: "ALLOW_EXTERNAL", label: "授权 Answer LLM" }]} /><Button type="primary" icon={<Play size={15} />} loading={v2DiagnosisLoading} disabled={!v2SourcePreparation} onClick={startV2Diagnosis}>开始 Answer Semantic</Button></Space> : <>
                   <Tooltip title="只读取当前诊断执行状态">
@@ -4586,7 +4599,13 @@ export default function App() {
               </Card>}
 
               {v2Diagnosis?.result && <>
-                {v2NoConsumableAnswerSemantic && <Alert
+                {v2MixedAnswerBoundary && <Alert
+                  type="error"
+                  showIcon
+                  message="历史回答文本未与平台搜索过程分离"
+                  description={`受影响 Run：${(v2AnswerEligibility?.mixed_answer_run_ids || []).join("、") || "未知"}。旧结果保持不可变，仅供审计；不能审核、修订或进入 Evidence。请用修复后的采集器发起新分析。`}
+                />}
+                {v2NoConsumableAnswerSemantic && !v2MixedAnswerBoundary && <Alert
                   type="error"
                   showIcon
                   message={`回答语义分析失败 ${v2AnswerEligibility?.failed_answer_count || 0}/${v2AnswerEligibility?.total_answer_count || 0}`}
@@ -4602,8 +4621,10 @@ export default function App() {
                   key={advisory.code}
                   type="warning"
                   showIcon
-                  message="当前正文安全限制"
-                  description={`${advisory.message} 历史技术成功 ${advisory.historical_content_ready}，当前有效正文最多 ${advisory.maximum_currently_eligible}。`}
+                  message={advisory.code === "ANSWER_CONTENT_BOUNDARY_NOT_INDEPENDENT" ? "当前回答安全限制" : "当前正文安全限制"}
+                  description={advisory.code === "ANSWER_CONTENT_BOUNDARY_NOT_INDEPENDENT"
+                    ? advisory.detail
+                    : `${advisory.message} 历史技术成功 ${advisory.historical_content_ready}，当前有效正文最多 ${advisory.maximum_currently_eligible}。`}
                 />)}
                 <Card size="small" title="诊断概览" extra={<Text type="secondary">输入、结果和审核版本均绑定当前 AnalysisContext</Text>}>
                   <div className="v2-status-grid">

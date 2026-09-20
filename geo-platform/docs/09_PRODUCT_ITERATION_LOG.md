@@ -4245,7 +4245,11 @@ passages。其余获取结果只作为人工候选，不自动 READY、不自动
 
 ### 2026-09-20：明确区分平台搜索词扩展与独立采样回答
 
-release 采样页按 Run 展示三个不同对象：系统实际提交的单个 Prompt、文心在回答文本中
-自报的多个搜索词，以及该 Run 的一条最终综合回答。自报搜索词只作为只读观察展示，明确
-标记为“未验证检索轨迹”；它们不等于三个独立回答，也不会在缺少正式采集观测时被计入
-RetrievalCandidate。该展示投影不改冻结 Raw Result 或任何诊断、证据语义。
+DOM 核查确认文心页面包含两个独立区域：搜索/引用过程和最终 Markdown 回答。此前采集器
+读取整个回答容器，导致已冻结 Run 的 `answer_text` 混入搜索关键词与引用标题；这不是
+三个独立回答，也不能继续被称为纯最终回答。
+
+新采集从 DOM 层切分：平台搜索词进入独立只读 observation artifact，标记为“暂不处理 / 未
+验证检索轨迹”；最终 Markdown 单独进入 `answer_text`，Answer Semantic 只消费后者。搜索词
+不进入 RetrievalCandidate、Reason、Evidence 或 Strategy。历史冻结数据保持不可变并显示
+`LEGACY_MIXED_CONTAINER` 限制，后端禁止其完成审核或进入 Evidence，不做静默字符串清洗。

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -25,6 +25,12 @@ from app.models import (
 )
 from app.modules.monitoring.enums import BROWSER_AUDIT_ENTRY_TYPE, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER
 from app.modules.monitoring.executor import MonitoringTaskExecutor
+from app.modules.monitoring.collectors.wenxin.search_process import (
+    legacy_mixed_answer_boundary,
+    normalize_answer_content_boundary,
+    normalize_platform_search_observation,
+    project_platform_search_observation,
+)
 from app.modules.monitoring.services import (
     create_browser_task,
     create_browser_task_from_frozen_prompt,
@@ -36,11 +42,6 @@ from app.services.serialization import dumps, loads
 TERMINAL_RUN_STATUSES = {"success", "partial_success", "failed", "blocked"}
 VALID_RUN_STATUSES = {"success", "partial_success"}
 ACTIVE_ANALYSIS_STATUSES = {"QUEUED", "COLLECTING"}
-
-_PLATFORM_SEARCH_COUNT_RE = re.compile(r"^\s*搜索\s*(\d+)\s*个关键词(?:\s|$)")
-_PLATFORM_SEARCH_TERMS_RE = re.compile(r"^\s*搜索关键词\s*(.+?)\s*$")
-_QUOTED_SEARCH_TERM_RE = re.compile(r"[\u201c\"]([^\u201d\"\r\n]+)[\u201d\"]")
-
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
@@ -55,39 +56,36 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def project_platform_reported_search(answer_text: str | None) -> dict[str, Any]:
-    """Project Wenxin's own answer-header claim without treating it as retrieval telemetry."""
+    """Legacy projection for immutable Runs captured before semantic-region separation."""
 
-    lines = [line.strip() for line in str(answer_text or "").splitlines()[:10] if line.strip()]
-    reported_count: int | None = None
-    evidence_line: str | None = None
-    terms: list[str] = []
-    for line in lines:
-        count_match = _PLATFORM_SEARCH_COUNT_RE.match(line)
-        if count_match and reported_count is None:
-            reported_count = int(count_match.group(1))
-        terms_match = _PLATFORM_SEARCH_TERMS_RE.match(line)
-        if terms_match and evidence_line is None:
-            evidence_line = line
-            for term in _QUOTED_SEARCH_TERM_RE.findall(terms_match.group(1)):
-                cleaned = term.strip()
-                if cleaned and cleaned not in terms:
-                    terms.append(cleaned)
-
-    return {
-        "status": "MODEL_REPORTED" if terms else "NOT_REPORTED",
-        "terms": terms,
-        "reported_count": reported_count,
-        "count_consistent": reported_count == len(terms) if reported_count is not None and terms else None,
-        "source": "ANSWER_TEXT",
-        "verification_status": "UNVERIFIED_RETRIEVAL_TRACE",
-        "evidence_line": evidence_line,
-    }
+    return project_platform_search_observation(
+        answer_text,
+        source="LEGACY_MIXED_ANSWER_TEXT_PROJECTION",
+    )
 
 
 def _with_platform_reported_search(run: dict[str, Any]) -> dict[str, Any]:
     projected = dict(run)
-    projected["platform_reported_search"] = project_platform_reported_search(run.get("answer_text"))
+    if not normalize_platform_search_observation(projected.get("platform_reported_search")):
+        projected["platform_reported_search"] = project_platform_reported_search(run.get("answer_text"))
+    if not normalize_answer_content_boundary(projected.get("answer_content_boundary")):
+        projected["answer_content_boundary"] = legacy_mixed_answer_boundary(run.get("answer_text"))
     return projected
+
+
+def _semantic_region_projection(rows: list[RunArtifact]) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    for row in reversed(rows):
+        if row.artifact_type != "wenxin_semantic_regions":
+            continue
+        try:
+            payload = json.loads(Path(row.storage_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        search = normalize_platform_search_observation(payload.get("platform_reported_search"))
+        boundary = normalize_answer_content_boundary(payload.get("answer_content_boundary"))
+        if search and boundary:
+            return search, boundary
+    return None, None
 
 
 def create_analysis(
@@ -364,6 +362,10 @@ def _snapshot_runs(db: Session, analysis: SinglePromptAnalysis) -> list[dict[str
             retrievals[row.run_id].append(row)
         for row in db.query(RunArtifact).filter(RunArtifact.run_id.in_(run_ids)).order_by(RunArtifact.run_id, RunArtifact.id):
             artifacts[row.run_id].append(row)
+    semantic_regions = {
+        run_id: _semantic_region_projection(artifacts[run_id])
+        for run_id in run_ids
+    }
 
     return [
         {
@@ -374,6 +376,8 @@ def _snapshot_runs(db: Session, analysis: SinglePromptAnalysis) -> list[dict[str
             "stage": run.stage,
             "answer_text": run.answer_text,
             "answer_char_count": run.answer_char_count,
+            "platform_reported_search": semantic_regions[run.id][0],
+            "answer_content_boundary": semantic_regions[run.id][1],
             "reference_complete": run.reference_complete,
             "started_at": _iso(run.started_at),
             "finished_at": _iso(run.finished_at),

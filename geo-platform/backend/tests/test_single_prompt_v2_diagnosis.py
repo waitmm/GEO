@@ -21,6 +21,7 @@ from app.models import (
 from app.modules.single_prompt_v2.diagnosis import (
     _diagnose_answers,
     _diagnose_truths,
+    _require_independent_answer_boundary,
     _source_summary,
     claim_diagnosis,
     complete_diagnosis_review,
@@ -771,6 +772,79 @@ def test_u200c_grounding_metadata_references_the_immutable_raw_answer(tmp_path):
         assert event["answer_span"] == event["grounding"]["raw_span"]
         assert answer[event["raw_start"]:event["raw_end"]] == event["answer_span"]
         assert output["answer_jobs"][0]["status"] == "DONE"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_legacy_mixed_search_container_is_not_sent_to_answer_semantic(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        class MustNotRunJudge:
+            def judge_answer(self, answer_text, prompt_text, brand_name, db=None):
+                raise AssertionError("mixed historical answer must not reach the judge")
+
+        mixed = "\n".join([
+            "搜索3个关键词 共参考28篇资料",
+            "搜索关键词“抖音跳转链接”、“生成方法”、“使用规则”",
+            "引用资料标题一",
+            "这里才是最终回答。",
+        ])
+        usage = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
+        output = _diagnose_answers(
+            db,
+            raw_output={"runs": [{"run_id": 1, "status": "success", "answer_text": mixed}]},
+            prompt_text="抖音跳转链接",
+            brand_name="爱短链",
+            usage=usage,
+            judge=MustNotRunJudge(),
+            thinking_mode="disabled",
+        )
+
+        assert output["events"] == []
+        assert output["failures"][0]["stage"] == "ANSWER_INPUT_BOUNDARY"
+        assert output["failures"][0]["status"] == "NOT_EVALUATED"
+        assert output["answer_jobs"][0]["status"] == "NOT_EVALUATED_MIXED_ANSWER_BOUNDARY"
+        assert usage["external_llm_calls"] == 0
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_legacy_mixed_answer_context_blocks_review_and_evidence_consumption(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        _seed(db)
+        analysis, _ = create_analysis(
+            db,
+            project_id=1,
+            prompt_id=44,
+            sample_count=1,
+            idempotency_key="mixed-answer-boundary-analysis",
+        )
+        token = claim_analysis(db, analysis.analysis_id)
+        run = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).one()
+        run.status = "success"
+        run.stage = "success"
+        run.answer_text = "搜索2个关键词\n搜索关键词“短链”、“短链工具”\n这里是最终回答正文。"
+        run.answer_char_count = len(run.answer_text)
+        run.reference_complete = True
+        db.commit()
+        assert finalize_analysis(db, analysis.analysis_id, token)
+        execution, _ = create_diagnosis(
+            db,
+            analysis_id=analysis.analysis_id,
+            project_id=1,
+            prompt_id=44,
+            idempotency_key="mixed-answer-boundary-diagnosis",
+        )
+
+        with pytest.raises(HTTPException) as excinfo:
+            _require_independent_answer_boundary(db, execution, "COMPLETE_REVIEW")
+
+        assert excinfo.value.status_code == 409
+        assert excinfo.value.detail["code"] == "ANSWER_CONTENT_BOUNDARY_NOT_INDEPENDENT"
+        assert excinfo.value.detail["run_ids"] == [run.id]
     finally:
         db.close()
         engine.dispose()

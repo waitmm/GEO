@@ -347,10 +347,12 @@ export type SinglePromptV2DiagnosisStatus = {
   usage: { external_llm_calls: number; llm_cache_hits: number; external_token_usage: number };
   current_safety_advisories: Array<{
     code: string;
-    count: number;
-    historical_content_ready: number;
-    maximum_currently_eligible: number;
-    message: string;
+    count?: number;
+    historical_content_ready?: number;
+    maximum_currently_eligible?: number;
+    message?: string;
+    detail?: string;
+    affected_run_ids?: number[];
   }>;
   effective_evidence_eligibility: {
     contract_version: string;
@@ -389,6 +391,7 @@ export type SinglePromptV2DiagnosisStatus = {
     no_consumable_answer_semantic_result: boolean;
     partial_failure: boolean;
     status: "NO_CONSUMABLE_RESULT" | "PARTIAL" | "ADMITTED" | string;
+    mixed_answer_run_ids?: number[];
   };
   result: null | {
     result_version: string;

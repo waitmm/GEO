@@ -39,6 +39,7 @@ from app.modules.optimization.answer_semantic import (
 )
 from app.modules.optimization.passage_retrieval import RETRIEVAL_VERSION, retrieve_passages_for_reason, tokenize_zh
 from app.modules.optimization.passage_service import fetch_page_playwright
+from app.modules.monitoring.collectors.wenxin.search_process import legacy_mixed_answer_boundary
 from app.modules.single_prompt_v2.llm_safety import (
     V2_ADMISSION_CONTRACT_VERSION,
     V2_ANSWER_GROUNDING_VERSION,
@@ -167,6 +168,44 @@ def _require_consumable_answer_semantic(output: dict[str, Any], operation: str) 
                 "operation": operation,
                 "detail": "回答语义没有任何通过当前准入契约的结果；失败不能通过审核或修订升级为有效输入。",
                 "answer_semantic_eligibility": eligibility,
+            },
+        )
+
+
+def _mixed_answer_boundary_run_ids(db: Session, execution: SinglePromptDiagnosisExecution) -> list[int]:
+    context = db.query(SinglePromptAnalysisContext).filter(
+        SinglePromptAnalysisContext.context_id == execution.context_id,
+        SinglePromptAnalysisContext.raw_output_hash == execution.raw_output_hash,
+    ).one_or_none()
+    if not context:
+        return []
+    raw_output = loads(context.raw_output_json, {})
+    mixed: list[int] = []
+    for run in raw_output.get("runs") or []:
+        answer = str(run.get("answer_text") or "")
+        status = str((run.get("answer_content_boundary") or {}).get("status") or "")
+        if status == "LEGACY_MIXED_CONTAINER" or (
+            status != "FINAL_ANSWER_ONLY"
+            and legacy_mixed_answer_boundary(answer)["status"] == "LEGACY_MIXED_CONTAINER"
+        ):
+            mixed.append(int(run.get("run_id") or 0))
+    return [run_id for run_id in mixed if run_id]
+
+
+def _require_independent_answer_boundary(
+    db: Session,
+    execution: SinglePromptDiagnosisExecution,
+    operation: str,
+) -> None:
+    mixed_run_ids = _mixed_answer_boundary_run_ids(db, execution)
+    if mixed_run_ids:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ANSWER_CONTENT_BOUNDARY_NOT_INDEPENDENT",
+                "operation": operation,
+                "run_ids": mixed_run_ids,
+                "detail": "历史 Run 的回答文本混入平台搜索过程；该结果只保留审计，不能完成审核或进入后续证据消费。",
             },
         )
 
@@ -511,6 +550,28 @@ def _diagnose_answers(
         if run.get("status") not in {"success", "partial_success"} or not answer.strip():
             continue
         answer_hash = hashlib.sha256(answer.encode("utf-8")).hexdigest()
+        boundary_status = str((run.get("answer_content_boundary") or {}).get("status") or "")
+        if boundary_status == "LEGACY_MIXED_CONTAINER" or (
+            boundary_status != "FINAL_ANSWER_ONLY"
+            and legacy_mixed_answer_boundary(answer)["status"] == "LEGACY_MIXED_CONTAINER"
+        ):
+            failure = {
+                "run_id": run.get("run_id"),
+                "stage": "ANSWER_INPUT_BOUNDARY",
+                "status": "NOT_EVALUATED",
+                "error": "历史采集文本混入平台搜索过程，不能作为独立最终回答进入语义分析",
+            }
+            failures.append(failure)
+            answer_jobs.setdefault(
+                answer_hash,
+                {
+                    "answer_hash": answer_hash,
+                    "semantic_input_hash": "",
+                    "status": "NOT_EVALUATED_MIXED_ANSWER_BOUNDARY",
+                    "result_source": "INPUT_GATE",
+                },
+            )
+            continue
         if answer_hash not in answer_cache and answer_hash not in answer_jobs:
             payload = answer_user_payload(prompt_text, answer, brand_name)
             input_hash = _llm_input_hash(
@@ -2073,6 +2134,7 @@ def _evidence_continuation_inputs(
         raise HTTPException(status_code=409, detail={"code": "EVIDENCE_PROJECT_PROMPT_MISMATCH"})
     if execution.context_id == "":
         raise HTTPException(status_code=409, detail={"code": "EVIDENCE_CONTEXT_MISSING"})
+    _require_independent_answer_boundary(db, execution, "EVIDENCE_CONTINUATION")
     answer_result = db.query(SinglePromptDiagnosisResult).filter_by(
         diagnosis_id=diagnosis_id,
         result_version=answer_result_version,
@@ -2562,6 +2624,22 @@ def get_diagnosis_status(
         historical_output=result_output,
     )
     answer_eligibility = answer_semantic_eligibility(result_output) if result else None
+    mixed_answer_run_ids = _mixed_answer_boundary_run_ids(db, execution) if result else []
+    if answer_eligibility and mixed_answer_run_ids:
+        answer_eligibility = {
+            **answer_eligibility,
+            "no_consumable_answer_semantic_result": True,
+            "status": "BLOCKED_MIXED_ANSWER_BOUNDARY",
+            "mixed_answer_run_ids": mixed_answer_run_ids,
+        }
+        safety_advisories = [
+            *safety_advisories,
+            {
+                "code": "ANSWER_CONTENT_BOUNDARY_NOT_INDEPENDENT",
+                "detail": "历史回答文本包含平台搜索过程，不能作为独立最终回答进入审核或 Evidence。",
+                "affected_run_ids": mixed_answer_run_ids,
+            },
+        ]
     source_content_status_summary = _source_summary(snapshots)
     truth_relation_eligibility = current_truth_relation_eligibility(result_output) if result else None
     overall_status = "REVIEW_COMPLETED" if review else execution.status
@@ -2643,6 +2721,7 @@ def revise_diagnosis_result(
     ).one_or_none()
     if not execution:
         raise HTTPException(status_code=404, detail="诊断执行不存在")
+    _require_independent_answer_boundary(db, execution, "REVISE")
     if execution.active_result_version != base_result_version:
         raise HTTPException(status_code=409, detail="诊断结果版本已变化，请重新加载")
     base = db.query(SinglePromptDiagnosisResult).filter(
@@ -2739,6 +2818,7 @@ def complete_diagnosis_review(
     ).one_or_none()
     if not execution:
         raise HTTPException(status_code=404, detail="诊断执行不存在")
+    _require_independent_answer_boundary(db, execution, "COMPLETE_REVIEW")
     if execution.active_result_version != result_version:
         raise HTTPException(status_code=409, detail="诊断结果版本已变化，请重新加载")
     result = db.query(SinglePromptDiagnosisResult).filter(

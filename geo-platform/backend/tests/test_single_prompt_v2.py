@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -11,6 +13,7 @@ from app.models import (
     Prompt,
     ReferenceSource,
     RetrievalCandidate,
+    RunArtifact,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
 )
@@ -24,6 +27,10 @@ from app.modules.single_prompt_v2.service import (
     retry_analysis,
 )
 from app.modules.single_prompt_v2.schemas import SinglePromptAnalysisStatusRead
+from app.modules.monitoring.collectors.wenxin.search_process import (
+    final_answer_boundary,
+    project_platform_search_observation,
+)
 
 
 def _session(tmp_path):
@@ -183,7 +190,7 @@ def test_frozen_context_ignores_later_run_mutation_and_new_sampling(tmp_path):
         engine.dispose()
 
 
-def test_platform_reported_search_is_read_only_display_projection_not_retrieval(tmp_path):
+def test_legacy_mixed_answer_projects_search_terms_but_keeps_boundary_limitation(tmp_path):
     db, engine = _session(tmp_path)
     try:
         _seed(db)
@@ -204,24 +211,67 @@ def test_platform_reported_search_is_read_only_display_projection_not_retrieval(
 
         assert finalize_analysis(db, analysis.analysis_id, token)
         context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis.analysis_id).one()
-        assert "platform_reported_search" not in context.raw_output_json
+        assert json.loads(context.raw_output_json)["runs"][0]["platform_reported_search"] is None
 
         status = get_analysis_status(db, analysis.analysis_id)
         projection = status["runs"][0]["platform_reported_search"]
-        assert projection == {
-            "status": "MODEL_REPORTED",
-            "terms": ["抖音跳转链接", "抖音跳转链接生成方法", "抖音跳转链接使用规则"],
-            "reported_count": 3,
-            "count_consistent": True,
-            "source": "ANSWER_TEXT",
-            "verification_status": "UNVERIFIED_RETRIEVAL_TRACE",
-            "evidence_line": "搜索关键词“抖音跳转链接”、“抖音跳转链接生成方法”、“抖音跳转链接使用规则”",
-        }
+        assert projection["terms"] == ["抖音跳转链接", "抖音跳转链接生成方法", "抖音跳转链接使用规则"]
+        assert projection["source"] == "LEGACY_MIXED_ANSWER_TEXT_PROJECTION"
+        assert projection["consumption_policy"] == "OBSERVATION_ONLY"
+        assert status["runs"][0]["answer_content_boundary"]["status"] == "LEGACY_MIXED_CONTAINER"
         assert status["runs"][0]["retrieval_candidates"] == []
         assert {warning["code"] for warning in status["warnings"]} == {
             "INDEPENDENT_SESSION_PROOF_UNAVAILABLE",
             "RETRIEVAL_OBSERVATION_UNAVAILABLE",
         }
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_new_run_freezes_search_observation_separately_from_final_answer(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        _seed(db)
+        analysis = _create(db, count=1)
+        token = claim_analysis(db, analysis.analysis_id)
+        run = _runs(db, analysis)[0]
+        final_answer = "这是单独保存的最终回答正文，不包含搜索过程和引用资料标题。"
+        _succeed(run, final_answer)
+        artifact_path = tmp_path / "semantic-regions.json"
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "platform_reported_search": project_platform_search_observation(
+                        "搜索3个关键词 共参考28篇资料\n搜索关键词“抖音跳转链接”、“生成方法”、“使用规则”"
+                    ),
+                    "answer_content_boundary": final_answer_boundary(),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        db.add(
+            RunArtifact(
+                run_id=run.id,
+                artifact_type="wenxin_semantic_regions",
+                storage_path=str(artifact_path),
+                mime_type="application/json",
+                size_bytes=artifact_path.stat().st_size,
+            )
+        )
+        db.commit()
+
+        assert finalize_analysis(db, analysis.analysis_id, token)
+        status = get_analysis_status(db, analysis.analysis_id)
+        frozen_run = status["runs"][0]
+
+        assert frozen_run["answer_text"] == final_answer
+        assert "搜索关键词" not in frozen_run["answer_text"]
+        assert frozen_run["answer_content_boundary"]["status"] == "FINAL_ANSWER_ONLY"
+        assert frozen_run["platform_reported_search"]["terms"] == ["抖音跳转链接", "生成方法", "使用规则"]
+        assert frozen_run["platform_reported_search"]["consumption_policy"] == "OBSERVATION_ONLY"
+        assert frozen_run["retrieval_candidates"] == []
     finally:
         db.close()
         engine.dispose()

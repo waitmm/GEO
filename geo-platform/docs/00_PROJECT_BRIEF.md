@@ -60,10 +60,14 @@ allowlist.
 This does not mean the real positive evidence chain is complete. The first
 release acceptance has now created a real Analysis/Context, frozen 38-source
 Citation Manifest, one real immutable source Snapshot, and a 3/3-admitted Answer
-ResultVersion. The remaining 37 sources and exact Answer Review still require
-human disposition, so Source Completion and SourceClaim/Alignment consumption
-remain correctly blocked. Candidate fetch files and fixture output are not
-reported as completed evidence.
+ResultVersion. A later DOM audit found that those frozen Run answer texts include
+Wenxin's search/thinking region before the final Markdown answer. The immutable
+result remains available for audit, but current eligibility marks it
+`ANSWER_CONTENT_BOUNDARY_NOT_INDEPENDENT`; it cannot be reviewed or consumed by
+Evidence. New collection separates the platform-reported search observation into
+its own artifact and stores only the final Markdown as `answer_text`. The remaining
+37 sources also still require human disposition. Candidate fetch files and
+fixture output are not reported as completed evidence.
 See `docs/GEO_1_0_FIRST_SLICE_OPERATIONS.md` for the executable workflow and
 `docs/GEO_1_0_R3_EXECUTION_CONTRACT.md` for the frozen boundary.
 

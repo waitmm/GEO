@@ -23,6 +23,10 @@ from app.modules.monitoring.collectors.wenxin.exceptions import (
     PageStructureError,
 )
 from app.modules.monitoring.collectors.wenxin.reference_parser import resolve_reference_url
+from app.modules.monitoring.collectors.wenxin.search_process import (
+    final_answer_boundary,
+    project_platform_search_observation,
+)
 from app.modules.monitoring.collectors.wenxin.selectors import (
     ANSWER_NOISE_MARKERS,
     CAPTCHA_TEXT_MARKERS,
@@ -165,8 +169,25 @@ class WenxinWebCollector(BaseCollector):
             run.retrieval_query = run.original_query
             answer_text = await self._wait_answer_complete(self._page, run.original_query, settings.wenxin_browser_timeout_seconds)
             answer_html = await self._extract_answer_html(self._page)
+            platform_reported_search = await self._extract_platform_reported_search(self._page)
+            answer_content_boundary = final_answer_boundary()
             references = await self._extract_references(self._page)
             artifacts = await self._capture_page_artifacts(self._page)
+            artifacts.append(
+                {
+                    "artifact_type": "wenxin_semantic_regions",
+                    "filename": "semantic-regions.json",
+                    "content": json.dumps(
+                        {
+                            "platform_reported_search": platform_reported_search,
+                            "answer_content_boundary": answer_content_boundary,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    "mime_type": "application/json",
+                }
+            )
             if self._last_reference_panel_html:
                 artifacts.append(
                     {
@@ -188,6 +209,8 @@ class WenxinWebCollector(BaseCollector):
             return CollectorResult(
                 answer_text=answer_text,
                 answer_html=answer_html,
+                platform_reported_search=platform_reported_search,
+                answer_content_boundary=answer_content_boundary,
                 references=references,
                 retrieval_candidates=[],
                 artifacts=artifacts,
@@ -325,7 +348,7 @@ class WenxinWebCollector(BaseCollector):
             "profile_identifier": Path(settings.wenxin_profile_dir).name,
             "conversation_id": self._conversation_id,
             "network_region": os.getenv("WENXIN_NETWORK_REGION", "unknown"),
-            "collector_version": "wenxin-web-v1.1-independent-session-proof",
+            "collector_version": "wenxin-web-v1.2-final-answer-boundary",
             "parser_version": "reference-parser-v1.8c-compatible",
             "page_url": page.url,
         }
@@ -401,7 +424,7 @@ class WenxinWebCollector(BaseCollector):
             body_text = await page.locator("body").inner_text(timeout=5000)
             answer_text = await self._current_answer_text(page)
             current_hash = hashlib.sha256(answer_text.encode("utf-8")).hexdigest()
-            has_reference = re.search(REFERENCE_TEXT_PATTERN, answer_text) is not None
+            has_reference = re.search(REFERENCE_TEXT_PATTERN, body_text) is not None
             has_stop_button = any(marker in body_text for marker in STOP_BUTTON_TEXT_MARKERS)
             if answer_text and current_hash == last_hash:
                 stable_count += 1
@@ -417,6 +440,33 @@ class WenxinWebCollector(BaseCollector):
         raise AnswerTimeoutError("等待回答超时，未采集到回答正文")
 
     async def _current_answer_text(self, page) -> str:
+        container = await self._last_answer_container(page)
+        if container is None:
+            return ""
+        for selector in [
+            ".ai-entry-block.ai-markdown .cosd-markdown-content",
+            ".ai-entry-block.ai-markdown",
+        ]:
+            try:
+                locator = container.locator(selector).last
+                if not await locator.is_visible(timeout=500):
+                    continue
+                answer = self._clean_answer_text(await locator.inner_text(timeout=2000))
+                if answer:
+                    return answer
+            except Exception:
+                continue
+
+        # Wenxin's current container includes thinking/search steps before the
+        # final Markdown. Never fall back to the whole container in that layout.
+        try:
+            if await container.locator(".ai-entry-block.ai-thinking-steps").count():
+                return ""
+            return self._clean_answer_text(await container.inner_text(timeout=2000))
+        except Exception:
+            return ""
+
+    async def _last_answer_container(self, page):
         selectors = [
             "#conversation-flow-content .conversation-flow-answer-container .cs-answer-container",
             "#conversation-flow-content .conversation-flow-answer-container .answer-container",
@@ -425,23 +475,34 @@ class WenxinWebCollector(BaseCollector):
         for selector in selectors:
             try:
                 locator = page.locator(selector).last
-                if not await locator.is_visible(timeout=500):
-                    continue
-                text = await locator.inner_text(timeout=2000)
-                lines = []
-                for line in text.splitlines():
-                    stripped = line.strip()
-                    if not stripped or stripped in ANSWER_NOISE_MARKERS:
-                        continue
-                    if stripped in {"思考已停止", "深度思考"}:
-                        continue
-                    lines.append(stripped)
-                answer = "\n".join(lines).strip()
-                if answer:
-                    return answer
+                if await locator.is_visible(timeout=500):
+                    return locator
             except Exception:
                 continue
-        return ""
+        return None
+
+    def _clean_answer_text(self, text: str) -> str:
+        lines = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped in ANSWER_NOISE_MARKERS:
+                continue
+            if stripped in {"思考已停止", "深度思考"}:
+                continue
+            lines.append(stripped)
+        return "\n".join(lines).strip()
+
+    async def _extract_platform_reported_search(self, page) -> dict:
+        container = await self._last_answer_container(page)
+        if container is None:
+            return project_platform_search_observation("")
+        try:
+            locator = container.locator(".ai-entry-block.ai-thinking-steps").last
+            if await locator.is_visible(timeout=500):
+                return project_platform_search_observation(await locator.inner_text(timeout=2000))
+        except Exception:
+            pass
+        return project_platform_search_observation("")
 
     def _extract_answer_text_from_body(self, body_text: str, query: str) -> str:
         after_query = body_text.split(query, 1)[-1].strip() if query in body_text else body_text.strip()
@@ -454,16 +515,25 @@ class WenxinWebCollector(BaseCollector):
         return "\n".join(lines).strip()
 
     async def _extract_answer_html(self, page) -> str:
+        container = await self._last_answer_container(page)
+        if container is None:
+            return ""
         for selector in [
-            "#conversation-flow-content .conversation-flow-answer-container .cs-answer-container",
-            "#conversation-flow-content .conversation-flow-answer-container .answer-container",
+            ".ai-entry-block.ai-markdown .cosd-markdown-content",
+            ".ai-entry-block.ai-markdown",
         ]:
             try:
-                locator = page.locator(selector).last
+                locator = container.locator(selector).last
                 if await locator.is_visible(timeout=500):
                     return await locator.evaluate("node => node.innerHTML")
             except Exception:
                 continue
+        try:
+            if await container.locator(".ai-entry-block.ai-thinking-steps").count():
+                return ""
+            return await container.evaluate("node => node.innerHTML")
+        except Exception:
+            pass
         return ""
 
     async def _extract_references(self, page) -> list[dict]:

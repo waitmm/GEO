@@ -9,6 +9,8 @@ from typing import Any
 class CollectorResult:
     answer_text: str = ""
     answer_html: str = ""
+    platform_reported_search: dict[str, Any] = field(default_factory=dict)
+    answer_content_boundary: dict[str, Any] = field(default_factory=dict)
     references: list[dict[str, Any]] = field(default_factory=list)
     retrieval_candidates: list[dict[str, Any]] = field(default_factory=list)
     artifacts: list[dict[str, Any]] = field(default_factory=list)

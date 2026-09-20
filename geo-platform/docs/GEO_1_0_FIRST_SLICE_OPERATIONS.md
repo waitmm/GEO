@@ -1,6 +1,6 @@
 # GEO 1.0 首批来源与证据主链操作说明
 
-Status: `REAL_INPUT_PARTIAL / BLOCKED_BY_MANUAL_SOURCE_COMPLETION_AND_ANSWER_REVIEW`
+Status: `REAL_INPUT_PARTIAL / BLOCKED_BY_ANSWER_BOUNDARY_AND_MANUAL_SOURCE_COMPLETION`
 Date: 2026-09-20
 
 ## 1. 当前交付范围
@@ -107,8 +107,10 @@ cd /Users/bmwqr/Desktop/python/GEO
   passages SHA-256 `717fd262e71459d7f8257bb2e39db9c8912e29082f31e8e2eb2f0ab1d8fb470f`，
   20 passages；
 - Answer Diagnosis `aac746f4-6b9b-4cda-b981-3487b5ef2f9b`，Result
-  `diag-v1:69cb9884452deead`，3/3 回答通过准入并合法返回零事件；DeepSeek
-  外部请求 3 次、缓存命中 0、总 token 8,922。
+  `diag-v1:69cb9884452deead` 的历史模型响应曾 3/3 通过当时的 Schema/Grounding
+  准入并返回零事件；DeepSeek 外部请求 3 次、缓存命中 0、总 token 8,922。后续 DOM
+  核查确认其固定输入混入了平台搜索/引用过程，因此当前只保留审计，不具备审核或
+  Evidence 消费资格；零事件不能解释为纯最终回答没有推荐。
 
 来源获取审计在每个唯一 URL 最多 2 次、串行、不递归的边界内完成：除已正式
 READY 的 1 条外，形成 10 份待人工检查的正文候选、17 条内容复核项、8 条人工
@@ -126,11 +128,11 @@ backend/artifacts/release-acceptance/source-prep-626e2e6e-4cda-41a2-81b7-cc08a39
 同目录的 `unvalidated-candidates/`。两者都是人工处置材料，不是正式 Snapshot、
 Completion 或 Evidence。
 
-当前真实守恒为 `READY=1 / PENDING=37`，Completion Manifest 未生成；Answer
-Review 也尚未由用户完成。正式 API 已分别验证：来源范围未完成时冻结 Completion
-返回 409，缺精确 Answer Review 时 Evidence continuation 返回 409。没有 Evidence
-Task、SourceClaim/Alignment 调用、WAIVE、Truth 或 Review 自动写入。服务重启后
-Analysis、Snapshot、artifact hash、Diagnosis 和 `review=null` 均保持一致。
+当前真实守恒为 `READY=1 / PENDING=37`，Completion Manifest 未生成；历史 Answer
+Result 还因 `ANSWER_CONTENT_BOUNDARY_NOT_INDEPENDENT` 禁止审核和 Evidence 消费。
+正式 API 已分别验证来源范围和审核 Gate；没有 Evidence Task、SourceClaim/Alignment
+调用、WAIVE、Truth 或 Review 自动写入。服务重启后 Analysis、Snapshot、artifact
+hash、Diagnosis 和 `review=null` 均保持一致。
 
 精确页面入口：
 
@@ -138,6 +140,7 @@ Analysis、Snapshot、artifact hash、Diagnosis 和 `review=null` 均保持一�
 http://127.0.0.1:8020/?v2_analysis=a2d0c0ee-b62e-4f39-9fe9-1bc14efdea33&v2_project=1&v2_prompt=1&v2_diagnosis=aac746f4-6b9b-4cda-b981-3487b5ef2f9b&v2_diagnosis_result=diag-v1%3A69cb9884452deead
 ```
 
-下一步仅是用户在该页面完成精确 Answer Review，并逐条补录或明确 WAIVE 剩余
-37 个来源。两侧均完成后才可冻结 Completion Manifest 并执行已授权 Evidence；
-当前正确状态是 Gate 真实阻断，不是 Evidence 正向消费完成。
+下一次新采样会将 Wenxin 搜索过程保存为独立只读 observation，并仅把最终 Markdown
+冻结为回答正文；得到新的独立 Answer Result 后，用户才能完成精确 Review。来源侧仍需
+逐条补录或明确 WAIVE 剩余 37 个来源。两侧均完成后才可冻结 Completion Manifest 并
+执行 Evidence；当前正确状态是 Gate 真实阻断，不是 Evidence 正向消费完成。

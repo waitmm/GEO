@@ -5300,14 +5300,18 @@ review_queue = READY
 
 ## 2026-09-20 Release Sampling Search-Term Display
 
-- Added a read-only status projection for search terms explicitly reported in
-  the Wenxin answer header. The projection is derived from the frozen answer
-  text and does not alter the immutable Raw Result, Context hash, Run, or
-  RetrievalCandidate records.
-- The V2 sampling table now distinguishes the submitted Prompt, the platform's
-  self-reported search-term expansion, and the one final synthesized answer for
-  each independent Run. The search terms are labeled as an unverified retrieval
-  trace and never counted as observed RetrievalCandidates.
-- Added regression coverage proving the real answer-header shape projects three
-  terms while the frozen payload remains unchanged and Retrieval observation
-  remains unavailable.
+- A follow-up DOM audit corrected the initial display-only interpretation. The
+  Wenxin `.cs-answer-container` contains both `.ai-thinking-steps` and the final
+  `.ai-markdown`; the collector previously persisted their combined text as
+  `answer_text`.
+- New Runs now persist a `wenxin_semantic_regions` artifact. Platform-reported
+  search terms are an `OBSERVATION_ONLY` module, while `answer_text` and
+  `answer_html` come only from the final Markdown region. Collector version is
+  `wenxin-web-v1.2-final-answer-boundary`.
+- Frozen historical Runs are not rewritten. A deterministic projection marks
+  the known mixed shape `LEGACY_MIXED_CONTAINER`, and backend gates reject
+  revision, review and Evidence continuation for that input. This prevents a UI
+  warning from becoming the only protection.
+- Added collector DOM-boundary, immutable Context projection and Answer Semantic
+  input-gate regressions. No browser sampling, model call, source fetch, Review,
+  Truth or Evidence write was performed by this change.

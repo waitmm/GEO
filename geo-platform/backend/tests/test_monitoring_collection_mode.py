@@ -157,3 +157,88 @@ def test_environment_reports_actual_verified_sampling_mode(tmp_path):
     assert metadata["collection_mode"] == "single_independent"
     assert metadata["sampling_mode"] == "single_independent"
     assert metadata["session_verification_basis"] == "PRE_SUBMIT_ZERO_TURN_DOM_GATE"
+
+
+class _SemanticRegionLocator:
+    def __init__(self, *, text="", html="", visible=True, children=None, count_value=None):
+        self.text = text
+        self.html = html
+        self.visible = visible
+        self.children = children or {}
+        self.count_value = count_value
+
+    @property
+    def last(self):
+        return self
+
+    def locator(self, selector):
+        return self.children.get(selector, _SemanticRegionLocator(visible=False, count_value=0))
+
+    async def is_visible(self, timeout=0):
+        return self.visible
+
+    async def inner_text(self, timeout=0):
+        return self.text
+
+    async def evaluate(self, expression):
+        return self.html
+
+    async def count(self):
+        if self.count_value is not None:
+            return self.count_value
+        return 1 if self.visible else 0
+
+
+class _SemanticRegionPage:
+    def __init__(self, container):
+        self.container = container
+
+    def locator(self, selector):
+        if selector == "#conversation-flow-content .conversation-flow-answer-container .cs-answer-container":
+            return self.container
+        return _SemanticRegionLocator(visible=False, count_value=0)
+
+
+def _semantic_region_page(*, include_final=True):
+    final = _SemanticRegionLocator(
+        text="这是完全独立的最终回答正文，不包含平台搜索过程。",
+        html="<p>这是完全独立的最终回答正文，不包含平台搜索过程。</p>",
+        visible=include_final,
+    )
+    thinking = _SemanticRegionLocator(
+        text="搜索3个关键词 共参考28篇资料\n搜索关键词“抖音跳转链接”、“生成方法”、“使用规则”",
+        visible=True,
+    )
+    container = _SemanticRegionLocator(
+        text="搜索3个关键词\n搜索关键词“抖音跳转链接”、“生成方法”、“使用规则”\n这是完全独立的最终回答正文，不包含平台搜索过程。",
+        html="<div>mixed</div>",
+        children={
+            ".ai-entry-block.ai-markdown .cosd-markdown-content": final,
+            ".ai-entry-block.ai-markdown": final,
+            ".ai-entry-block.ai-thinking-steps": thinking,
+        },
+    )
+    return _SemanticRegionPage(container)
+
+
+def test_wenxin_collects_final_answer_and_search_process_as_separate_regions():
+    collector = WenxinWebCollector()
+    page = _semantic_region_page()
+
+    answer = asyncio.run(collector._current_answer_text(page))
+    answer_html = asyncio.run(collector._extract_answer_html(page))
+    search = asyncio.run(collector._extract_platform_reported_search(page))
+
+    assert answer == "这是完全独立的最终回答正文，不包含平台搜索过程。"
+    assert "搜索关键词" not in answer
+    assert answer_html == "<p>这是完全独立的最终回答正文，不包含平台搜索过程。</p>"
+    assert search["terms"] == ["抖音跳转链接", "生成方法", "使用规则"]
+    assert search["consumption_policy"] == "OBSERVATION_ONLY"
+
+
+def test_wenxin_never_falls_back_to_mixed_container_when_final_region_is_missing():
+    collector = WenxinWebCollector()
+    page = _semantic_region_page(include_final=False)
+
+    assert asyncio.run(collector._current_answer_text(page)) == ""
+    assert asyncio.run(collector._extract_answer_html(page)) == ""

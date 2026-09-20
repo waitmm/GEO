@@ -244,6 +244,66 @@ export type SinglePromptV2Status = {
   finished_at: string | null;
 };
 
+export type SinglePromptV2SourcePreparation = {
+  preparation: {
+    preparation_id: string;
+    analysis_id: string;
+    context_id: string;
+    project_id: number;
+    prompt_id: number;
+    status: string;
+    created_by: string;
+  };
+  citation_manifest: {
+    manifest_id: string;
+    version_number: number;
+    payload_hash: string;
+    raw_output_hash: string;
+    source_count: number;
+    occurrence_count: number;
+  };
+  conservation: {
+    required_unique_sources: number;
+    terminal: number;
+    nonterminal: number;
+    by_state: Record<string, number>;
+    conserved: boolean;
+  };
+  sources: Array<{
+    source_key: string;
+    canonical_url: string;
+    original_urls: string[];
+    reference_observations: Array<Record<string, any>>;
+    occurrence_count: number;
+    state: "PENDING" | "READY" | "WAIVED_WITH_LIMITATION" | string;
+    row_version: number;
+    failure: null | { code: string; detail: string };
+    waiver: null | { reason: string; impact: string; waived_by: string; waived_at: string | null };
+    snapshot: null | {
+      snapshot_id: string;
+      content_hash: string;
+      artifact_hash: string;
+      artifact_path: string;
+      passages_hash: string;
+      passage_count: number;
+      coverage_scope: "FULL_PAGE" | "EXCERPT" | string;
+      submitted_by: string;
+      created_at: string;
+    };
+  }>;
+  completion_manifest: null | {
+    manifest_id: string;
+    version_number: number;
+    status: "FROZEN" | "NO_USABLE_SOURCE" | string;
+    payload_hash: string;
+    required_source_count: number;
+    ready_source_count: number;
+    waived_source_count: number;
+    created_at: string;
+  };
+  allowed_operations: string[];
+};
+
 export type SinglePromptV2DiagnosisEdit = {
   target_type: "RECOMMENDATION_EVENT" | "EVIDENCE_RELATION" | "TRUTH_RELATION";
   target_id: string;
@@ -322,6 +382,7 @@ export type SinglePromptV2DiagnosisStatus = {
     output_hash: string;
     reviewable_set_hash: string;
     output: {
+      result_scope?: "ANSWER_ONLY" | "ANSWER_AND_EVIDENCE" | string;
       input: Record<string, any>;
       answer_diagnosis: { events: any[]; market_criteria?: any[]; unresolved_items: any[]; failures: any[]; answer_jobs?: any[] };
       source_diagnosis: { summary: Record<string, number>; snapshots: any[] };

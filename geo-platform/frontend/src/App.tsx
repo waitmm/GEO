@@ -8,7 +8,7 @@ import { ArrowDown, ArrowUp, BarChart3, ExternalLink, FileText, ListChecks, Moni
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
-  SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
@@ -16,6 +16,15 @@ const { Header, Sider, Content } = Layout;
 const { Title, Text, Link } = Typography;
 type PageKey = "coreV2" | "validation" | "recommendation" | "optimization" | "config" | "runs" | "ranking" | "golden";
 type V2AnswerReviewDecision = "CONFIRM_INCLUDE_AS_OPTION" | "CORRECT_TO_MENTION" | "KEEP_UNRESOLVED" | "EXCLUDE_EXTRACTION";
+type V2SourceDraft = {
+  title: string;
+  cleanText: string;
+  coverageScope: "FULL_PAGE" | "EXCERPT";
+  waiverReason: string;
+  waiverImpact: string;
+};
+
+const RELEASE_FIRST_SLICE = import.meta.env.VITE_GEO_RELEASE_FIRST_SLICE === "1";
 
 const PAGE_META: Record<PageKey, { title: string; subtitle: string }> = {
   coreV2: { title: "单问题分析 V2", subtitle: "一次分析、固定采样、可信状态" },
@@ -1176,7 +1185,7 @@ function PromptScopeAlert({ prompt, description }: { prompt: Prompt; description
 }
 
 export default function App() {
-  const [page, setPage] = useState<PageKey>("validation");
+  const [page, setPage] = useState<PageKey>(RELEASE_FIRST_SLICE ? "coreV2" : "validation");
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<number>();
   const [prompts, setPrompts] = useState<Prompt[]>([]);
@@ -1232,6 +1241,12 @@ export default function App() {
   const [v2Loading, setV2Loading] = useState(false);
   const [v2SampleCount, setV2SampleCount] = useState(3);
   const v2PendingIdempotencyKey = useRef<string | null>(null);
+  const [v2SourcePreparation, setV2SourcePreparation] = useState<SinglePromptV2SourcePreparation | null>(null);
+  const [v2SourceLoading, setV2SourceLoading] = useState(false);
+  const [v2SourceActor, setV2SourceActor] = useState("本地审核人");
+  const [v2SourceDrafts, setV2SourceDrafts] = useState<Record<string, V2SourceDraft>>({});
+  const [v2AnswerPolicy, setV2AnswerPolicy] = useState<"CACHE_ONLY" | "ALLOW_EXTERNAL">("CACHE_ONLY");
+  const [v2EvidencePolicy, setV2EvidencePolicy] = useState<"CACHE_ONLY" | "ALLOW_EXTERNAL">("CACHE_ONLY");
   const [v2Diagnosis, setV2Diagnosis] = useState<SinglePromptV2DiagnosisStatus | null>(null);
   const [v2DiagnosisLoading, setV2DiagnosisLoading] = useState(false);
   const [v2DiagnosisEdits, setV2DiagnosisEdits] = useState<Record<string, Omit<SinglePromptV2DiagnosisEdit, "reason">>>({});
@@ -1579,6 +1594,8 @@ export default function App() {
       window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
       setV2Diagnosis(null);
       setV2DiagnosisEdits({});
+      setV2SourcePreparation(null);
+      setV2SourceDrafts({});
       setV2StrategyReadiness(null);
       setV2Strategy(null);
       setV2Execution(null);
@@ -1616,6 +1633,146 @@ export default function App() {
     }
   }
 
+  async function refreshV2SourcePreparation() {
+    if (!v2Analysis?.context_id || !projectId || !activePromptId) return;
+    setV2SourceLoading(true);
+    try {
+      const status = await api.getSinglePromptV2SourcePreparation(
+        v2Analysis.analysis.analysis_id,
+        projectId,
+        activePromptId,
+      );
+      setV2SourcePreparation(status);
+    } catch (error: any) {
+      message.error(error.message || "读取来源准备状态失败");
+    } finally {
+      setV2SourceLoading(false);
+    }
+  }
+
+  async function startV2SourcePreparation() {
+    if (!v2Analysis?.context_id || !projectId || !activePromptId) return;
+    setV2SourceLoading(true);
+    try {
+      const status = await api.createSinglePromptV2SourcePreparation(
+        v2Analysis.analysis.analysis_id,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          idempotency_key: `source-preparation:${v2Analysis.context_id}`,
+          created_by: v2SourceActor.trim() || "本地审核人",
+        },
+      );
+      setV2SourcePreparation(status);
+      message.success("引用范围已冻结，可以逐条补录或明确放弃来源");
+    } catch (error: any) {
+      message.error(error.message || "冻结引用范围失败");
+    } finally {
+      setV2SourceLoading(false);
+    }
+  }
+
+  function updateV2SourceDraft(sourceKey: string, values: Partial<V2SourceDraft>) {
+    setV2SourceDrafts((current) => ({
+      ...current,
+      [sourceKey]: {
+        ...(current[sourceKey] || {
+          title: "",
+          cleanText: "",
+          coverageScope: "FULL_PAGE",
+          waiverReason: "",
+          waiverImpact: "",
+        }),
+        ...values,
+      },
+    }));
+  }
+
+  async function submitV2ManualSource(source: SinglePromptV2SourcePreparation["sources"][number]) {
+    if (!v2SourcePreparation || !projectId || !activePromptId) return;
+    const draft = v2SourceDrafts[source.source_key];
+    if (!draft?.cleanText?.trim() || draft.cleanText.trim().length < 50) {
+      message.warning("请补录至少 50 个字符的正文");
+      return;
+    }
+    setV2SourceLoading(true);
+    try {
+      const status = await api.submitSinglePromptV2ManualSource(
+        v2SourcePreparation.preparation.preparation_id,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          source_key: source.source_key,
+          expected_row_version: source.row_version,
+          title: draft.title || source.reference_observations?.[0]?.title || "",
+          clean_text: draft.cleanText,
+          coverage_scope: draft.coverageScope,
+          submitted_by: v2SourceActor.trim() || "本地审核人",
+        },
+      );
+      setV2SourcePreparation(status);
+      updateV2SourceDraft(source.source_key, { cleanText: "" });
+      message.success("正文快照与 passages 已生成");
+    } catch (error: any) {
+      message.error(error.message || "正文补录失败");
+    } finally {
+      setV2SourceLoading(false);
+    }
+  }
+
+  async function waiveV2Source(source: SinglePromptV2SourcePreparation["sources"][number]) {
+    if (!v2SourcePreparation || !projectId || !activePromptId) return;
+    const draft = v2SourceDrafts[source.source_key];
+    if (!draft?.waiverReason?.trim() || !draft?.waiverImpact?.trim()) {
+      message.warning("人工放弃必须填写原因和对结论的影响");
+      return;
+    }
+    setV2SourceLoading(true);
+    try {
+      const status = await api.waiveSinglePromptV2Source(
+        v2SourcePreparation.preparation.preparation_id,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          source_key: source.source_key,
+          expected_row_version: source.row_version,
+          reason: draft.waiverReason,
+          impact: draft.waiverImpact,
+          waived_by: v2SourceActor.trim() || "本地审核人",
+        },
+      );
+      setV2SourcePreparation(status);
+      message.success("已记录人工放弃及限制；该来源不会产生证据结论");
+    } catch (error: any) {
+      message.error(error.message || "记录人工放弃失败");
+    } finally {
+      setV2SourceLoading(false);
+    }
+  }
+
+  async function freezeV2SourceCompletion() {
+    if (!v2SourcePreparation || !projectId || !activePromptId) return;
+    setV2SourceLoading(true);
+    try {
+      const status = await api.freezeSinglePromptV2SourceCompletion(
+        v2SourcePreparation.preparation.preparation_id,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          created_by: v2SourceActor.trim() || "本地审核人",
+        },
+      );
+      setV2SourcePreparation(status);
+      message.success(status.completion_manifest?.status === "FROZEN"
+        ? "Source Completion Manifest 已冻结"
+        : "来源处置已关闭，但没有可供 Evidence 使用的正文");
+    } catch (error: any) {
+      message.error(error.message || "冻结来源完成清单失败");
+    } finally {
+      setV2SourceLoading(false);
+    }
+  }
+
   async function refreshV2Diagnosis() {
     if (!v2Analysis || !projectId || !activePromptId) return;
     const params = new URLSearchParams(window.location.search);
@@ -1635,7 +1792,7 @@ export default function App() {
   }
 
   async function startV2Diagnosis() {
-    if (!v2Analysis?.context_id || !projectId || !activePromptId) return;
+    if (!v2Analysis?.context_id || !projectId || !activePromptId || !v2SourcePreparation) return;
     const key = v2PendingDiagnosisKey.current || crypto.randomUUID();
     v2PendingDiagnosisKey.current = key;
     setV2DiagnosisLoading(true);
@@ -1649,17 +1806,53 @@ export default function App() {
       setV2StrategyReadiness(null);
       setV2Strategy(null);
       setV2Execution(null);
-      const status = await api.createSinglePromptV2Diagnosis(v2Analysis.analysis.analysis_id, {
+      const status = await api.createSinglePromptV2AnswerDiagnosis(v2Analysis.analysis.analysis_id, {
         project_id: projectId,
         prompt_id: activePromptId,
+        citation_manifest_id: v2SourcePreparation.citation_manifest.manifest_id,
+        citation_manifest_hash: v2SourcePreparation.citation_manifest.payload_hash,
+        answer_llm_policy: v2AnswerPolicy,
         idempotency_key: key,
       });
       v2PendingDiagnosisKey.current = null;
       setV2Diagnosis(status);
       persistV2DiagnosisIdentity(status);
-      message.success("诊断执行已创建，输入快照已经固定");
+      message.success("Answer Semantic 执行已创建，Citation Manifest 已精确绑定");
     } catch (error: any) {
       message.error(error.message || "创建诊断失败");
+    } finally {
+      setV2DiagnosisLoading(false);
+    }
+  }
+
+  async function continueV2Evidence() {
+    if (
+      !v2Analysis || !v2Diagnosis?.result || !v2Diagnosis.review
+      || !v2SourcePreparation?.completion_manifest || !projectId || !activePromptId
+    ) return;
+    setV2DiagnosisLoading(true);
+    try {
+      const status = await api.continueSinglePromptV2Evidence(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          answer_result_version: v2Diagnosis.result.result_version,
+          answer_result_hash: v2Diagnosis.result.output_hash,
+          answer_review_id: v2Diagnosis.review.review_id,
+          citation_manifest_id: v2SourcePreparation.citation_manifest.manifest_id,
+          citation_manifest_hash: v2SourcePreparation.citation_manifest.payload_hash,
+          completion_manifest_id: v2SourcePreparation.completion_manifest.manifest_id,
+          completion_manifest_hash: v2SourcePreparation.completion_manifest.payload_hash,
+          evidence_llm_policy: v2EvidencePolicy,
+        },
+      );
+      setV2Diagnosis(status);
+      persistV2DiagnosisIdentity(status);
+      message.success("Evidence 已消费精确 Answer Review 与 Source Completion 版本");
+    } catch (error: any) {
+      message.error(error.message || "Evidence 双输入校验或执行失败");
     } finally {
       setV2DiagnosisLoading(false);
     }
@@ -2425,10 +2618,15 @@ export default function App() {
     if (!keep) setPromptContext(null);
     setLoading(true);
     try {
-      const [nextPrompts, nextRuns, nextQueue, nextTopics, nextClusters] = await Promise.all([
-        api.listPrompts(id), api.listBrowserAuditRuns(id), api.getBrowserQueueSummary(id),
-        api.listTopics(id), api.listPromptClusters(id)
-      ]);
+      const [nextPrompts, nextRuns, nextQueue, nextTopics, nextClusters] = RELEASE_FIRST_SLICE
+        ? await Promise.all([
+          api.listPrompts(id), Promise.resolve([] as BrowserMonitorRun[]), Promise.resolve(emptyQueue),
+          api.listTopics(id), api.listPromptClusters(id),
+        ])
+        : await Promise.all([
+          api.listPrompts(id), api.listBrowserAuditRuns(id), api.getBrowserQueueSummary(id),
+          api.listTopics(id), api.listPromptClusters(id),
+        ]);
       setPrompts(nextPrompts);
       setRuns(nextRuns);
       setQueue(nextQueue);
@@ -2475,6 +2673,8 @@ export default function App() {
       setV2Analysis(null);
       setV2Diagnosis(null);
       setV2DiagnosisEdits({});
+      setV2SourcePreparation(null);
+      setV2SourceDrafts({});
       setV2StrategyReadiness(null);
       setV2Strategy(null);
       setV2Execution(null);
@@ -2492,6 +2692,10 @@ export default function App() {
   }, [v2Analysis?.analysis.analysis_id, v2Analysis?.sampling.status, projectId, activePromptId]);
   useEffect(() => {
     if (page !== "coreV2" || !v2Analysis?.context_id) return;
+    void refreshV2SourcePreparation();
+  }, [page, v2Analysis?.analysis.analysis_id, v2Analysis?.context_id, projectId, activePromptId]);
+  useEffect(() => {
+    if (page !== "coreV2" || !v2Analysis?.context_id) return;
     const params = new URLSearchParams(window.location.search);
     if (!params.get("v2_diagnosis")) return;
     if (v2Diagnosis?.diagnosis.analysis_id === v2Analysis.analysis.analysis_id) return;
@@ -2506,16 +2710,19 @@ export default function App() {
     setV2AnswerReviewDecisions({});
   }, [v2Diagnosis?.diagnosis.diagnosis_id]);
   useEffect(() => {
+    if (RELEASE_FIRST_SLICE) return;
     if (page !== "coreV2" || !v2Diagnosis?.result || v2Diagnosis.compute_status !== "READY_FOR_REVIEW") return;
     void refreshV2StrategyContext(v2Diagnosis);
   }, [page, v2Diagnosis?.diagnosis.diagnosis_id, v2Diagnosis?.result?.result_version, v2Diagnosis?.review?.review_id, projectId, activePromptId]);
   useEffect(() => {
+    if (RELEASE_FIRST_SLICE) return;
     if (page !== "coreV2" || !v2Strategy?.result || !v2Strategy.review) return;
     const proposalId = new URLSearchParams(window.location.search).get("v2_execution_proposal");
     if (!proposalId || v2Execution?.proposal.strategy_id === v2Strategy.strategy.strategy_id) return;
     void refreshV2Execution();
   }, [page, v2Strategy?.strategy.strategy_id, v2Strategy?.result?.result_version, v2Strategy?.review?.review_id, projectId, activePromptId]);
   useEffect(() => {
+    if (RELEASE_FIRST_SLICE) return;
     if (page !== "coreV2" || !projectId || !activePromptId || !v2Diagnosis?.result) return;
     const retestId = new URLSearchParams(window.location.search).get("v2_retest");
     if (retestId) {
@@ -2525,6 +2732,7 @@ export default function App() {
     if (!v2RetestReadiness) void refreshV2RetestReadiness("");
   }, [page, projectId, activePromptId, v2Diagnosis?.result?.result_version, v2Execution?.publications.length]);
   useEffect(() => {
+    if (RELEASE_FIRST_SLICE) return;
     if (!v2Retest || !["SAMPLING", "SEMANTIC_MEASURING"].includes(v2Retest.retest.status)) return;
     const timer = window.setInterval(() => { void refreshV2Retest(); }, 3000);
     return () => window.clearInterval(timer);
@@ -4161,7 +4369,11 @@ export default function App() {
   return <Layout className="app-shell">
     <Sider width={228} className="side-nav" breakpoint="md" collapsedWidth={0} collapsible>
       <div className="brand-block"><Title level={4}>生成式搜索决策平台</Title><Text type="secondary">监测 · 诊断 · 策略 · 复测</Text></div>
-        <Menu mode="inline" selectedKeys={[page]} onClick={({ key }) => setPage(key as PageKey)} items={[
+        <Menu mode="inline" selectedKeys={[page]} onClick={({ key }) => setPage(key as PageKey)} items={RELEASE_FIRST_SLICE ? [
+          { type: "group", label: "GEO 1.0 首批交付", children: [
+            { key: "coreV2", icon: <Play size={18} />, label: "来源与证据主链" },
+          ] },
+        ] : [
         { type: "group", label: "业务闭环", children: [
           { key: "coreV2", icon: <Play size={18} />, label: "单问题分析 V2" },
           { key: "validation", icon: <BarChart3 size={18} />, label: "监测总览" },
@@ -4259,18 +4471,79 @@ export default function App() {
                 />
               </Card>
 
-              {v2Analysis.context_id && <Card size="small" title={<Space><ShieldCheck size={18} />推荐理由、引用与品牌事实诊断</Space>} extra={<Space wrap>
+              {v2Analysis.context_id && <Card size="small" title={<Space><FileText size={18} />引用范围与正文准备</Space>} extra={<Space wrap>
+                {v2SourcePreparation && <Tag color={v2SourcePreparation.completion_manifest?.status === "FROZEN" ? "green" : v2SourcePreparation.completion_manifest?.status === "NO_USABLE_SOURCE" ? "red" : "gold"}>
+                  {v2SourcePreparation.completion_manifest?.status || `${v2SourcePreparation.conservation.terminal}/${v2SourcePreparation.conservation.required_unique_sources} 已处置`}
+                </Tag>}
+                {v2SourcePreparation && <Tooltip title="只读取当前来源准备状态，不抓取网页"><Button icon={<RefreshCw size={15} />} loading={v2SourceLoading} onClick={refreshV2SourcePreparation} aria-label="刷新来源准备" /></Tooltip>}
+              </Space>}>
+                {!v2SourcePreparation ? <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  <Alert type="info" showIcon message="先冻结本次分析的引用范围" description="Citation Manifest 只固定哪些引用属于本次 Context；不会抓取正文，也不会自动放弃任何来源。" />
+                  <Row gutter={[12, 12]} align="middle">
+                    <Col xs={24} md={8}><Input value={v2SourceActor} onChange={(event) => setV2SourceActor(event.target.value)} placeholder="操作人" /></Col>
+                    <Col><Button type="primary" icon={<ListChecks size={15} />} loading={v2SourceLoading} onClick={startV2SourcePreparation}>冻结引用范围并开始准备</Button></Col>
+                  </Row>
+                </Space> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                  <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                    <Descriptions.Item label="Citation Manifest"><Text code copyable>{v2SourcePreparation.citation_manifest.manifest_id}</Text></Descriptions.Item>
+                    <Descriptions.Item label="唯一来源 / 引用记录">{v2SourcePreparation.citation_manifest.source_count} / {v2SourcePreparation.citation_manifest.occurrence_count}</Descriptions.Item>
+                    <Descriptions.Item label="Manifest SHA-256"><Text code copyable>{v2SourcePreparation.citation_manifest.payload_hash}</Text></Descriptions.Item>
+                    <Descriptions.Item label="READY">{v2SourcePreparation.conservation.by_state.READY || 0}</Descriptions.Item>
+                    <Descriptions.Item label="人工放弃">{v2SourcePreparation.conservation.by_state.WAIVED_WITH_LIMITATION || 0}</Descriptions.Item>
+                    <Descriptions.Item label="待处置">{v2SourcePreparation.conservation.nonterminal}</Descriptions.Item>
+                  </Descriptions>
+                  <Alert type="warning" showIcon message="来源处置完成不等于证据充分" description="人工放弃只记录限制，不产生 SUPPORTS 或 NO_SUPPORT。仍有 PENDING 时 Evidence 必须阻断；全部来源被放弃也不能取得证据资格。" />
+                  <Row gutter={[12, 12]} align="middle">
+                    <Col xs={24} md={8}><Input value={v2SourceActor} onChange={(event) => setV2SourceActor(event.target.value)} placeholder="操作人" /></Col>
+                    <Col><Text type="secondary">正文补录会创建新的不可变 Snapshot，不改写历史版本。</Text></Col>
+                  </Row>
+                  <Collapse items={v2SourcePreparation.sources.map((source) => {
+                    const draft = v2SourceDrafts[source.source_key] || { title: "", cleanText: "", coverageScope: "FULL_PAGE", waiverReason: "", waiverImpact: "" };
+                    const sourceTitle = String(source.reference_observations?.[0]?.title || source.canonical_url);
+                    return {
+                      key: source.source_key,
+                      label: <Space wrap><Tag color={source.state === "READY" ? "green" : source.state === "WAIVED_WITH_LIMITATION" ? "gold" : "default"}>{source.state}</Tag><Text ellipsis style={{ maxWidth: 660 }}>{sourceTitle}</Text><Text type="secondary">{source.occurrence_count} 次引用</Text></Space>,
+                      children: <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                        <Link href={source.canonical_url} target="_blank" ellipsis>{source.canonical_url}</Link>
+                        {source.snapshot && <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                          <Descriptions.Item label="Snapshot"><Text code>{source.snapshot.snapshot_id}</Text></Descriptions.Item>
+                          <Descriptions.Item label="正文 / passages">{source.snapshot.content_hash.slice(0, 12)} / {source.snapshot.passage_count}</Descriptions.Item>
+                          <Descriptions.Item label="覆盖范围">{source.snapshot.coverage_scope}</Descriptions.Item>
+                        </Descriptions>}
+                        {source.waiver && <Alert type="warning" showIcon message={`已由 ${source.waiver.waived_by} 明确放弃`} description={`${source.waiver.reason}；影响：${source.waiver.impact}`} />}
+                        <Divider orientation="left">人工正文补录</Divider>
+                        <Row gutter={[12, 12]}>
+                          <Col xs={24} md={16}><Input value={draft.title} onChange={(event) => updateV2SourceDraft(source.source_key, { title: event.target.value })} placeholder="来源标题（可选）" /></Col>
+                          <Col xs={24} md={8}><Select style={{ width: "100%" }} value={draft.coverageScope} onChange={(value) => updateV2SourceDraft(source.source_key, { coverageScope: value })} options={[{ value: "FULL_PAGE", label: "完整正文" }, { value: "EXCERPT", label: "明确摘录" }]} /></Col>
+                          <Col xs={24}><Input.TextArea rows={7} value={draft.cleanText} onChange={(event) => updateV2SourceDraft(source.source_key, { cleanText: event.target.value })} placeholder="粘贴真实正文。验证页、登录墙、错误提示不得作为正文提交。" /></Col>
+                          <Col><Button type="primary" loading={v2SourceLoading} onClick={() => submitV2ManualSource(source)}>{source.snapshot ? "提交新正文版本" : "校验并生成正文快照"}</Button></Col>
+                        </Row>
+                        <Divider orientation="left">明确人工放弃</Divider>
+                        <Row gutter={[12, 12]}>
+                          <Col xs={24} md={10}><Input value={draft.waiverReason} onChange={(event) => updateV2SourceDraft(source.source_key, { waiverReason: event.target.value })} placeholder="放弃原因" /></Col>
+                          <Col xs={24} md={10}><Input value={draft.waiverImpact} onChange={(event) => updateV2SourceDraft(source.source_key, { waiverImpact: event.target.value })} placeholder="对结论和适用范围的影响" /></Col>
+                          <Col><Popconfirm title="明确放弃该来源？" description="放弃不会产生证据资格，也不能由系统自动撤销。" okText="记录放弃" cancelText="取消" onConfirm={() => waiveV2Source(source)}><Button danger loading={v2SourceLoading}>记录放弃与限制</Button></Popconfirm></Col>
+                        </Row>
+                      </Space>,
+                    };
+                  })} />
+                  {!v2SourcePreparation.completion_manifest && <Button type="primary" icon={<ShieldCheck size={15} />} disabled={v2SourcePreparation.conservation.nonterminal > 0} loading={v2SourceLoading} onClick={freezeV2SourceCompletion}>冻结 Source Completion Manifest</Button>}
+                  {v2SourcePreparation.completion_manifest && <Alert type={v2SourcePreparation.completion_manifest.status === "FROZEN" ? "success" : "error"} showIcon message={`Source Completion Manifest · ${v2SourcePreparation.completion_manifest.status}`} description={<Text code copyable>{v2SourcePreparation.completion_manifest.payload_hash}</Text>} />}
+                </Space>}
+              </Card>}
+
+              {v2Analysis.context_id && <Card size="small" title={<Space><ShieldCheck size={18} />回答语义与证据诊断</Space>} extra={<Space wrap>
                 {v2Diagnosis && <Tag color={v2NoConsumableAnswerSemantic ? "red" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "green" : ["QUEUED", "RUNNING"].includes(v2Diagnosis.compute_status) ? "blue" : v2Diagnosis.compute_status === "FAILED" ? "red" : "gold"}>
                   {v2NoConsumableAnswerSemantic ? "回答语义失败" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "审核完成" : v2Diagnosis.compute_status === "READY_FOR_REVIEW" ? "待审核" : v2Diagnosis.compute_status === "RUNNING" ? "诊断中" : v2Diagnosis.compute_status === "QUEUED" ? "等待诊断" : v2Diagnosis.compute_status === "INTERRUPTED" ? "诊断中断" : v2Diagnosis.compute_status}
                 </Tag>}
-                {!v2Diagnosis ? <Button type="primary" icon={<Play size={15} />} loading={v2DiagnosisLoading} onClick={startV2Diagnosis}>开始诊断</Button> : <>
+                {!v2Diagnosis ? <Space wrap><Select value={v2AnswerPolicy} onChange={setV2AnswerPolicy} options={[{ value: "CACHE_ONLY", label: "仅兼容缓存" }, { value: "ALLOW_EXTERNAL", label: "授权 Answer LLM" }]} /><Button type="primary" icon={<Play size={15} />} loading={v2DiagnosisLoading} disabled={!v2SourcePreparation} onClick={startV2Diagnosis}>开始 Answer Semantic</Button></Space> : <>
                   <Tooltip title="只读取当前诊断执行状态">
                     <Button icon={<RefreshCw size={15} />} loading={v2DiagnosisLoading} onClick={refreshV2Diagnosis} aria-label="刷新诊断状态" />
                   </Tooltip>
                   {v2Diagnosis.allowed_operations.includes("RETRY") && <Button danger loading={v2DiagnosisLoading} onClick={retryV2DiagnosisExecution}>明确重试</Button>}
                 </>}
               </Space>}>
-                {!v2Diagnosis ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="采样结果已冻结，尚未创建诊断执行" /> : <>
+                {!v2Diagnosis ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={v2SourcePreparation ? "Citation Manifest 已冻结，尚未创建 Answer Semantic 执行" : "请先冻结本次 Context 的 Citation Manifest"} /> : <>
                   <Descriptions size="small" column={{ xs: 1, md: 3 }}>
                     <Descriptions.Item label="执行身份"><Text code>{v2Diagnosis.diagnosis.diagnosis_id}</Text></Descriptions.Item>
                     <Descriptions.Item label="结果版本">{v2Diagnosis.result?.result_version || "尚未发布"}</Descriptions.Item>
@@ -4547,6 +4820,28 @@ export default function App() {
                   }]} />
                 </Card>
 
+                <Card size="small" title={<Space><ShieldCheck size={18} />Evidence 双输入 Gate</Space>}>
+                  <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                      <Descriptions.Item label="诊断范围"><Tag>{v2Diagnosis.result.output.result_scope || "LEGACY_RESULT"}</Tag></Descriptions.Item>
+                      <Descriptions.Item label="Answer Result"><Text code>{v2Diagnosis.result.result_version}</Text></Descriptions.Item>
+                      <Descriptions.Item label="Answer Review">{v2Diagnosis.review ? <Text code>{v2Diagnosis.review.review_id}</Text> : <Tag color="gold">尚未审核</Tag>}</Descriptions.Item>
+                      <Descriptions.Item label="Citation Manifest">{v2SourcePreparation ? <Text code>{v2SourcePreparation.citation_manifest.manifest_id}</Text> : <Tag color="red">缺失</Tag>}</Descriptions.Item>
+                      <Descriptions.Item label="Source Completion">{v2SourcePreparation?.completion_manifest ? <Tag color={v2SourcePreparation.completion_manifest.status === "FROZEN" ? "green" : "red"}>{v2SourcePreparation.completion_manifest.status}</Tag> : <Tag color="gold">尚未冻结</Tag>}</Descriptions.Item>
+                      <Descriptions.Item label="Evidence 外部策略">{v2Diagnosis.result.output.result_scope === "ANSWER_ONLY" ? <Select style={{ minWidth: 150 }} value={v2EvidencePolicy} onChange={setV2EvidencePolicy} options={[{ value: "CACHE_ONLY", label: "仅兼容缓存" }, { value: "ALLOW_EXTERNAL", label: "授权 Evidence LLM" }]} /> : "已形成结果"}</Descriptions.Item>
+                    </Descriptions>
+                    {v2Diagnosis.result.output.result_scope === "ANSWER_AND_EVIDENCE" ? <Alert type="success" showIcon message="Evidence 已消费精确双输入版本" description="当前 Evidence 结果是新的不可变 ResultVersion；若需人工确认，应审核这个新版本，不能继承 Answer-only 版本的审核。" /> : v2Diagnosis.result.output.result_scope !== "ANSWER_ONLY" ? <Alert type="info" showIcon message="历史诊断结果不具备本切片的显式 Evidence 交接身份" description="系统不会通过 latest Snapshot 或旧工作流状态补齐。" /> : <>
+                      {!v2Diagnosis.review && <Alert type="warning" showIcon message="Answer Result 尚未完成精确版本审核" description="Evidence 不会把机器输出或其他结果版本的审核当成本次授权。" />}
+                      {!v2SourcePreparation?.completion_manifest && <Alert type="warning" showIcon message="来源处置范围尚未冻结" description="请先逐条处置 Citation Manifest 中全部来源，再冻结 Source Completion Manifest。" />}
+                      {v2SourcePreparation?.completion_manifest?.status === "NO_USABLE_SOURCE" && <Alert type="error" showIcon message="没有可消费的正文来源" description="全部来源被放弃只能关闭处置清单，不能获得来源证据资格。" />}
+                      <Popconfirm title="执行 Evidence 消费？" description="将严格绑定当前 Answer Result/Review 与 Source Completion Manifest；选择外部 LLM 时必须已有明确授权。" okText="执行" cancelText="取消" onConfirm={continueV2Evidence}>
+                        <Button type="primary" icon={<Play size={15} />} loading={v2DiagnosisLoading} disabled={!v2Diagnosis.review || v2SourcePreparation?.completion_manifest?.status !== "FROZEN"}>通过 Gate 并执行 Evidence</Button>
+                      </Popconfirm>
+                    </>}
+                  </Space>
+                </Card>
+
+                {!RELEASE_FIRST_SLICE && <>
                 <Card
                   id="v2-strategy"
                   size="small"
@@ -4874,6 +5169,7 @@ export default function App() {
                     </Descriptions> }]} />
                   </Space>}
                 </Card>
+                </>}
               </>}
             </>}
           </>}

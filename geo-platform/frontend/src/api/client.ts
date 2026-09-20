@@ -1,4 +1,4 @@
-import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
+import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
 
 const API_BASE = "";
 
@@ -30,7 +30,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let message = detail || response.statusText;
     try {
       const parsed = JSON.parse(detail);
-      message = parsed.detail || parsed.message || message;
+      const parsedDetail = parsed.detail || parsed.message;
+      message = typeof parsedDetail === "string"
+        ? parsedDetail
+        : parsedDetail?.detail || parsedDetail?.code || JSON.stringify(parsedDetail) || message;
     } catch {
       // Non-JSON error bodies are surfaced as-is.
     }
@@ -58,6 +61,32 @@ export const api = {
     request<SinglePromptV2Status>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}?project_id=${projectId}&prompt_id=${promptId}`),
   retrySinglePromptV2Analysis: (analysisId: string, projectId: number, promptId: number) =>
     request<SinglePromptV2Status>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/retry?project_id=${projectId}&prompt_id=${promptId}`, { method: "POST" }),
+  createSinglePromptV2SourcePreparation: (analysisId: string, payload: {
+    project_id: number; prompt_id: number; idempotency_key: string; created_by: string;
+  }) => request<SinglePromptV2SourcePreparation>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/source-preparation`, { method: "POST", body: JSON.stringify(payload) }),
+  getSinglePromptV2SourcePreparation: (analysisId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2SourcePreparation | null>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/source-preparation?project_id=${projectId}&prompt_id=${promptId}`),
+  submitSinglePromptV2ManualSource: (preparationId: string, payload: {
+    project_id: number; prompt_id: number; source_key: string; expected_row_version: number;
+    title: string; clean_text: string; coverage_scope: "FULL_PAGE" | "EXCERPT"; submitted_by: string;
+  }) => request<SinglePromptV2SourcePreparation>(`/api/v2/single-prompt/source-preparations/${encodeURIComponent(preparationId)}/manual-content`, { method: "POST", body: JSON.stringify(payload) }),
+  waiveSinglePromptV2Source: (preparationId: string, payload: {
+    project_id: number; prompt_id: number; source_key: string; expected_row_version: number;
+    reason: string; impact: string; waived_by: string;
+  }) => request<SinglePromptV2SourcePreparation>(`/api/v2/single-prompt/source-preparations/${encodeURIComponent(preparationId)}/waivers`, { method: "POST", body: JSON.stringify(payload) }),
+  freezeSinglePromptV2SourceCompletion: (preparationId: string, payload: {
+    project_id: number; prompt_id: number; created_by: string;
+  }) => request<SinglePromptV2SourcePreparation>(`/api/v2/single-prompt/source-preparations/${encodeURIComponent(preparationId)}/completion-manifests`, { method: "POST", body: JSON.stringify(payload) }),
+  createSinglePromptV2AnswerDiagnosis: (analysisId: string, payload: {
+    project_id: number; prompt_id: number; citation_manifest_id: string; citation_manifest_hash: string;
+    answer_llm_policy: "ALLOW_EXTERNAL" | "CACHE_ONLY"; idempotency_key: string;
+  }) => request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/answer-diagnoses`, { method: "POST", body: JSON.stringify(payload) }),
+  continueSinglePromptV2Evidence: (analysisId: string, diagnosisId: string, payload: {
+    project_id: number; prompt_id: number; answer_result_version: string; answer_result_hash: string;
+    answer_review_id: string; citation_manifest_id: string; citation_manifest_hash: string;
+    completion_manifest_id: string; completion_manifest_hash: string;
+    evidence_llm_policy: "ALLOW_EXTERNAL" | "CACHE_ONLY";
+  }) => request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/evidence-continuations`, { method: "POST", body: JSON.stringify(payload) }),
   createSinglePromptV2Diagnosis: (analysisId: string, payload: { project_id: number; prompt_id: number; idempotency_key: string }) =>
     request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses`, { method: "POST", body: JSON.stringify(payload) }),
   getSinglePromptV2Diagnosis: (analysisId: string, diagnosisId: string, projectId: number, promptId: number) =>

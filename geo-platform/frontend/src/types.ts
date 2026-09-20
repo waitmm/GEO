@@ -208,6 +208,21 @@ export type SinglePromptV2Run = {
   started_at: string | null;
   finished_at: string | null;
   duration_ms: number;
+  observed_conditions: {
+    original_query: { value: string | null; source: string };
+    page_query: { value: string | null; source: string };
+    retrieval_query: { value: string | null; source: string };
+    [key: string]: { value: unknown; source: string };
+  };
+  platform_reported_search: {
+    status: "MODEL_REPORTED" | "NOT_REPORTED" | string;
+    terms: string[];
+    reported_count: number | null;
+    count_consistent: boolean | null;
+    source: "ANSWER_TEXT" | string;
+    verification_status: "UNVERIFIED_RETRIEVAL_TRACE" | string;
+    evidence_line: string | null;
+  };
   references: Array<{ reference_id: number; index: number; title: string; url: string; canonical_url: string; domain: string }>;
   retrieval_candidates: Array<{ candidate_id: number; rank: number; title: string; url: string; canonical_url: string; domain: string; snippet: string }>;
   error: { stage: string; type: string; message: string; blocked_type: string; blocked_reason: string } | null;

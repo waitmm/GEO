@@ -19,6 +19,7 @@ from app.modules.single_prompt_v2.service import (
     create_analysis,
     finalize_analysis,
     get_analysis_status,
+    project_platform_reported_search,
     recover_interrupted_analyses,
     retry_analysis,
 )
@@ -180,6 +181,57 @@ def test_frozen_context_ignores_later_run_mutation_and_new_sampling(tmp_path):
     finally:
         db.close()
         engine.dispose()
+
+
+def test_platform_reported_search_is_read_only_display_projection_not_retrieval(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        _seed(db)
+        analysis = _create(db, count=1)
+        token = claim_analysis(db, analysis.analysis_id)
+        run = _runs(db, analysis)[0]
+        _succeed(
+            run,
+            "\n".join([
+                "搜索3个关键词 共参考28篇资料",
+                "搜索关键词“抖音跳转链接”、“抖音跳转链接生成方法”、“抖音跳转链接使用规则”",
+                "搜索全网28篇资料",
+                "这里是文心合并生成的一条最终回答。",
+            ]),
+        )
+        db.add(ReferenceSource(run_id=run.id, reference_index=1, display_title="引用资料", url="https://example.com/source"))
+        db.commit()
+
+        assert finalize_analysis(db, analysis.analysis_id, token)
+        context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis.analysis_id).one()
+        assert "platform_reported_search" not in context.raw_output_json
+
+        status = get_analysis_status(db, analysis.analysis_id)
+        projection = status["runs"][0]["platform_reported_search"]
+        assert projection == {
+            "status": "MODEL_REPORTED",
+            "terms": ["抖音跳转链接", "抖音跳转链接生成方法", "抖音跳转链接使用规则"],
+            "reported_count": 3,
+            "count_consistent": True,
+            "source": "ANSWER_TEXT",
+            "verification_status": "UNVERIFIED_RETRIEVAL_TRACE",
+            "evidence_line": "搜索关键词“抖音跳转链接”、“抖音跳转链接生成方法”、“抖音跳转链接使用规则”",
+        }
+        assert status["runs"][0]["retrieval_candidates"] == []
+        assert {warning["code"] for warning in status["warnings"]} == {
+            "INDEPENDENT_SESSION_PROOF_UNAVAILABLE",
+            "RETRIEVAL_OBSERVATION_UNAVAILABLE",
+        }
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_platform_reported_search_does_not_parse_unscoped_quoted_text():
+    projection = project_platform_reported_search('回答正文说“关键词甲”和“关键词乙”，但没有平台搜索头。')
+    assert projection["status"] == "NOT_REPORTED"
+    assert projection["terms"] == []
+    assert projection["verification_status"] == "UNVERIFIED_RETRIEVAL_TRACE"
 
 
 def test_prompt_and_task_scopes_do_not_cross(tmp_path):

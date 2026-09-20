@@ -5297,3 +5297,17 @@ review_queue = READY
   release SPA return 404 for every unregistered `/api/*` route instead of
   serving `index.html` with a misleading 200. Release route isolation now has
   both route-table and HTTP-response coverage (`d24f936`).
+
+## 2026-09-20 Release Sampling Search-Term Display
+
+- Added a read-only status projection for search terms explicitly reported in
+  the Wenxin answer header. The projection is derived from the frozen answer
+  text and does not alter the immutable Raw Result, Context hash, Run, or
+  RetrievalCandidate records.
+- The V2 sampling table now distinguishes the submitted Prompt, the platform's
+  self-reported search-term expansion, and the one final synthesized answer for
+  each independent Run. The search terms are labeled as an unverified retrieval
+  trace and never counted as observed RetrievalCandidates.
+- Added regression coverage proving the real answer-header shape projects three
+  terms while the frozen payload remains unchanged and Retrieval observation
+  remains unavailable.

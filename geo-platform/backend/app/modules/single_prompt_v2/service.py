@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Any, Callable
 from uuid import uuid4
@@ -36,6 +37,10 @@ TERMINAL_RUN_STATUSES = {"success", "partial_success", "failed", "blocked"}
 VALID_RUN_STATUSES = {"success", "partial_success"}
 ACTIVE_ANALYSIS_STATUSES = {"QUEUED", "COLLECTING"}
 
+_PLATFORM_SEARCH_COUNT_RE = re.compile(r"^\s*搜索\s*(\d+)\s*个关键词(?:\s|$)")
+_PLATFORM_SEARCH_TERMS_RE = re.compile(r"^\s*搜索关键词\s*(.+?)\s*$")
+_QUOTED_SEARCH_TERM_RE = re.compile(r"[\u201c\"]([^\u201d\"\r\n]+)[\u201d\"]")
+
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
@@ -47,6 +52,42 @@ def _hash(value: Any) -> str:
 
 def _iso(value: datetime | None) -> str | None:
     return f"{value.isoformat()}Z" if value else None
+
+
+def project_platform_reported_search(answer_text: str | None) -> dict[str, Any]:
+    """Project Wenxin's own answer-header claim without treating it as retrieval telemetry."""
+
+    lines = [line.strip() for line in str(answer_text or "").splitlines()[:10] if line.strip()]
+    reported_count: int | None = None
+    evidence_line: str | None = None
+    terms: list[str] = []
+    for line in lines:
+        count_match = _PLATFORM_SEARCH_COUNT_RE.match(line)
+        if count_match and reported_count is None:
+            reported_count = int(count_match.group(1))
+        terms_match = _PLATFORM_SEARCH_TERMS_RE.match(line)
+        if terms_match and evidence_line is None:
+            evidence_line = line
+            for term in _QUOTED_SEARCH_TERM_RE.findall(terms_match.group(1)):
+                cleaned = term.strip()
+                if cleaned and cleaned not in terms:
+                    terms.append(cleaned)
+
+    return {
+        "status": "MODEL_REPORTED" if terms else "NOT_REPORTED",
+        "terms": terms,
+        "reported_count": reported_count,
+        "count_consistent": reported_count == len(terms) if reported_count is not None and terms else None,
+        "source": "ANSWER_TEXT",
+        "verification_status": "UNVERIFIED_RETRIEVAL_TRACE",
+        "evidence_line": evidence_line,
+    }
+
+
+def _with_platform_reported_search(run: dict[str, Any]) -> dict[str, Any]:
+    projected = dict(run)
+    projected["platform_reported_search"] = project_platform_reported_search(run.get("answer_text"))
+    return projected
 
 
 def create_analysis(
@@ -615,6 +656,7 @@ def get_analysis_status(db: Session, analysis_id: str) -> dict[str, Any]:
     else:
         runs = _snapshot_runs(db, analysis)
         result_source = "LIVE_TASK_PROGRESS"
+    runs = [_with_platform_reported_search(run) for run in runs]
 
     valid = [run for run in runs if run.get("status") in VALID_RUN_STATUSES and str(run.get("answer_text") or "").strip()]
     terminal = [run for run in runs if run.get("status") in TERMINAL_RUN_STATUSES]

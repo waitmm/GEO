@@ -4446,6 +4446,13 @@ export default function App() {
               </Card>
 
               <Card size="small" title="本次分析的原始采样结果" extra={<Text type="secondary">只读取 Task #{v2Analysis.analysis.task_id}</Text>}>
+                <Alert
+                  className="v2-sampling-explanation"
+                  type="info"
+                  showIcon
+                  message="每行是一轮独立采样"
+                  description="平台自报搜索词来自文心回答文本：同一轮内可报告多个搜索词，但只生成下方一条最终综合回答；这些词不是系统已验证的 Retrieval 轨迹。"
+                />
                 <Table
                   rowKey="run_id"
                   size="small"
@@ -4456,14 +4463,31 @@ export default function App() {
                   columns={[
                     { title: "样本", width: 76, render: (_: unknown, row: any) => `第 ${row.run_sequence} 次` },
                     { title: "状态", dataIndex: "status", width: 100, render: statusTag },
-                    { title: "回答", dataIndex: "answer_text", ellipsis: true, render: (value: string) => value || <Text type="secondary">尚无回答</Text> },
+                    { title: "平台自报搜索词", width: 330, render: (_: unknown, row: any) => {
+                      const terms = row.platform_reported_search?.terms || [];
+                      return terms.length ? <Space size={6}>
+                        <Tag>{terms.length} 个</Tag>
+                        <Text ellipsis={{ tooltip: terms.join(" / ") }} style={{ maxWidth: 250 }}>{terms.join(" / ")}</Text>
+                      </Space> : <Text type="secondary">未在回答中识别到</Text>;
+                    } },
+                    { title: "最终综合回答", width: 150, render: (_: unknown, row: any) => row.answer_text ? <Space size={6}><Tag color="blue">1 条</Tag><Text type="secondary">{row.answer_char_count || row.answer_text.length} 字</Text></Space> : <Text type="secondary">尚无回答</Text> },
                     { title: "引用", width: 72, render: (_: unknown, row: any) => row.references?.length || 0 },
                     { title: "检索", width: 72, render: (_: unknown, row: any) => row.retrieval_candidates?.length || 0 },
                     { title: "耗时", width: 92, render: (_: unknown, row: any) => row.duration_ms ? `${Math.round(row.duration_ms / 1000)} 秒` : "-" },
                   ]}
                   expandable={{ expandedRowRender: (row: any) => <div className="v2-run-detail">
                     {row.error && <Alert type="error" showIcon message={row.error.type || row.status} description={row.error.message || row.error.blocked_reason || "采集未完成"} />}
-                    {row.answer_text && <div><Text strong>原始回答</Text><Typography.Paragraph className="v2-answer-text">{row.answer_text}</Typography.Paragraph></div>}
+                    <div className="v2-reported-search">
+                      <Text strong>本轮实际提交 Prompt</Text>
+                      <div><Text>{row.observed_conditions?.original_query?.value || v2Analysis.analysis.prompt_text}</Text></div>
+                      <Space wrap size={[6, 6]}>
+                        <Text strong>平台自报搜索词</Text>
+                        <Tag color="gold">未验证检索轨迹</Tag>
+                        {(row.platform_reported_search?.terms || []).map((term: string) => <Tag key={term}>{term}</Tag>)}
+                        {!row.platform_reported_search?.terms?.length && <Text type="secondary">未在回答文本中识别到</Text>}
+                      </Space>
+                    </div>
+                    {row.answer_text && <div><Text strong>最终综合回答 · 1 条</Text><Typography.Paragraph className="v2-answer-text">{row.answer_text}</Typography.Paragraph></div>}
                     <div className="v2-output-columns">
                       <div><Text strong>引用资料 · {row.references?.length || 0}</Text>{(row.references || []).map((item: any) => <div key={item.reference_id}><Link href={item.canonical_url || item.url} target="_blank">{item.index}. {item.title || item.domain || item.url}</Link></div>)}</div>
                       <div><Text strong>检索观测 · {row.retrieval_candidates?.length || 0}</Text>{(row.retrieval_candidates || []).map((item: any) => <div key={item.candidate_id}><Link href={item.canonical_url || item.url} target="_blank">{item.rank}. {item.title || item.domain || item.url}</Link></div>)}</div>

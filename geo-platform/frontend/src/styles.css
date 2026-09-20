@@ -478,6 +478,18 @@ body {
   padding: 4px 12px 10px;
 }
 
+.v2-sampling-explanation {
+  margin-bottom: 12px;
+}
+
+.v2-reported-search {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-left: 3px solid #d9a441;
+  background: #fffdf4;
+}
+
 .v2-answer-text {
   max-height: 280px;
   margin: 8px 0 0 !important;

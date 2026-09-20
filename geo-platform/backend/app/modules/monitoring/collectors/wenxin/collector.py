@@ -348,7 +348,7 @@ class WenxinWebCollector(BaseCollector):
             "profile_identifier": Path(settings.wenxin_profile_dir).name,
             "conversation_id": self._conversation_id,
             "network_region": os.getenv("WENXIN_NETWORK_REGION", "unknown"),
-            "collector_version": "wenxin-web-v1.2-final-answer-boundary",
+            "collector_version": "wenxin-web-v1.3-final-answer-only",
             "parser_version": "reference-parser-v1.8c-compatible",
             "page_url": page.url,
         }
@@ -426,13 +426,19 @@ class WenxinWebCollector(BaseCollector):
             current_hash = hashlib.sha256(answer_text.encode("utf-8")).hexdigest()
             has_reference = re.search(REFERENCE_TEXT_PATTERN, body_text) is not None
             has_stop_button = any(marker in body_text for marker in STOP_BUTTON_TEXT_MARKERS)
+            generation_complete = await self._answer_generation_complete(page)
             if answer_text and current_hash == last_hash:
                 stable_count += 1
             else:
                 stable_count = 0
             best_answer = answer_text or best_answer
             last_hash = current_hash
-            if best_answer and stable_count >= 3 and (has_reference or not has_stop_button):
+            if (
+                best_answer
+                and stable_count >= 3
+                and generation_complete is not False
+                and (has_reference or not has_stop_button)
+            ):
                 return best_answer
             await page.wait_for_timeout(1000)
         if best_answer:
@@ -457,14 +463,19 @@ class WenxinWebCollector(BaseCollector):
             except Exception:
                 continue
 
-        # Wenxin's current container includes thinking/search steps before the
-        # final Markdown. Never fall back to the whole container in that layout.
+        return ""
+
+    async def _answer_generation_complete(self, page) -> bool | None:
+        container = await self._last_answer_container(page)
+        if container is None:
+            return False
         try:
-            if await container.locator(".ai-entry-block.ai-thinking-steps").count():
-                return ""
-            return self._clean_answer_text(await container.inner_text(timeout=2000))
+            status = str(await container.get_attribute("data-status") or "").upper()
         except Exception:
-            return ""
+            return None
+        if not status:
+            return None
+        return status == "COMPLETE"
 
     async def _last_answer_container(self, page):
         selectors = [
@@ -528,12 +539,6 @@ class WenxinWebCollector(BaseCollector):
                     return await locator.evaluate("node => node.innerHTML")
             except Exception:
                 continue
-        try:
-            if await container.locator(".ai-entry-block.ai-thinking-steps").count():
-                return ""
-            return await container.evaluate("node => node.innerHTML")
-        except Exception:
-            pass
         return ""
 
     async def _extract_references(self, page) -> list[dict]:

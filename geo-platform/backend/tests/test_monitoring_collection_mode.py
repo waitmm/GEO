@@ -160,12 +160,13 @@ def test_environment_reports_actual_verified_sampling_mode(tmp_path):
 
 
 class _SemanticRegionLocator:
-    def __init__(self, *, text="", html="", visible=True, children=None, count_value=None):
+    def __init__(self, *, text="", html="", visible=True, children=None, count_value=None, status=None):
         self.text = text
         self.html = html
         self.visible = visible
         self.children = children or {}
         self.count_value = count_value
+        self.status = status
 
     @property
     def last(self):
@@ -182,6 +183,9 @@ class _SemanticRegionLocator:
 
     async def evaluate(self, expression):
         return self.html
+
+    async def get_attribute(self, name):
+        return self.status if name == "data-status" else None
 
     async def count(self):
         if self.count_value is not None:
@@ -217,6 +221,7 @@ def _semantic_region_page(*, include_final=True):
             ".ai-entry-block.ai-markdown": final,
             ".ai-entry-block.ai-thinking-steps": thinking,
         },
+        status="COMPLETE",
     )
     return _SemanticRegionPage(container)
 
@@ -242,3 +247,12 @@ def test_wenxin_never_falls_back_to_mixed_container_when_final_region_is_missing
 
     assert asyncio.run(collector._current_answer_text(page)) == ""
     assert asyncio.run(collector._extract_answer_html(page)) == ""
+
+
+def test_wenxin_never_treats_generic_generating_placeholder_as_answer():
+    collector = WenxinWebCollector()
+    container = _SemanticRegionLocator(text="正在思考", status="GENERATING")
+    page = _SemanticRegionPage(container)
+
+    assert asyncio.run(collector._current_answer_text(page)) == ""
+    assert asyncio.run(collector._answer_generation_complete(page)) is False

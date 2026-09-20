@@ -4253,3 +4253,6 @@ DOM 核查确认文心页面包含两个独立区域：搜索/引用过程和最
 验证检索轨迹”；最终 Markdown 单独进入 `answer_text`，Answer Semantic 只消费后者。搜索词
 不进入 RetrievalCandidate、Reason、Evidence 或 Strategy。历史冻结数据保持不可变并显示
 `LEGACY_MIXED_CONTAINER` 限制，后端禁止其完成审核或进入 Evidence，不做静默字符串清洗。
+真实重采样进一步暴露了“最终 Markdown 尚未出现时回退读取通用回答容器”的提前完成问题；
+该兼容回退已删除。现在必须等待最终 Markdown 且生成状态结束，不能把“正在思考”等占位文本
+保存为回答正文。

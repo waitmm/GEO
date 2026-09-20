@@ -5307,7 +5307,11 @@ review_queue = READY
 - New Runs now persist a `wenxin_semantic_regions` artifact. Platform-reported
   search terms are an `OBSERVATION_ONLY` module, while `answer_text` and
   `answer_html` come only from the final Markdown region. Collector version is
-  `wenxin-web-v1.2-final-answer-boundary`.
+  `wenxin-web-v1.3-final-answer-only`. A real clean-database replay exposed that
+  the old generic-container fallback could return the transient "正在思考"
+  placeholder before final Markdown existed. That fallback was removed; a Run
+  now completes only after the final Markdown exists and the answer container
+  is no longer `GENERATING`.
 - Frozen historical Runs are not rewritten. A deterministic projection marks
   the known mixed shape `LEGACY_MIXED_CONTAINER`, and backend gates reject
   revision, review and Evidence continuation for that input. This prevents a UI

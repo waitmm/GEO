@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html as html_lib
 import json
 import os
 import platform
@@ -32,6 +33,7 @@ from app.modules.monitoring.collectors.wenxin.selectors import (
     CAPTCHA_TEXT_MARKERS,
     INPUT_CANDIDATES,
     LOGIN_TEXT_MARKERS,
+    REFERENCE_COUNT_PATTERN,
     REFERENCE_PANEL_CANDIDATES,
     REFERENCE_TEXT_PATTERN,
     STOP_BUTTON_TEXT_MARKERS,
@@ -348,7 +350,7 @@ class WenxinWebCollector(BaseCollector):
             "profile_identifier": Path(settings.wenxin_profile_dir).name,
             "conversation_id": self._conversation_id,
             "network_region": os.getenv("WENXIN_NETWORK_REGION", "unknown"),
-            "collector_version": "wenxin-web-v1.3-final-answer-only",
+            "collector_version": "wenxin-web-v1.4-reference-complete",
             "parser_version": "reference-parser-v1.8c-compatible",
             "page_url": page.url,
         }
@@ -550,16 +552,44 @@ class WenxinWebCollector(BaseCollector):
         }
         self._last_reference_panel_html = ""
         body_text = await page.locator("body").inner_text(timeout=5000)
-        expected_matches = re.findall(REFERENCE_TEXT_PATTERN, body_text)
+        expected_matches = re.findall(REFERENCE_COUNT_PATTERN, body_text)
         if not expected_matches:
             return []
         expected_count = int(expected_matches[-1])
         self._last_reference_metrics["ui_declared_count"] = expected_count
 
+        initial_dom_items = await self._reference_dom_items(page, expected_count)
+        initial_html_items = self._reference_items_from_html(await page.content(), expected_count)
+        initial_items = self._merge_reference_items([initial_dom_items, initial_html_items], expected_count)
+        if self._has_complete_reference_indexes(initial_items, expected_count):
+            resolved = [resolve_reference_url(item, []) for item in initial_items[:expected_count]]
+            self._last_reference_metrics.update(
+                {
+                    "dom_reference_count": len(resolved),
+                    "parsed_reference_count": sum(bool(item.get("display_title")) for item in resolved),
+                    "resolved_url_count": sum(bool(item.get("url")) for item in resolved),
+                }
+            )
+            return resolved
+
         await self._open_reference_panel(page)
+        panel_dom_items = await self._reference_dom_items(page, expected_count)
+        panel_html_items = self._reference_items_from_html(await page.content(), expected_count)
         await self._scroll_reference_panels(page)
         self._last_reference_panel_html = await self._reference_panel_html(page)
-        dom_items = await self._reference_dom_items(page, expected_count)
+        scrolled_dom_items = await self._reference_dom_items(page, expected_count)
+        scrolled_html_items = self._reference_items_from_html(await page.content(), expected_count)
+        dom_items = self._merge_reference_items(
+            [
+                initial_dom_items,
+                initial_html_items,
+                panel_dom_items,
+                panel_html_items,
+                scrolled_dom_items,
+                scrolled_html_items,
+            ],
+            expected_count,
+        )
         if dom_items:
             resolved = [resolve_reference_url(item, []) for item in dom_items]
             self._last_reference_metrics.update(
@@ -577,7 +607,9 @@ class WenxinWebCollector(BaseCollector):
             title = line.strip()
             if len(title) < 4 or len(title) > 300:
                 continue
-            if "共参考" in title or title in {"展开", "收起", "复制", "关闭"}:
+            if re.fullmatch(r"共参考\s*\d+\s*篇资料", title) or title in {
+                "展开", "收起", "复制", "分享", "关闭", "重新生成", "有用", "没用", "赞", "踩",
+            }:
                 continue
             reference_items.append(
                 {
@@ -607,6 +639,108 @@ class WenxinWebCollector(BaseCollector):
             }
         )
         return resolved
+
+    def _reference_items_from_html(self, page_html: str, expected_count: int) -> list[dict]:
+        candidates = []
+        lists = re.findall(r'<ol\b[^>]*data-show-ext="([^"]+)"[^>]*>(.*?)</ol>', page_html or "", flags=re.S)
+        for order, (raw_ext, list_html) in enumerate(lists):
+            try:
+                show_ext = json.loads(html_lib.unescape(raw_ext))
+            except json.JSONDecodeError:
+                show_ext = {}
+            total_num = int(show_ext.get("total_num") or show_ext.get("totalNum") or 0)
+            items = []
+            for fallback_index, match in enumerate(
+                re.finditer(r'<li\b[^>]*data-long-press-ext-info="([^"]+)"[^>]*>(.*?)</li>', list_html, flags=re.S),
+                start=1,
+            ):
+                raw_info = html_lib.unescape(match.group(1))
+                try:
+                    ext_info = json.loads(raw_info)
+                except json.JSONDecodeError:
+                    ext_info = {}
+                item_html = match.group(0)
+                index_match = re.search(r'<[^>]*class="[^"]*_index_[^"]*"[^>]*>\s*(\d+)', item_html)
+                reference_index = int(index_match.group(1)) if index_match else fallback_index
+                title = (ext_info.get("linkTitle") or ext_info.get("title") or "").strip()
+                if not title:
+                    text_match = re.search(r'<[^>]*class="[^"]*_text_[^"]*"[^>]*>(.*?)</[^>]+>', item_html, flags=re.S)
+                    if text_match:
+                        title = re.sub(r"<[^>]+>", "", html_lib.unescape(text_match.group(1))).strip()
+                title = re.sub(r"\s+", " ", html_lib.unescape(title)).strip()
+                if len(title) > 500:
+                    title = title[:500]
+                if len(title) < 4:
+                    continue
+                url = ext_info.get("link") or ext_info.get("linkUrl") or ext_info.get("url") or ext_info.get("href") or ""
+                items.append(
+                    {
+                        "reference_index": reference_index,
+                        "display_title": title,
+                        "href": url,
+                        "outer_html": item_html,
+                        "serialized": raw_info,
+                        "ancestor_outer_html": [list_html],
+                    }
+                )
+            if items:
+                score = (1000 if total_num == expected_count else 0) + len(items) + order / 1000
+                candidates.append((score, items))
+        if not candidates:
+            return []
+        return max(candidates, key=lambda item: item[0])[1]
+
+    def _merge_reference_items(self, item_groups: list[list[dict]], expected_count: int) -> list[dict]:
+        by_index: dict[int, dict] = {}
+        by_title: dict[str, dict] = {}
+        for group in item_groups:
+            for item in group:
+                title = (item.get("display_title") or "").strip()
+                if not title:
+                    continue
+                try:
+                    index = int(item.get("reference_index") or 0)
+                except (TypeError, ValueError):
+                    index = 0
+                if 1 <= index <= expected_count:
+                    current = by_index.get(index)
+                    if current is None or self._reference_item_score(item) > self._reference_item_score(current):
+                        by_index[index] = item
+                    continue
+                by_title.setdefault(title, item)
+
+        next_index = 1
+        for item in by_title.values():
+            while next_index in by_index and next_index <= expected_count:
+                next_index += 1
+            if next_index > expected_count:
+                break
+            by_index[next_index] = {**item, "reference_index": next_index}
+
+        return [by_index[index] for index in sorted(by_index)]
+
+    def _has_complete_reference_indexes(self, items: list[dict], expected_count: int) -> bool:
+        if expected_count <= 0:
+            return False
+        indexes = {int(item.get("reference_index") or 0) for item in items}
+        return all(index in indexes for index in range(1, expected_count + 1))
+
+    def _reference_item_score(self, item: dict) -> int:
+        url_keys = [
+            "href",
+            "data-url",
+            "data-href",
+            "data-link",
+            "data-source-url",
+            "data-target-url",
+            "data-jump-url",
+            "data-redirect-url",
+            "url",
+        ]
+        score = sum(20 for key in url_keys if item.get(key))
+        score += 10 if item.get("serialized") else 0
+        score += min(len(item.get("outer_html") or ""), 1000) // 100
+        return score
 
     async def _scroll_reference_panels(self, page) -> None:
         selectors = ", ".join(REFERENCE_PANEL_CANDIDATES)
@@ -665,7 +799,8 @@ class WenxinWebCollector(BaseCollector):
                             el.getAttribute('aria-label') || el.getAttribute('title')
                         ).replace(/^\\d+[.、]\\s*/, '');
                         if (title.length < 4 || title.length > 300) continue;
-                        if (/共参考\\s*\\d+\\s*篇资料|收起|展开|关闭|复制|分享|重新生成|有用|没用|赞|踩/.test(title)) continue;
+                        if (/^共参考\\s*\\d+\\s*篇资料$/.test(title) ||
+                            ['收起', '展开', '关闭', '复制', '分享', '重新生成', '有用', '没用', '赞', '踩'].includes(title)) continue;
                         const child = el.querySelector(
                             'a,button,[role="link"],[data-url],[data-href],[data-link]'
                         );

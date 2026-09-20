@@ -865,3 +865,15 @@ Status: ACTIVE
   `EVIDENCE_RUNNING` have uncertain external side effects after process loss and
   therefore become explicit interruption/failure. Do not auto-retry them on
   startup.
+- **Frozen release Runs 2/3 retain a known false citation-partial status**: the
+  saved pages contain all 28/24 references, but the then-active parser removed
+  reference #23 because its title contained `复制`. The parser regression is
+  fixed and both artifacts replay as complete, but immutable Raw Result
+  `raw-v1:c10d6ba7d06dee7e` remains 27/23 until a formal resample creates a new
+  result. Do not interpret the missing row as a Wenxin or network omission.
+- **Automatic source fetch is not yet wired into release Source Preparation**:
+  the mature `fetch_page_playwright()` kernel exists, while the formal release
+  API currently supports manual content only. Reuse must occur through an
+  explicit V2 scope adapter that creates Analysis-owned immutable snapshots;
+  invoking legacy Diagnosis/optimization runners would reintroduce forbidden
+  workflow ownership and latest-state dependencies.

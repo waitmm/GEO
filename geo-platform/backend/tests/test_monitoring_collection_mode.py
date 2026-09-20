@@ -256,3 +256,42 @@ def test_wenxin_never_treats_generic_generating_placeholder_as_answer():
 
     assert asyncio.run(collector._current_answer_text(page)) == ""
     assert asyncio.run(collector._answer_generation_complete(page)) is False
+
+
+def test_wenxin_reference_title_containing_copy_is_not_treated_as_button_noise():
+    collector = WenxinWebCollector()
+    page_html = """
+    <ol data-show-ext="{&quot;total_num&quot;:2}">
+      <li data-long-press-ext-info="{&quot;link&quot;:&quot;https://example.com/one&quot;,&quot;linkTitle&quot;:&quot;普通引用标题&quot;}">
+        <span class="_index_fixture">1.</span><span class="_text_fixture">普通引用标题</span>
+      </li>
+      <li data-long-press-ext-info="{&quot;link&quot;:&quot;https://example.com/two&quot;,&quot;linkTitle&quot;:&quot;3.02 复制打开抖音的链接规则&quot;}">
+        <span class="_index_fixture">2.</span><span class="_text_fixture">3.02 复制打开抖音的链接规则</span>
+      </li>
+    </ol>
+    """
+
+    items = collector._reference_items_from_html(page_html, expected_count=2)
+
+    assert [item["reference_index"] for item in items] == [1, 2]
+    assert items[1]["display_title"] == "3.02 复制打开抖音的链接规则"
+    assert collector._has_complete_reference_indexes(items, expected_count=2) is True
+
+
+def test_wenxin_reference_merge_restores_item_missing_from_live_dom():
+    collector = WenxinWebCollector()
+    dom_items = [{"reference_index": 1, "display_title": "普通引用标题", "href": "https://example.com/one"}]
+    html_items = [
+        *dom_items,
+        {
+            "reference_index": 2,
+            "display_title": "3.02 复制打开抖音的链接规则",
+            "href": "https://example.com/two",
+            "serialized": "source metadata",
+        },
+    ]
+
+    merged = collector._merge_reference_items([dom_items, html_items], expected_count=2)
+
+    assert [item["reference_index"] for item in merged] == [1, 2]
+    assert collector._has_complete_reference_indexes(merged, expected_count=2) is True

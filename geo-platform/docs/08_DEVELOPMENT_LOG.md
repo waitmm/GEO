@@ -5319,3 +5319,25 @@ review_queue = READY
 - Added collector DOM-boundary, immutable Context projection and Answer Semantic
   input-gate regressions. No browser sampling, model call, source fetch, Review,
   Truth or Evidence write was performed by this change.
+
+## 2026-09-20 Wenxin Reference Completeness Regression
+
+- A clean release replay exposed a collector regression introduced by the
+  first-delivery simplification. The DOM noise filter used substring matching
+  for labels such as `复制`, so the legitimate reference title `3.02 复制打开抖音`
+  was removed from Runs 2 and 3. Wenxin had returned all 28/24 references; the
+  collector incorrectly persisted 27/23 and marked both Runs partial.
+- Restored the earlier multi-view extraction contract: merge reference lists
+  captured before panel open, after open and after scroll, preserve the
+  platform's explicit reference indexes, and verify index conservation against
+  the declared count. Button labels now use exact matching and cannot remove a
+  reference merely because its title contains the same word. The auditable
+  collector version is `wenxin-web-v1.4-reference-complete`.
+- The two frozen page artifacts replay locally as 28/28 and 24/24, including
+  the previously omitted item. Historical Raw Result remains immutable; only a
+  new formal collection can produce a corrected business result.
+- The review also confirmed that automatic source fetching still exists as the
+  reusable `fetch_page_playwright()` computation kernel, but the release Source
+  Preparation API currently exposes only manual submission. The missing V2 DTO
+  adapter is a release-path integration gap; the legacy Diagnosis/optimization
+  runner must not be re-enabled as a shortcut.

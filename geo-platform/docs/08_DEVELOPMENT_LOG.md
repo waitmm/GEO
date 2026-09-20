@@ -5293,3 +5293,7 @@ review_queue = READY
 - A service restart preserved exact Analysis/Context, Snapshot/artifact hash,
   Diagnosis ResultVersion and `review=null`. The exact deep link reopened all
   source, review and Evidence Gate panels without selecting latest state.
+- Removed the release UI's residual legacy Prompt-overview probe and made the
+  release SPA return 404 for every unregistered `/api/*` route instead of
+  serving `index.html` with a misleading 200. Release route isolation now has
+  both route-table and HTTP-response coverage (`d24f936`).

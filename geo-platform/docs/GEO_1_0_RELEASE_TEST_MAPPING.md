@@ -34,6 +34,8 @@ Date: 2026-09-20
   外键、26/26 白名单表通过；
 - 正式 worker 空队列启动：`IDLE`；正式 API health/release status 与 release
   首屏通过。
+- release 页面不再请求 legacy Prompt overview；未注册的 `/api/optimization/*`
+  在正式 app 中返回 404，不会被 SPA fallback 伪装成 200。
 
 这些结果与首轮真实验收共同证明 release 工程链、真实 Wenxin 采样、一个真实
 Snapshot 及双输入负向 Gate。SourceClaim/Alignment 尚未调用，因为 37 个来源和

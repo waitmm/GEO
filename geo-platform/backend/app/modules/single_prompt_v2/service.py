@@ -11,7 +11,6 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.database import SessionLocal
 from app.models import (
     BrowserMonitorRun,
     BrowserMonitorTask,
@@ -251,8 +250,13 @@ def execute_analysis(
     executor_factory: Callable[[], MonitoringTaskExecutor] = MonitoringTaskExecutor,
     *,
     freeze_with_failures: bool = True,
+    session_factory: Callable[[], Session] | None = None,
 ) -> None:
-    db = SessionLocal()
+    if session_factory is None:
+        from app.core.database import SessionLocal
+
+        session_factory = SessionLocal
+    db = session_factory()
     executor: MonitoringTaskExecutor | None = None
     token = claim_analysis(db, analysis_id)
     if not token:

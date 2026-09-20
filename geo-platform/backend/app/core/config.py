@@ -5,6 +5,10 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     app_name: str = "GEO Platform"
     database_url: str = "sqlite:///./geo_v0.db"
+    release_database_url: str = "sqlite:///./geo_release.db"
+    deployment_mode: str = "legacy_dev"
+    release_schema_revision: str = "20260920_01"
+    evidence_artifact_dir: str = "./artifacts/evidence"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     wenxin_api_key: str = ""
     wenxin_secret_key: str = ""

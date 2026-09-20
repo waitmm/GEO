@@ -20,15 +20,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.database import SessionLocal
 from app.models import (
     LLMCallCache,
     Project,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
+    SinglePromptCitationManifest,
     SinglePromptDiagnosisExecution,
     SinglePromptDiagnosisResult,
     SinglePromptDiagnosisReview,
+    SinglePromptPreparedSourceSnapshot,
+    SinglePromptSourceCompletionManifest,
     SinglePromptSourceSnapshot,
     TargetBrandCapabilityTruth,
 )
@@ -66,6 +68,7 @@ from app.modules.single_prompt_v2.llm_safety import (
     source_claim_user_payload,
     source_subject_is_grounded,
 )
+from app.modules.single_prompt_v2.source_preparation import validate_completion_for_evidence
 from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import DeepSeekClient
 from app.services.url_identity import canonicalize_url
@@ -189,6 +192,10 @@ def _contract_config(
     *,
     source_snapshot_policy: str = "REUSE_OR_FETCH",
     evidence_llm_policy: str = "ALLOW_EXTERNAL",
+    diagnosis_mode: str = "LEGACY_BUNDLED",
+    answer_llm_policy: str = "ALLOW_EXTERNAL",
+    citation_manifest_id: str = "",
+    citation_manifest_hash: str = "",
 ) -> dict[str, Any]:
     settings = get_settings()
     return {
@@ -214,6 +221,10 @@ def _contract_config(
         "llm_max_attempts": 1,
         "source_snapshot_policy": source_snapshot_policy,
         "evidence_llm_policy": evidence_llm_policy,
+        "diagnosis_mode": diagnosis_mode,
+        "answer_llm_policy": answer_llm_policy,
+        "citation_manifest_id": citation_manifest_id,
+        "citation_manifest_hash": citation_manifest_hash,
         "candidate_passages_per_reason": 2,
         "alignment_claims_per_source_reason": 3,
     }
@@ -228,6 +239,10 @@ def create_diagnosis(
     idempotency_key: str,
     source_snapshot_policy: str = "REUSE_OR_FETCH",
     evidence_llm_policy: str = "ALLOW_EXTERNAL",
+    diagnosis_mode: str = "LEGACY_BUNDLED",
+    answer_llm_policy: str = "ALLOW_EXTERNAL",
+    citation_manifest_id: str = "",
+    citation_manifest_hash: str = "",
 ) -> tuple[SinglePromptDiagnosisExecution, bool]:
     analysis = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.analysis_id == analysis_id).one_or_none()
     if not analysis:
@@ -256,6 +271,10 @@ def create_diagnosis(
     config = _contract_config(
         source_snapshot_policy=source_snapshot_policy,
         evidence_llm_policy=evidence_llm_policy,
+        diagnosis_mode=diagnosis_mode,
+        answer_llm_policy=answer_llm_policy,
+        citation_manifest_id=citation_manifest_id,
+        citation_manifest_hash=citation_manifest_hash,
     )
     identity = {
         "analysis_id": analysis_id,
@@ -315,6 +334,44 @@ def create_diagnosis(
         raise
     db.refresh(execution)
     return execution, True
+
+
+def create_answer_diagnosis(
+    db: Session,
+    *,
+    analysis_id: str,
+    project_id: int,
+    prompt_id: int,
+    citation_manifest_id: str,
+    citation_manifest_hash: str,
+    answer_llm_policy: str,
+    idempotency_key: str,
+) -> tuple[SinglePromptDiagnosisExecution, bool]:
+    if answer_llm_policy not in {"ALLOW_EXTERNAL", "CACHE_ONLY"}:
+        raise HTTPException(status_code=422, detail="Answer Semantic 授权策略非法")
+    manifest = db.query(SinglePromptCitationManifest).filter_by(manifest_id=citation_manifest_id).one_or_none()
+    if not manifest:
+        raise HTTPException(status_code=409, detail={"code": "CITATION_MANIFEST_REQUIRED"})
+    if (
+        manifest.analysis_id != analysis_id
+        or manifest.project_id != project_id
+        or manifest.prompt_id != prompt_id
+        or manifest.payload_hash != citation_manifest_hash
+    ):
+        raise HTTPException(status_code=409, detail={"code": "CITATION_MANIFEST_INPUT_MISMATCH"})
+    return create_diagnosis(
+        db,
+        analysis_id=analysis_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        idempotency_key=idempotency_key,
+        source_snapshot_policy="SOURCE_PREPARATION_ONLY",
+        evidence_llm_policy="CACHE_ONLY",
+        diagnosis_mode="ANSWER_ONLY",
+        answer_llm_policy=answer_llm_policy,
+        citation_manifest_id=citation_manifest_id,
+        citation_manifest_hash=citation_manifest_hash,
+    )
 
 
 def claim_diagnosis(db: Session, diagnosis_id: str) -> str | None:
@@ -1710,6 +1767,130 @@ def _publish_result(db: Session, execution: SinglePromptDiagnosisExecution, toke
     return result
 
 
+def compute_answer_diagnosis(
+    db: Session,
+    execution: SinglePromptDiagnosisExecution,
+    token: str,
+    *,
+    answer_judge: Any | None = None,
+) -> SinglePromptDiagnosisResult:
+    context = db.query(SinglePromptAnalysisContext).filter_by(context_id=execution.context_id).one_or_none()
+    if not context or context.raw_output_hash != execution.raw_output_hash:
+        raise RuntimeError("冻结的 AnalysisContext 与 Answer 诊断输入不一致")
+    raw_output = loads(context.raw_output_json, {})
+    brand = loads(execution.brand_snapshot_json, {})
+    truths = loads(execution.truth_snapshot_json, [])
+    config = loads(execution.contract_config_json, {})
+    if config.get("diagnosis_mode") != "ANSWER_ONLY":
+        raise RuntimeError("当前执行不是 Answer-only 诊断")
+    citation = db.query(SinglePromptCitationManifest).filter_by(
+        manifest_id=str(config.get("citation_manifest_id") or "")
+    ).one_or_none()
+    if not citation or (
+        citation.analysis_id != execution.analysis_id
+        or citation.context_id != execution.context_id
+        or citation.payload_hash != config.get("citation_manifest_hash")
+        or citation.raw_output_hash != execution.raw_output_hash
+    ):
+        raise RuntimeError("Citation Manifest 与 Answer 诊断输入不一致")
+
+    usage = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
+    if answer_judge is None:
+        answer_judge = V2AnswerSemanticJudge(DeepSeekClient(
+            thinking_mode=V2_LLM_THINKING_MODE,
+            max_attempts=int(config.get("llm_max_attempts") or 1),
+            cache_only=config.get("answer_llm_policy") != "ALLOW_EXTERNAL",
+        ))
+    _set_progress(db, execution, "ANSWER_SEMANTIC", 0, 1, "识别推荐对象、理由和市场标准")
+    answer = _diagnose_answers(
+        db,
+        raw_output=raw_output,
+        prompt_text=str(raw_output.get("prompt_text") or ""),
+        brand_name=str(brand.get("brand_name") or ""),
+        usage=usage,
+        judge=answer_judge,
+        thinking_mode=str(config.get("llm_thinking_mode") or "") or None,
+    )
+    client = getattr(answer_judge, "client", None)
+    if isinstance(client, DeepSeekClient):
+        usage["external_llm_calls"] = client.external_call_count
+        usage["external_token_usage"] = client.external_token_count
+
+    truth_diagnosis = _diagnose_truths(answer, truths, target_brand=brand)
+    evidence = {
+        "status": "NOT_STARTED",
+        "source_claims": [],
+        "source_claim_jobs": [],
+        "alignment_jobs": [],
+        "source_relations": [],
+        "failures": [],
+    }
+    limitations = _limitations(raw_output, answer, [], evidence, truth_diagnosis)
+    limitations.append({
+        "code": "EVIDENCE_AWAITS_SOURCE_COMPLETION_AND_EXACT_REVIEW",
+        "impact": "Answer 结果不包含 SourceClaim/Alignment；Evidence 必须使用完成清单和本结果的精确审核继续。",
+    })
+    valid_runs = sum(
+        run.get("status") in {"success", "partial_success"} and bool(str(run.get("answer_text") or "").strip())
+        for run in raw_output.get("runs") or []
+    )
+    stats = {
+        "valid_runs": valid_runs,
+        "recommendation_events": len(answer["events"]),
+        "reasons": sum(len(event["reasons"]) for event in answer["events"]),
+        "market_criteria": len(answer.get("market_criteria") or []),
+        "reference_records": citation.occurrence_count,
+        "unique_sources": citation.source_count,
+        "content_ready": 0,
+        "not_fetched": citation.source_count,
+        "fetch_failed": 0,
+        "content_blocked": 0,
+        "passage_count": 0,
+        "candidate_recalled": 0,
+        "alignment_evaluated": 0,
+        "alignment_not_evaluated": 0,
+        "truth_facts": len(truths),
+        "truth_relationships": len(truth_diagnosis["relationships"]),
+    }
+    output = {
+        "contract_version": DIAGNOSIS_CONTRACT_VERSION,
+        "result_scope": "ANSWER_ONLY",
+        "input": {
+            "analysis_id": execution.analysis_id,
+            "context_id": execution.context_id,
+            "raw_output_hash": execution.raw_output_hash,
+            "citation_manifest_id": citation.manifest_id,
+            "citation_manifest_hash": citation.payload_hash,
+            "brand_snapshot": brand,
+            "brand_snapshot_hash": execution.brand_snapshot_hash,
+            "truth_set_hash": execution.truth_set_hash,
+            "contract_config": config,
+            "contract_config_hash": execution.contract_config_hash,
+        },
+        "answer_diagnosis": answer,
+        "source_diagnosis": {
+            "status": "SEPARATE_SOURCE_PREPARATION",
+            "summary": {
+                "reference_records": citation.occurrence_count,
+                "unique_sources": citation.source_count,
+                "content_ready": 0,
+                "not_fetched": citation.source_count,
+                "fetch_failed": 0,
+                "content_blocked": 0,
+                "passage_count": 0,
+            },
+            "snapshots": [],
+        },
+        "evidence_diagnosis": evidence,
+        "truth_diagnosis": truth_diagnosis,
+        "limitations": limitations,
+        "stats": stats,
+        "usage": usage,
+    }
+    output["answer_semantic_eligibility"] = answer_semantic_eligibility(output)
+    return _publish_result(db, execution, token, output)
+
+
 def compute_diagnosis(
     db: Session,
     execution: SinglePromptDiagnosisExecution,
@@ -1831,8 +2012,274 @@ def compute_diagnosis(
     return _publish_result(db, execution, token, output)
 
 
-def execute_diagnosis(diagnosis_id: str) -> None:
-    db = SessionLocal()
+def _reviewed_answer_for_evidence(output: dict[str, Any], review: SinglePromptDiagnosisReview) -> dict[str, Any]:
+    reviewed = copy.deepcopy(output.get("answer_diagnosis") or {})
+    decisions = {
+        str(row.get("event_id")): str(row.get("decision"))
+        for row in loads(review.decisions_json, [])
+        if row.get("scope") == "ANSWER_SEMANTIC_EVENT" and row.get("event_id")
+    }
+    eligible_events: list[dict[str, Any]] = []
+    for event in reviewed.get("events") or []:
+        if event.get("fact_consumption_eligible") is True:
+            eligible_events.append(event)
+            continue
+        if (
+            event.get("semantic_validation_status") == "SEMANTIC_REVIEW_REQUIRED"
+            and decisions.get(str(event.get("event_id"))) == "CONFIRM_INCLUDE_AS_OPTION"
+        ):
+            event["fact_consumption_eligible"] = True
+            event["review_status"] = "HUMAN_CONFIRMED_INCLUDE_AS_OPTION"
+            event["review_id"] = review.review_id
+            eligible_events.append(event)
+    reviewed["events"] = eligible_events
+    reviewed["evidence_event_scope"] = {
+        "source_result_version": review.result_version,
+        "source_review_id": review.review_id,
+        "eligible_event_ids": sorted(str(row.get("event_id")) for row in eligible_events),
+        "excluded_event_ids": sorted(
+            str(row.get("event_id"))
+            for row in (output.get("answer_diagnosis") or {}).get("events") or []
+            if str(row.get("event_id")) not in {str(item.get("event_id")) for item in eligible_events}
+        ),
+    }
+    return reviewed
+
+
+def continue_evidence_diagnosis(
+    db: Session,
+    *,
+    analysis_id: str,
+    diagnosis_id: str,
+    project_id: int,
+    prompt_id: int,
+    answer_result_version: str,
+    answer_result_hash: str,
+    answer_review_id: str,
+    citation_manifest_id: str,
+    citation_manifest_hash: str,
+    completion_manifest_id: str,
+    completion_manifest_hash: str,
+    evidence_llm_policy: str,
+    source_claim_judge: Any | None = None,
+    alignment_judge: Any | None = None,
+) -> SinglePromptDiagnosisResult:
+    if evidence_llm_policy not in {"ALLOW_EXTERNAL", "CACHE_ONLY"}:
+        raise HTTPException(status_code=422, detail="Evidence LLM 授权策略非法")
+    execution = db.query(SinglePromptDiagnosisExecution).filter_by(
+        diagnosis_id=diagnosis_id,
+        analysis_id=analysis_id,
+    ).one_or_none()
+    if not execution:
+        raise HTTPException(status_code=404, detail="Answer 诊断执行不存在")
+    if execution.project_id != project_id or execution.prompt_id != prompt_id:
+        raise HTTPException(status_code=409, detail={"code": "EVIDENCE_PROJECT_PROMPT_MISMATCH"})
+    if execution.context_id == "":
+        raise HTTPException(status_code=409, detail={"code": "EVIDENCE_CONTEXT_MISSING"})
+    answer_result = db.query(SinglePromptDiagnosisResult).filter_by(
+        diagnosis_id=diagnosis_id,
+        result_version=answer_result_version,
+    ).one_or_none()
+    if not answer_result or answer_result.output_hash != answer_result_hash:
+        raise HTTPException(status_code=409, detail={"code": "ANSWER_RESULT_INPUT_MISMATCH"})
+    answer_output = loads(answer_result.output_json, {})
+    if answer_output.get("result_scope") != "ANSWER_ONLY":
+        raise HTTPException(status_code=409, detail={"code": "ANSWER_ONLY_RESULT_REQUIRED"})
+    if (
+        (answer_output.get("input") or {}).get("analysis_id") != analysis_id
+        or (answer_output.get("input") or {}).get("context_id") != execution.context_id
+        or (answer_output.get("input") or {}).get("citation_manifest_id") != citation_manifest_id
+        or (answer_output.get("input") or {}).get("citation_manifest_hash") != citation_manifest_hash
+    ):
+        raise HTTPException(status_code=409, detail={"code": "ANSWER_RESULT_CONTEXT_MISMATCH"})
+    _require_consumable_answer_semantic(answer_output, "EVIDENCE_CONTINUATION")
+    review = db.query(SinglePromptDiagnosisReview).filter_by(
+        review_id=answer_review_id,
+        diagnosis_id=diagnosis_id,
+        result_version=answer_result_version,
+    ).one_or_none()
+    if not review or (
+        review.result_hash != answer_result_hash
+        or review.reviewable_set_hash != answer_result.reviewable_set_hash
+        or review.decision != "REVIEW_COMPLETED"
+    ):
+        raise HTTPException(status_code=409, detail={"code": "EXACT_ANSWER_REVIEW_REQUIRED"})
+    completion, snapshots, waiver_limitations = validate_completion_for_evidence(
+        db,
+        analysis_id=analysis_id,
+        context_id=execution.context_id,
+        citation_manifest_id=citation_manifest_id,
+        citation_manifest_hash=citation_manifest_hash,
+        completion_manifest_id=completion_manifest_id,
+        completion_manifest_hash=completion_manifest_hash,
+    )
+    binding = {
+        "analysis_id": analysis_id,
+        "context_id": execution.context_id,
+        "citation_manifest_id": citation_manifest_id,
+        "citation_manifest_hash": citation_manifest_hash,
+        "completion_manifest_id": completion_manifest_id,
+        "completion_manifest_hash": completion_manifest_hash,
+        "answer_result_version": answer_result_version,
+        "answer_result_hash": answer_result_hash,
+        "answer_review_id": answer_review_id,
+        "answer_reviewable_set_hash": review.reviewable_set_hash,
+        "evidence_llm_policy": evidence_llm_policy,
+    }
+    binding_hash = _hash(binding)
+    for row in db.query(SinglePromptDiagnosisResult).filter_by(diagnosis_id=diagnosis_id).all():
+        prior = loads(row.output_json, {})
+        if prior.get("result_scope") == "ANSWER_AND_EVIDENCE" and (prior.get("input") or {}).get("evidence_binding_hash") == binding_hash:
+            return row
+
+    raw_context = db.query(SinglePromptAnalysisContext).filter_by(context_id=execution.context_id).one()
+    raw_output = loads(raw_context.raw_output_json, {})
+    brand = loads(execution.brand_snapshot_json, {})
+    truths = loads(execution.truth_snapshot_json, [])
+    config = loads(execution.contract_config_json, {})
+    config = {**config, "evidence_llm_policy": evidence_llm_policy}
+    reviewed_answer = _reviewed_answer_for_evidence(answer_output, review)
+    usage = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
+    if source_claim_judge is None:
+        source_claim_judge = V2SourceClaimJudge(DeepSeekClient(
+            thinking_mode=V2_LLM_THINKING_MODE,
+            max_attempts=1,
+            cache_only=evidence_llm_policy != "ALLOW_EXTERNAL",
+        ))
+    if alignment_judge is None:
+        alignment_judge = V2AlignmentJudge(DeepSeekClient(
+            thinking_mode=V2_LLM_THINKING_MODE,
+            max_attempts=1,
+            cache_only=evidence_llm_policy != "ALLOW_EXTERNAL",
+        ))
+    execution.status = "EVIDENCE_RUNNING"
+    execution.progress_json = _canonical_json({
+        "stage": "EVIDENCE_DIAGNOSIS",
+        "completed": 0,
+        "total": 1,
+        "detail": "使用精确 Answer Review 与 Source Completion Manifest 计算证据关系",
+        "input_binding_hash": binding_hash,
+    })
+    db.commit()
+    try:
+        evidence = _diagnose_evidence(
+            db,
+            answer_diagnosis=reviewed_answer,
+            snapshots=snapshots,
+            usage=usage,
+            source_claim_judge=source_claim_judge,
+            alignment_judge=alignment_judge,
+            config=config,
+        )
+        real_clients = {
+            id(client): client
+            for client in (getattr(source_claim_judge, "client", None), getattr(alignment_judge, "client", None))
+            if isinstance(client, DeepSeekClient)
+        }
+        if real_clients:
+            usage["external_llm_calls"] = sum(client.external_call_count for client in real_clients.values())
+            usage["external_token_usage"] = sum(client.external_token_count for client in real_clients.values())
+        truth_diagnosis = _diagnose_truths(reviewed_answer, truths, target_brand=brand)
+        limitations = [
+            row for row in (answer_output.get("limitations") or [])
+            if row.get("code") != "EVIDENCE_AWAITS_SOURCE_COMPLETION_AND_EXACT_REVIEW"
+        ]
+        limitations.extend(waiver_limitations)
+        limitations.extend(_limitations(raw_output, reviewed_answer, snapshots, evidence, truth_diagnosis))
+        # Preserve order while preventing duplicate generic limitations.
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in limitations:
+            key = _hash(row)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(row)
+        source_summary = _source_summary(snapshots)
+        source_summary.update({
+            "unique_sources": completion.required_source_count,
+            "content_ready": completion.ready_source_count,
+            "waived_with_limitation": completion.waived_source_count,
+        })
+        stats = {
+            **(answer_output.get("stats") or {}),
+            **source_summary,
+            "candidate_recalled": sum(row["candidate_recall"] == "RECALLED" for row in evidence["source_relations"]),
+            "alignment_evaluated": sum(row["alignment_evaluation"] == "EVALUATED" for row in evidence["source_relations"]),
+            "alignment_not_evaluated": sum(row["alignment_evaluation"] != "EVALUATED" for row in evidence["source_relations"]),
+            "truth_relationships": len(truth_diagnosis["relationships"]),
+        }
+        output = {
+            "contract_version": DIAGNOSIS_CONTRACT_VERSION,
+            "result_scope": "ANSWER_AND_EVIDENCE",
+            "input": {
+                **(answer_output.get("input") or {}),
+                **binding,
+                "evidence_binding_hash": binding_hash,
+                "source_snapshot_ids": sorted(snapshot.snapshot_id for snapshot in snapshots),
+            },
+            "answer_diagnosis": reviewed_answer,
+            "source_diagnosis": {
+                "status": "SOURCE_COMPLETION_CONSUMED",
+                "summary": source_summary,
+                "snapshots": _snapshot_reads(snapshots),
+            },
+            "evidence_diagnosis": evidence,
+            "truth_diagnosis": truth_diagnosis,
+            "limitations": deduped,
+            "stats": stats,
+            "usage": usage,
+        }
+        output["answer_semantic_eligibility"] = answer_semantic_eligibility(output)
+        output_hash = _hash(output)
+        version_number = max(
+            row.version_number for row in db.query(SinglePromptDiagnosisResult).filter_by(diagnosis_id=diagnosis_id).all()
+        ) + 1
+        result = SinglePromptDiagnosisResult(
+            result_version=f"diag-v{version_number}:{output_hash[:16]}",
+            diagnosis_id=diagnosis_id,
+            version_number=version_number,
+            parent_result_version=answer_result_version,
+            output_json=_canonical_json(output),
+            output_hash=output_hash,
+            reviewable_set_hash=_hash(_reviewable_set(output)),
+            limitations_json=_canonical_json(deduped),
+            stats_json=_canonical_json(stats),
+        )
+        db.add(result)
+        db.flush()
+        execution.active_result_version = result.result_version
+        execution.status = "READY_FOR_REVIEW"
+        execution.blocker_code = ""
+        execution.blocker_detail = ""
+        execution.external_llm_calls += int(usage["external_llm_calls"])
+        execution.llm_cache_hits += int(usage["llm_cache_hits"])
+        execution.external_token_usage += int(usage["external_token_usage"])
+        execution.finished_at = datetime.utcnow()
+        execution.progress_json = _canonical_json({"stage": "EVIDENCE_RESULT_PUBLISHED", "completed": 1, "total": 1})
+        db.commit()
+        db.refresh(result)
+        return result
+    except Exception as exc:
+        db.rollback()
+        execution = db.query(SinglePromptDiagnosisExecution).filter_by(diagnosis_id=diagnosis_id).one()
+        execution.status = "EVIDENCE_FAILED"
+        execution.blocker_code = "EVIDENCE_EXECUTION_FAILED"
+        execution.blocker_detail = str(exc)[:2000]
+        execution.finished_at = datetime.utcnow()
+        db.commit()
+        raise
+
+
+def execute_diagnosis(
+    diagnosis_id: str,
+    *,
+    session_factory: Callable[[], Session] | None = None,
+) -> None:
+    if session_factory is None:
+        from app.core.database import SessionLocal
+
+        session_factory = SessionLocal
+    db = session_factory()
     token = claim_diagnosis(db, diagnosis_id)
     if not token:
         db.close()
@@ -1841,7 +2288,11 @@ def execute_diagnosis(diagnosis_id: str) -> None:
         execution = db.query(SinglePromptDiagnosisExecution).filter(
             SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id
         ).one()
-        compute_diagnosis(db, execution, token)
+        config = loads(execution.contract_config_json, {})
+        if config.get("diagnosis_mode") == "ANSWER_ONLY":
+            compute_answer_diagnosis(db, execution, token)
+        else:
+            compute_diagnosis(db, execution, token)
     except Exception as exc:
         db.rollback()
         db.execute(
@@ -1916,14 +2367,31 @@ def get_diagnosis_status(
         review = db.query(SinglePromptDiagnosisReview).filter(
             SinglePromptDiagnosisReview.result_version == result.result_version
         ).one_or_none()
-    snapshots = (
-        db.query(SinglePromptSourceSnapshot)
-        .filter(SinglePromptSourceSnapshot.diagnosis_id == execution.diagnosis_id)
-        .order_by(SinglePromptSourceSnapshot.source_key)
-        .all()
-    ) if result else []
     result_stats = loads(result.stats_json, {}) if result else {}
     result_output = loads(result.output_json, {}) if result else {}
+    result_scope = str(result_output.get("result_scope") or "")
+    prepared_snapshot_ids = list((result_output.get("input") or {}).get("source_snapshot_ids") or [])
+    if prepared_snapshot_ids:
+        snapshots = (
+            db.query(SinglePromptPreparedSourceSnapshot)
+            .filter(SinglePromptPreparedSourceSnapshot.snapshot_id.in_(prepared_snapshot_ids))
+            .order_by(SinglePromptPreparedSourceSnapshot.source_key)
+            .all()
+        )
+    elif result_scope == "ANSWER_ONLY":
+        snapshots = []
+    elif result_scope == "ANSWER_AND_EVIDENCE":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "EVIDENCE_SOURCE_SNAPSHOT_BINDING_MISSING"},
+        )
+    else:
+        snapshots = (
+            db.query(SinglePromptSourceSnapshot)
+            .filter(SinglePromptSourceSnapshot.diagnosis_id == execution.diagnosis_id)
+            .order_by(SinglePromptSourceSnapshot.source_key)
+            .all()
+        ) if result else []
     safety_advisories, evidence_eligibility = current_evidence_eligibility(
         snapshots,
         historical_content_ready=int(result_stats.get("content_ready") or 0),

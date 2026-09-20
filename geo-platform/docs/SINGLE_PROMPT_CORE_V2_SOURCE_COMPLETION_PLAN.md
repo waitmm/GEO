@@ -1,10 +1,16 @@
 # Single-Prompt Core V2 - Source Completion First Remediation Plan
 
-Status: `DRAFT_FOR_PRODUCT_OWNER_REVIEW`
-Date: 2026-09-16
-Classification: `SEMANTIC_RISK / IMPLEMENTATION_DIVERGENCE_REMEDIATION`
-Implementation: `NOT_STARTED`
-Production cutover: `NOT_AUTHORIZED`
+Status: `SUPERSEDED_IN_PART_BY_R3 / IMPLEMENTATION_IN_PROGRESS`
+Date: 2026-09-20
+Classification: `SEMANTIC_CHANGE / PRODUCT_OWNER_APPROVED`
+Implementation: `FIRST_SLICE_IN_PROGRESS`
+Production cutover: `AUTHORIZED_FOR_SOURCE_COMPLETION_AND_EVIDENCE_GATE_ONLY`
+
+> 2026-09-20 R3 override: Citation Manifest 冻结后，Source Preparation 与
+> Answer Semantic 可以独立推进；Evidence 才要求 Source Completion Manifest、
+> 精确 Answer ResultVersion 和精确 Review 汇合。本文早期“Answer 必须等待全部
+> 来源处置”的表述已被覆盖。正式执行契约见
+> `GEO_1_0_R3_EXECUTION_CONTRACT.md`。
 
 ## 产品负责人审批摘要
 

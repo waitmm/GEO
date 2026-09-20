@@ -61,6 +61,62 @@ class SinglePromptDiagnosisCreate(BaseModel):
     evidence_llm_policy: Literal["ALLOW_EXTERNAL", "CACHE_ONLY"] = "ALLOW_EXTERNAL"
 
 
+class SinglePromptSourcePreparationCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    created_by: str = Field(min_length=1, max_length=120)
+
+
+class SinglePromptManualSourceContentCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    source_key: str = Field(min_length=64, max_length=64)
+    expected_row_version: int = Field(ge=1)
+    title: str = Field(default="", max_length=500)
+    clean_text: str = Field(min_length=50)
+    coverage_scope: Literal["FULL_PAGE", "EXCERPT"]
+    submitted_by: str = Field(min_length=1, max_length=120)
+
+
+class SinglePromptSourceWaiverCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    source_key: str = Field(min_length=64, max_length=64)
+    expected_row_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=2000)
+    impact: str = Field(min_length=1, max_length=2000)
+    waived_by: str = Field(min_length=1, max_length=120)
+
+
+class SinglePromptSourceCompletionCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    created_by: str = Field(min_length=1, max_length=120)
+
+
+class SinglePromptAnswerDiagnosisCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    citation_manifest_id: str = Field(min_length=1, max_length=80)
+    citation_manifest_hash: str = Field(min_length=64, max_length=64)
+    answer_llm_policy: Literal["ALLOW_EXTERNAL", "CACHE_ONLY"] = "CACHE_ONLY"
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
+class SinglePromptEvidenceContinuationCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    answer_result_version: str = Field(min_length=1, max_length=96)
+    answer_result_hash: str = Field(min_length=64, max_length=64)
+    answer_review_id: str = Field(min_length=1, max_length=80)
+    citation_manifest_id: str = Field(min_length=1, max_length=80)
+    citation_manifest_hash: str = Field(min_length=64, max_length=64)
+    completion_manifest_id: str = Field(min_length=1, max_length=80)
+    completion_manifest_hash: str = Field(min_length=64, max_length=64)
+    evidence_llm_policy: Literal["ALLOW_EXTERNAL", "CACHE_ONLY"] = "CACHE_ONLY"
+
+
 class DiagnosisEdit(BaseModel):
     target_type: str
     target_id: str

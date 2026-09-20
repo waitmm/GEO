@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.modules.single_prompt_v2.diagnosis import (
     complete_diagnosis_review,
+    continue_evidence_diagnosis,
+    create_answer_diagnosis,
     create_diagnosis,
     execute_diagnosis,
     get_diagnosis_status,
@@ -15,9 +17,15 @@ from app.modules.single_prompt_v2.diagnosis import (
 from app.modules.single_prompt_v2.schemas import (
     SinglePromptAnalysisCreate,
     SinglePromptAnalysisStatusRead,
+    SinglePromptAnswerDiagnosisCreate,
     SinglePromptDiagnosisCreate,
     SinglePromptDiagnosisReviewCreate,
     SinglePromptDiagnosisRevisionCreate,
+    SinglePromptEvidenceContinuationCreate,
+    SinglePromptManualSourceContentCreate,
+    SinglePromptSourceCompletionCreate,
+    SinglePromptSourcePreparationCreate,
+    SinglePromptSourceWaiverCreate,
     SinglePromptStrategyCreate,
     SinglePromptStrategyPriorityRevisionCreate,
     SinglePromptStrategyReviewCreate,
@@ -28,6 +36,14 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptRetestAction,
     SinglePromptRetestCreate,
     SinglePromptSemanticMeasurementCreate,
+)
+from app.modules.single_prompt_v2.source_preparation import (
+    create_source_preparation,
+    freeze_completion_manifest,
+    get_source_preparation_for_analysis,
+    get_source_preparation_status,
+    submit_manual_content,
+    waive_source,
 )
 from app.modules.single_prompt_v2.execution import (
     confirm_execution_proposal,
@@ -212,6 +228,167 @@ def retry_collection(
     retry_analysis(db, analysis_id)
     background_tasks.add_task(execute_analysis, analysis_id)
     return get_analysis_status(db, analysis_id)
+
+
+@router.post("/analyses/{analysis_id}/source-preparation", status_code=201)
+def start_source_preparation(
+    analysis_id: str,
+    payload: SinglePromptSourcePreparationCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    preparation, created = create_source_preparation(
+        db,
+        analysis_id=analysis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        idempotency_key=payload.idempotency_key,
+        created_by=payload.created_by,
+    )
+    if not created:
+        response.status_code = 200
+    return get_source_preparation_status(db, preparation_id=preparation.preparation_id)
+
+
+@router.get("/analyses/{analysis_id}/source-preparation")
+def read_analysis_source_preparation(
+    analysis_id: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_db),
+) -> dict | None:
+    return get_source_preparation_for_analysis(
+        db,
+        analysis_id=analysis_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
+
+
+@router.get("/source-preparations/{preparation_id}")
+def read_source_preparation(preparation_id: str, db: Session = Depends(get_db)) -> dict:
+    return get_source_preparation_status(db, preparation_id=preparation_id)
+
+
+@router.post("/source-preparations/{preparation_id}/manual-content")
+def submit_source_manual_content(
+    preparation_id: str,
+    payload: SinglePromptManualSourceContentCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    status = get_source_preparation_status(db, preparation_id=preparation_id)
+    identity = status["preparation"]
+    if identity["project_id"] != payload.project_id or identity["prompt_id"] != payload.prompt_id:
+        raise HTTPException(status_code=409, detail="来源准备与当前 Project/Prompt 不匹配")
+    submit_manual_content(
+        db,
+        preparation_id=preparation_id,
+        source_key=payload.source_key,
+        expected_row_version=payload.expected_row_version,
+        title=payload.title,
+        clean_text=payload.clean_text,
+        coverage_scope=payload.coverage_scope,
+        submitted_by=payload.submitted_by,
+    )
+    return get_source_preparation_status(db, preparation_id=preparation_id)
+
+
+@router.post("/source-preparations/{preparation_id}/waivers")
+def waive_prepared_source(
+    preparation_id: str,
+    payload: SinglePromptSourceWaiverCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    status = get_source_preparation_status(db, preparation_id=preparation_id)
+    identity = status["preparation"]
+    if identity["project_id"] != payload.project_id or identity["prompt_id"] != payload.prompt_id:
+        raise HTTPException(status_code=409, detail="来源准备与当前 Project/Prompt 不匹配")
+    waive_source(
+        db,
+        preparation_id=preparation_id,
+        source_key=payload.source_key,
+        expected_row_version=payload.expected_row_version,
+        reason=payload.reason,
+        impact=payload.impact,
+        waived_by=payload.waived_by,
+    )
+    return get_source_preparation_status(db, preparation_id=preparation_id)
+
+
+@router.post("/source-preparations/{preparation_id}/completion-manifests", status_code=201)
+def complete_source_preparation(
+    preparation_id: str,
+    payload: SinglePromptSourceCompletionCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    status = get_source_preparation_status(db, preparation_id=preparation_id)
+    identity = status["preparation"]
+    if identity["project_id"] != payload.project_id or identity["prompt_id"] != payload.prompt_id:
+        raise HTTPException(status_code=409, detail="来源准备与当前 Project/Prompt 不匹配")
+    freeze_completion_manifest(db, preparation_id=preparation_id, created_by=payload.created_by)
+    return get_source_preparation_status(db, preparation_id=preparation_id)
+
+
+@router.post("/analyses/{analysis_id}/answer-diagnoses", status_code=202)
+def start_answer_diagnosis(
+    analysis_id: str,
+    payload: SinglePromptAnswerDiagnosisCreate,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    execution, created = create_answer_diagnosis(
+        db,
+        analysis_id=analysis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        citation_manifest_id=payload.citation_manifest_id,
+        citation_manifest_hash=payload.citation_manifest_hash,
+        answer_llm_policy=payload.answer_llm_policy,
+        idempotency_key=payload.idempotency_key,
+    )
+    if created:
+        background_tasks.add_task(execute_diagnosis, execution.diagnosis_id)
+    else:
+        response.status_code = 200
+    return get_diagnosis_status(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=execution.diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/evidence-continuations", status_code=201)
+def start_evidence_continuation(
+    analysis_id: str,
+    diagnosis_id: str,
+    payload: SinglePromptEvidenceContinuationCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    continue_evidence_diagnosis(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        answer_result_version=payload.answer_result_version,
+        answer_result_hash=payload.answer_result_hash,
+        answer_review_id=payload.answer_review_id,
+        citation_manifest_id=payload.citation_manifest_id,
+        citation_manifest_hash=payload.citation_manifest_hash,
+        completion_manifest_id=payload.completion_manifest_id,
+        completion_manifest_hash=payload.completion_manifest_hash,
+        evidence_llm_policy=payload.evidence_llm_policy,
+    )
+    return get_diagnosis_status(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
 
 
 @router.post("/analyses/{analysis_id}/diagnoses", status_code=202)

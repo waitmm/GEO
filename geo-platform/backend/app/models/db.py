@@ -336,6 +336,157 @@ class SinglePromptAnalysisContext(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class SinglePromptCitationManifest(Base):
+    __tablename__ = "single_prompt_citation_manifests"
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "version_number", name="uq_single_prompt_citation_manifest_version"),
+        Index("ix_single_prompt_citation_manifest_context", "context_id", "version_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    manifest_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    raw_output_hash: Mapped[str] = mapped_column(String(64))
+    url_identity_version: Mapped[str] = mapped_column(String(80))
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_hash: Mapped[str] = mapped_column(String(64), index=True)
+    source_count: Mapped[int] = mapped_column(Integer)
+    occurrence_count: Mapped[int] = mapped_column(Integer)
+    created_by: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptSourcePreparation(Base):
+    __tablename__ = "single_prompt_source_preparations"
+    __table_args__ = (
+        UniqueConstraint("citation_manifest_id", name="uq_single_prompt_source_preparation_manifest"),
+        UniqueConstraint("analysis_id", "idempotency_key", name="uq_single_prompt_source_preparation_idempotency"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    preparation_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    citation_manifest_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_citation_manifests.manifest_id"), index=True)
+    citation_manifest_hash: Mapped[str] = mapped_column(String(64))
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(40), default="PENDING", index=True)
+    current_completion_manifest_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SinglePromptSourceDisposition(Base):
+    __tablename__ = "single_prompt_source_dispositions"
+    __table_args__ = (
+        UniqueConstraint("preparation_id", "source_key", name="uq_single_prompt_source_disposition_key"),
+        Index("ix_single_prompt_source_disposition_state", "preparation_id", "state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    disposition_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    preparation_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_source_preparations.preparation_id"), index=True)
+    source_key: Mapped[str] = mapped_column(String(64))
+    canonical_url: Mapped[str] = mapped_column(String(1200), default="")
+    original_urls_json: Mapped[str] = mapped_column(Text, default="[]")
+    reference_observations_json: Mapped[str] = mapped_column(Text, default="[]")
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=0)
+    state: Mapped[str] = mapped_column(String(48), default="PENDING", index=True)
+    active_snapshot_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    failure_code: Mapped[str] = mapped_column(String(80), default="")
+    failure_detail: Mapped[str] = mapped_column(Text, default="")
+    waiver_reason: Mapped[str] = mapped_column(Text, default="")
+    waiver_impact: Mapped[str] = mapped_column(Text, default="")
+    waived_by: Mapped[str] = mapped_column(String(120), default="")
+    waived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SinglePromptPreparedSourceSnapshot(Base):
+    __tablename__ = "single_prompt_prepared_source_snapshots"
+    __table_args__ = (
+        Index("ix_single_prompt_prepared_snapshot_source", "preparation_id", "source_key", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    preparation_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_source_preparations.preparation_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    citation_manifest_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_citation_manifests.manifest_id"), index=True)
+    source_key: Mapped[str] = mapped_column(String(64), index=True)
+    canonical_url: Mapped[str] = mapped_column(String(1200), default="")
+    original_urls_json: Mapped[str] = mapped_column(Text, default="[]")
+    reference_observations_json: Mapped[str] = mapped_column(Text, default="[]")
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=0)
+    title: Mapped[str] = mapped_column(String(500), default="")
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    clean_text: Mapped[str] = mapped_column(Text)
+    artifact_path: Mapped[str] = mapped_column(String(1000))
+    artifact_hash: Mapped[str] = mapped_column(String(64))
+    passages_json: Mapped[str] = mapped_column(Text)
+    passages_hash: Mapped[str] = mapped_column(String(64))
+    parser_version: Mapped[str] = mapped_column(String(80))
+    acquisition_method: Mapped[str] = mapped_column(String(40), default="MANUAL")
+    coverage_scope: Mapped[str] = mapped_column(String(40))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    submitted_by: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    @property
+    def fetch_status(self) -> str:
+        return "SUCCESS"
+
+    @property
+    def failure_reason(self) -> str:
+        return ""
+
+    @property
+    def fetched_at(self) -> datetime:
+        return self.acquired_at
+
+    @property
+    def fetch_source(self) -> str:
+        return "V2_SOURCE_PREPARATION"
+
+    @property
+    def reused_from_snapshot_id(self) -> None:
+        return None
+
+
+class SinglePromptSourceCompletionManifest(Base):
+    __tablename__ = "single_prompt_source_completion_manifests"
+    __table_args__ = (
+        UniqueConstraint("preparation_id", "version_number", name="uq_single_prompt_source_completion_version"),
+        Index("ix_single_prompt_source_completion_context", "context_id", "version_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    manifest_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    preparation_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_source_preparations.preparation_id"), index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    citation_manifest_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_citation_manifests.manifest_id"), index=True)
+    citation_manifest_hash: Mapped[str] = mapped_column(String(64))
+    version_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_hash: Mapped[str] = mapped_column(String(64), index=True)
+    required_source_count: Mapped[int] = mapped_column(Integer)
+    ready_source_count: Mapped[int] = mapped_column(Integer)
+    waived_source_count: Mapped[int] = mapped_column(Integer)
+    created_by: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SinglePromptDiagnosisExecution(Base):
     __tablename__ = "single_prompt_diagnosis_executions"
     __table_args__ = (

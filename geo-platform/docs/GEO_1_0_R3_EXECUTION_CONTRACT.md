@@ -104,7 +104,7 @@ SQLite runtime 必须包含 WAL-reset 修复：`>=3.51.3`，或官方回补版�
 
 ## 9. 2026-09-20 实施结果
 
-- release revision：`20260920_01`；正式 schema 为 25 张白名单业务表，另含
+- release revision：`20260920_02`；正式 schema 为 26 张白名单业务表，另含
   Alembic 自有的 `alembic_version`；
 - release SQLite DBAPI：静态链接 SQLite `3.51.3` 的 `pysqlite3`；下载源和
   SHA-256 固定，运行时版本不安全时迁移/启动均 fail closed；
@@ -120,8 +120,11 @@ SQLite runtime 必须包含 WAL-reset 修复：`>=3.51.3`，或官方回补版�
 - 新空库已通过正式迁移脚本、API、worker 和页面启动验收；Snapshot、Review、
   Result 与正文文件的重启后绑定由迁移库专项测试覆盖。
 
-本轮没有新的浏览器采样、来源抓取或外部 LLM 授权。正式 release 库目前没有
-真实业务对象，不能把隔离测试 Snapshot 当作真实正文证据链。真实人工正文补录、
-Answer Review 汇合和 Evidence 正向消费继续等待固定 Analysis/Context 与相应授权。
+首轮真实验收已在 release 库创建固定 Analysis/Context、38-source Citation
+Manifest、1 个经正式补录入口形成的真实 Snapshot，以及 3/3 准入的 Answer
+ResultVersion。其余 37 个来源和精确 Answer Review 尚待人工处置，因此 Completion
+Manifest 与 Evidence 正向消费仍未发生；这项阻断符合本契约，不能用候选抓取
+文件、自动 WAIVE 或 fixture 绕过。
 
-实现 checkpoint：`9391be7`、`279c717`、`f421a95`、`7e657c9`、`d561363`。
+实现 checkpoint：`9391be7`、`279c717`、`f421a95`、`7e657c9`、`d561363`、
+`50f19f6`、`d150e17`。

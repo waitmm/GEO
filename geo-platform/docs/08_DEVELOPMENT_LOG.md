@@ -5263,3 +5263,30 @@ review_queue = READY
   (release source UI), `f421a95` (Wenxin fail-closed session reset), `7e657c9`
   (safe SQLite runtime + single worker + Evidence queue), `d561363` (release
   persistence and exact-gate tests).
+
+## 2026-09-20 GEO 1.0 First Real Release Acceptance
+
+- Fixed two blockers exposed only by the formal release path: release sampling
+  no longer freezes a partial Context before an explicit retry, and migration
+  `20260920_02` adds the collector-owned `brand_mentions` table to the frozen
+  release schema. Checkpoints: `50f19f6`, `d150e17`.
+- Created Project `1` / Prompt `1` through the release catalog and sampled three
+  valid Wenxin Runs under the five-attempt cap. Every final Run stored a distinct
+  conversation identity and `PRE_SUBMIT_ZERO_TURN_DOM_GATE`; Run 3 remains
+  `partial_success`, preserving its citation-completeness limitation.
+- Frozen Analysis `a2d0c0ee-b62e-4f39-9fe9-1bc14efdea33`, Context
+  `ctx-96357192-0f2d-45db-b70c-0b58c2987dcd`, Raw Result
+  `raw-v1:c0918158fcea889c`, and a 38-source/87-occurrence Citation Manifest.
+- Submitted real `2om.cn` page text through the formal manual-content API. It
+  produced immutable Snapshot `source-snapshot-1a51fa9d-9c0a-4cea-85f2-db72a67db8d0`,
+  SHA-256 `d163a7fe...d99822`, and 20 passages. No other fetched candidate was
+  auto-promoted to READY and no source was automatically waived.
+- Answer Semantic made three DeepSeek requests, admitted all three frozen
+  answers, and published `diag-v1:69cb9884452deead` with a legal zero-event
+  result. Usage is 8,922 total tokens, zero cache hits; no Review was created.
+- Real negative gates passed: Completion freeze returned 409 with 37 PENDING
+  sources, and Evidence continuation returned 409 without the exact Answer
+  Review. No SourceClaim/Alignment evaluation or Evidence task was created.
+- A service restart preserved exact Analysis/Context, Snapshot/artifact hash,
+  Diagnosis ResultVersion and `review=null`. The exact deep link reopened all
+  source, review and Evidence Gate panels without selecting latest state.

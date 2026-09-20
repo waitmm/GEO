@@ -839,12 +839,12 @@ Status: ACTIVE
   register the bundled route. Do not re-enable the old route, use latest snapshots,
   treat not-fetched as no support or manually write evidence rows. Historical #40
   still has 35/35 sources not fetched and is not migrated into the release path.
-- **GEO 1.0 first-slice implementation is engineering-ready, not yet real-positive
-  accepted**: the independent release database is migrated and the formal
-  Source Completion/Evidence gate exists, but no new real Analysis, source text,
-  Answer Review or external Evidence computation was authorized on 2026-09-20.
-  Keep reporting real Snapshot/Manifest/Evidence IDs as pending until they are
-  created through the formal release API/UI.
+- **GEO 1.0 first real acceptance is partial, not Evidence-complete**: the
+  release database now contains a real Analysis/Context, 38-source Citation
+  Manifest, one immutable READY Snapshot and a 3/3-admitted Answer ResultVersion.
+  It still has 37 PENDING sources and no Answer Review, Completion Manifest or
+  Evidence Result. Candidate fetch files must not be treated as READY; manual
+  source disposition and exact Review remain mandatory.
 - **Release SQLite is intentionally single-host/single-writer scoped**: the
   runtime uses one API process and one business worker. Do not add a second
   worker or share the database file across hosts. API review writes and worker
@@ -854,10 +854,12 @@ Status: ACTIVE
   runtime uses statically built pysqlite3/SQLite 3.51.3. A missing package or an
   unsafe version must block migration/startup; never bypass the check to make a
   deployment start. Source downloads are pinned by SHA-256.
-- **Wenxin independent-session behavior is code-fixed but not live-reverified**:
-  the collector now refuses submission unless a zero-turn conversation is
-  observed, but this implementation round did not authorize a browser run.
-  Existing historical samples retain their recorded session limitations.
+- **Wenxin independent-session behavior is live-verified for the first release
+  case, but one Run is citation-partial**: three final Runs recorded distinct
+  conversation identities and `PRE_SUBMIT_ZERO_TURN_DOM_GATE`. Two earlier
+  attempts failed during release integration and were retained rather than
+  hidden. Run 3 is valid `partial_success`, so its citation completeness
+  limitation must remain in downstream interpretation.
 - **Queued and running have different restart semantics**: `QUEUED` and
   `EVIDENCE_QUEUED` are durable work requests; `COLLECTING`, `RUNNING` and
   `EVIDENCE_RUNNING` have uncertain external side effects after process loss and

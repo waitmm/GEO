@@ -57,11 +57,13 @@ Evidence gate are engineering-accepted. The formal release database is separate
 from the legacy development database and contains only the approved first-slice
 allowlist.
 
-This does not mean the real positive evidence chain is complete. No new browser
-sampling, source fetch or external SourceClaim/Alignment call was authorized in
-the 2026-09-20 implementation run. The release database is migrated and ready,
-but a real Analysis/Context, user-supplied source text, exact Answer Review and
-authorized Evidence consumption are still required before real E2E acceptance.
+This does not mean the real positive evidence chain is complete. The first
+release acceptance has now created a real Analysis/Context, frozen 38-source
+Citation Manifest, one real immutable source Snapshot, and a 3/3-admitted Answer
+ResultVersion. The remaining 37 sources and exact Answer Review still require
+human disposition, so Source Completion and SourceClaim/Alignment consumption
+remain correctly blocked. Candidate fetch files and fixture output are not
+reported as completed evidence.
 See `docs/GEO_1_0_FIRST_SLICE_OPERATIONS.md` for the executable workflow and
 `docs/GEO_1_0_R3_EXECUTION_CONTRACT.md` for the frozen boundary.
 

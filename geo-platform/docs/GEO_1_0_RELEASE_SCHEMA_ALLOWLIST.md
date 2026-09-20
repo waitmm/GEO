@@ -1,7 +1,7 @@
 # GEO 1.0 首批发布表白名单
 
 Status: `APPROVED_FOR_FIRST_SLICE`
-Revision: `20260920_01`
+Revision: `20260920_02`
 Date: 2026-09-20
 
 正式 release 数据库只允许本文件列出的业务表及 Alembic 自有的
@@ -20,6 +20,7 @@ Date: 2026-09-20
 | `monitoring_batches` | 采样批次的显式配置 |
 | `browser_monitor_tasks` | V2 Analysis 所属采集任务 |
 | `browser_monitor_runs` | 固定计划 Run 与真实采样结果 |
+| `brand_mentions` | 采集器写入的回答级品牌提及观察；不等于推荐语义 |
 | `reference_sources` | Run 中实际观察到的引用 occurrence |
 | `retrieval_candidates` | 可用时保存的 Retrieval observation |
 | `run_artifacts` | 采样审计文件引用 |

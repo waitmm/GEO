@@ -1,6 +1,6 @@
 # GEO 1.0 首批测试能力映射
 
-Status: `FIRST_SLICE_ENGINEERING_ACCEPTED / REAL_POSITIVE_PENDING_AUTHORIZATION`
+Status: `FIRST_SLICE_ENGINEERING_ACCEPTED / REAL_INPUT_PARTIAL`
 Date: 2026-09-20
 
 | 旧测试/能力 | 1.0 是否保留 | 共享约束 | 处置 | 首批替代或验收 |
@@ -26,18 +26,18 @@ Date: 2026-09-20
 
 ## 2026-09-20 执行结果
 
-- `tests/test_release_first_slice.py`：10 passed；
-- release + 文心会话 + V2 Analysis/Diagnosis 相关组合：50 passed；
+- `tests/test_release_first_slice.py`：11 passed；
+- release + 文心会话 + V2 Analysis/Diagnosis/Safety 相关组合：95 passed；
 - frontend `npm run build` 与 `npm run build:release`：通过；
 - backend `compileall`、`git diff --check`：通过；
-- 新空库实际迁移：revision `20260920_01`、SQLite `3.51.3`、WAL、外键、
-  25/25 白名单表通过；
+- 新空库及正式库实际迁移：revision `20260920_02`、SQLite `3.51.3`、WAL、
+  外键、26/26 白名单表通过；
 - 正式 worker 空队列启动：`IDLE`；正式 API health/release status 与 release
   首屏通过。
 
-这些结果证明工程链和隔离正向消费，不证明新的真实来源已由用户补录，也不证明
-SourceClaim/Alignment 外部模型已在本轮调用。后两项必须在明确授权和真实输入下
-单独验收。
+这些结果与首轮真实验收共同证明 release 工程链、真实 Wenxin 采样、一个真实
+Snapshot 及双输入负向 Gate。SourceClaim/Alignment 尚未调用，因为 37 个来源和
+精确 Answer Review 仍未完成人工处置；不能把当前 409 阻断报告为正向消费通过。
 
 全仓基线为 `598 passed / 6 failed`。6 个失败均在 release 路径之外：
 

@@ -4225,3 +4225,20 @@ WAIVED 仍不是证据，全部 WAIVED 不产生策略资格，合法零 Evidenc
 工程验收和真实业务验收继续分开：当前新库、启动、页面、版本 Gate 和隔离正向测试已通过；
 本轮未授权新的采样、网页正文获取或 SourceClaim/Alignment 模型调用，因此真实正文 Snapshot
 和真实 Evidence 正向消费仍待固定输入与独立授权，不能用 fixture 冒充。
+
+### 2026-09-20：release 新库首轮真实验收推进到人工双输入 Gate
+
+正式 release 页面/API 已创建爱短链 / “抖音跳转链接”的新 Project、Prompt、3-Run
+Analysis 和 38-source Citation Manifest。文心最终三个有效 Run 均具备新对话
+zero-turn 证明；其中一条 `partial_success` 的引用完整性限制被保留，未为得到更好
+结果追加样本。
+
+真实 `2om.cn` 正文经人工检查后通过正式补录入口形成 1 个 READY Snapshot 与 20 个
+passages。其余获取结果只作为人工候选，不自动 READY、不自动 WAIVE。Answer Semantic
+对三个冻结回答各调用一次 DeepSeek，3/3 准入且合法返回零事件；这不表示来源不支持，
+也不把引用标题当作推荐正文。
+
+当前 `READY=1 / PENDING=37`，Answer Review 尚未完成。Completion 和 Evidence 两个
+正式 POST 均已验证以 409 正确阻断；因此首轮真实验收已经通过采样、正文快照和双输入
+负向 Gate，但尚未通过 Source Completion 或 Evidence 正向消费。下一动作是用户完成
+精确 Answer Review 与逐来源人工处置，而不是继续扩建架构或自动推进状态。

@@ -67,3 +67,17 @@ Analysis/Context/Citation Manifest 所有权冲突。
 - `single_prompt_retest_*`、`single_prompt_comparison_results`。
 
 首批正式 app 不注册这些对象对应的业务路由或后台恢复任务。
+
+## 正式运行形态
+
+- API：`app.release_main:app`，单进程；
+- worker：`backend/scripts/release_worker.py`，重任务并发固定为 1；
+- 迁移：`scripts/release-migrate.sh`，只执行 Alembic release migration；
+- 启动：`scripts/release-dev.sh`，只校验已迁移 schema，不创建或修补表；
+- SQLite：运行时必须通过 WAL-reset 安全版本检查；当前已验证 `3.51.3`；
+- artifact：正文文件位于独立 `EVIDENCE_ARTIFACT_DIR`，数据库保存精确路径、
+  hash、Snapshot 和 passage 身份。
+
+API 入队和 worker 消费均只访问本白名单。`QUEUED` / `EVIDENCE_QUEUED` 在 API
+重启后保留；`COLLECTING` / `RUNNING` / `EVIDENCE_RUNNING` 才会因不确定执行结果
+进入显式中断或失败状态。

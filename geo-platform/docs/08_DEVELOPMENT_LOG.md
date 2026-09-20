@@ -5223,3 +5223,43 @@ review_queue = READY
   documentation only.
 - Formal classification is `SEMANTIC_RISK / IMPLEMENTATION_DIVERGENCE_REMEDIATION`.
   Implementation and production cutover remain unauthorized pending review.
+
+## 2026-09-20 GEO 1.0 R2 + R3 First-Slice Implementation
+
+- Added a dedicated release Alembic baseline (`20260920_01`) and an exact
+  25-table allowlist. The release app validates revision, allowlist, WAL,
+  foreign keys and the SQLite WAL-reset fix at startup; it does not call
+  `create_all()` or legacy column repair.
+- Added a pinned `pysqlite3` bootstrap that builds against SQLite 3.51.3 after
+  verifying both source archive SHA-256 values. Formal migration and runtime
+  use the same DBAPI. The default independent `backend/geo_release.db` and a
+  second clean temporary database both migrated successfully.
+- Split the formal runtime into one API and one single-concurrency business
+  worker. Sampling, Answer Semantic and Evidence endpoints now queue work;
+  queued jobs survive API restart, while in-flight uncertain jobs fail closed.
+- Evidence continuation now validates and freezes exact Citation Manifest,
+  Source Completion Manifest, Answer ResultVersion and Review before enqueue,
+  then revalidates the same binding in the worker. Retry reuses the saved input
+  instead of querying latest.
+- Added formal release start scripts, release-only frontend navigation and
+  explicit Evidence queued/running/failed UI states. Strategy, Execution,
+  Publication, Retest and optimization routes remain absent.
+- Added restart persistence checks covering Snapshot artifact path/hash,
+  Review identity and Evidence ResultVersion. Ten release tests and 50 related
+  release/session/V2 tests pass; both frontend builds pass.
+- Full backend baseline: 598 passed / 6 failed. The failures are two legacy
+  prompt batch-delete assertions, two legacy Strategy-to-Experiment assertions
+  and two Runtime Projection Spike assertions. None of those routes/tables are
+  registered by the release app; their shared safety constraints have release
+  replacements, so they remain documented/archived rather than edited away.
+- The Wenxin collector now fails closed before submission unless it proves a
+  zero-turn new conversation and stores the actual sampling condition and proof
+  basis. No real browser replay was authorized in this implementation run, so
+  live independent-session verification remains pending.
+- No external fetch, browser sample, DeepSeek call, automatic Review, waiver or
+  real Evidence write occurred. The release database is ready but empty of real
+  business objects; fixture output is not reported as real acceptance.
+- Checkpoints: `9391be7` (release schema/source/evidence spine), `279c717`
+  (release source UI), `f421a95` (Wenxin fail-closed session reset), `7e657c9`
+  (safe SQLite runtime + single worker + Evidence queue), `d561363` (release
+  persistence and exact-gate tests).

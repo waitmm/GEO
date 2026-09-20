@@ -50,9 +50,20 @@ source-first product workflow = NOT DELIVERED
 real evidence E2E acceptance = BLOCKED
 ```
 
-The proposed repair is documented in
-`docs/SINGLE_PROMPT_CORE_V2_SOURCE_COMPLETION_PLAN.md`. It is a draft awaiting
-Product Owner review; no workflow cutover or external operation is authorized.
+The source-first repair was approved through the R2 + R3 delivery contract and
+is now implemented as the GEO 1.0 first-slice release path. Its dedicated app,
+release migration, source-preparation workspace, immutable manifests and exact
+Evidence gate are engineering-accepted. The formal release database is separate
+from the legacy development database and contains only the approved first-slice
+allowlist.
+
+This does not mean the real positive evidence chain is complete. No new browser
+sampling, source fetch or external SourceClaim/Alignment call was authorized in
+the 2026-09-20 implementation run. The release database is migrated and ready,
+but a real Analysis/Context, user-supplied source text, exact Answer Review and
+authorized Evidence consumption are still required before real E2E acceptance.
+See `docs/GEO_1_0_FIRST_SLICE_OPERATIONS.md` for the executable workflow and
+`docs/GEO_1_0_R3_EXECUTION_CONTRACT.md` for the frozen boundary.
 
 The fixed #44 production result is
 `diag-v1:1449c44916fe5c55`. It has four grounded recommendation Reasons, 30

@@ -4210,3 +4210,18 @@ Semantic。回答审核后再按候选召回运行 SourceClaim/Alignment，不�
 本次只登记待审批方案，不修改 V1 Step 1-8，不执行代码、迁移、网页抓取或 LLM。详细状态、Gate、API、页面、
 迁移兼容、测试矩阵和五阶段停止点见 `SINGLE_PROMPT_CORE_V2_SOURCE_COMPLETION_PLAN.md`。审批前 #40 停止在
 `BLOCKED_BY_SOURCE_COMPLETION_PATH`，不得生成 Strategy，也不得要求用户重复 Answer 审核。
+
+### 2026-09-20：GEO 1.0 首批来源与证据主链进入独立发布路径
+
+R2 + R3 已由 Product Owner 批准并完成首批工程实现。正式用户流程现在从固定
+Analysis/Context 冻结 Citation Manifest，允许逐来源人工补录正文或显式放弃，生成
+不可变 Snapshot、文件 hash、passages 和 Source Completion Manifest；Answer
+ResultVersion/Review 与来源完成清单必须精确汇合后，Evidence 才能排队执行。
+
+发布路径采用独立新库、显式 migration、一个 API 与一个串行业务 worker。页面只展示
+“来源与证据主链”，不会把旧 Step 7/8、Runtime 或 legacy workflow 带进首次交付。
+WAIVED 仍不是证据，全部 WAIVED 不产生策略资格，合法零 Evidence 也必须来自真实评估。
+
+工程验收和真实业务验收继续分开：当前新库、启动、页面、版本 Gate 和隔离正向测试已通过；
+本轮未授权新的采样、网页正文获取或 SourceClaim/Alignment 模型调用，因此真实正文 Snapshot
+和真实 Evidence 正向消费仍待固定输入与独立授权，不能用 fixture 冒充。

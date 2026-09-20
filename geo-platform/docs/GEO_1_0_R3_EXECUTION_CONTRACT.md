@@ -1,6 +1,6 @@
 # GEO 1.0 R3 首批执行契约
 
-Status: `PRODUCT_OWNER_APPROVED / IMPLEMENTATION_IN_PROGRESS`
+Status: `ENGINEERING_IMPLEMENTED / REAL_POSITIVE_CHAIN_PENDING_AUTHORIZATION`
 Date: 2026-09-20
 Classification: `SEMANTIC_CHANGE / EXPLICIT_PRODUCT_OWNER_CUTOVER_AUTHORIZATION`
 Scope: 首次交付的 Source Completion 与 Evidence 双输入 Gate
@@ -101,3 +101,27 @@ SQLite runtime 必须包含 WAL-reset 修复：`>=3.51.3`，或官方回补版�
 - Pending、错版、跨 Context、未审核 Answer 均阻断 Evidence；
 - 合格输入由 Evidence 消费指定版本；
 - GET 无业务写入；重启后对象、审核和文件绑定保持。
+
+## 9. 2026-09-20 实施结果
+
+- release revision：`20260920_01`；正式 schema 为 25 张白名单业务表，另含
+  Alembic 自有的 `alembic_version`；
+- release SQLite DBAPI：静态链接 SQLite `3.51.3` 的 `pysqlite3`；下载源和
+  SHA-256 固定，运行时版本不安全时迁移/启动均 fail closed；
+- 正式拓扑：一个 `app.release_main:app` API 进程和一个
+  `scripts/release_worker.py` 串行业务 worker；API 不在请求线程或
+  `BackgroundTasks` 中执行采样、Answer 或 Evidence；
+- Analysis/Answer/Evidence 由 API 排队；queued 在服务重启后保留，只有正在
+  执行且结果不确定的任务转为显式 `INTERRUPTED` / `EVIDENCE_FAILED`；
+- Evidence 请求在排队前完成双输入 Gate，并把精确版本绑定写入队列；worker
+  消费时再次校验相同绑定，不查询 latest；
+- release frontend 只暴露“来源与证据主链”，不注册 Strategy、Execution、
+  Publication、Retest 或 `/api/optimization`；
+- 新空库已通过正式迁移脚本、API、worker 和页面启动验收；Snapshot、Review、
+  Result 与正文文件的重启后绑定由迁移库专项测试覆盖。
+
+本轮没有新的浏览器采样、来源抓取或外部 LLM 授权。正式 release 库目前没有
+真实业务对象，不能把隔离测试 Snapshot 当作真实正文证据链。真实人工正文补录、
+Answer Review 汇合和 Evidence 正向消费继续等待固定 Analysis/Context 与相应授权。
+
+实现 checkpoint：`9391be7`、`279c717`、`f421a95`、`7e657c9`、`d561363`。

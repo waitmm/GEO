@@ -832,14 +832,34 @@ Status: ACTIVE
   option in that local scenario. Even `CONFIRM_INCLUDE_AS_OPTION` must retain its
   original speech act and cannot establish brand capability, citation binding or
   channel effectiveness. Those remain separate Truth and Evidence gates.
-- **V2 source completion is not currently a prerequisite Gate**: the second-slice
-  contract places immutable SourceSnapshots before recommendation diagnosis, but
-  production `compute_diagnosis()` runs Answer Semantic first and the UI bundles
-  source/evidence work behind one diagnosis action. The reviewed #40 case therefore
-  has 35/35 sources not fetched, zero passages/SourceClaims and 770 not-evaluated
-  relations after Answer review. Current handling is to stop downstream Strategy
-  and review `SINGLE_PROMPT_CORE_V2_SOURCE_COMPLETION_PLAN.md`. Prevention requires
-  an Analysis-owned source manifest, explicit source-state conservation, manual
-  same-source supplementation/waiver, stage-specific authorization and a backend
-  gate before Answer. Do not work around this by rerunning Answer, using latest
-  snapshots, treating not-fetched as no support or manually writing evidence rows.
+- **Historical bundled source flow remains unsafe outside the release app**: the
+  old second-slice route can still run Answer before source completion and bundle
+  source/evidence work. The GEO 1.0 release app resolves this with Analysis-owned
+  manifests, manual source completion and an exact Evidence gate, and does not
+  register the bundled route. Do not re-enable the old route, use latest snapshots,
+  treat not-fetched as no support or manually write evidence rows. Historical #40
+  still has 35/35 sources not fetched and is not migrated into the release path.
+- **GEO 1.0 first-slice implementation is engineering-ready, not yet real-positive
+  accepted**: the independent release database is migrated and the formal
+  Source Completion/Evidence gate exists, but no new real Analysis, source text,
+  Answer Review or external Evidence computation was authorized on 2026-09-20.
+  Keep reporting real Snapshot/Manifest/Evidence IDs as pending until they are
+  created through the formal release API/UI.
+- **Release SQLite is intentionally single-host/single-writer scoped**: the
+  runtime uses one API process and one business worker. Do not add a second
+  worker or share the database file across hosts. API review writes and worker
+  writes must stay short; external browser/LLM waits cannot hold write
+  transactions.
+- **The host stdlib SQLite is not the release DBAPI**: the verified release
+  runtime uses statically built pysqlite3/SQLite 3.51.3. A missing package or an
+  unsafe version must block migration/startup; never bypass the check to make a
+  deployment start. Source downloads are pinned by SHA-256.
+- **Wenxin independent-session behavior is code-fixed but not live-reverified**:
+  the collector now refuses submission unless a zero-turn conversation is
+  observed, but this implementation round did not authorize a browser run.
+  Existing historical samples retain their recorded session limitations.
+- **Queued and running have different restart semantics**: `QUEUED` and
+  `EVIDENCE_QUEUED` are durable work requests; `COLLECTING`, `RUNNING` and
+  `EVIDENCE_RUNNING` have uncertain external side effects after process loss and
+  therefore become explicit interruption/failure. Do not auto-retry them on
+  startup.

@@ -4471,12 +4471,10 @@ export default function App() {
                         <Text ellipsis={{ tooltip: terms.join(" / ") }} style={{ maxWidth: 250 }}>{terms.join(" / ")}</Text>
                       </Space> : <Text type="secondary">本轮未单独采集</Text>;
                     } },
-                    { title: "回答正文", width: 180, render: (_: unknown, row: any) => row.answer_text ? <Space size={6}>
-                      <Tag color={row.answer_content_boundary?.status === "FINAL_ANSWER_ONLY" ? "blue" : "gold"}>
-                        {row.answer_content_boundary?.status === "FINAL_ANSWER_ONLY" ? "独立 1 条" : "历史混合文本"}
-                      </Tag>
-                      <Text type="secondary">{row.answer_char_count || row.answer_text.length} 字</Text>
-                    </Space> : <Text type="secondary">尚无回答</Text> },
+                    { title: "回答正文", width: 180, render: (_: unknown, row: any) => row.answer_content_boundary?.status === "LEGACY_MIXED_CONTAINER"
+                      ? <Tag color="gold">需重新采样</Tag>
+                      : row.answer_text ? <Space size={6}><Tag color="blue">独立 1 条</Tag><Text type="secondary">{row.answer_char_count || row.answer_text.length} 字</Text></Space>
+                        : <Text type="secondary">尚无回答</Text> },
                     { title: "引用", width: 72, render: (_: unknown, row: any) => row.references?.length || 0 },
                     { title: "检索", width: 72, render: (_: unknown, row: any) => row.retrieval_candidates?.length || 0 },
                     { title: "耗时", width: 92, render: (_: unknown, row: any) => row.duration_ms ? `${Math.round(row.duration_ms / 1000)} 秒` : "-" },
@@ -4498,9 +4496,9 @@ export default function App() {
                       type="warning"
                       showIcon
                       message="历史回答边界未分离"
-                      description="该冻结 Run 的回答文本包含平台搜索过程，只保留作历史记录；系统不会静默清洗或将其作为新的独立回答重新分析。"
+                      description="该冻结 Run 的回答文本包含平台搜索过程，不再展开显示；请使用修复后的采集器重新采样。"
                     />}
-                    {row.answer_text && <div><Text strong>{row.answer_content_boundary?.status === "FINAL_ANSWER_ONLY" ? "最终回答正文 · 独立 1 条" : "历史采集文本"}</Text><Typography.Paragraph className="v2-answer-text">{row.answer_text}</Typography.Paragraph></div>}
+                    {row.answer_text && row.answer_content_boundary?.status !== "LEGACY_MIXED_CONTAINER" && <div><Text strong>实际回答正文</Text><Typography.Paragraph className="v2-answer-text">{row.answer_text}</Typography.Paragraph></div>}
                     <div className="v2-output-columns">
                       <div><Text strong>引用资料 · {row.references?.length || 0}</Text>{(row.references || []).map((item: any) => <div key={item.reference_id}><Link href={item.canonical_url || item.url} target="_blank">{item.index}. {item.title || item.domain || item.url}</Link></div>)}</div>
                       <div><Text strong>检索观测 · {row.retrieval_candidates?.length || 0}</Text>{(row.retrieval_candidates || []).map((item: any) => <div key={item.candidate_id}><Link href={item.canonical_url || item.url} target="_blank">{item.rank}. {item.title || item.domain || item.url}</Link></div>)}</div>

@@ -43,7 +43,13 @@ def run_once() -> str | None:
         db.close()
 
     if work_type == "analysis":
-        execute_analysis(identity, session_factory=ReleaseSessionLocal)
+        # The release acceptance path retains successful planned Runs and lets
+        # the operator explicitly retry failures before freezing the Context.
+        execute_analysis(
+            identity,
+            freeze_with_failures=False,
+            session_factory=ReleaseSessionLocal,
+        )
         return f"analysis:{identity}"
     if work_type == "evidence":
         execute_queued_evidence(identity, session_factory=ReleaseSessionLocal)

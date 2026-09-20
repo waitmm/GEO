@@ -49,6 +49,7 @@ from app.release_schema import (
     sqlite_has_wal_reset_fix,
     validate_release_database,
 )
+from scripts import release_worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -202,6 +203,38 @@ def test_release_routes_exclude_legacy_and_later_workflows():
     assert not any("execution-proposal" in path for path in paths)
     assert not any("retest" in path for path in paths)
     assert not any(path.startswith("/api/optimization") for path in paths)
+
+
+def test_release_worker_keeps_failed_runs_retryable_before_context_freeze(tmp_path, monkeypatch):
+    db, engine = _session(tmp_path)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        db.add(Organization(id=1, name="Release Org", plan_type="release-1.0"))
+        db.add(Project(id=1, organization_id=1, name="Release", brand_name="Target"))
+        db.add(Prompt(id=44, project_id=1, title="Prompt", prompt_text="推荐一个短链工具"))
+        db.commit()
+        analysis, _ = create_analysis(
+            db,
+            project_id=1,
+            prompt_id=44,
+            sample_count=3,
+            idempotency_key="release-worker-retryable",
+        )
+        called = {}
+
+        def fake_execute_analysis(identity, **kwargs):
+            called.update({"identity": identity, **kwargs})
+
+        monkeypatch.setattr(release_worker, "ReleaseSessionLocal", factory)
+        monkeypatch.setattr(release_worker, "execute_analysis", fake_execute_analysis)
+
+        assert release_worker.run_once() == f"analysis:{analysis.analysis_id}"
+        assert called["identity"] == analysis.analysis_id
+        assert called["freeze_with_failures"] is False
+        assert called["session_factory"] is factory
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def test_release_restart_preserves_queued_work_and_fails_only_running_work(tmp_path, monkeypatch):

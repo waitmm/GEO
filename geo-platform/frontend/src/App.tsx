@@ -2755,6 +2755,7 @@ export default function App() {
   }, [projectId, workflowData]);
   // 项目视图加载 Prompt 概览（单 Prompt 视图不显示概览）
   useEffect(() => {
+    if (RELEASE_FIRST_SLICE) return;
     if (!projectId || activePromptId) { setPromptOverview(null); return; }
     fetch(`/api/optimization/workflow/${projectId}/prompt-overview`)
       .then((r) => r.json()).then(setPromptOverview).catch(() => { /* 概览失败不影响页面 */ });

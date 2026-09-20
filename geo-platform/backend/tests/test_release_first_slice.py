@@ -9,6 +9,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import sessionmaker
 
@@ -203,6 +204,10 @@ def test_release_routes_exclude_legacy_and_later_workflows():
     assert not any("execution-proposal" in path for path in paths)
     assert not any("retest" in path for path in paths)
     assert not any(path.startswith("/api/optimization") for path in paths)
+
+    response = TestClient(app).get("/api/optimization/workflow/1/prompt-overview")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Release API route not found"}
 
 
 def test_release_worker_keeps_failed_runs_retryable_before_context_freeze(tmp_path, monkeypatch):

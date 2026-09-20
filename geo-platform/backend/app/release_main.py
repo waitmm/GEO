@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -58,6 +58,8 @@ def create_release_app(*, validate_on_startup: bool = True) -> FastAPI:
 
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str, request: Request):
+            if full_path == "api" or full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Release API route not found")
             index_path = frontend_dist / "index.html"
             return FileResponse(str(index_path)) if index_path.exists() else {"detail": "Frontend not found"}
 

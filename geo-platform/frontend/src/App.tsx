@@ -25,6 +25,12 @@ type V2SourceDraft = {
   waiverReason: string;
   waiverImpact: string;
 };
+type V2SourceActionNotice = {
+  type: "success" | "error";
+  sourceKey: string;
+  title: string;
+  detail: string;
+};
 
 const RELEASE_FIRST_SLICE = import.meta.env.VITE_GEO_RELEASE_FIRST_SLICE === "1";
 
@@ -1254,6 +1260,7 @@ export default function App() {
   const [v2SourceActionKey, setV2SourceActionKey] = useState<string | null>(null);
   const [v2SourceActor, setV2SourceActor] = useState("本地审核人");
   const [v2SourceDrafts, setV2SourceDrafts] = useState<Record<string, V2SourceDraft>>({});
+  const [v2SourceActionNotice, setV2SourceActionNotice] = useState<V2SourceActionNotice | null>(null);
   const [v2SourceFilter, setV2SourceFilter] = useState<"ACTION_REQUIRED" | "ALL" | "READY" | "WAIVED_WITH_LIMITATION">("ACTION_REQUIRED");
   const [v2AnswerPolicy, setV2AnswerPolicy] = useState<"CACHE_ONLY" | "ALLOW_EXTERNAL">("CACHE_ONLY");
   const [v2EvidencePolicy, setV2EvidencePolicy] = useState<"CACHE_ONLY" | "ALLOW_EXTERNAL">("CACHE_ONLY");
@@ -1746,6 +1753,7 @@ export default function App() {
       setV2DiagnosisEdits({});
       setV2SourcePreparation(null);
       setV2SourceDrafts({});
+      setV2SourceActionNotice(null);
       setV2StrategyReadiness(null);
       setV2Strategy(null);
       setV2Execution(null);
@@ -1868,6 +1876,8 @@ export default function App() {
       return;
     }
     const actionKey = `manual:${source.source_key}`;
+    const sourceTitle = String(source.reference_observations?.[0]?.title || source.canonical_url);
+    setV2SourceActionNotice(null);
     setV2SourceActionKey(actionKey);
     try {
       const status = await api.submitSinglePromptV2ManualSource(
@@ -1887,9 +1897,13 @@ export default function App() {
       );
       setV2SourcePreparation(status);
       updateV2SourceDraft(source.source_key, { cleanText: "", rawHtml: "" });
-      message.success(inputFormat === "HTML_SOURCE" ? "页面源码已提取正文并生成快照" : "正文快照与 passages 已生成");
+      const detail = inputFormat === "HTML_SOURCE" ? "页面源码已提取正文并生成不可变快照" : "正文与 passages 已生成不可变快照";
+      setV2SourceActionNotice({ type: "success", sourceKey: source.source_key, title: sourceTitle, detail });
+      message.success({ content: detail, duration: 6 });
     } catch (error: any) {
-      message.error(error.message || "正文补录失败");
+      const detail = error.message || "正文补录失败";
+      setV2SourceActionNotice({ type: "error", sourceKey: source.source_key, title: sourceTitle, detail });
+      message.error({ content: detail, duration: 8 });
     } finally {
       setV2SourceActionKey(null);
     }
@@ -4797,6 +4811,14 @@ export default function App() {
                     <Col><Button type="primary" icon={<ListChecks size={15} />} loading={v2SourceActionKey === "create-preparation"} disabled={Boolean(v2SourceActionKey)} onClick={startV2SourcePreparation}>冻结引用范围并开始准备</Button></Col>
                   </Row>
                 </Space> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                  {v2SourceActionNotice && <Alert
+                    type={v2SourceActionNotice.type}
+                    showIcon
+                    closable
+                    onClose={() => setV2SourceActionNotice(null)}
+                    message={v2SourceActionNotice.type === "success" ? "来源正文处理成功" : "来源正文未生成快照"}
+                    description={<Space direction="vertical" size={2}><Text strong>{v2SourceActionNotice.title}</Text><Text>{v2SourceActionNotice.detail}</Text></Space>}
+                  />}
                   {v2SourcePreparation.conservation.nonterminal > 0 && <Alert
                     type="warning"
                     showIcon
@@ -4867,6 +4889,7 @@ export default function App() {
                               ? <Input.TextArea rows={9} value={draft.rawHtml} onChange={(event) => updateV2SourceDraft(source.source_key, { rawHtml: event.target.value })} placeholder="粘贴页面 HTML 源代码。系统只提取正文；验证页、登录墙和空壳页面会被拒绝。" />
                               : <Input.TextArea rows={7} value={draft.cleanText} onChange={(event) => updateV2SourceDraft(source.source_key, { cleanText: event.target.value })} placeholder="粘贴真实正文。验证页、登录墙、错误提示不得作为正文提交。" />}</Col>
                             <Col><Button type="primary" loading={v2SourceActionKey === `manual:${source.source_key}`} disabled={Boolean(v2SourceActionKey)} onClick={() => submitV2ManualSource(source)}>{source.snapshot ? "提交新正文版本" : draft.inputFormat === "HTML_SOURCE" ? "提取并生成正文快照" : "校验并生成正文快照"}</Button></Col>
+                            {v2SourceActionNotice?.sourceKey === source.source_key && v2SourceActionNotice.type === "error" && <Col xs={24}><Alert type="error" showIcon message="本次提交被拒绝" description={v2SourceActionNotice.detail} /></Col>}
                           </Row>
                         </>}
                         {source.state === "MANUAL_REQUIRED" && <>

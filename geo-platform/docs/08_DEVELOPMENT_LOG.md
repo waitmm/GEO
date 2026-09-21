@@ -5549,3 +5549,17 @@ review_queue = READY
   revision `20260921_01` with the same `30 READY / 16 MANUAL_REQUIRED` state.
   Release first-slice tests pass `22/22`; the release frontend build passes, and
   a headless production-page render found zero loading buttons after settlement.
+
+### Follow-up: persist manual submission outcomes
+
+- Live access logs proved the reported no-op was two completed
+  `POST .../manual-content` requests returning HTTP 422 against Analysis
+  `19b0be0f-f794-4435-9fa7-2723257f26cc`; it was not a hung request and created
+  no Snapshot.
+- Manual-source success and rejection are now retained in the source workspace,
+  with the exact source title and backend reason. The same rejection also stays
+  next to the expanded source row. FastAPI field-level validation errors are
+  rendered as readable field/reason messages instead of raw JSON.
+- The page separately identifies the current Analysis. This follow-up did not
+  switch the user from the 66-source all-Runs Analysis to the pinned 46-source
+  Runs 4/5/6 Analysis, and did not change either source inventory.

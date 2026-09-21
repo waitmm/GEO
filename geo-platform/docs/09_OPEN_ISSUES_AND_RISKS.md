@@ -939,3 +939,9 @@ Status: ACTIVE
   claim `FULL_PAGE`, and only the extracted clean text is frozen. Do not bypass
   this path by storing markup as a passage or by treating extraction success as
   evidence sufficiency.
+- **Transient toast is not sufficient feedback for source disposition**: a
+  manual HTML submission can legitimately receive 422 from the content Gate.
+  The outcome and exact reason must remain visible in the source workspace;
+  otherwise a correct rejection is indistinguishable from a dead button. Keep
+  both success-after-filter-removal and row-local rejection feedback covered by
+  frontend acceptance.

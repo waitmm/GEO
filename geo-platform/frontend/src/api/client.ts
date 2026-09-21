@@ -31,9 +31,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     try {
       const parsed = JSON.parse(detail);
       const parsedDetail = parsed.detail || parsed.message;
-      message = typeof parsedDetail === "string"
-        ? parsedDetail
-        : parsedDetail?.detail || parsedDetail?.code || JSON.stringify(parsedDetail) || message;
+      if (typeof parsedDetail === "string") {
+        message = parsedDetail;
+      } else if (Array.isArray(parsedDetail)) {
+        message = parsedDetail.map((item) => {
+          const location = Array.isArray(item?.loc) ? item.loc.filter((part: unknown) => part !== "body").join(".") : "请求内容";
+          return `${location || "请求内容"}：${item?.msg || "格式不正确"}`;
+        }).join("；");
+      } else {
+        message = parsedDetail?.detail || parsedDetail?.code || JSON.stringify(parsedDetail) || message;
+      }
     } catch {
       // Non-JSON error bodies are surfaced as-is.
     }

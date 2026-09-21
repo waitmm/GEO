@@ -915,3 +915,15 @@ Status: ACTIVE
   while Runs 4/5/6 remained the declared main input. Preserve both histories,
   but never infer current ownership from creation time or reuse source output
   across their different Context/Manifest identities.
+- **The authorized Runs 4/5/6 Answer result is reviewable, not yet reviewed**:
+  Diagnosis `b0a35004-3c12-46f1-af49-76c903031c6f` has three admitted answers,
+  three option events requiring explicit decisions and one legal zero-event
+  answer. Evidence must not consume the event Reasons until the exact Review is
+  appended, and the empty Truth snapshot must remain `UNRESOLVED`.
+- **Local LLM cost audit currently retains total tokens, not billing splits**:
+  the three Answer cache rows retain 7441 total tokens but not separate input,
+  cache-hit and output token counts. Cost can therefore be reported only as a
+  conservative upper estimate unless the provider bill is inspected. Never
+  label that estimate as an actual deduction. Before Evidence, fix a request
+  envelope from the exact reviewed Reasons and completed sources and retain the
+  actual usage returned by each call.

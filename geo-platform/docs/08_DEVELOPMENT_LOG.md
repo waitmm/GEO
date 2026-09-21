@@ -5503,3 +5503,25 @@ review_queue = READY
   Preparation and started auto-fetch. Server access logs distinguish this from
   test fixtures and read-only polling. The new Analysis is retained as a
   separate user operation and is not selected as the Runs 4/5/6 main case.
+
+## 2026-09-21 Authorized Main-Case Answer Batch
+
+- Created and restored an isolated SQLite online backup before external work.
+  The restored copy retained revision `20260921_01`, the pinned Analysis,
+  Context and Citation Manifest, 30 snapshots, 859 passages and 30/30 artifact
+  hashes.
+- Ran the formal release Answer-only endpoint for Runs `4/5/6` under the exact
+  manifest binding. Diagnosis `b0a35004-3c12-46f1-af49-76c903031c6f` published
+  immutable Result `diag-v1:9a76fc3853156f99` and is `READY_FOR_REVIEW`.
+- DeepSeek made exactly three external calls with no retry or cache hit. All
+  three answer payloads passed strict admission: Runs 4/5 produced three total
+  review-required option events, while Run 6 produced a legal zero-event
+  result. No Review, Truth, Completion Manifest or Evidence task was created.
+- Repeating the same formal request with the same idempotency key returned the
+  existing execution. Database counts remained one execution, one result,
+  three cache rows and zero reviews; no duplicate external call occurred.
+- Confirmed the release UI already exposes full frozen answers, per-event
+  decisions and the 16 exact manual source actions. Evidence remains correctly
+  blocked by the missing exact Review and Completion Manifest.
+- No code changed in this batch. Only the durable operations and status records
+  were updated.

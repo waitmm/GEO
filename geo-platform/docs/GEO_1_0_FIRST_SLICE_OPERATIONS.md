@@ -305,3 +305,55 @@ Answer 与来源可并行，但当前 DB 没有兼容 `LLMCallCache`。Runs `4/5
 Evidence 仍需 16 条来源完成处置、Completion Manifest、精确 Answer Review，并在当时根据
 实际可消费 Reasons 和召回候选计算 SourceClaim/Alignment 调用上界。当前没有创建空的
 Diagnosis、Review、Completion 或 Evidence 任务，也没有把未执行解释为合法零结果。
+
+## 11. 2026-09-21 授权批次 Answer Semantic 实际执行
+
+执行前使用 SQLite Online Backup 建立保护性副本
+`/private/tmp/geo_release_answer_batch_20260921/geo_release.db`，并复制主案例 30 份正文
+artifact。隔离恢复核验结果：revision `20260921_01`、SQLite `3.51.3`、
+`integrity_check=ok`、固定 Analysis/Context/Manifest 均存在，30/30 artifact SHA-256 匹配，
+859 个 passages 可读取。正式库和既有正文未清空或重建。
+
+通过正式 Answer-only API 创建：
+
+- Diagnosis `b0a35004-3c12-46f1-af49-76c903031c6f`；
+- ResultVersion `diag-v1:9a76fc3853156f99`，完整结果 hash
+  `9a76fc3853156f99f0e3439fa9bb77909625380bdf54caa56deb53569ec7ebe3`；
+- reviewable set hash
+  `87f9112d34df5dbd055237cf5766e15a653eeb3c8bb86f21cb68041a2687421b`；
+- 状态 `READY_FOR_REVIEW`，Review 为空；
+- DeepSeek `deepseek-v4-flash` 3 次外部请求、0 缓存命中、0 重试、7441 total tokens。
+
+三个回答均通过当前严格 Schema、grounding 和 admission。Run 4 产生两个
+`INCLUDE_AS_OPTION` 待审事件（爱短链、趣码短链），Run 5 产生一个爱短链
+`INCLUDE_AS_OPTION` 待审事件，Run 6 是协议完整的 `DONE_ZERO_EVENTS`。三个事件均因
+`OPTION_ACT_WITHOUT_EXPLICIT_OPTION_CUE` 等待人工判断；确认候选只保持
+`INCLUDE_AS_OPTION`，不会升级为 `RECOMMEND`、Product Truth 或证据关系。Truth 集为空，三个
+Reason 关系均保持 `UNRESOLVED`。没有 Market Criteria、unresolved item 或 Answer 失败。
+
+相同幂等键再次提交只返回上述 Diagnosis/Result；数据库守恒为 1 个 execution、1 个 result、
+3 个 cache row、0 个 review，没有新增外部调用或重复业务结果。
+
+官方当前定价说明 legacy `deepseek-v4-flash` 实际由 DeepSeek-V4.1-Flash 服务并按 Flash 价格
+计费。现有审计只保存每次 total tokens（2690/2456/2295），未保存 input/cache-hit/output 拆分，
+因此账单实扣不可由本地数据精确重建。按全部 7441 tokens 均使用峰值 output 单价
+USD 1.20/M 的保守上界为 USD 0.00893；按 2026-09-21 美元中间价 6.7487 折算约人民币
+0.061 元。这是费用上界估算，不是账单实扣。
+
+来源侧仍为 `30 READY / 16 MANUAL_REQUIRED / 0 WAIVED`，Completion Manifest 为空。
+Evidence 尚未入队。当前三个待审事件全部确认时，配置上界为 3 个 eligible Reasons：
+SourceClaim 最多选择 6 个唯一 passages、最多 6 次请求；Alignment 每 Reason/来源最多 3 个
+claims，最多 18 次请求；`8 x 合格 Reason 数` 只覆盖这两个 Evidence LLM 阶段。Answer 的 3 次
+请求已单独计入本批；召回、内容 Gate、Truth 关系和持久化是确定性处理，不另含 LLM 请求。
+Evidence `max_attempts=1`，即额外重试上限为 0。最终固定计划仍必须在 Review 和 Completion
+形成后按实际 eligible Reasons、候选 passages、cache 命中重新计算，不能拿这个条件上界直接执行。
+
+人工入口：
+
+```text
+http://127.0.0.1:8020/?v2_analysis=92bb12a5-edcc-43c7-b848-ca60267a2672&v2_project=1&v2_prompt=1&v2_diagnosis=b0a35004-3c12-46f1-af49-76c903031c6f&v2_diagnosis_result=diag-v1%3A9a76fc3853156f99
+```
+
+页面可展开 Runs 4/5/6 的完整原回答，在“待人工确认的候选判断”逐项确认、排除或降为提及；
+来源准备默认集中显示 16 条人工待办，并提供人工补录和明确 WAIVE。完成准确 Review 与全部来源
+处置之前，Evidence 保持阻断，不把阻断报告成零结果或消费成功。

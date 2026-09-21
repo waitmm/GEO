@@ -4352,3 +4352,14 @@ Snapshot 没有出现在当前库、其他工作区数据库或现存备份中�
 同一时段页面显式选择 Runs 1-9 创建了另一份 Analysis 并启动来源自动获取。该操作有连续 POST
 访问日志，不是刷新副作用；其对象继续保留但不成为当前主分析，也不能跨 Context 为 Runs 4/5/6
 补齐来源。产品页面的展示顺序仍不具有“当前业务版本”语义。
+
+### 2026-09-21：主分析 Answer 已形成可审核结果
+
+固定 Runs 4/5/6 已通过正式 Answer-only 入口生成 Result
+`diag-v1:9a76fc3853156f99`。三个回答均通过技术准入：Run 4/5 共形成三条需要用户判断的
+`INCLUDE_AS_OPTION` 候选，Run 6 是合法零事件。产品当前不把这些候选自动升级为推荐、品牌事实
+或证据，也不把 Run 6 的零事件解释为失败。
+
+页面现在应沿固定链接继续：展开三条原回答，逐项处理三个候选，再处置 16 条来源。Answer Review
+和 Source Completion 两侧都满足后，系统才固定 Evidence 计划并入队。本批没有自动 Review、
+WAIVE、Truth 或 Evidence；30 READY / 16 MANUAL_REQUIRED 的来源状态保持不变。

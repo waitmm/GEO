@@ -230,3 +230,7 @@ release revision `20260921_01` 允许 Analysis/Context 不绑定新的 Browser T
 因此早期工单中的“3 个 DONE_ZERO_EVENTS”对象不在当前发布现场，不能冒充当前可审核结果。
 接下来的人工作业是：处置 16 个来源，并在本 Analysis 上正式生成和审核 Answer Result；两侧
 完成后才可排队 Evidence。
+
+正式 API/worker 重启后，上述新旧 Analysis、Run 绑定和 30/16 来源守恒保持不变；30 份
+artifact 的实际文件 SHA-256 与数据库记录全部一致。重复提交同一 `from-runs` 幂等请求返回
+既有版本，Analysis/Context 数量没有增加。

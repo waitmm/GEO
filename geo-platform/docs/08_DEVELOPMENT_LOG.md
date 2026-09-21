@@ -5464,6 +5464,10 @@ review_queue = READY
   `ctx-456936cd-e32c-4901-9ae5-7e6a8d167cc3` and Raw Result
   `raw-v1:139f8b4a8797739f`. `task_id` is null, the Browser Task count stayed at
   three, and the existing 30/16 Source Preparation state was unchanged.
+- A full API/worker restart retained that Analysis/Context, the exact Run set,
+  and the original 46-source conservation. All 30 persisted source artifact
+  files still matched their stored SHA-256 values; no queued business work was
+  created or advanced during restart.
 - Release first-slice suite: 21 passed, including populated migration upgrade,
   explicit Run selection across sampling Tasks, cross-Project/stale input
   rejection, single retry preservation and worker dispatch. The broader related

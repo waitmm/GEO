@@ -121,6 +121,18 @@ export const api = {
     project_id: number; prompt_id: number; result_hash: string; reviewable_set_hash: string;
     reviewer: string; note: string; decisions: any[];
   }) => request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/reviews`, { method: "POST", body: JSON.stringify(payload) }),
+  createSinglePromptV2TargetBrandTruth: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; result_hash: string; frozen_truth_set_hash: string;
+    expected_project_truth_set_hash: string; capability_label: string;
+    product_truth_status: "SUPPORTED" | "PARTIALLY_SUPPORTED" | "NOT_SUPPORTED" | "UNKNOWN";
+    source_reference: string; note: string; reviewed_by: string;
+  }) => request<{
+    truth: Record<string, any>;
+    project_truth_state: SinglePromptV2DiagnosisStatus["project_truth_state"];
+    frozen_diagnosis: { diagnosis_id: string; result_version: string; truth_set_hash: string; unchanged: boolean };
+    requires_new_diagnosis: boolean;
+    next_action: string;
+  }>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/target-brand-truths`, { method: "POST", body: JSON.stringify(payload) }),
   getSinglePromptV2StrategyReadiness: (analysisId: string, diagnosisId: string, resultVersion: string, projectId: number, promptId: number) =>
     request<SinglePromptV2StrategyReadiness>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/strategy-readiness?project_id=${projectId}&prompt_id=${promptId}`),
   createSinglePromptV2Strategy: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {

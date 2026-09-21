@@ -416,6 +416,23 @@ export type SinglePromptV2DiagnosisStatus = {
     cross_subject_relation_ids: string[];
     cross_subject_relation_count: number;
   };
+  project_truth_state: {
+    truths: Array<{
+      truth_id: number;
+      brand_id: number | null;
+      capability_key: string;
+      capability_label: string;
+      product_truth_status: "SUPPORTED" | "PARTIALLY_SUPPORTED" | "NOT_SUPPORTED" | "UNKNOWN";
+      truth_source: string;
+      source_reference: string;
+      reviewed_by: string;
+      reviewed_at: string | null;
+      note: string;
+      row_updated_at: string | null;
+    }>;
+    truth_set_hash: string;
+    differs_from_frozen_diagnosis: boolean;
+  };
   answer_semantic_eligibility: null | {
     contract_version: string;
     total_answer_count: number;

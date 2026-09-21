@@ -23,6 +23,7 @@ from app.core.config import get_settings
 from app.models import (
     LLMCallCache,
     Project,
+    RecommendationEntity,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
     SinglePromptCitationManifest,
@@ -223,6 +224,135 @@ def _snapshot_truth(row: TargetBrandCapabilityTruth) -> dict[str, Any]:
         "reviewed_at": _iso(row.reviewed_at),
         "note": row.note,
         "row_updated_at": _iso(row.updated_at),
+    }
+
+
+def _project_truth_state(db: Session, project_id: int, frozen_truth_set_hash: str = "") -> dict[str, Any]:
+    rows = (
+        db.query(TargetBrandCapabilityTruth)
+        .filter(TargetBrandCapabilityTruth.project_id == project_id)
+        .order_by(TargetBrandCapabilityTruth.id)
+        .all()
+    )
+    truths = [_snapshot_truth(row) for row in rows]
+    current_hash = _hash(truths)
+    return {
+        "truths": truths,
+        "truth_set_hash": current_hash,
+        "differs_from_frozen_diagnosis": bool(frozen_truth_set_hash and current_hash != frozen_truth_set_hash),
+    }
+
+
+def record_target_brand_truth(
+    db: Session,
+    *,
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    project_id: int,
+    prompt_id: int,
+    result_hash: str,
+    frozen_truth_set_hash: str,
+    expected_project_truth_set_hash: str,
+    capability_label: str,
+    product_truth_status: str,
+    source_reference: str,
+    note: str,
+    reviewed_by: str,
+) -> dict[str, Any]:
+    execution = db.query(SinglePromptDiagnosisExecution).filter_by(
+        diagnosis_id=diagnosis_id,
+        analysis_id=analysis_id,
+    ).one_or_none()
+    if not execution:
+        raise HTTPException(status_code=404, detail="诊断执行不存在")
+    if execution.project_id != project_id or execution.prompt_id != prompt_id:
+        raise HTTPException(status_code=409, detail="诊断身份与当前 Project/Prompt 不匹配")
+    if execution.active_result_version != result_version:
+        raise HTTPException(status_code=409, detail="诊断结果版本已变化，请重新加载")
+    result = db.query(SinglePromptDiagnosisResult).filter_by(
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+    ).one_or_none()
+    if not result or result.output_hash != result_hash:
+        raise HTTPException(status_code=409, detail="诊断结果身份或 hash 不匹配")
+    if execution.truth_set_hash != frozen_truth_set_hash:
+        raise HTTPException(status_code=409, detail="提交的冻结事实集合与当前诊断不匹配")
+
+    current_state = _project_truth_state(db, project_id, execution.truth_set_hash)
+    if current_state["truth_set_hash"] != expected_project_truth_set_hash:
+        raise HTTPException(status_code=409, detail="项目事实集合已变化，请重新加载后再提交")
+
+    label = capability_label.strip()
+    key = re.sub(r"[\s\W_]+", "", label.lower())
+    if not key:
+        raise HTTPException(status_code=422, detail="能力名称不能只包含空白或标点")
+    if product_truth_status not in {"SUPPORTED", "PARTIALLY_SUPPORTED", "NOT_SUPPORTED", "UNKNOWN"}:
+        raise HTTPException(status_code=422, detail="目标品牌事实状态非法")
+    source = source_reference.strip()
+    reviewed_note = note.strip()
+    if product_truth_status in {"SUPPORTED", "PARTIALLY_SUPPORTED"} and not source:
+        raise HTTPException(status_code=422, detail="确认支持或部分支持时必须提供事实来源")
+    if not source and not reviewed_note:
+        raise HTTPException(status_code=422, detail="请提供事实来源或人工核对说明")
+
+    existing = db.query(TargetBrandCapabilityTruth).filter(
+        TargetBrandCapabilityTruth.project_id == project_id,
+        TargetBrandCapabilityTruth.capability_key == key,
+    ).one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="该目标品牌事实已存在；本入口不会覆盖既有人工事实")
+
+    project = db.get(Project, project_id)
+    brand_entity = db.query(RecommendationEntity).filter(
+        RecommendationEntity.project_id == project_id,
+        RecommendationEntity.canonical_name == project.brand_name,
+    ).order_by(RecommendationEntity.id).first()
+    if not brand_entity:
+        brand_key = re.sub(r"[\s\W_]+", "", project.brand_name.lower())
+        brand_entity = RecommendationEntity(
+            project_id=project_id,
+            canonical_name=project.brand_name,
+            entity_type="BRAND",
+            entity_role="BRAND",
+            is_choice_candidate=False,
+            normalized_key=brand_key,
+            source="MANUAL_CONFIRMED",
+        )
+        db.add(brand_entity)
+        db.flush()
+
+    row = TargetBrandCapabilityTruth(
+        project_id=project_id,
+        brand_id=brand_entity.id,
+        capability_key=key,
+        capability_label=label,
+        product_truth_status=product_truth_status,
+        truth_source="MANUAL_CONFIRMED",
+        source_reference=source,
+        reviewed_by=reviewed_by.strip(),
+        reviewed_at=datetime.utcnow(),
+        note=reviewed_note,
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="目标品牌事实已被其他操作写入，请重新加载")
+    db.refresh(row)
+    updated_state = _project_truth_state(db, project_id, execution.truth_set_hash)
+    return {
+        "truth": _snapshot_truth(row),
+        "project_truth_state": updated_state,
+        "frozen_diagnosis": {
+            "diagnosis_id": diagnosis_id,
+            "result_version": result_version,
+            "truth_set_hash": execution.truth_set_hash,
+            "unchanged": True,
+        },
+        "requires_new_diagnosis": True,
+        "next_action": "CREATE_NEW_ANSWER_DIAGNOSIS_CACHE_ONLY",
     }
 
 
@@ -2642,6 +2772,7 @@ def get_diagnosis_status(
         ]
     source_content_status_summary = _source_summary(snapshots)
     truth_relation_eligibility = current_truth_relation_eligibility(result_output) if result else None
+    project_truth_state = _project_truth_state(db, execution.project_id, execution.truth_set_hash)
     overall_status = "REVIEW_COMPLETED" if review else execution.status
     return {
         "diagnosis": {
@@ -2670,6 +2801,7 @@ def get_diagnosis_status(
         "effective_evidence_eligibility": evidence_eligibility,
         "source_content_status_summary": source_content_status_summary,
         "current_truth_relation_eligibility": truth_relation_eligibility,
+        "project_truth_state": project_truth_state,
         "answer_semantic_eligibility": answer_eligibility,
         "result": {
             "result_version": result.result_version,

@@ -166,6 +166,19 @@ class SinglePromptDiagnosisReviewCreate(BaseModel):
     decisions: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class SinglePromptTargetBrandTruthCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    result_hash: str = Field(min_length=64, max_length=64)
+    frozen_truth_set_hash: str = Field(min_length=64, max_length=64)
+    expected_project_truth_set_hash: str = Field(min_length=64, max_length=64)
+    capability_label: str = Field(min_length=1, max_length=160)
+    product_truth_status: Literal["SUPPORTED", "PARTIALLY_SUPPORTED", "NOT_SUPPORTED", "UNKNOWN"]
+    source_reference: str = Field(default="", max_length=5000)
+    note: str = Field(default="", max_length=5000)
+    reviewed_by: str = Field(min_length=1, max_length=120)
+
+
 class SinglePromptStrategyCreate(BaseModel):
     project_id: int
     prompt_id: int

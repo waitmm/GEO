@@ -11,6 +11,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     create_answer_diagnosis,
     get_diagnosis_status,
     queue_evidence_continuation,
+    record_target_brand_truth,
     retry_diagnosis,
     revise_diagnosis_result,
 )
@@ -27,6 +28,7 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptSourceAutoFetchCreate,
     SinglePromptSourcePreparationCreate,
     SinglePromptSourceWaiverCreate,
+    SinglePromptTargetBrandTruthCreate,
 )
 from app.modules.single_prompt_v2.service import (
     create_analysis,
@@ -307,6 +309,32 @@ def review_diagnosis(analysis_id: str, diagnosis_id: str, result_version: str, p
         decisions=payload.decisions,
     )
     return read_diagnosis(analysis_id, diagnosis_id, payload.project_id, payload.prompt_id, db)
+
+
+@router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/target-brand-truths", status_code=201)
+def create_target_brand_truth(
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    payload: SinglePromptTargetBrandTruthCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    return record_target_brand_truth(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        result_hash=payload.result_hash,
+        frozen_truth_set_hash=payload.frozen_truth_set_hash,
+        expected_project_truth_set_hash=payload.expected_project_truth_set_hash,
+        capability_label=payload.capability_label,
+        product_truth_status=payload.product_truth_status,
+        source_reference=payload.source_reference,
+        note=payload.note,
+        reviewed_by=payload.reviewed_by,
+    )
 
 
 @router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/evidence-continuations", status_code=202)

@@ -945,3 +945,10 @@ Status: ACTIVE
   otherwise a correct rejection is indistinguishable from a dead button. Keep
   both success-after-filter-removal and row-local rejection feedback covered by
   frontend acceptance.
+- **Product Truth writes and diagnosis Truth snapshots have different
+  lifecycles**: the release UI now supports explicit target-brand fact entry,
+  but an existing DiagnosisResult remains bound to its original Truth-set hash.
+  Operators must create and review a new diagnosis before downstream Evidence
+  or Strategy can consume the new fact. Never hide this boundary by mutating the
+  old result, carrying its Review forward, or treating a saved project fact as
+  an already confirmed Reason-to-Truth relation.

@@ -29,6 +29,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     create_diagnosis,
     current_truth_relation_eligibility,
     get_diagnosis_status,
+    record_target_brand_truth,
     revise_diagnosis_result,
     validate_answer_event_review_decisions,
 )
@@ -448,6 +449,124 @@ def test_truth_snapshot_is_project_scoped_and_cross_brand_partial_stays_unresolv
         assert relationship["machine_relation"] == "PARTIALLY_COVERS"
         assert relationship["effective_relation"] == "UNRESOLVED"
         assert relationship["relation_purpose"] == "TARGET_CAPABILITY_FIT_SUGGESTION"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_manual_target_brand_truth_is_exactly_bound_and_requires_new_diagnosis(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        _seed(db)
+        analysis = _ready_analysis(db, references=False)
+        execution, result = _compute(db, analysis, key="diagnosis-empty-truth-review")
+        before = get_diagnosis_status(
+            db,
+            analysis_id=analysis.analysis_id,
+            diagnosis_id=execution.diagnosis_id,
+            project_id=1,
+            prompt_id=44,
+        )
+        assert before["result"]["output"]["truth_diagnosis"]["truth_snapshot"] == []
+        assert before["project_truth_state"]["differs_from_frozen_diagnosis"] is False
+
+        created = record_target_brand_truth(
+            db,
+            analysis_id=analysis.analysis_id,
+            diagnosis_id=execution.diagnosis_id,
+            result_version=result.result_version,
+            project_id=1,
+            prompt_id=44,
+            result_hash=result.output_hash,
+            frozen_truth_set_hash=execution.truth_set_hash,
+            expected_project_truth_set_hash=before["project_truth_state"]["truth_set_hash"],
+            capability_label="支持批量生成短链",
+            product_truth_status="SUPPORTED",
+            source_reference="https://target.example.com/docs/batch-links",
+            note="人工核对产品文档",
+            reviewed_by="owner",
+        )
+
+        assert created["truth"]["product_truth_status"] == "SUPPORTED"
+        assert created["requires_new_diagnosis"] is True
+        assert created["frozen_diagnosis"]["unchanged"] is True
+        after = get_diagnosis_status(
+            db,
+            analysis_id=analysis.analysis_id,
+            diagnosis_id=execution.diagnosis_id,
+            project_id=1,
+            prompt_id=44,
+        )
+        assert after["result"]["result_version"] == result.result_version
+        assert after["result"]["output"]["truth_diagnosis"]["truth_snapshot"] == []
+        assert after["project_truth_state"]["differs_from_frozen_diagnosis"] is True
+        assert len(after["project_truth_state"]["truths"]) == 1
+
+        new_execution, created_execution = create_diagnosis(
+            db,
+            analysis_id=analysis.analysis_id,
+            project_id=1,
+            prompt_id=44,
+            idempotency_key="diagnosis-updated-truth-review",
+        )
+        assert created_execution is True
+        assert new_execution.truth_set_hash == after["project_truth_state"]["truth_set_hash"]
+        assert new_execution.truth_set_hash != execution.truth_set_hash
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_manual_target_brand_truth_rejects_stale_identity_unsupported_positive_and_overwrite(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        _seed(db)
+        analysis = _ready_analysis(db, references=False)
+        execution, result = _compute(db, analysis, key="diagnosis-truth-cas")
+        status = get_diagnosis_status(
+            db,
+            analysis_id=analysis.analysis_id,
+            diagnosis_id=execution.diagnosis_id,
+            project_id=1,
+            prompt_id=44,
+        )
+        common = {
+            "analysis_id": analysis.analysis_id,
+            "diagnosis_id": execution.diagnosis_id,
+            "result_version": result.result_version,
+            "project_id": 1,
+            "prompt_id": 44,
+            "result_hash": result.output_hash,
+            "frozen_truth_set_hash": execution.truth_set_hash,
+            "expected_project_truth_set_hash": status["project_truth_state"]["truth_set_hash"],
+            "capability_label": "支持批量生成短链",
+            "product_truth_status": "SUPPORTED",
+            "source_reference": "",
+            "note": "",
+            "reviewed_by": "owner",
+        }
+        with pytest.raises(HTTPException, match="必须提供事实来源"):
+            record_target_brand_truth(db, **common)
+
+        first = record_target_brand_truth(
+            db,
+            **{**common, "source_reference": "https://target.example.com/docs/batch-links"},
+        )
+        with pytest.raises(HTTPException, match="项目事实集合已变化"):
+            record_target_brand_truth(
+                db,
+                **{**common, "capability_label": "支持单条短链", "source_reference": "manual:verified"},
+            )
+        with pytest.raises(HTTPException, match="不会覆盖"):
+            record_target_brand_truth(
+                db,
+                **{
+                    **common,
+                    "expected_project_truth_set_hash": first["project_truth_state"]["truth_set_hash"],
+                    "source_reference": "https://target.example.com/docs/changed",
+                },
+            )
+        assert db.query(TargetBrandCapabilityTruth).count() == 1
     finally:
         db.close()
         engine.dispose()

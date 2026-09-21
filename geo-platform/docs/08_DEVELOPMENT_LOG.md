@@ -5568,3 +5568,31 @@ review_queue = READY
   embedded scripts and state. The bounded local-release limit is now 25,000,000
   characters, the UI shows pasted size before submission, and a regression
   proves payloads above the former limit reach V2 admission.
+
+## 2026-09-21 V2 Target Brand Truth Review Entry
+
+- Classified as `IMPLEMENTATION_CHANGE`: the V2 contract already requires an
+  independent, explicit Product Truth operation, but the release page only
+  displayed an empty frozen Truth snapshot and the only write route lived in
+  the retired Optimization API.
+- Added a release-owned narrow write endpoint bound to the exact Analysis,
+  Diagnosis, active ResultVersion/result hash, frozen Truth-set hash and current
+  project Truth-set hash. It creates a manually reviewed project fact and
+  refuses silent overwrite, stale submission and positive facts without a
+  source reference.
+- The diagnosis status now exposes the current project Truth set separately
+  from the immutable diagnosis snapshot. Saving a fact never rewrites the old
+  result or review. The page explicitly requires a new Answer-only diagnosis,
+  forced to `CACHE_ONLY`, before the new fact can participate in deterministic
+  Reason-to-Truth matching.
+- Added per-reason review entry points and an in-page fact form. Competitor/tool
+  reasons are not copied into the target-brand capability field; the operator
+  must state and source the target brand's own fact.
+- No real Truth, Review, Diagnosis or external LLM call was created during this
+  implementation. Read-only verification against Diagnosis
+  `1bb77e76-a959-4b6c-9fc0-fd98a4b8b6ff` confirmed the frozen and current Truth
+  hashes both remain the empty-set hash.
+- Validation: 54 related backend tests passed, two new exact-binding/stale-write
+  regressions passed after the target entity uniqueness hardening, release and
+  regular frontend builds passed, and the production page rendered three
+  `核对事实` actions plus one enabled `保存人工事实` action without overlap.

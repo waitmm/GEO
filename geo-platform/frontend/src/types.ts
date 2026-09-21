@@ -259,6 +259,24 @@ export type SinglePromptV2Status = {
   finished_at: string | null;
 };
 
+export type SinglePromptV2AnalysisListItem = {
+  analysis: SinglePromptV2Status["analysis"];
+  sampling: SinglePromptV2Status["sampling"];
+  result_version: string | null;
+  context_id: string | null;
+  created_at: string;
+  finished_at: string | null;
+  source_preparation_summary: {
+    preparation_id: string;
+    status: string;
+    required_source_count: number;
+    ready_source_count: number;
+    waived_source_count: number;
+    nonterminal_source_count: number;
+    completion_manifest_id: string | null;
+  } | null;
+};
+
 export type SinglePromptV2SourcePreparation = {
   preparation: {
     preparation_id: string;

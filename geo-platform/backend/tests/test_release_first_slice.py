@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import sessionmaker
 
+from app.core.release_database import get_release_db
 from app.models import (
     Base,
     BrowserMonitorRun,
@@ -208,6 +209,66 @@ def test_release_routes_exclude_legacy_and_later_workflows():
     response = TestClient(app).get("/api/optimization/workflow/1/prompt-overview")
     assert response.status_code == 404
     assert response.json() == {"detail": "Release API route not found"}
+
+
+def test_release_lists_explicit_prompt_analyses_without_latest_substitution(tmp_path):
+    db, engine = _session(tmp_path)
+    app = create_release_app(validate_on_startup=False)
+
+    def override_release_db():
+        yield db
+
+    app.dependency_overrides[get_release_db] = override_release_db
+    try:
+        db.add(Organization(id=1, name="Release Org", plan_type="release-1.0"))
+        db.add(Project(id=1, organization_id=1, name="Release", brand_name="Target"))
+        db.add(Prompt(id=44, project_id=1, title="Prompt A", prompt_text="Prompt A"))
+        db.add(Prompt(id=45, project_id=1, title="Prompt B", prompt_text="Prompt B"))
+        db.commit()
+        first, _ = create_analysis(
+            db,
+            project_id=1,
+            prompt_id=44,
+            sample_count=1,
+            idempotency_key="analysis-list-first",
+        )
+        second, _ = create_analysis(
+            db,
+            project_id=1,
+            prompt_id=44,
+            sample_count=2,
+            idempotency_key="analysis-list-second",
+        )
+        other_prompt, _ = create_analysis(
+            db,
+            project_id=1,
+            prompt_id=45,
+            sample_count=1,
+            idempotency_key="analysis-list-other",
+        )
+
+        response = TestClient(app).get(
+            "/api/v2/single-prompt/analyses?project_id=1&prompt_id=44"
+        )
+
+        assert response.status_code == 200
+        rows = response.json()
+        assert [row["analysis"]["analysis_id"] for row in rows] == [
+            second.analysis_id,
+            first.analysis_id,
+        ]
+        assert all(row["analysis"]["prompt_id"] == 44 for row in rows)
+        assert all(row["source_preparation_summary"] is None for row in rows)
+        assert other_prompt.analysis_id not in {
+            row["analysis"]["analysis_id"] for row in rows
+        }
+        assert TestClient(app).get(
+            "/api/v2/single-prompt/analyses?project_id=1&prompt_id=44&limit=0"
+        ).status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        engine.dispose()
 
 
 def test_release_worker_keeps_failed_runs_retryable_before_context_freeze(tmp_path, monkeypatch):

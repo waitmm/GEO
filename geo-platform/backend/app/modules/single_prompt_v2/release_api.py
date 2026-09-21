@@ -26,7 +26,12 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptSourcePreparationCreate,
     SinglePromptSourceWaiverCreate,
 )
-from app.modules.single_prompt_v2.service import create_analysis, get_analysis_status, retry_analysis
+from app.modules.single_prompt_v2.service import (
+    create_analysis,
+    get_analysis_status,
+    list_analysis_statuses,
+    retry_analysis,
+)
 from app.modules.single_prompt_v2.source_preparation import (
     create_source_preparation,
     freeze_completion_manifest,
@@ -54,6 +59,23 @@ def start_analysis(payload: SinglePromptAnalysisCreate, response: Response, db: 
     if not created:
         response.status_code = 200
     return get_analysis_status(db, analysis.analysis_id)
+
+
+@router.get("/analyses")
+def list_analyses(
+    project_id: int,
+    prompt_id: int,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit 必须在 1 到 100 之间")
+    return list_analysis_statuses(
+        db,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        limit=limit,
+    )
 
 
 @router.get("/analyses/{analysis_id}")

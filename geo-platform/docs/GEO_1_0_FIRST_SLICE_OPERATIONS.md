@@ -186,3 +186,12 @@ SourceClaim、Alignment 和 Strategy 也未在本次操作中启动。
 ```text
 http://127.0.0.1:8020/?v2_analysis=92bb12a5-edcc-43c7-b848-ca60267a2672&v2_project=1&v2_prompt=1
 ```
+
+## 8. 从首页继续已有 Analysis
+
+选择 Project 和 Prompt 后，release 页面会列出属于这一精确组合的 Analysis。点击“继续处理”
+才会绑定对应的 `analysis_id`；列表排序只用于展示，系统不会自动把最新一条替换成当前输入。
+
+进入来源准备后默认显示“待处理”来源。`READY` 和 `WAIVED_WITH_LIMITATION` 仍可通过筛选查看。
+页面刷新或切换筛选不会抓取正文、补录、WAIVE 或冻结 Completion；这些仍必须通过对应的显式
+操作完成。

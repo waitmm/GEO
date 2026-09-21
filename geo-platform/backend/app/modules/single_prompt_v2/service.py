@@ -22,6 +22,8 @@ from app.models import (
     RunArtifact,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
+    SinglePromptSourceDisposition,
+    SinglePromptSourcePreparation,
 )
 from app.modules.monitoring.enums import BROWSER_AUDIT_ENTRY_TYPE, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER
 from app.modules.monitoring.executor import MonitoringTaskExecutor
@@ -737,3 +739,75 @@ def get_analysis_status(db: Session, analysis_id: str) -> dict[str, Any]:
         "started_at": _iso(analysis.started_at),
         "finished_at": _iso(analysis.finished_at),
     }
+
+
+def list_analysis_statuses(
+    db: Session,
+    *,
+    project_id: int,
+    prompt_id: int,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """List explicit analysis identities for user selection; never choose one implicitly."""
+    analyses = (
+        db.query(SinglePromptAnalysis)
+        .filter(
+            SinglePromptAnalysis.project_id == project_id,
+            SinglePromptAnalysis.prompt_id == prompt_id,
+        )
+        .order_by(SinglePromptAnalysis.id.desc())
+        .limit(limit)
+        .all()
+    )
+    statuses = []
+    for analysis in analyses:
+        status = get_analysis_status(db, analysis.analysis_id)
+        statuses.append({
+            "analysis": status["analysis"],
+            "sampling": status["sampling"],
+            "result_version": status["result_version"],
+            "context_id": status["context_id"],
+            "created_at": status["created_at"],
+            "finished_at": status["finished_at"],
+        })
+    if not analyses:
+        return statuses
+
+    analysis_ids = [analysis.analysis_id for analysis in analyses]
+    preparations = (
+        db.query(SinglePromptSourcePreparation)
+        .filter(SinglePromptSourcePreparation.analysis_id.in_(analysis_ids))
+        .all()
+    )
+    preparation_by_analysis = {row.analysis_id: row for row in preparations}
+    preparation_ids = [row.preparation_id for row in preparations]
+    dispositions = (
+        db.query(SinglePromptSourceDisposition)
+        .filter(SinglePromptSourceDisposition.preparation_id.in_(preparation_ids))
+        .all()
+        if preparation_ids
+        else []
+    )
+    states_by_preparation: dict[str, dict[str, int]] = {}
+    for row in dispositions:
+        counts = states_by_preparation.setdefault(row.preparation_id, {})
+        counts[row.state] = counts.get(row.state, 0) + 1
+
+    for status in statuses:
+        preparation = preparation_by_analysis.get(status["analysis"]["analysis_id"])
+        if not preparation:
+            status["source_preparation_summary"] = None
+            continue
+        counts = states_by_preparation.get(preparation.preparation_id, {})
+        required = sum(counts.values())
+        terminal = counts.get("READY", 0) + counts.get("WAIVED_WITH_LIMITATION", 0)
+        status["source_preparation_summary"] = {
+            "preparation_id": preparation.preparation_id,
+            "status": preparation.status,
+            "required_source_count": required,
+            "ready_source_count": counts.get("READY", 0),
+            "waived_source_count": counts.get("WAIVED_WITH_LIMITATION", 0),
+            "nonterminal_source_count": required - terminal,
+            "completion_manifest_id": preparation.current_completion_manifest_id,
+        }
+    return statuses

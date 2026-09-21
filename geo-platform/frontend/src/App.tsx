@@ -8,7 +8,7 @@ import { ArrowDown, ArrowUp, BarChart3, Download, ExternalLink, FileText, ListCh
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
-  SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  SinglePromptV2AnalysisListItem, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
@@ -1238,6 +1238,8 @@ export default function App() {
   const [workflowLoading, setWorkflowLoading] = useState(false);
   const [promptContext, setPromptContext] = useState<number | "ALL" | null>(null); // null=未选, "ALL"=全部, number=具体 prompt
   const [v2Analysis, setV2Analysis] = useState<SinglePromptV2Status | null>(null);
+  const [v2AnalysisHistory, setV2AnalysisHistory] = useState<SinglePromptV2AnalysisListItem[]>([]);
+  const [v2AnalysisHistoryLoading, setV2AnalysisHistoryLoading] = useState(false);
   const [v2Loading, setV2Loading] = useState(false);
   const [v2SampleCount, setV2SampleCount] = useState(3);
   const v2PendingIdempotencyKey = useRef<string | null>(null);
@@ -1245,6 +1247,7 @@ export default function App() {
   const [v2SourceLoading, setV2SourceLoading] = useState(false);
   const [v2SourceActor, setV2SourceActor] = useState("本地审核人");
   const [v2SourceDrafts, setV2SourceDrafts] = useState<Record<string, V2SourceDraft>>({});
+  const [v2SourceFilter, setV2SourceFilter] = useState<"ACTION_REQUIRED" | "ALL" | "READY" | "WAIVED_WITH_LIMITATION">("ACTION_REQUIRED");
   const [v2AnswerPolicy, setV2AnswerPolicy] = useState<"CACHE_ONLY" | "ALLOW_EXTERNAL">("CACHE_ONLY");
   const [v2EvidencePolicy, setV2EvidencePolicy] = useState<"CACHE_ONLY" | "ALLOW_EXTERNAL">("CACHE_ONLY");
   const [v2Diagnosis, setV2Diagnosis] = useState<SinglePromptV2DiagnosisStatus | null>(null);
@@ -1577,6 +1580,53 @@ export default function App() {
     }
   }
 
+  async function refreshV2AnalysisHistory() {
+    if (!projectId || !activePromptId) return;
+    setV2AnalysisHistoryLoading(true);
+    try {
+      setV2AnalysisHistory(await api.listSinglePromptV2Analyses(projectId, activePromptId));
+    } catch (error: any) {
+      setV2AnalysisHistory([]);
+      message.error(error.message || "读取已有分析失败");
+    } finally {
+      setV2AnalysisHistoryLoading(false);
+    }
+  }
+
+  async function openV2Analysis(summary: SinglePromptV2AnalysisListItem) {
+    if (!projectId || !activePromptId) return;
+    setV2Loading(true);
+    try {
+      const status = await api.getSinglePromptV2Analysis(summary.analysis.analysis_id, projectId, activePromptId);
+      const params = new URLSearchParams(window.location.search);
+      params.set("v2_project", String(status.analysis.project_id));
+      params.set("v2_prompt", String(status.analysis.prompt_id));
+      params.set("v2_analysis", status.analysis.analysis_id);
+      params.delete("v2_diagnosis");
+      params.delete("v2_diagnosis_result");
+      params.delete("v2_strategy");
+      params.delete("v2_strategy_result");
+      params.delete("v2_execution");
+      params.delete("v2_execution_result");
+      params.delete("v2_retest");
+      window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+      setV2Analysis(status);
+      setV2SampleCount(status.sampling.planned_run_count);
+      setV2SourcePreparation(null);
+      setV2Diagnosis(null);
+      setV2StrategyReadiness(null);
+      setV2Strategy(null);
+      setV2Execution(null);
+      setV2RetestReadiness(null);
+      setV2Retest(null);
+      persistV2Identity(status);
+    } catch (error: any) {
+      message.error(error.message || "打开 V2 分析失败");
+    } finally {
+      setV2Loading(false);
+    }
+  }
+
   async function startV2Analysis() {
     if (!projectId || !activePromptId) {
       message.warning("请先选择一个 Prompt");
@@ -1609,6 +1659,7 @@ export default function App() {
       });
       v2PendingIdempotencyKey.current = null;
       setV2Analysis(status);
+      await refreshV2AnalysisHistory();
       setV2SampleCount(status.sampling.planned_run_count);
       persistV2Identity(status);
       message.success("V2 分析已创建，采样计划已经固定");
@@ -2691,6 +2742,7 @@ export default function App() {
   }, [projectId, promptContext, page]);
   useEffect(() => {
     if (page !== "coreV2" || !projectId || !activePromptId) return;
+    void refreshV2AnalysisHistory();
     const params = new URLSearchParams(window.location.search);
     if (Number(params.get("v2_project")) !== projectId || Number(params.get("v2_prompt")) !== activePromptId) {
       setV2Analysis(null);
@@ -4393,6 +4445,13 @@ export default function App() {
     .map((directionId) => v2StrategyDirectionById.get(directionId))
     .filter((row): row is NonNullable<typeof row> => Boolean(row));
   const v2BlockedHistoricalRelations = new Set(v2EvidenceEligibility?.blocked_historical_relation_ids || []);
+  const v2FilteredSources = (v2SourcePreparation?.sources || []).filter((source) => {
+    if (v2SourceFilter === "ALL") return true;
+    if (v2SourceFilter === "ACTION_REQUIRED") {
+      return !["READY", "WAIVED_WITH_LIMITATION"].includes(source.state);
+    }
+    return source.state === v2SourceFilter;
+  });
   const stagedDiagnosisValue = (targetType: string, targetId: string, fallbackValue: string | null | undefined) =>
     v2DiagnosisEdits[`${targetType}:${targetId}`]?.value ?? fallbackValue ?? "";
 
@@ -4455,7 +4514,24 @@ export default function App() {
               <Text>{scopedPrompt?.prompt_text}</Text>
             </Card>
 
-            {!v2Analysis ? <Card><Empty description="该页面尚未绑定一次 V2 分析" /></Card> : <>
+            {!v2Analysis ? <Card title="已有分析" loading={v2AnalysisHistoryLoading} extra={<Button icon={<RefreshCw size={15} />} onClick={refreshV2AnalysisHistory}>刷新</Button>}>
+              {v2AnalysisHistory.length === 0 ? <Empty description="当前 Prompt 还没有分析，可从上方开始一次新分析" /> : <Table<SinglePromptV2AnalysisListItem>
+                rowKey={(row) => row.analysis.analysis_id}
+                size="small"
+                pagination={false}
+                dataSource={v2AnalysisHistory}
+                columns={[
+                  { title: "状态", width: 120, render: (_: unknown, row) => v2AnalysisStatusTag(row.sampling.status) },
+                  { title: "采样", width: 150, render: (_: unknown, row) => `${row.sampling.valid_run_count}/${row.sampling.planned_run_count} 有效` },
+                  { title: "Analysis", render: (_: unknown, row: SinglePromptV2AnalysisListItem) => <Text code copyable>{row.analysis.analysis_id}</Text> },
+                  { title: "当前进度", width: 230, render: (_: unknown, row: SinglePromptV2AnalysisListItem) => row.source_preparation_summary
+                    ? `${row.source_preparation_summary.ready_source_count}/${row.source_preparation_summary.required_source_count} 正文就绪，${row.source_preparation_summary.nonterminal_source_count} 待处理`
+                    : row.context_id ? "采样已冻结，待准备正文" : "采样尚未冻结" },
+                  { title: "创建时间", width: 180, render: (_: unknown, row) => formatDateTime(row.created_at) },
+                  { title: "操作", width: 110, render: (_: unknown, row) => <Button type="primary" size="small" onClick={() => openV2Analysis(row)}>继续处理</Button> },
+                ]}
+              />}
+            </Card> : <>
               <Card size="small" title={<Space>{v2AnalysisStatusTag(v2Analysis.sampling.status)}<Text code>{v2Analysis.analysis.analysis_id}</Text></Space>} extra={<Tag color={v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "green" : "blue"}>{v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "冻结结果" : "实时任务状态"}</Tag>}>
                 <div className="v2-status-grid">
                   <Statistic title="计划采样" value={v2Analysis.sampling.planned_run_count} suffix="次" />
@@ -4535,7 +4611,7 @@ export default function App() {
                 />
               </Card>
 
-              {v2Analysis.context_id && <Card size="small" title={<Space><FileText size={18} />引用范围与正文准备</Space>} extra={<Space wrap>
+              {v2Analysis.context_id && <Card id="v2-source-preparation" size="small" title={<Space><FileText size={18} />引用范围与正文准备</Space>} extra={<Space wrap>
                 {v2SourcePreparation && <Tag color={v2SourcePreparation.completion_manifest?.status === "FROZEN" ? "green" : v2SourcePreparation.completion_manifest?.status === "NO_USABLE_SOURCE" ? "red" : "gold"}>
                   {v2SourcePreparation.completion_manifest?.status || `${v2SourcePreparation.conservation.terminal}/${v2SourcePreparation.conservation.required_unique_sources} 已处置`}
                 </Tag>}
@@ -4548,6 +4624,13 @@ export default function App() {
                     <Col><Button type="primary" icon={<ListChecks size={15} />} loading={v2SourceLoading} onClick={startV2SourcePreparation}>冻结引用范围并开始准备</Button></Col>
                   </Row>
                 </Space> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                  {v2SourcePreparation.conservation.nonterminal > 0 && <Alert
+                    type="warning"
+                    showIcon
+                    message={`当前下一步：处置 ${v2SourcePreparation.conservation.nonterminal} 条待处理来源`}
+                    description={`已有 ${v2SourcePreparation.conservation.by_state.READY || 0} 条正文通过校验。请逐条人工补录真实正文，或在明确知道其不影响结论时记录人工放弃与限制；全部处置后才能冻结 Source Completion Manifest。Answer Semantic 可在下方独立启动，不需要等待正文补完。`}
+                    action={<Button onClick={() => setV2SourceFilter("ACTION_REQUIRED")}>只看待处理</Button>}
+                  />}
                   <Descriptions size="small" column={{ xs: 1, md: 3 }}>
                     <Descriptions.Item label="Citation Manifest"><Text code copyable>{v2SourcePreparation.citation_manifest.manifest_id}</Text></Descriptions.Item>
                     <Descriptions.Item label="唯一来源 / 引用记录">{v2SourcePreparation.citation_manifest.source_count} / {v2SourcePreparation.citation_manifest.occurrence_count}</Descriptions.Item>
@@ -4575,7 +4658,17 @@ export default function App() {
                     <Col xs={24} md={8}><Input value={v2SourceActor} onChange={(event) => setV2SourceActor(event.target.value)} placeholder="操作人" /></Col>
                     <Col><Text type="secondary">正文补录会创建新的不可变 Snapshot，不改写历史版本。</Text></Col>
                   </Row>
-                  <Collapse items={v2SourcePreparation.sources.map((source) => {
+                  <Segmented
+                    value={v2SourceFilter}
+                    onChange={(value) => setV2SourceFilter(value as typeof v2SourceFilter)}
+                    options={[
+                      { value: "ACTION_REQUIRED", label: `待处理 ${v2SourcePreparation.conservation.nonterminal}` },
+                      { value: "ALL", label: `全部 ${v2SourcePreparation.sources.length}` },
+                      { value: "READY", label: `已就绪 ${v2SourcePreparation.conservation.by_state.READY || 0}` },
+                      { value: "WAIVED_WITH_LIMITATION", label: `已放弃 ${v2SourcePreparation.conservation.by_state.WAIVED_WITH_LIMITATION || 0}` },
+                    ]}
+                  />
+                  {v2FilteredSources.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前筛选下没有来源" /> : <Collapse items={v2FilteredSources.map((source) => {
                     const draft = v2SourceDrafts[source.source_key] || { title: "", cleanText: "", coverageScope: "FULL_PAGE", waiverReason: "", waiverImpact: "" };
                     const sourceTitle = String(source.reference_observations?.[0]?.title || source.canonical_url);
                     return {
@@ -4610,13 +4703,13 @@ export default function App() {
                         </>}
                       </Space>,
                     };
-                  })} />
+                  })} />}
                   {!v2SourcePreparation.completion_manifest && <Button type="primary" icon={<ShieldCheck size={15} />} disabled={v2SourcePreparation.conservation.nonterminal > 0} loading={v2SourceLoading} onClick={freezeV2SourceCompletion}>冻结 Source Completion Manifest</Button>}
                   {v2SourcePreparation.completion_manifest && <Alert type={v2SourcePreparation.completion_manifest.status === "FROZEN" ? "success" : "error"} showIcon message={`Source Completion Manifest · ${v2SourcePreparation.completion_manifest.status}`} description={<Text code copyable>{v2SourcePreparation.completion_manifest.payload_hash}</Text>} />}
                 </Space>}
               </Card>}
 
-              {v2Analysis.context_id && <Card size="small" title={<Space><ShieldCheck size={18} />回答语义与证据诊断</Space>} extra={<Space wrap>
+              {v2Analysis.context_id && <Card id="v2-answer-semantic" size="small" title={<Space><ShieldCheck size={18} />回答语义与证据诊断</Space>} extra={<Space wrap>
                 {v2Diagnosis && <Tag color={v2NoConsumableAnswerSemantic ? "red" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "green" : ["QUEUED", "RUNNING", "EVIDENCE_QUEUED", "EVIDENCE_RUNNING"].includes(v2Diagnosis.compute_status) ? "blue" : ["FAILED", "EVIDENCE_FAILED"].includes(v2Diagnosis.compute_status) ? "red" : "gold"}>
                   {v2MixedAnswerBoundary ? "回答边界不合格" : v2NoConsumableAnswerSemantic ? "回答语义失败" : v2Diagnosis.compute_status === "EVIDENCE_QUEUED" ? "等待证据计算" : v2Diagnosis.compute_status === "EVIDENCE_RUNNING" ? "证据计算中" : v2Diagnosis.compute_status === "EVIDENCE_FAILED" ? "证据计算失败" : v2Diagnosis.overall_status === "REVIEW_COMPLETED" ? "审核完成" : v2Diagnosis.compute_status === "READY_FOR_REVIEW" ? "待审核" : v2Diagnosis.compute_status === "RUNNING" ? "诊断中" : v2Diagnosis.compute_status === "QUEUED" ? "等待诊断" : v2Diagnosis.compute_status === "INTERRUPTED" ? "诊断中断" : v2Diagnosis.compute_status}
                 </Tag>}

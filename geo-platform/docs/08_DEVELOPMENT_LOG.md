@@ -5409,3 +5409,24 @@ review_queue = READY
   Prompt automatically unless an explicit valid Prompt identity is already in
   scope. This is an implementation-only navigation correction; Project/Prompt
   identity and all Analysis inputs remain unchanged.
+
+## 2026-09-21 Release Analysis Resume And Next-Action Visibility
+
+- The release home could show Project and Prompt but still strand an existing
+  Analysis behind query parameters. Added a read-only, Project/Prompt-scoped
+  Analysis list and an explicit `继续处理` action. Selection always carries the
+  exact `analysis_id`; the backend and frontend do not infer or auto-open the
+  latest Analysis.
+- The bound Analysis page now states the current source-preparation action and
+  defaults the source list to unresolved items. READY and waived sources remain
+  available through explicit filters, while Source Completion and Evidence
+  gates are unchanged.
+- Real release state at verification time contains three explicit Analysis
+  records. Analysis `92bb12a5-edcc-43c7-b848-ca60267a2672` has 3/3 valid Runs,
+  30/46 READY sources and 16 `MANUAL_REQUIRED`; Analysis
+  `9b735b29-d6d9-46da-9de1-6331e9b84f48` was separately created from the UI,
+  completed 3/3 valid Runs and has not started Source Preparation; the older
+  `9f8d0400-b88c-47fb-be95-a7dbebe5d10b` also remains visible with 3/3 valid
+  Runs and no Source Preparation. None has a Completion Manifest, Answer
+  Semantic execution or Evidence execution. The resume fix itself performed no
+  collection, fetch, model, review, waiver or evidence write.

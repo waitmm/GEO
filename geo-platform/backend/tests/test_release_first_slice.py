@@ -10,17 +10,19 @@ from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, inspect
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 from app.core.release_database import get_release_db
 from app.models import (
     Base,
     BrowserMonitorRun,
+    BrowserMonitorTask,
     Organization,
     Project,
     Prompt,
     ReferenceSource,
+    SinglePromptAnalysisContext,
     SinglePromptDiagnosisResult,
     SinglePromptDiagnosisReview,
     SinglePromptPreparedSourceSnapshot,
@@ -40,7 +42,11 @@ from app.modules.single_prompt_v2 import source_preparation
 from app.modules.single_prompt_v2.service import (
     claim_analysis,
     create_analysis,
+    create_analysis_from_runs,
     finalize_analysis,
+    get_analysis_status,
+    list_prompt_run_pool,
+    queue_run_retry,
     recover_interrupted_analyses,
 )
 from app.release_main import create_release_app
@@ -188,6 +194,65 @@ def test_release_migration_is_explicit_allowlisted_and_runtime_version_is_checke
     engine.dispose()
 
 
+def test_run_selection_migration_preserves_populated_release_history(tmp_path, monkeypatch):
+    database_path = tmp_path / "populated-release.db"
+    monkeypatch.setenv("GEO_RELEASE_DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
+    config = Config(str(ROOT / "alembic.release.ini"))
+    command.upgrade(config, "20260920_02")
+
+    engine = create_engine(
+        f"sqlite:///{database_path.as_posix()}",
+        connect_args={"check_same_thread": False},
+    )
+
+    @event.listens_for(engine, "connect")
+    def _old_pragmas(connection, record):
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    db = sessionmaker(bind=engine, expire_on_commit=False)()
+    analysis = _seed_frozen_analysis(db, reference_urls=["https://example.com/history"])
+    context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis.analysis_id).one()
+    frozen = {
+        "analysis_id": analysis.analysis_id,
+        "task_id": analysis.task_id,
+        "context_id": context.context_id,
+        "raw_output_hash": context.raw_output_hash,
+    }
+    db.close()
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    migrated_engine = create_engine(
+        f"sqlite:///{database_path.as_posix()}",
+        connect_args={"check_same_thread": False},
+    )
+
+    @event.listens_for(migrated_engine, "connect")
+    def _new_pragmas(connection, record):
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    migrated_db = sessionmaker(bind=migrated_engine, expire_on_commit=False)()
+    try:
+        persisted = migrated_db.query(SinglePromptAnalysisContext).filter_by(
+            context_id=frozen["context_id"]
+        ).one()
+        assert persisted.analysis_id == frozen["analysis_id"]
+        assert persisted.task_id == frozen["task_id"]
+        assert persisted.raw_output_hash == frozen["raw_output_hash"]
+        assert migrated_engine.connect().execute(text("PRAGMA foreign_key_check")).fetchall() == []
+        with pytest.raises(Exception, match="RELEASE_HISTORY_IMMUTABLE"):
+            persisted.raw_output_hash = "0" * 64
+            migrated_db.commit()
+        migrated_db.rollback()
+    finally:
+        migrated_db.close()
+        migrated_engine.dispose()
+
+
 def test_release_startup_contract_rejects_unmigrated_database(tmp_path):
     engine = create_engine(f"sqlite:///{(tmp_path / 'unmigrated.db').as_posix()}")
     with pytest.raises(RuntimeError, match="RELEASE_SCHEMA_REVISION_MISMATCH:UNMIGRATED"):
@@ -271,6 +336,155 @@ def test_release_lists_explicit_prompt_analyses_without_latest_substitution(tmp_
         engine.dispose()
 
 
+def test_release_run_pool_creates_exact_analysis_without_sampling_or_mutating_history(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        original = _seed_frozen_analysis(
+            db,
+            reference_urls=["https://example.com/a", "https://example.com/b"],
+        )
+        original_context = db.query(SinglePromptAnalysisContext).filter_by(
+            analysis_id=original.analysis_id
+        ).one()
+        original_hash = original_context.raw_output_hash
+        task_count = db.query(BrowserMonitorTask).count()
+
+        pool = list_prompt_run_pool(db, project_id=1, prompt_id=44, page=1, page_size=20)
+        assert pool["total"] == 1
+        run = pool["items"][0]
+        assert run["run_id"] == 1
+        assert run["references"]
+        assert run["analysis_memberships"] == [{
+            "analysis_id": original.analysis_id,
+            "context_id": original_context.context_id,
+        }]
+
+        selected, created = create_analysis_from_runs(
+            db,
+            project_id=1,
+            prompt_id=44,
+            run_ids=[run["run_id"]],
+            run_fingerprints={run["run_id"]: run["input_fingerprint"]},
+            base_context_id=original_context.context_id,
+            idempotency_key="explicit-run-selection-0001",
+        )
+
+        assert created is True
+        assert selected.task_id is None
+        assert db.query(BrowserMonitorTask).count() == task_count
+        assert db.query(SinglePromptAnalysisContext).filter_by(
+            analysis_id=original.analysis_id
+        ).one().raw_output_hash == original_hash
+        selected_status = get_analysis_status(db, selected.analysis_id)
+        assert selected_status["analysis"]["task_id"] is None
+        assert selected_status["active_task"] is None
+        assert [row["run_id"] for row in selected_status["runs"]] == [run["run_id"]]
+
+        preparation, created_preparation = source_preparation.create_source_preparation(
+            db,
+            analysis_id=selected.analysis_id,
+            project_id=1,
+            prompt_id=44,
+            idempotency_key="selected-analysis-source-prep",
+            created_by="qa",
+        )
+        assert created_preparation is True
+        status = source_preparation.get_source_preparation_status(
+            db, preparation_id=preparation.preparation_id
+        )
+        assert status["citation_manifest"]["source_count"] == 2
+
+        with pytest.raises(HTTPException) as stale:
+            create_analysis_from_runs(
+                db,
+                project_id=1,
+                prompt_id=44,
+                run_ids=[run["run_id"]],
+                run_fingerprints={run["run_id"]: "0" * 64},
+                base_context_id=original_context.context_id,
+                idempotency_key="explicit-run-selection-stale",
+            )
+        assert stale.value.status_code == 409
+        assert stale.value.detail["code"] == "RUN_INPUT_CHANGED"
+
+        with pytest.raises(HTTPException, match="重复"):
+            create_analysis_from_runs(
+                db,
+                project_id=1,
+                prompt_id=44,
+                run_ids=[run["run_id"], run["run_id"]],
+                run_fingerprints={run["run_id"]: run["input_fingerprint"]},
+                base_context_id=None,
+                idempotency_key="explicit-run-selection-duplicate",
+            )
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_release_single_run_retry_creates_new_attempt_and_preserves_source_run(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        db.add(Organization(id=1, name="Release Org", plan_type="release-1.0"))
+        db.add(Project(id=1, organization_id=1, name="Release", brand_name="Target"))
+        db.add(Prompt(id=44, project_id=1, title="Prompt", prompt_text="推荐一个短链工具"))
+        db.commit()
+        analysis, _ = create_analysis(
+            db,
+            project_id=1,
+            prompt_id=44,
+            sample_count=1,
+            idempotency_key="failed-run-analysis",
+        )
+        source = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).one()
+        source.status = "failed"
+        source.stage = "failed"
+        source.error_type = "temporary_browser_error"
+        source.error_message = "temporary"
+        source.answer_text = "保留的失败现场"
+        db.add(ReferenceSource(
+            run_id=source.id,
+            reference_index=1,
+            display_title="保留来源",
+            url="https://example.com/source",
+        ))
+        db.commit()
+        source_id = source.id
+        original_task_id = source.task_id
+
+        retry_run, created = queue_run_retry(
+            db,
+            run_id=source_id,
+            project_id=1,
+            prompt_id=44,
+            idempotency_key="run-retry-request-0001",
+        )
+
+        assert created is True
+        assert retry_run.id != source_id
+        assert retry_run.task_id != original_task_id
+        assert retry_run.status == "queued"
+        assert retry_run.original_query == "推荐一个短链工具"
+        db.expire_all()
+        preserved = db.get(BrowserMonitorRun, source_id)
+        assert preserved.status == "failed"
+        assert preserved.answer_text == "保留的失败现场"
+        assert db.query(ReferenceSource).filter_by(run_id=source_id).count() == 1
+
+        same_retry, created_again = queue_run_retry(
+            db,
+            run_id=source_id,
+            project_id=1,
+            prompt_id=44,
+            idempotency_key="run-retry-request-0001",
+        )
+        assert created_again is False
+        assert same_retry.id == retry_run.id
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_release_worker_keeps_failed_runs_retryable_before_context_freeze(tmp_path, monkeypatch):
     db, engine = _session(tmp_path)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -298,6 +512,63 @@ def test_release_worker_keeps_failed_runs_retryable_before_context_freeze(tmp_pa
         assert called["identity"] == analysis.analysis_id
         assert called["freeze_with_failures"] is False
         assert called["session_factory"] is factory
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_release_worker_executes_only_the_queued_single_run_retry(tmp_path, monkeypatch):
+    db, engine = _session(tmp_path)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        db.add(Organization(id=1, name="Release Org", plan_type="release-1.0"))
+        db.add(Project(id=1, organization_id=1, name="Release", brand_name="Target"))
+        db.add(Prompt(id=44, project_id=1, title="Prompt", prompt_text="推荐一个短链工具"))
+        db.commit()
+        analysis, _ = create_analysis(
+            db,
+            project_id=1,
+            prompt_id=44,
+            sample_count=2,
+            idempotency_key="release-worker-single-retry",
+        )
+        runs = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).order_by(BrowserMonitorRun.id).all()
+        failed, successful = runs
+        failed.status = "failed"
+        failed.stage = "failed"
+        failed.error_type = "temporary_browser_error"
+        successful.status = "success"
+        successful.stage = "success"
+        successful.answer_text = "保留成功回答"
+        db.commit()
+        retry, _ = queue_run_retry(
+            db,
+            run_id=failed.id,
+            project_id=1,
+            prompt_id=44,
+            idempotency_key="worker-retry-one-run",
+        )
+        calls: list[tuple[str, int]] = []
+
+        class FakeExecutor:
+            def execute_queued_runs(self, session, task_id):
+                calls.append(("execute", task_id))
+
+            def close(self):
+                calls.append(("close", 0))
+
+        def fake_update_task_status(session, task):
+            calls.append(("update", task.id))
+
+        monkeypatch.setattr(release_worker, "ReleaseSessionLocal", factory)
+        monkeypatch.setattr(release_worker, "MonitoringTaskExecutor", FakeExecutor)
+        monkeypatch.setattr(release_worker, "update_task_status_from_runs", fake_update_task_status)
+
+        assert release_worker.run_once() == f"run_retry:{retry.task_id}"
+        assert calls == [("execute", retry.task_id), ("update", retry.task_id), ("close", 0)]
+        db.expire_all()
+        assert db.get(BrowserMonitorRun, successful.id).answer_text == "保留成功回答"
+        assert db.get(BrowserMonitorRun, failed.id).status == "failed"
     finally:
         db.close()
         engine.dispose()

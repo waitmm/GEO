@@ -12,11 +12,26 @@ class SinglePromptAnalysisCreate(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=120)
 
 
+class SinglePromptRunSelectionCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    run_ids: list[int] = Field(min_length=1, max_length=500)
+    run_fingerprints: dict[int, str]
+    base_context_id: str | None = Field(default=None, max_length=80)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
+class SinglePromptRunRetryCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
 class AnalysisIdentityRead(BaseModel):
     analysis_id: str
     project_id: int
     prompt_id: int
-    task_id: int
+    task_id: int | None
     prompt_text: str
     sampling_plan_hash: str
 

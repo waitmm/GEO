@@ -16,6 +16,8 @@ from app.modules.single_prompt_v2.diagnosis import (
 )
 from app.modules.single_prompt_v2.schemas import (
     SinglePromptAnalysisCreate,
+    SinglePromptRunRetryCreate,
+    SinglePromptRunSelectionCreate,
     SinglePromptAnswerDiagnosisCreate,
     SinglePromptDiagnosisReviewCreate,
     SinglePromptDiagnosisRevisionCreate,
@@ -28,8 +30,11 @@ from app.modules.single_prompt_v2.schemas import (
 )
 from app.modules.single_prompt_v2.service import (
     create_analysis,
+    create_analysis_from_runs,
     get_analysis_status,
+    list_prompt_run_pool,
     list_analysis_statuses,
+    queue_run_retry,
     retry_analysis,
 )
 from app.modules.single_prompt_v2.source_preparation import (
@@ -59,6 +64,72 @@ def start_analysis(payload: SinglePromptAnalysisCreate, response: Response, db: 
     if not created:
         response.status_code = 200
     return get_analysis_status(db, analysis.analysis_id)
+
+
+@router.get("/runs")
+def list_runs(
+    project_id: int,
+    prompt_id: int,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+) -> dict:
+    if page < 1:
+        raise HTTPException(status_code=422, detail="page 必须大于等于 1")
+    if page_size < 1 or page_size > 100:
+        raise HTTPException(status_code=422, detail="page_size 必须在 1 到 100 之间")
+    return list_prompt_run_pool(
+        db,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.post("/analyses/from-runs", status_code=201)
+def start_analysis_from_runs(
+    payload: SinglePromptRunSelectionCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    analysis, created = create_analysis_from_runs(
+        db,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        run_ids=payload.run_ids,
+        run_fingerprints=payload.run_fingerprints,
+        base_context_id=payload.base_context_id,
+        idempotency_key=payload.idempotency_key,
+    )
+    if not created:
+        response.status_code = 200
+    return get_analysis_status(db, analysis.analysis_id)
+
+
+@router.post("/runs/{run_id}/retry", status_code=202)
+def retry_single_run(
+    run_id: int,
+    payload: SinglePromptRunRetryCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    run, created = queue_run_retry(
+        db,
+        run_id=run_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        idempotency_key=payload.idempotency_key,
+    )
+    if not created:
+        response.status_code = 200
+    return {
+        "source_run_id": run_id,
+        "retry_run_id": run.id,
+        "task_id": run.task_id,
+        "status": run.status,
+        "created": created,
+    }
 
 
 @router.get("/analyses")

@@ -25,7 +25,12 @@ from app.models import (
     SinglePromptSourceDisposition,
     SinglePromptSourcePreparation,
 )
-from app.modules.monitoring.enums import BROWSER_AUDIT_ENTRY_TYPE, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER
+from app.modules.monitoring.enums import (
+    BROWSER_AUDIT_ENTRY_TYPE,
+    NON_RETRYABLE_ERRORS,
+    WENXIN_PLATFORM,
+    WENXIN_WEB_ADAPTER,
+)
 from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.collectors.wenxin.search_process import (
     legacy_mixed_answer_boundary,
@@ -175,6 +180,54 @@ def create_analysis(
     return analysis, True
 
 
+def queue_run_retry(
+    db: Session,
+    *,
+    run_id: int,
+    project_id: int,
+    prompt_id: int,
+    idempotency_key: str,
+) -> tuple[BrowserMonitorRun, bool]:
+    """Queue a new immutable Run attempt without overwriting the failed Run."""
+
+    source = db.get(BrowserMonitorRun, run_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Run 不存在")
+    if source.project_id != project_id or source.prompt_id != prompt_id:
+        raise HTTPException(status_code=409, detail="Run 与当前 Project/Prompt 不匹配")
+    if source.status != "failed":
+        raise HTTPException(status_code=409, detail=f"当前状态 {source.status} 不支持重试，仅 failed 可重试")
+    if source.error_type in NON_RETRYABLE_ERRORS:
+        raise HTTPException(status_code=422, detail="该错误类型不支持自动重试")
+
+    created_by = f"single_prompt_v2:run_retry:{run_id}:{idempotency_key}"
+    existing_task = db.query(BrowserMonitorTask).filter_by(created_by=created_by).one_or_none()
+    if existing_task:
+        existing_run = db.query(BrowserMonitorRun).filter_by(task_id=existing_task.id).one()
+        return existing_run, False
+
+    task = create_browser_task_from_frozen_prompt(
+        db,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        prompt_text=source.original_query,
+        run_count=1,
+        execute_now=True,
+        platform=source.platform,
+        source_type=source.source_type,
+        adapter=source.adapter,
+        collection_mode=source.collection_mode,
+        schedule_type="single_prompt_v2_run_retry",
+        created_by=created_by,
+        commit=False,
+    )
+    retry_run = db.query(BrowserMonitorRun).filter_by(task_id=task.id).one()
+    retry_run.retry_count = source.retry_count + 1
+    db.commit()
+    db.refresh(retry_run)
+    return retry_run, True
+
+
 def create_frozen_analysis(
     db: Session,
     *,
@@ -254,7 +307,7 @@ def queue_frozen_analysis(db: Session, analysis_id: str) -> SinglePromptAnalysis
             raise HTTPException(status_code=409, detail="计划 Run 状态已变化，拒绝重复启动")
         run.status = "queued"
         run.stage = "queued"
-    task = db.get(BrowserMonitorTask, analysis.task_id)
+    task = db.get(BrowserMonitorTask, analysis.task_id) if analysis.task_id is not None else None
     if not task:
         raise HTTPException(status_code=409, detail="复测采样 Task 不存在")
     task.status = "queued"
@@ -342,17 +395,7 @@ def execute_analysis(
         db.close()
 
 
-def _snapshot_runs(db: Session, analysis: SinglePromptAnalysis) -> list[dict[str, Any]]:
-    runs = (
-        db.query(BrowserMonitorRun)
-        .filter(
-            BrowserMonitorRun.task_id == analysis.task_id,
-            BrowserMonitorRun.project_id == analysis.project_id,
-            BrowserMonitorRun.prompt_id == analysis.prompt_id,
-        )
-        .order_by(BrowserMonitorRun.run_sequence.asc(), BrowserMonitorRun.id.asc())
-        .all()
-    )
+def _snapshot_run_rows(db: Session, runs: list[BrowserMonitorRun]) -> list[dict[str, Any]]:
     run_ids = [run.id for run in runs]
     references: dict[int, list[ReferenceSource]] = {run_id: [] for run_id in run_ids}
     retrievals: dict[int, list[RetrievalCandidate]] = {run_id: [] for run_id in run_ids}
@@ -459,6 +502,234 @@ def _snapshot_runs(db: Session, analysis: SinglePromptAnalysis) -> list[dict[str
         }
         for run in runs
     ]
+
+
+def _snapshot_runs(db: Session, analysis: SinglePromptAnalysis) -> list[dict[str, Any]]:
+    if analysis.task_id is None:
+        return []
+    runs = (
+        db.query(BrowserMonitorRun)
+        .filter(
+            BrowserMonitorRun.task_id == analysis.task_id,
+            BrowserMonitorRun.project_id == analysis.project_id,
+            BrowserMonitorRun.prompt_id == analysis.prompt_id,
+        )
+        .order_by(BrowserMonitorRun.run_sequence.asc(), BrowserMonitorRun.id.asc())
+        .all()
+    )
+    return _snapshot_run_rows(db, runs)
+
+
+def _run_input_fingerprint(run: dict[str, Any]) -> str:
+    return _hash(_with_platform_reported_search(run))
+
+
+def _selected_run_snapshots(
+    db: Session,
+    *,
+    project_id: int,
+    prompt_id: int,
+    run_ids: list[int],
+) -> list[dict[str, Any]]:
+    if len(run_ids) != len(set(run_ids)):
+        raise HTTPException(status_code=422, detail="run_ids 不能包含重复项")
+    ordered_ids = sorted(run_ids)
+    rows = (
+        db.query(BrowserMonitorRun)
+        .filter(BrowserMonitorRun.id.in_(ordered_ids))
+        .all()
+    )
+    by_id = {row.id: row for row in rows}
+    missing = [run_id for run_id in ordered_ids if run_id not in by_id]
+    if missing:
+        raise HTTPException(status_code=422, detail={"code": "RUN_NOT_FOUND", "run_ids": missing})
+    wrong_scope = [
+        row.id for row in rows
+        if row.project_id != project_id or row.prompt_id != prompt_id
+    ]
+    if wrong_scope:
+        raise HTTPException(status_code=409, detail={"code": "RUN_SCOPE_MISMATCH", "run_ids": sorted(wrong_scope)})
+    invalid = [
+        row.id for row in rows
+        if row.status not in VALID_RUN_STATUSES or not str(row.answer_text or "").strip()
+    ]
+    if invalid:
+        raise HTTPException(status_code=409, detail={"code": "RUN_NOT_ANALYZABLE", "run_ids": sorted(invalid)})
+    return _snapshot_run_rows(db, [by_id[run_id] for run_id in ordered_ids])
+
+
+def create_analysis_from_runs(
+    db: Session,
+    *,
+    project_id: int,
+    prompt_id: int,
+    run_ids: list[int],
+    run_fingerprints: dict[int, str],
+    base_context_id: str | None,
+    idempotency_key: str,
+) -> tuple[SinglePromptAnalysis, bool]:
+    project = db.get(Project, project_id)
+    prompt = db.get(Prompt, prompt_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if not prompt or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Prompt 不存在或不属于当前项目")
+    if base_context_id:
+        base = db.query(SinglePromptAnalysisContext).filter_by(context_id=base_context_id).one_or_none()
+        if not base or base.project_id != project_id or base.prompt_id != prompt_id:
+            raise HTTPException(status_code=409, detail="基准 Context 与当前 Project/Prompt 不匹配")
+
+    snapshots = _selected_run_snapshots(
+        db,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        run_ids=run_ids,
+    )
+    actual_fingerprints = {
+        int(row["run_id"]): _run_input_fingerprint(row)
+        for row in snapshots
+    }
+    supplied = {int(key): str(value) for key, value in run_fingerprints.items()}
+    if supplied != actual_fingerprints:
+        changed = sorted(
+            set(actual_fingerprints) ^ set(supplied)
+            | {run_id for run_id in actual_fingerprints if supplied.get(run_id) != actual_fingerprints[run_id]}
+        )
+        raise HTTPException(status_code=409, detail={"code": "RUN_INPUT_CHANGED", "run_ids": changed})
+
+    ordered_ids = [int(row["run_id"]) for row in snapshots]
+    plan = {
+        "contract_version": "single-prompt-explicit-run-selection-v1",
+        "project_id": project_id,
+        "prompt_id": prompt_id,
+        "prompt_text": prompt.prompt_text,
+        "sample_count": len(ordered_ids),
+        "input_mode": "EXPLICIT_RUN_SELECTION",
+        "run_ids": ordered_ids,
+        "run_fingerprints": actual_fingerprints,
+        "base_context_id": base_context_id,
+    }
+    plan_hash = _hash(plan)
+    existing = (
+        db.query(SinglePromptAnalysis)
+        .filter_by(project_id=project_id, idempotency_key=idempotency_key)
+        .one_or_none()
+    )
+    if existing:
+        if existing.sampling_plan_hash != plan_hash:
+            raise HTTPException(status_code=409, detail="幂等键已用于不同的 Run 选择")
+        return existing, False
+
+    analysis_id = str(uuid4())
+    run_scope = {
+        "contract_version": "single-prompt-run-scope-v2",
+        "source": "EXPLICIT_RUN_SELECTION",
+        "run_ids": ordered_ids,
+        "run_fingerprints": actual_fingerprints,
+        "base_context_id": base_context_id,
+        "planned_run_count": len(ordered_ids),
+    }
+    output = {
+        "contract_version": "single-prompt-raw-output-v1",
+        "analysis_id": analysis_id,
+        "project_id": project_id,
+        "prompt_id": prompt_id,
+        "prompt_text": prompt.prompt_text,
+        "sampling_plan": plan,
+        "runs": snapshots,
+    }
+    run_scope_hash = _hash(run_scope)
+    output_hash = _hash(output)
+    now = datetime.utcnow()
+    analysis = SinglePromptAnalysis(
+        analysis_id=analysis_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        task_id=None,
+        idempotency_key=idempotency_key,
+        prompt_text_snapshot=prompt.prompt_text,
+        sampling_plan_json=_canonical_json(plan),
+        sampling_plan_hash=plan_hash,
+        status="READY",
+        blocker_code="",
+        blocker_detail="",
+        finished_at=now,
+    )
+    context = SinglePromptAnalysisContext(
+        context_id=f"ctx-{uuid4()}",
+        analysis_id=analysis_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        task_id=None,
+        result_version=f"raw-v1:{output_hash[:16]}",
+        run_scope_json=_canonical_json(run_scope),
+        run_scope_hash=run_scope_hash,
+        raw_output_json=_canonical_json(output),
+        raw_output_hash=output_hash,
+        valid_run_count=len(snapshots),
+        failed_run_count=0,
+    )
+    db.add_all([analysis, context])
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent = (
+            db.query(SinglePromptAnalysis)
+            .filter_by(project_id=project_id, idempotency_key=idempotency_key)
+            .one_or_none()
+        )
+        if concurrent and concurrent.sampling_plan_hash == plan_hash:
+            return concurrent, False
+        raise
+    db.refresh(analysis)
+    return analysis, True
+
+
+def list_prompt_run_pool(
+    db: Session,
+    *,
+    project_id: int,
+    prompt_id: int,
+    page: int,
+    page_size: int,
+) -> dict[str, Any]:
+    if not db.get(Project, project_id):
+        raise HTTPException(status_code=404, detail="项目不存在")
+    prompt = db.get(Prompt, prompt_id)
+    if not prompt or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Prompt 不存在或不属于当前项目")
+    query = db.query(BrowserMonitorRun).filter_by(project_id=project_id, prompt_id=prompt_id)
+    total = query.count()
+    rows = (
+        query.order_by(BrowserMonitorRun.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    snapshots = _snapshot_run_rows(db, rows)
+    context_membership: dict[int, list[dict[str, str]]] = {}
+    for context in db.query(SinglePromptAnalysisContext).filter_by(project_id=project_id, prompt_id=prompt_id).all():
+        scope = loads(context.run_scope_json, {})
+        for run_id in scope.get("run_ids") or []:
+            context_membership.setdefault(int(run_id), []).append({
+                "analysis_id": context.analysis_id,
+                "context_id": context.context_id,
+            })
+    items = []
+    for row in snapshots:
+        projected = _with_platform_reported_search(row)
+        projected["input_fingerprint"] = _run_input_fingerprint(row)
+        projected["analysis_memberships"] = context_membership.get(int(row["run_id"]), [])
+        items.append(projected)
+    return {
+        "project_id": project_id,
+        "prompt_id": prompt_id,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "items": items,
+    }
 
 
 def finalize_analysis(db: Session, analysis_id: str, token: str) -> bool:
@@ -653,7 +924,7 @@ def get_analysis_status(db: Session, analysis_id: str) -> dict[str, Any]:
     analysis = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.analysis_id == analysis_id).one_or_none()
     if not analysis:
         raise HTTPException(status_code=404, detail="V2 分析不存在")
-    task = db.get(BrowserMonitorTask, analysis.task_id)
+    task = db.get(BrowserMonitorTask, analysis.task_id) if analysis.task_id is not None else None
     context = db.query(SinglePromptAnalysisContext).filter(SinglePromptAnalysisContext.analysis_id == analysis_id).one_or_none()
     if context:
         output = loads(context.raw_output_json, {})

@@ -10,7 +10,9 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.release_database import ReleaseSessionLocal, release_engine
-from app.models import SinglePromptAnalysis, SinglePromptDiagnosisExecution, SinglePromptSourcePreparation
+from app.models import BrowserMonitorTask, SinglePromptAnalysis, SinglePromptDiagnosisExecution, SinglePromptSourcePreparation
+from app.modules.monitoring.executor import MonitoringTaskExecutor
+from app.modules.monitoring.services import update_task_status_from_runs
 from app.modules.single_prompt_v2.diagnosis import execute_diagnosis, execute_queued_evidence
 from app.modules.single_prompt_v2.service import execute_analysis
 from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_STATUS, execute_auto_fetch
@@ -20,13 +22,22 @@ from app.release_schema import validate_release_database
 def run_once() -> str | None:
     db = ReleaseSessionLocal()
     try:
+        retry_task = (
+            db.query(BrowserMonitorTask)
+            .filter_by(schedule_type="single_prompt_v2_run_retry", status="queued")
+            .order_by(BrowserMonitorTask.id.asc())
+            .first()
+        )
         analysis = (
             db.query(SinglePromptAnalysis)
             .filter(SinglePromptAnalysis.status == "QUEUED")
             .order_by(SinglePromptAnalysis.id.asc())
             .first()
         )
-        if analysis:
+        if retry_task:
+            identity = retry_task.id
+            work_type = "run_retry"
+        elif analysis:
             identity = analysis.analysis_id
             work_type = "analysis"
         else:
@@ -53,6 +64,21 @@ def run_once() -> str | None:
     finally:
         db.close()
 
+    if work_type == "run_retry":
+        db = ReleaseSessionLocal()
+        executor = MonitoringTaskExecutor()
+        try:
+            task = db.get(BrowserMonitorTask, identity)
+            if not task or task.status != "queued":
+                return None
+            task.status = "running"
+            db.commit()
+            executor.execute_queued_runs(db, task.id)
+            update_task_status_from_runs(db, task)
+        finally:
+            executor.close()
+            db.close()
+        return f"run_retry:{identity}"
     if work_type == "analysis":
         # The release acceptance path retains successful planned Runs and lets
         # the operator explicitly retry failures before freezing the Context.

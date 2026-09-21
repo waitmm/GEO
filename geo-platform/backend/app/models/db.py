@@ -298,7 +298,9 @@ class SinglePromptAnalysis(Base):
     analysis_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
-    task_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_tasks.id"), unique=True, index=True)
+    task_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("browser_monitor_tasks.id"), unique=True, index=True, nullable=True
+    )
     idempotency_key: Mapped[str] = mapped_column(String(120))
     prompt_text_snapshot: Mapped[str] = mapped_column(Text)
     sampling_plan_json: Mapped[str] = mapped_column(Text)
@@ -325,7 +327,9 @@ class SinglePromptAnalysisContext(Base):
     )
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
-    task_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_tasks.id"), unique=True, index=True)
+    task_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("browser_monitor_tasks.id"), unique=True, index=True, nullable=True
+    )
     result_version: Mapped[str] = mapped_column(String(96), unique=True, index=True)
     run_scope_json: Mapped[str] = mapped_column(Text)
     run_scope_hash: Mapped[str] = mapped_column(String(64))

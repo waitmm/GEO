@@ -927,3 +927,15 @@ Status: ACTIVE
   label that estimate as an actual deduction. Before Evidence, fix a request
   envelope from the exact reviewed Reasons and completed sources and retain the
   actual usage returned by each call.
+- **Source refresh state must never own manual mutation loading**: the release
+  UI previously reused one loading flag for background polling, manual content,
+  waiver and completion actions. This made settled pages appear stuck and could
+  encourage duplicate clicks. Refresh and mutation state are now separate;
+  retain the zero-loading-button production render check when changing source
+  polling or action concurrency.
+- **Pasted HTML is input material, not evidence content**: manual HTML source is
+  accepted only through the established primary-content extractor and V2
+  content Gate. `SUSPECT`/`EMPTY` output stays unresolved, partial output cannot
+  claim `FULL_PAGE`, and only the extracted clean text is frozen. Do not bypass
+  this path by storing markup as a passage or by treating extraction success as
+  evidence sufficiency.

@@ -217,6 +217,8 @@ def submit_source_manual_content(preparation_id: str, payload: SinglePromptManua
         expected_row_version=payload.expected_row_version,
         title=payload.title,
         clean_text=payload.clean_text,
+        input_format=payload.input_format,
+        raw_html=payload.raw_html,
         coverage_scope=payload.coverage_scope,
         submitted_by=payload.submitted_by,
     )

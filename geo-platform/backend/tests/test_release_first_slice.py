@@ -938,6 +938,65 @@ def test_manual_source_completion_freezes_exact_content_and_waiver_limitations(t
         engine.dispose()
 
 
+def test_manual_html_source_uses_existing_primary_content_extractor(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    try:
+        analysis = _seed_frozen_analysis(db, reference_urls=["https://example.com/guide"])
+        preparation, status = _create_preparation(db, analysis)
+        source = status["sources"][0]
+
+        blocked_html = (
+            "<html><body><main><h1>安全验证</h1><p>请完成验证后继续访问，"
+            "当前页面不是来源正文。</p>" * 8 + "</main></body></html>"
+        )
+        with pytest.raises(HTTPException) as blocked:
+            source_preparation.submit_manual_content(
+                db,
+                preparation_id=preparation.preparation_id,
+                source_key=source["source_key"],
+                expected_row_version=source["row_version"],
+                title="来源页面",
+                clean_text="",
+                input_format="HTML_SOURCE",
+                raw_html=blocked_html,
+                coverage_scope="FULL_PAGE",
+                submitted_by="qa",
+            )
+        assert blocked.value.detail["code"] == "HTML_PRIMARY_CONTENT_REJECTED"
+        assert db.query(SinglePromptPreparedSourceSnapshot).count() == 0
+
+        article_html = (
+            "<html><head><title>产品说明</title></head><body><nav>首页 登录</nav>"
+            "<main><article><h1>短链产品完整说明</h1>"
+            + "".join(
+                f"<p>这是第{index}段正式正文，详细说明短链生成能力、适用场景、使用边界和注意事项，内容来自页面实际源代码。</p>"
+                for index in range(1, 12)
+            )
+            + "</article></main></body></html>"
+        )
+        snapshot = source_preparation.submit_manual_content(
+            db,
+            preparation_id=preparation.preparation_id,
+            source_key=source["source_key"],
+            expected_row_version=source["row_version"],
+            title="产品说明",
+            clean_text="",
+            input_format="HTML_SOURCE",
+            raw_html=article_html,
+            coverage_scope="FULL_PAGE",
+            submitted_by="qa",
+        )
+        assert snapshot.acquisition_method == "MANUAL_HTML_SOURCE"
+        assert "短链产品完整说明" in snapshot.clean_text
+        assert "<article>" not in snapshot.clean_text
+        assert Path(snapshot.artifact_path).read_text(encoding="utf-8") == snapshot.clean_text
+        assert json.loads(snapshot.passages_json)
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_source_preparation_status_read_has_no_business_writes(tmp_path, monkeypatch):
     _configure_artifacts(monkeypatch, tmp_path)
     db, engine = _session(tmp_path)

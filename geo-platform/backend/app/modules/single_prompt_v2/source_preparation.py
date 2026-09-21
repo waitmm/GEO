@@ -34,6 +34,7 @@ from app.models import (
 from app.services.serialization import loads
 from app.services.url_identity import canonicalize_url
 from app.modules.optimization.passage_service import fetch_page_playwright
+from app.modules.optimization.primary_content import extract_from_html
 
 
 CITATION_MANIFEST_CONTRACT_VERSION = "single_prompt_citation_manifest.v1"
@@ -557,6 +558,8 @@ def submit_manual_content(
     expected_row_version: int,
     title: str,
     clean_text: str,
+    input_format: str = "CLEAN_TEXT",
+    raw_html: str = "",
     coverage_scope: str,
     submitted_by: str,
 ) -> SinglePromptPreparedSourceSnapshot:
@@ -564,12 +567,6 @@ def submit_manual_content(
         raise HTTPException(status_code=422, detail="coverage_scope 只能是 FULL_PAGE 或 EXCERPT")
     if not submitted_by.strip():
         raise HTTPException(status_code=422, detail="必须记录正文提交人")
-    text = clean_text.strip()
-    if len(text) < 50:
-        raise HTTPException(status_code=422, detail="正文过短，不能形成可审计 passage")
-    block_reason = _content_block_reason(title, text)
-    if block_reason:
-        raise HTTPException(status_code=422, detail={"code": "CONTENT_BLOCKED", "detail": block_reason})
     disposition = (
         db.query(SinglePromptSourceDisposition)
         .filter_by(preparation_id=preparation_id, source_key=source_key)
@@ -582,6 +579,44 @@ def submit_manual_content(
     preparation = db.query(SinglePromptSourcePreparation).filter_by(preparation_id=preparation_id).one()
     if preparation.status in ACTIVE_AUTO_FETCH_STATUSES:
         raise HTTPException(status_code=409, detail="自动获取正在排队或执行，请等待完成后再人工补录")
+    if input_format == "CLEAN_TEXT":
+        if raw_html.strip():
+            raise HTTPException(status_code=422, detail="粘贴正文模式不能同时提交页面源码")
+        text = clean_text.strip()
+        acquisition_method = "MANUAL"
+    elif input_format == "HTML_SOURCE":
+        if clean_text.strip():
+            raise HTTPException(status_code=422, detail="粘贴页面源码模式不能同时提交清洗正文")
+        html = raw_html.strip()
+        if len(html) < 50:
+            raise HTTPException(status_code=422, detail="页面源码过短，无法提取正文")
+        extraction = extract_from_html(html, disposition.canonical_url)
+        extraction_status = str(extraction.get("extraction_status") or "EMPTY")
+        text = str(extraction.get("primary_content") or "").strip()
+        if extraction_status not in {"FULL", "PARTIAL", "DESCRIPTION_ONLY"} or len(text) < 50:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "HTML_PRIMARY_CONTENT_REJECTED",
+                    "detail": f"页面源码未提取出合格正文（status={extraction_status}）",
+                },
+            )
+        if coverage_scope == "FULL_PAGE" and extraction_status != "FULL":
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "HTML_PRIMARY_CONTENT_PARTIAL",
+                    "detail": f"页面源码只提取到部分内容（status={extraction_status}），请选择明确摘录或补充完整正文",
+                },
+            )
+        acquisition_method = "MANUAL_HTML_SOURCE"
+    else:
+        raise HTTPException(status_code=422, detail="input_format 只能是 CLEAN_TEXT 或 HTML_SOURCE")
+    if len(text) < 50:
+        raise HTTPException(status_code=422, detail="正文过短，不能形成可审计 passage")
+    block_reason = _content_block_reason(title, text)
+    if block_reason:
+        raise HTTPException(status_code=422, detail={"code": "CONTENT_BLOCKED", "detail": block_reason})
     try:
         snapshot = _snapshot_from_content(
             db,
@@ -590,7 +625,7 @@ def submit_manual_content(
             title=title,
             clean_text=text,
             coverage_scope=coverage_scope,
-            acquisition_method="MANUAL",
+            acquisition_method=acquisition_method,
             submitted_by=submitted_by.strip(),
         )
     except ValueError as exc:

@@ -18,7 +18,9 @@ type PageKey = "coreV2" | "validation" | "recommendation" | "optimization" | "co
 type V2AnswerReviewDecision = "CONFIRM_INCLUDE_AS_OPTION" | "CORRECT_TO_MENTION" | "KEEP_UNRESOLVED" | "EXCLUDE_EXTRACTION";
 type V2SourceDraft = {
   title: string;
+  inputFormat: "CLEAN_TEXT" | "HTML_SOURCE";
   cleanText: string;
+  rawHtml: string;
   coverageScope: "FULL_PAGE" | "EXCERPT";
   waiverReason: string;
   waiverImpact: string;
@@ -1248,7 +1250,8 @@ export default function App() {
   const [v2SampleCount, setV2SampleCount] = useState(3);
   const v2PendingIdempotencyKey = useRef<string | null>(null);
   const [v2SourcePreparation, setV2SourcePreparation] = useState<SinglePromptV2SourcePreparation | null>(null);
-  const [v2SourceLoading, setV2SourceLoading] = useState(false);
+  const [v2SourceRefreshing, setV2SourceRefreshing] = useState(false);
+  const [v2SourceActionKey, setV2SourceActionKey] = useState<string | null>(null);
   const [v2SourceActor, setV2SourceActor] = useState("本地审核人");
   const [v2SourceDrafts, setV2SourceDrafts] = useState<Record<string, V2SourceDraft>>({});
   const [v2SourceFilter, setV2SourceFilter] = useState<"ACTION_REQUIRED" | "ALL" | "READY" | "WAIVED_WITH_LIMITATION">("ACTION_REQUIRED");
@@ -1781,9 +1784,9 @@ export default function App() {
     }
   }
 
-  async function refreshV2SourcePreparation() {
+  async function refreshV2SourcePreparation(silent = false) {
     if (!v2Analysis?.context_id || !projectId || !activePromptId) return;
-    setV2SourceLoading(true);
+    if (!silent) setV2SourceRefreshing(true);
     try {
       const status = await api.getSinglePromptV2SourcePreparation(
         v2Analysis.analysis.analysis_id,
@@ -1794,13 +1797,13 @@ export default function App() {
     } catch (error: any) {
       message.error(error.message || "读取来源准备状态失败");
     } finally {
-      setV2SourceLoading(false);
+      if (!silent) setV2SourceRefreshing(false);
     }
   }
 
   async function startV2SourcePreparation() {
     if (!v2Analysis?.context_id || !projectId || !activePromptId) return;
-    setV2SourceLoading(true);
+    setV2SourceActionKey("create-preparation");
     try {
       const status = await api.createSinglePromptV2SourcePreparation(
         v2Analysis.analysis.analysis_id,
@@ -1816,13 +1819,13 @@ export default function App() {
     } catch (error: any) {
       message.error(error.message || "冻结引用范围失败");
     } finally {
-      setV2SourceLoading(false);
+      setV2SourceActionKey(null);
     }
   }
 
   async function startV2SourceAutoFetch() {
     if (!v2SourcePreparation || !projectId || !activePromptId) return;
-    setV2SourceLoading(true);
+    setV2SourceActionKey("auto-fetch");
     try {
       const status = await api.queueSinglePromptV2SourceAutoFetch(
         v2SourcePreparation.preparation.preparation_id,
@@ -1833,7 +1836,7 @@ export default function App() {
     } catch (error: any) {
       message.error(error.message || "自动获取正文失败");
     } finally {
-      setV2SourceLoading(false);
+      setV2SourceActionKey(null);
     }
   }
 
@@ -1843,7 +1846,9 @@ export default function App() {
       [sourceKey]: {
         ...(current[sourceKey] || {
           title: "",
+          inputFormat: "CLEAN_TEXT",
           cleanText: "",
+          rawHtml: "",
           coverageScope: "FULL_PAGE",
           waiverReason: "",
           waiverImpact: "",
@@ -1856,11 +1861,14 @@ export default function App() {
   async function submitV2ManualSource(source: SinglePromptV2SourcePreparation["sources"][number]) {
     if (!v2SourcePreparation || !projectId || !activePromptId) return;
     const draft = v2SourceDrafts[source.source_key];
-    if (!draft?.cleanText?.trim() || draft.cleanText.trim().length < 50) {
-      message.warning("请补录至少 50 个字符的正文");
+    const inputFormat = draft?.inputFormat || "CLEAN_TEXT";
+    const submittedContent = inputFormat === "HTML_SOURCE" ? draft?.rawHtml : draft?.cleanText;
+    if (!submittedContent?.trim() || submittedContent.trim().length < 50) {
+      message.warning(inputFormat === "HTML_SOURCE" ? "请粘贴完整的页面 HTML 源码" : "请补录至少 50 个字符的正文");
       return;
     }
-    setV2SourceLoading(true);
+    const actionKey = `manual:${source.source_key}`;
+    setV2SourceActionKey(actionKey);
     try {
       const status = await api.submitSinglePromptV2ManualSource(
         v2SourcePreparation.preparation.preparation_id,
@@ -1870,18 +1878,20 @@ export default function App() {
           source_key: source.source_key,
           expected_row_version: source.row_version,
           title: draft.title || source.reference_observations?.[0]?.title || "",
-          clean_text: draft.cleanText,
+          input_format: inputFormat,
+          clean_text: inputFormat === "CLEAN_TEXT" ? draft.cleanText : "",
+          raw_html: inputFormat === "HTML_SOURCE" ? draft.rawHtml : "",
           coverage_scope: draft.coverageScope,
           submitted_by: v2SourceActor.trim() || "本地审核人",
         },
       );
       setV2SourcePreparation(status);
-      updateV2SourceDraft(source.source_key, { cleanText: "" });
-      message.success("正文快照与 passages 已生成");
+      updateV2SourceDraft(source.source_key, { cleanText: "", rawHtml: "" });
+      message.success(inputFormat === "HTML_SOURCE" ? "页面源码已提取正文并生成快照" : "正文快照与 passages 已生成");
     } catch (error: any) {
       message.error(error.message || "正文补录失败");
     } finally {
-      setV2SourceLoading(false);
+      setV2SourceActionKey(null);
     }
   }
 
@@ -1892,7 +1902,8 @@ export default function App() {
       message.warning("人工放弃必须填写原因和对结论的影响");
       return;
     }
-    setV2SourceLoading(true);
+    const actionKey = `waive:${source.source_key}`;
+    setV2SourceActionKey(actionKey);
     try {
       const status = await api.waiveSinglePromptV2Source(
         v2SourcePreparation.preparation.preparation_id,
@@ -1911,13 +1922,13 @@ export default function App() {
     } catch (error: any) {
       message.error(error.message || "记录人工放弃失败");
     } finally {
-      setV2SourceLoading(false);
+      setV2SourceActionKey(null);
     }
   }
 
   async function freezeV2SourceCompletion() {
     if (!v2SourcePreparation || !projectId || !activePromptId) return;
-    setV2SourceLoading(true);
+    setV2SourceActionKey("freeze-completion");
     try {
       const status = await api.freezeSinglePromptV2SourceCompletion(
         v2SourcePreparation.preparation.preparation_id,
@@ -1934,7 +1945,7 @@ export default function App() {
     } catch (error: any) {
       message.error(error.message || "冻结来源完成清单失败");
     } finally {
-      setV2SourceLoading(false);
+      setV2SourceActionKey(null);
     }
   }
 
@@ -2871,7 +2882,7 @@ export default function App() {
   }, [page, v2Analysis?.analysis.analysis_id, v2Analysis?.context_id, projectId, activePromptId]);
   useEffect(() => {
     if (!v2SourcePreparation || !["AUTO_FETCH_QUEUED", "AUTO_FETCHING"].includes(v2SourcePreparation.preparation.status)) return;
-    const timer = window.setInterval(() => { void refreshV2SourcePreparation(); }, 3000);
+    const timer = window.setInterval(() => { void refreshV2SourcePreparation(true); }, 3000);
     return () => window.clearInterval(timer);
   }, [v2SourcePreparation?.preparation.preparation_id, v2SourcePreparation?.preparation.status, projectId, activePromptId]);
   useEffect(() => {
@@ -4777,13 +4788,13 @@ export default function App() {
                 {v2SourcePreparation && <Tag color={v2SourcePreparation.completion_manifest?.status === "FROZEN" ? "green" : v2SourcePreparation.completion_manifest?.status === "NO_USABLE_SOURCE" ? "red" : "gold"}>
                   {v2SourcePreparation.completion_manifest?.status || `${v2SourcePreparation.conservation.terminal}/${v2SourcePreparation.conservation.required_unique_sources} 已处置`}
                 </Tag>}
-                {v2SourcePreparation && <Tooltip title="只读取当前来源准备状态，不抓取网页"><Button icon={<RefreshCw size={15} />} loading={v2SourceLoading} onClick={refreshV2SourcePreparation} aria-label="刷新来源准备" /></Tooltip>}
+                {v2SourcePreparation && <Tooltip title="只读取当前来源准备状态，不抓取网页"><Button icon={<RefreshCw size={15} />} loading={v2SourceRefreshing} disabled={Boolean(v2SourceActionKey)} onClick={() => refreshV2SourcePreparation()} aria-label="刷新来源准备" /></Tooltip>}
               </Space>}>
                 {!v2SourcePreparation ? <Space direction="vertical" size={12} style={{ width: "100%" }}>
                   <Alert type="info" showIcon message="先冻结本次分析的引用范围" description="Citation Manifest 只固定哪些引用属于本次 Context；不会抓取正文，也不会自动放弃任何来源。" />
                   <Row gutter={[12, 12]} align="middle">
                     <Col xs={24} md={8}><Input value={v2SourceActor} onChange={(event) => setV2SourceActor(event.target.value)} placeholder="操作人" /></Col>
-                    <Col><Button type="primary" icon={<ListChecks size={15} />} loading={v2SourceLoading} onClick={startV2SourcePreparation}>冻结引用范围并开始准备</Button></Col>
+                    <Col><Button type="primary" icon={<ListChecks size={15} />} loading={v2SourceActionKey === "create-preparation"} disabled={Boolean(v2SourceActionKey)} onClick={startV2SourcePreparation}>冻结引用范围并开始准备</Button></Col>
                   </Row>
                 </Space> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
                   {v2SourcePreparation.conservation.nonterminal > 0 && <Alert
@@ -4807,7 +4818,7 @@ export default function App() {
                     showIcon
                     message="先自动获取，再人工补充"
                     description="系统只抓取当前 Citation Manifest 内的 URL。合格正文会直接形成不可变 Snapshot；抓取失败、验证页或内容不完整的来源会进入人工补录，不会自动放弃。"
-                    action={<Button type="primary" icon={<Download size={15} />} loading={v2SourceLoading} onClick={startV2SourceAutoFetch}>自动获取正文</Button>}
+                    action={<Button type="primary" icon={<Download size={15} />} loading={v2SourceActionKey === "auto-fetch"} disabled={Boolean(v2SourceActionKey)} onClick={startV2SourceAutoFetch}>自动获取正文</Button>}
                   />}
                   {["AUTO_FETCH_QUEUED", "AUTO_FETCHING"].includes(v2SourcePreparation.preparation.status) && <Alert
                     type="info"
@@ -4831,7 +4842,7 @@ export default function App() {
                     ]}
                   />
                   {v2FilteredSources.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前筛选下没有来源" /> : <Collapse items={v2FilteredSources.map((source) => {
-                    const draft = v2SourceDrafts[source.source_key] || { title: "", cleanText: "", coverageScope: "FULL_PAGE", waiverReason: "", waiverImpact: "" };
+                    const draft = v2SourceDrafts[source.source_key] || { title: "", inputFormat: "CLEAN_TEXT", cleanText: "", rawHtml: "", coverageScope: "FULL_PAGE", waiverReason: "", waiverImpact: "" };
                     const sourceTitle = String(source.reference_observations?.[0]?.title || source.canonical_url);
                     return {
                       key: source.source_key,
@@ -4843,7 +4854,7 @@ export default function App() {
                           <Descriptions.Item label="Snapshot"><Text code>{source.snapshot.snapshot_id}</Text></Descriptions.Item>
                           <Descriptions.Item label="正文 / passages">{source.snapshot.content_hash.slice(0, 12)} / {source.snapshot.passage_count}</Descriptions.Item>
                           <Descriptions.Item label="覆盖范围">{source.snapshot.coverage_scope}</Descriptions.Item>
-                          <Descriptions.Item label="获取方式">{source.snapshot.acquisition_method === "AUTO_FETCH" ? "自动获取" : "人工补录"}</Descriptions.Item>
+                          <Descriptions.Item label="获取方式">{source.snapshot.acquisition_method === "AUTO_FETCH" ? "自动获取" : source.snapshot.acquisition_method === "MANUAL_HTML_SOURCE" ? "人工源码提取" : "人工正文补录"}</Descriptions.Item>
                         </Descriptions>}
                         {source.waiver && <Alert type="warning" showIcon message={`已由 ${source.waiver.waived_by} 明确放弃`} description={`${source.waiver.reason}；影响：${source.waiver.impact}`} />}
                         {(source.state === "MANUAL_REQUIRED" || source.state === "READY") && <>
@@ -4851,8 +4862,11 @@ export default function App() {
                           <Row gutter={[12, 12]}>
                             <Col xs={24} md={16}><Input value={draft.title} onChange={(event) => updateV2SourceDraft(source.source_key, { title: event.target.value })} placeholder="来源标题（可选）" /></Col>
                             <Col xs={24} md={8}><Select style={{ width: "100%" }} value={draft.coverageScope} onChange={(value) => updateV2SourceDraft(source.source_key, { coverageScope: value })} options={[{ value: "FULL_PAGE", label: "完整正文" }, { value: "EXCERPT", label: "明确摘录" }]} /></Col>
-                            <Col xs={24}><Input.TextArea rows={7} value={draft.cleanText} onChange={(event) => updateV2SourceDraft(source.source_key, { cleanText: event.target.value })} placeholder="粘贴真实正文。验证页、登录墙、错误提示不得作为正文提交。" /></Col>
-                            <Col><Button type="primary" loading={v2SourceLoading} onClick={() => submitV2ManualSource(source)}>{source.snapshot ? "提交新正文版本" : "校验并生成正文快照"}</Button></Col>
+                            <Col xs={24}><Segmented value={draft.inputFormat} onChange={(value) => updateV2SourceDraft(source.source_key, { inputFormat: value as V2SourceDraft["inputFormat"] })} options={[{ value: "CLEAN_TEXT", label: "粘贴正文" }, { value: "HTML_SOURCE", label: "粘贴页面源码" }]} /></Col>
+                            <Col xs={24}>{draft.inputFormat === "HTML_SOURCE"
+                              ? <Input.TextArea rows={9} value={draft.rawHtml} onChange={(event) => updateV2SourceDraft(source.source_key, { rawHtml: event.target.value })} placeholder="粘贴页面 HTML 源代码。系统只提取正文；验证页、登录墙和空壳页面会被拒绝。" />
+                              : <Input.TextArea rows={7} value={draft.cleanText} onChange={(event) => updateV2SourceDraft(source.source_key, { cleanText: event.target.value })} placeholder="粘贴真实正文。验证页、登录墙、错误提示不得作为正文提交。" />}</Col>
+                            <Col><Button type="primary" loading={v2SourceActionKey === `manual:${source.source_key}`} disabled={Boolean(v2SourceActionKey)} onClick={() => submitV2ManualSource(source)}>{source.snapshot ? "提交新正文版本" : draft.inputFormat === "HTML_SOURCE" ? "提取并生成正文快照" : "校验并生成正文快照"}</Button></Col>
                           </Row>
                         </>}
                         {source.state === "MANUAL_REQUIRED" && <>
@@ -4860,13 +4874,13 @@ export default function App() {
                           <Row gutter={[12, 12]}>
                             <Col xs={24} md={10}><Input value={draft.waiverReason} onChange={(event) => updateV2SourceDraft(source.source_key, { waiverReason: event.target.value })} placeholder="放弃原因" /></Col>
                             <Col xs={24} md={10}><Input value={draft.waiverImpact} onChange={(event) => updateV2SourceDraft(source.source_key, { waiverImpact: event.target.value })} placeholder="对结论和适用范围的影响" /></Col>
-                            <Col><Popconfirm title="明确放弃该来源？" description="放弃不会产生证据资格，也不能由系统自动撤销。" okText="记录放弃" cancelText="取消" onConfirm={() => waiveV2Source(source)}><Button danger loading={v2SourceLoading}>记录放弃与限制</Button></Popconfirm></Col>
+                            <Col><Popconfirm title="明确放弃该来源？" description="放弃不会产生证据资格，也不能由系统自动撤销。" okText="记录放弃" cancelText="取消" onConfirm={() => waiveV2Source(source)}><Button danger loading={v2SourceActionKey === `waive:${source.source_key}`} disabled={Boolean(v2SourceActionKey)}>记录放弃与限制</Button></Popconfirm></Col>
                           </Row>
                         </>}
                       </Space>,
                     };
                   })} />}
-                  {!v2SourcePreparation.completion_manifest && <Button type="primary" icon={<ShieldCheck size={15} />} disabled={v2SourcePreparation.conservation.nonterminal > 0} loading={v2SourceLoading} onClick={freezeV2SourceCompletion}>冻结 Source Completion Manifest</Button>}
+                  {!v2SourcePreparation.completion_manifest && <Button type="primary" icon={<ShieldCheck size={15} />} disabled={v2SourcePreparation.conservation.nonterminal > 0 || Boolean(v2SourceActionKey)} loading={v2SourceActionKey === "freeze-completion"} onClick={freezeV2SourceCompletion}>冻结 Source Completion Manifest</Button>}
                   {v2SourcePreparation.completion_manifest && <Alert type={v2SourcePreparation.completion_manifest.status === "FROZEN" ? "success" : "error"} showIcon message={`Source Completion Manifest · ${v2SourcePreparation.completion_manifest.status}`} description={<Text code copyable>{v2SourcePreparation.completion_manifest.payload_hash}</Text>} />}
                 </Space>}
               </Card>}

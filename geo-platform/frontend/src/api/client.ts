@@ -80,7 +80,8 @@ export const api = {
     request<SinglePromptV2SourcePreparation>(`/api/v2/single-prompt/source-preparations/${encodeURIComponent(preparationId)}/auto-fetch`, { method: "POST", body: JSON.stringify(payload) }),
   submitSinglePromptV2ManualSource: (preparationId: string, payload: {
     project_id: number; prompt_id: number; source_key: string; expected_row_version: number;
-    title: string; clean_text: string; coverage_scope: "FULL_PAGE" | "EXCERPT"; submitted_by: string;
+    title: string; input_format: "CLEAN_TEXT" | "HTML_SOURCE"; clean_text: string; raw_html: string;
+    coverage_scope: "FULL_PAGE" | "EXCERPT"; submitted_by: string;
   }) => request<SinglePromptV2SourcePreparation>(`/api/v2/single-prompt/source-preparations/${encodeURIComponent(preparationId)}/manual-content`, { method: "POST", body: JSON.stringify(payload) }),
   waiveSinglePromptV2Source: (preparationId: string, payload: {
     project_id: number; prompt_id: number; source_key: string; expected_row_version: number;

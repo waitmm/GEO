@@ -5525,3 +5525,27 @@ review_queue = READY
   blocked by the missing exact Review and Completion Manifest.
 - No code changed in this batch. Only the durable operations and status records
   were updated.
+
+## 2026-09-21 Manual HTML Source Completion And Frontend Loading Fix
+
+- Added an explicit `HTML_SOURCE` mode to the existing manual source-completion
+  endpoint. It reuses `optimization.primary_content.extract_from_html()` as a
+  pure extraction kernel, then passes the extracted text through the existing
+  V2 content block, immutable artifact, Snapshot and passage path. No legacy
+  Runner or workflow state is restored.
+- HTML that produces `SUSPECT`/`EMPTY` output is rejected. Partial extraction
+  cannot be submitted as `FULL_PAGE`; the operator must select `EXCERPT` or
+  provide complete content. The frozen source URL and row version still define
+  ownership, and no rejection changes the disposition or creates a Snapshot.
+- The release UI now offers `粘贴正文` and `粘贴页面源码` for every manually
+  resolvable source. Successful HTML extraction is visibly recorded as
+  `MANUAL_HTML_SOURCE`; only extracted clean text enters the immutable evidence
+  artifact.
+- Fixed the apparent frontend hang by separating read-only refresh state from
+  source mutations. The 3-second auto-fetch poll is silent and can no longer
+  put every manual submit/waiver/freeze button into loading. A mutation now
+  shows loading only on the exact source action and prevents conflicting writes.
+- The populated release database was not changed. The service restarted on
+  revision `20260921_01` with the same `30 READY / 16 MANUAL_REQUIRED` state.
+  Release first-slice tests pass `22/22`; the release frontend build passes, and
+  a headless production-page render found zero loading buttons after settlement.

@@ -5474,3 +5474,32 @@ review_queue = READY
   suite passed 101 tests before the final cross-Task case was added; that added
   case also passes independently. Release frontend build and desktop/mobile
   visual verification pass.
+
+## 2026-09-21 Release Site Reconciliation And Main Analysis Pin
+
+- Verified the live API and worker with process open-file inspection. Both use
+  `backend/geo_release.db`; the release migration command resolves the same
+  absolute path. Revision is `20260921_01`, SQLite is `3.51.3`, schema validation
+  is READY and `foreign_key_check` is clean.
+- Queried the actual result-bearing tables, all workspace SQLite files and the
+  surviving `/private/tmp` release backups for the prior Analysis, Answer Result
+  and Snapshot IDs. No row matched. The current database was created after that
+  historical acceptance and restarted Task numbering from 1, so the prior IDs
+  belong to the replaced pre-rebuild release database rather than a hidden
+  result table. Their audit details remain in the operations log only.
+- Pinned the continuing case to Analysis `92bb12a5-edcc-43c7-b848-ca60267a2672`,
+  Context `ctx-79dcb9e0-a8fe-4c17-b584-01c240acdde2`, Runs `4/5/6`, Citation
+  Manifest `citation-manifest-9ccde3db-5810-440a-aef8-836306c6db44` and Source
+  Preparation `source-prep-25dbbbb2-b5ed-49c7-895c-8a8384a55afe`. Runs `7/8/9`
+  and their run-selection Analysis remain acceptance history only.
+- Confirmed all 30 READY artifacts remain available. None of the 16 unresolved
+  rows has a persisted current candidate. The old `2om.cn` Snapshot content is
+  absent; an audit hash alone cannot satisfy exact content/version reuse.
+- The live release database has no diagnosis, review, completion, evidence or
+  LLM cache row. No external operation, automatic review, waiver or business
+  state write was initiated by the reconciliation commands.
+- A separate browser page concurrently issued three explicit POST requests at
+  `2026-09-21 03:52Z`: it created an all-Runs Analysis, created its Source
+  Preparation and started auto-fetch. Server access logs distinguish this from
+  test fixtures and read-only polling. The new Analysis is retained as a
+  separate user operation and is not selected as the Runs 4/5/6 main case.

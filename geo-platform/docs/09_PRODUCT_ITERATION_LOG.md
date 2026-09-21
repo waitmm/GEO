@@ -4336,3 +4336,19 @@ Snapshot 和人工待办，避免“为了隔离又重写一个缩水抓取器�
 处置。附件提到的三条零事件 ResultVersion 在当前 release DB 中不存在，因此不能直接进入审核；
 这不是新的算法结论，而是历史验收记录与当前发布数据不一致，必须基于当前 Context 正式生成新的
 Answer Result 后再审核。此次恢复没有新增采样、模型调用、抓取、WAIVE 或自动审核。
+
+### 2026-09-21：固定当前主分析并完成现场对账
+
+当前正式续办对象固定为 Runs 4/5/6 对应的 Analysis `92bb12a5-...`，不是 Runs 7/8/9 的
+选样验收版本。API、worker、migration CLI 已核对为同一个 `backend/geo_release.db` 和 revision
+`20260921_01`。上一份 release 数据库中的首轮 Analysis、零事件 Answer Result 和 `2om.cn`
+Snapshot 没有出现在当前库、其他工作区数据库或现存备份中；它们继续作为历史审计记录，不用于
+当前审核或 Evidence。
+
+当前产品状态是两条并行待办：Answer Semantic 尚需对精确 Context 的新外发授权；来源侧保留
+30 条 READY，16 条没有正式正文的来源等待人工补录或明确 WAIVE。两侧完成后才冻结 Completion
+并执行精确绑定 Evidence。现场对账没有创建空诊断、自动审核、自动 WAIVE 或把未执行写成零结果。
+
+同一时段页面显式选择 Runs 1-9 创建了另一份 Analysis 并启动来源自动获取。该操作有连续 POST
+访问日志，不是刷新副作用；其对象继续保留但不成为当前主分析，也不能跨 Context 为 Runs 4/5/6
+补齐来源。产品页面的展示顺序仍不具有“当前业务版本”语义。

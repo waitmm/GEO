@@ -234,3 +234,74 @@ release revision `20260921_01` 允许 Analysis/Context 不绑定新的 Browser T
 正式 API/worker 重启后，上述新旧 Analysis、Run 绑定和 30/16 来源守恒保持不变；30 份
 artifact 的实际文件 SHA-256 与数据库记录全部一致。重复提交同一 `from-runs` 幂等请求返回
 既有版本，Analysis/Context 数量没有增加。
+
+## 10. 2026-09-21 当前发布现场对账与主案例固定
+
+API 与 worker 的打开文件均核对为
+`/Users/bmwqr/Desktop/python/GEO/geo-platform/backend/geo_release.db`；release migration CLI
+默认并经显式 URL 校验使用同一路径。当前 revision 为 `20260921_01`，应用实际 SQLite 为
+`3.51.3`。实际结果承载表 `single_prompt_diagnosis_executions`、
+`single_prompt_diagnosis_results`、`single_prompt_diagnosis_reviews`、
+`single_prompt_source_completion_manifests` 和 `llm_call_cache` 均为 0 行，不是 ORM 类名查询遗漏。
+
+上一份 release 现场记录中的 Analysis `a2d0c0ee-b62e-4f39-9fe9-1bc14efdea33`、Answer Result
+`diag-v1:69cb9884452deead` 与 Snapshot
+`source-snapshot-1a51fa9d-9c0a-4cea-85f2-db72a67db8d0` 不在当前 DB、工作区其他 SQLite 或现存
+临时备份中。当前 DB 文件于本地时间 `2026-09-20 20:06:40 +0800` 建立，随后从新的 Task 1
+重新写入；旧 Task 1 与当前 Task 1 身份互斥。旧对象因此归属于新库重建前的历史现场，只保留
+本文中的 ID、hash、token 和 Gate 审计，不具备当前审核或 Evidence 输入资格。旧 `2om.cn`
+正文文件与候选目录也未保留；仅有旧 hash 不能重建正文或证明当前内容版本，不能复用为 Snapshot。
+
+当前主案例固定为以下精确输入，不由展示顺序或 latest 选择：
+
+- Analysis `92bb12a5-edcc-43c7-b848-ca60267a2672`；
+- Context `ctx-79dcb9e0-a8fe-4c17-b584-01c240acdde2`；
+- Raw Result `raw-v1:eb86358c452b1bc4`，完整 hash
+  `eb86358c452b1bc40038394c9243a13febef4f305c8f1a895ec78c3cd909f3d2`；
+- Runs `4/5/6`，Task `2`；
+- Citation Manifest `citation-manifest-9ccde3db-5810-440a-aef8-836306c6db44`，hash
+  `302a791df952f4683946327c183f12ac9c56d46160766c44df80dabfa5da09e9`；
+- Source Preparation `source-prep-25dbbbb2-b5ed-49c7-895c-8a8384a55afe`；
+- Source state `30 READY / 16 MANUAL_REQUIRED / 0 WAIVED`，Completion Manifest 为空。
+
+Runs `4/5/6` 由 Task `2` 在 `2026-09-20 12:56:18Z` 创建，三次采样分别于
+`12:56:34Z`、`12:57:44Z`、`12:58:29Z` 开始，均无重试。Runs `7/8/9` 由 Task `3` 在
+`2026-09-21 01:35:38Z` 创建，随后仅用于显式选样入口验收；Analysis
+`5ced1566-9e79-4c84-8bc8-1bccf58550a3` 不替换主案例。任务行只保存
+`single_prompt_v2:<analysis_id>` 操作者来源，没有独立外部授权记录；授权范围仍必须以明确的
+产品操作指令核对，不能从 `created_by` 反推。
+
+对账期间另有页面连接在 `2026-09-21 03:52Z` 连续显式 POST：选择 Runs `1-9` 创建
+Analysis `19b0be0f-f794-4435-9fa7-2723257f26cc`，创建 Source Preparation
+`source-prep-5dd9a496-c958-440e-a97b-b11c004b2156`，并启动 66 个来源的自动获取。访问日志证明
+这不是 GET/轮询副作用或测试 fixture；它作为独立页面操作记录保留，但不替换本节固定主案例，
+也不得把其来源结果跨 Context 复用到 Runs `4/5/6`。
+
+当前 16 条待办均无 active Snapshot，当前 artifact 目录也没有保存其失败/局部正文候选：
+`CONTENT_BLOCKED=7`、`PARTIAL=5`、`FETCH_FAILED=4`。它们必须由用户通过正式补录或 WAIVE
+入口处置；抓取失败不能自动 WAIVE。30 条 READY Snapshot 与 859 passages 原样保留。
+
+| URL | 当前可复用材料 | 缺失范围 | 当前原因 |
+|---|---|---|---|
+| `https://zhuanlan.zhihu.com/p/1903476812568311223` | 无 Snapshot/候选文件 | 完整正文 | 验证码页，`CONTENT_BLOCKED` |
+| `https://developer.open-douyin.com/docs/resource/zh-CN/mini-app/develop/server/share/url-link-generate` | 无 Snapshot/候选文件 | 可形成 passages 的完整正文 | 未形成合格 passage，`CONTENT_BLOCKED` |
+| `https://zhuanlan.zhihu.com/p/2066568669669466693` | 无 Snapshot/候选文件 | 完整正文 | 验证码页，`CONTENT_BLOCKED` |
+| `https://wenku.csdn.net/answer/bkgeeog0xzcp` | 无 Snapshot/候选文件 | 完整正文 | 安全验证页，`CONTENT_BLOCKED` |
+| `https://wenku.csdn.net/answer/7wb0edwgzv1p` | 无 Snapshot/候选文件 | 完整正文 | 安全验证页，`CONTENT_BLOCKED` |
+| `https://zhuanlan.zhihu.com/p/1908892156019585529` | 无 Snapshot/候选文件 | 完整正文 | 验证码页，`CONTENT_BLOCKED` |
+| `https://wenku.csdn.net/answer/4g4y9ru5f663` | 无 Snapshot/候选文件 | 完整正文 | 安全验证页，`CONTENT_BLOCKED` |
+| `https://so.douyin.com/s?enter_method=related_search_keywords&group_id=7439173270454177081&keyword=%E6%8A%96%E9%9F%B3%E8%87%AA%E5%8A%A8%E8%B7%B3%E8%BD%AC%E5%A6%82%E4%BD%95%E5%8F%96%E6%B6%88&search_entrance=aweme` | 无 Snapshot/候选文件 | 完整正文 | 自动结果不完整，`PARTIAL` |
+| `https://m.douyin.com/zhuanti/7426597053133948962` | 无 Snapshot/候选文件 | 完整正文 | 自动结果不完整，`PARTIAL` |
+| `https://so.douyin.com/s?enter_method=related_search_keywords&group_id=7490866343152045371&keyword=%E6%8A%96%E9%9F%B3%E6%80%8E%E4%B9%88%E5%85%B3%E9%97%AD%E8%87%AA%E5%8A%A8%E8%B7%B3%E8%BD%AC%E9%93%BE%E6%8E%A5&search_entrance=aweme` | 无 Snapshot/候选文件 | 完整正文 | 自动结果不完整，`PARTIAL` |
+| `https://so.douyin.com/s?enter_method=related_search_keywords&group_id=7490866343152045371&keyword=%E6%8A%96%E9%9F%B3%E8%87%AA%E5%8A%A8%E8%B7%B3%E8%BD%AC%E5%A6%82%E4%BD%95%E5%8F%96%E6%B6%88&search_entrance=aweme` | 无 Snapshot/候选文件 | 完整正文 | 自动结果不完整，`PARTIAL` |
+| `https://bilibili.com/video/BV19KNn6tETN` | 无 Snapshot/候选文件 | 完整正文/视频对应文本 | 自动结果不完整，`PARTIAL` |
+| `https://sohu.com/a/1012157642_122283710` | 无 Snapshot/候选文件 | 完整正文 | HTTP 响应失败，`FETCH_FAILED` |
+| `http://m.mall.timesmba.com/mnews/01/202609/360280_article740617.htm` | 无 Snapshot/候选文件 | 完整正文 | 连接被关闭，`FETCH_FAILED` |
+| `https://2om.cn` | 仅历史 ID/hash 审计，无可取回正文 | 完整正文 | HTTP/2 协议错误，`FETCH_FAILED` |
+| `https://sohu.com/a/908304605_121956422` | 无 Snapshot/候选文件 | 完整正文 | HTTP 响应失败，`FETCH_FAILED` |
+
+Answer 与来源可并行，但当前 DB 没有兼容 `LLMCallCache`。Runs `4/5/6` 的 Answer Semantic
+需要新的精确外发授权，最多 3 次 DeepSeek 请求；在得到 ResultVersion 后必须由用户审核。
+Evidence 仍需 16 条来源完成处置、Completion Manifest、精确 Answer Review，并在当时根据
+实际可消费 Reasons 和召回候选计算 SourceClaim/Alignment 调用上界。当前没有创建空的
+Diagnosis、Review、Completion 或 Evidence 任务，也没有把未执行解释为合法零结果。

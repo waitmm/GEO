@@ -899,3 +899,19 @@ Status: ACTIVE
   inserted manually or treated as current Evidence input. A current Answer
   Result must be created through the formal endpoint under a new, explicit LLM
   authorization, then reviewed against its exact version.
+- **Pre-rebuild release artifacts are audit-only unless their immutable content
+  is still available**: reconciliation found the old `2om.cn` Snapshot ID and
+  hashes in documentation, but neither its database row nor its artifact file
+  survives in the current workspace or known backups. A hash without retrievable
+  bytes cannot be rebound into the current Source Completion Manifest. Do not
+  reconstruct the row from notes or treat domain equality as version proof.
+- **Task actor metadata is not an external-authorization ledger**: Runs 4-9
+  preserve Task, Analysis, timestamps, session evidence and `created_by`, but no
+  dedicated authorization artifact. Before any new browser, fetch or LLM call,
+  authorization must be matched to the exact current Context and operation;
+  `created_by` or an earlier case's budget cannot be used as implied consent.
+- **A newer Analysis may exist without becoming the selected main case**: an
+  explicit page action created an all-Runs Analysis and started source fetching
+  while Runs 4/5/6 remained the declared main input. Preserve both histories,
+  but never infer current ownership from creation time or reuse source output
+  across their different Context/Manifest identities.

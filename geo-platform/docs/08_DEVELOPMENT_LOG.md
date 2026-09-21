@@ -5430,3 +5430,35 @@ review_queue = READY
   Runs and no Source Preparation. None has a Completion Manifest, Answer
   Semantic execution or Evidence execution. The resume fix itself performed no
   collection, fetch, model, review, waiver or evidence write.
+
+## 2026-09-21 Prompt Run Pool, Explicit Analysis Inputs, And Single-Run Retry
+
+- Restored the mature monitoring model as a Prompt-level Run pool instead of
+  requiring every new Analysis to launch another browser task. The release API
+  now lists all Runs for an exact Project/Prompt with full answers, references,
+  acquisition conditions, limitations, immutable input fingerprints and
+  Analysis memberships.
+- Added explicit `run_ids` Analysis creation. The backend rejects duplicates,
+  cross-scope Runs, non-analyzable Runs and stale fingerprints, then writes a
+  new immutable Context with `task_id = NULL`. No browser Task is created and no
+  old Context, Result or Review is changed.
+- Reused `create_browser_task_from_frozen_prompt()`, `MonitoringTaskExecutor`
+  and `update_task_status_from_runs()` for failed single-Run retry. A retry is a
+  new one-Run Task and Run with lineage; it never overwrites the failed source
+  Run or reruns successful siblings.
+- Release migration `20260921_01` changes only Analysis/Context task ownership.
+  It was rehearsed against a copy of the populated release database, then
+  applied to the real database. Revision, 9 Runs, 3 Analysis/Context versions,
+  source snapshots and file bindings remained intact; `foreign_key_check` is
+  clean and immutable Context triggers were recreated.
+- Existing Source Preparation already provides the requested automatic-first,
+  manual-fallback behavior by reusing `fetch_page_playwright()`. Existing V2
+  Evidence uses strict `LLMCallCache` semantic identities and exact immutable
+  result reuse; the old SourceClaim/Alignment workflow tables were not added to
+  the release schema.
+- Current release data does not contain the zero-event Diagnosis/Result/Review
+  objects cited by the work order. No new model call was authorized, so this is
+  recorded as a real-input mismatch rather than reconstructed from older notes.
+- Release first-slice suite: 20 passed, including populated migration upgrade,
+  explicit Run selection, stale input rejection, single retry preservation and
+  worker dispatch. Release frontend build and desktop visual verification pass.

@@ -886,3 +886,16 @@ Status: ACTIVE
   before aggregation and startup reconciles only fully settled stale summaries;
   it does not repeat network fetches. Keep the restart regression because this
   status otherwise leaves the page polling forever despite correct child data.
+- **Explicit Run selection is for analysis scope, not post-hoc experiment
+  sampling**: release users can now combine historical and new Runs into an
+  immutable AnalysisContext, but a future Baseline/Retest still has to satisfy
+  its predeclared sampling plan. Selecting Runs after seeing favorable outcomes
+  cannot be presented as an unbiased effectiveness measurement. Input
+  fingerprints prevent stale selection, not selection bias.
+- **The current release DB does not contain the zero-event Answer objects named
+  in the latest work order**: the live database has 9 Runs and 3 Analysis/
+  Context records, but zero DiagnosisExecution, DiagnosisResult and Review
+  rows. The older object IDs must not be reconstructed from documentation,
+  inserted manually or treated as current Evidence input. A current Answer
+  Result must be created through the formal endpoint under a new, explicit LLM
+  authorization, then reviewed against its exact version.

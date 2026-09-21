@@ -8,7 +8,7 @@ import { ArrowDown, ArrowUp, BarChart3, Download, ExternalLink, FileText, ListCh
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
-  SinglePromptV2AnalysisListItem, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  SinglePromptV2AnalysisListItem, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
@@ -1240,6 +1240,10 @@ export default function App() {
   const [v2Analysis, setV2Analysis] = useState<SinglePromptV2Status | null>(null);
   const [v2AnalysisHistory, setV2AnalysisHistory] = useState<SinglePromptV2AnalysisListItem[]>([]);
   const [v2AnalysisHistoryLoading, setV2AnalysisHistoryLoading] = useState(false);
+  const [v2RunPool, setV2RunPool] = useState<SinglePromptV2RunPool | null>(null);
+  const [v2RunPoolLoading, setV2RunPoolLoading] = useState(false);
+  const [v2SelectedRunIds, setV2SelectedRunIds] = useState<Key[]>([]);
+  const [v2SelectedRunFingerprints, setV2SelectedRunFingerprints] = useState<Record<number, string>>({});
   const [v2Loading, setV2Loading] = useState(false);
   const [v2SampleCount, setV2SampleCount] = useState(3);
   const v2PendingIdempotencyKey = useRef<string | null>(null);
@@ -1593,6 +1597,84 @@ export default function App() {
     }
   }
 
+  async function refreshV2RunPool(page = v2RunPool?.page || 1) {
+    if (!projectId || !activePromptId) return;
+    setV2RunPoolLoading(true);
+    try {
+      setV2RunPool(await api.listSinglePromptV2RunPool(projectId, activePromptId, page, 20));
+    } catch (error: any) {
+      message.error(error.message || "读取采样记录池失败");
+    } finally {
+      setV2RunPoolLoading(false);
+    }
+  }
+
+  function selectV2Run(row: SinglePromptV2RunPoolItem, selected: boolean) {
+    setV2SelectedRunIds((current) => selected
+      ? [...new Set([...current.map(Number), row.run_id])]
+      : current.filter((value) => Number(value) !== row.run_id));
+    setV2SelectedRunFingerprints((current) => {
+      const next = { ...current };
+      if (selected) next[row.run_id] = row.input_fingerprint;
+      else delete next[row.run_id];
+      return next;
+    });
+  }
+
+  async function createV2AnalysisFromSelectedRuns() {
+    if (!projectId || !activePromptId || !v2SelectedRunIds.length) return;
+    const runIds = v2SelectedRunIds.map(Number).sort((a, b) => a - b);
+    const missingFingerprint = runIds.find((runId) => !v2SelectedRunFingerprints[runId]);
+    if (missingFingerprint) {
+      message.error(`Run #${missingFingerprint} 缺少当前输入指纹，请刷新记录池后重新选择`);
+      return;
+    }
+    setV2Loading(true);
+    try {
+      const status = await api.createSinglePromptV2AnalysisFromRuns({
+        project_id: projectId,
+        prompt_id: activePromptId,
+        run_ids: runIds,
+        run_fingerprints: Object.fromEntries(runIds.map((runId) => [runId, v2SelectedRunFingerprints[runId]])),
+        base_context_id: v2Analysis?.context_id || null,
+        idempotency_key: crypto.randomUUID(),
+      });
+      setV2Analysis(status);
+      setV2SourcePreparation(null);
+      setV2Diagnosis(null);
+      setV2StrategyReadiness(null);
+      setV2Strategy(null);
+      setV2Execution(null);
+      setV2RetestReadiness(null);
+      setV2Retest(null);
+      persistV2Identity(status);
+      await refreshV2AnalysisHistory();
+      message.success(`已用 ${runIds.length} 个明确 Run 创建新的不可变分析版本`);
+    } catch (error: any) {
+      message.error(error.message || "按所选 Run 创建分析失败");
+    } finally {
+      setV2Loading(false);
+    }
+  }
+
+  async function retryV2Run(row: SinglePromptV2RunPoolItem) {
+    if (!projectId || !activePromptId) return;
+    setV2RunPoolLoading(true);
+    try {
+      const result = await api.retrySinglePromptV2Run(row.run_id, {
+        project_id: projectId,
+        prompt_id: activePromptId,
+        idempotency_key: crypto.randomUUID(),
+      });
+      message.success(`已保留 Run #${row.run_id}，新重试为 Run #${result.retry_run_id}`);
+      await refreshV2RunPool();
+    } catch (error: any) {
+      message.error(error.message || "单 Run 重试排队失败");
+    } finally {
+      setV2RunPoolLoading(false);
+    }
+  }
+
   async function openV2Analysis(summary: SinglePromptV2AnalysisListItem) {
     if (!projectId || !activePromptId) return;
     setV2Loading(true);
@@ -1625,6 +1707,21 @@ export default function App() {
     } finally {
       setV2Loading(false);
     }
+  }
+
+  function showV2AnalysisHistory() {
+    const params = new URLSearchParams(window.location.search);
+    ["v2_analysis", "v2_diagnosis", "v2_diagnosis_result", "v2_strategy", "v2_strategy_result", "v2_execution", "v2_execution_result", "v2_retest"].forEach((key) => params.delete(key));
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    setV2Analysis(null);
+    setV2SourcePreparation(null);
+    setV2Diagnosis(null);
+    setV2StrategyReadiness(null);
+    setV2Strategy(null);
+    setV2Execution(null);
+    setV2RetestReadiness(null);
+    setV2Retest(null);
+    void refreshV2AnalysisHistory();
   }
 
   async function startV2Analysis() {
@@ -2743,9 +2840,12 @@ export default function App() {
   useEffect(() => {
     if (page !== "coreV2" || !projectId || !activePromptId) return;
     void refreshV2AnalysisHistory();
+    void refreshV2RunPool(1);
     const params = new URLSearchParams(window.location.search);
     if (Number(params.get("v2_project")) !== projectId || Number(params.get("v2_prompt")) !== activePromptId) {
       setV2Analysis(null);
+      setV2SelectedRunIds([]);
+      setV2SelectedRunFingerprints({});
       setV2Diagnosis(null);
       setV2DiagnosisEdits({});
       setV2SourcePreparation(null);
@@ -4502,16 +4602,78 @@ export default function App() {
             <Card size="small" title={<Space><Play size={18} />Single-Prompt Core V2 · Prompt #{activePromptId}</Space>} extra={<Space wrap>
               <Text type="secondary">采样次数</Text>
               <InputNumber min={1} max={10} value={v2SampleCount} onChange={(value) => setV2SampleCount(Number(value || 1))} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")} />
-              <Tooltip title="创建一次具有独立身份和固定采样计划的分析">
-                <Button type="primary" icon={<Play size={15} />} loading={v2Loading} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")} onClick={startV2Analysis}>
-                  {v2Analysis?.context_id ? "发起新分析" : "开始分析"}
-                </Button>
-              </Tooltip>
+              <Popconfirm
+                title={v2AnalysisHistory.length ? "新增一批浏览器采样？" : "开始首次浏览器采样？"}
+                description={v2AnalysisHistory.length ? "这会新增 Run，不会修改或重算已有分析。采样完成后可在下方选择是否纳入新分析。" : "采样完成后会形成第一份不可变分析输入。"}
+                okText="确认采样"
+                cancelText="取消"
+                onConfirm={startV2Analysis}
+              >
+                <Tooltip title="只新增采样记录；继续历史分析请使用下方已有分析">
+                  <Button icon={<Play size={15} />} loading={v2Loading} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")}>
+                    {v2AnalysisHistory.length ? "新增采样" : "开始首次采样"}
+                  </Button>
+                </Tooltip>
+              </Popconfirm>
               <Tooltip title="读取这次分析的后端权威状态">
                 <Button icon={<RefreshCw size={15} />} loading={v2Loading} disabled={!v2Analysis} onClick={refreshV2Analysis} aria-label="刷新分析状态" />
               </Tooltip>
             </Space>}>
               <Text>{scopedPrompt?.prompt_text}</Text>
+            </Card>
+
+            <Card size="small" title={<Space><Monitor size={18} />采样记录池<Tag>{v2RunPool?.total || 0} Runs</Tag></Space>} extra={<Space>
+              <Text type="secondary">新增采样不会改变已有分析</Text>
+              <Button icon={<RefreshCw size={15} />} loading={v2RunPoolLoading} onClick={() => refreshV2RunPool()}>刷新</Button>
+            </Space>}>
+              <Alert
+                type="info"
+                showIcon
+                message="先选择 Run，再决定是否建立新的分析版本"
+                description="可以只选新增样本，也可以选择历史加新增样本。旧 Analysis、Context、审核和正文准备不会被修改。"
+                style={{ marginBottom: 12 }}
+              />
+              <Table<SinglePromptV2RunPoolItem>
+                rowKey="run_id"
+                size="small"
+                loading={v2RunPoolLoading}
+                dataSource={v2RunPool?.items || []}
+                rowSelection={{
+                  selectedRowKeys: v2SelectedRunIds,
+                  preserveSelectedRowKeys: true,
+                  onSelect: (row, selected) => selectV2Run(row, selected),
+                  onSelectAll: (selected, rows) => rows.forEach((row) => selectV2Run(row, selected)),
+                }}
+                pagination={{
+                  current: v2RunPool?.page || 1,
+                  pageSize: v2RunPool?.page_size || 20,
+                  total: v2RunPool?.total || 0,
+                  showSizeChanger: false,
+                  onChange: (nextPage) => refreshV2RunPool(nextPage),
+                }}
+                scroll={{ x: 980 }}
+                expandable={{ expandedRowRender: (row) => <Space direction="vertical" style={{ width: "100%" }}>
+                  <Text strong>实际回答正文</Text>
+                  <Typography.Paragraph className="v2-answer-text">{row.answer_text || "无可用回答"}</Typography.Paragraph>
+                  <Text type="secondary">引用 {row.references?.length || 0} 条 · 输入指纹 <Text code copyable>{row.input_fingerprint}</Text></Text>
+                </Space> }}
+                columns={[
+                  { title: "Run", width: 82, render: (_: unknown, row) => <Text code>#{row.run_id}</Text> },
+                  { title: "状态", width: 110, render: (_: unknown, row) => statusTag(row.status) },
+                  { title: "采样时间", width: 170, render: (_: unknown, row) => formatDateTime(row.finished_at || row.started_at) },
+                  { title: "回答", width: 110, render: (_: unknown, row) => row.answer_text ? `${row.answer_char_count || row.answer_text.length} 字` : "无" },
+                  { title: "引用", width: 80, render: (_: unknown, row) => row.references?.length || 0 },
+                  { title: "引用完整", width: 100, render: (_: unknown, row) => row.reference_complete ? <Tag color="green">完整</Tag> : <Tag color="gold">有限制</Tag> },
+                  { title: "已用于分析", width: 210, render: (_: unknown, row) => row.analysis_memberships?.length
+                    ? <Text ellipsis={{ tooltip: row.analysis_memberships.map((item) => item.analysis_id).join("、") }}>{row.analysis_memberships.length} 个版本</Text>
+                    : <Text type="secondary">尚未纳入</Text> },
+                  { title: "操作", width: 100, fixed: "right", render: (_: unknown, row) => row.status === "failed" ? <Popconfirm title={`重试 Run #${row.run_id}？`} description="原 Run 保留不变，系统会创建一个新的 Run 尝试。" onConfirm={() => retryV2Run(row)}><Button size="small">重试</Button></Popconfirm> : null },
+                ]}
+              />
+              <Row justify="space-between" align="middle" gutter={[12, 12]}>
+                <Col><Text>已选择 <Text strong>{v2SelectedRunIds.length}</Text> 个 Run：{v2SelectedRunIds.length ? v2SelectedRunIds.map(Number).sort((a, b) => a - b).join("、") : "尚未选择"}</Text></Col>
+                <Col><Button type="primary" icon={<ListChecks size={15} />} disabled={!v2SelectedRunIds.length} loading={v2Loading} onClick={createV2AnalysisFromSelectedRuns}>用所选 Run 建立分析版本</Button></Col>
+              </Row>
             </Card>
 
             {!v2Analysis ? <Card title="已有分析" loading={v2AnalysisHistoryLoading} extra={<Button icon={<RefreshCw size={15} />} onClick={refreshV2AnalysisHistory}>刷新</Button>}>
@@ -4532,7 +4694,7 @@ export default function App() {
                 ]}
               />}
             </Card> : <>
-              <Card size="small" title={<Space>{v2AnalysisStatusTag(v2Analysis.sampling.status)}<Text code>{v2Analysis.analysis.analysis_id}</Text></Space>} extra={<Tag color={v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "green" : "blue"}>{v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "冻结结果" : "实时任务状态"}</Tag>}>
+              <Card size="small" title={<Space>{v2AnalysisStatusTag(v2Analysis.sampling.status)}<Text code>{v2Analysis.analysis.analysis_id}</Text></Space>} extra={<Space><Tag color={v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "green" : "blue"}>{v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "固定分析输入" : "实时采样状态"}</Tag><Button size="small" onClick={showV2AnalysisHistory}>切换已有分析</Button></Space>}>
                 <div className="v2-status-grid">
                   <Statistic title="计划采样" value={v2Analysis.sampling.planned_run_count} suffix="次" />
                   <Statistic title="已进入终态" value={v2Analysis.sampling.terminal_run_count} suffix="次" />
@@ -4541,7 +4703,7 @@ export default function App() {
                   <Statistic title="执行尝试" value={v2Analysis.sampling.attempt_count} suffix="次" />
                 </div>
                 <Descriptions size="small" column={{ xs: 1, md: 2 }} style={{ marginTop: 18 }}>
-                  <Descriptions.Item label="采集任务">#{v2Analysis.analysis.task_id} · {v2Analysis.active_task?.status || "-"}</Descriptions.Item>
+                  <Descriptions.Item label="输入来源">{v2Analysis.analysis.task_id ? `采集任务 #${v2Analysis.analysis.task_id} · ${v2Analysis.active_task?.status || "-"}` : "显式选择历史 Run"}</Descriptions.Item>
                   <Descriptions.Item label="结果版本">{v2Analysis.result_version || "采集完成后生成"}</Descriptions.Item>
                   <Descriptions.Item label="AnalysisContext">{v2Analysis.context_id || "尚未冻结"}</Descriptions.Item>
                   <Descriptions.Item label="开始时间">{formatDateTime(v2Analysis.started_at)}</Descriptions.Item>

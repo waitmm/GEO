@@ -67,6 +67,17 @@ integration: 46 frozen sources produced 30 immutable AUTO_FETCH snapshots and
 16 MANUAL_REQUIRED items, with zero automatic waivers. The remaining manual
 items still block Source Completion and Evidence.
 
+Sampling is now a Prompt-level record pool rather than an implicit one-time
+Analysis prerequisite. The release UI pages through every Run for the exact
+Project/Prompt, and a user may freeze an explicit `run_ids` set into a new
+immutable AnalysisContext without starting a browser task. New sampling does not
+rewrite existing analyses; an existing analysis remains resumable at its source,
+answer-review or evidence gate. Failed Runs can be retried as a new Run attempt,
+while the original Run and every Context that references it remain unchanged.
+This restores the mature monitoring executor and source fetcher behind explicit
+V2 ownership instead of duplicating their behavior or restoring legacy workflow
+control.
+
 This does not mean the real positive evidence chain is complete. The first
 release acceptance remains immutable and ineligible because its answer text
 mixed Wenxin search/thinking content. Corrected Analysis
@@ -76,6 +87,13 @@ mixed Wenxin search/thinking content. Corrected Analysis
 Manifest or Evidence result was created by the resample/source-fetch run.
 See `docs/GEO_1_0_FIRST_SLICE_OPERATIONS.md` for the executable workflow and
 `docs/GEO_1_0_R3_EXECUTION_CONTRACT.md` for the frozen boundary.
+
+As of 2026-09-21 the current release database has 9 real Runs and 3 immutable
+Analysis/Context versions. It has no current DiagnosisExecution, ResultVersion
+or Review row. Earlier acceptance notes that reference three zero-event Answer
+results describe an older release state and cannot be used as the current
+Evidence input. The active blocker remains 16 unresolved source dispositions
+plus creation and exact-version review of a current Answer Result.
 
 The fixed #44 production result is
 `diag-v1:1449c44916fe5c55`. It has four grounded recommendation Reasons, 30

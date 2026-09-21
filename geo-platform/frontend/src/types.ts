@@ -233,7 +233,7 @@ export type SinglePromptV2Status = {
     analysis_id: string;
     project_id: number;
     prompt_id: number;
-    task_id: number;
+    task_id: number | null;
     prompt_text: string;
     sampling_plan_hash: string;
   };
@@ -257,6 +257,20 @@ export type SinglePromptV2Status = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+};
+
+export type SinglePromptV2RunPoolItem = SinglePromptV2Run & {
+  input_fingerprint: string;
+  analysis_memberships: Array<{ analysis_id: string; context_id: string }>;
+};
+
+export type SinglePromptV2RunPool = {
+  project_id: number;
+  prompt_id: number;
+  page: number;
+  page_size: number;
+  total: number;
+  items: SinglePromptV2RunPoolItem[];
 };
 
 export type SinglePromptV2AnalysisListItem = {

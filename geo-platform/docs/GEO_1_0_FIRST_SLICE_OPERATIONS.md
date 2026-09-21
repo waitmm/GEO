@@ -1,7 +1,7 @@
 # GEO 1.0 首批来源与证据主链操作说明
 
-Status: `AUTO_SOURCE_PREPARATION_ENGINEERING_READY / REAL_REPLAY_PENDING`
-Date: 2026-09-20
+Status: `RUN_POOL_AND_SOURCE_PREPARATION_AVAILABLE / EVIDENCE_INPUTS_PENDING`
+Date: 2026-09-21
 
 ## 1. 当前交付范围
 
@@ -55,26 +55,33 @@ cd /Users/bmwqr/Desktop/python/GEO
 ## 3. 正式用户操作顺序
 
 1. 在 release 页面创建/选择 Project 与 Prompt；
-2. 用户显式启动 Analysis；此操作可能触发浏览器采样，必须已有对应授权；
-3. Raw Result / Context 冻结后，点击创建来源准备；系统同时冻结 Citation Manifest；
-4. 用户显式点击“自动获取正文”；单 worker 只处理该 Citation Manifest 内仍未完成的
+2. “新增采样”只创建新的浏览器 Run，必须已有对应外部操作授权；
+3. 页面“采样记录池”分页展示该 Prompt 的全部历史 Run。用户可展开查看完整回答、引用、
+   采样条件和限制，并明确勾选 `run_ids`；
+4. “用所选 Run 建立分析版本”冻结精确 Run 集及每条输入指纹，不触发采样，也不修改旧
+   Analysis/Context。用户也可以从“已有分析”继续原停止点；
+5. Raw Result / Context 冻结后，点击创建来源准备；系统同时冻结 Citation Manifest；
+6. 用户显式点击“自动获取正文”；单 worker 只处理该 Citation Manifest 内仍未完成的
    URL，复用既有浏览器渲染 + HTTP 兜底抓取内核；
-5. 自动取得的正文经过验证页、登录墙、错误页、完整性和正文长度 Gate。合格内容由
+7. 自动取得的正文经过验证页、登录墙、错误页、完整性和正文长度 Gate。合格内容由
    V2 生成不可变 Snapshot、正文 SHA-256、artifact 文件和 passages；
-6. 自动获取失败或内容不合格的来源进入 `MANUAL_REQUIRED`，页面集中显示原因并允许
+8. 自动获取失败或内容不合格的来源进入 `MANUAL_REQUIRED`，页面集中显示原因并允许
    人工补录；系统不会自动 WAIVE；
-7. 无法取得的来源只能由用户明确填写原因与影响后 `WAIVED_WITH_LIMITATION`；
-8. 所有来源处置完成后冻结 Source Completion Manifest；全部 WAIVED 时状态为
+9. 无法取得的来源只能由用户明确填写原因与影响后 `WAIVED_WITH_LIMITATION`；
+10. 所有来源处置完成后冻结 Source Completion Manifest；全部 WAIVED 时状态为
    `NO_USABLE_SOURCE`，不能进入 Evidence；
-9. Citation Manifest 冻结后，Answer Semantic 可与来源准备独立推进；完成后
+11. Citation Manifest 冻结后，Answer Semantic 可与来源准备独立推进；完成后
    用户审核精确 ResultVersion；它不需要等待正文完成，但 Evidence 需要两侧都完成；
-10. 用户显式启动 Evidence；API 先校验同一 Analysis/Context 下的 Citation、
+12. 用户显式启动 Evidence；API 先校验同一 Analysis/Context 下的 Citation、
    Completion、Answer Result 与 Review，成功后仅入队；
-11. release worker 对完全相同的版本绑定再次校验并消费，发布不可变 Evidence 结果。
+13. release worker 对完全相同的版本绑定再次校验并消费，发布不可变 Evidence 结果。
 
 ## 4. 关键 API
 
 - `POST /api/v2/single-prompt/analyses`
+- `GET /api/v2/single-prompt/runs?project_id=...&prompt_id=...`
+- `POST /api/v2/single-prompt/analyses/from-runs`
+- `POST /api/v2/single-prompt/runs/{run_id}/retry`
 - `POST /api/v2/single-prompt/analyses/{analysis_id}/source-preparation`
 - `POST /api/v2/single-prompt/source-preparations/{preparation_id}/auto-fetch`
 - `POST /api/v2/single-prompt/source-preparations/{preparation_id}/manual-content`
@@ -195,3 +202,28 @@ http://127.0.0.1:8020/?v2_analysis=92bb12a5-edcc-43c7-b848-ca60267a2672&v2_proje
 进入来源准备后默认显示“待处理”来源。`READY` 和 `WAIVED_WITH_LIMITATION` 仍可通过筛选查看。
 页面刷新或切换筛选不会抓取正文、补录、WAIVE 或冻结 Completion；这些仍必须通过对应的显式
 操作完成。
+
+## 9. 采样记录池与成熟能力恢复
+
+release revision `20260921_01` 允许 Analysis/Context 不绑定新的 Browser Task，从而让用户用
+历史 Run 建立新的不可变输入版本。Run 本身仍属于共享采样记录；一次 Analysis 冻结后不会因
+后续新增 Run 自动变化。
+
+| 能力 | 复用实现 | 退化点与处理 | release 入口 | 验收 |
+|---|---|---|---|---|
+| 文心采样 | `create_browser_task_from_frozen_prompt()`、`MonitoringTaskExecutor` | V2 继续拥有 Analysis/Context；不恢复旧 Runner | “新增采样” | 既有 9 个 Run 均可见 |
+| Run 快照 | `_snapshot_run_rows()`（从既有 `_snapshot_runs()` 提取） | 去除“必须来自当前 Task”的限制，增加 scope/指纹校验 | `GET /runs`、`POST /analyses/from-runs` | 精确 run_ids，无新 Task |
+| 单 Run 重试 | 同一 monitoring executor 与 task status 汇总 | 新 Task/Run attempt，原失败 Run 不覆盖 | `POST /runs/{id}/retry` | worker 只执行该 retry task |
+| 正文自动获取 | `fetch_page_playwright()` + V2 `_snapshot_from_content()` | 不调用旧 `acquire_cited_sources()` 写旧 SourceDocument 状态 | Source Preparation 自动获取 | 30 READY / 16 MANUAL_REQUIRED |
+| Passage/召回 | 既有 `retrieve_passages_for_reason()` | 仅消费固定 Snapshot passages | Evidence 双输入 Gate 后 | 隔离正向链通过 |
+| 增量模型结果 | `LLMCallCache` 的语义输入/版本身份 + 不可变 ResultVersion | 缓存恢复仍经过 V2 准入；不迁入旧业务 materialization ledger | V2 Evidence | 重复精确绑定直接复用结果 |
+
+非正式重复路径已经退出 release：旧 Evidence Package run 选择、旧 optimization Runner、
+`acquire_cited_sources()` 的旧业务落库、任何 latest Package/Candidate/Truth 选择都未注册。
+
+当前真实 release DB 有 9 个 Run，分别属于三份保留的 Analysis。主 Analysis
+`92bb12a5-edcc-43c7-b848-ca60267a2672` 仍是 46 个唯一来源、30 READY、16
+`MANUAL_REQUIRED`、0 WAIVED。当前库没有 DiagnosisExecution、DiagnosisResult 或 Review；
+因此早期工单中的“3 个 DONE_ZERO_EVENTS”对象不在当前发布现场，不能冒充当前可审核结果。
+接下来的人工作业是：处置 16 个来源，并在本 Analysis 上正式生成和审核 Answer Result；两侧
+完成后才可排队 Evidence。

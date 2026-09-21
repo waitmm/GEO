@@ -1,4 +1,4 @@
-import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2AnalysisListItem, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
+import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2AnalysisListItem, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2RunPool, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
 
 const API_BASE = "";
 
@@ -57,6 +57,14 @@ export const api = {
   listProjects: () => request<Project[]>("/api/projects"),
   createSinglePromptV2Analysis: (payload: { project_id: number; prompt_id: number; sample_count: number; idempotency_key: string }) =>
     request<SinglePromptV2Status>("/api/v2/single-prompt/analyses", { method: "POST", body: JSON.stringify(payload) }),
+  listSinglePromptV2RunPool: (projectId: number, promptId: number, page = 1, pageSize = 20) =>
+    request<SinglePromptV2RunPool>(`/api/v2/single-prompt/runs?project_id=${projectId}&prompt_id=${promptId}&page=${page}&page_size=${pageSize}`),
+  createSinglePromptV2AnalysisFromRuns: (payload: {
+    project_id: number; prompt_id: number; run_ids: number[]; run_fingerprints: Record<number, string>;
+    base_context_id: string | null; idempotency_key: string;
+  }) => request<SinglePromptV2Status>("/api/v2/single-prompt/analyses/from-runs", { method: "POST", body: JSON.stringify(payload) }),
+  retrySinglePromptV2Run: (runId: number, payload: { project_id: number; prompt_id: number; idempotency_key: string }) =>
+    request<{ source_run_id: number; retry_run_id: number; task_id: number; status: string; created: boolean }>(`/api/v2/single-prompt/runs/${runId}/retry`, { method: "POST", body: JSON.stringify(payload) }),
   listSinglePromptV2Analyses: (projectId: number, promptId: number) =>
     request<SinglePromptV2AnalysisListItem[]>(`/api/v2/single-prompt/analyses?project_id=${projectId}&prompt_id=${promptId}`),
   getSinglePromptV2Analysis: (analysisId: string, projectId: number, promptId: number) =>

@@ -96,7 +96,7 @@ class SinglePromptManualSourceContentCreate(BaseModel):
     title: str = Field(default="", max_length=500)
     input_format: Literal["CLEAN_TEXT", "HTML_SOURCE"] = "CLEAN_TEXT"
     clean_text: str = ""
-    raw_html: str = Field(default="", max_length=5_000_000)
+    raw_html: str = Field(default="", max_length=25_000_000)
     coverage_scope: Literal["FULL_PAGE", "EXCERPT"]
     submitted_by: str = Field(min_length=1, max_length=120)
 

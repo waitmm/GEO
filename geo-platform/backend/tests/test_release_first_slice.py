@@ -39,6 +39,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     recover_interrupted_diagnoses,
 )
 from app.modules.single_prompt_v2 import source_preparation
+from app.modules.single_prompt_v2.schemas import SinglePromptManualSourceContentCreate
 from app.modules.single_prompt_v2.service import (
     claim_analysis,
     create_analysis,
@@ -159,6 +160,23 @@ def _submit(db, preparation_id: str, source: dict, text: str, *, title: str = "�
         coverage_scope="FULL_PAGE",
         submitted_by="qa",
     )
+
+
+def test_manual_html_payload_accepts_source_larger_than_legacy_five_million_limit():
+    raw_html = "<main>" + ("页面源码内容" * 833_334) + "</main>"
+    payload = SinglePromptManualSourceContentCreate(
+        project_id=1,
+        prompt_id=44,
+        source_key="a" * 64,
+        expected_row_version=1,
+        title="大型页面源码",
+        input_format="HTML_SOURCE",
+        clean_text="",
+        raw_html=raw_html,
+        coverage_scope="FULL_PAGE",
+        submitted_by="qa",
+    )
+    assert len(payload.raw_html) > 5_000_000
 
 
 def test_release_migration_is_explicit_allowlisted_and_runtime_version_is_checked(tmp_path, monkeypatch):

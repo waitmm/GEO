@@ -14,6 +14,7 @@ import type {
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text, Link } = Typography;
+const MAX_MANUAL_HTML_CHARACTERS = 25_000_000;
 type PageKey = "coreV2" | "validation" | "recommendation" | "optimization" | "config" | "runs" | "ranking" | "golden";
 type V2AnswerReviewDecision = "CONFIRM_INCLUDE_AS_OPTION" | "CORRECT_TO_MENTION" | "KEEP_UNRESOLVED" | "EXCLUDE_EXTRACTION";
 type V2SourceDraft = {
@@ -1873,6 +1874,10 @@ export default function App() {
     const submittedContent = inputFormat === "HTML_SOURCE" ? draft?.rawHtml : draft?.cleanText;
     if (!submittedContent?.trim() || submittedContent.trim().length < 50) {
       message.warning(inputFormat === "HTML_SOURCE" ? "请粘贴完整的页面 HTML 源码" : "请补录至少 50 个字符的正文");
+      return;
+    }
+    if (inputFormat === "HTML_SOURCE" && submittedContent.length > MAX_MANUAL_HTML_CHARACTERS) {
+      message.error(`页面源码共 ${submittedContent.length.toLocaleString()} 个字符，超过 25,000,000 字符上限`);
       return;
     }
     const actionKey = `manual:${source.source_key}`;
@@ -4886,7 +4891,7 @@ export default function App() {
                             <Col xs={24} md={8}><Select style={{ width: "100%" }} value={draft.coverageScope} onChange={(value) => updateV2SourceDraft(source.source_key, { coverageScope: value })} options={[{ value: "FULL_PAGE", label: "完整正文" }, { value: "EXCERPT", label: "明确摘录" }]} /></Col>
                             <Col xs={24}><Segmented value={draft.inputFormat} onChange={(value) => updateV2SourceDraft(source.source_key, { inputFormat: value as V2SourceDraft["inputFormat"] })} options={[{ value: "CLEAN_TEXT", label: "粘贴正文" }, { value: "HTML_SOURCE", label: "粘贴页面源码" }]} /></Col>
                             <Col xs={24}>{draft.inputFormat === "HTML_SOURCE"
-                              ? <Input.TextArea rows={9} value={draft.rawHtml} onChange={(event) => updateV2SourceDraft(source.source_key, { rawHtml: event.target.value })} placeholder="粘贴页面 HTML 源代码。系统只提取正文；验证页、登录墙和空壳页面会被拒绝。" />
+                              ? <Space direction="vertical" size={4} style={{ width: "100%" }}><Input.TextArea rows={9} value={draft.rawHtml} onChange={(event) => updateV2SourceDraft(source.source_key, { rawHtml: event.target.value })} placeholder="粘贴页面 HTML 源代码。系统只提取正文；验证页、登录墙和空壳页面会被拒绝。" /><Text type={draft.rawHtml.length > MAX_MANUAL_HTML_CHARACTERS ? "danger" : "secondary"}>已粘贴 {draft.rawHtml.length.toLocaleString()} / 25,000,000 字符</Text></Space>
                               : <Input.TextArea rows={7} value={draft.cleanText} onChange={(event) => updateV2SourceDraft(source.source_key, { cleanText: event.target.value })} placeholder="粘贴真实正文。验证页、登录墙、错误提示不得作为正文提交。" />}</Col>
                             <Col><Button type="primary" loading={v2SourceActionKey === `manual:${source.source_key}`} disabled={Boolean(v2SourceActionKey)} onClick={() => submitV2ManualSource(source)}>{source.snapshot ? "提交新正文版本" : draft.inputFormat === "HTML_SOURCE" ? "提取并生成正文快照" : "校验并生成正文快照"}</Button></Col>
                             {v2SourceActionNotice?.sourceKey === source.source_key && v2SourceActionNotice.type === "error" && <Col xs={24}><Alert type="error" showIcon message="本次提交被拒绝" description={v2SourceActionNotice.detail} /></Col>}

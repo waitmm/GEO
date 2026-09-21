@@ -5563,3 +5563,8 @@ review_queue = READY
 - The page separately identifies the current Analysis. This follow-up did not
   switch the user from the 66-source all-Runs Analysis to the pinned 46-source
   Runs 4/5/6 Analysis, and did not change either source inventory.
+- A subsequent retained rejection exposed the former 5,000,000-character DTO
+  limit before extraction. Real browser page source can exceed that size due to
+  embedded scripts and state. The bounded local-release limit is now 25,000,000
+  characters, the UI shows pasted size before submission, and a regression
+  proves payloads above the former limit reach V2 admission.

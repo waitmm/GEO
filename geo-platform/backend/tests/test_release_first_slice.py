@@ -422,6 +422,86 @@ def test_release_run_pool_creates_exact_analysis_without_sampling_or_mutating_hi
         engine.dispose()
 
 
+def test_release_run_selection_combines_tasks_and_rejects_cross_project_runs(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        original = _seed_frozen_analysis(db, reference_urls=["https://example.com/history"])
+        original_context = db.query(SinglePromptAnalysisContext).filter_by(
+            analysis_id=original.analysis_id
+        ).one()
+        additional, _ = create_analysis(
+            db,
+            project_id=1,
+            prompt_id=44,
+            sample_count=1,
+            idempotency_key="additional-sampling-task",
+        )
+        token = claim_analysis(db, additional.analysis_id)
+        additional_run = db.query(BrowserMonitorRun).filter_by(task_id=additional.task_id).one()
+        additional_run.status = "success"
+        additional_run.stage = "success"
+        additional_run.answer_text = "新增采样回答"
+        additional_run.answer_char_count = len(additional_run.answer_text)
+        additional_run.reference_complete = True
+        db.commit()
+        assert token and finalize_analysis(db, additional.analysis_id, token)
+
+        pool = list_prompt_run_pool(db, project_id=1, prompt_id=44, page=1, page_size=20)
+        assert pool["total"] == 2
+        by_id = {row["run_id"]: row for row in pool["items"]}
+        selected_ids = sorted(by_id)
+        combined, created = create_analysis_from_runs(
+            db,
+            project_id=1,
+            prompt_id=44,
+            run_ids=selected_ids,
+            run_fingerprints={run_id: by_id[run_id]["input_fingerprint"] for run_id in selected_ids},
+            base_context_id=original_context.context_id,
+            idempotency_key="history-plus-additional-runs",
+        )
+        assert created is True
+        assert combined.task_id is None
+        assert [
+            row["run_id"] for row in get_analysis_status(db, combined.analysis_id)["runs"]
+        ] == selected_ids
+
+        db.add(Project(id=2, organization_id=1, name="Other", brand_name="Other"))
+        db.add(Prompt(id=45, project_id=2, title="Other Prompt", prompt_text="其他问题"))
+        db.commit()
+        foreign, _ = create_analysis(
+            db,
+            project_id=2,
+            prompt_id=45,
+            sample_count=1,
+            idempotency_key="cross-project-sampling",
+        )
+        foreign_token = claim_analysis(db, foreign.analysis_id)
+        foreign_run = db.query(BrowserMonitorRun).filter_by(task_id=foreign.task_id).one()
+        foreign_run.status = "success"
+        foreign_run.stage = "success"
+        foreign_run.answer_text = "跨项目回答"
+        foreign_run.answer_char_count = len(foreign_run.answer_text)
+        foreign_run.reference_complete = True
+        db.commit()
+        assert foreign_token and finalize_analysis(db, foreign.analysis_id, foreign_token)
+
+        with pytest.raises(HTTPException) as mismatch:
+            create_analysis_from_runs(
+                db,
+                project_id=1,
+                prompt_id=44,
+                run_ids=[foreign_run.id],
+                run_fingerprints={foreign_run.id: "irrelevant-before-scope-check"},
+                base_context_id=original_context.context_id,
+                idempotency_key="cross-project-run-selection",
+            )
+        assert mismatch.value.status_code == 409
+        assert mismatch.value.detail == {"code": "RUN_SCOPE_MISMATCH", "run_ids": [foreign_run.id]}
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_release_single_run_retry_creates_new_attempt_and_preserves_source_run(tmp_path):
     db, engine = _session(tmp_path)
     try:

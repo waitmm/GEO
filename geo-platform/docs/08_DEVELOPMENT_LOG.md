@@ -5464,6 +5464,9 @@ review_queue = READY
   `ctx-456936cd-e32c-4901-9ae5-7e6a8d167cc3` and Raw Result
   `raw-v1:139f8b4a8797739f`. `task_id` is null, the Browser Task count stayed at
   three, and the existing 30/16 Source Preparation state was unchanged.
-- Release first-slice suite: 20 passed, including populated migration upgrade,
-  explicit Run selection, stale input rejection, single retry preservation and
-  worker dispatch. Release frontend build and desktop visual verification pass.
+- Release first-slice suite: 21 passed, including populated migration upgrade,
+  explicit Run selection across sampling Tasks, cross-Project/stale input
+  rejection, single retry preservation and worker dispatch. The broader related
+  suite passed 101 tests before the final cross-Task case was added; that added
+  case also passes independently. Release frontend build and desktop/mobile
+  visual verification pass.

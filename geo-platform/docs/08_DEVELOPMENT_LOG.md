@@ -5393,3 +5393,19 @@ review_queue = READY
   SourceClaim, Alignment, Truth and Strategy were not run in this replay. The
   next user action is manual completion or explicit waiver of the 16 unresolved
   sources; source disposition completion still does not imply evidence support.
+
+## 2026-09-21 Release Home Prompt Visibility
+
+- Reproduced the release home page with the real release API. Project `1` and
+  Prompt `1` were both returned correctly, but `frontend/dist` had been replaced
+  by a normal `npm run build`. That build requested legacy monitoring routes
+  against the release-only API and discarded the otherwise valid Prompt load
+  when the grouped request failed.
+- Rebuilt with the existing release mode and added an emitted
+  `geo-release-build.json` marker. `scripts/release-dev.sh` now refuses to start
+  when `dist` is present but is not a release build, preventing a stale normal
+  bundle from silently presenting the wrong home page.
+- In the release first slice, a project with exactly one Prompt now selects that
+  Prompt automatically unless an explicit valid Prompt identity is already in
+  scope. This is an implementation-only navigation correction; Project/Prompt
+  identity and all Analysis inputs remain unchanged.

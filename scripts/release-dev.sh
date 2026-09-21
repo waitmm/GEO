@@ -18,6 +18,11 @@ if [[ ! -f "$FRONTEND_DIR/dist/index.html" ]]; then
   echo "Release frontend is not built. Run npm run build:release in geo-platform/frontend." >&2
   exit 1
 fi
+RELEASE_BUILD_MARKER="$FRONTEND_DIR/dist/geo-release-build.json"
+if [[ ! -f "$RELEASE_BUILD_MARKER" ]] || ! grep -q '"release_first_slice":true' "$RELEASE_BUILD_MARKER"; then
+  echo "Frontend dist is not a GEO release build. Run npm run build:release in geo-platform/frontend." >&2
+  exit 1
+fi
 
 export GEO_RELEASE_DATABASE_URL="${GEO_RELEASE_DATABASE_URL:-sqlite:///$RELEASE_DB_PATH}"
 export EVIDENCE_ARTIFACT_DIR="${EVIDENCE_ARTIFACT_DIR:-$BACKEND_DIR/artifacts/release-evidence}"

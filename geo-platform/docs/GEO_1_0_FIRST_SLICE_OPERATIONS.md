@@ -46,6 +46,9 @@ cd /Users/bmwqr/Desktop/python/GEO
 ./scripts/release-dev.sh
 ```
 
+`build:release` 会生成 `frontend/dist/geo-release-build.json`。发布启动脚本必须验证该标记；
+普通 `npm run build` 不能作为 release 页面启动，否则脚本会明确拒绝并提示重新构建。
+
 默认地址：`http://127.0.0.1:8020`。启动不会执行 migration，也不会
 `create_all()`；未迁移、错 revision、额外表或 SQLite 版本不安全都会拒绝启动。
 

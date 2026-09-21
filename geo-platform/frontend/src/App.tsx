@@ -2654,6 +2654,12 @@ export default function App() {
       const requestedPromptId = Number(params.get("v2_prompt"));
       if (params.get("v2_analysis") && requestedProjectId === id && nextPrompts.some((item) => item.id === requestedPromptId)) {
         setPromptContext(requestedPromptId);
+      } else if (
+        RELEASE_FIRST_SLICE
+        && nextPrompts.length === 1
+        && (!keep || typeof promptContext !== "number" || !nextPrompts.some((item) => item.id === promptContext))
+      ) {
+        setPromptContext(nextPrompts[0].id);
       }
       // V2 has its own explicit analysis identity and authoritative status.
       if (page !== "coreV2") {

@@ -5459,6 +5459,11 @@ review_queue = READY
 - Current release data does not contain the zero-event Diagnosis/Result/Review
   objects cited by the work order. No new model call was authorized, so this is
   recorded as a real-input mismatch rather than reconstructed from older notes.
+- The formal API demonstration selected existing Runs `7/8/9` and created
+  Analysis `5ced1566-9e79-4c84-8bc8-1bccf58550a3`, Context
+  `ctx-456936cd-e32c-4901-9ae5-7e6a8d167cc3` and Raw Result
+  `raw-v1:139f8b4a8797739f`. `task_id` is null, the Browser Task count stayed at
+  three, and the existing 30/16 Source Preparation state was unchanged.
 - Release first-slice suite: 20 passed, including populated migration upgrade,
   explicit Run selection, stale input rejection, single retry preservation and
   worker dispatch. Release frontend build and desktop visual verification pass.

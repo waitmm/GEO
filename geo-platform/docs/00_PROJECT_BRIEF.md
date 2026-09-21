@@ -88,7 +88,7 @@ Manifest or Evidence result was created by the resample/source-fetch run.
 See `docs/GEO_1_0_FIRST_SLICE_OPERATIONS.md` for the executable workflow and
 `docs/GEO_1_0_R3_EXECUTION_CONTRACT.md` for the frozen boundary.
 
-As of 2026-09-21 the current release database has 9 real Runs and 3 immutable
+As of 2026-09-21 the current release database has 9 real Runs and 4 immutable
 Analysis/Context versions. It has no current DiagnosisExecution, ResultVersion
 or Review row. Earlier acceptance notes that reference three zero-event Answer
 results describe an older release state and cannot be used as the current

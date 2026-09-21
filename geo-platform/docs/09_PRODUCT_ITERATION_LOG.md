@@ -4331,7 +4331,8 @@ WAIVE、自动审核或创建新的 Analysis。
 正文获取继续复用成熟的 Playwright/HTTP 获取能力，并由 V2 管理精确引用范围、内容 Gate、
 Snapshot 和人工待办，避免“为了隔离又重写一个缩水抓取器”。
 
-当前真实库已显示 9 个 Run 和三份历史 Analysis。主 Analysis 仍为 30/46 正文就绪、16 条待人工
+当前真实库已显示 9 个 Run 和四份历史 Analysis；其中一份是用 Runs 7/8/9 通过正式选择入口创建
+的演示版本，没有新增浏览器 Task。主 Analysis 仍为 30/46 正文就绪、16 条待人工
 处置。附件提到的三条零事件 ResultVersion 在当前 release DB 中不存在，因此不能直接进入审核；
 这不是新的算法结论，而是历史验收记录与当前发布数据不一致，必须基于当前 Context 正式生成新的
 Answer Result 后再审核。此次恢复没有新增采样、模型调用、抓取、WAIVE 或自动审核。

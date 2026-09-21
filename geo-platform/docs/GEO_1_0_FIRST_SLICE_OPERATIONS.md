@@ -221,7 +221,10 @@ release revision `20260921_01` 允许 Analysis/Context 不绑定新的 Browser T
 非正式重复路径已经退出 release：旧 Evidence Package run 选择、旧 optimization Runner、
 `acquire_cited_sources()` 的旧业务落库、任何 latest Package/Candidate/Truth 选择都未注册。
 
-当前真实 release DB 有 9 个 Run，分别属于三份保留的 Analysis。主 Analysis
+当前真实 release DB 有 9 个 Run 和四份保留的 Analysis。正式 `from-runs` 演示使用 Runs
+`7/8/9` 创建了 Analysis `5ced1566-9e79-4c84-8bc8-1bccf58550a3`、Context
+`ctx-456936cd-e32c-4901-9ae5-7e6a8d167cc3` 和 Raw Result `raw-v1:139f8b4a8797739f`；
+该版本没有 Browser Task，也没有外部调用。主 Analysis
 `92bb12a5-edcc-43c7-b848-ca60267a2672` 仍是 46 个唯一来源、30 READY、16
 `MANUAL_REQUIRED`、0 WAIVED。当前库没有 DiagnosisExecution、DiagnosisResult 或 Review；
 因此早期工单中的“3 个 DONE_ZERO_EVENTS”对象不在当前发布现场，不能冒充当前可审核结果。

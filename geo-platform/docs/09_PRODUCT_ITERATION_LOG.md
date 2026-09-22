@@ -2,6 +2,28 @@
 
 Status: ACTIVE
 
+## 2026-09-22 V2 Evidence Review Handoff
+
+### Product Decision
+
+An Evidence continuation creates a new immutable ResultVersion and therefore
+requires a new result-level review. The exact Answer Review consumed by that
+continuation remains valid for the Answer objects it already decided; the user
+must not repeat those same Answer decisions merely because SourceClaim and
+Alignment were added later.
+
+The Evidence review is responsible for the newly added evidence relations and
+for explicitly preserving failures, non-evaluated candidates and unproven
+anchors. Completing it does not turn failed or non-evaluated work into negative
+evidence, and does not upgrade an unproven citation anchor.
+
+### User Impact
+
+The V2 page now identifies the current main-chain stage and shows the Evidence
+work as evaluated relations, upstream failures and normal recall pruning. The
+operator reviews only the new Evidence result and its limitations instead of
+being sent back through the already completed Answer candidate review.
+
 ## 2026-09-04 Phase E Workflow Status Orphan Failure Handling
 
 ### Product Decision

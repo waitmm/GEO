@@ -107,6 +107,37 @@ function v2AnswerReviewReasonLabel(code: string) {
   } as Record<string, string>)[code] || code;
 }
 
+function v2AnswerEventNeedsReview(event: any) {
+  return event?.semantic_validation_status === "SEMANTIC_REVIEW_REQUIRED" && !(
+    event?.fact_consumption_eligible === true
+    && event?.review_status === "HUMAN_CONFIRMED_INCLUDE_AS_OPTION"
+    && event?.review_id
+  );
+}
+
+function v2EvidenceRelationLabel(value?: string | null) {
+  return ({
+    SOURCE_SUPPORTS_REASON: "来源正文支持该理由",
+    SOURCE_CONTRADICTS_REASON: "来源正文与该理由矛盾",
+    RELATED: "主题相关，但未形成支持或反驳",
+    NONE: "未发现语义关系",
+  } as Record<string, string>)[value || ""] || value || "未形成结论";
+}
+
+function v2EvidenceEvaluationLabel(value?: string | null) {
+  return ({
+    EVALUATED: "已完成判断",
+    NOT_EVALUATED: "未进入候选",
+    UPSTREAM_CLAIM_FAILED: "正文主张提取失败",
+    UPSTREAM_CLAIM_NOT_EVALUATED: "正文主张未评估",
+    UPSTREAM_CLAIM_REVIEW_REQUIRED: "正文主张待审核",
+    DONE_ZERO_CLAIMS: "正文无可用主张",
+    SEMANTIC_REVIEW_REQUIRED: "关系待审核",
+    HARD_FILTERED: "主体范围不匹配",
+    FAILED: "关系判断失败",
+  } as Record<string, string>)[value || ""] || value || "未知";
+}
+
 const V2_ANSWER_REVIEW_OPTIONS: { label: string; value: V2AnswerReviewDecision }[] = [
   { label: "确认是候选", value: "CONFIRM_INCLUDE_AS_OPTION" },
   { label: "仅为提及", value: "CORRECT_TO_MENTION" },
@@ -2164,7 +2195,7 @@ export default function App() {
       return;
     }
     const pendingEvents = (v2Diagnosis.result.output.answer_diagnosis?.events || []).filter(
-      (event: any) => event.semantic_validation_status === "SEMANTIC_REVIEW_REQUIRED",
+      v2AnswerEventNeedsReview,
     );
     const undecidedEvents = pendingEvents.filter(
       (event: any) => !v2AnswerReviewDecisions[event.event_id] && !v2StoredAnswerReviewDecisions.has(event.event_id),
@@ -4660,14 +4691,14 @@ export default function App() {
   const v2DiagnosisOutput = v2Diagnosis?.result?.output;
   const v2DiagnosisEvents = v2DiagnosisOutput?.answer_diagnosis?.events || [];
   const v2PendingSemanticEvents = v2DiagnosisEvents
-    .filter((event: any) => event.semantic_validation_status === "SEMANTIC_REVIEW_REQUIRED")
+    .filter(v2AnswerEventNeedsReview)
     .sort((left: any, right: any) => {
       const brandName = String(project?.brand_name || "").trim();
       const leftTarget = brandName && String(left.entity_text || "").includes(brandName) ? 0 : 1;
       const rightTarget = brandName && String(right.entity_text || "").includes(brandName) ? 0 : 1;
       return leftTarget - rightTarget || Number(left.run_id || 0) - Number(right.run_id || 0) || String(left.entity_text || "").localeCompare(String(right.entity_text || ""));
     });
-  const v2VerifiedSemanticEvents = v2DiagnosisEvents.filter((event: any) => event.semantic_validation_status !== "SEMANTIC_REVIEW_REQUIRED");
+  const v2VerifiedSemanticEvents = v2DiagnosisEvents.filter((event: any) => !v2AnswerEventNeedsReview(event));
   const v2PriorAnswerReviewDecisions = v2DiagnosisOutput?.truth_reprojection?.prior_review?.decisions || [];
   const v2StoredAnswerReviewDecisions = new Map(
     (v2Diagnosis?.review?.decisions || v2PriorAnswerReviewDecisions)
@@ -4687,6 +4718,25 @@ export default function App() {
   const v2DiagnosisSnapshots = v2DiagnosisOutput?.source_diagnosis?.snapshots || [];
   const v2DiagnosisSnapshotById = new Map(v2DiagnosisSnapshots.map((source: any) => [source.snapshot_id, source]));
   const v2DiagnosisRelations = v2DiagnosisOutput?.evidence_diagnosis?.source_relations || [];
+  const v2EvidenceClaimJobs = v2DiagnosisOutput?.evidence_diagnosis?.source_claim_jobs || [];
+  const v2EvidenceEvaluatedRelations = v2DiagnosisRelations.filter((row: any) => row.alignment_evaluation === "EVALUATED");
+  const v2EvidenceRecalledRelations = v2DiagnosisRelations.filter((row: any) => row.candidate_recall === "RECALLED");
+  const v2EvidenceUpstreamFailedRelations = v2DiagnosisRelations.filter((row: any) => row.alignment_evaluation === "UPSTREAM_CLAIM_FAILED");
+  const v2EvidenceNotRecalledRelations = v2DiagnosisRelations.filter((row: any) => row.candidate_recall !== "RECALLED");
+  const v2EvidenceFailedClaimJobs = v2EvidenceClaimJobs.filter((row: any) => String(row.status || "").startsWith("FAILED") || row.status === "CACHE_REJECTED_BY_V2_VALIDATION");
+  const v2IsEvidenceResult = v2DiagnosisOutput?.result_scope === "ANSWER_AND_EVIDENCE";
+  const v2AnswerReviewConsumed = Boolean(v2DiagnosisOutput?.input?.answer_review_id) || (!v2IsEvidenceResult && Boolean(v2Diagnosis?.review));
+  const v2EvidenceReviewComplete = Boolean(v2IsEvidenceResult && v2Diagnosis?.review?.result_version === v2Diagnosis?.result?.result_version);
+  const v2AnalysisFlowItems = [
+    { title: "采样冻结", status: v2Analysis?.context_id ? "finish" : "wait" },
+    { title: "引用与正文", status: v2SourcePreparation?.completion_manifest?.status === "FROZEN" ? "finish" : v2SourcePreparation ? "process" : "wait" },
+    { title: "回答分析", status: v2Diagnosis?.result ? "finish" : v2Diagnosis ? "process" : "wait" },
+    { title: "回答审核", status: v2AnswerReviewConsumed ? "finish" : v2Diagnosis?.result ? "process" : "wait" },
+    { title: "证据计算", status: v2IsEvidenceResult ? "finish" : v2AnswerReviewConsumed ? "process" : "wait" },
+    { title: "证据审核", status: v2EvidenceReviewComplete ? "finish" : v2IsEvidenceResult ? "process" : "wait" },
+    { title: "策略", status: v2Strategy?.result ? "finish" : v2EvidenceReviewComplete ? "process" : "wait" },
+  ] as any[];
+  const v2AnalysisFlowCurrent = Math.max(0, v2AnalysisFlowItems.findIndex((item) => item.status === "process"));
   const v2TargetCapabilityReviewItems = v2Diagnosis?.target_capability_review_items || [];
   const v2ConfirmedTargetCapabilityCount = v2TargetCapabilityReviewItems.filter((row) => Boolean(row.current_truth)).length;
   const v2EvidenceEligibility = v2Diagnosis?.effective_evidence_eligibility;
@@ -5081,6 +5131,19 @@ export default function App() {
               </Card>}
 
               {v2Diagnosis?.result && <>
+                <Card size="small" title="当前分析进度" extra={<Tag color={v2EvidenceReviewComplete ? "green" : "blue"}>{v2EvidenceReviewComplete ? "证据审核已完成" : v2IsEvidenceResult ? "当前：审核证据结果" : v2AnswerReviewConsumed ? "当前：生成证据" : "当前：审核回答"}</Tag>}>
+                  <Steps size="small" responsive current={v2AnalysisFlowCurrent} items={v2AnalysisFlowItems} />
+                  {v2IsEvidenceResult && !v2EvidenceReviewComplete && <Alert
+                    style={{ marginTop: 16 }}
+                    type="warning"
+                    showIcon
+                    message="Evidence 已完成计算，当前只需审核新增的证据结果"
+                    description={`先前的 Answer 审核 ${v2DiagnosisOutput?.input?.answer_review_id || "已绑定"} 已作为本次输入生效，不需要重复确认答案候选。本次请核对 ${v2EvidenceEvaluatedRelations.length} 条已形成结论的关系，并确认是否接受 ${v2EvidenceFailedClaimJobs.length} 个正文主张提取失败等限制。`}
+                    action={<Button onClick={() => document.getElementById("v2-evidence-review-focus")?.scrollIntoView({ behavior: "smooth", block: "start" })}>查看本次审核内容</Button>}
+                  />}
+                  {v2EvidenceReviewComplete && <Alert style={{ marginTop: 16 }} type="success" showIcon message="当前 Evidence ResultVersion 已审核" description="下一步可以查看策略资格；目标品牌能力核对仍只影响依赖这些事实的策略声明和公开内容。" />}
+                </Card>
+
                 {v2MixedAnswerBoundary && <Alert
                   type="error"
                   showIcon
@@ -5250,7 +5313,52 @@ export default function App() {
                   />}
                 </Card>
 
-                <Card size="small" title="引用与理由关系" extra={<Text type="secondary">来源出现、原文锚点、候选召回、关系判断分别记录</Text>}>
+                {v2IsEvidenceResult && <Card id="v2-evidence-review-focus" size="small" title="本次 Evidence 结果" extra={<Text type="secondary">审核当前结果版本，不重复审核 Answer</Text>}>
+                  <div className="v2-status-grid">
+                    <Statistic title="召回候选关系" value={v2EvidenceRecalledRelations.length} />
+                    <Statistic title="已完成关系判断" value={v2EvidenceEvaluatedRelations.length} />
+                    <Statistic title="正文主张提取失败" value={v2EvidenceFailedClaimJobs.length} />
+                    <Statistic title="未召回（正常裁剪）" value={v2EvidenceNotRecalledRelations.length} />
+                    <Statistic title="外部模型调用" value={v2DiagnosisOutput?.usage?.external_llm_calls || 0} />
+                    <Statistic title="缓存复用" value={v2DiagnosisOutput?.usage?.llm_cache_hits || 0} />
+                  </div>
+                  {v2EvidenceFailedClaimJobs.length > 0 && <Alert
+                    style={{ marginTop: 14 }}
+                    type="warning"
+                    showIcon
+                    message={`${v2EvidenceFailedClaimJobs.length} 个候选 passage 的 SourceClaim 未通过安全准入`}
+                    description={`${v2EvidenceUpstreamFailedRelations.length} 条候选关系因此没有完成判断。它们保留为失败限制，不会被写成“不支持”，也不能靠完成审核自动变成有效证据。`}
+                  />}
+                  <Divider orientation="left" plain>需要核对的已评估关系</Divider>
+                  {v2EvidenceEvaluatedRelations.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次没有形成可审核的 Evidence 关系；只能审核并保留当前失败和未评估限制" /> : <Table
+                    rowKey="relation_id"
+                    size="small"
+                    pagination={false}
+                    dataSource={v2EvidenceEvaluatedRelations}
+                    scroll={{ x: 980 }}
+                    columns={[
+                      { title: "答案理由", width: 260, render: (_: unknown, row: any) => (v2DiagnosisReasonById.get(row.reason_id) as any)?.effective_grounded_text || (v2DiagnosisReasonById.get(row.reason_id) as any)?.reason_span || row.reason_id },
+                      { title: "来源", width: 260, render: (_: unknown, row: any) => { const source: any = v2DiagnosisSnapshotById.get(row.source_snapshot_id); return source?.canonical_url ? <Link href={source.canonical_url} target="_blank" ellipsis>{source.title || displaySourceDomain("", source.canonical_url)}</Link> : <Text type="secondary">来源地址不可用</Text>; } },
+                      { title: "锚点", width: 110, render: (_: unknown, row: any) => <Tag color={row.anchor_binding === "EXPLICIT" ? "green" : "gold"}>{row.anchor_binding === "EXPLICIT" ? "回答明确绑定" : "未证明回答使用"}</Tag> },
+                      { title: "机器结论", width: 230, render: (_: unknown, row: any) => <Text>{v2EvidenceRelationLabel(row.machine_relation)}</Text> },
+                      { title: "审核结论", width: 250, render: (_: unknown, row: any) => v2Diagnosis.allowed_operations.includes("REVISE") ? <Select
+                        style={{ width: 235 }}
+                        value={stagedDiagnosisValue("EVIDENCE_RELATION", row.relation_id, row.effective_relation)}
+                        onChange={(value) => stageV2DiagnosisEdit("EVIDENCE_RELATION", row.relation_id, value)}
+                        options={["SOURCE_SUPPORTS_REASON", "SOURCE_CONTRADICTS_REASON", "RELATED", "NONE"].map((value) => ({ label: v2EvidenceRelationLabel(value), value }))}
+                      /> : <Text>{v2EvidenceRelationLabel(row.effective_relation)}</Text> },
+                    ]}
+                    expandable={{
+                      expandedRowRender: (row: any) => <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                        {(row.claim_relations || []).filter((item: any) => item.evaluation === "EVALUATED").map((item: any) => <div key={item.claim_id}><Text strong>判断依据：</Text><Text>{item.rationale || "未提供"}</Text></div>)}
+                        <Text type="secondary">关系 ID：<Text code>{row.relation_id}</Text></Text>
+                      </Space>,
+                    }}
+                  />}
+                  <Alert style={{ marginTop: 14 }} type="info" showIcon message="为什么还要人工审核？" description="模型只负责提出 SourceClaim 和关系结论。人工审核用于确认新增关系是否可进入后续策略，并接受仍然存在的失败、未评估和 UNPROVEN 锚点限制；不会让失败项自动通过。" />
+                </Card>}
+
+                <Card size="small" title="全部引用与理由关系" extra={<Text type="secondary">来源出现、原文锚点、候选召回、关系判断分别记录</Text>}>
                   <Table
                     className="v2-evidence-table"
                     rowKey="relation_id"
@@ -5265,13 +5373,13 @@ export default function App() {
                       { title: "回答中出现", width: 110, render: (_: unknown, row: any) => <Tag color={row.reference_observation === "OBSERVED" ? "green" : "default"}>{row.reference_observation}</Tag> },
                       { title: "原文锚点", width: 110, render: (_: unknown, row: any) => <Tag color={row.anchor_binding === "EXPLICIT" ? "green" : "gold"}>{row.anchor_binding}</Tag> },
                       { title: "候选召回", width: 120, render: (_: unknown, row: any) => <Tag color={row.candidate_recall === "RECALLED" ? "blue" : "default"}>{row.candidate_recall}</Tag> },
-                      { title: "判断状态", width: 180, render: (_: unknown, row: any) => <Space size={4} wrap><Tag color={row.alignment_evaluation === "EVALUATED" ? "green" : row.alignment_evaluation === "FAILED" ? "red" : "gold"}>{row.alignment_evaluation}</Tag>{v2BlockedHistoricalRelations.has(row.relation_id) && <Tag color="red">当前不可消费</Tag>}</Space> },
+                      { title: "判断状态", width: 180, render: (_: unknown, row: any) => <Space size={4} wrap><Tag color={row.alignment_evaluation === "EVALUATED" ? "green" : ["FAILED", "UPSTREAM_CLAIM_FAILED"].includes(row.alignment_evaluation) ? "red" : "gold"}>{v2EvidenceEvaluationLabel(row.alignment_evaluation)}</Tag>{v2BlockedHistoricalRelations.has(row.relation_id) && <Tag color="red">当前不可消费</Tag>}</Space> },
                       { title: "关系结论", width: 230, render: (_: unknown, row: any) => v2Diagnosis.allowed_operations.includes("REVISE") && row.alignment_evaluation === "EVALUATED" ? <Select
                         style={{ width: 215 }}
                         value={stagedDiagnosisValue("EVIDENCE_RELATION", row.relation_id, row.effective_relation)}
                         onChange={(value) => stageV2DiagnosisEdit("EVIDENCE_RELATION", row.relation_id, value)}
-                        options={["SOURCE_SUPPORTS_REASON", "SOURCE_CONTRADICTS_REASON", "RELATED", "NONE"].map((value) => ({ label: value, value }))}
-                      /> : <Text>{row.effective_relation || "未形成结论"}</Text> },
+                        options={["SOURCE_SUPPORTS_REASON", "SOURCE_CONTRADICTS_REASON", "RELATED", "NONE"].map((value) => ({ label: v2EvidenceRelationLabel(value), value }))}
+                      /> : <Text>{v2EvidenceRelationLabel(row.effective_relation)}</Text> },
                     ]}
                   />
                   <Alert type="info" showIcon message="SOURCE_SUPPORTS_REASON 只表示来源正文支持该理由；锚点为 UNPROVEN 时，不代表本次回答实际使用了该来源作为推荐依据。" />

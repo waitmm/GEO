@@ -2,6 +2,28 @@
 
 Status: ACTIVE
 
+## 2026-09-22 V2 Evidence Review Handoff Clarity
+
+- Classified as `IMPLEMENTATION_CHANGE` under the exact-version review and
+  Evidence lineage contracts. No Evidence verdict, candidate scope, Product
+  Truth, Strategy or immutable result semantics changed.
+- Fixed the Answer-to-Evidence review handoff. An Answer event already made
+  consumable by the exact bound Answer Review keeps its original machine
+  `SEMANTIC_REVIEW_REQUIRED` audit status, but no longer requires the operator
+  to repeat the same Answer decision when reviewing the new
+  `ANSWER_AND_EVIDENCE` ResultVersion.
+- The current Evidence ResultVersion still requires its own review. That review
+  covers newly computed SourceClaim/Alignment output plus preserved failures,
+  non-evaluated relations and anchor limitations; it does not inherit approval
+  for those new objects from the Answer-only review.
+- Added a V2 analysis progress strip and a focused Evidence review summary. The
+  UI now separates recalled/evaluated relations, SourceClaim admission failures
+  and normal candidate pruning, and translates relation/evaluation states into
+  operator-facing Chinese labels.
+- Added regression coverage proving that an exact, human-confirmed Answer event
+  is not re-reviewed in the Evidence ResultVersion while an unreviewed event
+  remains blocked.
+
 ## 2026-09-04 Phase E Workflow Status Orphan Failure Fallback
 
 - Fixed `workflow/status` so a latest `PromptAnalysisRun(status=FAILED)` caused

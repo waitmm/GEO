@@ -123,6 +123,43 @@ def test_target_capability_review_items_wait_for_answer_event_review():
     assert _target_capability_review_items(output, [], []) == []
 
 
+def test_evidence_result_does_not_require_duplicate_answer_event_review():
+    output = {
+        "answer_diagnosis": {
+            "events": [{
+                "event_id": "event-reviewed-for-evidence",
+                "run_id": 4,
+                "effective_speech_act": "INCLUDE_AS_OPTION",
+                "semantic_validation_status": "SEMANTIC_REVIEW_REQUIRED",
+                "fact_consumption_eligible": True,
+                "review_status": "HUMAN_CONFIRMED_INCLUDE_AS_OPTION",
+                "review_id": "review-answer-v1",
+            }],
+        },
+    }
+
+    assert validate_answer_event_review_decisions(output, []) == {}
+
+
+def test_unreviewed_answer_event_still_requires_explicit_disposition():
+    output = {
+        "answer_diagnosis": {
+            "events": [{
+                "event_id": "event-still-pending",
+                "run_id": 4,
+                "effective_speech_act": "INCLUDE_AS_OPTION",
+                "semantic_validation_status": "SEMANTIC_REVIEW_REQUIRED",
+                "fact_consumption_eligible": False,
+            }],
+        },
+    }
+
+    with pytest.raises(HTTPException) as exc:
+        validate_answer_event_review_decisions(output, [])
+
+    assert exc.value.detail["code"] == "ANSWER_SEMANTIC_EVENT_REVIEW_INCOMPLETE"
+
+
 class FakeAnswerJudge:
     def judge_answer(self, answer_text, prompt_text, brand_name, db=None):
         return {

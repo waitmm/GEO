@@ -3479,7 +3479,15 @@ def validate_answer_event_review_decisions(output: dict[str, Any], decisions: li
     pending = {
         str(event.get("event_id")): event
         for event in (output.get("answer_diagnosis") or {}).get("events") or []
-        if event.get("event_id") and event.get("semantic_validation_status") == "SEMANTIC_REVIEW_REQUIRED"
+        if (
+            event.get("event_id")
+            and event.get("semantic_validation_status") == "SEMANTIC_REVIEW_REQUIRED"
+            and not (
+                event.get("fact_consumption_eligible") is True
+                and event.get("review_status") == "HUMAN_CONFIRMED_INCLUDE_AS_OPTION"
+                and event.get("review_id")
+            )
+        )
     }
     if not pending:
         return {}

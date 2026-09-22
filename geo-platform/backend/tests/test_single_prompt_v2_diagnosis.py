@@ -136,6 +136,60 @@ def test_capability_splitter_does_not_change_grounded_source_text():
     assert source == "生成加密短链嵌入视频描述或评论区，可降低被平台屏蔽的风险"
 
 
+def test_atomic_capabilities_collectively_cover_one_grounded_reason_only_when_complete():
+    answer = {
+        "events": [{
+            "entity_text": "爱短链",
+            "reasons": [{
+                "reason_id": "reason-target",
+                "entity": "爱短链",
+                "effective_grounded_text": "生成加密短链，还支持活码更新、全链路数据追踪",
+                "fact_consumption_eligible": True,
+            }],
+        }],
+    }
+    truths = [
+        {
+            "truth_id": 1,
+            "capability_key": "生成加密短链",
+            "capability_label": "生成加密短链",
+            "product_truth_status": "SUPPORTED",
+            "truth_source": "MANUAL_CONFIRMED",
+            "statement_eligibility": {"status": "VERIFY_FIRST"},
+        },
+        {
+            "truth_id": 2,
+            "capability_key": "支持活码更新",
+            "capability_label": "支持活码更新",
+            "product_truth_status": "SUPPORTED",
+            "truth_source": "MANUAL_CONFIRMED",
+            "statement_eligibility": {"status": "VERIFY_FIRST"},
+        },
+    ]
+
+    partial = _diagnose_truths(answer, truths, target_brand={"brand_name": "爱短链", "aliases": []})
+    partial_coverage = partial["reason_capability_coverage"][0]
+    assert partial_coverage["effective_relation"] == "PARTIALLY_COVERS"
+    assert [row["capability_label"] for row in partial_coverage["missing_capabilities"]] == ["支持全链路数据追踪"]
+
+    complete = _diagnose_truths(
+        answer,
+        [*truths, {
+            "truth_id": 3,
+            "capability_key": "支持全链路数据追踪",
+            "capability_label": "支持全链路数据追踪",
+            "product_truth_status": "SUPPORTED",
+            "truth_source": "MANUAL_CONFIRMED",
+            "statement_eligibility": {"status": "VERIFY_FIRST"},
+        }],
+        target_brand={"brand_name": "爱短链", "aliases": []},
+    )
+    complete_coverage = complete["reason_capability_coverage"][0]
+    assert complete_coverage["effective_relation"] == "FULLY_COVERS"
+    assert complete_coverage["truth_ids"] == [1, 2, 3]
+    assert complete_coverage["missing_capabilities"] == []
+
+
 def test_target_capability_review_items_wait_for_answer_event_review():
     output = {
         "input": {"brand_snapshot": {"brand_name": "爱短链", "aliases": []}},

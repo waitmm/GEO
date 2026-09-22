@@ -239,7 +239,7 @@ artifact 的实际文件 SHA-256 与数据库记录全部一致。重复提交�
 
 API 与 worker 的打开文件均核对为
 `/Users/bmwqr/Desktop/python/GEO/geo-platform/backend/geo_release.db`；release migration CLI
-默认并经显式 URL 校验使用同一路径。当前 revision 为 `20260921_01`，应用实际 SQLite 为
+默认并经显式 URL 校验使用同一路径。当前 revision 为 `20260922_01`，应用实际 SQLite 为
 `3.51.3`。实际结果承载表 `single_prompt_diagnosis_executions`、
 `single_prompt_diagnosis_results`、`single_prompt_diagnosis_reviews`、
 `single_prompt_source_completion_manifests` 和 `llm_call_cache` 均为 0 行，不是 ORM 类名查询遗漏。

@@ -172,6 +172,64 @@ def test_partially_covers_is_not_a_strategy_qualification_gate():
     assert readiness["blocker"]["code"] == "NO_ELIGIBLE_STRATEGY_DIRECTION"
 
 
+def test_complete_atomic_capability_set_qualifies_reason_without_public_claim_evidence():
+    projection = _projection(anchor="UNPROVEN")
+    projection["truth_relationships"][0]["effective_relation"] = "PARTIALLY_COVERS"
+    projection["truth_snapshot"].append({
+        "truth_id": 8,
+        "capability_key": "支持批量导出",
+        "capability_label": "支持批量导出",
+        "product_truth_status": "SUPPORTED",
+        "truth_source": "MANUAL_CONFIRMED",
+        "statement_eligibility": {"status": "VERIFY_FIRST", "issues": ["SOURCE_REFERENCE_REQUIRED"]},
+    })
+    projection["truth_snapshot"][0]["statement_eligibility"] = {
+        "status": "VERIFY_FIRST",
+        "issues": ["SOURCE_REFERENCE_REQUIRED"],
+    }
+    projection["reason_capability_coverage"] = [{
+        "reason_id": "reason-1",
+        "effective_relation": "FULLY_COVERS",
+        "method": "ATOMIC_CAPABILITY_SET_EXACT",
+        "truth_ids": [7, 8],
+        "required_capabilities": [
+            {"capability_key": "批量生成二维码", "capability_label": "批量生成二维码"},
+            {"capability_key": "支持批量导出", "capability_label": "支持批量导出"},
+        ],
+        "covered_capabilities": [],
+        "missing_capabilities": [],
+        "fact_consumption_eligible": True,
+    }]
+
+    readiness = evaluate_strategy_readiness(projection)
+
+    assert readiness["classification"] == "C"
+    assert readiness["qualified_directions"][0]["truth_ids"] == [7, 8]
+    assert readiness["current_observation"]["confirmed_capability_count"] == 2
+    assert readiness["current_observation"]["public_claim_eligible_count"] == 0
+
+
+def test_incomplete_atomic_capability_set_reports_exact_missing_items():
+    projection = _projection(anchor="UNPROVEN")
+    projection["truth_relationships"][0]["effective_relation"] = "PARTIALLY_COVERS"
+    projection["reason_capability_coverage"] = [{
+        "reason_id": "reason-1",
+        "effective_relation": "PARTIALLY_COVERS",
+        "method": "ATOMIC_CAPABILITY_SET_EXACT",
+        "truth_ids": [7],
+        "required_capabilities": [],
+        "covered_capabilities": [],
+        "missing_capabilities": [{"capability_key": "支持批量导出", "capability_label": "支持批量导出"}],
+        "fact_consumption_eligible": True,
+    }]
+
+    readiness = evaluate_strategy_readiness(projection)
+
+    assert readiness["classification"] == "B"
+    item = next(row for row in readiness["verification_items"] if row["code"] == "TARGET_CAPABILITY_CONFIRMATION_INCOMPLETE")
+    assert "支持批量导出" in item["detail"]
+
+
 def test_event_level_review_gate_controls_reason_consumption_without_role_upgrade():
     context = SinglePromptAnalysisContext(
         raw_output_json=json.dumps({"runs": [{"run_id": 101, "answer_text": "工具甲适合批量短链。"}]})

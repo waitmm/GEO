@@ -307,6 +307,9 @@ def build_strategy_input_projection(
         "reasons": reasons,
         "truth_snapshot": (output.get("truth_diagnosis") or {}).get("truth_snapshot") or [],
         "truth_relationships": truth_relation_eligibility["effective_relationships"],
+        "reason_capability_coverage": copy.deepcopy(
+            (output.get("truth_diagnosis") or {}).get("reason_capability_coverage") or []
+        ),
         "external_capability_signals": copy.deepcopy(
             (output.get("truth_diagnosis") or {}).get("external_capability_signals") or []
         ),
@@ -386,6 +389,16 @@ def _truths_by_reason(projection: dict[str, Any]) -> dict[str, list[int]]:
                 and match.get("applicability") == "ELIGIBLE"
             ):
                 result[str(signal.get("reason_id"))].append(int(truth_id))
+    for coverage in projection.get("reason_capability_coverage") or []:
+        if (
+            coverage.get("fact_consumption_eligible") is True
+            and coverage.get("effective_relation") == "FULLY_COVERS"
+        ):
+            result[str(coverage.get("reason_id"))].extend(
+                int(value)
+                for value in coverage.get("truth_ids") or []
+                if int(value) in confirmed
+            )
     return {key: sorted(set(values)) for key, values in result.items()}
 
 
@@ -640,6 +653,19 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
         verification_items.append({
             "code": "PUBLIC_CLAIM_EVIDENCE_PENDING",
             "detail": "能力已可用于策略适用性判断；进入公开内容前仍需补充目标品牌依据并确认可写范围。",
+        })
+    missing_capability_labels = sorted({
+        str(item.get("capability_label") or "")
+        for coverage in projection.get("reason_capability_coverage") or []
+        if coverage.get("fact_consumption_eligible") is True
+        and coverage.get("effective_relation") != "FULLY_COVERS"
+        for item in coverage.get("missing_capabilities") or []
+        if item.get("capability_label")
+    })
+    if confirmed_capabilities and missing_capability_labels:
+        verification_items.append({
+            "code": "TARGET_CAPABILITY_CONFIRMATION_INCOMPLETE",
+            "detail": f"仍有答案理由未被完整承接；待确认能力：{'、'.join(missing_capability_labels)}。",
         })
     if any(not row.get("fact_consumption_eligible") for row in projection.get("reasons") or []):
         verification_items.append({"code": "REASON_SEMANTIC_REVIEW_REQUIRED", "detail": "存在不能按当前安全契约消费的 Reason。"})

@@ -4,7 +4,7 @@ import {
   Alert, Button, Card, Checkbox, Col, Collapse, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
   Layout, Menu, Modal, Popconfirm, Progress, Radio, Row, Segmented, Select, Space, Statistic, Steps, Table, Tag, Timeline, Tooltip, Typography, message
 } from "antd";
-import { ArrowDown, ArrowUp, BarChart3, Download, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
@@ -701,6 +701,7 @@ function strategyCapabilityLabel(capability?: string) {
 function v2StrategyVerificationLabel(code?: string) {
   const labels: Record<string, string> = {
     TARGET_BRAND_TRUTH_UNRESOLVED: "目标品牌能力待确认",
+    TARGET_CAPABILITY_CONFIRMATION_INCOMPLETE: "能力确认尚未覆盖完整理由",
     PUBLIC_CLAIM_EVIDENCE_PENDING: "公开声明依据待补",
     REASON_SEMANTIC_REVIEW_REQUIRED: "回答理由仍受限",
     EVIDENCE_RELATION_NOT_EVALUATED: "部分证据尚未评估",
@@ -2249,7 +2250,13 @@ export default function App() {
       );
       setV2Diagnosis(status);
       persistV2DiagnosisIdentity(status);
-      message.success("本版诊断审核已完成；未解决项和限制仍被保留");
+      await refreshV2StrategyContext(status);
+      message.success(v2Diagnosis.result.output.truth_reprojection
+        ? "能力关系已确认，已进入策略资格"
+        : "本版诊断审核已完成；未解决项和限制仍被保留");
+      window.setTimeout(() => {
+        document.getElementById("v2-strategy-readiness")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 80);
     } catch (error: any) {
       message.error(error.message || "完成诊断审核失败");
     } finally {
@@ -2313,7 +2320,16 @@ export default function App() {
           reviewed_by: v2DiagnosisEditor.trim(),
         },
       );
-      setV2Diagnosis((current) => current ? { ...current, project_truth_state: response.project_truth_state } : current);
+      setV2Diagnosis((current) => current ? {
+        ...current,
+        project_truth_state: response.project_truth_state,
+        target_capability_review_items: current.target_capability_review_items.map((item) => (
+          item.capability_key === response.truth.capability_key
+            ? { ...item, current_truth: response.truth as any }
+            : item
+        )),
+      } : current);
+      setV2StrategyReadiness(null);
       setV2TruthDraft({ sourceSignalId: "", capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "" });
       message.success(v2TruthDraft.sourceReference.trim()
         ? "能力与公开依据已保存；请更新本次分析"
@@ -2359,7 +2375,10 @@ export default function App() {
       setV2Execution(null);
       setV2Diagnosis(status);
       persistV2DiagnosisIdentity(status);
-      message.success("事实关系已刷新；Answer 与 Evidence 未重算，请复核新的事实关系");
+      message.success("已应用确认能力；Answer 与 Evidence 未重算，请确认新的能力关系后进入策略");
+      window.setTimeout(() => {
+        document.getElementById("v2-diagnosis-review")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 80);
     } catch (error: any) {
       message.error(error.message || "创建新诊断失败");
     } finally {
@@ -2379,11 +2398,6 @@ export default function App() {
         activePromptId,
       );
       setV2StrategyReadiness(readiness);
-      if (RELEASE_FIRST_SLICE) {
-        setV2Strategy(null);
-        setV2StrategyDirectionOrder([]);
-        return;
-      }
       const params = new URLSearchParams(window.location.search);
       const strategyId = params.get("v2_strategy");
       if (!strategyId) {
@@ -4701,6 +4715,7 @@ export default function App() {
   const unresolvedEventStatusCounts = unresolvedReviewContext.event_status_counts || {};
   const decisionMarketUnknownEntities = decisionMarketEntities.filter((item: any) => item.relationship === "UNKNOWN_ENTITY");
   const v2DiagnosisOutput = v2Diagnosis?.result?.output;
+  const v2IsTruthReprojection = Boolean(v2DiagnosisOutput?.truth_reprojection);
   const v2DiagnosisEvents = v2DiagnosisOutput?.answer_diagnosis?.events || [];
   const v2PendingSemanticEvents = v2DiagnosisEvents
     .filter(v2AnswerEventNeedsReview)
@@ -5159,8 +5174,8 @@ export default function App() {
                 {RELEASE_FIRST_SLICE && v2EvidenceReviewComplete && <Card
                   id="v2-strategy-readiness"
                   size="small"
-                  title={<Space><ListChecks size={18} />下一步：策略资格</Space>}
-                  extra={<Button icon={<RefreshCw size={14} />} loading={v2StrategyLoading} onClick={() => refreshV2StrategyContext()} aria-label="刷新策略资格">刷新</Button>}
+                  title={<Space><ListChecks size={18} />下一步：生成并确认策略</Space>}
+                  extra={<Button icon={<RefreshCw size={14} />} loading={v2StrategyLoading} onClick={() => refreshV2StrategyContext()} aria-label="刷新策略状态">刷新</Button>}
                 >
                   {!v2StrategyReadiness ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={v2StrategyLoading ? "正在检查当前结果能否进入策略" : "尚未取得策略资格报告"} /> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
                     <Alert
@@ -5191,7 +5206,57 @@ export default function App() {
                       <Button onClick={() => document.getElementById("v2-target-brand-truth")?.scrollIntoView({ behavior: "smooth", block: "start" })}>核对目标品牌能力</Button>
                       <Button onClick={() => document.getElementById("v2-evidence-review-focus")?.scrollIntoView({ behavior: "smooth", block: "start" })}>查看 Evidence 限制</Button>
                     </Space>}
-                    {v2StrategyReadiness.classification === "C" && <Alert type="info" showIcon message="策略写入尚未在当前 release 开放" description="资格已经明确；当前页面不会调用旧 Strategy Runner 或写入旧工作流。正式策略生成需要下一发布切片接入 V2 策略表和写入路由。" />}
+                    {v2StrategyReadiness.can_create_strategy && !v2Strategy && <Alert
+                      type="success"
+                      showIcon
+                      message={`${v2StrategyReadiness.qualified_direction_count} 个方向通过策略资格 Gate`}
+                      description="生成只会冻结当前合格方向、依据和限制，不调用外部模型，也不会创建执行方案。"
+                      action={<Button type="primary" icon={<Play size={15} />} loading={v2StrategyLoading} onClick={createV2Strategy}>生成策略候选</Button>}
+                    />}
+                    {v2Strategy?.result && <>
+                      <Divider orientation="left">策略候选</Divider>
+                      <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                        <Descriptions.Item label="策略 ID"><Text code copyable>{v2Strategy.strategy.strategy_id}</Text></Descriptions.Item>
+                        <Descriptions.Item label="结果版本"><Text code>{v2Strategy.result.result_version}</Text></Descriptions.Item>
+                        <Descriptions.Item label="状态">{v2Strategy.review ? <Tag color={v2Strategy.review.decision === "ACCEPTED" ? "green" : "red"}>{v2Strategy.review.decision === "ACCEPTED" ? "已确认" : "已拒绝"}</Tag> : <Tag color="gold">待确认</Tag>}</Descriptions.Item>
+                      </Descriptions>
+                      {!v2Strategy.applicability.is_current_input && <Alert type="warning" showIcon message="该策略候选已过期" description="诊断、审核或安全输入已经变化；历史版本保留，但不能继续确认。" />}
+                      <div className="v2-strategy-list">
+                        {v2OrderedStrategyDirections.map((direction, index) => <div key={direction.direction_id} className="v2-strategy-direction">
+                          <div className="v2-strategy-direction-order"><Text strong>{v2Strategy.result?.output.needs_human_prioritization ? "同层" : index + 1}</Text></div>
+                          <div className="v2-strategy-direction-body">
+                            <Space wrap>
+                              <Text strong>{direction.direction_type === "FOUNDATION" ? "目标品牌事实基础" : direction.channel_label}</Text>
+                              <Tag color="green">{direction.level}</Tag>
+                              {direction.channel_role && <Tag color={direction.channel_role === "PRIMARY" ? "blue" : "purple"}>{direction.channel_role}</Tag>}
+                            </Space>
+                            <Text>{direction.rationale}</Text>
+                            {direction.hypothesis && <Text type="secondary">测试假设：{direction.hypothesis}</Text>}
+                          </div>
+                          {!v2Strategy.review && v2Strategy.allowed_operations.includes("REVISE") && v2StrategyOutput?.needs_human_prioritization && <Space size={4}>
+                            <Tooltip title="上移"><Button icon={<ArrowUp size={14} />} disabled={index === 0} onClick={() => moveV2StrategyDirection(direction.direction_id, -1)} aria-label="上移策略方向" /></Tooltip>
+                            <Tooltip title="下移"><Button icon={<ArrowDown size={14} />} disabled={index === v2OrderedStrategyDirections.length - 1} onClick={() => moveV2StrategyDirection(direction.direction_id, 1)} aria-label="下移策略方向" /></Tooltip>
+                          </Space>}
+                        </div>)}
+                      </div>
+                      {!v2Strategy.review && v2Strategy.allowed_operations.includes("REVIEW") ? <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                        {v2Strategy.result.output.needs_human_prioritization && <Alert type="warning" showIcon message="多个同层方向需要人工排序" description="系统不会用引用次数或隐藏评分替你制造优先级。" />}
+                        <Row gutter={[12, 12]}>
+                          <Col xs={24} md={8}><Input value={v2StrategyEditor} onChange={(event) => setV2StrategyEditor(event.target.value)} placeholder="策略审核人" /></Col>
+                          <Col xs={24} md={16}><Input value={v2StrategyPriorityReason} onChange={(event) => setV2StrategyPriorityReason(event.target.value)} placeholder="调整优先顺序时填写判断依据" /></Col>
+                        </Row>
+                        {v2Strategy.result.output.needs_human_prioritization && <Button icon={<ListChecks size={15} />} loading={v2StrategyLoading} onClick={saveV2StrategyPriority}>保存优先顺序为新版本</Button>}
+                        <Input.TextArea value={v2StrategyNote} onChange={(event) => setV2StrategyNote(event.target.value)} rows={2} placeholder="策略审核说明；未知和限制不会因确认而消失" />
+                        <Space wrap>
+                          <Popconfirm title="确认当前策略候选？" description="确认只追加策略审核记录，不会创建执行方案。" onConfirm={() => reviewV2Strategy("ACCEPTED")} okText="确认" cancelText="取消">
+                            <Button type="primary" icon={<ShieldCheck size={15} />} disabled={v2Strategy.result.output.needs_human_prioritization} loading={v2StrategyLoading}>确认策略</Button>
+                          </Popconfirm>
+                          <Popconfirm title="拒绝当前策略候选？" onConfirm={() => reviewV2Strategy("REJECTED")} okText="拒绝" cancelText="取消">
+                            <Button danger loading={v2StrategyLoading}>拒绝</Button>
+                          </Popconfirm>
+                        </Space>
+                      </Space> : v2Strategy.review ? <Alert type={v2Strategy.review.decision === "ACCEPTED" ? "success" : "warning"} showIcon message={v2Strategy.review.decision === "ACCEPTED" ? "策略已确认" : "策略已拒绝"} description="本批到策略确认结束；执行方案入口仍保持关闭。" /> : null}
+                    </>}
                   </Space>}
                 </Card>}
 
@@ -5443,6 +5508,14 @@ export default function App() {
                     message="逐项确认目标品牌是否具备这些能力"
                     description="能力来自已经审核的目标品牌答案片段。这里只快速确认目标品牌有没有，不核对竞品；依据可以稍后在公开内容制作前补充。"
                   />
+                  {v2Diagnosis.project_truth_state.differs_from_frozen_diagnosis && <Alert
+                    style={{ marginTop: 12 }}
+                    type="success"
+                    showIcon
+                    message={`已保存 ${v2ConfirmedTargetCapabilityCount} 项能力确认`}
+                    description="这些确认已经保存，但尚未应用到当前冻结分析。应用后不会重跑 Answer 或 Evidence，也不会调用外部模型。"
+                    action={<Button type="primary" icon={<ArrowRight size={15} />} loading={v2DiagnosisLoading} disabled={!v2Diagnosis.review} onClick={createV2DiagnosisForUpdatedTruths}>应用并进入策略</Button>}
+                  />}
                   <Table
                     className="v2-capability-desktop"
                     style={{ marginTop: 12 }}
@@ -5483,14 +5556,6 @@ export default function App() {
                     </div>)}
                   </div>
                   {v2TargetCapabilityReviewItems.length === 0 && <Alert style={{ marginTop: 12 }} type="warning" showIcon message="当前没有可核对的目标品牌能力" description="这可能是答案没有提到目标品牌，或目标品牌事件尚未完成人工审核；不会自动解释为目标品牌没有能力。" />}
-                  {v2Diagnosis.project_truth_state.differs_from_frozen_diagnosis && <Alert
-                    style={{ marginTop: 14 }}
-                    type="info"
-                    showIcon
-                    message="能力核对结果已更新"
-                    description="点击更新后，本次分析会使用刚确认的能力；答案与引用证据不会重跑，也不会调用外部模型。"
-                    action={<Button type="primary" icon={<RefreshCw size={15} />} loading={v2DiagnosisLoading} disabled={!v2Diagnosis.review} onClick={createV2DiagnosisForUpdatedTruths}>更新本次分析</Button>}
-                  />}
                   <div id="v2-truth-review-form" style={{ marginTop: 16 }}>
                     <Divider orientation="left" plain>确认一项能力</Divider>
                     <Alert
@@ -5522,6 +5587,12 @@ export default function App() {
                     <Descriptions.Item label="审核时间">{formatDateTime(v2Diagnosis.review.created_at)}</Descriptions.Item>
                     <Descriptions.Item label="说明" span={2}>{v2Diagnosis.review.note || "未填写"}</Descriptions.Item>
                   </Descriptions> : <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    {v2IsTruthReprojection && <Alert
+                      type="info"
+                      showIcon
+                      message="只需确认新应用的能力关系"
+                      description="原 Answer 与 Evidence 审核已经按精确版本继承，本次没有重新计算模型结果。确认后将直接检查策略资格。"
+                    />}
                     <Row gutter={[12, 12]}>
                       <Col xs={24} md={8}><Input value={v2DiagnosisEditor} onChange={(event) => setV2DiagnosisEditor(event.target.value)} placeholder="审核人" /></Col>
                       <Col xs={24} md={16}><Input value={v2DiagnosisEditReason} onChange={(event) => setV2DiagnosisEditReason(event.target.value)} placeholder="有语义修改时填写修改原因" /></Col>
@@ -5534,8 +5605,8 @@ export default function App() {
                     />}
                     {Object.keys(v2DiagnosisEdits).length > 0 && <Alert type="warning" showIcon message={`${Object.keys(v2DiagnosisEdits).length} 项修改尚未保存为新版本`} action={<Button type="primary" loading={v2DiagnosisLoading} onClick={saveV2DiagnosisRevision}>保存为新版本</Button>} />}
                     <Input.TextArea value={v2DiagnosisReviewNote} onChange={(event) => setV2DiagnosisReviewNote(event.target.value)} rows={2} placeholder="审核说明，可记录仍待补充的事实或来源限制" />
-                    <Popconfirm title="完成当前结果版本审核？" description="审核完成不会把 UNRESOLVED、UNPROVEN 或失败项改成已确认事实。" onConfirm={completeV2DiagnosisReview} okText="完成审核" cancelText="取消">
-                      <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2DiagnosisLoading} disabled={Object.keys(v2DiagnosisEdits).length > 0 || v2AnsweredSemanticReviewCount < v2PendingSemanticEvents.length}>完成本版审核</Button>
+                    <Popconfirm title={v2IsTruthReprojection ? "确认能力关系并检查策略资格？" : "完成当前结果版本审核？"} description="确认不会把 UNRESOLVED、UNPROVEN 或失败项升级为有效事实。" onConfirm={completeV2DiagnosisReview} okText="确认" cancelText="取消">
+                      <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2DiagnosisLoading} disabled={Object.keys(v2DiagnosisEdits).length > 0 || v2AnsweredSemanticReviewCount < v2PendingSemanticEvents.length}>{v2IsTruthReprojection ? "确认能力关系并进入策略" : "完成本版审核"}</Button>
                     </Popconfirm>
                   </Space>}
                   <Collapse ghost style={{ marginTop: 12 }} items={[{

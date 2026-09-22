@@ -1778,6 +1778,61 @@ def _truth_relation(reason: dict, truth: dict) -> tuple[str, str]:
     return "UNRESOLVED", f"{match_method}_REQUIRES_REVIEW"
 
 
+def _atomic_capability_coverage(reason: dict, truth_snapshot: list[dict]) -> dict[str, Any]:
+    """Project a compound grounded reason onto explicitly reviewed atomic capabilities."""
+    grounded_text = str(reason.get("effective_grounded_text") or reason.get("reason_span") or "").strip()
+    required_labels = _split_target_capability_candidates(grounded_text)
+    required = [
+        {
+            "capability_key": re.sub(r"[\s\W_]+", "", label.lower()),
+            "capability_label": label,
+        }
+        for label in required_labels
+        if re.sub(r"[\s\W_]+", "", label.lower())
+    ]
+    truths_by_key = {
+        str(row.get("capability_key") or ""): row
+        for row in truth_snapshot
+        if row.get("capability_key")
+    }
+    covered: list[dict[str, Any]] = []
+    missing: list[dict[str, str]] = []
+    for item in required:
+        truth = truths_by_key.get(item["capability_key"])
+        if (
+            truth
+            and truth.get("product_truth_status") in {"TRUE", "SUPPORTED"}
+            and truth.get("truth_source") == "MANUAL_CONFIRMED"
+        ):
+            covered.append({
+                **item,
+                "truth_id": truth.get("truth_id"),
+                "statement_eligibility": copy.deepcopy(truth.get("statement_eligibility") or {}),
+            })
+        else:
+            missing.append(item)
+    relation = (
+        "FULLY_COVERS" if required and not missing
+        else "PARTIALLY_COVERS" if covered
+        else "UNRESOLVED"
+    )
+    return {
+        "coverage_id": f"trc-{_hash({'reason': reason.get('reason_id'), 'required': required})[:20]}",
+        "reason_id": reason.get("reason_id"),
+        "effective_relation": relation,
+        "method": "ATOMIC_CAPABILITY_SET_EXACT",
+        "required_capabilities": required,
+        "covered_capabilities": covered,
+        "missing_capabilities": missing,
+        "truth_ids": sorted(
+            int(row["truth_id"])
+            for row in covered
+            if row.get("truth_id") is not None
+        ),
+        "fact_consumption_eligible": reason.get("fact_consumption_eligible") is True,
+    }
+
+
 def _diagnose_truths(
     answer_diagnosis: dict,
     truth_snapshot: list[dict],
@@ -1795,6 +1850,11 @@ def _diagnose_truths(
         reason
         for reason in reasons
         if _normalize_truth_text(str(reason.get("entity") or "")) in target_subject_labels
+    ]
+    reason_capability_coverage = [
+        _atomic_capability_coverage(reason, truth_snapshot)
+        for reason in target_reasons
+        if reason.get("fact_consumption_eligible") is True
     ]
     relationships: list[dict] = []
     external_capability_signals: list[dict] = []
@@ -1920,6 +1980,7 @@ def _diagnose_truths(
         "truth_snapshot": truth_snapshot,
         "relationships": relationships,
         "external_capability_signals": external_capability_signals,
+        "reason_capability_coverage": reason_capability_coverage,
     }
 
 

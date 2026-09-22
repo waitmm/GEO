@@ -144,3 +144,11 @@ Strategy qualification. It remains `statement_eligibility=VERIFY_FIRST` until
 target-brand provenance is supplied, and Execution must reject it from titles,
 public sections and asset claims. `PARTIALLY_SUPPORTED`, unknown, compound or
 semantically broader statements do not receive full coverage automatically.
+
+The release flow now continues through V2 Strategy Candidate generation and
+append-only Strategy Review. A compound grounded Reason is strategy-eligible
+only when every atomic capability in that Reason has an exact manually confirmed
+`SUPPORTED` fact; partial confirmation stays `UNRESOLVED` and reports the missing
+capabilities. This aggregate eligibility does not make any source-free capability
+publishable. Execution Proposal, Publication and Retest remain outside the active
+release route surface.

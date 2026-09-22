@@ -5766,3 +5766,26 @@ review_queue = READY
 - Validation: 81 diagnosis/strategy/execution tests passed, including quick
   source-free confirmation, Strategy qualification with pending publication
   evidence, and hard rejection at execution content generation.
+
+## 2026-09-22 Capability Confirmation Feedback and Strategy Handoff
+
+- Fixed the release capability editor so a successful save immediately updates
+  the matching atomic row, confirmed count and publication-evidence state. The
+  UI no longer waits for a full reload before acknowledging a saved capability.
+- Added an explicit `应用并进入策略` handoff beside the capability count. It
+  creates a Truth-only reprojection using the existing frozen Answer/Evidence
+  inputs, then asks the operator to confirm only the changed capability
+  relations before refreshing Strategy readiness.
+- Strategy no longer treats one confirmed atom as coverage of a compound
+  Reason. The diagnosis projection records the complete required atomic set;
+  qualification becomes `FULLY_COVERS` only when every required capability is
+  manually confirmed `SUPPORTED`. Otherwise readiness names the exact missing
+  capabilities. Public-claim evidence remains an independent downstream gate.
+- Release migration `20260922_01` adds only the V2 Strategy execution, immutable
+  result and append-only review tables. The release API exposes exact-version
+  Strategy generation/revision/review; Execution Proposal, Publication and
+  Retest routes remain closed. No live reprojection, Strategy or Review was
+  created automatically by this change.
+- Existing release data survived migration unchanged: 3 target capability
+  truths, 3 diagnosis results and 2 diagnosis reviews. The pre-migration SQLite
+  online backup passed `PRAGMA integrity_check` at revision `20260921_01`.

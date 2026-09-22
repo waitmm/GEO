@@ -29,6 +29,9 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptSourceAutoFetchCreate,
     SinglePromptSourcePreparationCreate,
     SinglePromptSourceWaiverCreate,
+    SinglePromptStrategyCreate,
+    SinglePromptStrategyPriorityRevisionCreate,
+    SinglePromptStrategyReviewCreate,
     SinglePromptTargetBrandTruthCreate,
     SinglePromptTruthReprojectionCreate,
 )
@@ -41,7 +44,13 @@ from app.modules.single_prompt_v2.service import (
     queue_run_retry,
     retry_analysis,
 )
-from app.modules.single_prompt_v2.strategy import build_strategy_readiness
+from app.modules.single_prompt_v2.strategy import (
+    build_strategy_readiness,
+    complete_strategy_review,
+    create_strategy_candidate,
+    get_strategy_status,
+    revise_strategy_priority,
+)
 from app.modules.single_prompt_v2.source_preparation import (
     create_source_preparation,
     freeze_completion_manifest,
@@ -330,6 +339,136 @@ def read_strategy_readiness(
         result_version=result_version,
         project_id=project_id,
         prompt_id=prompt_id,
+    )
+
+
+@router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/strategies", status_code=201)
+def generate_strategy(
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    payload: SinglePromptStrategyCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    execution, _result, created = create_strategy_candidate(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        idempotency_key=payload.idempotency_key,
+        diagnosis_result_hash=payload.diagnosis_result_hash,
+        reviewable_set_hash=payload.reviewable_set_hash,
+        review_id=payload.review_id,
+        review_snapshot_hash=payload.review_snapshot_hash,
+        input_projection_hash=payload.input_projection_hash,
+    )
+    if not created:
+        response.status_code = 200
+    return get_strategy_status(
+        db,
+        strategy_id=execution.strategy_id,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.get("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/strategies/{strategy_id}")
+def read_strategy(
+    analysis_id: str,
+    diagnosis_id: str,
+    strategy_id: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_strategy_status(
+        db,
+        strategy_id=strategy_id,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
+
+
+@router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/strategies/{strategy_id}/results/{result_version}/priority-revisions")
+def revise_strategy(
+    analysis_id: str,
+    diagnosis_id: str,
+    strategy_id: str,
+    result_version: str,
+    payload: SinglePromptStrategyPriorityRevisionCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    get_strategy_status(
+        db,
+        strategy_id=strategy_id,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+    if result_version != payload.base_result_version:
+        raise HTTPException(status_code=409, detail="路径策略版本与提交版本不一致")
+    revise_strategy_priority(
+        db,
+        strategy_id=strategy_id,
+        base_result_version=payload.base_result_version,
+        base_result_hash=payload.base_result_hash,
+        reviewable_set_hash=payload.reviewable_set_hash,
+        ordered_direction_ids=payload.ordered_direction_ids,
+        editor=payload.editor,
+        reason=payload.reason,
+    )
+    return get_strategy_status(
+        db,
+        strategy_id=strategy_id,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/strategies/{strategy_id}/results/{result_version}/reviews")
+def review_strategy(
+    analysis_id: str,
+    diagnosis_id: str,
+    strategy_id: str,
+    result_version: str,
+    payload: SinglePromptStrategyReviewCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    get_strategy_status(
+        db,
+        strategy_id=strategy_id,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+    complete_strategy_review(
+        db,
+        strategy_id=strategy_id,
+        result_version=result_version,
+        result_hash=payload.result_hash,
+        reviewable_set_hash=payload.reviewable_set_hash,
+        decision=payload.decision,
+        reviewer=payload.reviewer,
+        note=payload.note,
+    )
+    return get_strategy_status(
+        db,
+        strategy_id=strategy_id,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
     )
 
 

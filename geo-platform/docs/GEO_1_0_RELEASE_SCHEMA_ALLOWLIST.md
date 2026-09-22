@@ -1,7 +1,7 @@
 # GEO 1.0 首批发布表白名单
 
 Status: `APPROVED_FOR_FIRST_SLICE`
-Revision: `20260920_02`
+Revision: `20260922_01`
 Date: 2026-09-20
 
 正式 release 数据库只允许本文件列出的业务表及 Alembic 自有的
@@ -41,6 +41,9 @@ Date: 2026-09-20
 | `single_prompt_diagnosis_executions` | Answer/Evidence 执行身份 |
 | `single_prompt_diagnosis_results` | 不可变 Answer/Evidence 结果版本 |
 | `single_prompt_diagnosis_reviews` | 精确结果的追加式审核 |
+| `single_prompt_strategy_executions` | 精确 Diagnosis Review 输入下的策略生成执行身份 |
+| `single_prompt_strategy_results` | 不可变 Strategy Candidate 结果版本 |
+| `single_prompt_strategy_reviews` | 精确 Strategy Result 的追加式人工确认 |
 
 ## 计算/物化表
 
@@ -63,11 +66,11 @@ Analysis/Context/Citation Manifest 所有权冲突。
 ## 排除的 Runtime 与后续切片表
 
 - 全部 Runtime persistence/projection 表；
-- `single_prompt_strategy_*`；
 - `single_prompt_execution_*`、`single_prompt_publication_records`；
 - `single_prompt_retest_*`、`single_prompt_comparison_results`。
 
-首批正式 app 不注册这些对象对应的业务路由或后台恢复任务。
+正式 app 只注册 Strategy Candidate 的生成、修订和确认路由；执行方案、发布和
+复测对象仍不注册业务路由或后台恢复任务。
 
 ## 正式运行形态
 

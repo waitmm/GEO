@@ -202,7 +202,10 @@ def test_release_migration_is_explicit_allowlisted_and_runtime_version_is_checke
     assert status["foreign_keys"] == 1
     assert "optimization_evidence_packages" not in status["tables"]
     assert "runtime_stage_executions" not in status["tables"]
-    assert "single_prompt_strategy_executions" not in status["tables"]
+    assert "single_prompt_strategy_executions" in status["tables"]
+    assert "single_prompt_strategy_results" in status["tables"]
+    assert "single_prompt_strategy_reviews" in status["tables"]
+    assert "single_prompt_execution_proposals" not in status["tables"]
 
     if sqlite_has_wal_reset_fix(status["sqlite_version"]):
         assert validate_release_database(engine)["status"] == "READY"
@@ -278,15 +281,16 @@ def test_release_startup_contract_rejects_unmigrated_database(tmp_path):
     engine.dispose()
 
 
-def test_release_routes_exclude_legacy_and_later_workflows():
+def test_release_routes_include_strategy_but_exclude_execution_and_legacy_workflows():
     app = create_release_app(validate_on_startup=False)
     paths = {getattr(route, "path", "") for route in app.routes}
     assert "/api/v2/single-prompt/analyses" in paths
     assert any("source-preparation" in path for path in paths)
     assert any("evidence-continuations" in path for path in paths)
     assert any(path.endswith("/strategy-readiness") for path in paths)
-    assert not any(path.endswith("/strategies") for path in paths)
-    assert not any("/strategies/" in path for path in paths)
+    assert any(path.endswith("/strategies") for path in paths)
+    assert any(path.endswith("/priority-revisions") for path in paths)
+    assert any("/strategies/" in path and path.endswith("/reviews") for path in paths)
     assert not any("execution-proposal" in path for path in paths)
     assert not any("retest" in path for path in paths)
     assert not any(path.startswith("/api/optimization") for path in paths)

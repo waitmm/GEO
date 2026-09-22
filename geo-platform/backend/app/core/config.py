@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./geo_v0.db"
     release_database_url: str = "sqlite:///./geo_release.db"
     deployment_mode: str = "legacy_dev"
-    release_schema_revision: str = "20260921_01"
+    release_schema_revision: str = "20260922_01"
     evidence_artifact_dir: str = "./artifacts/evidence"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     wenxin_api_key: str = ""

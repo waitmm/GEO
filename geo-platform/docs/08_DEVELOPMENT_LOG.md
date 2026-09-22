@@ -5707,3 +5707,23 @@ review_queue = READY
   Runs `4/5`, with `生成加密短链` deduplicated across both Runs and no competitor
   Reason in any candidate lineage. Desktop and 390px browser checks found no
   horizontal page overflow.
+
+## 2026-09-22 Release Evidence-to-Strategy Readiness Handoff
+
+- The exact Evidence result `diag-v2:4de692c413d03abf` was reviewed as
+  `REVIEW_COMPLETED`. Release now exposes a read-only strategy-readiness route
+  and a post-review next-step panel instead of ending silently after Evidence
+  review. Strategy creation, execution and retest write routes remain excluded
+  from the first-slice release.
+- Strategy input projection now consumes the exact Prepared Snapshot IDs frozen
+  by the Evidence result. It does not query the retired Diagnosis-owned snapshot
+  table or substitute a latest snapshot. Exact Answer events already confirmed
+  by the bound upstream Answer review remain consumable without requiring the
+  user to confirm them again in the Evidence review.
+- Current production readiness is classification `B`: 3/3 grounded Reasons are
+  consumable, 61 prepared sources and 1 effective Evidence relation are visible,
+  but there are 0 qualified strategy directions. Target-brand atomic Truth is
+  unresolved, the evaluated relation is only `RELATED`, other relations remain
+  unevaluated after SourceClaim admission failures, and all answer anchors are
+  `UNPROVEN`. The page now presents these as concrete next actions rather than
+  another generic manual-review request.

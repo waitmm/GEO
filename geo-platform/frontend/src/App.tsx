@@ -698,6 +698,19 @@ function strategyCapabilityLabel(capability?: string) {
   return labels[capability || ""] || capability || "未判断";
 }
 
+function v2StrategyVerificationLabel(code?: string) {
+  const labels: Record<string, string> = {
+    TARGET_BRAND_TRUTH_UNRESOLVED: "目标品牌能力待确认",
+    REASON_SEMANTIC_REVIEW_REQUIRED: "回答理由仍受限",
+    EVIDENCE_RELATION_NOT_EVALUATED: "部分证据尚未评估",
+    REFERENCE_ANCHOR_UNPROVEN: "引用锚点未证明",
+    FOUNDATION_REQUIREMENT_UNKNOWN: "事实基础需求未知",
+    CONTENT_BLOCKED: "正文当前不可消费",
+    NO_CONSUMABLE_ANSWER_SEMANTIC_RESULT: "没有可消费的回答语义",
+  };
+  return labels[code || ""] || code || "待处理";
+}
+
 function strategyContentTypeLabel(contentType?: string) {
   const labels: Record<string, string> = {
     VIDEO: "视频教程",
@@ -2371,6 +2384,11 @@ export default function App() {
         activePromptId,
       );
       setV2StrategyReadiness(readiness);
+      if (RELEASE_FIRST_SLICE) {
+        setV2Strategy(null);
+        setV2StrategyDirectionOrder([]);
+        return;
+      }
       const params = new URLSearchParams(window.location.search);
       const strategyId = params.get("v2_strategy");
       if (!strategyId) {
@@ -3090,7 +3108,6 @@ export default function App() {
     setV2AnswerReviewDecisions({});
   }, [v2Diagnosis?.diagnosis.diagnosis_id]);
   useEffect(() => {
-    if (RELEASE_FIRST_SLICE) return;
     if (page !== "coreV2" || !v2Diagnosis?.result || v2Diagnosis.compute_status !== "READY_FOR_REVIEW") return;
     void refreshV2StrategyContext(v2Diagnosis);
   }, [page, v2Diagnosis?.diagnosis.diagnosis_id, v2Diagnosis?.result?.result_version, v2Diagnosis?.review?.review_id, projectId, activePromptId]);
@@ -5144,6 +5161,43 @@ export default function App() {
                   {v2EvidenceReviewComplete && <Alert style={{ marginTop: 16 }} type="success" showIcon message="当前 Evidence ResultVersion 已审核" description="下一步可以查看策略资格；目标品牌能力核对仍只影响依赖这些事实的策略声明和公开内容。" />}
                 </Card>
 
+                {RELEASE_FIRST_SLICE && v2EvidenceReviewComplete && <Card
+                  id="v2-strategy-readiness"
+                  size="small"
+                  title={<Space><ListChecks size={18} />下一步：策略资格</Space>}
+                  extra={<Button icon={<RefreshCw size={14} />} loading={v2StrategyLoading} onClick={() => refreshV2StrategyContext()} aria-label="刷新策略资格">刷新</Button>}
+                >
+                  {!v2StrategyReadiness ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={v2StrategyLoading ? "正在检查当前结果能否进入策略" : "尚未取得策略资格报告"} /> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                    <Alert
+                      type={v2StrategyReadiness.classification === "C" ? "success" : "warning"}
+                      showIcon
+                      message={v2StrategyReadiness.classification === "C" ? `${v2StrategyReadiness.qualified_direction_count} 个方向已具备策略资格` : "当前诊断已审核，但还没有可直接生成的策略方向"}
+                      description={v2StrategyReadiness.blocker?.detail || "策略只会消费已通过事实、关系和干预依据 Gate 的方向。"}
+                    />
+                    <Descriptions size="small" column={{ xs: 1, md: 4 }}>
+                      <Descriptions.Item label="可消费理由">{v2StrategyReadiness.current_observation.fact_consumable_reason_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="合格正文来源">{v2StrategyReadiness.current_observation.source_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="有效证据关系">{v2StrategyReadiness.current_observation.effective_evidence_relation_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="合格策略方向">{v2StrategyReadiness.qualified_direction_count}</Descriptions.Item>
+                    </Descriptions>
+                    <div className="v2-strategy-band">
+                      <Space wrap><Text strong>目标品牌事实基础</Text><Tag color={v2StrategyReadiness.foundation.state === "REQUIRED" ? "green" : v2StrategyReadiness.foundation.state === "UNKNOWN" ? "gold" : "default"}>{v2StrategyReadiness.foundation.state}</Tag></Space>
+                      <Text type="secondary">{v2StrategyReadiness.foundation.reason}</Text>
+                    </div>
+                    {v2StrategyReadiness.verification_items.length > 0 && <div>
+                      <Text strong>接下来需要处理</Text>
+                      <div className="v2-strategy-list" style={{ marginTop: 8 }}>
+                        {v2StrategyReadiness.verification_items.map((item) => <div key={item.code} className="v2-strategy-list-row"><Tag color="gold">{v2StrategyVerificationLabel(item.code)}</Tag><Text>{item.detail}</Text></div>)}
+                      </div>
+                    </div>}
+                    {v2StrategyReadiness.classification === "B" && <Space wrap>
+                      <Button onClick={() => document.getElementById("v2-target-brand-truth")?.scrollIntoView({ behavior: "smooth", block: "start" })}>核对目标品牌能力</Button>
+                      <Button onClick={() => document.getElementById("v2-evidence-review-focus")?.scrollIntoView({ behavior: "smooth", block: "start" })}>查看 Evidence 限制</Button>
+                    </Space>}
+                    {v2StrategyReadiness.classification === "C" && <Alert type="info" showIcon message="策略写入尚未在当前 release 开放" description="资格已经明确；当前页面不会调用旧 Strategy Runner 或写入旧工作流。正式策略生成需要下一发布切片接入 V2 策略表和写入路由。" />}
+                  </Space>}
+                </Card>}
+
                 {v2MixedAnswerBoundary && <Alert
                   type="error"
                   showIcon
@@ -5385,7 +5439,7 @@ export default function App() {
                   <Alert type="info" showIcon message="SOURCE_SUPPORTS_REASON 只表示来源正文支持该理由；锚点为 UNPROVEN 时，不代表本次回答实际使用了该来源作为推荐依据。" />
                 </Card>
 
-                <Card size="small" title={`核对${project?.brand_name || "目标品牌"}的能力`} extra={<Text type="secondary">已确认 {v2ConfirmedTargetCapabilityCount}/{v2TargetCapabilityReviewItems.length}</Text>}>
+                <Card id="v2-target-brand-truth" size="small" title={`核对${project?.brand_name || "目标品牌"}的能力`} extra={<Text type="secondary">已确认 {v2ConfirmedTargetCapabilityCount}/{v2TargetCapabilityReviewItems.length}</Text>}>
                   <Alert
                     type="info"
                     showIcon
@@ -5562,7 +5616,7 @@ export default function App() {
                     {v2StrategyReadiness.verification_items.length > 0 && <div>
                       <Text strong>限制与合法下一步</Text>
                       <div className="v2-strategy-list">
-                        {v2StrategyReadiness.verification_items.map((item) => <div key={item.code} className="v2-strategy-list-row"><Tag color="gold">{item.code}</Tag><Text>{item.detail}</Text></div>)}
+                        {v2StrategyReadiness.verification_items.map((item) => <div key={item.code} className="v2-strategy-list-row"><Tag color="gold">{v2StrategyVerificationLabel(item.code)}</Tag><Text>{item.detail}</Text></div>)}
                       </div>
                     </div>}
 

@@ -20,6 +20,7 @@ from app.models import (
     SinglePromptDiagnosisExecution,
     SinglePromptDiagnosisResult,
     SinglePromptDiagnosisReview,
+    SinglePromptPreparedSourceSnapshot,
     SinglePromptSourceSnapshot,
     SinglePromptStrategyExecution,
     SinglePromptStrategyResult,
@@ -153,7 +154,14 @@ def _reason_rows(
         event_status = str(event.get("semantic_validation_status") or "VERIFIED_CONSERVATIVE")
         event_eligible = event.get("fact_consumption_eligible") is not False
         if event_status == "SEMANTIC_REVIEW_REQUIRED":
-            event_eligible = review_decisions.get(event_id) == "CONFIRM_INCLUDE_AS_OPTION"
+            event_eligible = (
+                review_decisions.get(event_id) == "CONFIRM_INCLUDE_AS_OPTION"
+                or (
+                    event.get("fact_consumption_eligible") is True
+                    and event.get("review_status") == "HUMAN_CONFIRMED_INCLUDE_AS_OPTION"
+                    and bool(event.get("review_id"))
+                )
+            )
         run_id = int(event.get("run_id") or 0)
         for reason in event.get("reasons") or []:
             grounded = str(reason.get("effective_grounded_text") or reason.get("reason_span") or "").strip()
@@ -214,10 +222,35 @@ def build_strategy_input_projection(
         SinglePromptDiagnosisReview.result_version == result_version,
         SinglePromptDiagnosisReview.diagnosis_id == diagnosis_id,
     ).one_or_none()
-    snapshots = db.query(SinglePromptSourceSnapshot).filter(
-        SinglePromptSourceSnapshot.diagnosis_id == diagnosis_id
-    ).order_by(SinglePromptSourceSnapshot.source_key).all()
     output = loads(result.output_json, {})
+    result_scope = str(output.get("result_scope") or "")
+    prepared_snapshot_ids = list((output.get("input") or {}).get("source_snapshot_ids") or [])
+    if prepared_snapshot_ids:
+        snapshots = (
+            db.query(SinglePromptPreparedSourceSnapshot)
+            .filter(SinglePromptPreparedSourceSnapshot.snapshot_id.in_(prepared_snapshot_ids))
+            .order_by(SinglePromptPreparedSourceSnapshot.source_key)
+            .all()
+        )
+        if {row.snapshot_id for row in snapshots} != set(prepared_snapshot_ids):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "STRATEGY_SOURCE_SNAPSHOT_BINDING_MISMATCH"},
+            )
+    elif result_scope == "ANSWER_ONLY":
+        snapshots = []
+    elif result_scope == "ANSWER_AND_EVIDENCE":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "EVIDENCE_SOURCE_SNAPSHOT_BINDING_MISSING"},
+        )
+    else:
+        snapshots = (
+            db.query(SinglePromptSourceSnapshot)
+            .filter(SinglePromptSourceSnapshot.diagnosis_id == diagnosis_id)
+            .order_by(SinglePromptSourceSnapshot.source_key)
+            .all()
+        )
     answer_eligibility = answer_semantic_eligibility(output)
     limitations = loads(result.limitations_json, [])
     advisories, evidence_eligibility = current_evidence_eligibility(

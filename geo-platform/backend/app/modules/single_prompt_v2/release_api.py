@@ -41,6 +41,7 @@ from app.modules.single_prompt_v2.service import (
     queue_run_retry,
     retry_analysis,
 )
+from app.modules.single_prompt_v2.strategy import build_strategy_readiness
 from app.modules.single_prompt_v2.source_preparation import (
     create_source_preparation,
     freeze_completion_manifest,
@@ -311,6 +312,25 @@ def review_diagnosis(analysis_id: str, diagnosis_id: str, result_version: str, p
         decisions=payload.decisions,
     )
     return read_diagnosis(analysis_id, diagnosis_id, payload.project_id, payload.prompt_id, db)
+
+
+@router.get("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/strategy-readiness")
+def read_strategy_readiness(
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    return build_strategy_readiness(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
 
 
 @router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/target-brand-truths", status_code=201)

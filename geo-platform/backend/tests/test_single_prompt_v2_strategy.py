@@ -18,6 +18,7 @@ from app.models import (
     SinglePromptDiagnosisExecution,
     SinglePromptDiagnosisResult,
     SinglePromptDiagnosisReview,
+    SinglePromptPreparedSourceSnapshot,
     SinglePromptSourceSnapshot,
     SinglePromptStrategyExecution,
     SinglePromptStrategyResult,
@@ -218,7 +219,45 @@ def test_event_level_review_gate_controls_reason_consumption_without_role_upgrad
     assert unresolved["fact_consumption_eligible"] is False
 
 
-def _seed_strategy_input(db, *, reviewed=True, include_truth=True, anchor="UNPROVEN", foundation=None):
+def test_evidence_projection_consumes_exact_prior_answer_review_without_duplicate_decision():
+    context = SinglePromptAnalysisContext(
+        raw_output_json=json.dumps({"runs": [{"run_id": 101, "answer_text": "工具甲适合批量短链。"}]})
+    )
+    output = {
+        "answer_diagnosis": {
+            "events": [{
+                "event_id": "event-reviewed-upstream",
+                "run_id": 101,
+                "entity_text": "工具甲",
+                "machine_speech_act": "INCLUDE_AS_OPTION",
+                "effective_speech_act": "INCLUDE_AS_OPTION",
+                "semantic_validation_status": "SEMANTIC_REVIEW_REQUIRED",
+                "fact_consumption_eligible": True,
+                "review_status": "HUMAN_CONFIRMED_INCLUDE_AS_OPTION",
+                "review_id": "review-answer-exact-version",
+                "reasons": [{
+                    "reason_id": "reason-reviewed-upstream",
+                    "reason_span": "批量短链",
+                    "effective_grounded_text": "批量短链",
+                    "normalized_reason": "批量短链",
+                    "fact_consumption_eligible": True,
+                }],
+            }]
+        }
+    }
+
+    rows = _reason_rows(output, context, {
+        "decisions": [{
+            "scope": "ENTIRE_REVIEWABLE_SET",
+            "decision": "REVIEW_COMPLETED_WITH_LIMITATIONS_PRESERVED",
+        }]
+    })
+
+    assert rows[0]["fact_consumption_eligible"] is True
+    assert rows[0]["effective_speech_act"] == "INCLUDE_AS_OPTION"
+
+
+def _seed_strategy_input(db, *, reviewed=True, include_truth=True, anchor="UNPROVEN", foundation=None, prepared=False):
     answer = "竞品甲值得推荐，因为支持批量生成二维码。"
     output = {
         "contract_version": "single_prompt_diagnosis.v2_second_slice",
@@ -265,6 +304,9 @@ def _seed_strategy_input(db, *, reviewed=True, include_truth=True, anchor="UNPRO
         "limitations": [],
         "stats": {"content_ready": 1},
     }
+    if prepared:
+        output["result_scope"] = "ANSWER_AND_EVIDENCE"
+        output["input"] = {"source_snapshot_ids": ["source-1"]}
     result_hash = _hash(output)
     context = SinglePromptAnalysisContext(
         context_id="context-1", analysis_id="analysis-1", project_id=1, prompt_id=44, task_id=52,
@@ -284,13 +326,25 @@ def _seed_strategy_input(db, *, reviewed=True, include_truth=True, anchor="UNPRO
         output_json=json.dumps(output, ensure_ascii=False), output_hash=result_hash,
         reviewable_set_hash="q" * 64, limitations_json="[]", stats_json=json.dumps({"content_ready": 1}),
     )
-    source = SinglePromptSourceSnapshot(
-        snapshot_id="source-1", diagnosis_id="diagnosis-1", source_key="source-key-1",
-        canonical_url="https://www.zhihu.com/question/1", original_urls_json="[]",
-        reference_observations_json=json.dumps([{"run_id": 101, "domain": "zhihu.com"}]), occurrence_count=1,
-        fetch_status="SUCCESS", title="知乎来源", content_hash="e" * 64, clean_text="正文支持批量生成二维码",
-        passages_json="[]", passages_hash="f" * 64, parser_version="fixture",
-    )
+    if prepared:
+        source = SinglePromptPreparedSourceSnapshot(
+            snapshot_id="source-1", preparation_id="preparation-1", context_id="context-1",
+            citation_manifest_id="citation-manifest-1", source_key="source-key-1",
+            canonical_url="https://www.zhihu.com/question/1", original_urls_json="[]",
+            reference_observations_json=json.dumps([{"run_id": 101, "domain": "zhihu.com"}]), occurrence_count=1,
+            title="知乎来源", content_hash="e" * 64, clean_text="正文支持批量生成二维码",
+            artifact_path="sources/source-1.txt", artifact_hash="g" * 64,
+            passages_json="[]", passages_hash="f" * 64, parser_version="fixture",
+            acquisition_method="MANUAL", coverage_scope="FULL_PAGE", submitted_by="owner",
+        )
+    else:
+        source = SinglePromptSourceSnapshot(
+            snapshot_id="source-1", diagnosis_id="diagnosis-1", source_key="source-key-1",
+            canonical_url="https://www.zhihu.com/question/1", original_urls_json="[]",
+            reference_observations_json=json.dumps([{"run_id": 101, "domain": "zhihu.com"}]), occurrence_count=1,
+            fetch_status="SUCCESS", title="知乎来源", content_hash="e" * 64, clean_text="正文支持批量生成二维码",
+            passages_json="[]", passages_hash="f" * 64, parser_version="fixture",
+        )
     db.add_all([context, execution, result, source])
     if reviewed:
         db.add(SinglePromptDiagnosisReview(
@@ -301,6 +355,28 @@ def _seed_strategy_input(db, *, reviewed=True, include_truth=True, anchor="UNPRO
         ))
     db.commit()
     return result_hash
+
+
+def test_strategy_projection_reads_exact_prepared_snapshots_from_evidence_input(tmp_path):
+    db, engine = _session(tmp_path / "prepared-snapshot")
+    try:
+        _seed_strategy_input(db, prepared=True)
+
+        projection = build_strategy_input_projection(
+            db,
+            analysis_id="analysis-1",
+            diagnosis_id="diagnosis-1",
+            result_version="diag-v1:fixture",
+            project_id=1,
+            prompt_id=44,
+        )
+
+        assert projection["consumed_object_ids"]["source_snapshot_ids"] == ["source-1"]
+        assert projection["source_snapshots"][0]["fetch_status"] == "SUCCESS"
+        assert projection["source_snapshots"][0]["canonical_url"] == "https://www.zhihu.com/question/1"
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def test_a_class_requires_exact_review_and_has_no_candidate():

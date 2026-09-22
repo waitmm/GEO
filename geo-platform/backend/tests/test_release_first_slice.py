@@ -284,7 +284,9 @@ def test_release_routes_exclude_legacy_and_later_workflows():
     assert "/api/v2/single-prompt/analyses" in paths
     assert any("source-preparation" in path for path in paths)
     assert any("evidence-continuations" in path for path in paths)
-    assert not any("strategy" in path for path in paths)
+    assert any(path.endswith("/strategy-readiness") for path in paths)
+    assert not any(path.endswith("/strategies") for path in paths)
+    assert not any("/strategies/" in path for path in paths)
     assert not any("execution-proposal" in path for path in paths)
     assert not any("retest" in path for path in paths)
     assert not any(path.startswith("/api/optimization") for path in paths)

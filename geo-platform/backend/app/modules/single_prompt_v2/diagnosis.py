@@ -82,7 +82,7 @@ ANSWER_RESULT_PROJECTION_VERSION = "single_prompt_answer_semantic_projection.v3_
 SOURCE_SNAPSHOT_PARSER_VERSION = "single_prompt_source_snapshot.v1"
 SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v1"
 PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
-TRUTH_MATCH_VERSION = "single_prompt_truth_relation.v3_target_claim_eligibility"
+TRUTH_MATCH_VERSION = "single_prompt_truth_relation.v4_co_recommendation_context"
 REVIEW_CONTRACT_VERSION = "single_prompt_diagnosis_review.v1"
 V2_LLM_THINKING_MODE = "disabled"
 
@@ -1681,6 +1681,11 @@ def _diagnose_truths(
         for value in [target_brand.get("brand_name"), *(target_brand.get("aliases") or [])]
         if str(value or "").strip()
     }
+    target_reasons = [
+        reason
+        for reason in reasons
+        if _normalize_truth_text(str(reason.get("entity") or "")) in target_subject_labels
+    ]
     relationships: list[dict] = []
     external_capability_signals: list[dict] = []
     for reason in reasons:
@@ -1688,8 +1693,26 @@ def _diagnose_truths(
         source_subject_key = _normalize_truth_text(source_subject)
         is_target_subject = bool(source_subject_key and source_subject_key in target_subject_labels)
         if not is_target_subject:
+            reason_text_key = _normalize_truth_text(
+                str(reason.get("effective_grounded_text") or reason.get("reason_span") or "")
+            )
+            target_peer_reason_ids = sorted({
+                str(peer.get("reason_id"))
+                for peer in target_reasons
+                if reason.get("run_id") is not None
+                and peer.get("run_id") == reason.get("run_id")
+                and reason_text_key
+                and _normalize_truth_text(
+                    str(peer.get("effective_grounded_text") or peer.get("reason_span") or "")
+                ) == reason_text_key
+            })
+            signal_context = (
+                "CO_RECOMMENDED_WITH_TARGET"
+                if target_peer_reason_ids
+                else "EXTERNAL_ONLY"
+            )
             target_truth_matches: list[dict[str, Any]] = []
-            if reason.get("fact_consumption_eligible") is True:
+            if reason.get("fact_consumption_eligible") is True and not target_peer_reason_ids:
                 for truth in truth_snapshot:
                     relation, method = _truth_relation(reason, truth)
                     if relation == "UNRESOLVED" and method == "NO_APPROVED_MAPPING":
@@ -1713,7 +1736,14 @@ def _diagnose_truths(
                 "normalized_capability": str(reason.get("normalized_reason") or ""),
                 "fact_consumption_eligible": reason.get("fact_consumption_eligible") is True,
                 "target_truth_matches": target_truth_matches,
-                "use_boundary": "EXTERNAL_SIGNAL_ONLY",
+                "signal_context": signal_context,
+                "target_peer_reason_ids": target_peer_reason_ids,
+                "target_review_trigger_eligible": not target_peer_reason_ids,
+                "use_boundary": (
+                    "CO_RECOMMENDED_CONTEXT_ONLY"
+                    if target_peer_reason_ids
+                    else "EXTERNAL_SIGNAL_ONLY"
+                ),
             })
             continue
         if reason.get("fact_consumption_eligible") is not True:

@@ -27,6 +27,7 @@ from app.modules.single_prompt_v2.strategy import (
     STRATEGY_INPUT_VALIDATION_VERSION,
     _candidate_output,
     _reason_rows,
+    _truths_by_reason,
     _validate_candidate_output,
     build_strategy_input_projection,
     build_strategy_readiness,
@@ -361,6 +362,7 @@ def test_external_capability_signal_can_prove_target_applicability_without_cross
             "method": "EXACT_GROUNDED_CAPABILITY_LABEL",
             "boundary": "TARGET_APPLICABILITY_ONLY_NOT_SOURCE_FACT_PROOF",
         }],
+        "signal_context": "EXTERNAL_ONLY",
         "use_boundary": "EXTERNAL_SIGNAL_ONLY",
     }]
 
@@ -369,6 +371,30 @@ def test_external_capability_signal_can_prove_target_applicability_without_cross
     assert readiness["classification"] == "C"
     assert readiness["qualified_directions"][0]["channel_role"] == "TEST"
     assert readiness["qualified_directions"][0]["truth_ids"] == [7]
+
+
+def test_co_recommended_external_option_cannot_duplicate_target_applicability():
+    projection = _projection(anchor="UNPROVEN")
+    projection["truth_relationships"] = []
+    projection["external_capability_signals"] = [{
+        "signal_id": "co-recommended-option",
+        "reason_id": "reason-external",
+        "source_subject": "趣码短链",
+        "capability_text": "支持批量生成二维码",
+        "fact_consumption_eligible": True,
+        "signal_context": "CO_RECOMMENDED_WITH_TARGET",
+        "target_peer_reason_ids": ["reason-1"],
+        "target_review_trigger_eligible": False,
+        "target_truth_matches": [{
+            "truth_id": 7,
+            "applicability": "ELIGIBLE",
+            "match_relation": "FULLY_COVERS",
+            "method": "EXACT_GROUNDED_CAPABILITY_LABEL",
+        }],
+        "use_boundary": "CO_RECOMMENDED_CONTEXT_ONLY",
+    }]
+
+    assert _truths_by_reason(projection) == {}
 
 
 def test_explicit_anchor_can_form_primary_but_review_does_not_upgrade_bad_relation():

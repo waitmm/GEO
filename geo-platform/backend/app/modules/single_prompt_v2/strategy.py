@@ -336,6 +336,8 @@ def _truths_by_reason(projection: dict[str, Any]) -> dict[str, list[int]]:
     for signal in projection.get("external_capability_signals") or []:
         if signal.get("fact_consumption_eligible") is not True:
             continue
+        if signal.get("signal_context") == "CO_RECOMMENDED_WITH_TARGET":
+            continue
         for match in signal.get("target_truth_matches") or []:
             truth_id = match.get("truth_id")
             if (

@@ -960,7 +960,10 @@ Status: ACTIVE
   Reason-to-Truth coverage row. Preserve source subject, grounded text and this
   boundary in future Strategy changes. Legacy empty-Truth rows must also be
   classified from their grounded subject; `truth_id=null` is not permission to
-  display an external subject as a target-brand relation.
+  display an external subject as a target-brand relation. When the same Run and
+  grounded reason already belong to a target-brand recommendation, the external
+  entity is a co-recommended option rather than a new target capability gap; it
+  must not duplicate fact review or Strategy applicability.
 - **Existing composite target facts are not automatically publishable**: the
   current release database contains previously entered statements that combine
   multiple capabilities or remain UNKNOWN. Current projection marks these

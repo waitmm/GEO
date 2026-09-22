@@ -1060,6 +1060,9 @@ def test_cross_brand_reason_is_only_an_external_capability_signal():
     assert truth_diagnosis["relationships"] == []
     signal = truth_diagnosis["external_capability_signals"][0]
     assert signal["source_subject"] == "壹伴助手"
+    assert signal["signal_context"] == "EXTERNAL_ONLY"
+    assert signal["target_peer_reason_ids"] == []
+    assert signal["target_review_trigger_eligible"] is True
     assert signal["use_boundary"] == "EXTERNAL_SIGNAL_ONLY"
     assert signal["target_truth_matches"] == [{
         "truth_id": 2,
@@ -1068,6 +1071,53 @@ def test_cross_brand_reason_is_only_an_external_capability_signal():
         "method": "LEXICAL_CONTAINMENT_REQUIRES_REVIEW",
         "boundary": "TARGET_APPLICABILITY_ONLY_NOT_SOURCE_FACT_PROOF",
     }]
+
+
+def test_co_recommended_external_option_does_not_duplicate_target_truth_review():
+    shared_text = "使用爱短链、趣码短链等合规工具生成加密短链"
+    answer_diagnosis = {
+        "events": [{
+            "reasons": [{
+                "reason_id": "reason-target",
+                "run_id": 4,
+                "entity": "爱短链",
+                "effective_grounded_text": shared_text,
+                "reason_span": shared_text,
+                "fact_consumption_eligible": True,
+            }],
+        }, {
+            "reasons": [{
+                "reason_id": "reason-external",
+                "run_id": 4,
+                "entity": "趣码短链",
+                "effective_grounded_text": shared_text,
+                "reason_span": shared_text,
+                "fact_consumption_eligible": True,
+            }],
+        }],
+    }
+    truths = [{
+        "truth_id": 2,
+        "capability_key": "encrypted_short_link",
+        "capability_label": shared_text,
+        "product_truth_status": "SUPPORTED",
+        "statement_eligibility": {"status": "ELIGIBLE", "issues": []},
+    }]
+
+    truth_diagnosis = _diagnose_truths(
+        answer_diagnosis,
+        truths,
+        target_brand={"brand_name": "爱短链", "aliases": []},
+    )
+
+    assert {row["reason_id"] for row in truth_diagnosis["relationships"]} == {"reason-target"}
+    signal = truth_diagnosis["external_capability_signals"][0]
+    assert signal["source_subject"] == "趣码短链"
+    assert signal["signal_context"] == "CO_RECOMMENDED_WITH_TARGET"
+    assert signal["target_peer_reason_ids"] == ["reason-target"]
+    assert signal["target_review_trigger_eligible"] is False
+    assert signal["target_truth_matches"] == []
+    assert signal["use_boundary"] == "CO_RECOMMENDED_CONTEXT_ONLY"
 
 
 def test_current_projection_removes_legacy_cross_brand_empty_truth_relation():

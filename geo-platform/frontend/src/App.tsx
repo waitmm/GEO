@@ -4682,8 +4682,9 @@ export default function App() {
     || v2DiagnosisOutput?.truth_diagnosis?.relationships
     || [];
   const v2TruthRelationships = v2AllTruthRelationships.filter((row: any) => !row.cross_subject);
+  const v2TargetReasonIds = new Set(v2TruthRelationships.map((row: any) => row.reason_id));
   const v2PersistedExternalCapabilitySignals = v2DiagnosisOutput?.truth_diagnosis?.external_capability_signals || [];
-  const v2ExternalCapabilitySignals = v2PersistedExternalCapabilitySignals.length > 0
+  const v2RawExternalCapabilitySignals = v2PersistedExternalCapabilitySignals.length > 0
     ? v2PersistedExternalCapabilitySignals
     : v2AllTruthRelationships
       .filter((row: any) => row.cross_subject)
@@ -4697,6 +4698,38 @@ export default function App() {
           boundary: "TARGET_APPLICABILITY_ONLY_NOT_SOURCE_FACT_PROOF",
         };
       });
+  const v2ExternalCapabilitySignals = v2RawExternalCapabilitySignals.map((signal: any) => {
+    if (signal.signal_context) return signal;
+    const externalReason = v2DiagnosisReasonById.get(signal.reason_id) as any;
+    const externalText = String(externalReason?.effective_grounded_text || externalReason?.reason_span || signal.capability_text || "").trim();
+    const targetPeerReasonIds = v2DiagnosisReasons
+      .filter((reason: any) => (
+        v2TargetReasonIds.has(reason.reason_id)
+        && reason.run_id != null
+        && reason.run_id === externalReason?.run_id
+        && externalText
+        && String(reason.effective_grounded_text || reason.reason_span || "").trim() === externalText
+      ))
+      .map((reason: any) => reason.reason_id)
+      .sort();
+    return {
+      ...signal,
+      signal_context: targetPeerReasonIds.length > 0 ? "CO_RECOMMENDED_WITH_TARGET" : "EXTERNAL_ONLY",
+      target_peer_reason_ids: targetPeerReasonIds,
+      target_review_trigger_eligible: targetPeerReasonIds.length === 0,
+    };
+  });
+  const v2CoRecommendedExternalOptions = v2ExternalCapabilitySignals.filter(
+    (row: any) => row.signal_context === "CO_RECOMMENDED_WITH_TARGET",
+  );
+  const v2IndependentExternalCapabilitySignals = v2ExternalCapabilitySignals.filter(
+    (row: any) => row.signal_context !== "CO_RECOMMENDED_WITH_TARGET",
+  );
+  const v2CurrentProjectTruths = v2Diagnosis?.project_truth_state?.truths || [];
+  const v2ClaimEligibleProjectTruths = v2CurrentProjectTruths.filter((truth: any) => (
+    ["SUPPORTED", "TRUE"].includes(String(truth.product_truth_status || "").toUpperCase())
+    && truth.statement_eligibility?.status === "ELIGIBLE"
+  ));
   const v2EvidenceEligibility = v2Diagnosis?.effective_evidence_eligibility;
   const v2SourceStatus = v2Diagnosis?.source_content_status_summary;
   const v2StrategyOutput = v2Strategy?.result?.output;
@@ -5308,15 +5341,45 @@ export default function App() {
                       </Descriptions>,
                     }]}
                   />}
-                  {v2ExternalCapabilitySignals.length > 0 && <>
-                    <Divider orientation="left" plain>答案中的外部能力信号</Divider>
-                    <Alert type="info" showIcon message="这些是核对线索，不是竞品事实审核" description="答案把这些能力表述为其他品牌/工具的理由。它们可以提示去核对目标品牌自身能力，但不能证明目标品牌具备，也不会直接建立 Reason→Truth 覆盖关系。" />
+                  {v2CurrentProjectTruths.length > 0 && <Alert
+                    style={{ marginTop: 10 }}
+                    type={v2ClaimEligibleProjectTruths.length > 0 ? "success" : "warning"}
+                    showIcon
+                    message={`当前可用于策略声明的原子事实：${v2ClaimEligibleProjectTruths.length}/${v2CurrentProjectTruths.length}`}
+                    description={v2ClaimEligibleProjectTruths.length > 0
+                      ? "只有 SUPPORTED 且声明资格为 ELIGIBLE 的具体事实可以进入后续公开内容。"
+                      : "现有记录仍是复合陈述或 UNKNOWN，需要拆成可独立核对的目标品牌事实；这不阻断 Answer 与 Evidence。"}
+                  />}
+                  {v2CoRecommendedExternalOptions.length > 0 && <>
+                    <Divider orientation="left" plain>同段共同推荐的其他选项</Divider>
+                    <Alert
+                      type="info"
+                      showIcon
+                      message={`${project?.brand_name || "目标品牌"}也在同一段被列为可选方案`}
+                      description="这里保留共同出现的其他工具，用于理解竞争环境；目标品牌自己的推荐理由在下方单独核对。相同能力不会重复触发目标品牌事实核对，也不会单独证明策略适用性。"
+                    />
                     <Table
                       style={{ marginTop: 12 }}
                       rowKey="signal_id"
                       size="small"
                       pagination={false}
-                      dataSource={v2ExternalCapabilitySignals}
+                      dataSource={v2CoRecommendedExternalOptions}
+                      columns={[
+                        { title: "共同选项", dataIndex: "source_subject", width: 170 },
+                        { title: "共同推荐原文", dataIndex: "capability_text" },
+                        { title: "处理", width: 180, render: () => <Tag>不重复核对事实</Tag> },
+                      ]}
+                    />
+                  </>}
+                  {v2IndependentExternalCapabilitySignals.length > 0 && <>
+                    <Divider orientation="left" plain>答案中的外部能力线索</Divider>
+                    <Alert type="info" showIcon message="这些能力尚未在同段直接归属于目标品牌" description="它们可以提示去核对目标品牌自身能力，但不能证明目标品牌具备，也不会直接建立 Reason→Truth 覆盖关系。" />
+                    <Table
+                      style={{ marginTop: 12 }}
+                      rowKey="signal_id"
+                      size="small"
+                      pagination={false}
+                      dataSource={v2IndependentExternalCapabilitySignals}
                       columns={[
                         { title: "主体", dataIndex: "source_subject", width: 150 },
                         { title: "原文能力信号", dataIndex: "capability_text" },

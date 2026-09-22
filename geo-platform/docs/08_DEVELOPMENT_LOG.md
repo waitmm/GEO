@@ -5646,3 +5646,14 @@ review_queue = READY
   `compileall`, release frontend build and `git diff --check` passed. A release
   production screenshot confirmed separate external-signal and target-brand
   relation sections without layout overlap.
+- Follow-up production review found that Run 4 listed both `爱短链` and
+  `趣码短链` as `INCLUDE_AS_OPTION` using the same grounded reason. The external
+  entity is now classified as `CO_RECOMMENDED_WITH_TARGET`, retains its market
+  context, and cannot create a duplicate target-fact review trigger or Strategy
+  applicability path. The release UI labels it `同段共同推荐的其他选项` and keeps
+  the target-brand Reason in the target relation table. Independent external
+  capability signals retain the existing review path.
+- The fact panel now reports effective public-claim eligibility directly. The
+  current project has two manually recorded rows but zero eligible atomic facts:
+  one `SUPPORTED` compound statement and one `UNKNOWN` compound statement are
+  both `VERIFY_FIRST`. This status does not block Answer or Evidence.

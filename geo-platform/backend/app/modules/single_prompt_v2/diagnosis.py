@@ -38,7 +38,7 @@ from app.models import (
 from app.modules.optimization.answer_semantic import (
     locate_span,
 )
-from app.modules.optimization.passage_retrieval import RETRIEVAL_VERSION, retrieve_passages_for_reason, tokenize_zh
+from app.modules.optimization.passage_retrieval import RETRIEVAL_VERSION, tokenize_zh
 from app.modules.optimization.passage_service import fetch_page_playwright
 from app.modules.monitoring.collectors.wenxin.search_process import legacy_mixed_answer_boundary
 from app.modules.single_prompt_v2.llm_safety import (
@@ -70,6 +70,12 @@ from app.modules.single_prompt_v2.llm_safety import (
     source_claim_user_payload,
     source_subject_is_grounded,
 )
+from app.modules.single_prompt_v2.coverage import diagnosis_coverage_projections
+from app.modules.single_prompt_v2.evidence_plan import (
+    EVIDENCE_FALLBACK_REPLACEMENTS_PER_REASON,
+    EVIDENCE_PLAN_POLICY_VERSION,
+    build_evidence_candidate_plan,
+)
 from app.modules.single_prompt_v2.source_preparation import validate_completion_for_evidence
 from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import DeepSeekClient
@@ -77,8 +83,8 @@ from app.services.url_identity import canonicalize_url
 from app.services.serialization import dumps, loads
 
 
-DIAGNOSIS_CONTRACT_VERSION = "single_prompt_diagnosis.v2_second_slice_safety.v2"
-ANSWER_RESULT_PROJECTION_VERSION = "single_prompt_answer_semantic_projection.v3_grounded_raw_span"
+DIAGNOSIS_CONTRACT_VERSION = "single_prompt_diagnosis.v2_second_slice_safety.v3_fixed_scope"
+ANSWER_RESULT_PROJECTION_VERSION = "single_prompt_answer_semantic_projection.v4_fixed_scope_coverage"
 SOURCE_SNAPSHOT_PARSER_VERSION = "single_prompt_source_snapshot.v1"
 SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v1"
 PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
@@ -138,22 +144,36 @@ def answer_semantic_eligibility(output: dict[str, Any]) -> dict[str, Any]:
             "status": "ADMITTED_LEGACY_PROJECTION" if projected_objects else "NO_CONSUMABLE_RESULT",
         }
     admitted = [row for row in jobs if row.get("status") in _ADMITTED_ANSWER_JOB_STATUSES]
-    failed = [row for row in jobs if row.get("status") not in _ADMITTED_ANSWER_JOB_STATUSES]
+    pending = [
+        row for row in jobs
+        if str(row.get("status") or "").startswith("PENDING")
+        or row.get("result_source") == "CACHE_MISS_EXTERNAL_NOT_AUTHORIZED"
+    ]
+    invalid_cache = [
+        row for row in jobs
+        if row.get("status") == "CACHE_REJECTED_BY_V2_VALIDATION"
+    ]
+    failed = [
+        row for row in jobs
+        if row not in admitted and row not in pending and row not in invalid_cache
+    ]
     zero = [row for row in admitted if row.get("status") == "DONE_ZERO_EVENTS"]
-    total = len(jobs)
+    def covered_count(rows: list[dict[str, Any]]) -> int:
+        return sum(max(len(row.get("run_ids") or []), 1) for row in rows)
+    total = sum(max(len(row.get("run_ids") or []), 1) for row in jobs)
     no_consumable = total == 0 or not admitted
     return {
         "contract_version": ANSWER_RESULT_PROJECTION_VERSION,
         "total_answer_count": total,
-        "admitted_answer_count": len(admitted),
-        "failed_answer_count": len(failed),
-        "valid_zero_answer_count": len(zero),
+        "admitted_answer_count": covered_count(admitted),
+        "failed_answer_count": covered_count(failed),
+        "valid_zero_answer_count": covered_count(zero),
         "failure_record_count": len(diagnosis.get("failures") or []),
         "no_consumable_answer_semantic_result": no_consumable,
         "partial_failure": bool(admitted and failed),
         "status": (
             "NO_CONSUMABLE_RESULT" if no_consumable
-            else "PARTIAL" if failed
+            else "PARTIAL" if failed or pending or invalid_cache
             else "ADMITTED"
         ),
     }
@@ -585,7 +605,8 @@ def _contract_config(
         "answer_llm_policy": answer_llm_policy,
         "citation_manifest_id": citation_manifest_id,
         "citation_manifest_hash": citation_manifest_hash,
-        "candidate_passages_per_reason": 2,
+        "evidence_candidate_plan_version": EVIDENCE_PLAN_POLICY_VERSION,
+        "evidence_fallback_replacements_per_reason": EVIDENCE_FALLBACK_REPLACEMENTS_PER_REASON,
         "alignment_claims_per_source_reason": 3,
     }
 
@@ -860,6 +881,7 @@ def _diagnose_answers(
     usage: dict[str, int],
     judge: Any,
     thinking_mode: str | None,
+    answer_llm_policy: str = "ALLOW_EXTERNAL",
 ) -> dict:
     events: list[dict] = []
     market_criteria: list[dict] = []
@@ -888,6 +910,7 @@ def _diagnose_answers(
                 answer_hash,
                 {
                     "answer_hash": answer_hash,
+                    "run_ids": [int(run.get("run_id") or 0)],
                     "semantic_input_hash": "",
                     "status": "NOT_EVALUATED_MIXED_ANSWER_BOUNDARY",
                     "result_source": "INPUT_GATE",
@@ -903,6 +926,18 @@ def _diagnose_answers(
                 V2_ANSWER_SCHEMA_VERSION,
                 thinking_mode,
             )
+            if answer_llm_policy != "ALLOW_EXTERNAL" and not _cache_row(
+                db, input_hash, V2_ANSWER_PROMPT_VERSION, V2_ANSWER_SCHEMA_VERSION
+            ):
+                answer_jobs[answer_hash] = {
+                    "answer_hash": answer_hash,
+                    "run_ids": [int(run.get("run_id") or 0)],
+                    "semantic_input_hash": input_hash,
+                    "status": "PENDING_EXTERNAL_AUTHORIZATION",
+                    "result_source": "CACHE_MISS_EXTERNAL_NOT_AUTHORIZED",
+                    "error": "当前没有兼容缓存，需获得本固定回答的外部计算授权",
+                }
+                continue
             try:
                 raw_result, result_source = _call_with_usage(
                     db,
@@ -915,6 +950,7 @@ def _diagnose_answers(
                 answer_cache[answer_hash] = admit_answer_for_input(raw_result, answer)
                 answer_jobs[answer_hash] = {
                     "answer_hash": answer_hash,
+                    "run_ids": [int(run.get("run_id") or 0)],
                     "semantic_input_hash": input_hash,
                     "status": "ADMITTED_PENDING_PROJECTION",
                     "result_source": result_source,
@@ -923,12 +959,15 @@ def _diagnose_answers(
                 failure = _llm_failure(exc)
                 answer_jobs[answer_hash] = {
                     "answer_hash": answer_hash,
+                    "run_ids": [int(run.get("run_id") or 0)],
                     "semantic_input_hash": input_hash,
                     **failure,
                     "result_source": failure["audit"].get("response_source") or "EXTERNAL_LLM_OR_PROVIDER_FAILURE",
                 }
                 failures.append({"run_id": run.get("run_id"), "stage": "ANSWER_SEMANTIC", **failure})
                 continue
+        elif int(run.get("run_id") or 0) not in answer_jobs[answer_hash].setdefault("run_ids", []):
+            answer_jobs[answer_hash]["run_ids"].append(int(run.get("run_id") or 0))
         if answer_hash not in answer_cache:
             continue
         result = answer_cache[answer_hash]
@@ -1108,7 +1147,10 @@ def _diagnose_answers(
         "market_criteria": market_criteria,
         "unresolved_items": unresolved_items,
         "failures": failures,
-        "answer_jobs": list(answer_jobs.values()),
+        "answer_jobs": sorted(
+            answer_jobs.values(),
+            key=lambda row: (min(row.get("run_ids") or [0]), str(row.get("answer_hash") or "")),
+        ),
         "unique_answers_judged": len(answer_jobs),
     }
 
@@ -1118,6 +1160,102 @@ def _source_key(reference: dict) -> tuple[str, str]:
     fallback = "|".join([str(reference.get("domain") or ""), str(reference.get("title") or "")])
     identity = canonical or fallback
     return _hash({"source_identity": identity}), canonical
+
+
+def _attach_prior_review_provenance(
+    db: Session,
+    execution: SinglePromptDiagnosisExecution,
+    answer_diagnosis: dict[str, Any],
+) -> None:
+    """Annotate exact reusable judgments without granting review authority."""
+    current_events = {
+        str(row.get("event_id")): row
+        for row in answer_diagnosis.get("events") or []
+        if row.get("event_id")
+    }
+    prior_rows = (
+        db.query(SinglePromptDiagnosisResult, SinglePromptDiagnosisExecution)
+        .join(
+            SinglePromptDiagnosisExecution,
+            SinglePromptDiagnosisExecution.diagnosis_id == SinglePromptDiagnosisResult.diagnosis_id,
+        )
+        .filter(
+            SinglePromptDiagnosisExecution.analysis_id == execution.analysis_id,
+            SinglePromptDiagnosisExecution.context_id == execution.context_id,
+            SinglePromptDiagnosisExecution.diagnosis_id != execution.diagnosis_id,
+        )
+        .order_by(SinglePromptDiagnosisResult.created_at.desc())
+        .all()
+    )
+    reused_events: dict[str, dict[str, Any]] = {}
+    reused_run_ids: set[int] = set()
+    source_reviews: set[str] = set()
+    context = db.query(SinglePromptAnalysisContext).filter_by(
+        context_id=execution.context_id,
+        analysis_id=execution.analysis_id,
+    ).one_or_none()
+    run_ids_by_answer_hash = {
+        hashlib.sha256(str(row.get("answer_text") or "").encode("utf-8")).hexdigest(): int(row.get("run_id") or 0)
+        for row in (loads(context.raw_output_json, {}).get("runs") or []) if context and row.get("run_id")
+    }
+    for prior_result, _prior_execution in prior_rows:
+        review = db.query(SinglePromptDiagnosisReview).filter_by(
+            diagnosis_id=prior_result.diagnosis_id,
+            result_version=prior_result.result_version,
+        ).one_or_none()
+        if not review or review.decision != "REVIEW_COMPLETED":
+            continue
+        prior_output = loads(prior_result.output_json, {})
+        prior_events = {
+            str(row.get("event_id")): row
+            for row in (prior_output.get("answer_diagnosis") or {}).get("events") or []
+            if row.get("event_id")
+        }
+        decisions = {
+            str(row.get("event_id")): str(row.get("decision"))
+            for row in loads(review.decisions_json, [])
+            if row.get("scope") == "ANSWER_SEMANTIC_EVENT" and row.get("event_id")
+        }
+        for event_id, current in current_events.items():
+            if event_id in reused_events:
+                continue
+            prior = prior_events.get(event_id)
+            if not prior:
+                continue
+            comparable_fields = (
+                "run_id", "entity_text", "machine_speech_act", "effective_speech_act",
+                "recommendation_strength", "polarity", "answer_span", "raw_start", "raw_end",
+            )
+            if any(current.get(field) != prior.get(field) for field in comparable_fields):
+                continue
+            current_reason_ids = sorted(str(row.get("reason_id")) for row in current.get("reasons") or [])
+            prior_reason_ids = sorted(str(row.get("reason_id")) for row in prior.get("reasons") or [])
+            if current_reason_ids != prior_reason_ids:
+                continue
+            reused_events[event_id] = {
+                "event_id": event_id,
+                "run_id": int(current.get("run_id") or 0),
+                "source_review_id": review.review_id,
+                "source_result_version": prior_result.result_version,
+                "prior_decision": decisions.get(event_id) or "CONFIRMED_BY_RESULT_REVIEW",
+                "identity_match": "EXACT_EVENT_AND_REASON_IDENTITY",
+            }
+            reused_run_ids.add(int(current.get("run_id") or 0))
+            source_reviews.add(review.review_id)
+        prior_jobs = (prior_output.get("answer_diagnosis") or {}).get("answer_jobs") or []
+        for job in prior_jobs:
+            if job.get("status") == "DONE_ZERO_EVENTS":
+                prior_run_ids = [int(value) for value in job.get("run_ids") or []]
+                if not prior_run_ids and job.get("answer_hash") in run_ids_by_answer_hash:
+                    prior_run_ids = [run_ids_by_answer_hash[str(job.get("answer_hash"))]]
+                reused_run_ids.update(prior_run_ids)
+                source_reviews.add(review.review_id)
+    answer_diagnosis["review_reuse_provenance"] = {
+        "events": sorted(reused_events.values(), key=lambda row: (row["run_id"], row["event_id"])),
+        "run_ids": sorted(value for value in reused_run_ids if value),
+        "source_review_ids": sorted(source_reviews),
+        "authority": "PREFILL_ONLY_NEW_EXACT_RESULT_REVIEW_REQUIRED",
+    }
 
 
 def _group_references(raw_output: dict) -> list[dict]:
@@ -1448,6 +1586,133 @@ def _entity_precheck(reason: dict, claim: dict) -> str:
     return "PASS_INFERRED_FROM_SPAN" if entity in source_text else "ENTITY_SCOPE_UNRESOLVED"
 
 
+def _source_claim_job(
+    db: Session,
+    *,
+    passage: dict[str, Any],
+    usage: dict[str, int],
+    source_claim_judge: Any,
+    config: dict[str, Any],
+) -> tuple[list[dict], list[dict], dict]:
+    input_hash = _llm_input_hash(
+        V2_SOURCE_CLAIM_SYSTEM,
+        source_claim_user_payload(passage["text"]),
+        V2_SOURCE_CLAIM_PROMPT_VERSION,
+        V2_SOURCE_CLAIM_SCHEMA_VERSION,
+        str(config.get("llm_thinking_mode") or "") or None,
+    )
+    base_job = {
+        "passage_id": passage["passage_id"],
+        "source_snapshot_id": passage["snapshot_id"],
+        "semantic_input_hash": input_hash,
+    }
+    if config.get("evidence_llm_policy") == "CACHE_ONLY" and not _cache_row(
+        db, input_hash, V2_SOURCE_CLAIM_PROMPT_VERSION, V2_SOURCE_CLAIM_SCHEMA_VERSION
+    ):
+        return [], [], {
+            **base_job,
+            "status": "PENDING_EXTERNAL_AUTHORIZATION",
+            "result_source": "CACHE_MISS_EXTERNAL_NOT_AUTHORIZED",
+            "claim_count": 0,
+            "accepted_claim_count": 0,
+            "rejected_claim_count": 0,
+            "empty_result": False,
+        }
+    try:
+        result, result_source = _call_with_usage(
+            db,
+            usage,
+            input_hash=input_hash,
+            prompt_version=V2_SOURCE_CLAIM_PROMPT_VERSION,
+            schema_version=V2_SOURCE_CLAIM_SCHEMA_VERSION,
+            call=lambda: source_claim_judge.judge_passage(passage["text"], db=db),
+        )
+        # Envelope/schema admission is atomic. Grounding and semantic scope are
+        # isolated below so independent valid claims survive a bad sibling item.
+        result = admit_source_claim_response(result)
+        claims, failures = _validated_source_claims(passage, result)
+        review_required_count = sum(not claim["fact_consumption_eligible"] for claim in claims)
+        valid_count = sum(claim["fact_consumption_eligible"] for claim in claims)
+        if not result["claims"]:
+            status = "DONE_ZERO_CLAIMS"
+        elif failures and not claims:
+            status = "FAILED_VALIDATION"
+        elif failures:
+            status = "DONE_WITH_FAILURES"
+        elif review_required_count and not valid_count:
+            status = "SEMANTIC_REVIEW_REQUIRED"
+        elif review_required_count:
+            status = "DONE_WITH_REVIEW_REQUIRED"
+        else:
+            status = "DONE"
+        return claims, failures, {
+            **base_job,
+            "status": status,
+            "result_source": result_source,
+            "claim_count": len(claims),
+            "accepted_claim_count": len(claims),
+            "rejected_claim_count": len(failures),
+            "consumable_claim_count": valid_count,
+            "review_required_count": review_required_count,
+            "empty_result": not result["claims"],
+        }
+    except SemanticLLMError as exc:
+        failure = _llm_failure(exc)
+        return [], [{"passage_id": passage["passage_id"], **failure}], {
+            **base_job,
+            "status": failure["status"],
+            "result_source": failure["audit"].get("response_source") or "EXTERNAL_LLM_OR_PROVIDER_FAILURE",
+            "claim_count": 0,
+            "accepted_claim_count": 0,
+            "rejected_claim_count": 0,
+            "consumable_claim_count": 0,
+            "review_required_count": 0,
+            "empty_result": False,
+            "error": failure["error"],
+            "audit": failure["audit"],
+        }
+
+
+def _technical_claim_failure(job: dict[str, Any]) -> bool:
+    status = str(job.get("status") or "")
+    return status.startswith("FAILED") or status == "CACHE_REJECTED_BY_V2_VALIDATION"
+
+
+def _build_candidate_plan_for_evidence(
+    answer_diagnosis: dict,
+    snapshots: list[SinglePromptSourceSnapshot],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    all_reasons = [reason for event in answer_diagnosis["events"] for reason in event["reasons"]]
+    reasons = [reason for reason in all_reasons if reason.get("fact_consumption_eligible") is True]
+    all_passages = [
+        {**passage, "snapshot_id": snapshot.snapshot_id, "source_key": snapshot.source_key}
+        for snapshot in snapshots
+        if snapshot.fetch_status in {"SUCCESS", "PARTIAL"}
+        and not _source_content_block_reason(snapshot.title, snapshot.clean_text)
+        for passage in loads(snapshot.passages_json, [])
+    ]
+    observed_source_keys_by_run: dict[int, set[str]] = {}
+    for snapshot in snapshots:
+        for observation in loads(snapshot.reference_observations_json, []):
+            observed_source_keys_by_run.setdefault(int(observation.get("run_id") or 0), set()).add(snapshot.source_key)
+    explicit_source_keys_by_reason = {
+        str(reason["reason_id"]): {
+            snapshot.source_key
+            for snapshot in snapshots
+            if _reference_anchor_status(reason, snapshot) == "EXPLICIT"
+        }
+        for reason in reasons
+    }
+    plan = build_evidence_candidate_plan(
+        reasons,
+        all_passages,
+        observed_source_keys_by_run,
+        explicit_source_keys_by_reason,
+    )
+    passages_by_id = plan.pop("passages_by_id")
+    return plan, passages_by_id
+
+
 def _diagnose_evidence(
     db: Session,
     *,
@@ -1469,26 +1734,15 @@ def _diagnose_evidence(
         for reason in all_reasons
         if reason.get("fact_consumption_eligible") is not True
     ]
-    all_passages = [
-        {**passage, "snapshot_id": snapshot.snapshot_id, "source_key": snapshot.source_key}
-        for snapshot in snapshots
-        if snapshot.fetch_status in {"SUCCESS", "PARTIAL"}
-        and not _source_content_block_reason(snapshot.title, snapshot.clean_text)
-        for passage in loads(snapshot.passages_json, [])
-    ]
-    observed_source_keys_by_run: dict[int, set[str]] = {}
-    for snapshot in snapshots:
-        for observation in loads(snapshot.reference_observations_json, []):
-            observed_source_keys_by_run.setdefault(int(observation.get("run_id") or 0), set()).add(snapshot.source_key)
-    selected: dict[str, list[dict]] = {}
-    for reason in reasons:
-        observed_source_keys = observed_source_keys_by_run.get(int(reason.get("run_id") or 0), set())
-        run_passages = [passage for passage in all_passages if passage["source_key"] in observed_source_keys]
-        selected[reason["reason_id"]] = retrieve_passages_for_reason(
-            reason["effective_grounded_text"],
-            run_passages,
-            top_k=int(config["candidate_passages_per_reason"]),
-        )
+    candidate_plan, passages_by_id = _build_candidate_plan_for_evidence(answer_diagnosis, snapshots)
+    selected: dict[str, list[dict]] = {
+        row["reason_id"]: [
+            passages_by_id[item["passage_id"]]
+            for item in row.get("base_candidates") or []
+            if item["passage_id"] in passages_by_id
+        ]
+        for row in candidate_plan["reason_plans"]
+    }
     selected_passages = {
         passage["passage_id"]: passage
         for passages in selected.values()
@@ -1497,85 +1751,76 @@ def _diagnose_evidence(
     claims_by_passage: dict[str, list[dict]] = {}
     extracted_claims: list[dict] = []
     claim_failures: list[dict] = []
-    claim_jobs: list[dict] = []
-    for passage in selected_passages.values():
-        input_hash = _llm_input_hash(
-            V2_SOURCE_CLAIM_SYSTEM,
-            source_claim_user_payload(passage["text"]),
-            V2_SOURCE_CLAIM_PROMPT_VERSION,
-            V2_SOURCE_CLAIM_SCHEMA_VERSION,
-            str(config.get("llm_thinking_mode") or "") or None,
+    claim_jobs_by_passage: dict[str, dict] = {}
+
+    def evaluate_passage(passage: dict[str, Any]) -> dict[str, Any]:
+        passage_id = str(passage["passage_id"])
+        if passage_id in claim_jobs_by_passage:
+            return claim_jobs_by_passage[passage_id]
+        claims, failures, job = _source_claim_job(
+            db,
+            passage=passage,
+            usage=usage,
+            source_claim_judge=source_claim_judge,
+            config=config,
         )
-        if config.get("evidence_llm_policy") == "CACHE_ONLY" and not _cache_row(
-            db, input_hash, V2_SOURCE_CLAIM_PROMPT_VERSION, V2_SOURCE_CLAIM_SCHEMA_VERSION
-        ):
-            claims_by_passage[passage["passage_id"]] = []
-            claim_jobs.append({
-                "passage_id": passage["passage_id"],
-                "source_snapshot_id": passage["snapshot_id"],
-                "semantic_input_hash": input_hash,
-                "status": "NOT_EVALUATED",
-                "result_source": "CACHE_MISS_EXTERNAL_NOT_AUTHORIZED",
-                "claim_count": 0,
-                "empty_result": False,
-            })
-            continue
-        try:
-            result, result_source = _call_with_usage(
-                db,
-                usage,
-                input_hash=input_hash,
-                prompt_version=V2_SOURCE_CLAIM_PROMPT_VERSION,
-                schema_version=V2_SOURCE_CLAIM_SCHEMA_VERSION,
-                call=lambda p=passage: source_claim_judge.judge_passage(p["text"], db=db),
-            )
-            result = admit_source_claim_response(result)
-            claims, failures = _validated_source_claims(passage, result)
-            claims_by_passage[passage["passage_id"]] = claims
-            extracted_claims.extend(claims)
-            claim_failures.extend({**failure, "passage_id": passage["passage_id"]} for failure in failures)
-            review_required_count = sum(not claim["fact_consumption_eligible"] for claim in claims)
-            valid_count = sum(claim["fact_consumption_eligible"] for claim in claims)
-            if not result["claims"]:
-                job_status = "DONE_ZERO_CLAIMS"
-            elif failures and not claims:
-                job_status = "FAILED_VALIDATION"
-            elif failures:
-                job_status = "DONE_WITH_FAILURES"
-            elif review_required_count and not valid_count:
-                job_status = "SEMANTIC_REVIEW_REQUIRED"
-            elif review_required_count:
-                job_status = "DONE_WITH_REVIEW_REQUIRED"
-            else:
-                job_status = "DONE"
-            claim_jobs.append({
-                "passage_id": passage["passage_id"],
-                "source_snapshot_id": passage["snapshot_id"],
-                "semantic_input_hash": input_hash,
-                "status": job_status,
-                "result_source": result_source,
-                "claim_count": len(claims),
-                "consumable_claim_count": valid_count,
-                "review_required_count": review_required_count,
-                "empty_result": not result["claims"],
-            })
-        except SemanticLLMError as exc:
-            failure = _llm_failure(exc)
-            claims_by_passage[passage["passage_id"]] = []
-            claim_failures.append({"passage_id": passage["passage_id"], **failure})
-            claim_jobs.append({
-                "passage_id": passage["passage_id"],
-                "source_snapshot_id": passage["snapshot_id"],
-                "semantic_input_hash": input_hash,
-                "status": failure["status"],
-                "result_source": failure["audit"].get("response_source") or "EXTERNAL_LLM_OR_PROVIDER_FAILURE",
-                "claim_count": 0,
-                "consumable_claim_count": 0,
-                "review_required_count": 0,
-                "empty_result": False,
-                "error": failure["error"],
-                "audit": failure["audit"],
-            })
+        claims_by_passage[passage_id] = claims
+        extracted_claims.extend(claims)
+        claim_failures.extend({**failure, "passage_id": passage_id} for failure in failures)
+        claim_jobs_by_passage[passage_id] = job
+        return job
+
+    for passage in selected_passages.values():
+        evaluate_passage(passage)
+
+    fallback_trace: list[dict[str, Any]] = []
+    for reason_plan in candidate_plan["reason_plans"]:
+        reason_id = str(reason_plan["reason_id"])
+        queue = list(reason_plan.get("fallback_queue") or [])
+        consumed = 0
+        for base in list(reason_plan.get("base_candidates") or []):
+            base_job = claim_jobs_by_passage.get(str(base["passage_id"]))
+            if not base_job or not _technical_claim_failure(base_job):
+                continue
+            if consumed >= int(reason_plan.get("fallback_replacement_cap") or 0) or not queue:
+                fallback_trace.append({
+                    "reason_id": reason_id,
+                    "failed_passage_id": base["passage_id"],
+                    "failure_status": base_job.get("status"),
+                    "replacement_passage_id": None,
+                    "outcome": "FALLBACK_CAP_OR_QUEUE_EXHAUSTED",
+                })
+                continue
+            prior_failed_id = base["passage_id"]
+            prior_failure_status = base_job.get("status")
+            while consumed < int(reason_plan.get("fallback_replacement_cap") or 0) and queue:
+                replacement = queue.pop(0)
+                passage = passages_by_id[str(replacement["passage_id"])]
+                selected.setdefault(reason_id, []).append(passage)
+                replacement_job = evaluate_passage(passage)
+                consumed += 1
+                replacement_failed = _technical_claim_failure(replacement_job)
+                fallback_trace.append({
+                    "reason_id": reason_id,
+                    "failed_passage_id": prior_failed_id,
+                    "failure_status": prior_failure_status,
+                    "replacement_passage_id": replacement["passage_id"],
+                    "replacement_status": replacement_job.get("status"),
+                    "outcome": (
+                        "PREDECLARED_TECHNICAL_FALLBACK_FAILED"
+                        if replacement_failed
+                        else "PREDECLARED_TECHNICAL_FALLBACK_CONSUMED"
+                    ),
+                })
+                if not replacement_failed:
+                    break
+                prior_failed_id = replacement["passage_id"]
+                prior_failure_status = replacement_job.get("status")
+        reason_plan["fallback_consumed"] = consumed
+        reason_plan["remaining_fallback_count"] = len(queue)
+
+    claim_jobs = list(claim_jobs_by_passage.values())
+    candidate_plan["fallback_trace"] = fallback_trace
 
     snapshot_by_id = {row.snapshot_id: row for row in snapshots}
     source_relations: list[dict] = []
@@ -1620,7 +1865,9 @@ def _diagnose_evidence(
                     if str(job["status"]).startswith("FAILED") or job["status"] == "CACHE_REJECTED_BY_V2_VALIDATION"
                 }
                 not_evaluated_passage_ids = {
-                    job["passage_id"] for job in claim_jobs if job["status"] == "NOT_EVALUATED"
+                    job["passage_id"]
+                    for job in claim_jobs
+                    if job["status"] in {"NOT_EVALUATED", "PENDING_EXTERNAL_AUTHORIZATION", "PENDING_COMPUTE"}
                 }
                 if any(p["passage_id"] in failed_passage_ids for p in passages):
                     row["alignment_evaluation"] = "UPSTREAM_CLAIM_FAILED"
@@ -1736,7 +1983,14 @@ def _diagnose_evidence(
             else:
                 row["alignment_evaluation"] = "HARD_FILTERED"
             source_relations.append(row)
+    candidate_plan["execution_complete"] = all(
+        str(job.get("status") or "") not in {
+            "NOT_EVALUATED", "PENDING_EXTERNAL_AUTHORIZATION", "PENDING_COMPUTE", "RUNNING",
+        }
+        for job in claim_jobs
+    )
     return {
+        "candidate_plan": candidate_plan,
         "source_claim_jobs": claim_jobs,
         "source_claims": extracted_claims,
         "source_claim_failures": claim_failures,
@@ -2526,7 +2780,9 @@ def compute_answer_diagnosis(
         usage=usage,
         judge=answer_judge,
         thinking_mode=str(config.get("llm_thinking_mode") or "") or None,
+        answer_llm_policy=str(config.get("answer_llm_policy") or "ALLOW_EXTERNAL"),
     )
+    _attach_prior_review_provenance(db, execution, answer)
     client = getattr(answer_judge, "client", None)
     if isinstance(client, DeepSeekClient):
         usage["external_llm_calls"] = client.external_call_count
@@ -2652,7 +2908,9 @@ def compute_diagnosis(
         usage=usage,
         judge=answer_judge,
         thinking_mode=str(config.get("llm_thinking_mode") or "") or None,
+        answer_llm_policy=str(config.get("answer_llm_policy") or "ALLOW_EXTERNAL"),
     )
+    _attach_prior_review_provenance(db, execution, answer)
 
     grouped_references = _group_references(raw_output)
     _set_progress(db, execution, "SOURCE_SNAPSHOT", 0, len(grouped_references), "冻结引用正文版本")
@@ -2828,6 +3086,8 @@ def _evidence_continuation_inputs(
         completion_manifest_id=completion_manifest_id,
         completion_manifest_hash=completion_manifest_hash,
     )
+    reviewed_answer = _reviewed_answer_for_evidence(answer_output, review)
+    candidate_plan, _ = _build_candidate_plan_for_evidence(reviewed_answer, snapshots)
     binding = {
         "analysis_id": analysis_id,
         "context_id": execution.context_id,
@@ -2839,6 +3099,9 @@ def _evidence_continuation_inputs(
         "answer_result_hash": answer_result_hash,
         "answer_review_id": answer_review_id,
         "answer_reviewable_set_hash": review.reviewable_set_hash,
+        "evidence_plan_id": candidate_plan["plan_id"],
+        "evidence_plan_hash": candidate_plan["plan_hash"],
+        "evidence_plan_policy_version": candidate_plan["policy_version"],
         "evidence_llm_policy": evidence_llm_policy,
     }
     binding_hash = _hash(binding)
@@ -2985,6 +3248,9 @@ def continue_evidence_diagnosis(
             alignment_judge=alignment_judge,
             config=config,
         )
+        actual_plan = evidence.get("candidate_plan") or {}
+        if actual_plan.get("plan_hash") != binding.get("evidence_plan_hash"):
+            raise RuntimeError("EVIDENCE_PLAN_BINDING_MISMATCH")
         real_clients = {
             id(client): client
             for client in (getattr(source_claim_judge, "client", None), getattr(alignment_judge, "client", None))
@@ -3251,6 +3517,11 @@ def get_diagnosis_status(
         ).one_or_none()
     result_stats = loads(result.stats_json, {}) if result else {}
     result_output = loads(result.output_json, {}) if result else {}
+    context = db.query(SinglePromptAnalysisContext).filter_by(
+        context_id=execution.context_id,
+        analysis_id=execution.analysis_id,
+    ).one_or_none()
+    raw_output = loads(context.raw_output_json, {}) if context else {}
     result_scope = str(result_output.get("result_scope") or "")
     prepared_snapshot_ids = list((result_output.get("input") or {}).get("source_snapshot_ids") or [])
     if prepared_snapshot_ids:
@@ -3304,6 +3575,19 @@ def get_diagnosis_status(
         loads(review.decisions_json, []) if review else [],
         project_truth_state["truths"],
     ) if result else []
+    review_projection = ({
+        "review_id": review.review_id,
+        "decision": review.decision,
+        "result_version": review.result_version,
+        "result_hash": review.result_hash,
+        "reviewable_set_hash": review.reviewable_set_hash,
+        "decisions": loads(review.decisions_json, []),
+    } if review else None)
+    coverage_projections = diagnosis_coverage_projections(
+        raw_output,
+        result_output,
+        review_projection,
+    ) if result else None
     overall_status = "REVIEW_COMPLETED" if review else execution.status
     return {
         "diagnosis": {
@@ -3335,6 +3619,7 @@ def get_diagnosis_status(
         "project_truth_state": project_truth_state,
         "target_capability_review_items": target_capability_review_items,
         "answer_semantic_eligibility": answer_eligibility,
+        "coverage_projections": coverage_projections,
         "result": {
             "result_version": result.result_version,
             "version_number": result.version_number,

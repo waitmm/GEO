@@ -98,6 +98,41 @@ def test_target_capability_review_items_are_atomic_target_only_and_deduplicated(
     assert all(row["current_truth"] is None for row in items)
 
 
+def test_answer_cache_only_miss_is_pending_authorization_without_call_or_failure(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        usage = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
+
+        class ForbiddenJudge:
+            def judge_answer(self, *args, **kwargs):
+                raise AssertionError("CACHE_ONLY miss must not call the provider")
+
+        result = _diagnose_answers(
+            db,
+            raw_output={"runs": [{
+                "run_id": 1,
+                "status": "success",
+                "answer_text": "这是一个固定回答。",
+                "answer_content_boundary": {"status": "FINAL_ANSWER_ONLY"},
+            }]},
+            prompt_text="测试问题",
+            brand_name="爱短链",
+            usage=usage,
+            judge=ForbiddenJudge(),
+            thinking_mode="disabled",
+            answer_llm_policy="CACHE_ONLY",
+        )
+
+        assert result["failures"] == []
+        assert result["answer_jobs"][0]["status"] == "PENDING_EXTERNAL_AUTHORIZATION"
+        assert result["answer_jobs"][0]["run_ids"] == [1]
+        assert result["answer_jobs"][0]["result_source"] == "CACHE_MISS_EXTERNAL_NOT_AUTHORIZED"
+        assert usage["external_llm_calls"] == 0
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_target_capability_review_items_reuse_bound_upstream_answer_review():
     output = {
         "input": {"brand_snapshot": {"brand_name": "爱短链", "aliases": []}},
@@ -516,7 +551,8 @@ def test_reuse_only_and_cache_only_do_not_fetch_or_call_evidence_llm(tmp_path):
 
         assert output
         assert status["source_diagnosis"]["snapshots"][0]["fetch_source"] == "V2_SNAPSHOT_REUSE"
-        assert status["evidence_diagnosis"]["source_claim_jobs"][0]["status"] == "NOT_EVALUATED"
+        assert status["evidence_diagnosis"]["source_claim_jobs"][0]["status"] == "PENDING_EXTERNAL_AUTHORIZATION"
+        assert status["evidence_diagnosis"]["source_claim_jobs"][0]["result_source"] == "CACHE_MISS_EXTERNAL_NOT_AUTHORIZED"
         assert status["evidence_diagnosis"]["source_relations"][0]["alignment_evaluation"] == "UPSTREAM_CLAIM_NOT_EVALUATED"
         assert "EVIDENCE_EXTERNAL_PROCESSING_NOT_AUTHORIZED" in {
             item["code"] for item in status["limitations"]
@@ -1459,7 +1495,7 @@ def test_all_failed_answer_semantics_block_revision_review_and_strategy(tmp_path
         )
 
         assert status["answer_semantic_eligibility"] == {
-            "contract_version": "single_prompt_answer_semantic_projection.v3_grounded_raw_span",
+            "contract_version": "single_prompt_answer_semantic_projection.v4_fixed_scope_coverage",
             "total_answer_count": 1,
             "admitted_answer_count": 0,
             "failed_answer_count": 1,

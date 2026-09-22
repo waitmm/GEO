@@ -1312,6 +1312,9 @@ def test_migrated_release_database_consumes_exact_answer_review_and_source_compl
         assert queued is True
         db.refresh(diagnosis)
         assert diagnosis.status == "EVIDENCE_QUEUED"
+        queued_progress = json.loads(diagnosis.progress_json)
+        assert queued_progress["request"]["evidence_plan_id"].startswith("evidence-plan-")
+        assert len(queued_progress["request"]["evidence_plan_hash"]) == 64
 
         evidence_result = continue_evidence_diagnosis(
             db,
@@ -1335,6 +1338,7 @@ def test_migrated_release_database_consumes_exact_answer_review_and_source_compl
         assert output["input"]["source_snapshot_ids"] == [snapshot.snapshot_id]
         assert output["input"]["completion_manifest_id"] == completion.manifest_id
         assert output["input"]["answer_review_id"] == answer_review.review_id
+        assert output["input"]["evidence_plan_hash"] == output["evidence_diagnosis"]["candidate_plan"]["plan_hash"]
         assert output["source_diagnosis"]["status"] == "SOURCE_COMPLETION_CONSUMED"
         assert output["evidence_diagnosis"]["source_claim_jobs"][0]["status"] == "DONE"
         assert output["evidence_diagnosis"]["source_relations"][0]["alignment_evaluation"] == "EVALUATED"

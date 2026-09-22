@@ -21,7 +21,7 @@ from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import DeepSeekClient
 
 
-V2_ADMISSION_CONTRACT_VERSION = "single_prompt_v2_llm_admission.v3"
+V2_ADMISSION_CONTRACT_VERSION = "single_prompt_v2_llm_admission.v4_item_isolation"
 V2_ANSWER_GROUNDING_VERSION = "single_prompt_v2.answer_grounding.u200c.v1"
 V2_ANSWER_PROMPT_VERSION = "single_prompt_v2.answer_semantic.safety.v2"
 V2_ANSWER_SCHEMA_VERSION = "single_prompt_v2.answer_semantic.strict.v2"
@@ -503,7 +503,10 @@ class V2SourceClaimJudge:
             max_tokens=4096,
             db=db,
             strict_json=True,
-            response_validator=lambda payload: admit_source_claim_for_input(payload, passage_text),
+            # The envelope/schema is atomic. Grounding and semantic admission are
+            # evaluated per claim by the V2 diagnosis projector so one bad span
+            # cannot erase independent valid claims from an otherwise valid response.
+            response_validator=admit_source_claim_response,
         )
 
 

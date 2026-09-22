@@ -40,12 +40,13 @@ from app.modules.single_prompt_v2.diagnosis import (
     current_evidence_eligibility,
     current_truth_relation_eligibility,
 )
+from app.modules.single_prompt_v2.coverage import diagnosis_coverage_projections
 from app.modules.single_prompt_v2.llm_safety import assess_normalized_projection
 from app.services.serialization import loads
 
 
 STRATEGY_CONTRACT_VERSION = "single_prompt_strategy.v2_third_slice"
-STRATEGY_INPUT_VALIDATION_VERSION = "single_prompt_strategy_input.v4_capability_publication_split"
+STRATEGY_INPUT_VALIDATION_VERSION = "single_prompt_strategy_input.v5_fixed_scope_dependencies"
 CHANNEL_EVIDENCE_ADAPTER_VERSION = "single_prompt_channel_evidence.v1"
 FOUNDATION_RESOLUTION_VERSION = "single_prompt_foundation.v1"
 CHANNEL_RESOLUTION_VERSION = "single_prompt_channel_resolution.v1"
@@ -279,6 +280,8 @@ def build_strategy_input_projection(
         source["channel"] = _source_channel(source)
         source_rows.append(source)
     review_payload = _review_snapshot(review) if review else None
+    raw_output = loads(context.raw_output_json, {})
+    coverage_projections = diagnosis_coverage_projections(raw_output, output, review_payload)
     reasons = _reason_rows(output, context, review_payload)
     truth_relation_eligibility = current_truth_relation_eligibility(output)
     run_scope = loads(context.run_scope_json, {})
@@ -302,6 +305,7 @@ def build_strategy_input_projection(
         },
         "diagnosis_review": review_payload,
         "answer_semantic_eligibility": answer_eligibility,
+        "coverage_projections": coverage_projections,
         "review_snapshot_hash": _hash(review_payload) if review_payload else None,
         "analyzable_run_ids": analyzable_run_ids,
         "reasons": reasons,
@@ -621,6 +625,72 @@ def _build_themes(projection: dict[str, Any], reason_ids: list[str], reason_trut
     return themes
 
 
+def _strategy_dependency_coverage(
+    projection: dict[str, Any],
+    directions: list[dict[str, Any]],
+    blocked_directions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    coverage = projection.get("coverage_projections") or {}
+    compute = coverage.get("compute_coverage") or {}
+    review = coverage.get("review_coverage") or {}
+    reasons = {str(row.get("reason_id")): row for row in projection.get("reasons") or []}
+    truths = _confirmed_capabilities(projection)
+    relations = {
+        str(row.get("relation_id")): row
+        for row in projection.get("evidence_relations") or []
+        if row.get("relation_id")
+    }
+    eligible_relation_ids = set(
+        (projection.get("effective_evidence_eligibility") or {}).get("effective_evidence_relation_ids") or []
+    )
+    direction_rows: list[dict[str, Any]] = []
+    for direction in directions:
+        unmet: list[dict[str, Any]] = []
+        for reason_id in direction.get("reason_ids") or []:
+            if not reasons.get(str(reason_id), {}).get("fact_consumption_eligible"):
+                unmet.append({"kind": "REASON", "id": str(reason_id), "code": "REASON_NOT_ELIGIBLE"})
+        for truth_id in direction.get("truth_ids") or []:
+            if int(truth_id) not in truths:
+                unmet.append({"kind": "TRUTH", "id": str(truth_id), "code": "TRUTH_NOT_CONFIRMED"})
+        for relation_id in direction.get("evidence_relation_ids") or []:
+            relation = relations.get(str(relation_id))
+            if not relation or str(relation_id) not in eligible_relation_ids:
+                unmet.append({"kind": "EVIDENCE", "id": str(relation_id), "code": "EVIDENCE_NOT_CURRENTLY_ELIGIBLE"})
+            elif relation.get("alignment_evaluation") != "EVALUATED":
+                unmet.append({"kind": "EVIDENCE", "id": str(relation_id), "code": "EVIDENCE_NOT_EVALUATED"})
+        direction_rows.append({
+            "direction_id": direction.get("direction_id"),
+            "direction_type": direction.get("direction_type"),
+            "channel_key": direction.get("channel_key"),
+            "required_reason_ids": sorted(str(value) for value in direction.get("reason_ids") or []),
+            "required_truth_ids": sorted(str(value) for value in direction.get("truth_ids") or []),
+            "required_evidence_relation_ids": sorted(str(value) for value in direction.get("evidence_relation_ids") or []),
+            "unmet_dependencies": unmet,
+            "direction_dependencies_satisfied": not unmet,
+            "eligible_scope": "FIXED_DIRECTION_ONLY" if not unmet else "NONE",
+        })
+    full_scope = bool(
+        compute.get("all_runs_validly_understood")
+        and review.get("full_scope_review_complete")
+    )
+    return {
+        "contract_version": STRATEGY_INPUT_VALIDATION_VERSION,
+        "expected_run_ids": compute.get("expected_run_ids") or [],
+        "valid_compute_run_ids": compute.get("valid_compute_run_ids") or [],
+        "reviewed_run_ids": review.get("reviewed_run_ids") or [],
+        "full_scope_conclusion_eligible": full_scope,
+        "direction_dependencies": direction_rows,
+        "blocked_directions": copy.deepcopy(blocked_directions),
+        "eligible_limited_direction_ids": sorted(
+            str(row["direction_id"])
+            for row in direction_rows
+            if row["direction_dependencies_satisfied"] and row.get("direction_id")
+        ),
+        "current_create_contract_allows_limited_scope": False,
+        "boundary": "LIMITATION_CANNOT_REPLACE_REQUIRED_DEPENDENCY",
+    }
+
+
 def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
     reason_truths = _truths_by_reason(projection)
     foundation, foundation_directions = _resolve_foundation(projection, reason_truths)
@@ -644,6 +714,23 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
         verification_items.append({
             "code": "NO_CONSUMABLE_ANSWER_SEMANTIC_RESULT",
             "detail": "回答语义没有通过当前准入契约的结果；不能通过审核将失败升级为策略输入。",
+        })
+    compute_coverage = ((projection.get("coverage_projections") or {}).get("compute_coverage") or {})
+    review_coverage = ((projection.get("coverage_projections") or {}).get("review_coverage") or {})
+    coverage_available = bool(projection.get("coverage_projections"))
+    if coverage_available and not compute_coverage.get("all_runs_validly_understood"):
+        verification_items.append({
+            "code": "ANSWER_SCOPE_COMPUTE_INCOMPLETE",
+            "detail": (
+                f"固定范围仅 {int(compute_coverage.get('valid_compute_count') or 0)}/"
+                f"{int(compute_coverage.get('expected_run_count') or 0)} 个 Run 形成合法语义结果；"
+                "待计算、待授权和真实失败均不能作为零事件。"
+            ),
+        })
+    if coverage_available and compute_coverage.get("all_runs_validly_understood") and not review_coverage.get("full_scope_review_complete"):
+        verification_items.append({
+            "code": "ANSWER_SCOPE_REVIEW_INCOMPLETE",
+            "detail": "固定范围已有完整计算，但新的全集 ResultVersion 尚未完成精确审核。",
         })
     confirmed_capabilities = _confirmed_capabilities(projection)
     publishable_truths = _publishable_truths(projection)
@@ -686,6 +773,13 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
     no_answer_semantic = bool(
         (projection.get("answer_semantic_eligibility") or {}).get("no_consumable_answer_semantic_result")
     )
+    full_scope_ready = bool(
+        not coverage_available
+        or (
+            compute_coverage.get("all_runs_validly_understood")
+            and review_coverage.get("full_scope_review_complete")
+        )
+    )
     if no_answer_semantic:
         classification = "A"
         blocker = {
@@ -695,6 +789,12 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
     elif not review_valid:
         classification = "A"
         blocker = {"code": "DIAGNOSIS_REVIEW_REQUIRED", "detail": "当前精确 DiagnosisResultVersion 尚无有效审核，不能创建正式策略候选。"}
+    elif not full_scope_ready:
+        classification = "A"
+        blocker = {
+            "code": "FIXED_ANALYSIS_SCOPE_INCOMPLETE",
+            "detail": "固定 Analysis 的回答计算或全集审核尚未覆盖全部 Run；局部方向不能授权代表全范围的正式策略候选。",
+        }
     elif not directions:
         classification = "B"
         blocker = {"code": "NO_ELIGIBLE_STRATEGY_DIRECTION", "detail": "诊断已审核，但当前没有同时通过事实、关系和干预依据 Gate 的方向。"}
@@ -712,6 +812,7 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
         "reason": row["rationale"],
         "blocking_signals": row["blocking_signals"],
     } for row in channel_assessments if row["level"] != "ACTIONABLE")
+    dependency_coverage = _strategy_dependency_coverage(projection, directions, blocked_directions)
     return {
         "contract_version": STRATEGY_CONTRACT_VERSION,
         "classification": classification,
@@ -719,6 +820,7 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
         "blocker": blocker,
         "legal_next_steps": (
             ["CREATE_NEW_DIAGNOSIS_AFTER_CONTRACT_FIX"] if no_answer_semantic
+            else ["COMPLETE_FIXED_SCOPE_COMPUTE_AND_REVIEW"] if not full_scope_ready
             else ["COMPLETE_DIAGNOSIS_REVIEW"] if classification == "A"
             else ["RESOLVE_LISTED_VERIFICATION_ITEMS"] if classification == "B"
             else ["CREATE_STRATEGY_CANDIDATE"]
@@ -743,6 +845,7 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
         "qualified_directions": directions,
         "qualified_direction_count": len(directions),
         "blocked_directions": blocked_directions,
+        "strategy_dependency_coverage": dependency_coverage,
         "verification_items": verification_items,
         "needs_human_prioritization": needs_human,
         "limitations": copy.deepcopy(projection.get("limitations") or []),
@@ -786,6 +889,7 @@ def _candidate_output(strategy_id: str, projection: dict, readiness: dict) -> di
         "limitations": copy.deepcopy(readiness["limitations"]),
         "advisories": copy.deepcopy(readiness["advisories"]),
         "effective_evidence_eligibility": copy.deepcopy(readiness["effective_evidence_eligibility"]),
+        "strategy_dependency_coverage": copy.deepcopy(readiness["strategy_dependency_coverage"]),
         "provenance": {
             "direction_ids": direction_ids,
             "consumed_object_ids": copy.deepcopy(projection["consumed_object_ids"]),

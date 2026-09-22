@@ -27,7 +27,7 @@ from app.models import (
 from app.services.serialization import loads
 from app.services.url_identity import canonicalize_url
 
-RETRIEVAL_VERSION = "passage_retrieval.v1_bm25"
+RETRIEVAL_VERSION = "passage_retrieval.v2_bm25_stable_tiebreak"
 FORMAL_V1_1_INPUT_VERSION = "citation_decision_v1_1_formal_input.v1"
 ANSWER_BINDING_REASON_SOURCE = "ANSWER_DECISION_BINDING"
 EVENT_REASON_SOURCE = "RECOMMENDATION_EVENT_REASONS_JSON"
@@ -176,7 +176,11 @@ def retrieve_passages_for_reason(
         s = bm25.score(query_tokens, doc_tokens)
         if s > 0:
             scored.append({**p, "bm25_score": round(s, 4)})
-    scored.sort(key=lambda x: -x["bm25_score"])
+    scored.sort(key=lambda x: (
+        -x["bm25_score"],
+        str(x.get("source_key") or x.get("snapshot_id") or ""),
+        str(x.get("passage_id") or ""),
+    ))
     return scored[:top_k]
 
 

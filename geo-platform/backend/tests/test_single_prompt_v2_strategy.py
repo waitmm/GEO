@@ -172,6 +172,34 @@ def test_partially_covers_is_not_a_strategy_qualification_gate():
     assert readiness["blocker"]["code"] == "NO_ELIGIBLE_STRATEGY_DIRECTION"
 
 
+def test_partial_fixed_run_scope_keeps_local_direction_visible_but_blocks_full_scope_candidate():
+    projection = _projection(anchor="UNPROVEN")
+    projection["coverage_projections"] = {
+        "compute_coverage": {
+            "expected_run_ids": list(range(1, 10)),
+            "valid_compute_run_ids": [4, 5, 6],
+            "valid_compute_count": 3,
+            "expected_run_count": 9,
+            "all_runs_validly_understood": False,
+        },
+        "review_coverage": {
+            "reviewed_run_ids": [4, 5, 6],
+            "full_scope_review_complete": False,
+        },
+    }
+
+    readiness = evaluate_strategy_readiness(projection)
+
+    assert readiness["classification"] == "A"
+    assert readiness["can_create_strategy"] is False
+    assert readiness["blocker"]["code"] == "FIXED_ANALYSIS_SCOPE_INCOMPLETE"
+    assert readiness["qualified_direction_count"] == 1
+    dependencies = readiness["strategy_dependency_coverage"]
+    assert dependencies["full_scope_conclusion_eligible"] is False
+    assert dependencies["eligible_limited_direction_ids"] == [readiness["qualified_directions"][0]["direction_id"]]
+    assert dependencies["current_create_contract_allows_limited_scope"] is False
+
+
 def test_complete_atomic_capability_set_qualifies_reason_without_public_claim_evidence():
     projection = _projection(anchor="UNPROVEN")
     projection["truth_relationships"][0]["effective_relation"] = "PARTIALLY_COVERS"

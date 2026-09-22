@@ -4738,6 +4738,10 @@ export default function App() {
   const v2MarketCriteria = v2DiagnosisOutput?.answer_diagnosis?.market_criteria || [];
   const v2AnswerJobs = v2DiagnosisOutput?.answer_diagnosis?.answer_jobs || [];
   const v2AnswerEligibility = v2Diagnosis?.answer_semantic_eligibility;
+  const v2Coverage = v2Diagnosis?.coverage_projections;
+  const v2ComputeCoverage = v2Coverage?.compute_coverage;
+  const v2ReviewCoverage = v2Coverage?.review_coverage;
+  const v2EvidencePlanCoverage = v2Coverage?.evidence_plan_coverage;
   const v2NoConsumableAnswerSemantic = Boolean(v2AnswerEligibility?.no_consumable_answer_semantic_result);
   const v2MixedAnswerBoundary = v2AnswerEligibility?.status === "BLOCKED_MIXED_ANSWER_BOUNDARY";
   const v2DiagnosisReasons = v2DiagnosisEvents.flatMap((event: any) => event.reasons || []);
@@ -4757,8 +4761,8 @@ export default function App() {
   const v2AnalysisFlowItems = [
     { title: "采样冻结", status: v2Analysis?.context_id ? "finish" : "wait" },
     { title: "引用与正文", status: v2SourcePreparation?.completion_manifest?.status === "FROZEN" ? "finish" : v2SourcePreparation ? "process" : "wait" },
-    { title: "回答分析", status: v2Diagnosis?.result ? "finish" : v2Diagnosis ? "process" : "wait" },
-    { title: "回答审核", status: v2AnswerReviewConsumed ? "finish" : v2Diagnosis?.result ? "process" : "wait" },
+    { title: "回答分析", status: v2ComputeCoverage?.all_runs_validly_understood ? "finish" : v2Diagnosis?.result ? "process" : v2Diagnosis ? "process" : "wait" },
+    { title: "回答审核", status: v2ReviewCoverage?.full_scope_review_complete ? "finish" : v2Diagnosis?.result ? "process" : "wait" },
     { title: "证据计算", status: v2IsEvidenceResult ? "finish" : v2AnswerReviewConsumed ? "process" : "wait" },
     { title: "证据审核", status: v2EvidenceReviewComplete ? "finish" : v2IsEvidenceResult ? "process" : "wait" },
     { title: "策略", status: v2Strategy?.result ? "finish" : v2EvidenceReviewComplete ? "process" : "wait" },
@@ -5160,6 +5164,28 @@ export default function App() {
               {v2Diagnosis?.result && <>
                 <Card size="small" title="当前分析进度" extra={<Tag color={v2EvidenceReviewComplete ? "green" : "blue"}>{v2EvidenceReviewComplete ? "证据审核已完成" : v2IsEvidenceResult ? "当前：审核证据结果" : v2AnswerReviewConsumed ? "当前：生成证据" : "当前：审核回答"}</Tag>}>
                   <Steps size="small" responsive current={v2AnalysisFlowCurrent} items={v2AnalysisFlowItems} />
+                  {v2Coverage && <>
+                    <Descriptions size="small" column={{ xs: 1, md: 4 }} style={{ marginTop: 16 }}>
+                      <Descriptions.Item label="固定输入">{v2Coverage.input_scope_coverage.readable_answer_count}/{v2Coverage.input_scope_coverage.expected_run_count} Runs</Descriptions.Item>
+                      <Descriptions.Item label="有效语义计算">{v2ComputeCoverage?.valid_compute_count || 0}/{v2ComputeCoverage?.expected_run_count || 0} Runs</Descriptions.Item>
+                      <Descriptions.Item label="当前版本已审核">{v2ReviewCoverage?.reviewed_run_count || 0}/{v2ReviewCoverage?.expected_run_count || 0} Runs</Descriptions.Item>
+                      <Descriptions.Item label="Evidence 计划">{v2EvidencePlanCoverage?.plan_status || "NOT_PLANNED"}</Descriptions.Item>
+                    </Descriptions>
+                    {!v2ComputeCoverage?.all_runs_validly_understood && <Alert
+                      style={{ marginTop: 12 }}
+                      type="warning"
+                      showIcon
+                      message={`回答语义只完成 ${v2ComputeCoverage?.valid_compute_count || 0}/${v2ComputeCoverage?.expected_run_count || 0}`}
+                      description={`待外部授权 Run：${(v2ComputeCoverage?.pending_external_authorization_run_ids || []).join("、") || "无"}；真实失败 Run：${(v2ComputeCoverage?.actual_failure_run_ids || []).join("、") || "无"}。待授权不是失败，失败也不是零事件；当前不能代表完整 9-Run。`}
+                    />}
+                    {v2EvidencePlanCoverage?.plan_status === "LEGACY_PLAN_METADATA_INCOMPLETE" && <Alert
+                      style={{ marginTop: 12 }}
+                      type="info"
+                      showIcon
+                      message="当前 Evidence 来自旧的固定候选截断"
+                      description="已有结论和失败会保留；补齐 Answer 并完成新全集审核后，系统将冻结带基础候选、递补队列和停止原因的新计划，只执行新增、失败或规则失效部分。"
+                    />}
+                  </>}
                   {v2IsEvidenceResult && !v2EvidenceReviewComplete && <Alert
                     style={{ marginTop: 16 }}
                     type="warning"
@@ -5191,6 +5217,7 @@ export default function App() {
                       <Descriptions.Item label="已确认能力">{v2StrategyReadiness.current_observation.confirmed_capability_count || 0}</Descriptions.Item>
                       <Descriptions.Item label="公开可写事实">{v2StrategyReadiness.current_observation.public_claim_eligible_count || 0}</Descriptions.Item>
                       <Descriptions.Item label="合格策略方向">{v2StrategyReadiness.qualified_direction_count}</Descriptions.Item>
+                      <Descriptions.Item label="完整范围结论">{v2StrategyReadiness.strategy_dependency_coverage?.full_scope_conclusion_eligible ? <Tag color="green">可用</Tag> : <Tag color="gold">不可用</Tag>}</Descriptions.Item>
                     </Descriptions>
                     <div className="v2-strategy-band">
                       <Space wrap><Text strong>目标品牌事实基础</Text><Tag color={v2StrategyReadiness.foundation.state === "REQUIRED" ? "green" : v2StrategyReadiness.foundation.state === "UNKNOWN" ? "gold" : "default"}>{v2StrategyReadiness.foundation.state}</Tag></Space>

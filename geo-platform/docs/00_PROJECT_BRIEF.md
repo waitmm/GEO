@@ -152,3 +152,21 @@ only when every atomic capability in that Reason has an exact manually confirmed
 capabilities. This aggregate eligibility does not make any source-free capability
 publishable. Execution Proposal, Publication and Retest remain outside the active
 release route surface.
+
+As of 2026-09-22 the fixed nine-Run analysis has explicit completeness
+projections for input scope, Answer computation, exact-result review, Evidence
+planning and Strategy dependencies. The immutable input contains Runs 1-9, but
+the currently selected result has valid Answer semantics only for Runs 4/5/6;
+Runs 1/2/3/7/8/9 are pending external authorization, not model failures and not
+zero-event results. Prior exact judgments may be shown as provenance-prefill,
+but a new complete ResultVersion still requires an exact review.
+
+Evidence candidate planning is now deterministic and same-Run scoped. It uses a
+stable BM25 order, explicit-anchor priority, source diversity, boundary ties, a
+12-candidate per-Reason cap and a predeclared technical-failure fallback queue.
+The plan ID/hash/version is frozen in the Evidence input binding before worker
+execution and rechecked by the worker. Legal zero results, pending authorization
+and semantic uncertainty do not trigger fallback. Strategy continues to expose
+locally qualified directions for inspection, but no partial direction may be
+presented as a conclusion over all nine Runs or create a formal candidate under
+the current full-scope creation contract.

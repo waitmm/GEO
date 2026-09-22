@@ -5789,3 +5789,48 @@ review_queue = READY
 - Existing release data survived migration unchanged: 3 target capability
   truths, 3 diagnosis results and 2 diagnosis reviews. The pre-migration SQLite
   online backup passed `PRAGMA integrity_check` at revision `20260921_01`.
+
+## 2026-09-22 Fixed Nine-Run Completeness and Incremental Evidence Repair
+
+- Added five read-only projections to the real V2 status path:
+  `input_scope_coverage`, `compute_coverage`, `review_coverage`,
+  `evidence_plan_coverage` and `strategy_dependency_coverage`. They separate
+  pending authorization, invalid cache, actual failure and legal zero results.
+- The current release input remains immutable at Analysis
+  `19b0be0f-f794-4435-9fa7-2723257f26cc`, Context
+  `ctx-f06aa92a-6193-4aa0-ab9b-e62974f594f4`, Raw Result
+  `raw-v1:a447f95889472632`, Citation Manifest
+  `citation-manifest-adbd75b9-401e-479a-9ac2-36ae0db58626` and Source
+  Completion hash `5d8aa4e38881accc5fb7d7d7805a22a00047c870d761ab701fd270a353d9b065`.
+  It still has 61 READY sources, 5 explicit waivers and 1530 passages.
+- Current Result `diag-v1:83192f653f4c8a71` is now truthfully projected as
+  3/9 valid Answer computations: Runs 4/5 have events and Run 6 is a legal zero;
+  Runs 1/2/3/7/8/9 are pending external authorization. The historical cache-only
+  misses are not exposed as Answer failures. No current exact-result review exists.
+- New Answer results preserve exact prior reviewed Run/event provenance only as
+  `PREFILL_ONLY_NEW_EXACT_RESULT_REVIEW_REQUIRED`. No prior Review is inherited as
+  authority for the new nine-Run ResultVersion.
+- Replaced the fixed two-passages-per-Reason behavior with a deterministic
+  same-Run candidate plan: stable retrieval tie-break, explicit-anchor priority,
+  source diversity, strong-threshold boundary ties, 12 total candidates per
+  Reason and at most 3 predeclared technical-failure replacements. Candidate
+  plan identity is bound at queue time and revalidated by the worker.
+- SourceClaim admission now isolates invalid Claim items after the complete
+  response envelope passes strict Schema validation. Valid grounded items remain
+  consumable; rejected items remain explicit limitations. Schema-invalid whole
+  responses are still rejected in full.
+- Strategy now freezes exact Reason/Truth/Evidence dependencies per direction.
+  A locally qualified direction remains visible, but the formal create path is
+  blocked until all fixed Runs have valid Answer computation and the new exact
+  ResultVersion has been reviewed. A limitation or waiver cannot replace a
+  required dependency.
+- Offline validation: 136 relevant backend tests passed, including release
+  migration/continuation, strict LLM admission, fixed-scope coverage, plan
+  binding, bounded fallback and Strategy dependency gates. Python `compileall`,
+  frontend TypeScript/Vite production build and `git diff --check` passed.
+- External calls, browser sampling, source fetching and production DB writes
+  performed by this repair: 0. The next paid scope is exactly Answer Runs
+  1/2/3/7/8/9, maximum one request each and no automatic retry. The final
+  Evidence plan must be regenerated from the reviewed nine-Run result; valid
+  compatible computations are reused and only missing, failed or invalidated
+  work may call externally.

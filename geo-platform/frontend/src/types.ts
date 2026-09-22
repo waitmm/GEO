@@ -449,12 +449,68 @@ export type SinglePromptV2DiagnosisStatus = {
     total_answer_count: number;
     admitted_answer_count: number;
     failed_answer_count: number;
+    pending_answer_count?: number;
+    invalid_cache_answer_count?: number;
     valid_zero_answer_count: number;
     failure_record_count: number;
     no_consumable_answer_semantic_result: boolean;
     partial_failure: boolean;
+    partial_compute?: boolean;
     status: "NO_CONSUMABLE_RESULT" | "PARTIAL" | "ADMITTED" | string;
     mixed_answer_run_ids?: number[];
+  };
+  coverage_projections: null | {
+    input_scope_coverage: {
+      expected_run_ids: number[];
+      bound_run_ids: number[];
+      missing_run_ids: number[];
+      readable_answer_count: number;
+      expected_run_count: number;
+      scope_complete: boolean;
+    };
+    compute_coverage: {
+      expected_run_ids: number[];
+      success_with_events_run_ids: number[];
+      success_zero_events_run_ids: number[];
+      actual_failure_run_ids: number[];
+      pending_compute_run_ids: number[];
+      pending_external_authorization_run_ids: number[];
+      invalid_cache_run_ids: number[];
+      valid_compute_run_ids: number[];
+      valid_compute_count: number;
+      expected_run_count: number;
+      all_runs_validly_understood: boolean;
+    };
+    review_coverage: {
+      reviewed_run_ids: number[];
+      unreviewed_valid_run_ids: number[];
+      pending_review_event_ids: string[];
+      prefilled_event_ids: string[];
+      prefilled_run_ids: number[];
+      reviewed_run_count: number;
+      expected_run_count: number;
+      exact_result_review_present: boolean;
+      full_scope_review_complete: boolean;
+    };
+    evidence_plan_coverage: {
+      plan_status: string;
+      plan_id: string | null;
+      plan_hash: string | null;
+      eligible_reason_ids: string[];
+      planned_reason_ids: string[];
+      unplanned_reason_ids: string[];
+      base_candidate_count: number;
+      fallback_candidate_count: number;
+      evaluated_relation_count: number;
+      technical_failure_count: number;
+      not_evaluated_relation_count: number;
+      execution_complete: boolean;
+    };
+    strategy_dependency_coverage: {
+      global_nine_run_conclusion_eligible: boolean;
+      reason_level_direction_evaluation_required: boolean;
+      boundary: string;
+    };
   };
   result: null | {
     result_version: string;
@@ -536,6 +592,7 @@ export type SinglePromptV2StrategyReadiness = {
   limitations: any[];
   advisories: any[];
   effective_evidence_eligibility: Record<string, any>;
+  strategy_dependency_coverage: Record<string, any>;
   boundary: Record<string, boolean | number>;
 };
 

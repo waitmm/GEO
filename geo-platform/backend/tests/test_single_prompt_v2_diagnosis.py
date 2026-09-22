@@ -98,6 +98,33 @@ def test_target_capability_review_items_are_atomic_target_only_and_deduplicated(
     assert all(row["current_truth"] is None for row in items)
 
 
+def test_target_capability_review_items_reuse_bound_upstream_answer_review():
+    output = {
+        "input": {"brand_snapshot": {"brand_name": "爱短链", "aliases": []}},
+        "answer_diagnosis": {"events": [{
+            "event_id": "event-target",
+            "run_id": 4,
+            "entity_text": "爱短链",
+            "fact_consumption_eligible": True,
+            "review_status": "HUMAN_CONFIRMED_INCLUDE_AS_OPTION",
+            "review_id": "answer-review-1",
+            "reasons": [{
+                "reason_id": "reason-target",
+                "effective_grounded_text": "生成加密短链",
+            }],
+        }]},
+    }
+
+    items = _target_capability_review_items(
+        output,
+        [{"scope": "EVIDENCE_RELATION", "decision": "CONFIRM_RELATED"}],
+        [],
+    )
+
+    assert [row["capability_label"] for row in items] == ["生成加密短链"]
+    assert items[0]["source_signal_ids"] == ["reason-target"]
+
+
 def test_capability_splitter_does_not_change_grounded_source_text():
     source = "生成加密短链嵌入视频描述或评论区，可降低被平台屏蔽的风险"
 
@@ -683,7 +710,7 @@ def test_manual_target_brand_truth_is_exactly_bound_and_reprojects_without_recom
         engine.dispose()
 
 
-def test_manual_target_brand_truth_rejects_stale_identity_unsupported_positive_and_overwrite(tmp_path):
+def test_manual_target_brand_truth_allows_quick_presence_but_rejects_compound_stale_and_overwrite(tmp_path):
     db, engine = _session(tmp_path)
     try:
         _seed(db)
@@ -712,9 +739,6 @@ def test_manual_target_brand_truth_rejects_stale_identity_unsupported_positive_a
             "note": "",
             "reviewed_by": "owner",
         }
-        with pytest.raises(HTTPException, match="必须提供事实来源"):
-            record_target_brand_truth(db, **common)
-
         with pytest.raises(HTTPException) as compound:
             record_target_brand_truth(
                 db,
@@ -727,10 +751,13 @@ def test_manual_target_brand_truth_rejects_stale_identity_unsupported_positive_a
         assert compound.value.status_code == 422
         assert compound.value.detail["code"] == "COMPOUND_TARGET_BRAND_TRUTH_REQUIRES_SPLIT"
 
-        first = record_target_brand_truth(
-            db,
-            **{**common, "source_reference": "https://target.example.com/docs/batch-links"},
-        )
+        first = record_target_brand_truth(db, **common)
+        assert first["truth"]["product_truth_status"] == "SUPPORTED"
+        assert first["truth"]["source_reference"] == ""
+        assert first["truth"]["statement_eligibility"] == {
+            "status": "VERIFY_FIRST",
+            "issues": ["SOURCE_REFERENCE_REQUIRED"],
+        }
         with pytest.raises(HTTPException, match="项目事实集合已变化"):
             record_target_brand_truth(
                 db,
@@ -749,6 +776,37 @@ def test_manual_target_brand_truth_rejects_stale_identity_unsupported_positive_a
     finally:
         db.close()
         engine.dispose()
+
+
+def test_source_free_confirmed_capability_can_cover_reason_but_is_not_public_claim_eligible():
+    reason_text = "支持批量生成短链"
+    truth_diagnosis = _diagnose_truths(
+        {
+            "events": [{
+                "reasons": [{
+                    "reason_id": "reason-target",
+                    "run_id": 4,
+                    "entity": "爱短链",
+                    "effective_grounded_text": reason_text,
+                    "reason_span": reason_text,
+                    "fact_consumption_eligible": True,
+                }],
+            }],
+        },
+        [{
+            "truth_id": 2,
+            "capability_key": "batch_short_link",
+            "capability_label": reason_text,
+            "product_truth_status": "SUPPORTED",
+            "truth_source": "MANUAL_CONFIRMED",
+            "source_reference": "",
+            "statement_eligibility": {"status": "VERIFY_FIRST", "issues": ["SOURCE_REFERENCE_REQUIRED"]},
+        }],
+        target_brand={"brand_name": "爱短链", "aliases": []},
+    )
+
+    assert truth_diagnosis["relationships"][0]["effective_relation"] == "FULLY_COVERS"
+    assert truth_diagnosis["truth_snapshot"][0]["statement_eligibility"]["status"] == "VERIFY_FIRST"
 
 
 def test_revision_and_review_use_exact_version_cas_and_preserve_limitations(tmp_path):

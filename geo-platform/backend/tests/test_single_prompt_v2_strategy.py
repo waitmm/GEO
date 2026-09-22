@@ -422,6 +422,23 @@ def test_foundation_unknown_does_not_block_independent_channel_test():
     assert readiness["qualified_directions"][0]["effect_status"] == "NOT_PROVEN"
 
 
+def test_confirmed_capability_without_public_evidence_can_qualify_strategy_only():
+    projection = _projection(anchor="UNPROVEN")
+    projection["truth_snapshot"][0]["statement_eligibility"] = {
+        "status": "VERIFY_FIRST",
+        "issues": ["SOURCE_REFERENCE_REQUIRED"],
+    }
+
+    readiness = evaluate_strategy_readiness(projection)
+
+    assert readiness["classification"] == "C"
+    assert readiness["qualified_direction_count"] == 1
+    assert readiness["current_observation"]["confirmed_capability_count"] == 1
+    assert readiness["current_observation"]["public_claim_eligible_count"] == 0
+    assert "TARGET_BRAND_TRUTH_UNRESOLVED" not in {row["code"] for row in readiness["verification_items"]}
+    assert "PUBLIC_CLAIM_EVIDENCE_PENDING" in {row["code"] for row in readiness["verification_items"]}
+
+
 def test_external_capability_signal_can_prove_target_applicability_without_cross_brand_truth_relation():
     projection = _projection(anchor="UNPROVEN")
     projection["truth_relationships"] = []

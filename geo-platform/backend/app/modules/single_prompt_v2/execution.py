@@ -228,7 +228,13 @@ def _strategy_input_for_execution(
     baseline = _baseline_snapshot(analysis, context)
     truths = _confirmed_truths(strategy_input, direction)
     if not truths or {row["product_truth_id"] for row in truths} != {int(value) for value in direction.get("truth_ids") or []}:
-        raise HTTPException(status_code=409, detail="所选方向包含未被 FULLY_COVERS 承接的目标品牌事实")
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PUBLIC_CLAIM_EVIDENCE_REQUIRED",
+                "detail": "策略方向可以基于已确认能力成立，但生成公开内容前必须补充目标品牌依据并确认可写范围。",
+            },
+        )
     return {
         "identity": {
             "analysis_id": strategy.analysis_id,

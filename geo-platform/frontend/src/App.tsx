@@ -701,6 +701,7 @@ function strategyCapabilityLabel(capability?: string) {
 function v2StrategyVerificationLabel(code?: string) {
   const labels: Record<string, string> = {
     TARGET_BRAND_TRUTH_UNRESOLVED: "目标品牌能力待确认",
+    PUBLIC_CLAIM_EVIDENCE_PENDING: "公开声明依据待补",
     REASON_SEMANTIC_REVIEW_REQUIRED: "回答理由仍受限",
     EVIDENCE_RELATION_NOT_EVALUATED: "部分证据尚未评估",
     REFERENCE_ANCHOR_UNPROVEN: "引用锚点未证明",
@@ -2288,14 +2289,6 @@ export default function App() {
       message.warning("请先从一条答案能力信号发起事实核对");
       return;
     }
-    if (["SUPPORTED", "PARTIALLY_SUPPORTED"].includes(v2TruthDraft.productTruthStatus) && !v2TruthDraft.sourceReference.trim()) {
-      message.warning("确认支持或部分支持时，请提供官网、产品文档或其他可核对来源");
-      return;
-    }
-    if (!v2TruthDraft.sourceReference.trim() && !v2TruthDraft.note.trim()) {
-      message.warning("请提供事实来源或人工核对说明");
-      return;
-    }
     if (!v2DiagnosisEditor.trim()) {
       message.warning("请填写核对人");
       return;
@@ -2322,7 +2315,9 @@ export default function App() {
       );
       setV2Diagnosis((current) => current ? { ...current, project_truth_state: response.project_truth_state } : current);
       setV2TruthDraft({ sourceSignalId: "", capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "" });
-      message.success("目标品牌事实已保存；答案和证据保持不变，请刷新事实关系");
+      message.success(v2TruthDraft.sourceReference.trim()
+        ? "能力与公开依据已保存；请更新本次分析"
+        : "能力已确认，可参与策略判断；公开内容使用前仍需补依据");
     } catch (error: any) {
       message.error(error.message || "保存目标品牌事实失败");
     } finally {
@@ -5174,10 +5169,12 @@ export default function App() {
                       message={v2StrategyReadiness.classification === "C" ? `${v2StrategyReadiness.qualified_direction_count} 个方向已具备策略资格` : "当前诊断已审核，但还没有可直接生成的策略方向"}
                       description={v2StrategyReadiness.blocker?.detail || "策略只会消费已通过事实、关系和干预依据 Gate 的方向。"}
                     />
-                    <Descriptions size="small" column={{ xs: 1, md: 4 }}>
+                    <Descriptions size="small" column={{ xs: 1, md: 3 }}>
                       <Descriptions.Item label="可消费理由">{v2StrategyReadiness.current_observation.fact_consumable_reason_count || 0}</Descriptions.Item>
                       <Descriptions.Item label="合格正文来源">{v2StrategyReadiness.current_observation.source_count || 0}</Descriptions.Item>
                       <Descriptions.Item label="有效证据关系">{v2StrategyReadiness.current_observation.effective_evidence_relation_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="已确认能力">{v2StrategyReadiness.current_observation.confirmed_capability_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="公开可写事实">{v2StrategyReadiness.current_observation.public_claim_eligible_count || 0}</Descriptions.Item>
                       <Descriptions.Item label="合格策略方向">{v2StrategyReadiness.qualified_direction_count}</Descriptions.Item>
                     </Descriptions>
                     <div className="v2-strategy-band">
@@ -5444,9 +5441,10 @@ export default function App() {
                     type="info"
                     showIcon
                     message="逐项确认目标品牌是否具备这些能力"
-                    description="能力来自已经审核的目标品牌答案片段。这里只核对目标品牌本身，不核对竞品；每次只保存一项能力和对应的目标品牌依据。"
+                    description="能力来自已经审核的目标品牌答案片段。这里只快速确认目标品牌有没有，不核对竞品；依据可以稍后在公开内容制作前补充。"
                   />
                   <Table
+                    className="v2-capability-desktop"
                     style={{ marginTop: 12 }}
                     rowKey="candidate_id"
                     size="small"
@@ -5463,10 +5461,27 @@ export default function App() {
                       { title: "单一能力", dataIndex: "capability_label", width: 320 },
                       { title: "来自回答", width: 150, render: (_: unknown, row: SinglePromptV2DiagnosisStatus["target_capability_review_items"][number]) => <Space wrap>{row.source_run_ids.map((runId) => <Tag key={runId}>Run {runId}</Tag>)}</Space> },
                       { title: "目标品牌是否具备", width: 170, render: (_: unknown, row: SinglePromptV2DiagnosisStatus["target_capability_review_items"][number]) => row.current_truth ? <Tag color={row.current_truth.product_truth_status === "SUPPORTED" ? "green" : row.current_truth.product_truth_status === "NOT_SUPPORTED" ? "red" : "gold"}>{capabilityPresenceLabel(row.current_truth.product_truth_status)}</Tag> : <Tag>待确认</Tag> },
-                      { title: "目标品牌依据", render: (_: unknown, row: SinglePromptV2DiagnosisStatus["target_capability_review_items"][number]) => row.current_truth ? <Text>{row.current_truth.source_reference || row.current_truth.note || "未填写"}</Text> : <Text type="secondary">尚未提供</Text> },
+                      { title: "公开声明资格", render: (_: unknown, row: SinglePromptV2DiagnosisStatus["target_capability_review_items"][number]) => row.current_truth ? (row.current_truth.statement_eligibility?.status === "ELIGIBLE" ? <Tag color="green">依据已齐</Tag> : <Tag color="gold">发布前补依据</Tag>) : <Text type="secondary">待确认能力</Text> },
                       { title: "操作", width: 120, render: (_: unknown, row: SinglePromptV2DiagnosisStatus["target_capability_review_items"][number]) => row.current_truth ? <Text type="secondary">已确认</Text> : <Button size="small" onClick={() => prepareV2TargetCapabilityReview(row)}>确认</Button> },
                     ]}
                   />
+                  <div className="v2-capability-mobile">
+                    {v2TargetCapabilityReviewItems.map((row) => <div className="v2-capability-mobile-row" key={row.candidate_id}>
+                      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                        <Text strong>{row.capability_label}</Text>
+                        <Space wrap>{row.source_run_ids.map((runId) => <Tag key={runId}>Run {runId}</Tag>)}</Space>
+                        <Space wrap>
+                          {row.current_truth
+                            ? <Tag color={row.current_truth.product_truth_status === "SUPPORTED" ? "green" : row.current_truth.product_truth_status === "NOT_SUPPORTED" ? "red" : "gold"}>{capabilityPresenceLabel(row.current_truth.product_truth_status)}</Tag>
+                            : <Tag>待确认能力</Tag>}
+                          {row.current_truth && <Tag color={row.current_truth.statement_eligibility?.status === "ELIGIBLE" ? "green" : "gold"}>{row.current_truth.statement_eligibility?.status === "ELIGIBLE" ? "依据已齐" : "发布前补依据"}</Tag>}
+                        </Space>
+                        {row.current_truth
+                          ? <Text type="secondary">能力已确认</Text>
+                          : <Button size="small" onClick={() => prepareV2TargetCapabilityReview(row)}>确认这项能力</Button>}
+                      </Space>
+                    </div>)}
+                  </div>
                   {v2TargetCapabilityReviewItems.length === 0 && <Alert style={{ marginTop: 12 }} type="warning" showIcon message="当前没有可核对的目标品牌能力" description="这可能是答案没有提到目标品牌，或目标品牌事件尚未完成人工审核；不会自动解释为目标品牌没有能力。" />}
                   {v2Diagnosis.project_truth_state.differs_from_frozen_diagnosis && <Alert
                     style={{ marginTop: 14 }}
@@ -5481,8 +5496,8 @@ export default function App() {
                     <Alert
                       type="info"
                       showIcon
-                      message="答案只是提示你核对，不是目标品牌的事实依据"
-                      description="选择“有”或“部分有”时，请提供目标品牌自己的官网、产品文档或其他可核对记录。"
+                      message="现在只确认有没有；依据可稍后补"
+                      description="选择“有”后即可参与策略适用性判断。未提供依据时不能进入公开标题、正文或产品声明，执行内容阶段仍会被后端拦截。"
                     />
                     <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
                       <Col xs={24} md={10}><Input value={v2TruthDraft.capabilityLabel} onChange={(event) => setV2TruthDraft((current) => ({ ...current, capabilityLabel: event.target.value }))} placeholder="先点击上方一项能力" maxLength={160} /></Col>
@@ -5492,8 +5507,8 @@ export default function App() {
                         { value: "NOT_SUPPORTED", label: "没有" },
                         { value: "UNKNOWN", label: "不确定" },
                       ]} /></Col>
-                      <Col xs={24} md={8}><Input value={v2TruthDraft.sourceReference} onChange={(event) => setV2TruthDraft((current) => ({ ...current, sourceReference: event.target.value }))} placeholder="目标品牌依据 URL / 文档" /></Col>
-                      <Col xs={24} md={18}><Input value={v2TruthDraft.note} onChange={(event) => setV2TruthDraft((current) => ({ ...current, note: event.target.value }))} placeholder="补充说明；不确定时写明待核实内容" /></Col>
+                      <Col xs={24} md={8}><Input value={v2TruthDraft.sourceReference} onChange={(event) => setV2TruthDraft((current) => ({ ...current, sourceReference: event.target.value }))} placeholder="目标品牌依据（可选，发布前补齐）" /></Col>
+                      <Col xs={24} md={18}><Input value={v2TruthDraft.note} onChange={(event) => setV2TruthDraft((current) => ({ ...current, note: event.target.value }))} placeholder="补充说明（可选）" /></Col>
                       <Col xs={24} md={6}><Button block type="primary" icon={<ShieldCheck size={15} />} loading={v2TruthSaving} onClick={submitV2TargetBrandTruth}>保存核对结果</Button></Col>
                     </Row>
                   </div>
@@ -5569,10 +5584,12 @@ export default function App() {
                   </Space>}
                 >
                   {!v2StrategyReadiness ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={v2StrategyLoading ? "正在读取策略资格" : "尚未形成策略输入投影"} /> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
-                    <Descriptions size="small" column={{ xs: 1, md: 4 }}>
+                    <Descriptions size="small" column={{ xs: 1, md: 3 }}>
                       <Descriptions.Item label="可消费理由">{v2StrategyReadiness.current_observation.fact_consumable_reason_count || 0}</Descriptions.Item>
                       <Descriptions.Item label="来源快照">{v2StrategyReadiness.current_observation.source_count || 0}</Descriptions.Item>
                       <Descriptions.Item label="有效证据关系">{v2StrategyReadiness.current_observation.effective_evidence_relation_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="已确认能力">{v2StrategyReadiness.current_observation.confirmed_capability_count || 0}</Descriptions.Item>
+                      <Descriptions.Item label="公开可写事实">{v2StrategyReadiness.current_observation.public_claim_eligible_count || 0}</Descriptions.Item>
                       <Descriptions.Item label="合格方向">{v2StrategyReadiness.qualified_direction_count}</Descriptions.Item>
                     </Descriptions>
 

@@ -621,6 +621,10 @@ body {
   word-break: normal;
 }
 
+.v2-capability-mobile {
+  display: none;
+}
+
 @media (max-width: 720px) {
   .app-shell > .ant-layout {
     min-width: 0;
@@ -680,5 +684,20 @@ body {
     width: 100%;
     margin-inline-start: 0;
     padding-top: 8px;
+  }
+
+  .v2-capability-desktop {
+    display: none;
+  }
+
+  .v2-capability-mobile {
+    display: block;
+    margin-top: 12px;
+    border-top: 1px solid #e5e7eb;
+  }
+
+  .v2-capability-mobile-row {
+    padding: 14px 0;
+    border-bottom: 1px solid #e5e7eb;
   }
 }

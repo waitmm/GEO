@@ -82,7 +82,7 @@ ANSWER_RESULT_PROJECTION_VERSION = "single_prompt_answer_semantic_projection.v3_
 SOURCE_SNAPSHOT_PARSER_VERSION = "single_prompt_source_snapshot.v1"
 SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v1"
 PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
-TRUTH_MATCH_VERSION = "single_prompt_truth_relation.v4_co_recommendation_context"
+TRUTH_MATCH_VERSION = "single_prompt_truth_relation.v5_capability_presence"
 REVIEW_CONTRACT_VERSION = "single_prompt_diagnosis_review.v1"
 V2_LLM_THINKING_MODE = "disabled"
 
@@ -308,6 +308,13 @@ def _target_capability_review_items(
         if row.get("scope") == "ANSWER_SEMANTIC_EVENT"
         and str(row.get("decision") or "").startswith("CONFIRM_")
     }
+    accepted_events.update(
+        str(event.get("event_id") or "")
+        for event in (output.get("answer_diagnosis") or {}).get("events") or []
+        if event.get("fact_consumption_eligible") is True
+        and str(event.get("review_status") or "").startswith("HUMAN_CONFIRMED_")
+        and bool(event.get("review_id"))
+    )
     if not accepted_events:
         return []
     truth_by_key = {
@@ -475,11 +482,6 @@ def record_target_brand_truth(
         )
     source = source_reference.strip()
     reviewed_note = note.strip()
-    if product_truth_status in {"SUPPORTED", "PARTIALLY_SUPPORTED"} and not source:
-        raise HTTPException(status_code=422, detail="确认支持或部分支持时必须提供事实来源")
-    if not source and not reviewed_note:
-        raise HTTPException(status_code=422, detail="请提供事实来源或人工核对说明")
-
     existing = db.query(TargetBrandCapabilityTruth).filter(
         TargetBrandCapabilityTruth.project_id == project_id,
         TargetBrandCapabilityTruth.capability_key == key,
@@ -1765,8 +1767,6 @@ def _truth_relation(reason: dict, truth: dict) -> tuple[str, str]:
         match_method = "NORMALIZED_CANDIDATE_CONTAINMENT"
     else:
         return "UNRESOLVED", "NO_APPROVED_MAPPING"
-    if (truth.get("statement_eligibility") or {}).get("status") != "ELIGIBLE":
-        return "UNRESOLVED", "TRUTH_STATEMENT_NOT_CLAIM_ELIGIBLE"
     if status in {"FALSE", "NOT_SUPPORTED", "UNSUPPORTED"} and match_method == "EXACT_GROUNDED_CAPABILITY_LABEL":
         return "CONFLICTS", "EXACT_REVIEWED_FALSE"
     if status not in {"TRUE", "SUPPORTED"}:
@@ -3370,8 +3370,8 @@ def revise_diagnosis_result(
                     ),
                     None,
                 )
-                if not truth or (truth.get("statement_eligibility") or {}).get("status") != "ELIGIBLE":
-                    raise HTTPException(status_code=422, detail="该目标品牌事实仍需拆分或核实，不能确认覆盖关系")
+                if not truth or truth.get("product_truth_status") not in {"TRUE", "SUPPORTED"}:
+                    raise HTTPException(status_code=422, detail="该目标品牌能力尚未确认为具备，不能确认覆盖关系")
         if not target or value not in allowed:
             raise HTTPException(status_code=422, detail=f"非法诊断修改：{target_type}/{target_id}/{value}")
         before = target.get(field)

@@ -136,3 +136,11 @@ are descriptive observations only; no result can claim causal lift, channel
 effectiveness or strategy success. #44 remains blocked before strategy and has no
 retest object. The positive fifth-slice chain is fixture-validated; no real
 external retest or semantic call was authorized.
+
+Target-brand capability presence and public-claim eligibility are separate
+gates. An atomic `SUPPORTED` capability may be manually confirmed without an
+immediate source reference and may be used to test target applicability during
+Strategy qualification. It remains `statement_eligibility=VERIFY_FIRST` until
+target-brand provenance is supplied, and Execution must reject it from titles,
+public sections and asset claims. `PARTIALLY_SUPPORTED`, unknown, compound or
+semantically broader statements do not receive full coverage automatically.

@@ -62,7 +62,7 @@ def _session(tmp_path):
     return sessionmaker(bind=engine)(), engine
 
 
-def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, accept_strategy=True):
+def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, accept_strategy=True, publishable=True):
     plan = {
         "contract_version": "single-prompt-sampling-plan-v1", "project_id": 1, "prompt_id": 44,
         "prompt_text": "哪个二维码工具值得推荐", "sample_count": 3, "platform": "wenxin",
@@ -113,7 +113,7 @@ def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, acce
         }], "source_claim_jobs": []},
         "truth_diagnosis": {
             "truth_snapshot": [
-                {"truth_id": 7, "capability_key": "batch_qr", "capability_label": "批量生成二维码", "product_truth_status": "SUPPORTED", "truth_source": "MANUAL_CONFIRMED", "statement_eligibility": {"status": "ELIGIBLE", "issues": []}},
+                {"truth_id": 7, "capability_key": "batch_qr", "capability_label": "批量生成二维码", "product_truth_status": "SUPPORTED", "truth_source": "MANUAL_CONFIRMED", "statement_eligibility": ({"status": "ELIGIBLE", "issues": []} if publishable else {"status": "VERIFY_FIRST", "issues": ["SOURCE_REFERENCE_REQUIRED"]})},
                 *([{"truth_id": 8, "capability_key": "encrypted_qr", "capability_label": "加密防封二维码", "product_truth_status": "SUPPORTED", "truth_source": "MANUAL_CONFIRMED", "statement_eligibility": {"status": "ELIGIBLE", "issues": []}}] if include_partial else []),
             ],
             "relationships": [
@@ -230,6 +230,37 @@ def test_unconfirmed_strategy_cannot_create_proposal(tmp_path):
                 strategy_review_id="missing", strategy_review_snapshot_hash="x" * 64,
             )
         assert blocked.value.status_code == 409
+        assert db.query(SinglePromptExecutionProposal).count() == 0
+    finally:
+        db.close(); engine.dispose()
+
+
+def test_strategy_capability_without_public_evidence_cannot_generate_public_content(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        strategy, result, review, direction = _seed_accepted_strategy(db, publishable=False)
+        from app.modules.single_prompt_v2.execution import _hash as execution_hash
+        from app.modules.single_prompt_v2.strategy import strategy_review_snapshot
+        review_row = db.query(
+            __import__("app.models", fromlist=["SinglePromptStrategyReview"]).SinglePromptStrategyReview
+        ).filter_by(review_id=review["review_id"]).one()
+
+        with pytest.raises(HTTPException) as blocked:
+            create_execution_proposal(
+                db,
+                strategy_id=strategy.strategy_id,
+                strategy_result_version=result.result_version,
+                project_id=1,
+                prompt_id=44,
+                direction_id=direction["direction_id"],
+                idempotency_key="missing-public-evidence",
+                strategy_result_hash=result.output_hash,
+                strategy_review_id=review["review_id"],
+                strategy_review_snapshot_hash=execution_hash(strategy_review_snapshot(review_row)),
+            )
+
+        assert blocked.value.status_code == 409
+        assert blocked.value.detail["code"] == "PUBLIC_CLAIM_EVIDENCE_REQUIRED"
         assert db.query(SinglePromptExecutionProposal).count() == 0
     finally:
         db.close(); engine.dispose()

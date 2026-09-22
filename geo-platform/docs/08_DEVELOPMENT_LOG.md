@@ -5727,3 +5727,42 @@ review_queue = READY
   unevaluated after SourceClaim admission failures, and all answer anchors are
   `UNPROVEN`. The page now presents these as concrete next actions rather than
   another generic manual-review request.
+
+## 2026-09-22 Capability Presence / Public Claim Gate Split
+
+- Corrected the remaining Product Truth coupling without adding a schema or a
+  workflow stage. An operator may now record one atomic target-brand capability
+  as `SUPPORTED`, `PARTIALLY_SUPPORTED`, `NOT_SUPPORTED` or `UNKNOWN` without
+  supplying a URL or note at the same moment.
+- `SUPPORTED + MANUAL_CONFIRMED` now means capability presence is confirmed for
+  deterministic target-applicability and Strategy qualification. Missing
+  target-brand provenance still leaves `statement_eligibility=VERIFY_FIRST`
+  with `SOURCE_REFERENCE_REQUIRED`; it is not a publishable Product Truth.
+- Exact grounded Reason-to-Truth coverage no longer depends on public-claim
+  eligibility. This permits Strategy to answer whether an observed Reason is
+  relevant to the target brand. `PARTIALLY_SUPPORTED`, semantic containment,
+  compound statements and unknown status remain conservative and cannot become
+  automatic full coverage.
+- Strategy readiness separately reports `confirmed_capability_count` and
+  `public_claim_eligible_count`, and emits
+  `PUBLIC_CLAIM_EVIDENCE_PENDING` without blocking an otherwise qualified
+  Strategy direction. The Strategy input contract is now
+  `single_prompt_strategy_input.v4_capability_publication_split`; Truth matching
+  is `single_prompt_truth_relation.v5_capability_presence`.
+- Execution/public-content compilation remains strict. A confirmed capability
+  lacking eligible target-brand provenance is rejected by the backend with
+  `PUBLIC_CLAIM_EVIDENCE_REQUIRED`; it cannot enter a title, section, claim
+  policy or published asset merely because the operator clicked `有`.
+- The release page now asks only whether the target brand has the capability,
+  makes provenance optional at this stage, and displays a separate public-claim
+  state (`依据已齐` / `发布前补依据`). No real Truth, Review, Strategy or external
+  call was created by this implementation.
+- Read-only page verification exposed and fixed an Evidence-version handoff
+  defect: the capability list previously looked only at decisions in the latest
+  Evidence Review and could show `0/0` even though the immutable Answer events
+  already carried an exact upstream human confirmation. The list now accepts
+  either a confirmation in the current review or the bound event-level upstream
+  review metadata; unreviewed events remain excluded.
+- Validation: 81 diagnosis/strategy/execution tests passed, including quick
+  source-free confirmation, Strategy qualification with pending publication
+  evidence, and hard rejection at execution content generation.

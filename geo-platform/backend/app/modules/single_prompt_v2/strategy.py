@@ -45,7 +45,7 @@ from app.services.serialization import loads
 
 
 STRATEGY_CONTRACT_VERSION = "single_prompt_strategy.v2_third_slice"
-STRATEGY_INPUT_VALIDATION_VERSION = "single_prompt_strategy_input.v3_event_review_gate"
+STRATEGY_INPUT_VALIDATION_VERSION = "single_prompt_strategy_input.v4_capability_publication_split"
 CHANNEL_EVIDENCE_ADAPTER_VERSION = "single_prompt_channel_evidence.v1"
 FOUNDATION_RESOLUTION_VERSION = "single_prompt_foundation.v1"
 CHANNEL_RESOLUTION_VERSION = "single_prompt_channel_resolution.v1"
@@ -344,19 +344,26 @@ def build_strategy_input_projection(
     return input_snapshot
 
 
-def _confirmed_truths(projection: dict[str, Any]) -> dict[int, dict[str, Any]]:
+def _confirmed_capabilities(projection: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return {
         int(row["truth_id"]): row
         for row in projection.get("truth_snapshot") or []
         if row.get("truth_id") is not None
         and row.get("product_truth_status") in _POSITIVE_TRUTH_STATUSES
         and row.get("truth_source") == "MANUAL_CONFIRMED"
-        and (row.get("statement_eligibility") or {}).get("status") == "ELIGIBLE"
+    }
+
+
+def _publishable_truths(projection: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    return {
+        truth_id: row
+        for truth_id, row in _confirmed_capabilities(projection).items()
+        if (row.get("statement_eligibility") or {}).get("status") == "ELIGIBLE"
     }
 
 
 def _truths_by_reason(projection: dict[str, Any]) -> dict[str, list[int]]:
-    confirmed = _confirmed_truths(projection)
+    confirmed = _confirmed_capabilities(projection)
     result: dict[str, list[int]] = defaultdict(list)
     for row in projection.get("truth_relationships") or []:
         truth_id = row.get("truth_id")
@@ -387,7 +394,7 @@ def _direction_id(kind: str, key: str, reason_ids: list[str]) -> str:
 
 
 def _resolve_foundation(projection: dict[str, Any], reason_truths: dict[str, list[int]]) -> tuple[dict, list[dict]]:
-    confirmed = _confirmed_truths(projection)
+    confirmed = _confirmed_capabilities(projection)
     assessment = projection.get("foundation_assessment") or {}
     assessment_truth_ids = {int(value) for value in assessment.get("truth_ids") or [] if value is not None}
     supported_truth_ids = {value for values in reason_truths.values() for value in values}
@@ -553,7 +560,7 @@ def _resolve_channels(projection: dict[str, Any], reason_truths: dict[str, list[
 
 def _build_themes(projection: dict[str, Any], reason_ids: list[str], reason_truths: dict[str, list[int]]) -> list[dict]:
     reason_map = {row["reason_id"]: row for row in projection.get("reasons") or []}
-    truth_map = _confirmed_truths(projection)
+    truth_map = _confirmed_capabilities(projection)
     objects = []
     for reason_id in sorted(set(reason_ids)):
         row = reason_map.get(reason_id)
@@ -625,8 +632,15 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
             "code": "NO_CONSUMABLE_ANSWER_SEMANTIC_RESULT",
             "detail": "回答语义没有通过当前准入契约的结果；不能通过审核将失败升级为策略输入。",
         })
-    if not _confirmed_truths(projection):
+    confirmed_capabilities = _confirmed_capabilities(projection)
+    publishable_truths = _publishable_truths(projection)
+    if not confirmed_capabilities:
         verification_items.append({"code": "TARGET_BRAND_TRUTH_UNRESOLVED", "detail": "补充并确认目标品牌自己的能力事实；空事实不表示能力为假。"})
+    elif len(publishable_truths) < len(confirmed_capabilities):
+        verification_items.append({
+            "code": "PUBLIC_CLAIM_EVIDENCE_PENDING",
+            "detail": "能力已可用于策略适用性判断；进入公开内容前仍需补充目标品牌依据并确认可写范围。",
+        })
     if any(not row.get("fact_consumption_eligible") for row in projection.get("reasons") or []):
         verification_items.append({"code": "REASON_SEMANTIC_REVIEW_REQUIRED", "detail": "存在不能按当前安全契约消费的 Reason。"})
     if any(row.get("alignment_evaluation") != "EVALUATED" for row in projection.get("evidence_relations") or []):
@@ -693,6 +707,8 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
             "fact_consumable_reason_count": len(observable_reason_ids),
             "source_count": len(projection.get("source_snapshots") or []),
             "effective_evidence_relation_count": len((projection.get("effective_evidence_eligibility") or {}).get("effective_evidence_relation_ids") or []),
+            "confirmed_capability_count": len(confirmed_capabilities),
+            "public_claim_eligible_count": len(publishable_truths),
         },
         "foundation": foundation,
         "channel_assessments": channel_assessments,

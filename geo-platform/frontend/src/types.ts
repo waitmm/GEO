@@ -434,6 +434,16 @@ export type SinglePromptV2DiagnosisStatus = {
     truth_set_hash: string;
     differs_from_frozen_diagnosis: boolean;
   };
+  target_capability_review_items: Array<{
+    candidate_id: string;
+    capability_key: string;
+    capability_label: string;
+    source_signal_ids: string[];
+    source_event_ids: string[];
+    source_run_ids: number[];
+    answer_excerpts: string[];
+    current_truth: SinglePromptV2DiagnosisStatus["project_truth_state"]["truths"][number] | null;
+  }>;
   answer_semantic_eligibility: null | {
     contract_version: string;
     total_answer_count: number;

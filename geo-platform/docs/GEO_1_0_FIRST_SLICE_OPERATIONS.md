@@ -354,6 +354,25 @@ Evidence `max_attempts=1`，即额外重试上限为 0。最终固定计划仍�
 http://127.0.0.1:8020/?v2_analysis=92bb12a5-edcc-43c7-b848-ca60267a2672&v2_project=1&v2_prompt=1&v2_diagnosis=b0a35004-3c12-46f1-af49-76c903031c6f&v2_diagnosis_result=diag-v1%3A9a76fc3853156f99
 ```
 
+## 13. 目标品牌原子能力核对修正
+
+2026-09-22 对当前 Project `1` 的两条错误复合人工事实执行了受控清理。清理前通过 SQLite
+Online Backup 保存：
+
+```text
+backend/backups/geo_release.pre_atomic_truth_cleanup.20260922-142845.db
+```
+
+备份包含 Truth ID `1/2` 且 `integrity_check=ok`。清理前核对两条事实均未出现在任何不可变
+Diagnosis Result 的 `truth_snapshot` 中，release schema 也没有 Strategy 结果表；清理后当前
+Project Truth 数为 `0`、`foreign_key_check` 为空、正式数据库 `integrity_check=ok`。Runs、原始
+回答、引用、Diagnosis Result 与 Review 均未修改。
+
+当前正式页面通过 Diagnosis `1bb77e76-a959-4b6c-9fc0-fd98a4b8b6ff`、Result
+`diag-v1:07a0295d2e967a3b` 和 Review
+`review-f13b8c36-323e-494b-bbc0-49089987bca6`，显示 6 条目标品牌单一能力候选。它们只是人工
+核对清单，不是 Product Truth；用户保存“有/部分有”时仍需目标品牌来源。
+
 页面可展开 Runs 4/5/6 的完整原回答，在“待人工确认的候选判断”逐项确认、排除或降为提及；
 来源准备默认集中显示 16 条人工待办，并提供人工补录和明确 WAIVE。完成准确 Review 与全部来源
 处置之前，Evidence 保持阻断，不把阻断报告成零结果或消费成功。

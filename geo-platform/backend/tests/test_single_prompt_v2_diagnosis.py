@@ -23,6 +23,8 @@ from app.modules.single_prompt_v2.diagnosis import (
     _diagnose_truths,
     _require_independent_answer_boundary,
     _source_summary,
+    _split_target_capability_candidates,
+    _target_capability_review_items,
     claim_diagnosis,
     complete_diagnosis_review,
     compute_diagnosis,
@@ -40,6 +42,85 @@ from app.modules.single_prompt_v2.strategy import build_strategy_readiness
 
 ANSWER = "甲工具值得推荐，因为支持批量生成短链。参考资料统一列在文首。Geo 也在候选清单中出现。"
 SOURCE_TEXT = "甲工具支持批量生成短链，可以一次处理多个链接，适用于日常内容发布。"
+
+
+def test_target_capability_review_items_are_atomic_target_only_and_deduplicated():
+    shared_text = (
+        "使用爱短链、趣码短链等合规工具生成加密短链，"
+        "通过中转页实现“抖音点击→浏览器唤起→微信打开”的完整链路，"
+        "还支持活码更新、全链路数据追踪"
+    )
+    output = {
+        "input": {"brand_snapshot": {"brand_name": "爱短链", "aliases": []}},
+        "answer_diagnosis": {"events": [
+            {
+                "event_id": "event-target-4",
+                "run_id": 4,
+                "entity_text": "爱短链",
+                "reasons": [{"reason_id": "reason-target-4", "effective_grounded_text": shared_text}],
+            },
+            {
+                "event_id": "event-external-4",
+                "run_id": 4,
+                "entity_text": "趣码短链",
+                "reasons": [{"reason_id": "reason-external-4", "effective_grounded_text": shared_text}],
+            },
+            {
+                "event_id": "event-target-5",
+                "run_id": 5,
+                "entity_text": "爱短链",
+                "reasons": [{
+                    "reason_id": "reason-target-5",
+                    "effective_grounded_text": "生成加密短链嵌入视频描述或评论区，可降低被平台屏蔽的风险",
+                }],
+            },
+        ]},
+    }
+    decisions = [
+        {"scope": "ANSWER_SEMANTIC_EVENT", "event_id": event_id, "decision": "CONFIRM_INCLUDE_AS_OPTION"}
+        for event_id in ("event-target-4", "event-external-4", "event-target-5")
+    ]
+
+    items = _target_capability_review_items(output, decisions, [])
+
+    assert [row["capability_label"] for row in items] == [
+        "生成加密短链",
+        "通过中转页实现“抖音点击→浏览器唤起→微信打开”的完整链路",
+        "支持活码更新",
+        "支持全链路数据追踪",
+        "支持将加密短链嵌入视频描述或评论区",
+        "降低被平台屏蔽的风险",
+    ]
+    encrypted = next(row for row in items if row["capability_label"] == "生成加密短链")
+    assert encrypted["source_run_ids"] == [4, 5]
+    assert encrypted["source_signal_ids"] == ["reason-target-4", "reason-target-5"]
+    assert all("reason-external-4" not in row["source_signal_ids"] for row in items)
+    assert all(row["current_truth"] is None for row in items)
+
+
+def test_capability_splitter_does_not_change_grounded_source_text():
+    source = "生成加密短链嵌入视频描述或评论区，可降低被平台屏蔽的风险"
+
+    assert _split_target_capability_candidates(source) == [
+        "生成加密短链",
+        "支持将加密短链嵌入视频描述或评论区",
+        "降低被平台屏蔽的风险",
+    ]
+    assert source == "生成加密短链嵌入视频描述或评论区，可降低被平台屏蔽的风险"
+
+
+def test_target_capability_review_items_wait_for_answer_event_review():
+    output = {
+        "input": {"brand_snapshot": {"brand_name": "爱短链", "aliases": []}},
+        "answer_diagnosis": {"events": [{
+            "event_id": "event-pending",
+            "run_id": 4,
+            "entity_text": "爱短链",
+            "reasons": [{"reason_id": "reason-pending", "effective_grounded_text": "支持生成短链接"}],
+        }]},
+    }
+
+    assert _target_capability_review_items(output, [], []) == []
 
 
 class FakeAnswerJudge:

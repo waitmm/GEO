@@ -241,6 +241,116 @@ def _truth_statement_eligibility(
     }
 
 
+def _split_target_capability_candidates(text: str) -> list[str]:
+    """Build conservative, review-only capability labels from grounded answer text."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip(" ，,；;。")
+    if not value:
+        return []
+
+    # Shared recommendations often begin with a tool list. That list is
+    # context, not part of the target capability the operator must verify.
+    value = re.sub(r"^使用.+?等[^，,；;。]{0,16}工具(?=(?:可|能|支持|提供|生成|实现|通过))", "", value)
+    clauses = [part.strip() for part in re.split(r"[，,；;。]+", value) if part.strip()]
+    candidates: list[str] = []
+    inherited_verb = ""
+
+    def add(label: str) -> None:
+        normalized = re.sub(r"\s+", " ", label).strip(" ，,；;。")
+        normalized = re.sub(r"^(?:还|并|且)(?=支持|提供|实现|可)", "", normalized)
+        normalized = re.sub(r"^可(?=降低|减少|避免|提升|提高)", "", normalized)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    for clause in clauses:
+        clause = re.sub(r"^(?:还|并|且)(?=支持|提供|实现|可)", "", clause)
+        embedded = re.match(r"^(生成.+?)(?:并)?嵌入(.+)$", clause)
+        if embedded:
+            generated = embedded.group(1).strip()
+            add(generated)
+            object_text = re.sub(r"^生成", "", generated, count=1)
+            add(f"支持将{object_text}嵌入{embedded.group(2).strip()}")
+            inherited_verb = "支持"
+            continue
+
+        supported = re.match(r"^(支持|提供)(.+)$", clause)
+        if supported:
+            inherited_verb = supported.group(1)
+            items = [item.strip() for item in re.split(r"[、]", supported.group(2)) if item.strip()]
+            for item in items:
+                add(f"{inherited_verb}{item}")
+            continue
+
+        if "、" in clause and inherited_verb:
+            for item in [item.strip() for item in clause.split("、") if item.strip()]:
+                add(f"{inherited_verb}{item}")
+            continue
+
+        add(clause)
+        inherited_verb = ""
+
+    return candidates
+
+
+def _target_capability_review_items(
+    output: dict[str, Any],
+    review_decisions: list[dict[str, Any]],
+    project_truths: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    brand_snapshot = (output.get("input") or {}).get("brand_snapshot") or {}
+    target_names = {
+        str(value).strip()
+        for value in [brand_snapshot.get("brand_name"), *(brand_snapshot.get("aliases") or [])]
+        if str(value or "").strip()
+    }
+    accepted_events = {
+        str(row.get("event_id") or "")
+        for row in review_decisions
+        if row.get("scope") == "ANSWER_SEMANTIC_EVENT"
+        and str(row.get("decision") or "").startswith("CONFIRM_")
+    }
+    if not accepted_events:
+        return []
+    truth_by_key = {
+        str(row.get("capability_key") or ""): row
+        for row in project_truths
+    }
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for event in (output.get("answer_diagnosis") or {}).get("events") or []:
+        event_id = str(event.get("event_id") or "")
+        entity = str(event.get("entity_text") or "").strip()
+        if entity not in target_names or event_id not in accepted_events:
+            continue
+        for reason in event.get("reasons") or []:
+            reason_id = str(reason.get("reason_id") or "")
+            grounded_text = str(reason.get("effective_grounded_text") or reason.get("reason_span") or "").strip()
+            for capability_label in _split_target_capability_candidates(grounded_text):
+                capability_key = re.sub(r"[\s\W_]+", "", capability_label.lower())
+                if not capability_key:
+                    continue
+                item = grouped.setdefault(capability_key, {
+                    "candidate_id": f"cap-{_hash({'capability_key': capability_key})[:20]}",
+                    "capability_key": capability_key,
+                    "capability_label": capability_label,
+                    "source_signal_ids": [],
+                    "source_event_ids": [],
+                    "source_run_ids": [],
+                    "answer_excerpts": [],
+                    "current_truth": truth_by_key.get(capability_key),
+                })
+                if reason_id and reason_id not in item["source_signal_ids"]:
+                    item["source_signal_ids"].append(reason_id)
+                if event_id and event_id not in item["source_event_ids"]:
+                    item["source_event_ids"].append(event_id)
+                run_id = event.get("run_id")
+                if run_id is not None and run_id not in item["source_run_ids"]:
+                    item["source_run_ids"].append(run_id)
+                if grounded_text and grounded_text not in item["answer_excerpts"]:
+                    item["answer_excerpts"].append(grounded_text)
+
+    return list(grouped.values())
+
+
 def _snapshot_truth(row: TargetBrandCapabilityTruth) -> dict[str, Any]:
     statement_eligibility = _truth_statement_eligibility(
         capability_label=row.capability_label,
@@ -3128,6 +3238,11 @@ def get_diagnosis_status(
     source_content_status_summary = _source_summary(snapshots)
     truth_relation_eligibility = current_truth_relation_eligibility(result_output) if result else None
     project_truth_state = _project_truth_state(db, execution.project_id, execution.truth_set_hash)
+    target_capability_review_items = _target_capability_review_items(
+        result_output,
+        loads(review.decisions_json, []) if review else [],
+        project_truth_state["truths"],
+    ) if result else []
     overall_status = "REVIEW_COMPLETED" if review else execution.status
     return {
         "diagnosis": {
@@ -3157,6 +3272,7 @@ def get_diagnosis_status(
         "source_content_status_summary": source_content_status_summary,
         "current_truth_relation_eligibility": truth_relation_eligibility,
         "project_truth_state": project_truth_state,
+        "target_capability_review_items": target_capability_review_items,
         "answer_semantic_eligibility": answer_eligibility,
         "result": {
             "result_version": result.result_version,

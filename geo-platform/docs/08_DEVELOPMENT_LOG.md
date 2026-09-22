@@ -5657,3 +5657,31 @@ review_queue = READY
   current project has two manually recorded rows but zero eligible atomic facts:
   one `SUPPORTED` compound statement and one `UNKNOWN` compound statement are
   both `VERIFY_FIRST`. This status does not block Answer or Evidence.
+
+## 2026-09-22 V2 Atomic Target Capability Review Simplification
+
+- Classified as `IMPLEMENTATION_CHANGE` under `SC-PT-001` and
+  `SC-UNKNOWN-001`. The operation still confirms only the target brand's own
+  facts; this change removes internal diagnosis terminology from the operator
+  surface instead of changing Product Truth semantics.
+- Added a read-only `target_capability_review_items` projection. It consumes
+  only target-brand Answer events explicitly confirmed by the exact Diagnosis
+  Review, splits grounded compound Reasons into conservative single-capability
+  candidates, deduplicates the same capability across Runs and retains every
+  source Reason, Run and answer excerpt. The projection itself never creates a
+  Product Truth or a Reason-to-Truth relation.
+- Replaced the release-page Product Truth panel with one direct table:
+  `single capability -> target brand has / partially has / does not have /
+  unknown -> target-brand source`. Co-recommended competitors, external-signal
+  tables, frozen-snapshot details and raw `Reason->Truth` enums are no longer
+  shown in this operator action. They remain available in immutable diagnosis
+  audit data and do not become target-brand review items.
+- Removed the two malformed compound manual facts from Project `1` after an
+  SQLite online backup. Neither Truth ID appeared in an immutable Diagnosis
+  result, and no Strategy tables exist in the release schema. Original Runs,
+  answers, citations, Diagnosis Result `diag-v1:07a0295d2e967a3b` and Review
+  `review-f13b8c36-323e-494b-bbc0-49089987bca6` were unchanged.
+- The live API now returns six review-only atomic candidates from confirmed
+  Runs `4/5`, with `生成加密短链` deduplicated across both Runs and no competitor
+  Reason in any candidate lineage. Desktop and 390px browser checks found no
+  horizontal page overflow.

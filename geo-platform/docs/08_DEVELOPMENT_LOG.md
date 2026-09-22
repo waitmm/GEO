@@ -5824,7 +5824,7 @@ review_queue = READY
   blocked until all fixed Runs have valid Answer computation and the new exact
   ResultVersion has been reviewed. A limitation or waiver cannot replace a
   required dependency.
-- Offline validation: 136 relevant backend tests passed, including release
+- Offline validation: 137 relevant backend tests passed, including release
   migration/continuation, strict LLM admission, fixed-scope coverage, plan
   binding, bounded fallback and Strategy dependency gates. Python `compileall`,
   frontend TypeScript/Vite production build and `git diff --check` passed.

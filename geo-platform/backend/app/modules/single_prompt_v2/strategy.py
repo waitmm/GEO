@@ -786,6 +786,12 @@ def evaluate_strategy_readiness(projection: dict[str, Any]) -> dict[str, Any]:
             "code": "NO_CONSUMABLE_ANSWER_SEMANTIC_RESULT",
             "detail": "当前 DiagnosisResultVersion 没有可消费的回答语义结果，不能审核升级或创建策略。",
         }
+    elif coverage_available and not compute_coverage.get("all_runs_have_terminal_disposition"):
+        classification = "A"
+        blocker = {
+            "code": "FIXED_ANALYSIS_SCOPE_INCOMPLETE",
+            "detail": "固定 Analysis 仍有未执行、待授权或执行中的 Run；应先完成计算，再审核新的全集 ResultVersion。",
+        }
     elif not review_valid:
         classification = "A"
         blocker = {"code": "DIAGNOSIS_REVIEW_REQUIRED", "detail": "当前精确 DiagnosisResultVersion 尚无有效审核，不能创建正式策略候选。"}

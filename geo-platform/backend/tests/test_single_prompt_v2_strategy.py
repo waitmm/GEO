@@ -71,6 +71,7 @@ def _projection(*, reviewed=True, foundation=None, anchor="UNPROVEN", include_tr
         "capability_label": "批量生成二维码",
         "product_truth_status": "SUPPORTED",
         "truth_source": "MANUAL_CONFIRMED",
+        "statement_eligibility": {"status": "ELIGIBLE", "issues": []},
     }] if include_truth else []
     truth_relationships = [{
         "relationship_id": "truth-rel-1",
@@ -250,6 +251,7 @@ def _seed_strategy_input(db, *, reviewed=True, include_truth=True, anchor="UNPRO
                 "capability_label": "批量生成二维码",
                 "product_truth_status": "SUPPORTED",
                 "truth_source": "MANUAL_CONFIRMED",
+                "statement_eligibility": {"status": "ELIGIBLE", "issues": []},
             }] if include_truth else [],
             "relationships": [{
                 "relationship_id": "truth-rel-1",
@@ -341,6 +343,32 @@ def test_foundation_unknown_does_not_block_independent_channel_test():
     assert readiness["foundation"]["state"] == "UNKNOWN"
     assert [(row["channel_key"], row["channel_role"]) for row in readiness["qualified_directions"]] == [("ZHIHU", "TEST")]
     assert readiness["qualified_directions"][0]["effect_status"] == "NOT_PROVEN"
+
+
+def test_external_capability_signal_can_prove_target_applicability_without_cross_brand_truth_relation():
+    projection = _projection(anchor="UNPROVEN")
+    projection["truth_relationships"] = []
+    projection["external_capability_signals"] = [{
+        "signal_id": "external-signal-1",
+        "reason_id": "reason-1",
+        "source_subject": "竞品甲",
+        "capability_text": "支持批量生成二维码",
+        "fact_consumption_eligible": True,
+        "target_truth_matches": [{
+            "truth_id": 7,
+            "applicability": "ELIGIBLE",
+            "match_relation": "FULLY_COVERS",
+            "method": "EXACT_GROUNDED_CAPABILITY_LABEL",
+            "boundary": "TARGET_APPLICABILITY_ONLY_NOT_SOURCE_FACT_PROOF",
+        }],
+        "use_boundary": "EXTERNAL_SIGNAL_ONLY",
+    }]
+
+    readiness = evaluate_strategy_readiness(projection)
+
+    assert readiness["classification"] == "C"
+    assert readiness["qualified_directions"][0]["channel_role"] == "TEST"
+    assert readiness["qualified_directions"][0]["truth_ids"] == [7]
 
 
 def test_explicit_anchor_can_form_primary_but_review_does_not_upgrade_bad_relation():

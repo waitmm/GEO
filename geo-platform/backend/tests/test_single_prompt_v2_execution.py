@@ -113,8 +113,8 @@ def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, acce
         }], "source_claim_jobs": []},
         "truth_diagnosis": {
             "truth_snapshot": [
-                {"truth_id": 7, "capability_key": "batch_qr", "capability_label": "批量生成二维码", "product_truth_status": "SUPPORTED", "truth_source": "MANUAL_CONFIRMED"},
-                *([{"truth_id": 8, "capability_key": "encrypted_qr", "capability_label": "加密防封二维码", "product_truth_status": "SUPPORTED", "truth_source": "MANUAL_CONFIRMED"}] if include_partial else []),
+                {"truth_id": 7, "capability_key": "batch_qr", "capability_label": "批量生成二维码", "product_truth_status": "SUPPORTED", "truth_source": "MANUAL_CONFIRMED", "statement_eligibility": {"status": "ELIGIBLE", "issues": []}},
+                *([{"truth_id": 8, "capability_key": "encrypted_qr", "capability_label": "加密防封二维码", "product_truth_status": "SUPPORTED", "truth_source": "MANUAL_CONFIRMED", "statement_eligibility": {"status": "ELIGIBLE", "issues": []}}] if include_partial else []),
             ],
             "relationships": [
                 {"relationship_id": "truth-rel-1", "reason_id": "reason-1", "truth_id": 7, "effective_relation": "FULLY_COVERS"},

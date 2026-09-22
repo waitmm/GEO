@@ -274,6 +274,9 @@ def build_strategy_input_projection(
         "reasons": reasons,
         "truth_snapshot": (output.get("truth_diagnosis") or {}).get("truth_snapshot") or [],
         "truth_relationships": truth_relation_eligibility["effective_relationships"],
+        "external_capability_signals": copy.deepcopy(
+            (output.get("truth_diagnosis") or {}).get("external_capability_signals") or []
+        ),
         "truth_relation_eligibility": truth_relation_eligibility,
         "evidence_relations": (output.get("evidence_diagnosis") or {}).get("source_relations") or [],
         "source_claim_jobs": (output.get("evidence_diagnosis") or {}).get("source_claim_jobs") or [],
@@ -295,6 +298,11 @@ def build_strategy_input_projection(
         "reason_ids": sorted({row["reason_id"] for row in reasons}),
         "truth_ids": sorted(str(row.get("truth_id")) for row in input_snapshot["truth_snapshot"] if row.get("truth_id") is not None),
         "truth_relationship_ids": sorted(str(row.get("relationship_id")) for row in input_snapshot["truth_relationships"] if row.get("relationship_id")),
+        "external_capability_signal_ids": sorted(
+            str(row.get("signal_id"))
+            for row in input_snapshot["external_capability_signals"]
+            if row.get("signal_id")
+        ),
         "evidence_relation_ids": sorted(str(row.get("relation_id")) for row in input_snapshot["evidence_relations"] if row.get("relation_id")),
         "source_snapshot_ids": sorted(row["snapshot_id"] for row in source_rows),
     }
@@ -310,6 +318,7 @@ def _confirmed_truths(projection: dict[str, Any]) -> dict[int, dict[str, Any]]:
         if row.get("truth_id") is not None
         and row.get("product_truth_status") in _POSITIVE_TRUTH_STATUSES
         and row.get("truth_source") == "MANUAL_CONFIRMED"
+        and (row.get("statement_eligibility") or {}).get("status") == "ELIGIBLE"
     }
 
 
@@ -324,6 +333,17 @@ def _truths_by_reason(projection: dict[str, Any]) -> dict[str, list[int]]:
             and row.get("effective_relation") == "FULLY_COVERS"
         ):
             result[str(row.get("reason_id"))].append(int(truth_id))
+    for signal in projection.get("external_capability_signals") or []:
+        if signal.get("fact_consumption_eligible") is not True:
+            continue
+        for match in signal.get("target_truth_matches") or []:
+            truth_id = match.get("truth_id")
+            if (
+                truth_id is not None
+                and int(truth_id) in confirmed
+                and match.get("applicability") == "ELIGIBLE"
+            ):
+                result[str(signal.get("reason_id"))].append(int(truth_id))
     return {key: sorted(set(values)) for key, values in result.items()}
 
 

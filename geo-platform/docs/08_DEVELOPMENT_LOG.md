@@ -5596,3 +5596,53 @@ review_queue = READY
   regressions passed after the target entity uniqueness hardening, release and
   regular frontend builds passed, and the production page rendered three
   `核对事实` actions plus one enabled `保存人工事实` action without overlap.
+
+## 2026-09-22 V2 Product Truth Responsibility Correction
+
+- Classified as an implementation correction under existing `SC-PT-001` and
+  `SC-UNKNOWN-001`; no new RFC or workflow stage was introduced. Answer signals,
+  target-brand facts and public-claim eligibility are now separate objects and
+  must not be treated as equivalent.
+- Competitor/tool Reasons no longer create cross-brand Reason-to-Truth coverage
+  rows. They are retained as `external_capability_signals`, including grounded
+  source subject/text and bounded target applicability matches. Such a match may
+  qualify a strategy hypothesis only when the target brand has an independently
+  confirmed, atomic and eligible Truth; it never proves the competitor claim.
+- Manual Product Truth entry is bound to an exact Answer signal or Market
+  Criterion, but that signal is only the review trigger. Positive facts still
+  require target-brand provenance. Compound capability statements are rejected
+  and must be split into independently verifiable claims; existing compound or
+  UNKNOWN facts are projected as `VERIFY_FIRST` rather than silently consumed.
+- Added immutable Truth reprojection. A reviewed Diagnosis may create a new
+  exact diagnosis identity with the current Truth-set hash while copying the
+  unchanged Answer/Evidence output and exact prior review metadata. It performs
+  zero Answer, SourceClaim or Alignment calls, never mutates the prior result,
+  and requires a new explicit review before Strategy consumption.
+- Product Truth incompleteness does not block Answer Semantic or Evidence. It
+  only blocks dependent target applicability, deterministic strategy claims and
+  public content. Strategy and Execution additionally require
+  `statement_eligibility=ELIGIBLE`; `PARTIALLY_COVERS`, compound, UNKNOWN and
+  prohibited statements remain non-publishable.
+- No release business data, Review, Truth, Strategy or external model call was
+  written during implementation. The currently source-complete all-Runs Analysis
+  and the separately authorized Runs 4/5/6 Analysis remain distinct; this change
+  does not reinterpret authorization or silently switch the active identity.
+- Production read-only verification used all-Runs Analysis
+  `19b0be0f-f794-4435-9fa7-2723257f26cc`: its Citation scope is conserved at
+  `66/66` (`61 READY`, `5 WAIVED_WITH_LIMITATION`), Source Completion
+  `source-completion-f4b4b160-827b-42b4-986c-191f67453042` is frozen, and exact
+  Answer Review `review-f13b8c36-323e-494b-bbc0-49089987bca6` remains attached
+  to Result `diag-v1:07a0295d2e967a3b`. The two later project facts are both
+  projected as `VERIFY_FIRST` because they are compound statements; this does
+  not invalidate source or Answer completion.
+- The production render exposed one legacy compatibility defect: an external
+  subject with `truth_id=null` was not marked cross-subject and still appeared
+  in the target-brand relation table. Current projection now classifies by
+  grounded subject independently of whether a Truth row exists. The immutable
+  historical row remains unchanged; the UI presents it as an external ability
+  signal instead. The regression covers this exact empty-Truth shape.
+- Validation after the compatibility fix: the diagnosis/strategy/execution and
+  release first-slice suites passed, targeted cross-subject regressions passed,
+  `compileall`, release frontend build and `git diff --check` passed. A release
+  production screenshot confirmed separate external-signal and target-brand
+  relation sections without layout overlap.

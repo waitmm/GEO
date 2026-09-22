@@ -82,7 +82,7 @@ ANSWER_RESULT_PROJECTION_VERSION = "single_prompt_answer_semantic_projection.v3_
 SOURCE_SNAPSHOT_PARSER_VERSION = "single_prompt_source_snapshot.v1"
 SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v1"
 PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
-TRUTH_MATCH_VERSION = "single_prompt_truth_relation.v2_subject_aware"
+TRUTH_MATCH_VERSION = "single_prompt_truth_relation.v3_target_claim_eligibility"
 REVIEW_CONTRACT_VERSION = "single_prompt_diagnosis_review.v1"
 V2_LLM_THINKING_MODE = "disabled"
 
@@ -211,7 +211,42 @@ def _require_independent_answer_boundary(
         )
 
 
+def _truth_statement_issues(label: str) -> list[str]:
+    value = str(label or "").strip()
+    issues: list[str] = []
+    if any(marker in value for marker in ("，", ",", "；", ";", "、", "/", "／", "以及", "并且", "同时", "还支持", "且支持")):
+        issues.append("COMPOUND_STATEMENT_REQUIRES_SPLIT")
+    if value.count("支持") > 1:
+        issues.append("MULTIPLE_CAPABILITY_PREDICATES")
+    return sorted(set(issues))
+
+
+def _truth_statement_eligibility(
+    *,
+    capability_label: str,
+    product_truth_status: str,
+    source_reference: str,
+) -> dict[str, Any]:
+    status = str(product_truth_status or "UNKNOWN").upper()
+    issues = _truth_statement_issues(capability_label)
+    if status in {"FALSE", "NOT_SUPPORTED", "UNSUPPORTED"}:
+        return {"status": "PROHIBITED", "issues": issues or ["CONFIRMED_NOT_SUPPORTED"]}
+    if status not in {"TRUE", "SUPPORTED"}:
+        return {"status": "VERIFY_FIRST", "issues": issues or ["TRUTH_NOT_CONFIRMED_POSITIVE"]}
+    if not str(source_reference or "").strip():
+        issues.append("SOURCE_REFERENCE_REQUIRED")
+    return {
+        "status": "ELIGIBLE" if not issues else "VERIFY_FIRST",
+        "issues": sorted(set(issues)),
+    }
+
+
 def _snapshot_truth(row: TargetBrandCapabilityTruth) -> dict[str, Any]:
+    statement_eligibility = _truth_statement_eligibility(
+        capability_label=row.capability_label,
+        product_truth_status=row.product_truth_status,
+        source_reference=row.source_reference,
+    )
     return {
         "truth_id": row.id,
         "brand_id": row.brand_id,
@@ -224,6 +259,7 @@ def _snapshot_truth(row: TargetBrandCapabilityTruth) -> dict[str, Any]:
         "reviewed_at": _iso(row.reviewed_at),
         "note": row.note,
         "row_updated_at": _iso(row.updated_at),
+        "statement_eligibility": statement_eligibility,
     }
 
 
@@ -259,6 +295,7 @@ def record_target_brand_truth(
     source_reference: str,
     note: str,
     reviewed_by: str,
+    source_signal_id: str,
 ) -> dict[str, Any]:
     execution = db.query(SinglePromptDiagnosisExecution).filter_by(
         diagnosis_id=diagnosis_id,
@@ -283,12 +320,49 @@ def record_target_brand_truth(
     if current_state["truth_set_hash"] != expected_project_truth_set_hash:
         raise HTTPException(status_code=409, detail="项目事实集合已变化，请重新加载后再提交")
 
+    result_output = loads(result.output_json, {})
+    target_brand_name = str((result_output.get("input") or {}).get("brand_snapshot", {}).get("brand_name") or "").strip()
+    selected_signal = next(
+        (
+            {"event": event, "reason": reason}
+            for event in (result_output.get("answer_diagnosis") or {}).get("events") or []
+            for reason in event.get("reasons") or []
+            if str(reason.get("reason_id") or "") == source_signal_id
+        ),
+        None,
+    )
+    if not selected_signal:
+        criterion = next(
+            (
+                row for row in (result_output.get("answer_diagnosis") or {}).get("market_criteria") or []
+                if str(row.get("criterion_id") or "") == source_signal_id
+            ),
+            None,
+        )
+        if criterion:
+            selected_signal = {
+                "event": {"entity_text": "MARKET_CRITERION"},
+                "reason": criterion,
+            }
+    if not selected_signal:
+        raise HTTPException(status_code=422, detail="事实核验必须绑定当前诊断中的准确能力信号")
+
     label = capability_label.strip()
     key = re.sub(r"[\s\W_]+", "", label.lower())
     if not key:
         raise HTTPException(status_code=422, detail="能力名称不能只包含空白或标点")
     if product_truth_status not in {"SUPPORTED", "PARTIALLY_SUPPORTED", "NOT_SUPPORTED", "UNKNOWN"}:
         raise HTTPException(status_code=422, detail="目标品牌事实状态非法")
+    statement_issues = _truth_statement_issues(label)
+    if statement_issues:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "COMPOUND_TARGET_BRAND_TRUTH_REQUIRES_SPLIT",
+                "detail": "请一次只确认一项可以独立判真或判假的目标品牌能力；适用条件请写入核对说明。",
+                "issues": statement_issues,
+            },
+        )
     source = source_reference.strip()
     reviewed_note = note.strip()
     if product_truth_status in {"SUPPORTED", "PARTIALLY_SUPPORTED"} and not source:
@@ -344,6 +418,12 @@ def record_target_brand_truth(
     updated_state = _project_truth_state(db, project_id, execution.truth_set_hash)
     return {
         "truth": _snapshot_truth(row),
+        "trigger_signal": {
+            "signal_id": source_signal_id,
+            "source_subject": str(selected_signal["event"].get("entity_text") or ""),
+            "target_subject": target_brand_name,
+            "boundary": "REVIEW_TRIGGER_ONLY_NOT_FACT_PROVENANCE",
+        },
         "project_truth_state": updated_state,
         "frozen_diagnosis": {
             "diagnosis_id": diagnosis_id,
@@ -352,7 +432,7 @@ def record_target_brand_truth(
             "unchanged": True,
         },
         "requires_new_diagnosis": True,
-        "next_action": "CREATE_NEW_ANSWER_DIAGNOSIS_CACHE_ONLY",
+        "next_action": "REPROJECT_TARGET_BRAND_TRUTHS",
     }
 
 
@@ -1561,18 +1641,31 @@ def _normalize_truth_text(value: str) -> str:
 def _truth_relation(reason: dict, truth: dict) -> tuple[str, str]:
     status = str(truth.get("product_truth_status") or "UNKNOWN").upper()
     reason_text = _normalize_truth_text(reason.get("effective_grounded_text") or reason.get("reason_span") or "")
+    normalized_reason = _normalize_truth_text(reason.get("normalized_reason") or "")
     label = _normalize_truth_text(truth.get("capability_label") or truth.get("capability_key") or "")
     if not reason_text or not label:
         return "UNRESOLVED", "MISSING_SEMANTIC_LABEL"
-    if status in {"FALSE", "UNSUPPORTED"} and reason_text == label:
+    if reason_text == label:
+        match_method = "EXACT_GROUNDED_CAPABILITY_LABEL"
+    elif label in reason_text or reason_text in label:
+        match_method = "GROUNDED_LEXICAL_CONTAINMENT"
+    elif normalized_reason and normalized_reason == label:
+        match_method = "NORMALIZED_CANDIDATE_EXACT"
+    elif normalized_reason and (label in normalized_reason or normalized_reason in label):
+        match_method = "NORMALIZED_CANDIDATE_CONTAINMENT"
+    else:
+        return "UNRESOLVED", "NO_APPROVED_MAPPING"
+    if (truth.get("statement_eligibility") or {}).get("status") != "ELIGIBLE":
+        return "UNRESOLVED", "TRUTH_STATEMENT_NOT_CLAIM_ELIGIBLE"
+    if status in {"FALSE", "NOT_SUPPORTED", "UNSUPPORTED"} and match_method == "EXACT_GROUNDED_CAPABILITY_LABEL":
         return "CONFLICTS", "EXACT_REVIEWED_FALSE"
     if status not in {"TRUE", "SUPPORTED"}:
         return "UNRESOLVED", "TRUTH_NOT_POSITIVE"
-    if reason_text == label:
-        return "FULLY_COVERS", "EXACT_CAPABILITY_LABEL"
-    if label in reason_text or reason_text in label:
+    if match_method == "EXACT_GROUNDED_CAPABILITY_LABEL":
+        return "FULLY_COVERS", match_method
+    if match_method == "GROUNDED_LEXICAL_CONTAINMENT":
         return "PARTIALLY_COVERS", "LEXICAL_CONTAINMENT_REQUIRES_REVIEW"
-    return "UNRESOLVED", "NO_APPROVED_MAPPING"
+    return "UNRESOLVED", f"{match_method}_REQUIRES_REVIEW"
 
 
 def _diagnose_truths(
@@ -1589,7 +1682,40 @@ def _diagnose_truths(
         if str(value or "").strip()
     }
     relationships: list[dict] = []
+    external_capability_signals: list[dict] = []
     for reason in reasons:
+        source_subject = str(reason.get("entity") or "").strip()
+        source_subject_key = _normalize_truth_text(source_subject)
+        is_target_subject = bool(source_subject_key and source_subject_key in target_subject_labels)
+        if not is_target_subject:
+            target_truth_matches: list[dict[str, Any]] = []
+            if reason.get("fact_consumption_eligible") is True:
+                for truth in truth_snapshot:
+                    relation, method = _truth_relation(reason, truth)
+                    if relation == "UNRESOLVED" and method == "NO_APPROVED_MAPPING":
+                        continue
+                    target_truth_matches.append({
+                        "truth_id": truth.get("truth_id"),
+                        "applicability": (
+                            "ELIGIBLE"
+                            if relation == "FULLY_COVERS" and method == "EXACT_GROUNDED_CAPABILITY_LABEL"
+                            else "VERIFY_FIRST"
+                        ),
+                        "match_relation": relation,
+                        "method": method,
+                        "boundary": "TARGET_APPLICABILITY_ONLY_NOT_SOURCE_FACT_PROOF",
+                    })
+            external_capability_signals.append({
+                "signal_id": f"ext-{_hash({'reason': reason['reason_id'], 'subject': source_subject})[:20]}",
+                "reason_id": reason["reason_id"],
+                "source_subject": source_subject,
+                "capability_text": str(reason.get("effective_grounded_text") or reason.get("reason_span") or ""),
+                "normalized_capability": str(reason.get("normalized_reason") or ""),
+                "fact_consumption_eligible": reason.get("fact_consumption_eligible") is True,
+                "target_truth_matches": target_truth_matches,
+                "use_boundary": "EXTERNAL_SIGNAL_ONLY",
+            })
+            continue
         if reason.get("fact_consumption_eligible") is not True:
             relationships.append({
                 "relationship_id": f"trl-{_hash({'reason': reason['reason_id'], 'truth': 'semantic-review'})[:20]}",
@@ -1612,42 +1738,49 @@ def _diagnose_truths(
                 "review_status": "NEEDS_FACT_INPUT",
             })
             continue
+        matched_truth = False
         for truth in truth_snapshot:
             relation, method = _truth_relation(reason, truth)
             if relation == "UNRESOLVED" and method == "NO_APPROVED_MAPPING":
                 continue
-            source_subject = str(reason.get("entity") or "").strip()
-            source_subject_key = _normalize_truth_text(source_subject)
-            is_cross_subject = bool(
-                source_subject_key
-                and target_subject_labels
-                and source_subject_key not in target_subject_labels
-            )
-            effective_relation = "UNRESOLVED" if is_cross_subject else relation
+            matched_truth = True
+            requires_review = method.endswith("REQUIRES_REVIEW") or method == "TRUTH_STATEMENT_NOT_CLAIM_ELIGIBLE"
+            effective_relation = "UNRESOLVED" if requires_review else relation
             relationships.append({
                 "relationship_id": f"trl-{_hash({'reason': reason['reason_id'], 'truth': truth['truth_id']})[:20]}",
                 "reason_id": reason["reason_id"],
                 "truth_id": truth["truth_id"],
                 "machine_relation": relation,
                 "effective_relation": effective_relation,
-                "method": (
-                    "CROSS_SUBJECT_TARGET_CAPABILITY_FIT_REQUIRES_REVIEW"
-                    if is_cross_subject else method
-                ),
-                "review_status": (
-                    "SEMANTIC_REVIEW_REQUIRED" if is_cross_subject else "MACHINE_SUGGESTION"
-                ),
-                "relation_purpose": (
-                    "TARGET_CAPABILITY_FIT_SUGGESTION" if is_cross_subject else "REASON_TRUTH_COVERAGE"
-                ),
+                "method": method,
+                "review_status": "SEMANTIC_REVIEW_REQUIRED" if requires_review else "MACHINE_SUGGESTION",
+                "relation_purpose": "REASON_TRUTH_COVERAGE",
                 "source_subject": source_subject,
                 "target_subject": str(target_brand.get("brand_name") or ""),
                 "source_reason_span": str(
                     reason.get("effective_grounded_text") or reason.get("reason_span") or ""
                 ),
-                "cross_subject": is_cross_subject,
+                "cross_subject": False,
             })
-    return {"truth_snapshot": truth_snapshot, "relationships": relationships}
+        if not matched_truth:
+            relationships.append({
+                "relationship_id": f"trl-{_hash({'reason': reason['reason_id'], 'truth': 'no-match'})[:20]}",
+                "reason_id": reason["reason_id"],
+                "truth_id": None,
+                "machine_relation": "UNRESOLVED",
+                "effective_relation": "UNRESOLVED",
+                "method": "NO_MATCHING_TARGET_BRAND_TRUTH",
+                "review_status": "NEEDS_FACT_INPUT",
+                "relation_purpose": "REASON_TRUTH_COVERAGE",
+                "source_subject": source_subject,
+                "target_subject": str(target_brand.get("brand_name") or ""),
+                "cross_subject": False,
+            })
+    return {
+        "truth_snapshot": truth_snapshot,
+        "relationships": relationships,
+        "external_capability_signals": external_capability_signals,
+    }
 
 
 def current_truth_relation_eligibility(output: dict[str, Any]) -> dict[str, Any]:
@@ -1673,8 +1806,7 @@ def current_truth_relation_eligibility(output: dict[str, Any]) -> dict[str, Any]
         source_subject = str(reason.get("entity") or "").strip()
         source_subject_key = _normalize_truth_text(source_subject)
         is_cross_subject = bool(
-            row.get("truth_id") is not None
-            and source_subject_key
+            source_subject_key
             and target_subject_labels
             and source_subject_key not in target_subject_labels
         )
@@ -1913,6 +2045,199 @@ def _reviewable_set(output: dict) -> dict:
         "evidence_relation_ids": sorted(row["relation_id"] for row in output["evidence_diagnosis"]["source_relations"]),
         "truth_relationship_ids": sorted(row["relationship_id"] for row in output["truth_diagnosis"]["relationships"]),
     }
+
+
+def reproject_target_brand_truths(
+    db: Session,
+    *,
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    project_id: int,
+    prompt_id: int,
+    source_result_hash: str,
+    source_review_id: str,
+    expected_project_truth_set_hash: str,
+    idempotency_key: str,
+) -> tuple[SinglePromptDiagnosisExecution, bool]:
+    """Create a new immutable diagnosis identity while recomputing only Truth relations."""
+    source_execution = db.query(SinglePromptDiagnosisExecution).filter_by(
+        diagnosis_id=diagnosis_id,
+        analysis_id=analysis_id,
+    ).one_or_none()
+    if not source_execution:
+        raise HTTPException(status_code=404, detail="诊断执行不存在")
+    if source_execution.project_id != project_id or source_execution.prompt_id != prompt_id:
+        raise HTTPException(status_code=409, detail="诊断身份与当前 Project/Prompt 不匹配")
+    if source_execution.active_result_version != result_version:
+        raise HTTPException(status_code=409, detail="诊断结果版本已变化，请重新加载")
+    source_result = db.query(SinglePromptDiagnosisResult).filter_by(
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+    ).one_or_none()
+    if not source_result or source_result.output_hash != source_result_hash:
+        raise HTTPException(status_code=409, detail="诊断结果身份或 hash 不匹配")
+    source_review = db.query(SinglePromptDiagnosisReview).filter_by(
+        review_id=source_review_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+    ).one_or_none()
+    if not source_review or source_review.result_hash != source_result_hash:
+        raise HTTPException(status_code=409, detail="事实关系重投影需要当前结果的有效审核")
+    _require_independent_answer_boundary(db, source_execution, "REPROJECT_TARGET_BRAND_TRUTHS")
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    truth_rows = (
+        db.query(TargetBrandCapabilityTruth)
+        .filter(TargetBrandCapabilityTruth.project_id == project_id)
+        .order_by(TargetBrandCapabilityTruth.id)
+        .all()
+    )
+    truth_snapshot = [_snapshot_truth(row) for row in truth_rows]
+    truth_set_hash = _hash(truth_snapshot)
+    if truth_set_hash != expected_project_truth_set_hash:
+        raise HTTPException(status_code=409, detail="项目事实集合已变化，请重新加载后再提交")
+    if truth_set_hash == source_execution.truth_set_hash:
+        raise HTTPException(status_code=409, detail="项目事实集合未变化，无需刷新事实关系")
+
+    source_output = loads(source_result.output_json, {})
+    _require_consumable_answer_semantic(source_output, "REPROJECT_TARGET_BRAND_TRUTHS")
+    brand_snapshot = loads(source_execution.brand_snapshot_json, {})
+    source_config = loads(source_execution.contract_config_json, {})
+    contract_config = {
+        **source_config,
+        "diagnosis_mode": "TRUTH_REPROJECTION",
+        "truth_match_version": TRUTH_MATCH_VERSION,
+        "source_diagnosis_id": diagnosis_id,
+        "source_result_version": result_version,
+        "source_result_hash": source_result_hash,
+        "source_review_id": source_review_id,
+    }
+    identity = {
+        "analysis_id": analysis_id,
+        "context_id": source_execution.context_id,
+        "raw_output_hash": source_execution.raw_output_hash,
+        "brand_snapshot_hash": source_execution.brand_snapshot_hash,
+        "truth_set_hash": truth_set_hash,
+        "contract_config_hash": _hash(contract_config),
+    }
+    fingerprint = _hash(identity)
+    existing = db.query(SinglePromptDiagnosisExecution).filter_by(
+        analysis_id=analysis_id,
+        idempotency_key=idempotency_key,
+    ).one_or_none()
+    if existing:
+        if existing.input_fingerprint != fingerprint:
+            raise HTTPException(status_code=409, detail="幂等键已用于不同的事实关系输入")
+        return existing, False
+
+    execution = SinglePromptDiagnosisExecution(
+        diagnosis_id=str(uuid4()),
+        analysis_id=analysis_id,
+        context_id=source_execution.context_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        idempotency_key=idempotency_key,
+        input_fingerprint=fingerprint,
+        raw_output_hash=source_execution.raw_output_hash,
+        brand_snapshot_json=source_execution.brand_snapshot_json,
+        brand_snapshot_hash=source_execution.brand_snapshot_hash,
+        truth_snapshot_json=_canonical_json(truth_snapshot),
+        truth_set_hash=truth_set_hash,
+        contract_config_json=_canonical_json(contract_config),
+        contract_config_hash=identity["contract_config_hash"],
+        status="READY_FOR_REVIEW",
+        progress_json=_canonical_json({"stage": "TRUTH_REPROJECTED", "completed": 1, "total": 1}),
+        attempt_count=1,
+        external_llm_calls=0,
+        llm_cache_hits=0,
+        external_token_usage=0,
+        started_at=datetime.utcnow(),
+        finished_at=datetime.utcnow(),
+    )
+    db.add(execution)
+    db.flush()
+
+    output = copy.deepcopy(source_output)
+    output.setdefault("input", {})["truth_set_hash"] = truth_set_hash
+    output["input"]["contract_config"] = contract_config
+    output["input"]["contract_config_hash"] = identity["contract_config_hash"]
+    output["truth_diagnosis"] = _diagnose_truths(
+        output.get("answer_diagnosis") or {"events": []},
+        truth_snapshot,
+        target_brand=brand_snapshot,
+    )
+    prior_review_payload = {
+        "review_id": source_review.review_id,
+        "result_version": source_review.result_version,
+        "result_hash": source_review.result_hash,
+        "reviewable_set_hash": source_review.reviewable_set_hash,
+        "decision": source_review.decision,
+        "decisions": loads(source_review.decisions_json, []),
+        "reviewer": source_review.reviewer,
+        "note": source_review.note,
+        "created_at": _iso(source_review.created_at),
+    }
+    output["truth_reprojection"] = {
+        "contract_version": TRUTH_MATCH_VERSION,
+        "source_diagnosis_id": diagnosis_id,
+        "source_result_version": result_version,
+        "source_result_hash": source_result_hash,
+        "prior_review": prior_review_payload,
+        "answer_semantic_recomputed": False,
+        "evidence_recomputed": False,
+        "external_llm_calls": 0,
+    }
+    limitations = [
+        row for row in (output.get("limitations") or [])
+        if row.get("code") != "TARGET_BRAND_TRUTH_MISSING"
+    ]
+    unresolved_truths = sum(
+        row.get("effective_relation") == "UNRESOLVED"
+        for row in output["truth_diagnosis"]["relationships"]
+    )
+    if unresolved_truths:
+        limitations.append({
+            "code": "TARGET_BRAND_TRUTH_RELATION_REVIEW_REQUIRED",
+            "count": unresolved_truths,
+            "impact": "不阻断 Answer/Evidence；依赖这些事实的策略声明仍需核对。",
+        })
+    output["limitations"] = limitations
+    output.setdefault("stats", {})["truth_facts"] = len(truth_snapshot)
+    output["stats"]["truth_relationships"] = len(output["truth_diagnosis"]["relationships"])
+    output["usage"] = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
+    output["answer_semantic_eligibility"] = answer_semantic_eligibility(output)
+
+    output_hash = _hash(output)
+    result = SinglePromptDiagnosisResult(
+        result_version=f"diag-v1:{output_hash[:16]}",
+        diagnosis_id=execution.diagnosis_id,
+        version_number=1,
+        parent_result_version=None,
+        output_json=_canonical_json(output),
+        output_hash=output_hash,
+        reviewable_set_hash=_hash(_reviewable_set(output)),
+        limitations_json=_canonical_json(limitations),
+        stats_json=_canonical_json(output["stats"]),
+    )
+    db.add(result)
+    db.flush()
+    execution.active_result_version = result.result_version
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent = db.query(SinglePromptDiagnosisExecution).filter_by(
+            analysis_id=analysis_id,
+            idempotency_key=idempotency_key,
+        ).one_or_none()
+        if concurrent and concurrent.input_fingerprint == fingerprint:
+            return concurrent, False
+        raise
+    db.refresh(execution)
+    return execution, True
 
 
 def _publish_result(db: Session, execution: SinglePromptDiagnosisExecution, token: str, output: dict) -> SinglePromptDiagnosisResult:
@@ -2891,6 +3216,16 @@ def revise_diagnosis_result(
             allowed, field = _TRUTH_RELATIONS, "effective_relation"
             if target and target.get("truth_id") is None and value != "UNRESOLVED":
                 raise HTTPException(status_code=422, detail="空品牌事实不能被编辑成已覆盖或冲突")
+            if target and target.get("truth_id") is not None and value in {"FULLY_COVERS", "PARTIALLY_COVERS"}:
+                truth = next(
+                    (
+                        row for row in output["truth_diagnosis"].get("truth_snapshot") or []
+                        if row.get("truth_id") == target.get("truth_id")
+                    ),
+                    None,
+                )
+                if not truth or (truth.get("statement_eligibility") or {}).get("status") != "ELIGIBLE":
+                    raise HTTPException(status_code=422, detail="该目标品牌事实仍需拆分或核实，不能确认覆盖关系")
         if not target or value not in allowed:
             raise HTTPException(status_code=422, detail=f"非法诊断修改：{target_type}/{target_id}/{value}")
         before = target.get(field)
@@ -2964,13 +3299,16 @@ def complete_diagnosis_review(
     validate_answer_event_review_decisions(result_output, decisions)
     if db.query(SinglePromptDiagnosisReview).filter(SinglePromptDiagnosisReview.result_version == result_version).first():
         raise HTTPException(status_code=409, detail="该诊断结果已经完成审核")
+    prior_review_id = str(
+        (((result_output.get("truth_reprojection") or {}).get("prior_review") or {}).get("review_id")) or ""
+    ) or None
     review = SinglePromptDiagnosisReview(
         review_id=f"review-{uuid4()}",
         diagnosis_id=diagnosis_id,
         result_version=result_version,
         result_hash=result_hash,
         reviewable_set_hash=reviewable_set_hash,
-        prior_review_id=None,
+        prior_review_id=prior_review_id,
         decision="REVIEW_COMPLETED",
         decisions_json=_canonical_json(decisions),
         reviewer=reviewer,

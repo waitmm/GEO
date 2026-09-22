@@ -948,7 +948,21 @@ Status: ACTIVE
 - **Product Truth writes and diagnosis Truth snapshots have different
   lifecycles**: the release UI now supports explicit target-brand fact entry,
   but an existing DiagnosisResult remains bound to its original Truth-set hash.
-  Operators must create and review a new diagnosis before downstream Evidence
-  or Strategy can consume the new fact. Never hide this boundary by mutating the
-  old result, carrying its Review forward, or treating a saved project fact as
-  an already confirmed Reason-to-Truth relation.
+  Operators must explicitly create and review a Truth reprojection before
+  Strategy can consume the new fact. The reprojection copies exact Answer and
+  Evidence results without recomputing them, records the exact prior Review and
+  does not inherit its approval automatically. Never mutate the old result or
+  treat a saved project fact as an already confirmed applicability relation.
+- **External capability signals are not competitor Product Truth**: competitor
+  Reasons and Market Criteria may trigger target-brand fact verification and may
+  carry a bounded target-applicability match. They cannot prove the competitor's
+  capability, cannot write a target fact, and cannot become a direct cross-brand
+  Reason-to-Truth coverage row. Preserve source subject, grounded text and this
+  boundary in future Strategy changes. Legacy empty-Truth rows must also be
+  classified from their grounded subject; `truth_id=null` is not permission to
+  display an external subject as a target-brand relation.
+- **Existing composite target facts are not automatically publishable**: the
+  current release database contains previously entered statements that combine
+  multiple capabilities or remain UNKNOWN. Current projection marks these
+  `VERIFY_FIRST`; do not split them automatically, infer supported fragments or
+  let historical review status bypass the statement eligibility Gate.

@@ -123,7 +123,7 @@ export const api = {
   }) => request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/reviews`, { method: "POST", body: JSON.stringify(payload) }),
   createSinglePromptV2TargetBrandTruth: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {
     project_id: number; prompt_id: number; result_hash: string; frozen_truth_set_hash: string;
-    expected_project_truth_set_hash: string; capability_label: string;
+    expected_project_truth_set_hash: string; source_signal_id: string; capability_label: string;
     product_truth_status: "SUPPORTED" | "PARTIALLY_SUPPORTED" | "NOT_SUPPORTED" | "UNKNOWN";
     source_reference: string; note: string; reviewed_by: string;
   }) => request<{
@@ -133,6 +133,10 @@ export const api = {
     requires_new_diagnosis: boolean;
     next_action: string;
   }>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/target-brand-truths`, { method: "POST", body: JSON.stringify(payload) }),
+  createSinglePromptV2TruthReprojection: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; source_result_hash: string; source_review_id: string;
+    expected_project_truth_set_hash: string; idempotency_key: string;
+  }) => request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/truth-reprojections`, { method: "POST", body: JSON.stringify(payload) }),
   getSinglePromptV2StrategyReadiness: (analysisId: string, diagnosisId: string, resultVersion: string, projectId: number, promptId: number) =>
     request<SinglePromptV2StrategyReadiness>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/strategy-readiness?project_id=${projectId}&prompt_id=${promptId}`),
   createSinglePromptV2Strategy: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {

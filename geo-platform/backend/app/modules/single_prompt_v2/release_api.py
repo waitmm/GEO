@@ -12,6 +12,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     get_diagnosis_status,
     queue_evidence_continuation,
     record_target_brand_truth,
+    reproject_target_brand_truths,
     retry_diagnosis,
     revise_diagnosis_result,
 )
@@ -29,6 +30,7 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptSourcePreparationCreate,
     SinglePromptSourceWaiverCreate,
     SinglePromptTargetBrandTruthCreate,
+    SinglePromptTruthReprojectionCreate,
 )
 from app.modules.single_prompt_v2.service import (
     create_analysis,
@@ -329,11 +331,44 @@ def create_target_brand_truth(
         result_hash=payload.result_hash,
         frozen_truth_set_hash=payload.frozen_truth_set_hash,
         expected_project_truth_set_hash=payload.expected_project_truth_set_hash,
+        source_signal_id=payload.source_signal_id,
         capability_label=payload.capability_label,
         product_truth_status=payload.product_truth_status,
         source_reference=payload.source_reference,
         note=payload.note,
         reviewed_by=payload.reviewed_by,
+    )
+
+
+@router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/truth-reprojections", status_code=201)
+def create_truth_reprojection(
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    payload: SinglePromptTruthReprojectionCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    execution, created = reproject_target_brand_truths(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        source_result_hash=payload.source_result_hash,
+        source_review_id=payload.source_review_id,
+        expected_project_truth_set_hash=payload.expected_project_truth_set_hash,
+        idempotency_key=payload.idempotency_key,
+    )
+    if not created:
+        response.status_code = 200
+    return get_diagnosis_status(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=execution.diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
     )
 
 

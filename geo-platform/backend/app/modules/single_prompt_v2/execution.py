@@ -171,6 +171,7 @@ def _confirmed_truths(strategy_input: dict[str, Any], direction: dict[str, Any])
         and int(row["truth_id"]) in allowed_ids & fully_covered
         and row.get("product_truth_status") in {"TRUE", "SUPPORTED"}
         and row.get("truth_source") == "MANUAL_CONFIRMED"
+        and (row.get("statement_eligibility") or {}).get("status") == "ELIGIBLE"
         and str(row.get("capability_label") or "").strip()
     ]
 

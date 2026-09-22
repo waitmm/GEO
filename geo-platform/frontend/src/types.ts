@@ -429,6 +429,7 @@ export type SinglePromptV2DiagnosisStatus = {
       reviewed_at: string | null;
       note: string;
       row_updated_at: string | null;
+      statement_eligibility: { status: "ELIGIBLE" | "VERIFY_FIRST" | "PROHIBITED"; issues: string[] };
     }>;
     truth_set_hash: string;
     differs_from_frozen_diagnosis: boolean;
@@ -457,7 +458,8 @@ export type SinglePromptV2DiagnosisStatus = {
       answer_diagnosis: { events: any[]; market_criteria?: any[]; unresolved_items: any[]; failures: any[]; answer_jobs?: any[] };
       source_diagnosis: { summary: Record<string, number>; snapshots: any[] };
       evidence_diagnosis: { source_claim_jobs: any[]; source_claims: any[]; source_claim_failures: any[]; source_relations: any[]; alignment_failures: any[]; reason_inputs_requiring_review: any[] };
-      truth_diagnosis: { truth_snapshot: any[]; relationships: any[] };
+      truth_diagnosis: { truth_snapshot: any[]; relationships: any[]; external_capability_signals?: any[] };
+      truth_reprojection?: { prior_review?: { review_id: string; decisions: any[] }; answer_semantic_recomputed: boolean; evidence_recomputed: boolean; external_llm_calls: number };
       limitations: any[];
       stats: Record<string, number>;
       usage: Record<string, number>;

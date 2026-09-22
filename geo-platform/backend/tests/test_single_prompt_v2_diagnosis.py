@@ -30,6 +30,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     current_truth_relation_eligibility,
     get_diagnosis_status,
     record_target_brand_truth,
+    reproject_target_brand_truths,
     revise_diagnosis_result,
     validate_answer_event_review_decisions,
 )
@@ -200,7 +201,8 @@ def test_diagnosis_keeps_four_dimensions_and_empty_truth_conservative(tmp_path):
         assert relation["alignment_evaluation"] == "EVALUATED"
         assert relation["effective_relation"] == "SOURCE_SUPPORTS_REASON"
         assert output["truth_diagnosis"]["truth_snapshot"] == []
-        assert {row["effective_relation"] for row in output["truth_diagnosis"]["relationships"]} == {"UNRESOLVED"}
+        assert output["truth_diagnosis"]["relationships"] == []
+        assert len(output["truth_diagnosis"]["external_capability_signals"]) == 1
         assert "TARGET_BRAND_TRUTH_MISSING" in {item["code"] for item in output["limitations"]}
         assert "RETRIEVAL_OBSERVATION_UNAVAILABLE" in {item["code"] for item in output["limitations"]}
         assert db.query(SinglePromptSourceSnapshot).count() == 1
@@ -445,16 +447,16 @@ def test_truth_snapshot_is_project_scoped_and_cross_brand_partial_stays_unresolv
         truth_snapshot = output["truth_diagnosis"]["truth_snapshot"]
         assert len(truth_snapshot) == 1
         assert truth_snapshot[0]["source_reference"] == "manual:1"
-        relationship = output["truth_diagnosis"]["relationships"][0]
-        assert relationship["machine_relation"] == "PARTIALLY_COVERS"
-        assert relationship["effective_relation"] == "UNRESOLVED"
-        assert relationship["relation_purpose"] == "TARGET_CAPABILITY_FIT_SUGGESTION"
+        assert output["truth_diagnosis"]["relationships"] == []
+        signal = output["truth_diagnosis"]["external_capability_signals"][0]
+        assert signal["source_subject"] == "甲工具"
+        assert signal["use_boundary"] == "EXTERNAL_SIGNAL_ONLY"
     finally:
         db.close()
         engine.dispose()
 
 
-def test_manual_target_brand_truth_is_exactly_bound_and_requires_new_diagnosis(tmp_path):
+def test_manual_target_brand_truth_is_exactly_bound_and_reprojects_without_recomputing_answer(tmp_path):
     db, engine = _session(tmp_path)
     try:
         _seed(db)
@@ -469,6 +471,17 @@ def test_manual_target_brand_truth_is_exactly_bound_and_requires_new_diagnosis(t
         )
         assert before["result"]["output"]["truth_diagnosis"]["truth_snapshot"] == []
         assert before["project_truth_state"]["differs_from_frozen_diagnosis"] is False
+        source_signal_id = before["result"]["output"]["answer_diagnosis"]["events"][0]["reasons"][0]["reason_id"]
+        source_review = complete_diagnosis_review(
+            db,
+            diagnosis_id=execution.diagnosis_id,
+            result_version=result.result_version,
+            result_hash=result.output_hash,
+            reviewable_set_hash=result.reviewable_set_hash,
+            reviewer="owner",
+            note="确认原回答分析",
+            decisions=[{"scope": "ENTIRE_REVIEWABLE_SET", "decision": "REVIEW_COMPLETED_WITH_LIMITATIONS_PRESERVED"}],
+        )
 
         created = record_target_brand_truth(
             db,
@@ -480,6 +493,7 @@ def test_manual_target_brand_truth_is_exactly_bound_and_requires_new_diagnosis(t
             result_hash=result.output_hash,
             frozen_truth_set_hash=execution.truth_set_hash,
             expected_project_truth_set_hash=before["project_truth_state"]["truth_set_hash"],
+            source_signal_id=source_signal_id,
             capability_label="支持批量生成短链",
             product_truth_status="SUPPORTED",
             source_reference="https://target.example.com/docs/batch-links",
@@ -502,16 +516,50 @@ def test_manual_target_brand_truth_is_exactly_bound_and_requires_new_diagnosis(t
         assert after["project_truth_state"]["differs_from_frozen_diagnosis"] is True
         assert len(after["project_truth_state"]["truths"]) == 1
 
-        new_execution, created_execution = create_diagnosis(
+        new_execution, created_execution = reproject_target_brand_truths(
             db,
             analysis_id=analysis.analysis_id,
+            diagnosis_id=execution.diagnosis_id,
+            result_version=result.result_version,
             project_id=1,
             prompt_id=44,
-            idempotency_key="diagnosis-updated-truth-review",
+            source_result_hash=result.output_hash,
+            source_review_id=source_review.review_id,
+            expected_project_truth_set_hash=after["project_truth_state"]["truth_set_hash"],
+            idempotency_key="truth-reprojection-review",
         )
         assert created_execution is True
         assert new_execution.truth_set_hash == after["project_truth_state"]["truth_set_hash"]
         assert new_execution.truth_set_hash != execution.truth_set_hash
+        assert new_execution.external_llm_calls == 0
+        projected = get_diagnosis_status(
+            db,
+            analysis_id=analysis.analysis_id,
+            diagnosis_id=new_execution.diagnosis_id,
+            project_id=1,
+            prompt_id=44,
+        )
+        assert projected["result"]["output"]["answer_diagnosis"] == before["result"]["output"]["answer_diagnosis"]
+        assert projected["result"]["output"]["evidence_diagnosis"] == before["result"]["output"]["evidence_diagnosis"]
+        assert projected["result"]["output"]["truth_reprojection"]["prior_review"]["review_id"] == source_review.review_id
+        assert projected["result"]["output"]["truth_reprojection"]["answer_semantic_recomputed"] is False
+        assert projected["result"]["output"]["truth_reprojection"]["evidence_recomputed"] is False
+        assert len(projected["result"]["output"]["truth_diagnosis"]["truth_snapshot"]) == 1
+
+        reused, created_again = reproject_target_brand_truths(
+            db,
+            analysis_id=analysis.analysis_id,
+            diagnosis_id=execution.diagnosis_id,
+            result_version=result.result_version,
+            project_id=1,
+            prompt_id=44,
+            source_result_hash=result.output_hash,
+            source_review_id=source_review.review_id,
+            expected_project_truth_set_hash=after["project_truth_state"]["truth_set_hash"],
+            idempotency_key="truth-reprojection-review",
+        )
+        assert created_again is False
+        assert reused.diagnosis_id == new_execution.diagnosis_id
     finally:
         db.close()
         engine.dispose()
@@ -539,6 +587,7 @@ def test_manual_target_brand_truth_rejects_stale_identity_unsupported_positive_a
             "result_hash": result.output_hash,
             "frozen_truth_set_hash": execution.truth_set_hash,
             "expected_project_truth_set_hash": status["project_truth_state"]["truth_set_hash"],
+            "source_signal_id": status["result"]["output"]["answer_diagnosis"]["events"][0]["reasons"][0]["reason_id"],
             "capability_label": "支持批量生成短链",
             "product_truth_status": "SUPPORTED",
             "source_reference": "",
@@ -547,6 +596,18 @@ def test_manual_target_brand_truth_rejects_stale_identity_unsupported_positive_a
         }
         with pytest.raises(HTTPException, match="必须提供事实来源"):
             record_target_brand_truth(db, **common)
+
+        with pytest.raises(HTTPException) as compound:
+            record_target_brand_truth(
+                db,
+                **{
+                    **common,
+                    "capability_label": "支持生成短链，并且支持跳转数据追踪",
+                    "source_reference": "https://target.example.com/docs/compound",
+                },
+            )
+        assert compound.value.status_code == 422
+        assert compound.value.detail["code"] == "COMPOUND_TARGET_BRAND_TRUTH_REQUIRES_SPLIT"
 
         first = record_target_brand_truth(
             db,
@@ -841,7 +902,8 @@ def test_market_criteria_are_grounded_independent_results_not_brand_reasons_or_t
         assert criterion["truth_relation_eligible"] is False
         assert output["stats"]["market_criteria"] == 1
         assert output["stats"]["reasons"] == 1
-        assert len(output["truth_diagnosis"]["relationships"]) == 1
+        assert output["truth_diagnosis"]["relationships"] == []
+        assert len(output["truth_diagnosis"]["external_capability_signals"]) == 1
         assert output["answer_diagnosis"]["unresolved_items"][0]["item"] == "回答没有说明服务期限"
         assert status["answer_semantic_eligibility"]["admitted_answer_count"] == 1
     finally:
@@ -969,7 +1031,7 @@ def test_legacy_mixed_answer_context_blocks_review_and_evidence_consumption(tmp_
         engine.dispose()
 
 
-def test_cross_brand_reason_is_only_an_unconfirmed_target_capability_fit_suggestion():
+def test_cross_brand_reason_is_only_an_external_capability_signal():
     answer_diagnosis = {
         "events": [{
             "reasons": [{
@@ -986,37 +1048,64 @@ def test_cross_brand_reason_is_only_an_unconfirmed_target_capability_fit_suggest
         "capability_key": "短链生成",
         "capability_label": "短链生成",
         "product_truth_status": "SUPPORTED",
+        "statement_eligibility": {"status": "ELIGIBLE", "issues": []},
     }]
 
-    relationship = _diagnose_truths(
+    truth_diagnosis = _diagnose_truths(
         answer_diagnosis,
         truths,
         target_brand={"brand_name": "爱短链", "aliases": ["aifabu"]},
-    )["relationships"][0]
+    )
 
-    assert relationship["source_subject"] == "壹伴助手"
-    assert relationship["target_subject"] == "爱短链"
-    assert relationship["machine_relation"] == "PARTIALLY_COVERS"
-    assert relationship["effective_relation"] == "UNRESOLVED"
-    assert relationship["relation_purpose"] == "TARGET_CAPABILITY_FIT_SUGGESTION"
-    assert relationship["review_status"] == "SEMANTIC_REVIEW_REQUIRED"
-    assert relationship["method"] == "CROSS_SUBJECT_TARGET_CAPABILITY_FIT_REQUIRES_REVIEW"
+    assert truth_diagnosis["relationships"] == []
+    signal = truth_diagnosis["external_capability_signals"][0]
+    assert signal["source_subject"] == "壹伴助手"
+    assert signal["use_boundary"] == "EXTERNAL_SIGNAL_ONLY"
+    assert signal["target_truth_matches"] == [{
+        "truth_id": 2,
+        "applicability": "VERIFY_FIRST",
+        "match_relation": "PARTIALLY_COVERS",
+        "method": "LEXICAL_CONTAINMENT_REQUIRES_REVIEW",
+        "boundary": "TARGET_APPLICABILITY_ONLY_NOT_SOURCE_FACT_PROOF",
+    }]
 
-    historical_output = {
-        "input": {"brand_snapshot": {"brand_name": "爱短链", "aliases": ["aifabu"]}},
-        "answer_diagnosis": answer_diagnosis,
-        "truth_diagnosis": {"truth_snapshot": truths, "relationships": [{
-            **relationship,
-            "effective_relation": "PARTIALLY_COVERS",
-            "method": "LEXICAL_CONTAINMENT_REQUIRES_REVIEW",
-        }]},
+
+def test_current_projection_removes_legacy_cross_brand_empty_truth_relation():
+    output = {
+        "input": {
+            "brand_snapshot": {
+                "brand_name": "爱短链",
+                "aliases": ["aifabu"],
+            },
+        },
+        "answer_diagnosis": {
+            "events": [{
+                "reasons": [{
+                    "reason_id": "reason-quma",
+                    "entity": "趣码短链",
+                    "effective_grounded_text": "支持生成短链接",
+                }],
+            }],
+        },
+        "truth_diagnosis": {
+            "relationships": [{
+                "relationship_id": "legacy-empty-truth",
+                "reason_id": "reason-quma",
+                "truth_id": None,
+                "effective_relation": "UNRESOLVED",
+                "method": "EMPTY_TRUTH_SET",
+            }],
+        },
     }
-    current = current_truth_relation_eligibility(historical_output)
-    projected = current["effective_relationships"][0]
-    assert historical_output["truth_diagnosis"]["relationships"][0]["effective_relation"] == "PARTIALLY_COVERS"
-    assert projected["historical_effective_relation"] == "PARTIALLY_COVERS"
-    assert projected["effective_relation"] == "UNRESOLVED"
-    assert current["cross_subject_relation_ids"] == [relationship["relationship_id"]]
+
+    projection = current_truth_relation_eligibility(output)
+
+    assert projection["cross_subject_relation_ids"] == ["legacy-empty-truth"]
+    assert projection["cross_subject_relation_count"] == 1
+    relation = projection["effective_relationships"][0]
+    assert relation["cross_subject"] is True
+    assert relation["relation_purpose"] == "TARGET_CAPABILITY_FIT_SUGGESTION"
+    assert relation["method"] == "CROSS_SUBJECT_TARGET_CAPABILITY_FIT_REQUIRES_REVIEW"
 
 
 def test_market_criterion_normalization_enhancement_stays_review_required_and_out_of_truth(tmp_path):
@@ -1058,7 +1147,8 @@ def test_market_criterion_normalization_enhancement_stays_review_required_and_ou
         assert "MARKET_CRITERIA_NORMALIZATION_REVIEW_REQUIRED" in {
             row["code"] for row in output["limitations"]
         }
-        assert len(output["truth_diagnosis"]["relationships"]) == 1
+        assert output["truth_diagnosis"]["relationships"] == []
+        assert len(output["truth_diagnosis"]["external_capability_signals"]) == 1
     finally:
         db.close()
         engine.dispose()
@@ -1305,8 +1395,8 @@ def test_normalized_reason_enhancement_requires_review_and_cannot_reach_evidence
         assert reason["effective_grounded_text"] == "支持批量生成短链"
         assert output["evidence_diagnosis"]["source_claim_jobs"] == []
         assert output["evidence_diagnosis"]["source_relations"] == []
-        assert {row["effective_relation"] for row in output["truth_diagnosis"]["relationships"]} == {"UNRESOLVED"}
-        assert output["truth_diagnosis"]["relationships"][0]["method"] == "SEMANTIC_INPUT_REVIEW_REQUIRED"
+        assert output["truth_diagnosis"]["relationships"] == []
+        assert len(output["truth_diagnosis"]["external_capability_signals"]) == 1
         assert db.query(SinglePromptDiagnosisReview).count() == 0
     finally:
         db.close()

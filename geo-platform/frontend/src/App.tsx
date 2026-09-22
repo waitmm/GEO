@@ -33,6 +33,7 @@ type V2SourceActionNotice = {
   detail: string;
 };
 type V2TruthDraft = {
+  sourceSignalId: string;
   capabilityLabel: string;
   productTruthStatus: "SUPPORTED" | "PARTIALLY_SUPPORTED" | "NOT_SUPPORTED" | "UNKNOWN";
   sourceReference: string;
@@ -1279,7 +1280,7 @@ export default function App() {
   const [v2DiagnosisReviewNote, setV2DiagnosisReviewNote] = useState("");
   const [v2AnswerReviewDecisions, setV2AnswerReviewDecisions] = useState<Record<string, V2AnswerReviewDecision>>({});
   const [v2TruthDraft, setV2TruthDraft] = useState<V2TruthDraft>({
-    capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "",
+    sourceSignalId: "", capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "",
   });
   const [v2TruthSaving, setV2TruthSaving] = useState(false);
   const v2PendingDiagnosisKey = useRef<string | null>(null);
@@ -2155,7 +2156,9 @@ export default function App() {
     const pendingEvents = (v2Diagnosis.result.output.answer_diagnosis?.events || []).filter(
       (event: any) => event.semantic_validation_status === "SEMANTIC_REVIEW_REQUIRED",
     );
-    const undecidedEvents = pendingEvents.filter((event: any) => !v2AnswerReviewDecisions[event.event_id]);
+    const undecidedEvents = pendingEvents.filter(
+      (event: any) => !v2AnswerReviewDecisions[event.event_id] && !v2StoredAnswerReviewDecisions.has(event.event_id),
+    );
     if (undecidedEvents.length) {
       message.warning(`还有 ${undecidedEvents.length} 个候选判断未处理`);
       document.getElementById("v2-answer-semantic-review")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2180,7 +2183,7 @@ export default function App() {
               scope: "ANSWER_SEMANTIC_EVENT",
               event_id: event.event_id,
               run_id: event.run_id,
-              decision: v2AnswerReviewDecisions[event.event_id],
+              decision: v2AnswerReviewDecisions[event.event_id] || v2StoredAnswerReviewDecisions.get(event.event_id),
               machine_speech_act: event.machine_speech_act,
               effective_speech_act: event.effective_speech_act,
               review_reasons: event.semantic_admission?.review_reasons || [],
@@ -2203,7 +2206,8 @@ export default function App() {
     const reason = v2DiagnosisReasonById.get(reasonId) as any;
     setV2TruthDraft((current) => ({
       ...current,
-      capabilityLabel: reason?.entity === project?.brand_name ? (reason?.normalized_reason || "") : "",
+      sourceSignalId: reasonId,
+      capabilityLabel: reason?.entity === project?.brand_name ? (reason?.effective_grounded_text || reason?.reason_span || "") : "",
     }));
     document.getElementById("v2-truth-review-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
     if (reason?.entity && reason.entity !== project?.brand_name) {
@@ -2211,10 +2215,24 @@ export default function App() {
     }
   }
 
+  function prepareV2TruthReviewFromCriterion(criterion: any) {
+    setV2TruthDraft((current) => ({
+      ...current,
+      sourceSignalId: String(criterion.criterion_id || ""),
+      capabilityLabel: String(criterion.effective_grounded_text || criterion.reason_span || ""),
+    }));
+    document.getElementById("v2-truth-review-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    message.info("市场选择标准只用于发起目标品牌事实核对，不会自动成为品牌推荐理由");
+  }
+
   async function submitV2TargetBrandTruth() {
     if (!v2Analysis || !v2Diagnosis?.result || !projectId || !activePromptId) return;
     if (!v2TruthDraft.capabilityLabel.trim()) {
       message.warning("请填写目标品牌自身的真实能力");
+      return;
+    }
+    if (!v2TruthDraft.sourceSignalId) {
+      message.warning("请先从一条答案能力信号发起事实核对");
       return;
     }
     if (["SUPPORTED", "PARTIALLY_SUPPORTED"].includes(v2TruthDraft.productTruthStatus) && !v2TruthDraft.sourceReference.trim()) {
@@ -2241,6 +2259,7 @@ export default function App() {
           result_hash: v2Diagnosis.result.output_hash,
           frozen_truth_set_hash: v2Diagnosis.diagnosis.truth_set_hash,
           expected_project_truth_set_hash: v2Diagnosis.project_truth_state.truth_set_hash,
+          source_signal_id: v2TruthDraft.sourceSignalId,
           capability_label: v2TruthDraft.capabilityLabel.trim(),
           product_truth_status: v2TruthDraft.productTruthStatus,
           source_reference: v2TruthDraft.sourceReference.trim(),
@@ -2249,8 +2268,8 @@ export default function App() {
         },
       );
       setV2Diagnosis((current) => current ? { ...current, project_truth_state: response.project_truth_state } : current);
-      setV2TruthDraft({ capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "" });
-      message.success("目标品牌事实已保存；当前诊断快照保持不变，请显式生成消费新事实的新诊断");
+      setV2TruthDraft({ sourceSignalId: "", capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "" });
+      message.success("目标品牌事实已保存；答案和证据保持不变，请刷新事实关系");
     } catch (error: any) {
       message.error(error.message || "保存目标品牌事实失败");
     } finally {
@@ -2259,19 +2278,23 @@ export default function App() {
   }
 
   async function createV2DiagnosisForUpdatedTruths() {
-    if (!v2Analysis?.context_id || !v2Diagnosis?.result || !v2SourcePreparation || !projectId || !activePromptId) return;
+    if (!v2Analysis?.context_id || !v2Diagnosis?.result || !v2Diagnosis.review || !projectId || !activePromptId) return;
     if (!v2Diagnosis.project_truth_state.differs_from_frozen_diagnosis) {
       message.info("项目事实集合与当前诊断快照一致，无需创建新诊断");
       return;
     }
     setV2DiagnosisLoading(true);
     try {
-      const status = await api.createSinglePromptV2AnswerDiagnosis(v2Analysis.analysis.analysis_id, {
+      const status = await api.createSinglePromptV2TruthReprojection(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        v2Diagnosis.result.result_version,
+        {
         project_id: projectId,
         prompt_id: activePromptId,
-        citation_manifest_id: v2SourcePreparation.citation_manifest.manifest_id,
-        citation_manifest_hash: v2SourcePreparation.citation_manifest.payload_hash,
-        answer_llm_policy: "CACHE_ONLY",
+        source_result_hash: v2Diagnosis.result.output_hash,
+        source_review_id: v2Diagnosis.review.review_id,
+        expected_project_truth_set_hash: v2Diagnosis.project_truth_state.truth_set_hash,
         idempotency_key: crypto.randomUUID(),
       });
       const params = new URLSearchParams(window.location.search);
@@ -2288,7 +2311,7 @@ export default function App() {
       setV2Execution(null);
       setV2Diagnosis(status);
       persistV2DiagnosisIdentity(status);
-      message.success("已创建消费最新品牌事实的新诊断；Answer Semantic 仅允许复用当前合格缓存");
+      message.success("事实关系已刷新；Answer 与 Evidence 未重算，请复核新的事实关系");
     } catch (error: any) {
       message.error(error.message || "创建新诊断失败");
     } finally {
@@ -4636,8 +4659,9 @@ export default function App() {
       return leftTarget - rightTarget || Number(left.run_id || 0) - Number(right.run_id || 0) || String(left.entity_text || "").localeCompare(String(right.entity_text || ""));
     });
   const v2VerifiedSemanticEvents = v2DiagnosisEvents.filter((event: any) => event.semantic_validation_status !== "SEMANTIC_REVIEW_REQUIRED");
+  const v2PriorAnswerReviewDecisions = v2DiagnosisOutput?.truth_reprojection?.prior_review?.decisions || [];
   const v2StoredAnswerReviewDecisions = new Map(
-    (v2Diagnosis?.review?.decisions || [])
+    (v2Diagnosis?.review?.decisions || v2PriorAnswerReviewDecisions)
       .filter((row: any) => row.scope === "ANSWER_SEMANTIC_EVENT" && row.event_id)
       .map((row: any) => [row.event_id, row.decision]),
   );
@@ -4654,9 +4678,25 @@ export default function App() {
   const v2DiagnosisSnapshots = v2DiagnosisOutput?.source_diagnosis?.snapshots || [];
   const v2DiagnosisSnapshotById = new Map(v2DiagnosisSnapshots.map((source: any) => [source.snapshot_id, source]));
   const v2DiagnosisRelations = v2DiagnosisOutput?.evidence_diagnosis?.source_relations || [];
-  const v2TruthRelationships = v2Diagnosis?.current_truth_relation_eligibility?.effective_relationships
+  const v2AllTruthRelationships = v2Diagnosis?.current_truth_relation_eligibility?.effective_relationships
     || v2DiagnosisOutput?.truth_diagnosis?.relationships
     || [];
+  const v2TruthRelationships = v2AllTruthRelationships.filter((row: any) => !row.cross_subject);
+  const v2PersistedExternalCapabilitySignals = v2DiagnosisOutput?.truth_diagnosis?.external_capability_signals || [];
+  const v2ExternalCapabilitySignals = v2PersistedExternalCapabilitySignals.length > 0
+    ? v2PersistedExternalCapabilitySignals
+    : v2AllTruthRelationships
+      .filter((row: any) => row.cross_subject)
+      .map((row: any) => {
+        const reason = v2DiagnosisReasonById.get(row.reason_id) as any;
+        return {
+          signal_id: `legacy-${row.relationship_id}`,
+          reason_id: row.reason_id,
+          source_subject: row.source_subject || reason?.entity || "外部品牌/工具",
+          capability_text: reason?.effective_grounded_text || reason?.reason_span || row.reason_id,
+          boundary: "TARGET_APPLICABILITY_ONLY_NOT_SOURCE_FACT_PROOF",
+        };
+      });
   const v2EvidenceEligibility = v2Diagnosis?.effective_evidence_eligibility;
   const v2SourceStatus = v2Diagnosis?.source_content_status_summary;
   const v2StrategyOutput = v2Strategy?.result?.output;
@@ -5140,7 +5180,7 @@ export default function App() {
                         { title: "你的判断", width: 190, render: (_: unknown, row: any) => v2Diagnosis.review ? <Tag>{v2Diagnosis.review.decisions?.find((item: any) => item.scope === "ANSWER_SEMANTIC_EVENT" && item.event_id === row.event_id)?.decision || "未记录"}</Tag> : <Select
                           style={{ width: 175 }}
                           placeholder="请选择"
-                          value={v2AnswerReviewDecisions[row.event_id]}
+                          value={v2AnswerReviewDecisions[row.event_id] || v2StoredAnswerReviewDecisions.get(row.event_id)}
                           options={V2_ANSWER_REVIEW_OPTIONS}
                           onChange={(value) => setV2AnswerReviewDecision(row, value)}
                         /> },
@@ -5204,6 +5244,7 @@ export default function App() {
                         { title: "原文标准", dataIndex: "effective_grounded_text" },
                         { title: "展示概括", dataIndex: "normalized_reason" },
                         { title: "状态", width: 220, render: (_: unknown, row: any) => <Tag color={row.normalization_eligible ? "green" : "gold"}>{row.semantic_validation_status}</Tag> },
+                        { title: "操作", width: 150, render: (_: unknown, row: any) => <Button size="small" onClick={() => prepareV2TruthReviewFromCriterion(row)}>核对目标品牌能力</Button> },
                       ]}
                     />
                     <Text type="secondary">市场选择标准独立于品牌推荐理由，不会自动进入品牌事实或 Reason→Truth 关系。</Text>
@@ -5244,17 +5285,17 @@ export default function App() {
                   <Alert type="info" showIcon message="SOURCE_SUPPORTS_REASON 只表示来源正文支持该理由；锚点为 UNPROVEN 时，不代表本次回答实际使用了该来源作为推荐依据。" />
                 </Card>
 
-                <Card size="small" title="目标品牌事实核对">
-                  {v2DiagnosisOutput?.truth_diagnosis?.truth_snapshot?.length === 0 ? <Alert type="warning" showIcon message="当前诊断冻结的品牌事实集合为空" description="所有理由保持 UNRESOLVED；这不表示目标品牌不具备这些能力。请在下方人工核对目标品牌自己的事实，当前诊断不会被原地改写。" /> : <Descriptions size="small" column={1} bordered>
-                    {v2DiagnosisOutput?.truth_diagnosis?.truth_snapshot?.map((truth: any) => <Descriptions.Item key={truth.truth_id} label={truth.capability_label || truth.capability_key}><Space><Tag>{truth.product_truth_status}</Tag><Text type="secondary">{truth.source_reference || "无来源记录"}</Text></Space></Descriptions.Item>)}
+                <Card size="small" title="目标品牌能力与可写事实">
+                  {v2DiagnosisOutput?.truth_diagnosis?.truth_snapshot?.length === 0 ? <Alert type="warning" showIcon message="当前诊断冻结的目标品牌事实集合为空" description="这不表示目标品牌不具备这些能力，也不阻断答案和引用证据分析；只会限制依赖该事实的策略声明与公开内容。" /> : <Descriptions size="small" column={1} bordered>
+                    {v2DiagnosisOutput?.truth_diagnosis?.truth_snapshot?.map((truth: any) => <Descriptions.Item key={truth.truth_id} label={truth.capability_label || truth.capability_key}><Space wrap><Tag>{truth.product_truth_status}</Tag><Tag color={truth.statement_eligibility?.status === "ELIGIBLE" ? "green" : truth.statement_eligibility?.status === "PROHIBITED" ? "red" : "gold"}>{truth.statement_eligibility?.status || "VERIFY_FIRST"}</Tag><Text type="secondary">{truth.source_reference || "无来源记录"}</Text></Space></Descriptions.Item>)}
                   </Descriptions>}
                   {v2Diagnosis.project_truth_state.differs_from_frozen_diagnosis && <Alert
                     style={{ marginTop: 14 }}
                     type="info"
                     showIcon
                     message={`项目事实已更新（当前 ${v2Diagnosis.project_truth_state.truths.length} 条），但本诊断仍使用冻结旧快照`}
-                    description="这是预期的版本隔离。点击后会创建新的诊断身份并重新审核；Answer Semantic 只允许复用当前合格缓存，不会调用外部模型。"
-                    action={<Button type="primary" icon={<RefreshCw size={15} />} loading={v2DiagnosisLoading} onClick={createV2DiagnosisForUpdatedTruths}>生成新诊断</Button>}
+                    description="这是预期的版本隔离。刷新只重新计算目标品牌事实关系，不重跑 Answer Semantic、SourceClaim 或 Alignment，也不会调用外部模型。"
+                    action={<Button type="primary" icon={<RefreshCw size={15} />} loading={v2DiagnosisLoading} disabled={!v2Diagnosis.review} onClick={createV2DiagnosisForUpdatedTruths}>刷新事实关系</Button>}
                   />}
                   {v2Diagnosis.project_truth_state.truths.length > 0 && <Collapse
                     ghost
@@ -5263,17 +5304,27 @@ export default function App() {
                       key: "current-project-truths",
                       label: `查看项目当前事实（${v2Diagnosis.project_truth_state.truths.length}）`,
                       children: <Descriptions size="small" column={1} bordered>
-                        {v2Diagnosis.project_truth_state.truths.map((truth) => <Descriptions.Item key={truth.truth_id} label={truth.capability_label}><Space wrap><Tag>{truth.product_truth_status}</Tag><Text>{truth.source_reference || truth.note}</Text><Text type="secondary">核对人：{truth.reviewed_by}</Text></Space></Descriptions.Item>)}
+                        {v2Diagnosis.project_truth_state.truths.map((truth) => <Descriptions.Item key={truth.truth_id} label={truth.capability_label}><Space wrap><Tag>{truth.product_truth_status}</Tag><Tag color={truth.statement_eligibility.status === "ELIGIBLE" ? "green" : truth.statement_eligibility.status === "PROHIBITED" ? "red" : "gold"}>{truth.statement_eligibility.status}</Tag><Text>{truth.source_reference || truth.note}</Text><Text type="secondary">核对人：{truth.reviewed_by}</Text></Space></Descriptions.Item>)}
                       </Descriptions>,
                     }]}
                   />}
-                  {v2TruthRelationships.some((row: any) => row.relation_purpose === "TARGET_CAPABILITY_FIT_SUGGESTION") && <Alert
-                    style={{ marginTop: 14 }}
-                    type="warning"
-                    showIcon
-                    message="存在跨品牌能力适配建议"
-                    description="竞品理由只能提示目标品牌事实可能相关，不能用目标品牌 Truth 证明竞品陈述，也不会自动形成可消费的覆盖关系。"
-                  />}
+                  {v2ExternalCapabilitySignals.length > 0 && <>
+                    <Divider orientation="left" plain>答案中的外部能力信号</Divider>
+                    <Alert type="info" showIcon message="这些是核对线索，不是竞品事实审核" description="答案把这些能力表述为其他品牌/工具的理由。它们可以提示去核对目标品牌自身能力，但不能证明目标品牌具备，也不会直接建立 Reason→Truth 覆盖关系。" />
+                    <Table
+                      style={{ marginTop: 12 }}
+                      rowKey="signal_id"
+                      size="small"
+                      pagination={false}
+                      dataSource={v2ExternalCapabilitySignals}
+                      columns={[
+                        { title: "主体", dataIndex: "source_subject", width: 150 },
+                        { title: "原文能力信号", dataIndex: "capability_text" },
+                        { title: "操作", width: 150, render: (_: unknown, row: any) => <Button size="small" onClick={() => prepareV2TruthReview(row.reason_id)}>核对目标品牌能力</Button> },
+                      ]}
+                    />
+                  </>}
+                  <Divider orientation="left" plain>目标品牌 Reason→Truth 关系</Divider>
                   <Table
                     className="v2-truth-table"
                     style={{ marginTop: 14 }}
@@ -5284,7 +5335,7 @@ export default function App() {
                     scroll={{ x: 930 }}
                     tableLayout="fixed"
                     columns={[
-                      { title: "推荐理由", width: 320, render: (_: unknown, row: any) => (v2DiagnosisReasonById.get(row.reason_id) as any)?.normalized_reason || row.reason_id },
+                      { title: "目标品牌理由", width: 320, render: (_: unknown, row: any) => (v2DiagnosisReasonById.get(row.reason_id) as any)?.effective_grounded_text || row.reason_id },
                       { title: "事实 ID", width: 110, render: (_: unknown, row: any) => row.truth_id || <Text type="secondary">待补事实</Text> },
                       { title: "关系", width: 220, render: (_: unknown, row: any) => v2Diagnosis.allowed_operations.includes("REVISE") && row.truth_id ? <Select
                         style={{ width: 200 }}
@@ -5292,7 +5343,7 @@ export default function App() {
                         onChange={(value) => stageV2DiagnosisEdit("TRUTH_RELATION", row.relationship_id, value)}
                         options={["FULLY_COVERS", "PARTIALLY_COVERS", "CONFLICTS", "UNRESOLVED"].map((value) => ({ label: value, value }))}
                       /> : <Tag color={row.effective_relation === "FULLY_COVERS" ? "green" : row.effective_relation === "CONFLICTS" ? "red" : "gold"}>{row.effective_relation}</Tag> },
-                      { title: "判断依据", width: 240, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Text>{row.method}</Text>{row.cross_subject && <Text type="secondary">{row.source_subject} → {row.target_subject}（待人工核对适配）</Text>}</Space> },
+                      { title: "判断依据", width: 240, render: (_: unknown, row: any) => <Text>{row.method}</Text> },
                       { title: "人工核对", width: 120, render: (_: unknown, row: any) => row.truth_id ? <Text type="secondary">已有事实</Text> : <Button size="small" onClick={() => prepareV2TruthReview(row.reason_id)}>核对事实</Button> },
                     ]}
                   />
@@ -5302,7 +5353,7 @@ export default function App() {
                       type="info"
                       showIcon
                       message="这里只确认目标品牌自身事实"
-                      description="不能把答案中其他品牌、工具或来源声称的能力直接写给目标品牌。支持或部分支持必须提供可核对来源；保存事实不会自动确认 Reason→Truth 关系。"
+                      description="一次只确认一项可独立判真的能力。答案信号只是核对触发器；支持或部分支持必须提供目标品牌自身的可核对来源。事实不会自动变成策略，也不会阻断答案和证据分析。"
                     />
                     <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
                       <Col xs={24} md={10}><Input value={v2TruthDraft.capabilityLabel} onChange={(event) => setV2TruthDraft((current) => ({ ...current, capabilityLabel: event.target.value }))} placeholder="目标品牌真实能力，例如：支持生成短链接" maxLength={160} /></Col>

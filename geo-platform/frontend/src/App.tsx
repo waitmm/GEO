@@ -1333,6 +1333,7 @@ export default function App() {
   const [v2DiagnosisEdits, setV2DiagnosisEdits] = useState<Record<string, Omit<SinglePromptV2DiagnosisEdit, "reason">>>({});
   const [v2DiagnosisEditor, setV2DiagnosisEditor] = useState("本地审核人");
   const [v2DiagnosisEditReason, setV2DiagnosisEditReason] = useState("");
+  const [v2DiagnosisRevisionError, setV2DiagnosisRevisionError] = useState<string | null>(null);
   const [v2DiagnosisReviewNote, setV2DiagnosisReviewNote] = useState("");
   const [v2AnswerReviewDecisions, setV2AnswerReviewDecisions] = useState<Record<string, V2AnswerReviewDecision>>({});
   const [v2TruthDraft, setV2TruthDraft] = useState<V2TruthDraft>({
@@ -2141,6 +2142,7 @@ export default function App() {
 
   function stageV2DiagnosisEdit(targetType: SinglePromptV2DiagnosisEdit["target_type"], targetId: string, value: string) {
     const key = `${targetType}:${targetId}`;
+    setV2DiagnosisRevisionError(null);
     setV2DiagnosisEdits((current) => ({ ...current, [key]: { target_type: targetType, target_id: targetId, value } }));
   }
 
@@ -2167,9 +2169,15 @@ export default function App() {
     const edits = Object.values(v2DiagnosisEdits);
     if (!edits.length) return;
     if (!v2DiagnosisEditReason.trim()) {
-      message.warning("请填写本次语义修改原因");
+      setV2DiagnosisRevisionError("修改原因是版本审计必填项，请填写后再保存。");
+      window.setTimeout(() => {
+        const input = document.getElementById("v2-diagnosis-edit-reason");
+        input?.scrollIntoView({ behavior: "smooth", block: "center" });
+        input?.focus();
+      }, 0);
       return;
     }
+    setV2DiagnosisRevisionError(null);
     setV2DiagnosisLoading(true);
     try {
       const result = v2Diagnosis.result;
@@ -2191,9 +2199,12 @@ export default function App() {
       persistV2DiagnosisIdentity(status);
       setV2DiagnosisEdits({});
       setV2DiagnosisEditReason("");
+      setV2DiagnosisRevisionError(null);
       message.success("修改已保存为新的不可变结果版本");
     } catch (error: any) {
-      message.error(error.message || "保存诊断修改失败");
+      const detail = error.message || "保存诊断修改失败";
+      setV2DiagnosisRevisionError(detail);
+      message.error(detail);
     } finally {
       setV2DiagnosisLoading(false);
     }
@@ -5623,7 +5634,16 @@ export default function App() {
                     />}
                     <Row gutter={[12, 12]}>
                       <Col xs={24} md={8}><Input value={v2DiagnosisEditor} onChange={(event) => setV2DiagnosisEditor(event.target.value)} placeholder="审核人" /></Col>
-                      <Col xs={24} md={16}><Input value={v2DiagnosisEditReason} onChange={(event) => setV2DiagnosisEditReason(event.target.value)} placeholder="有语义修改时填写修改原因" /></Col>
+                      <Col xs={24} md={16}><Input
+                        id="v2-diagnosis-edit-reason"
+                        status={Object.keys(v2DiagnosisEdits).length > 0 && !v2DiagnosisEditReason.trim() ? "error" : undefined}
+                        value={v2DiagnosisEditReason}
+                        onChange={(event) => {
+                          setV2DiagnosisEditReason(event.target.value);
+                          setV2DiagnosisRevisionError(null);
+                        }}
+                        placeholder="修改原因（有修改时必填）"
+                      /></Col>
                     </Row>
                     {v2PendingSemanticEvents.length > 0 && <Alert
                       type={v2AnsweredSemanticReviewCount === v2PendingSemanticEvents.length ? "success" : "warning"}
@@ -5631,7 +5651,15 @@ export default function App() {
                       message={`候选判断已处理 ${v2AnsweredSemanticReviewCount}/${v2PendingSemanticEvents.length}`}
                       description="可以保留不确定，但每个待审事件都必须有明确处置。只有“确认是候选”可进入后续消费；它仍不是 RECOMMEND、品牌事实或证据结论。"
                     />}
-                    {Object.keys(v2DiagnosisEdits).length > 0 && <Alert type="warning" showIcon message={`${Object.keys(v2DiagnosisEdits).length} 项修改尚未保存为新版本`} action={<Button type="primary" loading={v2DiagnosisLoading} onClick={saveV2DiagnosisRevision}>保存为新版本</Button>} />}
+                    {Object.keys(v2DiagnosisEdits).length > 0 && <Alert
+                      type={v2DiagnosisRevisionError || !v2DiagnosisEditReason.trim() ? "error" : "warning"}
+                      showIcon
+                      message={`${Object.keys(v2DiagnosisEdits).length} 项修改尚未保存为新版本`}
+                      description={v2DiagnosisRevisionError || (!v2DiagnosisEditReason.trim()
+                        ? "请填写上方红框中的修改原因；这是新版本的审计记录。"
+                        : "保存会创建新的不可变 ResultVersion，原结果不会被覆盖。")}
+                      action={<Button type="primary" loading={v2DiagnosisLoading} onClick={saveV2DiagnosisRevision}>{v2DiagnosisLoading ? "正在保存" : "保存为新版本"}</Button>}
+                    />}
                     <Input.TextArea value={v2DiagnosisReviewNote} onChange={(event) => setV2DiagnosisReviewNote(event.target.value)} rows={2} placeholder="审核说明，可记录仍待补充的事实或来源限制" />
                     <Popconfirm title={v2IsTruthReprojection ? "确认能力关系并检查策略资格？" : "完成当前结果版本审核？"} description="确认不会把 UNRESOLVED、UNPROVEN 或失败项升级为有效事实。" onConfirm={completeV2DiagnosisReview} okText="确认" cancelText="取消">
                       <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2DiagnosisLoading} disabled={Object.keys(v2DiagnosisEdits).length > 0 || v2AnsweredSemanticReviewCount < v2PendingSemanticEvents.length}>{v2IsTruthReprojection ? "确认能力关系并进入策略" : "完成本版审核"}</Button>

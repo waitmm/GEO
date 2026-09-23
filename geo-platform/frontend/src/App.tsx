@@ -2155,6 +2155,27 @@ export default function App() {
     });
   }
 
+  function discardV2DiagnosisEdits() {
+    const correctedEventIds = new Set(
+      Object.values(v2DiagnosisEdits)
+        .filter((edit) => edit.target_type === "RECOMMENDATION_EVENT")
+        .map((edit) => edit.target_id),
+    );
+    setV2DiagnosisEdits({});
+    setV2DiagnosisEditReason("");
+    setV2DiagnosisRevisionError(null);
+    if (correctedEventIds.size) {
+      setV2AnswerReviewDecisions((current) => {
+        const next = { ...current };
+        correctedEventIds.forEach((eventId) => {
+          if (next[eventId] === "CORRECT_TO_MENTION") delete next[eventId];
+        });
+        return next;
+      });
+    }
+    message.info("已撤销未保存修改；可以按当前机器结论完成本版审核");
+  }
+
   function setV2AnswerReviewDecision(event: any, decision: V2AnswerReviewDecision) {
     setV2AnswerReviewDecisions((current) => ({ ...current, [event.event_id]: decision }));
     if (decision === "CORRECT_TO_MENTION") {
@@ -5632,6 +5653,12 @@ export default function App() {
                       message="只需确认新应用的能力关系"
                       description="原 Answer 与 Evidence 审核已经按精确版本继承，本次没有重新计算模型结果。确认后将直接检查策略资格。"
                     />}
+                    {v2IsEvidenceResult && Object.keys(v2DiagnosisEdits).length === 0 && <Alert
+                      type="info"
+                      showIcon
+                      message="认可当前 Evidence 结论时，不需要创建新版本"
+                      description="直接点击下方“完成本版审核”即可。只有修改机器关系结论时，才需要先保存为新的 ResultVersion。"
+                    />}
                     <Row gutter={[12, 12]}>
                       <Col xs={24} md={8}><Input value={v2DiagnosisEditor} onChange={(event) => setV2DiagnosisEditor(event.target.value)} placeholder="审核人" /></Col>
                       <Col xs={24} md={16}><Input
@@ -5658,7 +5685,12 @@ export default function App() {
                       description={v2DiagnosisRevisionError || (!v2DiagnosisEditReason.trim()
                         ? "请填写上方红框中的修改原因；这是新版本的审计记录。"
                         : "保存会创建新的不可变 ResultVersion，原结果不会被覆盖。")}
-                      action={<Button type="primary" loading={v2DiagnosisLoading} onClick={saveV2DiagnosisRevision}>{v2DiagnosisLoading ? "正在保存" : "保存为新版本"}</Button>}
+                      action={<Space wrap>
+                        <Popconfirm title="撤销这些未保存修改？" description="将恢复当前 ResultVersion 中的机器结论，然后可以直接完成审核。" okText="撤销" cancelText="取消" onConfirm={discardV2DiagnosisEdits}>
+                          <Button disabled={v2DiagnosisLoading}>撤销修改</Button>
+                        </Popconfirm>
+                        <Button type="primary" loading={v2DiagnosisLoading} onClick={saveV2DiagnosisRevision}>{v2DiagnosisLoading ? "正在保存" : "保存为新版本"}</Button>
+                      </Space>}
                     />}
                     <Input.TextArea value={v2DiagnosisReviewNote} onChange={(event) => setV2DiagnosisReviewNote(event.target.value)} rows={2} placeholder="审核说明，可记录仍待补充的事实或来源限制" />
                     <Popconfirm title={v2IsTruthReprojection ? "确认能力关系并检查策略资格？" : "完成当前结果版本审核？"} description="确认不会把 UNRESOLVED、UNPROVEN 或失败项升级为有效事实。" onConfirm={completeV2DiagnosisReview} okText="确认" cancelText="取消">

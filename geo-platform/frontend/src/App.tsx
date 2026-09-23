@@ -2035,12 +2035,12 @@ export default function App() {
     }
   }
 
-  async function refreshV2Diagnosis() {
+  async function refreshV2Diagnosis(silent = false) {
     if (!v2Analysis || !projectId || !activePromptId) return;
     const params = new URLSearchParams(window.location.search);
     const diagnosisId = v2Diagnosis?.diagnosis.diagnosis_id || params.get("v2_diagnosis");
     if (!diagnosisId) return;
-    setV2DiagnosisLoading(true);
+    if (!silent) setV2DiagnosisLoading(true);
     try {
       const status = await api.getSinglePromptV2Diagnosis(v2Analysis.analysis.analysis_id, diagnosisId, projectId, activePromptId);
       setV2Diagnosis(status);
@@ -2049,7 +2049,7 @@ export default function App() {
       setV2Diagnosis(null);
       message.error(error.message || "读取诊断状态失败");
     } finally {
-      setV2DiagnosisLoading(false);
+      if (!silent) setV2DiagnosisLoading(false);
     }
   }
 
@@ -3110,7 +3110,7 @@ export default function App() {
   }, [page, v2Analysis?.analysis.analysis_id, v2Analysis?.context_id, projectId, activePromptId]);
   useEffect(() => {
     if (!v2Diagnosis || !["QUEUED", "RUNNING", "EVIDENCE_QUEUED", "EVIDENCE_RUNNING"].includes(v2Diagnosis.compute_status)) return;
-    const timer = window.setInterval(() => { void refreshV2Diagnosis(); }, 3000);
+    const timer = window.setInterval(() => { void refreshV2Diagnosis(true); }, 3000);
     return () => window.clearInterval(timer);
   }, [v2Diagnosis?.diagnosis.diagnosis_id, v2Diagnosis?.compute_status, projectId, activePromptId]);
   useEffect(() => {
@@ -4716,6 +4716,7 @@ export default function App() {
   const decisionMarketUnknownEntities = decisionMarketEntities.filter((item: any) => item.relationship === "UNKNOWN_ENTITY");
   const v2DiagnosisOutput = v2Diagnosis?.result?.output;
   const v2IsTruthReprojection = Boolean(v2DiagnosisOutput?.truth_reprojection);
+  const v2EvidenceExecutionActive = ["EVIDENCE_QUEUED", "EVIDENCE_RUNNING"].includes(v2Diagnosis?.compute_status || "");
   const v2DiagnosisEvents = v2DiagnosisOutput?.answer_diagnosis?.events || [];
   const v2PendingSemanticEvents = v2DiagnosisEvents
     .filter(v2AnswerEventNeedsReview)
@@ -5139,7 +5140,7 @@ export default function App() {
                 </Tag>}
                 {!v2Diagnosis ? <Space wrap><Select value={v2AnswerPolicy} onChange={setV2AnswerPolicy} options={[{ value: "CACHE_ONLY", label: "仅兼容缓存" }, { value: "ALLOW_EXTERNAL", label: "授权 Answer LLM" }]} /><Button type="primary" icon={<Play size={15} />} loading={v2DiagnosisLoading} disabled={!v2SourcePreparation} onClick={startV2Diagnosis}>开始 Answer Semantic</Button></Space> : <>
                   <Tooltip title="只读取当前诊断执行状态">
-                    <Button icon={<RefreshCw size={15} />} loading={v2DiagnosisLoading} onClick={refreshV2Diagnosis} aria-label="刷新诊断状态" />
+                    <Button icon={<RefreshCw size={15} />} loading={v2DiagnosisLoading} onClick={() => void refreshV2Diagnosis()} aria-label="刷新诊断状态" />
                   </Tooltip>
                   {v2Diagnosis.allowed_operations.includes("RETRY") && <Button danger loading={v2DiagnosisLoading} onClick={retryV2DiagnosisExecution}>明确重试</Button>}
                 </>}
@@ -5658,15 +5659,20 @@ export default function App() {
                       <Descriptions.Item label="Answer Review">{v2Diagnosis.review ? <Text code>{v2Diagnosis.review.review_id}</Text> : <Tag color="gold">尚未审核</Tag>}</Descriptions.Item>
                       <Descriptions.Item label="Citation Manifest">{v2SourcePreparation ? <Text code>{v2SourcePreparation.citation_manifest.manifest_id}</Text> : <Tag color="red">缺失</Tag>}</Descriptions.Item>
                       <Descriptions.Item label="Source Completion">{v2SourcePreparation?.completion_manifest ? <Tag color={v2SourcePreparation.completion_manifest.status === "FROZEN" ? "green" : "red"}>{v2SourcePreparation.completion_manifest.status}</Tag> : <Tag color="gold">尚未冻结</Tag>}</Descriptions.Item>
-                      <Descriptions.Item label="Evidence 外部策略">{v2Diagnosis.result.output.result_scope === "ANSWER_ONLY" ? <Select style={{ minWidth: 150 }} value={v2EvidencePolicy} onChange={setV2EvidencePolicy} options={[{ value: "CACHE_ONLY", label: "仅兼容缓存" }, { value: "ALLOW_EXTERNAL", label: "授权 Evidence LLM" }]} /> : "已形成结果"}</Descriptions.Item>
+                      <Descriptions.Item label="Evidence 外部策略">{v2Diagnosis.result.output.result_scope === "ANSWER_ONLY" ? <Select disabled={v2EvidenceExecutionActive} style={{ minWidth: 150 }} value={v2EvidencePolicy} onChange={setV2EvidencePolicy} options={[{ value: "CACHE_ONLY", label: "仅兼容缓存" }, { value: "ALLOW_EXTERNAL", label: "授权 Evidence LLM" }]} /> : "已形成结果"}</Descriptions.Item>
                     </Descriptions>
                     {v2Diagnosis.result.output.result_scope === "ANSWER_AND_EVIDENCE" ? <Alert type="success" showIcon message="Evidence 已消费精确双输入版本" description="当前 Evidence 结果是新的不可变 ResultVersion；若需人工确认，应审核这个新版本，不能继承 Answer-only 版本的审核。" /> : v2Diagnosis.result.output.result_scope !== "ANSWER_ONLY" ? <Alert type="info" showIcon message="历史诊断结果不具备本切片的显式 Evidence 交接身份" description="系统不会通过 latest Snapshot 或旧工作流状态补齐。" /> : <>
                       {!v2Diagnosis.review && <Alert type="warning" showIcon message="Answer Result 尚未完成精确版本审核" description="Evidence 不会把机器输出或其他结果版本的审核当成本次授权。" />}
                       {!v2SourcePreparation?.completion_manifest && <Alert type="warning" showIcon message="来源处置范围尚未冻结" description="请先逐条处置 Citation Manifest 中全部来源，再冻结 Source Completion Manifest。" />}
                       {v2SourcePreparation?.completion_manifest?.status === "NO_USABLE_SOURCE" && <Alert type="error" showIcon message="没有可消费的正文来源" description="全部来源被放弃只能关闭处置清单，不能获得来源证据资格。" />}
-                      <Popconfirm title="执行 Evidence 消费？" description="将严格绑定当前 Answer Result/Review 与 Source Completion Manifest；选择外部 LLM 时必须已有明确授权。" okText="执行" cancelText="取消" onConfirm={continueV2Evidence}>
+                      {v2EvidenceExecutionActive ? <Alert
+                        type="info"
+                        showIcon
+                        message={v2Diagnosis.compute_status === "EVIDENCE_QUEUED" ? "Evidence 已排队" : "Evidence 正在执行"}
+                        description={v2Diagnosis.progress.detail || "worker 正在使用已冻结的 Answer Review 与 Source Completion Manifest 计算证据关系；页面会自动更新，刷新不会重复执行。"}
+                      /> : <Popconfirm title="执行 Evidence 消费？" description="将严格绑定当前 Answer Result/Review 与 Source Completion Manifest；选择外部 LLM 时必须已有明确授权。" okText="执行" cancelText="取消" onConfirm={continueV2Evidence}>
                         <Button type="primary" icon={<Play size={15} />} loading={v2DiagnosisLoading} disabled={!v2Diagnosis.review || v2SourcePreparation?.completion_manifest?.status !== "FROZEN"}>通过 Gate 并执行 Evidence</Button>
-                      </Popconfirm>
+                      </Popconfirm>}
                     </>}
                   </Space>
                 </Card>

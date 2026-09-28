@@ -45,6 +45,7 @@ from app.modules.single_prompt_v2.diagnosis import (
 )
 from app.modules.single_prompt_v2.citation_contribution import (
     CitationContributionJudge,
+    _build_calibration_set,
     _rank_candidate_passages,
     authorize_citation_contribution,
     build_answer_units,
@@ -1688,6 +1689,56 @@ def test_citation_contribution_strict_candidate_evaluation_gate():
         CitationContributionJudge(StaticClient(hallucinated_span)).judge([unit], [passage], [pair])
 
 
+def test_citation_contribution_calibration_freezes_unbiased_and_diagnostic_samples():
+    units = [
+        {
+            "answer_unit_id": f"au-{index}",
+            "primary_type": "PROCEDURE" if index % 2 else "RULE_CONDITION",
+            "semantic_facets": ["BRAND_CAPABILITY"] if index == 0 else [],
+            "subject_markers": ["爱短链"] if index == 0 else [],
+            "condition_markers": ["如果"] if index == 1 else [],
+            "negation_markers": [],
+            "comparison_markers": [],
+        }
+        for index in range(50)
+    ]
+    evaluations = [
+        {
+            "evaluation_id": f"evaluation-{index}",
+            "answer_unit_id": f"au-{index}",
+            "correspondence_mode": "FAITHFUL_PARAPHRASE" if index % 3 == 0 else "NO_CORRESPONDENCE",
+            "evidence_relation": "SUPPORTS_PARTIAL" if index % 3 == 0 else "NO_MATCH",
+        }
+        for index in range(50)
+    ]
+    controls = [{"control_id": f"control-{index}"} for index in range(4)]
+
+    first, first_meta = _build_calibration_set(
+        contribution_id="contribution-fixed",
+        plan_hash="a" * 64,
+        evaluations=evaluations,
+        recall_controls=controls,
+        answer_units=units,
+    )
+    second, second_meta = _build_calibration_set(
+        contribution_id="contribution-fixed",
+        plan_hash="a" * 64,
+        evaluations=list(reversed(evaluations)),
+        recall_controls=list(reversed(controls)),
+        answer_units=list(reversed(units)),
+    )
+
+    assert first == second
+    assert first_meta == second_meta
+    assert first_meta["unbiased_sample_count"] == 40
+    assert first_meta["unbiased_population_count"] == 50
+    assert all(item["target_type"] == "EVALUATION" for item in first[:40])
+    assert {item["sample_group"] for item in first[:40]} == {"UNBIASED_CHECK"}
+    assert any(item["target_type"] == "RECALL_CONTROL" for item in first[40:])
+    assert all(item["sample_group"] == "DIAGNOSTIC_SUPPLEMENT" for item in first[40:])
+    assert len(first) <= 60
+
+
 def test_citation_contribution_execution_separates_evaluations_bindings_and_waiver(monkeypatch, tmp_path):
     db, engine = _session(tmp_path)
     Session = sessionmaker(bind=engine, expire_on_commit=False)
@@ -1800,6 +1851,80 @@ def test_citation_contribution_execution_separates_evaluations_bindings_and_waiv
         assert metrics["false_positive"] == 0
         assert metrics["false_negative"] == 0
         assert db.query(SinglePromptCitationContributionReview).count() == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_citation_contribution_all_failed_blocks_empty_calibration_review(monkeypatch, tmp_path):
+    db, engine = _session(tmp_path)
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+        execution, _ = _create_contribution_fixture_plan(db, fixture)
+        plan = json.loads(execution.plan_json)
+        authorize_citation_contribution(
+            db,
+            contribution_id=execution.contribution_id,
+            project_id=execution.project_id,
+            prompt_id=execution.prompt_id,
+            plan_hash=execution.plan_hash,
+            provider="deepseek",
+            model=plan["call_plan"]["model"],
+            max_external_requests=plan["call_plan"]["max_new_external_requests"],
+            max_budget_cny=plan["call_plan"]["budget_upper_bound_cny"],
+            cost_upper_bound_cny=plan["call_plan"]["budget_upper_bound_cny"],
+            pricing_basis=plan["call_plan"]["pricing_basis"],
+            authorized_by="qa",
+        )
+
+        class Counters:
+            call_count = 0
+            external_call_count = 0
+            external_token_count = 0
+
+        class FailedJudge:
+            def __init__(self):
+                self.client = Counters()
+
+            def judge(self, answer_units, passages, candidate_pairs, db=None):
+                self.client.external_call_count += 1
+                self.client.external_token_count += 50
+                error = RuntimeError("strict schema rejected")
+                error.code = "FAILED_SCHEMA"
+                raise error
+
+        contribution_id = execution.contribution_id
+        db.close()
+        execute_citation_contribution(contribution_id, session_factory=Session, judge=FailedJudge())
+        db = Session()
+        status = get_citation_contribution_status(
+            db,
+            analysis_id=fixture["analysis"].analysis_id,
+            contribution_id=contribution_id,
+            project_id=fixture["analysis"].project_id,
+            prompt_id=fixture["analysis"].prompt_id,
+        )
+        assert status["execution"]["status"] == "CALIBRATION_BLOCKED_NO_VALID_EVALUATIONS"
+        assert status["result"]["stats"]["citation_dispositions"]["ANALYSIS_FAILED"] == 1
+        assert status["result"]["output"]["calibration_set"] == []
+        assert status["allowed_operations"] == ["VIEW"]
+        with pytest.raises(HTTPException) as rejected:
+            complete_citation_contribution_review(
+                db,
+                contribution_id=contribution_id,
+                result_version=status["result"]["result_version"],
+                project_id=fixture["analysis"].project_id,
+                prompt_id=fixture["analysis"].prompt_id,
+                result_hash=status["result"]["output_hash"],
+                reviewable_set_hash=status["result"]["reviewable_set_hash"],
+                reviewer="qa",
+                decisions=[],
+                missed_bindings=[],
+                note="must not create empty review",
+            )
+        assert rejected.value.detail["code"] == "NO_CALIBRATION_TARGETS"
+        assert db.query(SinglePromptCitationContributionReview).count() == 0
     finally:
         db.close()
         engine.dispose()

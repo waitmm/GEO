@@ -1339,6 +1339,7 @@ export default function App() {
   const [v2CitationContributionLoading, setV2CitationContributionLoading] = useState(false);
   const [v2CitationCalibrationReviewer, setV2CitationCalibrationReviewer] = useState("本地审核人");
   const [v2CitationCalibrationDecisions, setV2CitationCalibrationDecisions] = useState<Record<string, string>>({});
+  const [v2CitationCalibrationCorrections, setV2CitationCalibrationCorrections] = useState<Record<string, { correspondence_mode?: string; evidence_relation?: string }>>({});
   const [v2AnswerReviewDecisions, setV2AnswerReviewDecisions] = useState<Record<string, V2AnswerReviewDecision>>({});
   const [v2TruthDraft, setV2TruthDraft] = useState<V2TruthDraft>({
     sourceSignalId: "", capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "",
@@ -2203,20 +2204,21 @@ export default function App() {
       message.warning("请逐项完成冻结校准集合");
       return;
     }
+    if (calibration.some((item: any) => v2CitationCalibrationDecisions[item.target_id] === "CORRECT" && (!v2CitationCalibrationCorrections[item.target_id]?.correspondence_mode || !v2CitationCalibrationCorrections[item.target_id]?.evidence_relation))) {
+      message.warning("修正项必须同时选择内容对应方式和证据关系");
+      return;
+    }
     const decisions = calibration.map((item: any) => {
       const selected = v2CitationCalibrationDecisions[item.target_id];
-      const correction = selected.startsWith("CORRECT_") ? selected.slice("CORRECT_".length) : null;
+      const correction = v2CitationCalibrationCorrections[item.target_id];
       const subjectAttributionError = selected === "REJECT_SUBJECT" || selected === "REJECT_BOTH";
       const decisionRoleError = selected === "REJECT_DECISION_ROLE" || selected === "REJECT_BOTH";
-      const correspondence = correction === "NO_MATCH" ? "NO_CORRESPONDENCE"
-        : correction === "RELATED_ONLY" ? "TOPICAL_ONLY"
-        : correction ? "FAITHFUL_PARAPHRASE" : null;
       return {
         target_type: item.target_type,
         target_id: item.target_id,
-        decision: correction ? "CORRECT" : selected.startsWith("REJECT_") ? "REJECT" : selected,
-        correspondence_mode: correspondence,
-        evidence_relation: correction,
+        decision: selected === "CORRECT" ? "CORRECT" : selected.startsWith("REJECT_") ? "REJECT" : selected,
+        correspondence_mode: selected === "CORRECT" ? correction?.correspondence_mode : null,
+        evidence_relation: selected === "CORRECT" ? correction?.evidence_relation : null,
         subject_attribution_error: subjectAttributionError,
         decision_role_error: decisionRoleError,
         note: "",
@@ -5934,44 +5936,69 @@ export default function App() {
                         <Descriptions.Item label="Disposition 覆盖">{Math.round(100 * Number(v2CitationContribution.result.stats.citation_disposition_coverage || 0))}%</Descriptions.Item>
                         <Descriptions.Item label="生成影响"><Tag>UNAVAILABLE</Tag></Descriptions.Item>
                       </Descriptions>
-                      {!v2CitationContribution.review && <>
+                      {!v2CitationContribution.review && !(v2CitationContribution.allowed_operations || []).includes("COMPLETE_CALIBRATION") && <Alert type="error" showIcon message="暂无可人工校准的合格关系" description={v2CitationContribution.execution.blocker?.detail || "机器输出未通过准入，不能通过空审核继续主链。"} />}
+                      {!v2CitationContribution.review && (v2CitationContribution.allowed_operations || []).includes("COMPLETE_CALIBRATION") && <>
                         <Alert type="warning" showIcon message="请校准机器判断，不是确认模型使用了来源" description="逐项核对内容对应、主体和限定；召回边界样本用于发现被候选预算过滤的真实关系。内容对应不会升级为生成因果。" />
                         <Input value={v2CitationCalibrationReviewer} onChange={(event) => setV2CitationCalibrationReviewer(event.target.value)} placeholder="审核人" />
                         <Table
                           size="small"
                           pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                          scroll={{ x: 1460 }}
                           rowKey="target_id"
                           dataSource={v2CitationContribution.result.output.calibration_set || []}
                           columns={[
-                            { title: "机器判断", width: 170, render: (_: unknown, row: any) => {
-                              const evaluation = (v2CitationContribution.result?.output.evaluations || []).find((item: any) => item.evaluation_id === row.target_id);
-                              return row.target_type === "RECALL_CONTROL"
-                                ? <Space direction="vertical" size={0}><Tag color="gold">召回边界样本</Tag><Tag>未送模型</Tag></Space>
-                                : <Space direction="vertical" size={0}><Tag>{evaluation?.correspondence_mode}</Tag><Tag>{evaluation?.evidence_relation}</Tag></Space>;
-                            } },
-                            { title: "AnswerUnit / 来源片段", render: (_: unknown, row: any) => {
+                            { title: "抽样", width: 170, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Tag color={row.sample_group === "UNBIASED_CHECK" ? "blue" : "gold"}>{row.sample_group === "UNBIASED_CHECK" ? "无偏检查" : "诊断补充"}</Tag><Text type="secondary">{row.sampling_reason}</Text></Space> },
+                            { title: "AnswerUnit", width: 380, render: (_: unknown, row: any) => {
                               const evaluation = (v2CitationContribution.result?.output.evaluations || []).find((item: any) => item.evaluation_id === row.target_id);
                               const control = (v2CitationContribution.result?.output.recall_controls || []).find((item: any) => item.control_id === row.target_id);
                               const target = evaluation || control;
                               const unit = (v2CitationContribution.result?.output.answer_units || []).find((item: any) => item.answer_unit_id === target?.answer_unit_id);
-                              return <Space direction="vertical" size={4}><Text>{unit?.raw_text || ""}</Text><Text type="secondary">{evaluation?.source_span || control?.passage_text || "机器未建立内容对应"}</Text></Space>;
+                              const qualifiers = [...(unit?.negation_markers || []), ...(unit?.condition_markers || []), ...(unit?.comparison_markers || [])];
+                              return <Space direction="vertical" size={4}>
+                                <Space wrap><Tag>{unit?.primary_type}</Tag>{(unit?.semantic_facets || []).map((item: string) => <Tag key={item}>{item}</Tag>)}</Space>
+                                {unit?.context_heading && <Text type="secondary">上下文：{unit.context_heading}</Text>}
+                                <Text>{unit?.raw_text || ""}</Text>
+                                <Text type="secondary">主体：{(unit?.subject_markers || []).join(" / ") || "未显式标记"}；条件/限定：{qualifiers.join(" / ") || "无"}</Text>
+                              </Space>;
                             } },
-                            { title: "人工校准", width: 230, render: (_: unknown, row: any) => <Select style={{ width: "100%" }} value={v2CitationCalibrationDecisions[row.target_id]} onChange={(value) => setV2CitationCalibrationDecisions((current) => ({ ...current, [row.target_id]: value }))} options={[
-                              { value: "ACCEPT", label: row.target_type === "RECALL_CONTROL" ? "未发现漏召回" : "接受机器判断" },
-                              ...(row.target_type === "EVALUATION" ? [
-                                { value: "REJECT", label: "拒绝该判断" },
-                                { value: "REJECT_SUBJECT", label: "主体归属错误" },
-                                { value: "REJECT_DECISION_ROLE", label: "决策角色错误" },
-                                { value: "REJECT_BOTH", label: "主体与角色均错误" },
-                              ] : []),
-                              { value: "CORRECT_SUPPORTS_FULL", label: "改为完整支持" },
-                              { value: "CORRECT_SUPPORTS_PARTIAL", label: "改为部分支持" },
-                              { value: "CORRECT_RELATED_ONLY", label: "改为仅相关" },
-                              { value: "CORRECT_NO_MATCH", label: "改为不对应" },
-                            ]} /> },
+                            { title: "Citation / Source passage", width: 460, render: (_: unknown, row: any) => {
+                              const evaluation = (v2CitationContribution.result?.output.evaluations || []).find((item: any) => item.evaluation_id === row.target_id);
+                              const control = (v2CitationContribution.result?.output.recall_controls || []).find((item: any) => item.control_id === row.target_id);
+                              const target = evaluation || control;
+                              return <Space direction="vertical" size={4}>
+                                <Link href={target?.citation_url} target="_blank" rel="noreferrer">{target?.citation_title || target?.citation_url || "未知来源"}</Link>
+                                <Text type="secondary" copyable>{target?.citation_url || ""}</Text>
+                                <Text>{evaluation?.source_passage_text || control?.passage_text || "无可展示原文"}</Text>
+                                {evaluation?.source_span && <Text mark>机器定位：{evaluation.source_span}</Text>}
+                              </Space>;
+                            } },
+                            { title: "机器判断与边界", width: 260, render: (_: unknown, row: any) => {
+                              const evaluation = (v2CitationContribution.result?.output.evaluations || []).find((item: any) => item.evaluation_id === row.target_id);
+                              const control = (v2CitationContribution.result?.output.recall_controls || []).find((item: any) => item.control_id === row.target_id);
+                              const target = evaluation || control;
+                              return row.target_type === "RECALL_CONTROL"
+                                ? <Space direction="vertical" size={2}><Tag color="gold">召回边界样本</Tag><Tag>未送模型</Tag><Tag>{target?.answer_anchor}</Tag><Tag>{target?.generation_influence}</Tag>{(target?.validation_limitations || []).map((item: string) => <Text key={item} type="secondary">{item}</Text>)}</Space>
+                                : <Space direction="vertical" size={2}><Tag>{evaluation?.correspondence_mode}</Tag><Tag>{evaluation?.evidence_relation}</Tag><Tag>{evaluation?.answer_anchor}</Tag><Tag>{evaluation?.generation_influence}</Tag><Text>{evaluation?.rationale}</Text>{(evaluation?.validation_limitations || []).map((item: string) => <Text key={item} type="secondary">{item}</Text>)}</Space>;
+                            } },
+                            { title: "人工校准", width: 260, render: (_: unknown, row: any) => <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                              <Select style={{ width: "100%" }} value={v2CitationCalibrationDecisions[row.target_id]} onChange={(value) => setV2CitationCalibrationDecisions((current) => ({ ...current, [row.target_id]: value }))} options={[
+                                { value: "ACCEPT", label: row.target_type === "RECALL_CONTROL" ? "未发现漏召回" : "接受机器判断" },
+                                ...(row.target_type === "EVALUATION" ? [
+                                  { value: "REJECT", label: "拒绝该判断" },
+                                  { value: "REJECT_SUBJECT", label: "主体归属错误" },
+                                  { value: "REJECT_DECISION_ROLE", label: "决策角色错误" },
+                                  { value: "REJECT_BOTH", label: "主体与角色均错误" },
+                                ] : []),
+                                { value: "CORRECT", label: "修正关系" },
+                              ]} />
+                              {v2CitationCalibrationDecisions[row.target_id] === "CORRECT" && <>
+                                <Select placeholder="内容对应方式" style={{ width: "100%" }} value={v2CitationCalibrationCorrections[row.target_id]?.correspondence_mode} onChange={(value) => setV2CitationCalibrationCorrections((current) => ({ ...current, [row.target_id]: { ...current[row.target_id], correspondence_mode: value } }))} options={["DIRECT_REUSE", "FAITHFUL_PARAPHRASE", "SUMMARY_OR_SYNTHESIS", "TOPICAL_ONLY", "NO_CORRESPONDENCE", "UNKNOWN"].map((value) => ({ value, label: value }))} />
+                                <Select placeholder="证据关系" style={{ width: "100%" }} value={v2CitationCalibrationCorrections[row.target_id]?.evidence_relation} onChange={(value) => setV2CitationCalibrationCorrections((current) => ({ ...current, [row.target_id]: { ...current[row.target_id], evidence_relation: value } }))} options={["SUPPORTS_FULL", "SUPPORTS_PARTIAL", "CONTRADICTS", "RELATED_ONLY", "NO_MATCH", "INSUFFICIENT_EVIDENCE"].map((value) => ({ value, label: value }))} />
+                              </>}
+                            </Space> },
                           ]}
                         />
-                        <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2CitationContributionLoading} disabled={(v2CitationContribution.result.output.calibration_set || []).some((item: any) => !v2CitationCalibrationDecisions[item.target_id])} onClick={completeV2CitationContributionCalibration}>完成 P1 人工校准</Button>
+                        <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2CitationContributionLoading} disabled={(v2CitationContribution.result.output.calibration_set || []).some((item: any) => !v2CitationCalibrationDecisions[item.target_id] || (v2CitationCalibrationDecisions[item.target_id] === "CORRECT" && (!v2CitationCalibrationCorrections[item.target_id]?.correspondence_mode || !v2CitationCalibrationCorrections[item.target_id]?.evidence_relation)))} onClick={completeV2CitationContributionCalibration}>完成 P1 人工校准</Button>
                       </>}
                       {v2CitationContribution.review && <Alert type="success" showIcon message="P1 人工校准已完成" description={`false positive ${v2CitationContribution.review.metrics.false_positive || 0} · false negative ${v2CitationContribution.review.metrics.false_negative || 0} · 主体错误 ${v2CitationContribution.review.metrics.subject_attribution_error || 0} · 决策角色错误 ${v2CitationContribution.review.metrics.decision_role_error || 0}`} />}
                     </>}

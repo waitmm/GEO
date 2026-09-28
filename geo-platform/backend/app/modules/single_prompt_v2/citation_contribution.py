@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Any, Literal
 from uuid import uuid4
@@ -41,6 +42,8 @@ ANSWER_UNIT_VERSION = "single_prompt_v2.answer_unit.deterministic.v2"
 MAX_PASSAGES_PER_CITATION = 12
 MAX_PASSAGES_PER_UNIT = 2
 MAX_RECALL_AUDIT_CONTROLS_PER_CITATION = 2
+UNBIASED_CALIBRATION_TARGET_COUNT = 40
+MAX_CALIBRATION_TARGET_COUNT = 60
 CONSERVATIVE_USD_PER_MILLION_TOKENS = 1.20
 USD_CNY_REFERENCE_RATE = 6.7487
 PRICING_BASIS = (
@@ -76,6 +79,35 @@ def _iso(value: datetime | None) -> str | None:
 def _require(condition: bool, code: str, detail: str) -> None:
     if not condition:
         raise HTTPException(status_code=409, detail={"code": code, "detail": detail})
+
+
+def _write_machine_output_artifact(
+    *,
+    contribution_id: str,
+    attempt_number: int,
+    sequence: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    root = Path(get_settings().evidence_artifact_dir).resolve() / "citation-contribution" / contribution_id
+    root.mkdir(parents=True, exist_ok=True)
+    input_hash = str((payload.get("request_identity") or {}).get("input_hash") or "unknown")
+    path = root / f"attempt-{attempt_number:02d}-response-{sequence:03d}-{input_hash[:12]}.json"
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2, default=str).encode("utf-8")
+    with path.open("xb") as handle:
+        handle.write(encoded)
+    path.chmod(0o600)
+    return {
+        "artifact_path": str(path),
+        "artifact_hash": hashlib.sha256(encoded).hexdigest(),
+        "size_bytes": len(encoded),
+        "input_hash": input_hash,
+        "response_source": str(payload.get("response_source") or ""),
+        "validation_status": str(payload.get("validation_status") or ""),
+        "raw_response_hash": str(payload.get("raw_response_hash") or ""),
+        "token_usage": payload.get("token_usage") or {},
+        "rejection_code": str(payload.get("rejection_code") or ""),
+        "rejection_reason": str(payload.get("rejection_reason") or ""),
+    }
 
 
 def _classify_unit(
@@ -782,6 +814,106 @@ def _explicit_anchor_proven(answer_text: str, unit: dict[str, Any], reference_in
     return f"[{reference_index}]" in answer_text[start:end] or f"【{reference_index}】" in answer_text[start:end]
 
 
+def _build_calibration_set(
+    *,
+    contribution_id: str,
+    plan_hash: str,
+    evaluations: list[dict[str, Any]],
+    recall_controls: list[dict[str, Any]],
+    answer_units: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Freeze a result-blind audit sample plus deterministic diagnostic coverage."""
+    seed = _hash({
+        "algorithm": "HASH_ORDER_SHA256_V1",
+        "contract": CITATION_CONTRIBUTION_CONTRACT_VERSION,
+        "contribution_id": contribution_id,
+        "plan_hash": plan_hash,
+    })
+    unit_by_id = {item["answer_unit_id"]: item for item in answer_units}
+
+    def rank(target_type: str, target_id: str) -> str:
+        return _hash({"seed": seed, "target_type": target_type, "target_id": target_id})
+
+    ordered = sorted(evaluations, key=lambda item: (rank("EVALUATION", item["evaluation_id"]), item["evaluation_id"]))
+    unbiased = ordered[:min(UNBIASED_CALIBRATION_TARGET_COUNT, len(ordered))]
+    selected: list[dict[str, str]] = [
+        {
+            "target_type": "EVALUATION",
+            "target_id": item["evaluation_id"],
+            "sample_group": "UNBIASED_CHECK",
+            "sampling_reason": "HASH_ORDER_SHA256_V1",
+        }
+        for item in unbiased
+    ]
+    selected_ids = {item["target_id"] for item in selected}
+    remaining = [item for item in ordered if item["evaluation_id"] not in selected_ids]
+
+    diagnostic_rules: list[tuple[str, Any]] = []
+    for value in (
+        "DIRECT_REUSE", "FAITHFUL_PARAPHRASE", "SUMMARY_OR_SYNTHESIS", "TOPICAL_ONLY",
+        "SUPPORTS_FULL", "SUPPORTS_PARTIAL", "CONTRADICTS", "RELATED_ONLY", "NO_MATCH", "INSUFFICIENT_EVIDENCE",
+    ):
+        diagnostic_rules.append((value, lambda item, expected=value: (
+            item.get("correspondence_mode") == expected or item.get("evidence_relation") == expected
+        )))
+    for value in ("PROCEDURE", "RULE_CONDITION", "FACT", "MARKET_CRITERION", "BRAND_CAPABILITY", "DECISION_REASON"):
+        diagnostic_rules.append((value, lambda item, expected=value: (
+            (unit_by_id.get(item["answer_unit_id"]) or {}).get("primary_type") == expected
+            or expected in ((unit_by_id.get(item["answer_unit_id"]) or {}).get("semantic_facets") or [])
+        )))
+    diagnostic_rules.extend([
+        ("SUBJECT_ATTRIBUTION_CHECK", lambda item: bool((unit_by_id.get(item["answer_unit_id"]) or {}).get("subject_markers"))),
+        ("CONDITION_QUALIFIER_CHECK", lambda item: bool(
+            (unit_by_id.get(item["answer_unit_id"]) or {}).get("condition_markers")
+            or (unit_by_id.get(item["answer_unit_id"]) or {}).get("negation_markers")
+            or (unit_by_id.get(item["answer_unit_id"]) or {}).get("comparison_markers")
+        )),
+    ])
+    diagnostic_coverage: list[str] = []
+    for label, predicate in diagnostic_rules:
+        if len(selected) >= MAX_CALIBRATION_TARGET_COUNT:
+            break
+        if any(predicate(item) for item in unbiased):
+            diagnostic_coverage.append(label)
+            continue
+        candidate = next((item for item in remaining if predicate(item)), None)
+        if candidate is None:
+            continue
+        selected.append({
+            "target_type": "EVALUATION",
+            "target_id": candidate["evaluation_id"],
+            "sample_group": "DIAGNOSTIC_SUPPLEMENT",
+            "sampling_reason": label,
+        })
+        selected_ids.add(candidate["evaluation_id"])
+        remaining = [item for item in remaining if item["evaluation_id"] != candidate["evaluation_id"]]
+        diagnostic_coverage.append(label)
+
+    for item in sorted(recall_controls, key=lambda row: (rank("RECALL_CONTROL", row["control_id"]), row["control_id"])):
+        if len(selected) >= MAX_CALIBRATION_TARGET_COUNT:
+            break
+        selected.append({
+            "target_type": "RECALL_CONTROL",
+            "target_id": item["control_id"],
+            "sample_group": "DIAGNOSTIC_SUPPLEMENT",
+            "sampling_reason": "CANDIDATE_RECALL_BOUNDARY",
+        })
+
+    metadata = {
+        "version": "single_prompt_v2.citation_contribution_calibration.v2",
+        "unbiased_rule": "SHA256(seed,target_type,target_id) ascending; first min(40,evaluation_count)",
+        "unbiased_seed_hash": seed,
+        "unbiased_population_count": len(evaluations),
+        "unbiased_sample_count": len(unbiased),
+        "diagnostic_rule": "Fixed category completion followed by hash-ordered recall-boundary controls; no brand or strategy-value selection",
+        "diagnostic_coverage": diagnostic_coverage,
+        "diagnostic_sample_count": len(selected) - len(unbiased),
+        "total_sample_count": len(selected),
+        "max_sample_count": MAX_CALIBRATION_TARGET_COUNT,
+    }
+    return selected, metadata
+
+
 def execute_citation_contribution(
     contribution_id: str,
     *,
@@ -830,7 +962,34 @@ def execute_citation_contribution(
             fixed_run_ids=inputs["fixed_run_ids"],
         )
         _require(recomputed["plan_hash"] == execution.plan_hash, "CONTRIBUTION_PLAN_DRIFT", "worker 执行前重算的 plan 已变化")
-        active_judge = judge or CitationContributionJudge()
+        machine_output_artifacts: list[dict[str, Any]] = []
+        active_audit_context: dict[str, Any] = {}
+
+        def response_audit_sink(payload: dict[str, Any]) -> None:
+            audited_payload = {
+                "contribution_id": execution.contribution_id,
+                "plan_id": plan.get("plan_id"),
+                "plan_hash": execution.plan_hash,
+                "contract_version": CITATION_CONTRIBUTION_CONTRACT_VERSION,
+                "prompt_version": CITATION_CONTRIBUTION_PROMPT_VERSION,
+                "schema_version": CITATION_CONTRIBUTION_SCHEMA_VERSION,
+                "citation_context": dict(active_audit_context),
+                **payload,
+            }
+            machine_output_artifacts.append(_write_machine_output_artifact(
+                contribution_id=execution.contribution_id,
+                attempt_number=execution.attempt_count,
+                sequence=len(machine_output_artifacts) + 1,
+                payload=audited_payload,
+            ))
+
+        active_judge = judge or CitationContributionJudge(
+            DeepSeekClient(
+                thinking_mode="disabled",
+                max_attempts=1,
+                response_audit_sink=response_audit_sink,
+            )
+        )
         snapshot_by_id = {row.snapshot_id: row for row in fixed["snapshots"]}
         answer_units = plan["answer_units"]
         selected_run = next(
@@ -880,6 +1039,15 @@ def execute_citation_contribution(
                 if candidate["passage_id"] in passage_by_id
             ]
             try:
+                active_audit_context.clear()
+                active_audit_context.update({
+                    "citation_id": citation_plan["citation_id"],
+                    "reference_id": citation_plan["reference_id"],
+                    "reference_index": citation_plan["reference_index"],
+                    "run_id": execution.selected_run_id,
+                    "candidate_pair_count": len(candidate_pairs),
+                    "candidate_pair_hash": _hash(candidate_pairs),
+                })
                 response = active_judge.judge(answer_units, passage_inputs, candidate_pairs, db=db)
                 citation_binding_ids: list[str] = []
                 citation_evaluation_ids: list[str] = []
@@ -903,6 +1071,15 @@ def execute_citation_contribution(
                         "snapshot_id": snapshot.snapshot_id,
                         **admitted,
                         "processing_status": "DONE",
+                        "citation_title": citation_plan["title"],
+                        "citation_url": citation_plan["canonical_url"],
+                        "source_passage_text": str((passage_by_id.get(admitted["passage_id"]) or {}).get("text") or ""),
+                        "answer_anchor": "PROVEN" if _explicit_anchor_proven(answer_text, unit, int(citation_plan["reference_index"])) else "UNPROVEN",
+                        "generation_influence": "UNAVAILABLE",
+                        "validation_limitations": [
+                            "GENERATION_INFLUENCE_UNAVAILABLE",
+                            *([] if _explicit_anchor_proven(answer_text, unit, int(citation_plan["reference_index"])) else ["ANSWER_ANCHOR_UNPROVEN"]),
+                        ],
                     })
                     citation_evaluation_ids.append(evaluation_id)
                     if admitted["evidence_relation"] in {"NO_MATCH", "INSUFFICIENT_EVIDENCE"}:
@@ -954,6 +1131,15 @@ def execute_citation_contribution(
                         "passage_hash": control["passage_hash"],
                         "retrieval_score": control["score"],
                         "machine_status": "HARD_FILTERED_AT_CANDIDATE_BUDGET",
+                        "citation_title": citation_plan["title"],
+                        "citation_url": citation_plan["canonical_url"],
+                        "answer_anchor": "PROVEN" if _explicit_anchor_proven(answer_text, unit, int(citation_plan["reference_index"])) else "UNPROVEN",
+                        "generation_influence": "UNAVAILABLE",
+                        "validation_limitations": [
+                            "NOT_EVALUATED_BY_MODEL_RECALL_CONTROL",
+                            "GENERATION_INFLUENCE_UNAVAILABLE",
+                            *([] if _explicit_anchor_proven(answer_text, unit, int(citation_plan["reference_index"])) else ["ANSWER_ANCHOR_UNPROVEN"]),
+                        ],
                     })
                     citation_recall_control_ids.append(control_id)
                 row.update({
@@ -1010,27 +1196,13 @@ def execute_citation_contribution(
                 "supporting_binding_ids": [item["binding_id"] for item in supports],
                 "composite_support": len(supports) >= 2 and not any(item["evidence_relation"] == "SUPPORTS_FULL" for item in supports),
             })
-        unit_by_id = {item["answer_unit_id"]: item for item in answer_units}
-        buckets: dict[tuple[str, str], list[dict[str, str]]] = {}
-        for item in evaluations:
-            unit = unit_by_id[item["answer_unit_id"]]
-            key = (item["evidence_relation"], unit["primary_type"])
-            buckets.setdefault(key, []).append({
-                "target_type": "EVALUATION",
-                "target_id": item["evaluation_id"],
-            })
-        calibration_population: list[dict[str, str]] = []
-        recall_control_targets = [
-            {"target_type": "RECALL_CONTROL", "target_id": item["control_id"]}
-            for item in recall_controls
-        ][:10]
-        evaluation_target_limit = 60 - len(recall_control_targets)
-        bucket_keys = sorted(buckets)
-        while len(calibration_population) < evaluation_target_limit and any(buckets.values()):
-            for key in bucket_keys:
-                if buckets[key] and len(calibration_population) < evaluation_target_limit:
-                    calibration_population.append(buckets[key].pop(0))
-        calibration_population.extend(recall_control_targets)
+        calibration_population, calibration_sampling = _build_calibration_set(
+            contribution_id=execution.contribution_id,
+            plan_hash=execution.plan_hash,
+            evaluations=evaluations,
+            recall_controls=recall_controls,
+            answer_units=answer_units,
+        )
         output = {
             "contract_version": CITATION_CONTRIBUTION_CONTRACT_VERSION,
             "input": inputs,
@@ -1044,6 +1216,8 @@ def execute_citation_contribution(
             "recall_controls": recall_controls,
             "answer_unit_evidence_sets": evidence_sets,
             "calibration_set": calibration_population,
+            "calibration_sampling": calibration_sampling,
+            "machine_output_artifacts": machine_output_artifacts,
             "attribution_boundary": {
                 "observable_content_correspondence_only": True,
                 "generation_influence_proven": False,
@@ -1064,7 +1238,18 @@ def execute_citation_contribution(
             "candidate_evidence_relations": {status: len([item for item in evaluations if item.get("evidence_relation") == status]) for status in ("SUPPORTS_FULL", "SUPPORTS_PARTIAL", "CONTRADICTS", "RELATED_ONLY", "NO_MATCH", "INSUFFICIENT_EVIDENCE")},
             "calibration_target_count": len(calibration_population),
             "recall_control_count": len(recall_controls),
-            "calibration_recall_control_count": len(recall_control_targets),
+            "calibration_unbiased_count": calibration_sampling["unbiased_sample_count"],
+            "calibration_diagnostic_count": calibration_sampling["diagnostic_sample_count"],
+            "calibration_recall_control_count": len([
+                item for item in calibration_population if item["target_type"] == "RECALL_CONTROL"
+            ]),
+            "machine_output_artifact_count": len(machine_output_artifacts),
+            "accepted_machine_output_count": len([
+                item for item in machine_output_artifacts if item["validation_status"] == "ACCEPTED"
+            ]),
+            "rejected_machine_output_count": len([
+                item for item in machine_output_artifacts if item["validation_status"] != "ACCEPTED"
+            ]),
         }
         result_identity_hash = _hash({
             "contribution_id": execution.contribution_id,
@@ -1083,10 +1268,17 @@ def execute_citation_contribution(
         )
         db.add(result)
         execution.active_result_version = result.result_version
-        execution.status = "READY_FOR_CALIBRATION"
+        if calibration_population:
+            execution.status = "READY_FOR_CALIBRATION"
+            execution.blocker_code = ""
+            execution.blocker_detail = ""
+        else:
+            execution.status = "CALIBRATION_BLOCKED_NO_VALID_EVALUATIONS"
+            execution.blocker_code = "NO_VALID_CONTRIBUTION_EVALUATIONS"
+            execution.blocker_detail = "本次执行没有产生可校准的合格 Contribution 判断；不得创建空人工 Review。"
         execution.active_attempt_token = ""
         execution.finished_at = datetime.utcnow()
-        execution.progress_json = dumps({"stage": "READY_FOR_CALIBRATION", "completed": len(citations), "total": len(citations)})
+        execution.progress_json = dumps({"stage": execution.status, "completed": len(citations), "total": len(citations)})
         db.commit()
     except Exception as exc:
         db.rollback()
@@ -1111,9 +1303,24 @@ def recover_interrupted_citation_contributions(db: Session) -> int:
         row.blocker_code = "RECOVERED_AFTER_PROCESS_RESTART"
         row.blocker_detail = "服务重启中断执行；将按同一冻结 plan 重新运行，已成功的兼容调用只能通过校验缓存恢复。"
         row.progress_json = dumps({"stage": "RECOVERED_QUEUED"})
-    if rows:
+    corrected = 0
+    calibration_rows = db.query(SinglePromptCitationContributionExecution).filter_by(
+        status="READY_FOR_CALIBRATION"
+    ).all()
+    for row in calibration_rows:
+        result = db.query(SinglePromptCitationContributionResult).filter_by(
+            result_version=row.active_result_version
+        ).one_or_none() if row.active_result_version else None
+        if result and not (loads(result.output_json, {}).get("calibration_set") or []):
+            row.status = "CALIBRATION_BLOCKED_NO_VALID_EVALUATIONS"
+            row.blocker_code = "NO_VALID_CONTRIBUTION_EVALUATIONS"
+            row.blocker_detail = "本次执行没有产生可校准的合格 Contribution 判断；不得创建空人工 Review。"
+            citation_count = len(loads(row.plan_json, {}).get("citations") or [])
+            row.progress_json = dumps({"stage": row.status, "completed": citation_count, "total": citation_count})
+            corrected += 1
+    if rows or corrected:
         db.commit()
-    return len(rows)
+    return len(rows) + corrected
 
 
 def complete_citation_contribution_review(
@@ -1139,6 +1346,7 @@ def complete_citation_contribution_review(
         return existing
     output = loads(result.output_json, {})
     calibration = {(item["target_type"], item["target_id"]) for item in output.get("calibration_set") or []}
+    _require(bool(calibration), "NO_CALIBRATION_TARGETS", "当前 ResultVersion 没有可人工校准的合格对象")
     submitted = {(item.get("target_type"), item.get("target_id")) for item in decisions}
     _require(calibration == submitted, "CALIBRATION_SET_INCOMPLETE", "必须处理冻结的完整人工校准集合")
     evaluation_by_id = {item["evaluation_id"]: item for item in output.get("evaluations") or []}
@@ -1159,6 +1367,17 @@ def complete_citation_contribution_review(
             target_type == "RECALL_CONTROL" and target_id in recall_control_by_id
         )
         _require(valid_target, "UNKNOWN_CALIBRATION_TARGET", "人工校准引用未知候选判断或召回边界样本")
+        if item.get("decision") == "CORRECT":
+            correspondence = item.get("correspondence_mode")
+            relation = item.get("evidence_relation")
+            _require(bool(correspondence and relation), "CALIBRATION_CORRECTION_INCOMPLETE", "修正必须同时提交 correspondence_mode 和 evidence_relation")
+            positive_relation = relation not in {"NO_MATCH", "INSUFFICIENT_EVIDENCE"}
+            positive_correspondence = correspondence not in {"NO_CORRESPONDENCE", "UNKNOWN"}
+            _require(
+                positive_relation == positive_correspondence,
+                "CALIBRATION_CORRECTION_INCONSISTENT",
+                "修正后的 correspondence_mode 与 evidence_relation 不一致",
+            )
     for item in missed_bindings:
         reference_id = int(item.get("reference_id") or 0)
         _require(item.get("answer_unit_id") in unit_ids, "UNKNOWN_MISSED_ANSWER_UNIT", "漏召回记录引用未知 AnswerUnit")
@@ -1237,6 +1456,15 @@ def get_citation_contribution_status(
     review = db.query(SinglePromptCitationContributionReview).filter_by(
         result_version=execution.active_result_version
     ).one_or_none() if execution.active_result_version else None
+    result_output = loads(result.output_json, {}) if result else {}
+    projected_status = execution.status
+    projected_blocker = {"code": execution.blocker_code, "detail": execution.blocker_detail} if execution.blocker_code else None
+    if result and execution.status == "READY_FOR_CALIBRATION" and not (result_output.get("calibration_set") or []):
+        projected_status = "CALIBRATION_BLOCKED_NO_VALID_EVALUATIONS"
+        projected_blocker = {
+            "code": "NO_VALID_CONTRIBUTION_EVALUATIONS",
+            "detail": "本次执行没有产生可校准的合格 Contribution 判断；不得创建空人工 Review。",
+        }
     return {
         "execution": {
             "contribution_id": execution.contribution_id,
@@ -1247,12 +1475,12 @@ def get_citation_contribution_status(
             "selected_run_id": execution.selected_run_id,
             "input_snapshot_hash": execution.input_snapshot_hash,
             "contract_version": execution.contract_version,
-            "status": execution.status,
+            "status": projected_status,
             "plan_hash": execution.plan_hash,
             "plan": loads(execution.plan_json, {}),
             "authorization": loads(execution.authorization_json, {}),
             "progress": loads(execution.progress_json, {}),
-            "blocker": {"code": execution.blocker_code, "detail": execution.blocker_detail} if execution.blocker_code else None,
+            "blocker": projected_blocker,
             "usage": {
                 "external_llm_calls": execution.external_llm_calls,
                 "llm_cache_hits": execution.llm_cache_hits,
@@ -1266,7 +1494,7 @@ def get_citation_contribution_status(
             "result_version": result.result_version,
             "output_hash": result.output_hash,
             "reviewable_set_hash": result.reviewable_set_hash,
-            "output": loads(result.output_json, {}),
+            "output": result_output,
             "limitations": loads(result.limitations_json, []),
             "stats": loads(result.stats_json, {}),
             "created_at": _iso(result.created_at),
@@ -1283,7 +1511,7 @@ def get_citation_contribution_status(
         } if review else None,
         "allowed_operations": (
             ["VIEW", "AUTHORIZE_EXACT_PLAN"] if execution.status == "AWAITING_EXTERNAL_AUTHORIZATION"
-            else ["VIEW", "COMPLETE_CALIBRATION"] if execution.status == "READY_FOR_CALIBRATION"
+            else ["VIEW", "COMPLETE_CALIBRATION"] if projected_status == "READY_FOR_CALIBRATION"
             else ["VIEW"]
         ),
     }

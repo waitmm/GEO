@@ -143,7 +143,14 @@ def _input_hash(
 class DeepSeekClient(SemanticLLMClient):
     provider = "deepseek"
 
-    def __init__(self, *, thinking_mode: str | None = None, max_attempts: int = 3, cache_only: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        thinking_mode: str | None = None,
+        max_attempts: int = 3,
+        cache_only: bool = False,
+        response_audit_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         if thinking_mode not in {None, "enabled", "disabled"}:
             raise ValueError("thinking_mode 必须是 enabled、disabled 或 None")
         if max_attempts < 1:
@@ -152,10 +159,15 @@ class DeepSeekClient(SemanticLLMClient):
         self.thinking_mode = thinking_mode
         self.max_attempts = max_attempts
         self.cache_only = cache_only
+        self.response_audit_sink = response_audit_sink
         self._calls = 0
         self._tokens = 0
         self._external_calls = 0
         self._external_tokens = 0
+
+    def _record_response_audit(self, payload: dict[str, Any]) -> None:
+        if self.response_audit_sink is not None:
+            self.response_audit_sink(payload)
 
     @property
     def api_key(self) -> str:
@@ -216,13 +228,47 @@ class DeepSeekClient(SemanticLLMClient):
             )
             if cached is not None:
                 cached_content = json.dumps(cached["parsed_payload"], ensure_ascii=False, sort_keys=True)
-                parsed = _validate_response_payload(
-                    cached["parsed_payload"],
-                    response_validator,
-                    source="LLM_CALL_CACHE",
-                    content=cached_content,
-                    raw_response_hash=str(cached.get("raw_response_hash") or ""),
-                )
+                try:
+                    parsed = _validate_response_payload(
+                        cached["parsed_payload"],
+                        response_validator,
+                        source="LLM_CALL_CACHE",
+                        content=cached_content,
+                        raw_response_hash=str(cached.get("raw_response_hash") or ""),
+                    )
+                except Exception as exc:
+                    self._record_response_audit({
+                        "request_identity": {
+                            "provider": self.provider,
+                            "model": model_name,
+                            "prompt_version": prompt_version,
+                            "schema_version": schema_version,
+                            "input_hash": input_key,
+                        },
+                        "response_source": "LLM_CALL_CACHE",
+                        "validation_status": "REJECTED",
+                        "structured_response": cached["parsed_payload"],
+                        "raw_response_hash": str(cached.get("raw_response_hash") or ""),
+                        "token_usage": int(cached.get("token_usage") or 0),
+                        "rejection_code": str(getattr(exc, "code", "CACHE_REJECTED_BY_VALIDATION")),
+                        "rejection_reason": str(exc),
+                    })
+                    raise
+                self._record_response_audit({
+                    "request_identity": {
+                        "provider": self.provider,
+                        "model": model_name,
+                        "prompt_version": prompt_version,
+                        "schema_version": schema_version,
+                        "input_hash": input_key,
+                    },
+                    "response_source": "LLM_CALL_CACHE",
+                    "validation_status": "ACCEPTED",
+                    "structured_response": cached["parsed_payload"],
+                    "accepted_response": parsed,
+                    "raw_response_hash": str(cached.get("raw_response_hash") or ""),
+                    "token_usage": int(cached.get("token_usage") or 0),
+                })
                 self._calls += 1
                 self._tokens += cached.get("token_usage", 0)
                 return parsed
@@ -255,15 +301,23 @@ class DeepSeekClient(SemanticLLMClient):
         # 有限重试（最多 3 次，指数退避）——覆盖网络断连与推理模型偶发的非 JSON 输出；不无限 retry
         last_error: Exception | None = None
         for attempt in range(self.max_attempts):
+            response_data: dict[str, Any] | None = None
+            response_text = ""
+            content = ""
+            finish_reason = "unknown"
+            usage: dict[str, Any] = {}
+            audit_recorded = False
             try:
                 self._external_calls += 1
                 with httpx.Client(timeout=self.settings.deepseek_timeout_seconds) as client:
                     resp = client.post(url, headers=headers, json=body)
+                response_text = resp.text
                 if resp.status_code != 200:
                     # 响应体是 API 错误详情（不含 key），截断后透传，便于调试
                     detail = resp.text[:300]
                     raise SemanticLLMError(f"DeepSeek HTTP {resp.status_code} (model={model_name}): {detail}")
                 data = resp.json()
+                response_data = data
                 choice = (data.get("choices") or [{}])[0]
                 finish_reason = str(choice.get("finish_reason") or "unknown")
                 content = choice.get("message", {}).get("content", "")
@@ -314,13 +368,76 @@ class DeepSeekClient(SemanticLLMClient):
                     content=content,
                     finish_reason=finish_reason,
                 )
+                self._record_response_audit({
+                    "request_identity": {
+                        "provider": self.provider,
+                        "model": model_name,
+                        "prompt_version": prompt_version,
+                        "schema_version": schema_version,
+                        "input_hash": input_key,
+                        "attempt": attempt + 1,
+                        "max_attempts": self.max_attempts,
+                    },
+                    "response_source": "EXTERNAL_LLM",
+                    "validation_status": "ACCEPTED",
+                    "finish_reason": finish_reason,
+                    "raw_provider_response": response_data,
+                    "structured_response": parsed,
+                    "raw_response_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    "token_usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                    },
+                })
+                audit_recorded = True
                 break  # 成功拿到可解析结果
             except SemanticLLMError as e:
+                if not audit_recorded:
+                    self._record_response_audit({
+                        "request_identity": {
+                            "provider": self.provider,
+                            "model": model_name,
+                            "prompt_version": prompt_version,
+                            "schema_version": schema_version,
+                            "input_hash": input_key,
+                            "attempt": attempt + 1,
+                            "max_attempts": self.max_attempts,
+                        },
+                        "response_source": "EXTERNAL_LLM",
+                        "validation_status": "REJECTED",
+                        "finish_reason": finish_reason,
+                        "raw_provider_response": response_data,
+                        "raw_http_response": response_text if response_data is None else None,
+                        "structured_response_text": content,
+                        "raw_response_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        "token_usage": usage,
+                        "rejection_code": str(getattr(e, "code", "SEMANTIC_LLM_ERROR")),
+                        "rejection_reason": str(e),
+                    })
                 last_error = e
                 if attempt < self.max_attempts - 1:
                     import time
                     time.sleep(1.5 * (attempt + 1))
             except httpx.HTTPError as e:
+                self._record_response_audit({
+                    "request_identity": {
+                        "provider": self.provider,
+                        "model": model_name,
+                        "prompt_version": prompt_version,
+                        "schema_version": schema_version,
+                        "input_hash": input_key,
+                        "attempt": attempt + 1,
+                        "max_attempts": self.max_attempts,
+                    },
+                    "response_source": "EXTERNAL_LLM",
+                    "validation_status": "TRANSPORT_FAILED",
+                    "raw_provider_response": None,
+                    "raw_response_hash": hashlib.sha256(b"").hexdigest(),
+                    "token_usage": {},
+                    "rejection_code": e.__class__.__name__,
+                    "rejection_reason": str(e),
+                })
                 last_error = e
                 if attempt < self.max_attempts - 1:
                     import time

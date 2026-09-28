@@ -310,6 +310,78 @@ def test_strict_client_rejects_blank_non_full_json_and_truncation(monkeypatch, c
     assert len(rejected.value.audit["response_excerpt"]) <= 240
 
 
+def test_opt_in_response_audit_preserves_complete_accepted_and_rejected_payloads(monkeypatch):
+    responses = [
+        json.dumps(VALID_EMPTY_ANSWER, ensure_ascii=False),
+        json.dumps({**VALID_EMPTY_ANSWER, "unknown": True}, ensure_ascii=False),
+    ]
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, content):
+            self.content = content
+            self.text = content
+
+        def json(self):
+            return {
+                "choices": [{"finish_reason": "stop", "message": {"content": self.content}}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers, json):
+            return FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    audit: list[dict] = []
+    client = deepseek.DeepSeekClient(
+        thinking_mode="disabled",
+        max_attempts=1,
+        response_audit_sink=audit.append,
+    )
+    client.settings.deepseek_api_key = "test-key"
+
+    accepted = client.structured_generate_sync(
+        system_prompt="Return JSON.",
+        user_payload={"untrusted_input": "accepted"},
+        response_schema=AnswerSemanticResponse,
+        prompt_version="v2-test-prompt",
+        schema_version="v2-test-schema",
+        strict_json=True,
+        response_validator=admit_answer_response,
+    )
+    assert accepted == VALID_EMPTY_ANSWER
+    assert audit[0]["validation_status"] == "ACCEPTED"
+    assert audit[0]["structured_response"] == VALID_EMPTY_ANSWER
+    assert audit[0]["raw_provider_response"]["usage"]["total_tokens"] == 10
+
+    with pytest.raises(SemanticLLMError):
+        client.structured_generate_sync(
+            system_prompt="Return JSON.",
+            user_payload={"untrusted_input": "rejected"},
+            response_schema=AnswerSemanticResponse,
+            prompt_version="v2-test-prompt",
+            schema_version="v2-test-schema",
+            strict_json=True,
+            response_validator=admit_answer_response,
+        )
+    assert audit[1]["validation_status"] == "REJECTED"
+    assert audit[1]["structured_response_text"] == json.dumps(
+        {**VALID_EMPTY_ANSWER, "unknown": True}, ensure_ascii=False
+    )
+    assert audit[1]["rejection_code"] == "FAILED_SCHEMA"
+
+
 def test_v1_default_keeps_legacy_json_extraction_without_v2_validator(monkeypatch):
     class FakeResponse:
         status_code = 200

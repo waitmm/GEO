@@ -5896,3 +5896,26 @@ review_queue = READY
   hits, ResultVersion, dispositions, bindings and calibration Review are all
   zero or absent. P1 is not accepted and Strategy remains 0. A separate exact
   authorization is required before the worker may execute this plan.
+
+## 2026-09-28 Citation Contribution P1 Authorized Execution
+
+- Product Owner authorization was bound to Plan
+  `citation-contribution-plan-1144c02d0a8eb1daf200`, DeepSeek
+  `deepseek-v4-flash`, 19 maximum requests, zero retry and RMB 2 hard budget.
+  The worker revalidated the exact input and plan hashes before execution.
+- All 19 planned calls completed with 77,891 total tokens (55,421 prompt and
+  22,470 completion), zero cache hits and a conservative RMB 0.6308 estimate.
+  No Answer, SourceClaim, browser, fetch or Strategy operation ran.
+- Strict admission rejected all 19 responses as `FAILED_SCHEMA`. Eighteen used
+  a top-level `results` shape and one used `candidate_pairs`; the frozen
+  contract requires `evaluations` plus `no_binding_reason`. No response was
+  renamed, default-filled, cached as valid or converted into `NO_MATCH`.
+- Immutable Result `contribution-v1:b59cacd86f3b4f37` records 19
+  `FAILED/ANALYSIS_FAILED` Citation dispositions, zero evaluations, zero
+  bindings and zero calibration targets. This is P1 failure, not a legal
+  zero-contribution result. Empty calibration review and nine-Run expansion
+  remain blocked; Strategy remains zero.
+- Full provider and structured responses, request identities, contract/input
+  hashes, validation results, token usage and rejection details were written
+  to 19 non-Git artifacts with mode `0600`; all 19 artifact hashes were
+  independently verified against the immutable result metadata.

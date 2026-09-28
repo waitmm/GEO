@@ -1,0 +1,68 @@
+{
+  "recorded_at": "2026-09-28",
+  "checkpoint": "CITATION_CONTRIBUTION_P1_MACHINE_EXECUTION",
+  "status": "P1_FAILED_SCHEMA_CALIBRATION_BLOCKED",
+  "fixed_identity": {
+    "contribution_id": "citation-contribution-76074b05-e357-41b0-b563-51bdf3dc720d",
+    "plan_id": "citation-contribution-plan-1144c02d0a8eb1daf200",
+    "plan_hash": "1144c02d0a8eb1daf200776d65c8aa999f6e68db992bfab5e0f4ceb1415d9d52",
+    "input_snapshot_hash": "627dab6ab3ee7aaec0dea30ba8672785382391c9d72bf3620220ac950d312cba",
+    "selected_run_id": 1
+  },
+  "result": {
+    "result_version": "contribution-v1:b59cacd86f3b4f37",
+    "output_hash": "b9e39ec8375124fe9dfd0d20b6a79f67a73cd2f1c376ccd4322de6ad23f29f67",
+    "reviewable_set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "answer_units": 18,
+    "citations": 19,
+    "citation_disposition_coverage": 1.0,
+    "processing_status": {
+      "FAILED": 19
+    },
+    "citation_dispositions": {
+      "ANALYSIS_FAILED": 19
+    },
+    "evaluations": 0,
+    "bindings": 0,
+    "calibration_targets": 0,
+    "review_created": false
+  },
+  "external_execution": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "external_requests": 19,
+    "cache_hits": 0,
+    "automatic_retries": 0,
+    "prompt_tokens": 55421,
+    "completion_tokens": 22470,
+    "total_tokens": 77891,
+    "conservative_cost_estimate_cny": 0.6308,
+    "authorized_budget_cny": 2.0
+  },
+  "admission": {
+    "accepted_responses": 0,
+    "rejected_responses": 19,
+    "rejection_code": "FAILED_SCHEMA",
+    "observed_top_level_shapes": {
+      "no_binding_reason+results": 9,
+      "results": 7,
+      "no_binding_reason+results+type": 2,
+      "candidate_pairs": 1
+    },
+    "formal_required_shape": "evaluations + no_binding_reason",
+    "silent_field_renaming_or_defaulting": false
+  },
+  "machine_output_artifacts": {
+    "count": 19,
+    "hash_verified": 19,
+    "git_tracked": false,
+    "permissions": "0600",
+    "contains_complete_provider_response_and_structured_response": true
+  },
+  "gates": {
+    "human_calibration_ready": false,
+    "empty_review_allowed": false,
+    "nine_run_expansion_allowed": false,
+    "strategy_count": 0
+  }
+}

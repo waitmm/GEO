@@ -55,6 +55,7 @@ from app.modules.single_prompt_v2.citation_contribution import (
     create_citation_contribution_plan,
     execute_citation_contribution,
     get_citation_contribution_status,
+    list_citation_contributions,
     recover_interrupted_citation_contributions,
     select_p1_run,
 )
@@ -1583,6 +1584,34 @@ def test_citation_contribution_plan_is_deterministic_complete_and_zero_call(monk
         assert len(plan["system_prompt_hash"]) == 64
         assert plan["call_plan"]["budget_upper_bound_cny"] > 0
         assert db.query(SinglePromptCitationContributionResult).count() == 0
+
+        review_count = db.query(SinglePromptCitationContributionReview).count()
+        listed = list_citation_contributions(
+            db,
+            analysis_id=fixture["analysis"].analysis_id,
+            project_id=fixture["analysis"].project_id,
+            prompt_id=fixture["analysis"].prompt_id,
+        )
+        assert listed == [{
+            "contribution_id": execution.contribution_id,
+            "context_id": fixture["context"].context_id,
+            "selected_run_id": fixture["run"].id,
+            "status": "AWAITING_EXTERNAL_AUTHORIZATION",
+            "result_version": None,
+            "result_hash": None,
+            "reviewable_set_hash": None,
+            "review_id": None,
+            "deduplicated_target_count": 0,
+            "new_human_review_count": 0,
+            "created_at": execution.created_at.isoformat(),
+        }]
+        assert db.query(SinglePromptCitationContributionReview).count() == review_count
+        assert list_citation_contributions(
+            db,
+            analysis_id=fixture["analysis"].analysis_id,
+            project_id=999,
+            prompt_id=fixture["analysis"].prompt_id,
+        ) == []
 
         duplicate, duplicate_created = _create_contribution_fixture_plan(db, fixture)
         assert duplicate_created is False

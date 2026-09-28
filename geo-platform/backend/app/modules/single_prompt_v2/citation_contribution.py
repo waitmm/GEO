@@ -2380,3 +2380,52 @@ def get_citation_contribution_status(
             else ["VIEW"]
         ),
     }
+
+
+def list_citation_contributions(
+    db: Session,
+    *,
+    analysis_id: str,
+    project_id: int,
+    prompt_id: int,
+) -> list[dict[str, Any]]:
+    """List exact Contribution executions for one Analysis without selecting one."""
+    executions = (
+        db.query(SinglePromptCitationContributionExecution)
+        .filter_by(
+            analysis_id=analysis_id,
+            project_id=project_id,
+            prompt_id=prompt_id,
+        )
+        .order_by(
+            SinglePromptCitationContributionExecution.created_at.desc(),
+            SinglePromptCitationContributionExecution.id.desc(),
+        )
+        .all()
+    )
+    items: list[dict[str, Any]] = []
+    for execution in executions:
+        status = get_citation_contribution_status(
+            db,
+            analysis_id=analysis_id,
+            contribution_id=execution.contribution_id,
+            project_id=project_id,
+            prompt_id=prompt_id,
+        )
+        result = status["result"]
+        review = status["review"]
+        calibration = status["human_calibration"]
+        items.append({
+            "contribution_id": execution.contribution_id,
+            "context_id": execution.context_id,
+            "selected_run_id": execution.selected_run_id,
+            "status": status["execution"]["status"],
+            "result_version": result["result_version"] if result else None,
+            "result_hash": result["output_hash"] if result else None,
+            "reviewable_set_hash": result["reviewable_set_hash"] if result else None,
+            "review_id": review["review_id"] if review else None,
+            "deduplicated_target_count": calibration["deduplicated_target_count"] if calibration else 0,
+            "new_human_review_count": calibration["new_human_review_count"] if calibration else 0,
+            "created_at": _iso(execution.created_at),
+        })
+    return items

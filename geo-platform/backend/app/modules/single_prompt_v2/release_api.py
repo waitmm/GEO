@@ -11,6 +11,7 @@ from app.modules.single_prompt_v2.citation_contribution import (
     complete_citation_contribution_review,
     create_citation_contribution_plan,
     get_citation_contribution_status,
+    list_citation_contributions,
 )
 from app.modules.single_prompt_v2.diagnosis import (
     complete_diagnosis_review,
@@ -105,6 +106,21 @@ def plan_citation_contribution(
         contribution_id=execution.contribution_id,
         project_id=payload.project_id,
         prompt_id=payload.prompt_id,
+    )
+
+
+@router.get("/analyses/{analysis_id}/citation-contributions")
+def list_analysis_citation_contributions(
+    analysis_id: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    return list_citation_contributions(
+        db,
+        analysis_id=analysis_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
     )
 
 

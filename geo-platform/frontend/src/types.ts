@@ -616,6 +616,20 @@ export type SinglePromptV2CitationContributionStatus = {
   allowed_operations: string[];
 };
 
+export type SinglePromptV2CitationContributionListItem = {
+  contribution_id: string;
+  context_id: string;
+  selected_run_id: number;
+  status: string;
+  result_version: string | null;
+  result_hash: string | null;
+  reviewable_set_hash: string | null;
+  review_id: string | null;
+  deduplicated_target_count: number;
+  new_human_review_count: number;
+  created_at: string;
+};
+
 export type SinglePromptV2StrategyDirection = {
   direction_id: string;
   direction_type: "FOUNDATION" | "CHANNEL";

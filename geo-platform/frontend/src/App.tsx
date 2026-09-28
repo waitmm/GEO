@@ -8,7 +8,7 @@ import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, File
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
-  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
@@ -1403,6 +1403,8 @@ export default function App() {
   const [v2DiagnosisRevisionError, setV2DiagnosisRevisionError] = useState<string | null>(null);
   const [v2DiagnosisReviewNote, setV2DiagnosisReviewNote] = useState("");
   const [v2CitationContribution, setV2CitationContribution] = useState<SinglePromptV2CitationContributionStatus | null>(null);
+  const [v2CitationContributionHistory, setV2CitationContributionHistory] = useState<SinglePromptV2CitationContributionListItem[]>([]);
+  const [v2CitationContributionHistoryLoading, setV2CitationContributionHistoryLoading] = useState(false);
   const [v2CitationContributionLoading, setV2CitationContributionLoading] = useState(false);
   const [v2CitationCalibrationReviewer, setV2CitationCalibrationReviewer] = useState("本地审核人");
   const [v2CitationHumanGold, setV2CitationHumanGold] = useState<Record<string, V2CitationHumanGoldDraft>>({});
@@ -2202,6 +2204,45 @@ export default function App() {
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
   }
 
+  async function refreshV2CitationContributionHistory() {
+    if (!v2Analysis || !projectId || !activePromptId) return;
+    setV2CitationContributionHistoryLoading(true);
+    try {
+      const items = await api.listSinglePromptV2CitationContributions(
+        v2Analysis.analysis.analysis_id,
+        projectId,
+        activePromptId,
+      );
+      setV2CitationContributionHistory(items);
+    } catch (error: any) {
+      message.error(error.message || "读取当前 Analysis 的 P1 执行失败");
+    } finally {
+      setV2CitationContributionHistoryLoading(false);
+    }
+  }
+
+  async function openV2CitationContribution(contributionId: string) {
+    if (!v2Analysis || !projectId || !activePromptId) return;
+    setV2CitationContributionLoading(true);
+    try {
+      const status = await api.getSinglePromptV2CitationContribution(
+        v2Analysis.analysis.analysis_id,
+        contributionId,
+        projectId,
+        activePromptId,
+      );
+      setV2CitationContribution(status);
+      persistV2CitationContributionIdentity(status);
+      window.setTimeout(() => {
+        document.getElementById("v2-citation-contribution-p1")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
+    } catch (error: any) {
+      message.error(error.message || "打开精确 P1 执行失败");
+    } finally {
+      setV2CitationContributionLoading(false);
+    }
+  }
+
   async function refreshV2CitationContribution(silent = false) {
     if (!v2Analysis || !projectId || !activePromptId) return;
     const contributionId = v2CitationContribution?.execution.contribution_id
@@ -2252,6 +2293,7 @@ export default function App() {
       });
       setV2CitationContribution(status);
       persistV2CitationContributionIdentity(status);
+      void refreshV2CitationContributionHistory();
       message.success(`P1 计划已冻结：Run ${status.execution.selected_run_id}；尚未触发外部调用`);
     } catch (error: any) {
       message.error(error.message || "创建 Citation Contribution P1 计划失败");
@@ -2331,6 +2373,7 @@ export default function App() {
         },
       );
       setV2CitationContribution(status);
+      void refreshV2CitationContributionHistory();
       message.success("P1 人工校准已追加保存");
     } catch (error: any) {
       message.error(error.message || "保存 P1 人工校准失败");
@@ -3368,6 +3411,13 @@ export default function App() {
     const contributionId = new URLSearchParams(window.location.search).get("v2_contribution");
     if (!contributionId || v2CitationContribution?.execution.contribution_id === contributionId) return;
     void refreshV2CitationContribution();
+  }, [page, v2Analysis?.analysis.analysis_id, v2Analysis?.context_id, projectId, activePromptId]);
+  useEffect(() => {
+    if (page !== "coreV2" || !v2Analysis?.context_id) {
+      setV2CitationContributionHistory([]);
+      return;
+    }
+    void refreshV2CitationContributionHistory();
   }, [page, v2Analysis?.analysis.analysis_id, v2Analysis?.context_id, projectId, activePromptId]);
   useEffect(() => {
     if (!v2CitationContribution || !["QUEUED", "RUNNING"].includes(v2CitationContribution.execution.status)) return;
@@ -5060,6 +5110,11 @@ export default function App() {
     .map((directionId) => v2StrategyDirectionById.get(directionId))
     .filter((row): row is NonNullable<typeof row> => Boolean(row));
   const v2BlockedHistoricalRelations = new Set(v2EvidenceEligibility?.blocked_historical_relation_ids || []);
+  const v2PendingCitationCalibrations = v2CitationContributionHistory.filter(
+    (item) => item.context_id === v2Analysis?.context_id
+      && item.status === "READY_FOR_CALIBRATION"
+      && !item.review_id,
+  );
   const v2FilteredSources = (v2SourcePreparation?.sources || []).filter((source) => {
     if (v2SourceFilter === "ALL") return true;
     if (v2SourceFilter === "ACTION_REQUIRED") {
@@ -5429,6 +5484,19 @@ export default function App() {
               {v2Diagnosis?.result && <>
                 <Card size="small" title="当前分析进度" extra={<Tag color={v2EvidenceReviewComplete ? "green" : "blue"}>{v2EvidenceReviewComplete ? "证据审核已完成" : v2IsEvidenceResult ? "当前：审核证据结果" : v2AnswerReviewConsumed ? "当前：生成证据" : "当前：审核回答"}</Tag>}>
                   <Steps size="small" responsive current={v2AnalysisFlowCurrent} items={v2AnalysisFlowItems} />
+                  {v2PendingCitationCalibrations.length > 0 && <Alert
+                    style={{ marginTop: 16 }}
+                    type="warning"
+                    showIcon
+                    message="P1 引用贡献人工校准待完成"
+                    description={`这是首轮机器关系质量校准，不是每次分析的常规逐项审核。当前共有 ${v2PendingCitationCalibrations.reduce((total, item) => total + item.new_human_review_count, 0)} 项 Human Gold 待判断。`}
+                    action={<Space wrap>{v2PendingCitationCalibrations.map((item) => <Button
+                      key={item.contribution_id}
+                      type="primary"
+                      loading={v2CitationContributionLoading}
+                      onClick={() => void openV2CitationContribution(item.contribution_id)}
+                    >进入 Run #{item.selected_run_id} 校准（{item.new_human_review_count}项）</Button>)}</Space>}
+                  />}
                   {v2Coverage && <>
                     <Descriptions size="small" column={{ xs: 1, md: 4 }} style={{ marginTop: 16 }}>
                       <Descriptions.Item label="固定输入">{v2Coverage.input_scope_coverage.readable_answer_count}/{v2Coverage.input_scope_coverage.expected_run_count} Runs</Descriptions.Item>
@@ -5979,8 +6047,17 @@ export default function App() {
                   </Space>}
                 >
                   {!v2CitationContribution ? <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    {v2CitationContributionHistory.length > 0 && <Alert
+                      type="warning"
+                      showIcon
+                      message="当前 Analysis 已有 P1 执行"
+                      description="请选择精确执行继续处理；系统不会自动选择 latest。"
+                      action={<Space wrap>{v2CitationContributionHistory.map((item) => <Button key={item.contribution_id} loading={v2CitationContributionLoading} onClick={() => void openV2CitationContribution(item.contribution_id)}>
+                        Run #{item.selected_run_id} · {item.review_id ? "已校准" : item.status}
+                      </Button>)}</Space>}
+                    />}
                     <Alert type="info" showIcon message="先冻结一个与结果无关的真实 Run 计划" description="系统将覆盖该 Run 的完整 Answer、全部 AnswerUnit 和全部 Citation；这里只创建冻结计划，不调用模型，也不生成策略。" />
-                    <Button type="primary" icon={<ListChecks size={15} />} loading={v2CitationContributionLoading} disabled={!v2SourcePreparation?.completion_manifest || !v2Diagnosis?.result} onClick={createV2CitationContributionPlan}>冻结 P1 计划</Button>
+                    <Button type="primary" icon={<ListChecks size={15} />} loading={v2CitationContributionLoading || v2CitationContributionHistoryLoading} disabled={v2CitationContributionHistory.length > 0 || !v2SourcePreparation?.completion_manifest || !v2Diagnosis?.result} onClick={createV2CitationContributionPlan}>冻结 P1 计划</Button>
                   </Space> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
                     <Descriptions size="small" column={{ xs: 1, md: 4 }}>
                       <Descriptions.Item label="选定 Run">#{v2CitationContribution.execution.selected_run_id}</Descriptions.Item>

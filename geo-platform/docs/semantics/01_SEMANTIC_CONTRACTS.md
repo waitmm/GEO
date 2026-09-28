@@ -247,7 +247,7 @@ supersedes: null
 last_verified_at: 2026-09-08
 ```
 
-### SC-CHANNEL-001 Current Channel Resolver Roles
+### SC-CHANNEL-001 Current Channel Resolver Roles (SUPERSEDED)
 
 ```yaml
 contract_id: SC-CHANNEL-001
@@ -255,6 +255,7 @@ contract_name: Current Channel Resolver Roles
 contract_version: 1.1.0
 maturity: OBSERVED
 implementation_status: PRODUCTION
+lifecycle_status: SUPERSEDED_FOR_GEO_1_0
 definition: Resolver 依据 reason-level Evidence、Product Truth、资产权威性与渠道资格确定 PRIMARY/SECONDARY/TEST/OBSERVE；Role 与执行优先级分离。
 allowed_inferences:
   - 符合当前 Path A/B/C/D 门槛的渠道进入对应角色候选。
@@ -280,7 +281,42 @@ approval_reference: null
 golden_case_ids: [CASE-SYN-003, CASE-SYN-004, CASE-REAL-019, CASE-REAL-040]
 effective_from: null
 supersedes: null
-last_verified_at: 2026-09-08
+superseded_by: SC-CHANNEL-002@1.0.0
+superseded_scope: Product Truth/FACT_ANCHOR 推导 OFFICIAL_SITE PRIMARY 的 Path C；历史 Candidate 和 V1 审计记录保持不可变。
+last_verified_at: 2026-09-28
+```
+
+### SC-CHANNEL-002 Asset Role And Citation Channel Role Separation
+
+```yaml
+contract_id: SC-CHANNEL-002
+contract_name: Asset Role And Citation Channel Role Separation
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: NOT_IMPLEMENTED
+definition: FACT_ANCHOR 是资产角色；CITATION、DISCOVERY、CORROBORATION 是内容或渠道角色。资产角色与渠道角色必须独立判断。
+allowed_inferences:
+  - 官网资产可承担 FACT_ANCHOR 或 PROCEDURAL_SOURCE。
+  - 第三方来源可承担 CORROBORATION、COMPARISON_CONTEXT 或 DISCOVERY_SURFACE。
+  - Citation channel role 只能由其明确 scope 内的可消费观察和资格 Gate 决定。
+forbidden_inferences:
+  - FACT_ANCHOR 自动推出 OFFICIAL_SITE PRIMARY。
+  - Product Truth、Benchmark 平台或引用数量自动推出执行渠道。
+  - 发布位置反向改写 Strategy channel_key/channel_role。
+unknown_behavior: 渠道依据不足时保留 NONE/UNKNOWN/VERIFY_FIRST，不用官网兜底。
+step_boundary: Strategy/Execution 输入边界；不在 Citation Contribution P1 生成策略。
+source_references:
+  - docs/semantics/01_SEMANTIC_CONTRACTS.md::SC-CITATION-CONTRIBUTION-001
+  - docs/semantics/04_CONFLICT_REGISTER.md::SEM-CONFLICT-001
+observed_implementation_refs: []
+enforcement_refs: []
+approved_by: Product Owner
+approved_at: 2026-09-28
+approval_reference: GEO Citation Contribution P1 implementation order
+golden_case_ids: [CASE-SYN-001, CASE-SYN-008]
+effective_from: 2026-09-28
+supersedes: SC-CHANNEL-001@1.1.0 Path C
+last_verified_at: 2026-09-28
 ```
 
 ### SC-STRATEGY-001 Step 7 Strategy Truth
@@ -521,28 +557,116 @@ last_verified_at: 2026-09-08
 ```yaml
 contract_id: SC-FOUNDATION-001
 contract_name: Foundation/Citation Semantic Split
-contract_version: 0.1.0
-maturity: CANDIDATE
+contract_version: 1.0.0
+maturity: FROZEN
 implementation_status: NOT_IMPLEMENTED
-definition: Product Truth 可建立 Foundation Requirement，但不得单独证明 Citation Intervention；两者是否拆分为正式策略层级仍待 Definition Review。
+definition: Product Truth 与可证明的权威事实资产缺口可以建立 FACT_ANCHOR/Foundation Requirement，但不得单独证明 Citation、Discovery 或渠道干预资格。
 allowed_inferences:
-  - 仅用于 RFC、Shadow 设计和 Golden Case 讨论。
+  - FACT_ANCHOR 与 Citation channel role 可同时存在，也可任一为 NONE/UNKNOWN。
+  - Foundation 是否成立只回答事实承载需求，不决定执行渠道效果。
 forbidden_inferences:
-  - 覆盖当前 production Resolver Path C。
-  - 据此修改 #19/#40 Candidate、Role、Step 8 或数据库。
-unknown_behavior: 保留当前 production 行为并报告待决冲突。
-step_boundary: 候选定义涉及 Step 6-7；尚未获生产切换授权。
+  - Product Truth 或 Foundation REQUIRED 自动推出官网 PRIMARY。
+  - 未完成资产盘点时推断目标品牌没有适配资产。
+unknown_behavior: 事实或资产盘点不足时保持 UNKNOWN/VERIFY_ASSET_FIRST，不默认 CREATE_NEW 或 OFFICIAL_SITE PRIMARY。
+step_boundary: Foundation/Strategy 输入定义；不修改历史 Candidate，不授权 Citation Contribution P1 生成 Strategy。
 source_references:
   - docs/semantics/rfcs/RFC-FOUNDATION-CITATION-SPLIT.md
 observed_implementation_refs: []
 enforcement_refs: []
-approved_by: null
-approved_at: null
-approval_reference: null
-golden_case_ids: [CASE-SYN-001, CASE-REAL-019]
-effective_from: null
+approved_by: Product Owner
+approved_at: 2026-09-28
+approval_reference: GEO Citation Contribution P1 implementation order
+golden_case_ids: [CASE-SYN-001, CASE-SYN-008, CASE-REAL-019]
+effective_from: 2026-09-28
+supersedes: SC-FOUNDATION-001@0.1.0
+last_verified_at: 2026-09-28
+```
+
+### SC-CITATION-CONTRIBUTION-001 Citation Contribution V1
+
+```yaml
+contract_id: SC-CITATION-CONTRIBUTION-001
+contract_name: Citation Contribution V1
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: NOT_IMPLEMENTED
+definition: 在固定 Run 内，将完整 Answer 拆为可回指原文的 AnswerUnit，并判断每条 Citation 的 Source Passage/Claim 对各 AnswerUnit 的可观察内容对应与证据关系；不证明模型生成因果。
+dimensions:
+  processing_status: [PENDING, DONE, FAILED, NOT_EVALUATED, SOURCE_UNAVAILABLE, WAIVED]
+  correspondence_mode: [DIRECT_REUSE, FAITHFUL_PARAPHRASE, SUMMARY_OR_SYNTHESIS, TOPICAL_ONLY, NO_CORRESPONDENCE, UNKNOWN]
+  evidence_relation: [SUPPORTS_FULL, SUPPORTS_PARTIAL, CONTRADICTS, RELATED_ONLY, NO_MATCH, INSUFFICIENT_EVIDENCE]
+  answer_anchor: [PROVEN, UNPROVEN]
+  generation_influence: [PROVEN, UNPROVEN, UNAVAILABLE]
+allowed_inferences:
+  - DONE 的 pair 可分别记录 correspondence_mode、evidence_relation 和 attribution。
+  - 多个独立 Binding 可由 AnswerUnitEvidenceSet 投影 composite_support=true。
+  - 每条 Citation 必须有 BOUND、NO_BINDING_FOUND_AFTER_SEARCH、INSUFFICIENT_SOURCE_CONTENT、SOURCE_WAIVED、ANALYSIS_FAILED 或 NOT_EVALUATED disposition。
+forbidden_inferences:
+  - FAILED/NOT_EVALUATED 自动变成 NO_MATCH、NO_SUPPORT 或任何负面关系。
+  - 高内容对应自动升级 answer_anchor 或 generation_influence。
+  - 将旧 SourceClaim-to-Reason Alignment verdict 直接映射为本 Contract verdict。
+  - 将 COMPOSITE_SUPPORT 写成单个 pair verdict。
+unknown_behavior: 无法完成判断时保留 processing_status、UNKNOWN/INSUFFICIENT_EVIDENCE 与 limitation，不制造贡献解释。
+step_boundary: Answer/Evidence 分析；P1 不创建 StrategyCandidate、Execution 或 Product Truth。
+source_references:
+  - docs/semantics/snapshots/CASE-REAL-V2-P1-CITATION-CONTRIBUTION.checkpoint-0.json
+observed_implementation_refs:
+  - backend/app/modules/single_prompt_v2/citation_contribution.py
+enforcement_refs:
+  - backend/tests/test_single_prompt_v2_citation_contribution.py
+approved_by: Product Owner
+approved_at: 2026-09-28
+approval_reference: GEO Citation Contribution P1 implementation order
+golden_case_ids: [CASE-SYN-008, CASE-SYN-009, CASE-REAL-V2-P1]
+effective_from: 2026-09-28
 supersedes: null
-last_verified_at: 2026-09-08
+last_verified_at: 2026-09-28
+```
+
+### SC-MECHANISM-SCOPE-001 Scoped Mechanism State
+
+```yaml
+contract_id: SC-MECHANISM-SCOPE-001
+contract_name: Scoped Mechanism State
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: NOT_IMPLEMENTED
+definition: CONTENT、DISCOVERY、SELECTION、CONTRIBUTION/ABSORPTION、ASSOCIATION、DECISION 的状态必须绑定各自对象与 Run scope；历史投影还必须绑定 fixed run set、time window 和 sampling protocol。
+forbidden_inferences:
+  - 仅在 Prompt 层记录 CONTENT=EXISTS 而不指明 claim/capability 与 managed asset scope。
+  - 将固定样本覆盖解释为时间趋势。
+unknown_behavior: 时间或采样条件不可比时 trend_status=NOT_COMPARABLE。
+step_boundary: 横跨分析投影，不新增顶层工作流步骤。
+approved_by: Product Owner
+approved_at: 2026-09-28
+approval_reference: GEO Citation Contribution P1 implementation order
+effective_from: 2026-09-28
+supersedes: null
+last_verified_at: 2026-09-28
+```
+
+### SC-ASSET-001 Managed Asset Inventory Boundary
+
+```yaml
+contract_id: SC-ASSET-001
+contract_name: Managed Asset Inventory Boundary
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: NOT_IMPLEMENTED
+definition: SourceSnapshot 是被观察引用来源的不可变正文快照；ManagedAsset 是目标品牌拥有、控制或明确纳入盘点的资产。两者身份与资格不可互换。
+allowed_inferences:
+  - 资产盘点完整且确认没有适配资产时才允许 CREATE_NEW。
+forbidden_inferences:
+  - SourceSnapshot 自动成为 ManagedAsset。
+  - 数据库中没有 ManagedAsset row 就推断品牌没有资产并自动 CREATE_NEW。
+unknown_behavior: 资产盘点不完整时 asset_state=UNKNOWN，下一步为 VERIFY_ASSET_FIRST。
+step_boundary: Asset Resolver/Execution；Citation Contribution 只消费 SourceSnapshot，不决定资产操作。
+approved_by: Product Owner
+approved_at: 2026-09-28
+approval_reference: GEO Citation Contribution P1 implementation order
+effective_from: 2026-09-28
+supersedes: PR5 CREATE_NEW default when inventory completeness is unproven
+last_verified_at: 2026-09-28
 ```
 
 ### SC-RUNTIME-001 Analysis Context And Stage Lifecycle
@@ -596,4 +720,4 @@ persistence spine 已实现，不代表 live Shadow capture 或 Production Cutov
 
 可提交 Product Owner 首轮 Freeze Review 的稳定边界候选：`SC-HISTORY-001`、`SC-PT-001`、`SC-UNKNOWN-001`、`SC-EVIDENCE-001/002/003`、`SC-BENCHMARK-001`、`SC-STEP7-001`、`SC-STEP8-001`、`SC-EXPERIMENT-001`、`SC-SCOPE-001`、`SC-DECISION-STABILITY-001`。
 
-暂不建议冻结、仍需定义收敛：`SC-GAP-001`、`SC-CHANNEL-001`、`SC-STRATEGY-001`。`SC-FOUNDATION-001` 仍是 RFC Candidate。
+暂不建议冻结、仍需定义收敛：`SC-GAP-001`、`SC-STRATEGY-001`。`SC-CHANNEL-001` 的 Path C 已被 `SC-CHANNEL-002@1.0.0` 取代；`SC-FOUNDATION-001@1.0.0`、`SC-CITATION-CONTRIBUTION-001@1.0.0`、`SC-MECHANISM-SCOPE-001@1.0.0` 与 `SC-ASSET-001@1.0.0` 已由 Product Owner 冻结。

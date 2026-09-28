@@ -170,6 +170,48 @@ automation:
   - backend/tests/test_source_gap_v1.py
 ```
 
+### CASE-SYN-008 FACT_ANCHOR 不等于官网 PRIMARY
+
+```yaml
+contracts: [SC-FOUNDATION-001@1.0.0, SC-CHANNEL-002@1.0.0, SC-ASSET-001@1.0.0]
+verification_mode: AUTOMATED_TEST + MANUAL_SEMANTIC_REVIEW
+premise:
+  target_brand_truth: confirmed
+  fact_anchor_need: present
+  citation_channel_evidence: absent
+  asset_inventory_complete: false
+expected:
+  - Foundation/FACT_ANCHOR 可为 REQUIRED。
+  - Citation PRIMARY 保持 NONE。
+  - asset_state=UNKNOWN，下一步为 VERIFY_ASSET_FIRST。
+forbidden:
+  - OFFICIAL_SITE PRIMARY
+  - CREATE_NEW
+  - 将 SourceSnapshot 当作 ManagedAsset
+automation:
+  - backend/tests/test_single_prompt_v2_citation_contribution.py
+```
+
+### CASE-SYN-009 Citation 处置与关系不可混淆
+
+```yaml
+contracts: [SC-CITATION-CONTRIBUTION-001@1.0.0]
+verification_mode: AUTOMATED_TEST
+premise:
+  citation_a: source waived
+  citation_b: analysis failed
+  citation_c: completed with no correspondence
+expected:
+  - citation_a processing_status=WAIVED, disposition=SOURCE_WAIVED，且无 NO_MATCH 推断。
+  - citation_b processing_status=FAILED, disposition=ANALYSIS_FAILED，且无 NO_MATCH 推断。
+  - citation_c processing_status=DONE，可明确 correspondence_mode=NO_CORRESPONDENCE 与 evidence_relation=NO_MATCH。
+forbidden:
+  - 将前三者合并为 NO_SUPPORT。
+  - 由内容对应推断 generation_influence=PROVEN。
+automation:
+  - backend/tests/test_single_prompt_v2_citation_contribution.py
+```
+
 ## 3. Real Cases
 
 ### CASE-REAL-019

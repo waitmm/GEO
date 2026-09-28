@@ -12,7 +12,7 @@ Conflict 不允许通过“代码已经如此运行”或“最后一条聊天�
 ### SEM-CONFLICT-001 Foundation Requirement 与 Citation Intervention
 
 ```yaml
-status: OPEN
+status: RESOLVED
 severity: HIGH
 affected_contracts:
   - SC-CHANNEL-001@1.1.0 (maturity=OBSERVED, implementation_status=PRODUCTION)
@@ -20,44 +20,52 @@ affected_contracts:
 affected_objects: [Product Truth, Gap, Channel Role, StrategyCandidate]
 source_a: 当前 Resolver Path C 允许已确认 Product Truth 在满足权威资产条件时形成官网 PRIMARY。
 source_b: RFC Candidate 提议把 Foundation Requirement 与 Citation Intervention 分开，Product Truth 不单独证明 Citation Intervention。
-current_production_behavior: 继续执行 strategy_channel_resolver.v1_1 Path C；#19/#57 保持 OFFICIAL_SITE PRIMARY。
+current_production_behavior: 历史 #19/#57 与旧 Candidate 保持不可变；GEO 1.0 新策略输入不再使用 Path C 的 Product Truth => OFFICIAL_SITE PRIMARY 等价关系。
 risk: 如果未经审议直接切换，可能把“需要权威事实承载”误删，或把“事实承载”继续误表述成已证明 Citation 效果。
 observed_implementation_refs:
   - backend/app/modules/optimization/channel_resolution_shadow.py::resolve_channel_shadow
 enforcement_refs:
   - backend/tests/test_channel_resolution_shadow.py
-temporary_behavior: 保持当前 production 行为；Candidate 只用于文档讨论、Golden proposed expectation 和后续 Shadow，禁止覆盖 #19/#40。
-resolution_required: Product Owner Definition Review；若批准新定义，仍需独立 Production Cutover。
-owner_decision_required: 确认 Foundation Requirement 与 Citation Intervention 的对象、Role 和 Step 8 归属。
+temporary_behavior: 不适用。
+resolution_required: 已完成；实现仍按各切片独立验收。
+owner_decision_required: 已确认 FACT_ANCHOR 与 Citation/Discovery/Corroboration 角色解耦。
 resolution_rfc: docs/semantics/rfcs/RFC-FOUNDATION-CITATION-SPLIT.md
-resolution_reference: null
+resolution_reference: docs/semantics/01_SEMANTIC_CONTRACTS.md::SC-CHANNEL-002@1.0.0,SC-FOUNDATION-001@1.0.0
 latest_definition_review: docs/semantics/reviews/RFC-FOUNDATION-CITATION-SPLIT.review-001.md
-latest_review_result: NEEDS_REVISION
-last_verified_at: 2026-09-08
+latest_review_result: SUPERSEDED_BY_EXPLICIT_PRODUCT_OWNER_APPROVAL
+resolved_at: 2026-09-28
+resolved_by: Product Owner
+winning_contract_version: SC-CHANNEL-002@1.0.0 + SC-FOUNDATION-001@1.0.0
+superseded_contract_version: SC-CHANNEL-001@1.1.0 Path C + SC-FOUNDATION-001@0.1.0
+last_verified_at: 2026-09-28
 ```
 
 ### SEM-CONFLICT-002 旧 P0 Target Page Gate 与当前 CREATE_NEW Execution Proposal
 
 ```yaml
-status: OPEN
+status: RESOLVED_DEFINITION_IMPLEMENTATION_PENDING
 severity: MEDIUM
 affected_contracts:
   - SC-STEP8-001@1.0.0 (maturity=OBSERVED, implementation_status=PRODUCTION)
 affected_objects: [ExecutionProposal, Action, Experiment, ManagedAsset]
 source_a: docs/01_PRODUCT_DIRECTION.md 的 ACTIVE P0 描述强调目标页面与可编辑资产门槛。
 source_b: 当前 PR5-A/B 对无 ManagedAsset 的新外部资产明确使用 CREATE_NEW，并允许人工审核后 ready_for_freeze。
-current_production_behavior: PR5-B 生成 ephemeral CREATE_NEW Proposal 并重新校验，但不持久化 Action/Experiment。
+current_production_behavior: 历史 PR5-B Proposal 保持不可变；GEO 1.0 新执行路径在资产盘点不完整时必须返回 UNKNOWN/VERIFY_ASSET_FIRST。
 risk: 如果直接进入 PR5-C，旧资产门槛与新建资产身份可能产生 Action/Experiment attribution 冲突。
 observed_implementation_refs:
   - backend/app/modules/optimization/execution_proposal_shadow.py::resolve_asset_operation
 enforcement_refs:
   - backend/tests/test_execution_proposal_shadow.py
-temporary_behavior: PR5-B 保持只读 Proposal/overlay/revalidation；不进入 PR5-C，不创建 Action/Experiment。
-resolution_required: Product Owner 明确 ACTIVE Product Definition 的适用版本或修订旧 P0 文档。
-owner_decision_required: 确认 CREATE_NEW 在当前 Step 8 的合法身份、持久化边界与旧 P0 文档适用范围。
+temporary_behavior: 未实现最小 AssetInventory 前，新路径不得从“无 row”推出 CREATE_NEW。
+resolution_required: 定义已完成；实现留待 Asset Resolver 切片。
+owner_decision_required: 已确认只有完整资产盘点且无适配资产时才允许 CREATE_NEW。
 resolution_rfc: null
-resolution_reference: null
-last_verified_at: 2026-09-08
+resolution_reference: docs/semantics/01_SEMANTIC_CONTRACTS.md::SC-ASSET-001@1.0.0
+resolved_at: 2026-09-28
+resolved_by: Product Owner
+winning_contract_version: SC-ASSET-001@1.0.0
+superseded_contract_version: PR5 CREATE_NEW default when inventory completeness is unproven
+last_verified_at: 2026-09-28
 ```
 
 ### SEM-CONFLICT-003 Runtime ANSWER_SEMANTIC 输出契约不可执行

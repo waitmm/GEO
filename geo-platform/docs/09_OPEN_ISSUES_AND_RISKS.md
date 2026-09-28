@@ -969,3 +969,14 @@ Status: ACTIVE
   multiple capabilities or remain UNKNOWN. Current projection marks these
   `VERIFY_FIRST`; do not split them automatically, infer supported fragments or
   let historical review status bypass the statement eligibility Gate.
+- **Reason Evidence is not whole-answer Citation Contribution**: Result
+  `diag-v2:5435e5989f2a7c2f` evaluates a bounded Reason-to-Claim plan and remains
+  `REASON_EVIDENCE_BASELINE`. Do not infer full-answer coverage, citation
+  disposition coverage, answer anchors, or generation influence from it.
+- **P1 is intentionally one Run**: Run 1 was chosen by a frozen technical rule,
+  not by semantic outcome. P1 must produce all-citation disposition and a real
+  calibration baseline before any nine-Run expansion. Fixture success or a
+  planned-but-unauthorized external call is not a completed P1.
+- **Content correspondence is not causal attribution**: even a direct textual
+  reuse does not prove that the model consumed a cited page. Keep
+  `answer_anchor` and `generation_influence` independent and conservative.

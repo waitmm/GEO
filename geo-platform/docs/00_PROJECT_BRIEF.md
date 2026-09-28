@@ -2,6 +2,15 @@
 
 Status: ACTIVE
 
+## 2026-09-28 Current Delivery Baseline
+
+- Fixed case: Analysis `19b0be0f-f794-4435-9fa7-2723257f26cc`, Context `ctx-f06aa92a-6193-4aa0-ab9b-e62974f594f4`, Runs 1-9.
+- Answer Semantic: 9/9 valid, Result `diag-v1:cf81b3afcff72813`, Review `review-de74bccb-ad81-47e9-83e5-323baf1f147c`.
+- Source Completion: 61 READY snapshots, 1530 passages, and 5 `WAIVED_WITH_LIMITATION` sources.
+- Evidence Result `diag-v2:5435e5989f2a7c2f` is retained as `REASON_EVIDENCE_BASELINE`; it is not review authority for Citation Contribution.
+- Current delivery is one deterministically selected real-Run P1: full AnswerUnit coverage, all-citation disposition, Citation Contribution, and human calibration. Strategy remains empty.
+- P1 does not prove generation causality, does not treat SourceSnapshot as ManagedAsset, and does not infer OFFICIAL_SITE PRIMARY from Foundation.
+
 GEO Platform is a local Alpha tool for auditing AI answer visibility, brand
 presence, recommendation quality, and citation-source behavior.
 

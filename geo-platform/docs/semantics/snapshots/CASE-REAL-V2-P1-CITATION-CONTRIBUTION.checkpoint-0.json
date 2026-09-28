@@ -1,0 +1,40 @@
+{
+  "case_id": "CASE-REAL-V2-P1",
+  "checkpoint": "CHECKPOINT_0",
+  "captured_at": "2026-09-28",
+  "git_commit": "73ece54d9b7cb17659202c075b908fc6b17e56a0",
+  "analysis_id": "19b0be0f-f794-4435-9fa7-2723257f26cc",
+  "context_id": "ctx-f06aa92a-6193-4aa0-ab9b-e62974f594f4",
+  "fixed_run_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  "raw_result_version": "raw-v1:a447f95889472632",
+  "raw_output_hash": "a447f958894726321f7e1025173617508e6df8ea5eb7d2e4ed2d84fde004e1d9",
+  "run_scope_hash": "542f255dd4bf87b29a684a0ca37de98d71471b6fa43594cc17cc541d7617ed6b",
+  "answer_result_version": "diag-v1:cf81b3afcff72813",
+  "answer_result_hash": "cf81b3afcff72813a267ae4035c21af529107381d53db7d90ab946890b2969f3",
+  "answer_review_id": "review-de74bccb-ad81-47e9-83e5-323baf1f147c",
+  "citation_manifest_id": "citation-manifest-adbd75b9-401e-479a-9ac2-36ae0db58626",
+  "citation_manifest_hash": "58a0085cdc799aff8a1ecdab7fa9b3555a776a45111afdba5f68b40cdde1e09a",
+  "source_completion_manifest_id": "source-completion-f4b4b160-827b-42b4-986c-191f67453042",
+  "source_completion_hash": "5d8aa4e38881accc5fb7d7d7805a22a00047c870d761ab701fd270a353d9b065",
+  "ready_snapshot_count": 61,
+  "passage_count": 1530,
+  "waived_source_count": 5,
+  "reason_evidence_baseline": {
+    "contract": "REASON_EVIDENCE_BASELINE",
+    "result_version": "diag-v2:5435e5989f2a7c2f",
+    "result_hash": "5435e5989f2a7c2f9d1c091e3a1d9b0ca7a8555721eabc3e747ae88753021088",
+    "review_status": "PENDING",
+    "citation_contribution_review_eligible": false
+  },
+  "strategy_count": 0,
+  "p1_run_selection_rule": "first fixed run by run_id with readable full answer, technically eligible citation parse, and consumable source completion",
+  "p1_selected_run_id": 1,
+  "p1_selected_run_basis": {
+    "answer_char_count": 746,
+    "citation_occurrence_count": 19,
+    "all_citations_terminal": true,
+    "ready_citation_occurrence_count": 19,
+    "waived_citation_occurrence_count": 0,
+    "selection_uses_semantic_outcome": false
+  }
+}

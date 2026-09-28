@@ -5834,3 +5834,27 @@ review_queue = READY
   Evidence plan must be regenerated from the reviewed nine-Run result; valid
   compatible computations are reused and only missing, failed or invalidated
   work may call externally.
+
+## 2026-09-28 Citation Contribution P1 Checkpoint 0
+
+- Froze the live nine-Run input and its exact Answer, Review, Citation Manifest,
+  Source Completion, and historical Evidence identities in
+  `CASE-REAL-V2-P1-CITATION-CONTRIBUTION.checkpoint-0.json`.
+- Classified `diag-v2:5435e5989f2a7c2f` as immutable
+  `REASON_EVIDENCE_BASELINE`; it remains useful as a candidate clue but has no
+  review authority under Citation Contribution V1.
+- Froze Citation Contribution's independent processing, correspondence,
+  evidence, answer-anchor, and generation-influence dimensions. Pair verdicts
+  cannot encode composite support, and failed/not-evaluated work cannot become
+  a negative evidence result.
+- Resolved the definition-level Foundation/channel and asset-identity conflicts:
+  FACT_ANCHOR does not imply OFFICIAL_SITE PRIMARY; SourceSnapshot is not a
+  ManagedAsset; incomplete inventory yields UNKNOWN/VERIFY_ASSET_FIRST rather
+  than CREATE_NEW.
+- Deterministic P1 selection chose Run 1 before contribution execution because
+  it is the first fixed Run with a readable answer, technically complete
+  citation parsing, and consumable source content. It has 19 citation
+  occurrences, all bound to READY source snapshots. The rule does not inspect
+  brand appearance or expected relation outcomes.
+- External calls, source fetching, browser sampling, Strategy writes, and
+  production Evidence writes in Checkpoint 0: 0.

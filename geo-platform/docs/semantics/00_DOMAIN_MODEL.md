@@ -117,6 +117,21 @@ implementation_status = NOT_IMPLEMENTED | SHADOW | PARTIAL | PRODUCTION | DIVERG
 - 禁止推断：无有效 lineage 的旧关系不得进入正式 V1.1；人工审核不成为未来候选召回白名单。
 - 当前实现：`evidence_alignment.py`、`evidence_alignment_candidates.py`。
 
+### CitationContribution
+
+- 定义：固定 Run 内，Source Passage/Claim 对原文可回指 AnswerUnit 的可观察内容对应和证据关系。
+- 身份：固定 Analysis/Context、Run、Answer Result/Review、Citation Manifest、Completion Manifest、AnswerUnit、Citation occurrence、Passage/Claim 及 Contract version 的确定性组合。
+- 独立维度：`processing_status`、`correspondence_mode`、`evidence_relation`、`answer_anchor`、`generation_influence`。
+- 集合关系：Composite Support 只存在于 `AnswerUnitEvidenceSet` 聚合投影，不是 pair verdict。
+- 禁止推断：内容对应不证明模型使用该来源生成答案；失败或未评估不等于 NO_MATCH/NO_SUPPORT；旧 Alignment 不能直接迁移为 CitationContribution。
+
+### ManagedAsset / AssetInventory
+
+- `SourceSnapshot`：AI 回答所列来源正文的冻结快照，只用于证据分析。
+- `ManagedAsset`：目标品牌拥有、控制或明确纳入资产盘点的页面/内容。
+- `AssetInventory`：声明盘点范围及是否完整；不完整时资产状态为 `UNKNOWN`。
+- 禁止推断：SourceSnapshot 不是 ManagedAsset；缺少 ManagedAsset row 不是“资产不存在”；只有完整盘点确认无适配资产时才允许 CREATE_NEW。
+
 ### Benchmark
 
 - 定义：在满足资格条件的证据关系上，对可比较来源能力/理由进行的只读对标归纳。
@@ -223,6 +238,8 @@ Run
 | SourceDocument | 不是 URL 字符串或 PageSnapshot | document id + canonical source identity + content version/hash | `SourceDocument` | source fetch -> versioned body/passages | Step 4 / SourceClaim | 新正文新版本；fetch failure/ready 显式 | OBSERVED |
 | SourceClaim | 不是目标品牌事实 | claim id；materialization key + passage/content contract | `SourceClaimMaterialization` ledger + bound claims | passage semantic input -> zero or more claims | Step 4 / Alignment、Benchmark | lookup-first；DONE+0 合法；版本 stale 后补算 | OBSERVED |
 | EvidenceAlignment | 不是 Binding 或 Citation count | alignment id；answer semantic hash + claim semantic hash + version + lineage | `EvidenceAlignmentMaterialization` ledger + alignments | eligible pair -> verdict/review | Step 4 / Benchmark、Gap | verdict/review 追加；历史不可删除；DONE negative 合法 | OBSERVED |
+| CitationContribution | 不是生成归因，也不是旧 Reason Alignment | fixed input hashes + Run + AnswerUnit + citation occurrence + passage/claim + contract | V2 immutable result payload | full Answer + same-run citations + fixed snapshots -> contribution | Answer/Evidence / 后续 mechanism projection | 结果版本不可变；人工校准追加；旧 Alignment 仅作线索 | FROZEN/PARTIAL_P1 |
+| ManagedAsset | 不是 SourceSnapshot | project + owned/control identity + content version + permission evidence | 后续最小 AssetInventory/ManagedAsset | explicit inventory -> asset eligibility | Asset Resolver / Execution | 资产盘点版本化；UNKNOWN 不得自动 CREATE_NEW | FROZEN/NOT_IMPLEMENTED |
 | Benchmark | 不是热门来源榜 | fixed evidence package + reason + benchmark contract | versioned formal evidence/diagnosis payload | eligible alignments -> comparable pattern | Step 5 / Gap、Strategy | 随 Evidence Package 重算；无 eligible 是合法空结果 | OBSERVED |
 | Gap | 不是 Strategy/Action | gap id + reason + fixed evidence/truth scope | persisted diagnosis/versioned Candidate input | reason + truth + evidence + benchmark -> gap type | Step 6 / Step 7 | 按 package/version supersede；UNKNOWN 合法 | OBSERVED |
 | Channel Evidence | 不是 Channel Role | channel key + fixed run scope + aggregation version | deterministic read model from persisted observations | references/retrieval/docs/claims/alignments -> profile | Step 7 input / Resolver | 派生可重算；必须固定 scope/version | OBSERVED |

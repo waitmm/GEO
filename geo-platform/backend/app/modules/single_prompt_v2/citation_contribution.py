@@ -51,6 +51,8 @@ MAX_RECALL_AUDIT_CONTROLS_PER_CITATION = 2
 CANARY_CITATION_COUNT = 2
 UNBIASED_CALIBRATION_TARGET_COUNT = 40
 MAX_CALIBRATION_TARGET_COUNT = 60
+HUMAN_GOLD_VERSION = "single_prompt_v2.citation_contribution_human_gold.v1"
+HUMAN_CALIBRATION_PROJECTION_VERSION = "single_prompt_v2.citation_contribution_human_calibration.v1"
 CONSERVATIVE_USD_PER_MILLION_TOKENS = 1.20
 USD_CNY_REFERENCE_RATE = 6.7487
 PRICING_BASIS = (
@@ -1121,6 +1123,590 @@ def _build_calibration_set(
     return selected, metadata
 
 
+def _pair_gold_identity(
+    output: dict[str, Any],
+    pair: dict[str, Any],
+) -> str:
+    unit = next(
+        (item for item in output.get("answer_units") or [] if item.get("answer_unit_id") == pair.get("answer_unit_id")),
+        {},
+    )
+    citation = next(
+        (item for item in output.get("citations") or [] if item.get("citation_id") == pair.get("citation_id")),
+        {},
+    )
+    return _hash({
+        "version": HUMAN_GOLD_VERSION,
+        "run_id": pair.get("run_id"),
+        "answer_text_hash": output.get("answer_text_hash"),
+        "answer_unit_id": pair.get("answer_unit_id"),
+        "answer_unit_text_hash": unit.get("raw_text_hash"),
+        "citation_id": pair.get("citation_id"),
+        "source_key": pair.get("source_key") or citation.get("source_key"),
+        "snapshot_id": pair.get("snapshot_id") or citation.get("snapshot_id"),
+        "snapshot_content_hash": citation.get("snapshot_content_hash"),
+        "snapshot_passages_hash": citation.get("snapshot_passages_hash"),
+        "passage_id": pair.get("passage_id"),
+        "passage_hash": pair.get("passage_hash") or hashlib.sha256(
+            str(pair.get("source_passage_text") or pair.get("passage_text") or "").encode("utf-8")
+        ).hexdigest(),
+    })
+
+
+def _human_gold_payload(item: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "human_correspondence_mode",
+        "human_evidence_relation",
+        "span_validity",
+        "subject_attribution",
+        "qualifier_preservation",
+        "decision_role_validity",
+        "boundary_has_correspondence",
+        "boundary_has_support",
+        "boundary_has_related",
+        "boundary_should_enter_candidate",
+        "boundary_miss_reason",
+        "review_comment",
+    )
+    return {key: item.get(key) for key in keys}
+
+
+def _reusable_human_gold(
+    db: Session,
+    *,
+    exclude_result_version: str,
+) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    variants: dict[str, dict[str, dict[str, Any]]] = {}
+    rows = (
+        db.query(SinglePromptCitationContributionReview)
+        .filter(SinglePromptCitationContributionReview.result_version != exclude_result_version)
+        .order_by(SinglePromptCitationContributionReview.id.asc())
+        .all()
+    )
+    for row in rows:
+        for decision in loads(row.decisions_json, []):
+            identity = str(decision.get("gold_identity") or "")
+            if len(identity) != 64:
+                continue
+            payload = _human_gold_payload(decision)
+            if not payload.get("review_comment"):
+                continue
+            payload_hash = _hash(payload)
+            variants.setdefault(identity, {})[payload_hash] = {
+                **payload,
+                "source_review_id": row.review_id,
+            }
+    reusable: dict[str, dict[str, Any]] = {}
+    conflicts: set[str] = set()
+    for identity, values in variants.items():
+        if len(values) == 1:
+            reusable[identity] = next(iter(values.values()))
+        elif values:
+            conflicts.add(identity)
+    return reusable, conflicts
+
+
+def _build_human_calibration_projection(
+    db: Session,
+    *,
+    result: SinglePromptCitationContributionResult,
+    output: dict[str, Any],
+) -> dict[str, Any]:
+    evaluations = {item["evaluation_id"]: item for item in output.get("evaluations") or []}
+    bindings = {item["binding_id"]: item for item in output.get("bindings") or []}
+    controls = {item["control_id"]: item for item in output.get("recall_controls") or []}
+    frozen_samples = list(output.get("calibration_set") or [])
+    frozen_evaluation_ids = {
+        item["target_id"] for item in frozen_samples if item.get("target_type") == "EVALUATION"
+    }
+    reusable, conflicts = _reusable_human_gold(db, exclude_result_version=result.result_version)
+
+    targets: list[dict[str, Any]] = []
+    seen_targets: set[tuple[str, str]] = set()
+
+    def add_target(
+        *,
+        target_type: str,
+        target_id: str,
+        sample_group: str,
+        sampling_reason: str,
+        evaluation_id: str | None = None,
+        binding_id: str | None = None,
+        control_id: str | None = None,
+    ) -> None:
+        key = (target_type, target_id)
+        if key in seen_targets:
+            return
+        if target_type in {"EVALUATION", "BINDING"}:
+            evaluation = evaluations.get(evaluation_id or target_id)
+            _require(bool(evaluation), "HUMAN_CALIBRATION_TARGET_INVALID", "人工校准关系对象不存在")
+            identity = _pair_gold_identity(output, evaluation or {})
+        else:
+            control = controls.get(control_id or target_id)
+            _require(bool(control), "HUMAN_CALIBRATION_TARGET_INVALID", "人工校准召回边界对象不存在")
+            identity = _pair_gold_identity(output, control or {})
+        reused = reusable.get(identity) if identity not in conflicts else None
+        targets.append({
+            "target_type": target_type,
+            "target_id": target_id,
+            "evaluation_id": evaluation_id,
+            "binding_id": binding_id,
+            "control_id": control_id,
+            "sample_group": sample_group,
+            "sampling_reason": sampling_reason,
+            "gold_identity": identity,
+            "requires_human_review": reused is None,
+            "reused_human_gold": reused,
+            "human_gold_conflict": identity in conflicts,
+        })
+        seen_targets.add(key)
+
+    for item in frozen_samples:
+        target_type = str(item.get("target_type") or "")
+        target_id = str(item.get("target_id") or "")
+        add_target(
+            target_type=target_type,
+            target_id=target_id,
+            evaluation_id=target_id if target_type == "EVALUATION" else None,
+            control_id=target_id if target_type == "RECALL_CONTROL" else None,
+            sample_group=str(item.get("sample_group") or ""),
+            sampling_reason=str(item.get("sampling_reason") or ""),
+        )
+
+    census: list[dict[str, Any]] = []
+    for binding in output.get("bindings") or []:
+        evaluation_id = str(binding.get("evaluation_id") or "")
+        binding_id = str(binding.get("binding_id") or "")
+        covered = evaluation_id in frozen_evaluation_ids
+        review_target_type = "EVALUATION" if covered else "BINDING"
+        review_target_id = evaluation_id if covered else binding_id
+        census.append({
+            "binding_id": binding_id,
+            "evaluation_id": evaluation_id,
+            "review_target_type": review_target_type,
+            "review_target_id": review_target_id,
+            "reuses_frozen_evaluation_gold": covered,
+            "gold_identity": _pair_gold_identity(output, evaluations[evaluation_id]),
+        })
+        if not covered:
+            add_target(
+                target_type="BINDING",
+                target_id=binding_id,
+                evaluation_id=evaluation_id,
+                binding_id=binding_id,
+                sample_group="BINDING_CENSUS",
+                sampling_reason="ALL_MACHINE_BINDINGS",
+            )
+
+    calibration_sample_identity = (
+        "citation-calibration-v1:"
+        + _hash({
+            "result_version": result.result_version,
+            "reviewable_set_hash": result.reviewable_set_hash,
+            "frozen_samples": frozen_samples,
+        })[:20]
+    )
+    binding_census_hash = _hash(census)
+    human_review_set_hash = _hash([
+        {
+            "target_type": item["target_type"],
+            "target_id": item["target_id"],
+            "gold_identity": item["gold_identity"],
+            "sample_group": item["sample_group"],
+        }
+        for item in targets
+    ])
+    return {
+        "version": HUMAN_CALIBRATION_PROJECTION_VERSION,
+        "calibration_sample_identity": calibration_sample_identity,
+        "frozen_sample_count": len(frozen_samples),
+        "unbiased_evaluation_count": len([
+            item for item in frozen_samples if item.get("sample_group") == "UNBIASED_CHECK"
+        ]),
+        "recall_boundary_count": len([
+            item for item in frozen_samples if item.get("target_type") == "RECALL_CONTROL"
+        ]),
+        "binding_census": census,
+        "binding_census_count": len(census),
+        "binding_census_hash": binding_census_hash,
+        "review_targets": targets,
+        "human_review_set_hash": human_review_set_hash,
+        "deduplicated_target_count": len(targets),
+        "new_human_review_count": len([item for item in targets if item["requires_human_review"]]),
+        "reused_human_gold_count": len([item for item in targets if not item["requires_human_review"]]),
+        "human_gold_conflict_count": len([item for item in targets if item["human_gold_conflict"]]),
+    }
+
+
+def _validate_human_gold_decision(
+    item: dict[str, Any],
+    target: dict[str, Any],
+) -> None:
+    _require(
+        item.get("gold_identity") == target.get("gold_identity"),
+        "HUMAN_GOLD_IDENTITY_MISMATCH",
+        "Human Gold identity 与冻结校准对象不一致",
+    )
+    _require(bool(str(item.get("review_comment") or "").strip()), "HUMAN_GOLD_COMMENT_REQUIRED", "每项 Human Gold 必须填写审核说明")
+    if target["target_type"] == "RECALL_CONTROL":
+        boundary_fields = (
+            "boundary_has_correspondence",
+            "boundary_has_support",
+            "boundary_has_related",
+            "boundary_should_enter_candidate",
+        )
+        _require(
+            all(isinstance(item.get(field), bool) for field in boundary_fields),
+            "RECALL_BOUNDARY_GOLD_INCOMPLETE",
+            "Recall Boundary 必须独立判断内容对应、SUPPORT、RELATED 和是否应进入候选",
+        )
+        should_enter = bool(item.get("boundary_should_enter_candidate"))
+        has_relation = bool(item.get("boundary_has_support")) or bool(item.get("boundary_has_related"))
+        _require(
+            not has_relation or bool(item.get("boundary_has_correspondence")),
+            "RECALL_BOUNDARY_GOLD_INCONSISTENT",
+            "SUPPORT/RELATED 必须同时存在真实内容对应",
+        )
+        _require(
+            not has_relation or should_enter,
+            "RECALL_BOUNDARY_GOLD_INCONSISTENT",
+            "存在 SUPPORT/RELATED 的边界对象必须标记为应进入正式候选",
+        )
+        _require(
+            bool(item.get("boundary_miss_reason")) == should_enter,
+            "RECALL_BOUNDARY_REASON_INVALID",
+            "应进入候选时必须选择漏召回原因；不应进入时不得填写漏召回原因",
+        )
+        _require(
+            not any(item.get(field) is not None for field in (
+                "human_correspondence_mode",
+                "human_evidence_relation",
+                "span_validity",
+                "subject_attribution",
+                "qualifier_preservation",
+                "decision_role_validity",
+            )),
+            "RECALL_BOUNDARY_RELATION_FIELDS_FORBIDDEN",
+            "Recall Boundary 不使用正式机器 relation 作为人工审核目标",
+        )
+        return
+
+    required = (
+        "human_correspondence_mode",
+        "human_evidence_relation",
+        "span_validity",
+        "subject_attribution",
+        "qualifier_preservation",
+        "decision_role_validity",
+    )
+    _require(all(item.get(field) is not None for field in required), "RELATION_HUMAN_GOLD_INCOMPLETE", "Evaluation/Binding 必须填写完整 Human Gold 字段")
+    correspondence = item.get("human_correspondence_mode")
+    relation = item.get("human_evidence_relation")
+    positive_correspondence = correspondence not in {"NO_CORRESPONDENCE", "UNKNOWN"}
+    positive_relation = relation not in {"NO_MATCH", "INSUFFICIENT_EVIDENCE"}
+    _require(
+        positive_correspondence == positive_relation,
+        "RELATION_HUMAN_GOLD_INCONSISTENT",
+        "Human correspondence 与 evidence relation 的正负方向不一致",
+    )
+    _require(
+        not any(item.get(field) is not None for field in (
+            "boundary_has_correspondence",
+            "boundary_has_support",
+            "boundary_has_related",
+            "boundary_should_enter_candidate",
+            "boundary_miss_reason",
+        )),
+        "RELATION_BOUNDARY_FIELDS_FORBIDDEN",
+        "Evaluation/Binding 不得填写 Recall Boundary 专用字段",
+    )
+
+
+def _metric_fraction(numerator: int, denominator: int) -> dict[str, Any]:
+    return {
+        "numerator": numerator,
+        "denominator": denominator,
+        "value": round(numerator / denominator, 6) if denominator else None,
+    }
+
+
+def _build_human_calibration_metrics(
+    *,
+    output: dict[str, Any],
+    projection: dict[str, Any],
+    decisions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    decision_by_target = {
+        (item["target_type"], item["target_id"]): item for item in decisions
+    }
+    evaluation_by_id = {item["evaluation_id"]: item for item in output.get("evaluations") or []}
+    binding_by_id = {item["binding_id"]: item for item in output.get("bindings") or []}
+    control_by_id = {item["control_id"]: item for item in output.get("recall_controls") or []}
+    frozen_samples = output.get("calibration_set") or []
+    unbiased_ids = [
+        item["target_id"] for item in frozen_samples
+        if item.get("target_type") == "EVALUATION" and item.get("sample_group") == "UNBIASED_CHECK"
+    ]
+
+    confusion: dict[str, dict[str, int]] = {}
+    relation_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for evaluation_id in unbiased_ids:
+        machine = evaluation_by_id[evaluation_id]
+        human = decision_by_target[("EVALUATION", evaluation_id)]
+        machine_relation = str(machine.get("evidence_relation") or "")
+        human_relation = str(human.get("human_evidence_relation") or "")
+        confusion.setdefault(machine_relation, {})[human_relation] = (
+            confusion.setdefault(machine_relation, {}).get(human_relation, 0) + 1
+        )
+        relation_rows.append((machine, human))
+
+    human_support = {"SUPPORTS_FULL", "SUPPORTS_PARTIAL"}
+    human_positive = human_support | {"RELATED_ONLY", "CONTRADICTS"}
+    no_match_support_false_negative = len([
+        1 for machine, human in relation_rows
+        if machine.get("evidence_relation") == "NO_MATCH" and human.get("human_evidence_relation") in human_support
+    ])
+    no_match_related_false_negative = len([
+        1 for machine, human in relation_rows
+        if machine.get("evidence_relation") == "NO_MATCH" and human.get("human_evidence_relation") == "RELATED_ONLY"
+    ])
+    related_false_positive = len([
+        1 for machine, human in relation_rows
+        if machine.get("evidence_relation") == "RELATED_ONLY" and human.get("human_evidence_relation") == "NO_MATCH"
+    ])
+    support_overstatement = len([
+        1 for machine, human in relation_rows
+        if machine.get("evidence_relation") == "SUPPORTS_PARTIAL"
+        and human.get("human_evidence_relation") in {"RELATED_ONLY", "NO_MATCH"}
+    ])
+
+    def relation_error_count(field: str, invalid_value: str) -> int:
+        return len([1 for _, human in relation_rows if human.get(field) == invalid_value])
+
+    relation_error_counts = {
+        "subject_attribution_error": relation_error_count("subject_attribution", "MISATTRIBUTED"),
+        "qualifier_loss": relation_error_count("qualifier_preservation", "LOST_OR_STRENGTHENED"),
+        "span_invalid": relation_error_count("span_validity", "INVALID"),
+        "decision_role_error": relation_error_count("decision_role_validity", "INVALID"),
+    }
+
+    census_rows: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for item in projection["binding_census"]:
+        binding = binding_by_id[item["binding_id"]]
+        human = decision_by_target[(item["review_target_type"], item["review_target_id"])]
+        census_rows.append((item, binding, human))
+
+    def valid_human_binding(human: dict[str, Any]) -> bool:
+        return (
+            human.get("human_correspondence_mode") not in {"NO_CORRESPONDENCE", "UNKNOWN"}
+            and human.get("human_evidence_relation") in human_positive
+        )
+
+    valid_binding_count = len([1 for _, _, human in census_rows if valid_human_binding(human)])
+
+    def class_precision(field: str, value: str, human_field: str) -> dict[str, Any]:
+        rows = [(binding, human) for _, binding, human in census_rows if binding.get(field) == value]
+        return _metric_fraction(
+            len([1 for _, human in rows if human.get(human_field) == value]),
+            len(rows),
+        )
+
+    support_rows = [
+        (binding, human) for _, binding, human in census_rows
+        if binding.get("evidence_relation") in human_support
+    ]
+    related_rows = [
+        (binding, human) for _, binding, human in census_rows
+        if binding.get("evidence_relation") == "RELATED_ONLY"
+    ]
+    applicable_spans = [
+        human for _, _, human in census_rows if human.get("span_validity") != "NOT_APPLICABLE"
+    ]
+    census_error_counts = {
+        "subject_attribution_error": len([1 for _, _, human in census_rows if human.get("subject_attribution") == "MISATTRIBUTED"]),
+        "qualifier_loss": len([1 for _, _, human in census_rows if human.get("qualifier_preservation") == "LOST_OR_STRENGTHENED"]),
+        "span_invalid": len([1 for _, _, human in census_rows if human.get("span_validity") == "INVALID"]),
+        "decision_role_error": len([1 for _, _, human in census_rows if human.get("decision_role_validity") == "INVALID"]),
+    }
+    binding_census_metrics = {
+        "binding_count": len(census_rows),
+        "binding_precision": _metric_fraction(valid_binding_count, len(census_rows)),
+        "faithful_paraphrase_precision": class_precision("correspondence_mode", "FAITHFUL_PARAPHRASE", "human_correspondence_mode"),
+        "topical_only_precision": class_precision("correspondence_mode", "TOPICAL_ONLY", "human_correspondence_mode"),
+        "support_precision": _metric_fraction(
+            len([1 for _, human in support_rows if human.get("human_evidence_relation") in human_support]),
+            len(support_rows),
+        ),
+        "supports_partial_precision": _metric_fraction(
+            len([
+                1 for binding, human in support_rows
+                if binding.get("evidence_relation") == "SUPPORTS_PARTIAL"
+                and human.get("human_evidence_relation") == "SUPPORTS_PARTIAL"
+            ]),
+            len([1 for binding, _ in support_rows if binding.get("evidence_relation") == "SUPPORTS_PARTIAL"]),
+        ),
+        "related_only_precision": _metric_fraction(
+            len([1 for _, human in related_rows if human.get("human_evidence_relation") == "RELATED_ONLY"]),
+            len(related_rows),
+        ),
+        "subject_attribution_error": _metric_fraction(census_error_counts["subject_attribution_error"], len(census_rows)),
+        "qualifier_loss_rate": _metric_fraction(census_error_counts["qualifier_loss"], len(census_rows)),
+        "span_validity_rate": _metric_fraction(
+            len([1 for human in applicable_spans if human.get("span_validity") == "VALID"]),
+            len(applicable_spans),
+        ),
+        "decision_role_error": _metric_fraction(census_error_counts["decision_role_error"], len(census_rows)),
+    }
+
+    boundary_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for sample in frozen_samples:
+        if sample.get("target_type") != "RECALL_CONTROL":
+            continue
+        control = control_by_id[sample["target_id"]]
+        human = decision_by_target[("RECALL_CONTROL", sample["target_id"])]
+        boundary_rows.append((control, human))
+    reason_distribution: dict[str, int] = {}
+    for _, human in boundary_rows:
+        reason = human.get("boundary_miss_reason")
+        if reason:
+            reason_distribution[str(reason)] = reason_distribution.get(str(reason), 0) + 1
+    boundary_metrics = {
+        "reviewed_count": len(boundary_rows),
+        "boundary_miss_count": len([1 for _, human in boundary_rows if human.get("boundary_should_enter_candidate")]),
+        "boundary_support_miss_count": len([1 for _, human in boundary_rows if human.get("boundary_has_support")]),
+        "boundary_related_miss_count": len([1 for _, human in boundary_rows if human.get("boundary_has_related")]),
+        "miss_reason_distribution": reason_distribution,
+    }
+
+    def recurring_relation_error(predicate) -> bool:
+        rows = [(machine, human) for machine, human in relation_rows if predicate(machine, human)]
+        return (
+            len(rows) >= 2
+            and len({machine.get("citation_id") for machine, _ in rows}) >= 2
+            and len({machine.get("answer_unit_id") for machine, _ in rows}) >= 2
+        )
+
+    relation_blockers: list[str] = []
+    blocker_checks = (
+        ("SYSTEMIC_SUBJECT_ATTRIBUTION_ERROR", lambda _m, h: h.get("subject_attribution") == "MISATTRIBUTED"),
+        ("SYSTEMIC_QUALIFIER_LOSS", lambda _m, h: h.get("qualifier_preservation") == "LOST_OR_STRENGTHENED"),
+        ("SYSTEMIC_SPAN_INVALID", lambda _m, h: h.get("span_validity") == "INVALID"),
+        ("SYSTEMIC_DECISION_ROLE_ERROR", lambda _m, h: h.get("decision_role_validity") == "INVALID"),
+        ("RELATED_SYSTEMATICALLY_UPGRADED_TO_SUPPORT", lambda m, h: m.get("evidence_relation") in human_support and h.get("human_evidence_relation") in {"RELATED_ONLY", "NO_MATCH"}),
+        ("OBVIOUS_SUPPORT_SYSTEMATICALLY_MISSED", lambda m, h: m.get("evidence_relation") == "NO_MATCH" and h.get("human_evidence_relation") in human_support),
+    )
+    for code, predicate in blocker_checks:
+        if recurring_relation_error(predicate):
+            relation_blockers.append(code)
+
+    support_boundary_rows = [(control, human) for control, human in boundary_rows if human.get("boundary_has_support")]
+    recall_blockers = []
+    if (
+        len(support_boundary_rows) >= 2
+        and len({control.get("citation_id") for control, _ in support_boundary_rows}) >= 2
+        and len({control.get("answer_unit_id") for control, _ in support_boundary_rows}) >= 2
+    ):
+        recall_blockers.append("BOUNDARY_SYSTEMATIC_SUPPORT_MISS")
+
+    failed_citations = [
+        item for item in output.get("citations") or [] if item.get("processing_status") == "FAILED"
+    ]
+    contract_gate = {
+        "status": "LIMITED" if failed_citations else "BASELINE_RECORDED",
+        "done_count": len([item for item in output.get("citations") or [] if item.get("processing_status") == "DONE"]),
+        "failed_count": len(failed_citations),
+        "failed_citation_ids": [item.get("citation_id") for item in failed_citations],
+    }
+    relation_gate = {
+        "status": "BLOCKER" if relation_blockers else "BASELINE_RECORDED",
+        "blockers": relation_blockers,
+    }
+    recall_gate = {
+        "status": "BLOCKER" if recall_blockers else "BASELINE_RECORDED",
+        "blockers": recall_blockers,
+    }
+    has_non_blocking_error = bool(
+        failed_citations
+        or no_match_support_false_negative
+        or no_match_related_false_negative
+        or related_false_positive
+        or support_overstatement
+        or any(relation_error_counts.values())
+        or any(census_error_counts.values())
+        or boundary_metrics["boundary_miss_count"]
+    )
+    if relation_blockers or recall_blockers:
+        recommendation = "P1_FAIL_AND_FIX"
+    elif has_non_blocking_error:
+        recommendation = "P1_LIMITED_PASS"
+    else:
+        recommendation = "P1_PASS"
+
+    error_cases: list[dict[str, Any]] = []
+    for machine, human in relation_rows:
+        reasons = []
+        if machine.get("evidence_relation") != human.get("human_evidence_relation"):
+            reasons.append("RELATION_DISAGREEMENT")
+        if human.get("subject_attribution") == "MISATTRIBUTED":
+            reasons.append("SUBJECT_ATTRIBUTION")
+        if human.get("qualifier_preservation") == "LOST_OR_STRENGTHENED":
+            reasons.append("QUALIFIER_LOSS")
+        if human.get("span_validity") == "INVALID":
+            reasons.append("SPAN_INVALID")
+        if human.get("decision_role_validity") == "INVALID":
+            reasons.append("DECISION_ROLE")
+        if reasons:
+            error_cases.append({
+                "target_id": machine.get("evaluation_id"),
+                "citation_id": machine.get("citation_id"),
+                "answer_unit_id": machine.get("answer_unit_id"),
+                "machine_relation": machine.get("evidence_relation"),
+                "human_relation": human.get("human_evidence_relation"),
+                "reasons": reasons,
+                "classification": "LLM_JUDGEMENT",
+            })
+    for control, human in boundary_rows:
+        if human.get("boundary_should_enter_candidate"):
+            error_cases.append({
+                "target_id": control.get("control_id"),
+                "citation_id": control.get("citation_id"),
+                "answer_unit_id": control.get("answer_unit_id"),
+                "reasons": [human.get("boundary_miss_reason")],
+                "classification": "PASSAGE" if human.get("boundary_miss_reason") == "PASSAGE_SPLIT" else "RECALL",
+            })
+
+    return {
+        "human_gold_version": HUMAN_GOLD_VERSION,
+        "reviewed_targets": len(decisions),
+        "new_human_review_count": len([item for item in decisions if item.get("review_origin") == "NEW"]),
+        "reused_human_gold_count": len([item for item in decisions if item.get("review_origin") == "REUSED"]),
+        "relation_calibration": {
+            "unbiased_count": len(relation_rows),
+            "confusion_matrix": confusion,
+            "no_match_to_human_support": no_match_support_false_negative,
+            "no_match_to_human_related": no_match_related_false_negative,
+            "related_only_to_human_no_match": related_false_positive,
+            "supports_partial_to_human_related_or_no_match": support_overstatement,
+            **relation_error_counts,
+        },
+        "binding_census": binding_census_metrics,
+        "recall_boundary": boundary_metrics,
+        "gates": {
+            "CONTRACT_RELIABILITY": contract_gate,
+            "RELATION_QUALITY": relation_gate,
+            "RECALL_QUALITY": recall_gate,
+        },
+        "recommendation": recommendation,
+        "major_error_cases": error_cases[:20],
+        "repair_scope": {
+            "PROMPT_OR_SCHEMA_CONTRACT": [item.get("citation_id") for item in failed_citations],
+            "RECALL": [item["target_id"] for item in error_cases if item.get("classification") == "RECALL"],
+            "PASSAGE": [item["target_id"] for item in error_cases if item.get("classification") == "PASSAGE"],
+            "LLM_JUDGEMENT": [item["target_id"] for item in error_cases if item.get("classification") == "LLM_JUDGEMENT"],
+        },
+    }
+
+
 def execute_citation_contribution(
     contribution_id: str,
     *,
@@ -1603,6 +2189,9 @@ def complete_citation_contribution_review(
     prompt_id: int,
     result_hash: str,
     reviewable_set_hash: str,
+    calibration_sample_identity: str,
+    binding_census_hash: str,
+    human_review_set_hash: str,
     reviewer: str,
     decisions: list[dict[str, Any]],
     missed_bindings: list[dict[str, Any]],
@@ -1616,12 +2205,24 @@ def complete_citation_contribution_review(
     if existing:
         return existing
     output = loads(result.output_json, {})
-    calibration = {(item["target_type"], item["target_id"]) for item in output.get("calibration_set") or []}
-    _require(bool(calibration), "NO_CALIBRATION_TARGETS", "当前 ResultVersion 没有可人工校准的合格对象")
+    projection = _build_human_calibration_projection(db, result=result, output=output)
+    _require(bool(projection["review_targets"]), "NO_CALIBRATION_TARGETS", "当前 ResultVersion 没有可人工校准的合格对象")
+    _require(
+        projection["calibration_sample_identity"] == calibration_sample_identity,
+        "CALIBRATION_SAMPLE_STALE",
+        "冻结的 40+20 校准样本身份已过期",
+    )
+    _require(projection["binding_census_hash"] == binding_census_hash, "BINDING_CENSUS_STALE", "Binding Census 身份已过期")
+    _require(projection["human_review_set_hash"] == human_review_set_hash, "HUMAN_REVIEW_SET_STALE", "Human Review 去重集合身份已过期")
+    targets = {
+        (item["target_type"], item["target_id"]): item
+        for item in projection["review_targets"]
+    }
+    required_targets = {
+        key for key, item in targets.items() if item["requires_human_review"]
+    }
     submitted = {(item.get("target_type"), item.get("target_id")) for item in decisions}
-    _require(calibration == submitted, "CALIBRATION_SET_INCOMPLETE", "必须处理冻结的完整人工校准集合")
-    evaluation_by_id = {item["evaluation_id"]: item for item in output.get("evaluations") or []}
-    recall_control_by_id = {item["control_id"]: item for item in output.get("recall_controls") or []}
+    _require(required_targets == submitted, "CALIBRATION_SET_INCOMPLETE", "必须处理全部未复用的 Human Gold 对象，且不得提交范围外对象")
     unit_ids = {item["answer_unit_id"] for item in output.get("answer_units") or []}
     citation_by_reference = {int(item["reference_id"]): item for item in output.get("citations") or []}
     passage_ids_by_reference = {
@@ -1629,71 +2230,58 @@ def complete_citation_contribution_review(
         | set(item.get("recall_control_passage_ids") or [])
         for item in output.get("citations") or []
     }
-    for item in decisions:
-        target_type = item.get("target_type")
-        target_id = item.get("target_id")
-        valid_target = (
-            target_type == "EVALUATION" and target_id in evaluation_by_id
-        ) or (
-            target_type == "RECALL_CONTROL" and target_id in recall_control_by_id
-        )
-        _require(valid_target, "UNKNOWN_CALIBRATION_TARGET", "人工校准引用未知候选判断或召回边界样本")
-        if item.get("decision") == "CORRECT":
-            correspondence = item.get("correspondence_mode")
-            relation = item.get("evidence_relation")
-            _require(bool(correspondence and relation), "CALIBRATION_CORRECTION_INCOMPLETE", "修正必须同时提交 correspondence_mode 和 evidence_relation")
-            positive_relation = relation not in {"NO_MATCH", "INSUFFICIENT_EVIDENCE"}
-            positive_correspondence = correspondence not in {"NO_CORRESPONDENCE", "UNKNOWN"}
-            _require(
-                positive_relation == positive_correspondence,
-                "CALIBRATION_CORRECTION_INCONSISTENT",
-                "修正后的 correspondence_mode 与 evidence_relation 不一致",
-            )
+    submitted_by_target = {
+        (item.get("target_type"), item.get("target_id")): item for item in decisions
+    }
+    reviewed_decisions: list[dict[str, Any]] = []
+    for key, target in targets.items():
+        if target["requires_human_review"]:
+            item = submitted_by_target[key]
+            _validate_human_gold_decision(item, target)
+            payload = _human_gold_payload(item)
+            review_origin = "NEW"
+            source_review_id = None
+        else:
+            payload = dict(target["reused_human_gold"] or {})
+            source_review_id = payload.pop("source_review_id", None)
+            item = {
+                "target_type": target["target_type"],
+                "target_id": target["target_id"],
+                "gold_identity": target["gold_identity"],
+                **payload,
+            }
+            _validate_human_gold_decision(item, target)
+            review_origin = "REUSED"
+        reviewed_decisions.append({
+            "target_type": target["target_type"],
+            "target_id": target["target_id"],
+            "evaluation_id": target.get("evaluation_id"),
+            "binding_id": target.get("binding_id"),
+            "control_id": target.get("control_id"),
+            "sample_group": target.get("sample_group"),
+            "sampling_reason": target.get("sampling_reason"),
+            "gold_identity": target["gold_identity"],
+            "review_origin": review_origin,
+            "source_review_id": source_review_id,
+            **payload,
+        })
     for item in missed_bindings:
         reference_id = int(item.get("reference_id") or 0)
         _require(item.get("answer_unit_id") in unit_ids, "UNKNOWN_MISSED_ANSWER_UNIT", "漏召回记录引用未知 AnswerUnit")
         _require(reference_id in citation_by_reference, "UNKNOWN_MISSED_CITATION", "漏召回记录引用未知 Citation")
         _require(item.get("passage_id") in passage_ids_by_reference.get(reference_id, set()), "UNKNOWN_MISSED_PASSAGE", "漏召回记录必须来自实际搜索的 passage")
-    machine_positive = {
-        item["evaluation_id"] for item in output.get("evaluations") or []
-        if item["evidence_relation"] not in {"NO_MATCH", "INSUFFICIENT_EVIDENCE"}
-    }
-    machine_negative = set(evaluation_by_id) - machine_positive
-    false_positive = len([
-        item for item in decisions
-        if item.get("target_id") in machine_positive
-        and (
-            item.get("decision") == "REJECT"
-            or item.get("evidence_relation") in {"NO_MATCH", "INSUFFICIENT_EVIDENCE"}
-        )
-    ])
-    false_negative = len(missed_bindings) + len([
-        item for item in decisions
-        if (
-            item.get("target_id") in machine_negative
-            or item.get("target_type") == "RECALL_CONTROL"
-        )
-        and item.get("decision") == "CORRECT"
-        and item.get("evidence_relation") not in {None, "NO_MATCH", "INSUFFICIENT_EVIDENCE"}
-    ])
-    accepted_positive = max(len(machine_positive) - false_positive, 0)
-    metrics = {
-        "reviewed_targets": len(decisions),
-        "machine_positive_bindings": len(machine_positive),
-        "false_positive": false_positive,
-        "false_negative": false_negative,
-        "subject_attribution_error": len([item for item in decisions if item.get("subject_attribution_error")]),
-        "decision_role_error": len([item for item in decisions if item.get("decision_role_error")]),
-        "precision": round(accepted_positive / max(accepted_positive + false_positive, 1), 6),
-        "recall": round(accepted_positive / max(accepted_positive + false_negative, 1), 6),
-    }
+    metrics = _build_human_calibration_metrics(
+        output=output,
+        projection=projection,
+        decisions=reviewed_decisions,
+    )
     review = SinglePromptCitationContributionReview(
         review_id=f"contribution-review-{uuid4()}",
         contribution_id=contribution_id,
         result_version=result_version,
         result_hash=result_hash,
         reviewable_set_hash=reviewable_set_hash,
-        decisions_json=dumps(decisions),
+        decisions_json=dumps(reviewed_decisions),
         missed_bindings_json=dumps(missed_bindings),
         metrics_json=dumps(metrics),
         reviewer=reviewer,
@@ -1728,6 +2316,11 @@ def get_citation_contribution_status(
         result_version=execution.active_result_version
     ).one_or_none() if execution.active_result_version else None
     result_output = loads(result.output_json, {}) if result else {}
+    human_calibration = (
+        _build_human_calibration_projection(db, result=result, output=result_output)
+        if result and (result_output.get("calibration_set") or [])
+        else None
+    )
     projected_status = execution.status
     projected_blocker = {"code": execution.blocker_code, "detail": execution.blocker_detail} if execution.blocker_code else None
     if result and execution.status == "READY_FOR_CALIBRATION" and not (result_output.get("calibration_set") or []):
@@ -1780,6 +2373,7 @@ def get_citation_contribution_status(
             "note": review.note,
             "created_at": _iso(review.created_at),
         } if review else None,
+        "human_calibration": human_calibration,
         "allowed_operations": (
             ["VIEW", "AUTHORIZE_EXACT_PLAN"] if execution.status == "AWAITING_EXTERNAL_AUTHORIZATION"
             else ["VIEW", "COMPLETE_CALIBRATION"] if projected_status == "READY_FOR_CALIBRATION"

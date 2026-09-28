@@ -17,6 +17,7 @@ from app.modules.single_prompt_v2.citation_contribution import (
     citation_contribution_response_examples,
     citation_contribution_response_schema,
 )
+from app.modules.single_prompt_v2.schemas import CitationContributionCalibrationDecision
 from app.services.semantic_llm import deepseek
 
 
@@ -234,3 +235,41 @@ def test_two_call_canary_requires_both_fixed_citations_to_pass():
         {"citation_id": "citation-1", "processing_status": "DONE"},
         {"citation_id": "citation-2", "processing_status": "DONE"},
     ], canary_ids) is True
+
+
+def test_human_gold_contract_rejects_old_accept_reject_shape_and_requires_comment():
+    with pytest.raises(ValidationError):
+        CitationContributionCalibrationDecision.model_validate({
+            "target_type": "EVALUATION",
+            "target_id": "evaluation-1",
+            "decision": "ACCEPT",
+        })
+    with pytest.raises(ValidationError):
+        CitationContributionCalibrationDecision.model_validate({
+            "target_type": "EVALUATION",
+            "target_id": "evaluation-1",
+            "gold_identity": "a" * 64,
+            "human_correspondence_mode": "DIRECT_REUSE",
+            "human_evidence_relation": "SUPPORTS_FULL",
+            "span_validity": "VALID",
+            "subject_attribution": "PRESERVED",
+            "qualifier_preservation": "PRESERVED",
+            "decision_role_validity": "VALID",
+            "review_comment": "",
+        })
+
+
+def test_recall_boundary_gold_stays_independent_from_machine_relation_fields():
+    parsed = CitationContributionCalibrationDecision.model_validate({
+        "target_type": "RECALL_CONTROL",
+        "target_id": "control-1",
+        "gold_identity": "b" * 64,
+        "boundary_has_correspondence": True,
+        "boundary_has_support": False,
+        "boundary_has_related": True,
+        "boundary_should_enter_candidate": True,
+        "boundary_miss_reason": "RANKING_BOUNDARY",
+        "review_comment": "主题相关，应该进入正式候选",
+    })
+    assert parsed.human_evidence_relation is None
+    assert parsed.boundary_has_related is True

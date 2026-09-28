@@ -48,6 +48,7 @@ from app.modules.single_prompt_v2.citation_contribution import (
     CitationContributionJudge,
     _build_calibration_set,
     _rank_candidate_passages,
+    _reusable_human_gold,
     authorize_citation_contribution,
     build_answer_units,
     complete_citation_contribution_review,
@@ -1839,19 +1840,56 @@ def test_citation_contribution_execution_separates_evaluations_bindings_and_waiv
         assert binding["answer_anchor"] == "UNPROVEN"
         assert binding["generation_influence"] == "UNAVAILABLE"
         assert all(item["target_type"] == "EVALUATION" for item in status["result"]["output"]["calibration_set"])
+        immutable_output_json = db.query(SinglePromptCitationContributionResult).filter_by(
+            result_version=status["result"]["result_version"]
+        ).one().output_json
 
-        decisions = [
-            {
-                **item,
-                "decision": "ACCEPT",
-                "correspondence_mode": None,
-                "evidence_relation": None,
-                "subject_attribution_error": False,
-                "decision_role_error": False,
-                "note": "",
-            }
-            for item in status["result"]["output"]["calibration_set"]
-        ]
+        projection = status["human_calibration"]
+        evaluation_by_id = {
+            item["evaluation_id"]: item
+            for item in status["result"]["output"]["evaluations"]
+        }
+        decisions = []
+        for item in projection["review_targets"]:
+            if not item["requires_human_review"]:
+                continue
+            if item["target_type"] == "RECALL_CONTROL":
+                decisions.append({
+                    "target_type": item["target_type"],
+                    "target_id": item["target_id"],
+                    "gold_identity": item["gold_identity"],
+                    "human_correspondence_mode": None,
+                    "human_evidence_relation": None,
+                    "span_validity": None,
+                    "subject_attribution": None,
+                    "qualifier_preservation": None,
+                    "decision_role_validity": None,
+                    "boundary_has_correspondence": False,
+                    "boundary_has_support": False,
+                    "boundary_has_related": False,
+                    "boundary_should_enter_candidate": False,
+                    "boundary_miss_reason": None,
+                    "review_comment": "该边界对象不应进入候选",
+                })
+                continue
+            evaluation = evaluation_by_id[item["evaluation_id"] or item["target_id"]]
+            decisions.append({
+                "target_type": item["target_type"],
+                "target_id": item["target_id"],
+                "gold_identity": item["gold_identity"],
+                "human_correspondence_mode": evaluation["correspondence_mode"],
+                "human_evidence_relation": evaluation["evidence_relation"],
+                "span_validity": "VALID" if evaluation.get("source_span") else "NOT_APPLICABLE",
+                "subject_attribution": "PRESERVED",
+                "qualifier_preservation": "PRESERVED",
+                "decision_role_validity": "VALID",
+                "boundary_has_correspondence": None,
+                "boundary_has_support": None,
+                "boundary_has_related": None,
+                "boundary_should_enter_candidate": None,
+                "boundary_miss_reason": None,
+                "review_comment": "人工 Gold 与该 fixture 的固定关系一致",
+            })
         review = complete_citation_contribution_review(
             db,
             contribution_id=contribution_id,
@@ -1860,15 +1898,36 @@ def test_citation_contribution_execution_separates_evaluations_bindings_and_waiv
             prompt_id=fixture["analysis"].prompt_id,
             result_hash=status["result"]["output_hash"],
             reviewable_set_hash=status["result"]["reviewable_set_hash"],
+            calibration_sample_identity=projection["calibration_sample_identity"],
+            binding_census_hash=projection["binding_census_hash"],
+            human_review_set_hash=projection["human_review_set_hash"],
             reviewer="qa",
             decisions=decisions,
             missed_bindings=[],
             note="P1 calibration",
         )
         metrics = json.loads(review.metrics_json)
-        assert metrics["false_positive"] == 0
-        assert metrics["false_negative"] == 0
+        assert metrics["relation_calibration"]["no_match_to_human_support"] == 0
+        assert metrics["relation_calibration"]["related_only_to_human_no_match"] == 0
+        assert metrics["binding_census"]["binding_precision"] == {
+            "numerator": 1,
+            "denominator": 1,
+            "value": 1.0,
+        }
+        assert set(metrics["gates"]) == {
+            "CONTRACT_RELIABILITY",
+            "RELATION_QUALITY",
+            "RECALL_QUALITY",
+        }
+        assert projection["binding_census_count"] == 1
+        assert projection["deduplicated_target_count"] == len(projection["review_targets"])
         assert db.query(SinglePromptCitationContributionReview).count() == 1
+        assert db.query(SinglePromptCitationContributionResult).filter_by(
+            result_version=status["result"]["result_version"]
+        ).one().output_json == immutable_output_json
+        reusable, conflicts = _reusable_human_gold(db, exclude_result_version="future-result")
+        assert not conflicts
+        assert {item["gold_identity"] for item in decisions}.issubset(reusable)
     finally:
         db.close()
         engine.dispose()
@@ -1937,6 +1996,9 @@ def test_citation_contribution_all_failed_blocks_empty_calibration_review(monkey
                 prompt_id=fixture["analysis"].prompt_id,
                 result_hash=status["result"]["output_hash"],
                 reviewable_set_hash=status["result"]["reviewable_set_hash"],
+                calibration_sample_identity="not-applicable",
+                binding_census_hash="0" * 64,
+                human_review_set_hash="0" * 64,
                 reviewer="qa",
                 decisions=[],
                 missed_bindings=[],

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SinglePromptAnalysisCreate(BaseModel):
@@ -168,10 +168,12 @@ class SinglePromptCitationContributionAuthorizationCreate(BaseModel):
 
 
 class CitationContributionCalibrationDecision(BaseModel):
-    target_type: Literal["EVALUATION", "RECALL_CONTROL"]
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    target_type: Literal["EVALUATION", "BINDING", "RECALL_CONTROL"]
     target_id: str = Field(min_length=1, max_length=96)
-    decision: Literal["ACCEPT", "REJECT", "CORRECT"]
-    correspondence_mode: Literal[
+    gold_identity: str = Field(min_length=64, max_length=64)
+    human_correspondence_mode: Literal[
         "DIRECT_REUSE",
         "FAITHFUL_PARAPHRASE",
         "SUMMARY_OR_SYNTHESIS",
@@ -179,7 +181,7 @@ class CitationContributionCalibrationDecision(BaseModel):
         "NO_CORRESPONDENCE",
         "UNKNOWN",
     ] | None = None
-    evidence_relation: Literal[
+    human_evidence_relation: Literal[
         "SUPPORTS_FULL",
         "SUPPORTS_PARTIAL",
         "CONTRADICTS",
@@ -187,9 +189,24 @@ class CitationContributionCalibrationDecision(BaseModel):
         "NO_MATCH",
         "INSUFFICIENT_EVIDENCE",
     ] | None = None
-    subject_attribution_error: bool = False
-    decision_role_error: bool = False
-    note: str = Field(default="", max_length=2000)
+    span_validity: Literal["VALID", "INVALID", "NOT_APPLICABLE", "UNCERTAIN"] | None = None
+    subject_attribution: Literal["PRESERVED", "MISATTRIBUTED", "NOT_APPLICABLE", "UNCERTAIN"] | None = None
+    qualifier_preservation: Literal["PRESERVED", "LOST_OR_STRENGTHENED", "NOT_APPLICABLE", "UNCERTAIN"] | None = None
+    decision_role_validity: Literal["VALID", "INVALID", "NOT_APPLICABLE", "UNCERTAIN"] | None = None
+    boundary_has_correspondence: bool | None = None
+    boundary_has_support: bool | None = None
+    boundary_has_related: bool | None = None
+    boundary_should_enter_candidate: bool | None = None
+    boundary_miss_reason: Literal[
+        "RANKING_BOUNDARY",
+        "ANCHOR_MISS",
+        "QUERY_TERM_MISMATCH",
+        "SOURCE_DIVERSITY",
+        "PASSAGE_SPLIT",
+        "SUBJECT_RESOLUTION",
+        "OTHER",
+    ] | None = None
+    review_comment: str = Field(min_length=1, max_length=2000)
 
 
 class CitationContributionMissedBinding(BaseModel):
@@ -216,6 +233,9 @@ class SinglePromptCitationContributionReviewCreate(BaseModel):
     prompt_id: int
     result_hash: str = Field(min_length=64, max_length=64)
     reviewable_set_hash: str = Field(min_length=64, max_length=64)
+    calibration_sample_identity: str = Field(min_length=1, max_length=120)
+    binding_census_hash: str = Field(min_length=64, max_length=64)
+    human_review_set_hash: str = Field(min_length=64, max_length=64)
     reviewer: str = Field(min_length=1, max_length=120)
     decisions: list[CitationContributionCalibrationDecision]
     missed_bindings: list[CitationContributionMissedBinding] = Field(default_factory=list)

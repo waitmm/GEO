@@ -117,6 +117,7 @@ export const api = {
     request<SinglePromptV2CitationContributionStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/citation-contributions/${encodeURIComponent(contributionId)}?project_id=${projectId}&prompt_id=${promptId}`),
   reviewSinglePromptV2CitationContribution: (analysisId: string, contributionId: string, resultVersion: string, payload: {
     project_id: number; prompt_id: number; result_hash: string; reviewable_set_hash: string;
+    calibration_sample_identity: string; binding_census_hash: string; human_review_set_hash: string;
     reviewer: string; decisions: Array<Record<string, any>>; missed_bindings: Array<Record<string, any>>; note: string;
   }) => request<SinglePromptV2CitationContributionStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/citation-contributions/${encodeURIComponent(contributionId)}/results/${encodeURIComponent(resultVersion)}/reviews`, { method: "POST", body: JSON.stringify(payload) }),
   createSinglePromptV2Diagnosis: (analysisId: string, payload: { project_id: number; prompt_id: number; idempotency_key: string }) =>

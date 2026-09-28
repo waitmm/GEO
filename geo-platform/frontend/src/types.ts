@@ -590,12 +590,28 @@ export type SinglePromptV2CitationContributionStatus = {
   review: null | {
     review_id: string;
     result_version: string;
-    metrics: Record<string, number>;
+    metrics: Record<string, any>;
     decisions: Array<Record<string, any>>;
     missed_bindings: Array<Record<string, any>>;
     reviewer: string;
     note: string;
     created_at: string;
+  };
+  human_calibration: null | {
+    version: string;
+    calibration_sample_identity: string;
+    frozen_sample_count: number;
+    unbiased_evaluation_count: number;
+    recall_boundary_count: number;
+    binding_census: Array<Record<string, any>>;
+    binding_census_count: number;
+    binding_census_hash: string;
+    review_targets: Array<Record<string, any>>;
+    human_review_set_hash: string;
+    deduplicated_target_count: number;
+    new_human_review_count: number;
+    reused_human_gold_count: number;
+    human_gold_conflict_count: number;
   };
   allowed_operations: string[];
 };

@@ -6006,3 +6006,30 @@ review_queue = READY
   now preserves the independently version-bound Contribution when only the
   Diagnosis result changes; it still clears it when the Diagnosis identity
   itself changes.
+
+## 2026-09-28 Citation Contribution P1 Human Calibration
+
+- The immutable machine Result `contribution-v1:dd80ec35eab9fe62` and its
+  frozen 40 unbiased Evaluation plus 20 Recall Boundary samples remain
+  unchanged. No failed Citation was rerun and no external model call occurred.
+- A read-only Human Calibration projection adds a census of all 22 machine
+  Bindings. Four Bindings are already represented by the unbiased sample, so
+  the real deduplicated review workload is 78 objects: the original 60 plus 18
+  additional Binding targets. Identical pair identities can reuse one prior,
+  non-conflicting Human Gold record across later diagnostic sets.
+- Evaluation and Binding review now records correspondence, evidence relation,
+  span validity, subject attribution, qualifier preservation, decision-role
+  validity and a required comment. Recall Boundary review independently records
+  correspondence, support, relatedness, candidate eligibility and miss reason;
+  it does not inherit the machine relation.
+- Review submission binds the immutable Contribution result, original
+  reviewable-set hash, calibration sample identity, Binding Census hash and
+  deduplicated Human Review set hash. It appends one Review and never mutates
+  the machine Result.
+- The resulting report separates Contract Reliability, Relation Quality and
+  Recall Quality. It exposes the unbiased confusion matrix, Binding precision
+  by relevant classes, independent error categories, boundary misses, major
+  cases and the P1 recommendation without adding an arbitrary pass threshold.
+- The release page exposes the complete source and AnswerUnit context needed
+  for human judgment. Reading or refreshing the page creates no Review;
+  Strategy and nine-Run Contribution remain unavailable at this checkpoint.

@@ -1,4 +1,4 @@
-import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2AnalysisListItem, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2RunPool, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
+import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2RunPool, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
 
 const API_BASE = "";
 
@@ -107,6 +107,18 @@ export const api = {
     completion_manifest_id: string; completion_manifest_hash: string;
     evidence_llm_policy: "ALLOW_EXTERNAL" | "CACHE_ONLY";
   }) => request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/evidence-continuations`, { method: "POST", body: JSON.stringify(payload) }),
+  createSinglePromptV2CitationContribution: (analysisId: string, payload: {
+    project_id: number; prompt_id: number; answer_result_version: string; answer_result_hash: string;
+    answer_review_id: string; citation_manifest_id: string; citation_manifest_hash: string;
+    completion_manifest_id: string; completion_manifest_hash: string; fixed_run_ids: number[];
+    idempotency_key: string;
+  }) => request<SinglePromptV2CitationContributionStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/citation-contributions`, { method: "POST", body: JSON.stringify(payload) }),
+  getSinglePromptV2CitationContribution: (analysisId: string, contributionId: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2CitationContributionStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/citation-contributions/${encodeURIComponent(contributionId)}?project_id=${projectId}&prompt_id=${promptId}`),
+  reviewSinglePromptV2CitationContribution: (analysisId: string, contributionId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; result_hash: string; reviewable_set_hash: string;
+    reviewer: string; decisions: Array<Record<string, any>>; missed_bindings: Array<Record<string, any>>; note: string;
+  }) => request<SinglePromptV2CitationContributionStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/citation-contributions/${encodeURIComponent(contributionId)}/results/${encodeURIComponent(resultVersion)}/reviews`, { method: "POST", body: JSON.stringify(payload) }),
   createSinglePromptV2Diagnosis: (analysisId: string, payload: { project_id: number; prompt_id: number; idempotency_key: string }) =>
     request<SinglePromptV2DiagnosisStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses`, { method: "POST", body: JSON.stringify(payload) }),
   getSinglePromptV2Diagnosis: (analysisId: string, diagnosisId: string, projectId: number, promptId: number) =>

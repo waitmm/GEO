@@ -6,6 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.core.release_database import get_release_db
+from app.modules.single_prompt_v2.citation_contribution import (
+    authorize_citation_contribution,
+    complete_citation_contribution_review,
+    create_citation_contribution_plan,
+    get_citation_contribution_status,
+)
 from app.modules.single_prompt_v2.diagnosis import (
     complete_diagnosis_review,
     create_answer_diagnosis,
@@ -21,6 +27,9 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptRunRetryCreate,
     SinglePromptRunSelectionCreate,
     SinglePromptAnswerDiagnosisCreate,
+    SinglePromptCitationContributionAuthorizationCreate,
+    SinglePromptCitationContributionPlanCreate,
+    SinglePromptCitationContributionReviewCreate,
     SinglePromptDiagnosisReviewCreate,
     SinglePromptDiagnosisRevisionCreate,
     SinglePromptEvidenceContinuationCreate,
@@ -64,6 +73,116 @@ from app.modules.single_prompt_v2.source_preparation import (
 
 router = APIRouter(prefix="/api/v2/single-prompt", tags=["single-prompt-v2-release"])
 get_db = get_release_db
+
+
+@router.post("/analyses/{analysis_id}/citation-contributions", status_code=201)
+def plan_citation_contribution(
+    analysis_id: str,
+    payload: SinglePromptCitationContributionPlanCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    execution, created = create_citation_contribution_plan(
+        db,
+        analysis_id=analysis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        answer_result_version=payload.answer_result_version,
+        answer_result_hash=payload.answer_result_hash,
+        answer_review_id=payload.answer_review_id,
+        citation_manifest_id=payload.citation_manifest_id,
+        citation_manifest_hash=payload.citation_manifest_hash,
+        completion_manifest_id=payload.completion_manifest_id,
+        completion_manifest_hash=payload.completion_manifest_hash,
+        fixed_run_ids=payload.fixed_run_ids,
+        idempotency_key=payload.idempotency_key,
+    )
+    if not created:
+        response.status_code = 200
+    return get_citation_contribution_status(
+        db,
+        analysis_id=analysis_id,
+        contribution_id=execution.contribution_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.get("/analyses/{analysis_id}/citation-contributions/{contribution_id}")
+def read_citation_contribution(
+    analysis_id: str,
+    contribution_id: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_citation_contribution_status(
+        db,
+        analysis_id=analysis_id,
+        contribution_id=contribution_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
+
+
+@router.post("/analyses/{analysis_id}/citation-contributions/{contribution_id}/authorizations", status_code=202)
+def authorize_citation_contribution_execution(
+    analysis_id: str,
+    contribution_id: str,
+    payload: SinglePromptCitationContributionAuthorizationCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    execution = authorize_citation_contribution(
+        db,
+        contribution_id=contribution_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        plan_hash=payload.plan_hash,
+        provider=payload.provider,
+        model=payload.model,
+        max_external_requests=payload.max_external_requests,
+        max_budget_cny=payload.max_budget_cny,
+        cost_upper_bound_cny=payload.cost_upper_bound_cny,
+        pricing_basis=payload.pricing_basis,
+        authorized_by=payload.authorized_by,
+    )
+    return get_citation_contribution_status(
+        db,
+        analysis_id=analysis_id,
+        contribution_id=execution.contribution_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.post("/analyses/{analysis_id}/citation-contributions/{contribution_id}/results/{result_version}/reviews")
+def review_citation_contribution(
+    analysis_id: str,
+    contribution_id: str,
+    result_version: str,
+    payload: SinglePromptCitationContributionReviewCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    complete_citation_contribution_review(
+        db,
+        contribution_id=contribution_id,
+        result_version=result_version,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        result_hash=payload.result_hash,
+        reviewable_set_hash=payload.reviewable_set_hash,
+        reviewer=payload.reviewer,
+        decisions=[item.model_dump() for item in payload.decisions],
+        missed_bindings=[item.model_dump() for item in payload.missed_bindings],
+        note=payload.note,
+    )
+    return get_citation_contribution_status(
+        db,
+        analysis_id=analysis_id,
+        contribution_id=contribution_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
 
 
 @router.post("/analyses", status_code=202)

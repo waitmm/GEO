@@ -10,10 +10,17 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.release_database import ReleaseSessionLocal, release_engine
-from app.models import BrowserMonitorTask, SinglePromptAnalysis, SinglePromptDiagnosisExecution, SinglePromptSourcePreparation
+from app.models import (
+    BrowserMonitorTask,
+    SinglePromptAnalysis,
+    SinglePromptCitationContributionExecution,
+    SinglePromptDiagnosisExecution,
+    SinglePromptSourcePreparation,
+)
 from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.services import update_task_status_from_runs
 from app.modules.single_prompt_v2.diagnosis import execute_diagnosis, execute_queued_evidence
+from app.modules.single_prompt_v2.citation_contribution import execute_citation_contribution
 from app.modules.single_prompt_v2.service import execute_analysis
 from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_STATUS, execute_auto_fetch
 from app.release_schema import validate_release_database
@@ -57,10 +64,20 @@ def run_once() -> str | None:
                     .order_by(SinglePromptDiagnosisExecution.id.asc())
                     .first()
                 )
-                if not diagnosis:
-                    return None
-                identity = diagnosis.diagnosis_id
-                work_type = "evidence" if diagnosis.status == "EVIDENCE_QUEUED" else "answer"
+                if diagnosis:
+                    identity = diagnosis.diagnosis_id
+                    work_type = "evidence" if diagnosis.status == "EVIDENCE_QUEUED" else "answer"
+                else:
+                    contribution = (
+                        db.query(SinglePromptCitationContributionExecution)
+                        .filter_by(status="QUEUED")
+                        .order_by(SinglePromptCitationContributionExecution.id.asc())
+                        .first()
+                    )
+                    if not contribution:
+                        return None
+                    identity = contribution.contribution_id
+                    work_type = "citation_contribution"
     finally:
         db.close()
 
@@ -94,6 +111,9 @@ def run_once() -> str | None:
     if work_type == "evidence":
         execute_queued_evidence(identity, session_factory=ReleaseSessionLocal)
         return f"evidence:{identity}"
+    if work_type == "citation_contribution":
+        execute_citation_contribution(identity, session_factory=ReleaseSessionLocal)
+        return f"citation_contribution:{identity}"
     execute_diagnosis(identity, session_factory=ReleaseSessionLocal)
     return f"answer:{identity}"
 

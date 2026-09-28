@@ -551,6 +551,55 @@ export type SinglePromptV2DiagnosisStatus = {
   finished_at: string | null;
 };
 
+export type SinglePromptV2CitationContributionStatus = {
+  execution: {
+    contribution_id: string;
+    analysis_id: string;
+    context_id: string;
+    project_id: number;
+    prompt_id: number;
+    selected_run_id: number;
+    input_snapshot_hash: string;
+    contract_version: string;
+    status: string;
+    plan_hash: string;
+    plan: {
+      selection: Record<string, any>;
+      answer_units: Array<Record<string, any>>;
+      answer_semantic_char_coverage: { covered: number; total: number; rate: number };
+      citations: Array<Record<string, any>>;
+      call_plan: Record<string, any>;
+    };
+    authorization: Record<string, any>;
+    progress: Record<string, any>;
+    blocker: { code: string; detail: string } | null;
+    usage: { external_llm_calls: number; llm_cache_hits: number; external_token_usage: number };
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+  };
+  result: null | {
+    result_version: string;
+    output_hash: string;
+    reviewable_set_hash: string;
+    output: Record<string, any>;
+    limitations: Array<Record<string, any>>;
+    stats: Record<string, any>;
+    created_at: string;
+  };
+  review: null | {
+    review_id: string;
+    result_version: string;
+    metrics: Record<string, number>;
+    decisions: Array<Record<string, any>>;
+    missed_bindings: Array<Record<string, any>>;
+    reviewer: string;
+    note: string;
+    created_at: string;
+  };
+  allowed_operations: string[];
+};
+
 export type SinglePromptV2StrategyDirection = {
   direction_id: string;
   direction_type: "FOUNDATION" | "CHANNEL";

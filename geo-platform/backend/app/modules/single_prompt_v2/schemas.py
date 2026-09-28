@@ -139,6 +139,88 @@ class SinglePromptEvidenceContinuationCreate(BaseModel):
     evidence_llm_policy: Literal["ALLOW_EXTERNAL", "CACHE_ONLY"] = "CACHE_ONLY"
 
 
+class SinglePromptCitationContributionPlanCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    answer_result_version: str = Field(min_length=1, max_length=96)
+    answer_result_hash: str = Field(min_length=64, max_length=64)
+    answer_review_id: str = Field(min_length=1, max_length=80)
+    citation_manifest_id: str = Field(min_length=1, max_length=80)
+    citation_manifest_hash: str = Field(min_length=64, max_length=64)
+    completion_manifest_id: str = Field(min_length=1, max_length=80)
+    completion_manifest_hash: str = Field(min_length=64, max_length=64)
+    fixed_run_ids: list[int] = Field(min_length=1, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
+class SinglePromptCitationContributionAuthorizationCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    plan_hash: str = Field(min_length=64, max_length=64)
+    provider: Literal["deepseek"]
+    model: str = Field(min_length=1, max_length=120)
+    max_external_requests: int = Field(ge=1, le=200)
+    max_budget_cny: float = Field(gt=0, le=10_000)
+    cost_upper_bound_cny: float = Field(gt=0, le=10_000)
+    pricing_basis: str = Field(min_length=1, max_length=2000)
+    authorized_by: str = Field(min_length=1, max_length=120)
+
+
+class CitationContributionCalibrationDecision(BaseModel):
+    target_type: Literal["EVALUATION", "RECALL_CONTROL"]
+    target_id: str = Field(min_length=1, max_length=96)
+    decision: Literal["ACCEPT", "REJECT", "CORRECT"]
+    correspondence_mode: Literal[
+        "DIRECT_REUSE",
+        "FAITHFUL_PARAPHRASE",
+        "SUMMARY_OR_SYNTHESIS",
+        "TOPICAL_ONLY",
+        "NO_CORRESPONDENCE",
+        "UNKNOWN",
+    ] | None = None
+    evidence_relation: Literal[
+        "SUPPORTS_FULL",
+        "SUPPORTS_PARTIAL",
+        "CONTRADICTS",
+        "RELATED_ONLY",
+        "NO_MATCH",
+        "INSUFFICIENT_EVIDENCE",
+    ] | None = None
+    subject_attribution_error: bool = False
+    decision_role_error: bool = False
+    note: str = Field(default="", max_length=2000)
+
+
+class CitationContributionMissedBinding(BaseModel):
+    answer_unit_id: str = Field(min_length=1, max_length=96)
+    reference_id: int = Field(ge=1)
+    passage_id: str = Field(min_length=1, max_length=120)
+    correspondence_mode: Literal[
+        "DIRECT_REUSE",
+        "FAITHFUL_PARAPHRASE",
+        "SUMMARY_OR_SYNTHESIS",
+        "TOPICAL_ONLY",
+    ]
+    evidence_relation: Literal[
+        "SUPPORTS_FULL",
+        "SUPPORTS_PARTIAL",
+        "CONTRADICTS",
+        "RELATED_ONLY",
+    ]
+    note: str = Field(min_length=1, max_length=2000)
+
+
+class SinglePromptCitationContributionReviewCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    result_hash: str = Field(min_length=64, max_length=64)
+    reviewable_set_hash: str = Field(min_length=64, max_length=64)
+    reviewer: str = Field(min_length=1, max_length=120)
+    decisions: list[CitationContributionCalibrationDecision]
+    missed_bindings: list[CitationContributionMissedBinding] = Field(default_factory=list)
+    note: str = Field(default="", max_length=5000)
+
+
 class DiagnosisEdit(BaseModel):
     target_type: str
     target_id: str

@@ -8,7 +8,7 @@ import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, File
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
-  SinglePromptV2AnalysisListItem, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
@@ -1335,6 +1335,10 @@ export default function App() {
   const [v2DiagnosisEditReason, setV2DiagnosisEditReason] = useState("");
   const [v2DiagnosisRevisionError, setV2DiagnosisRevisionError] = useState<string | null>(null);
   const [v2DiagnosisReviewNote, setV2DiagnosisReviewNote] = useState("");
+  const [v2CitationContribution, setV2CitationContribution] = useState<SinglePromptV2CitationContributionStatus | null>(null);
+  const [v2CitationContributionLoading, setV2CitationContributionLoading] = useState(false);
+  const [v2CitationCalibrationReviewer, setV2CitationCalibrationReviewer] = useState("本地审核人");
+  const [v2CitationCalibrationDecisions, setV2CitationCalibrationDecisions] = useState<Record<string, string>>({});
   const [v2AnswerReviewDecisions, setV2AnswerReviewDecisions] = useState<Record<string, V2AnswerReviewDecision>>({});
   const [v2TruthDraft, setV2TruthDraft] = useState<V2TruthDraft>({
     sourceSignalId: "", capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "",
@@ -1573,6 +1577,7 @@ export default function App() {
     const diagnosisChanged = Boolean(params.get("v2_diagnosis") && params.get("v2_diagnosis") !== status.diagnosis.diagnosis_id);
     const resultChanged = Boolean(params.get("v2_diagnosis_result") && params.get("v2_diagnosis_result") !== nextResultVersion);
     if (diagnosisChanged || resultChanged) {
+      params.delete("v2_contribution");
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       params.delete("v2_execution_proposal");
@@ -1582,6 +1587,7 @@ export default function App() {
       params.delete("v2_execution_result");
       params.delete("v2_retest");
       setV2Strategy(null);
+      setV2CitationContribution(null);
       setV2Execution(null);
       setV2RetestReadiness(null);
       setV2Retest(null);
@@ -1765,6 +1771,7 @@ export default function App() {
       params.set("v2_analysis", status.analysis.analysis_id);
       params.delete("v2_diagnosis");
       params.delete("v2_diagnosis_result");
+      params.delete("v2_contribution");
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       params.delete("v2_execution");
@@ -1775,6 +1782,7 @@ export default function App() {
       setV2SampleCount(status.sampling.planned_run_count);
       setV2SourcePreparation(null);
       setV2Diagnosis(null);
+      setV2CitationContribution(null);
       setV2StrategyReadiness(null);
       setV2Strategy(null);
       setV2Execution(null);
@@ -1790,11 +1798,12 @@ export default function App() {
 
   function showV2AnalysisHistory() {
     const params = new URLSearchParams(window.location.search);
-    ["v2_analysis", "v2_diagnosis", "v2_diagnosis_result", "v2_strategy", "v2_strategy_result", "v2_execution", "v2_execution_result", "v2_retest"].forEach((key) => params.delete(key));
+    ["v2_analysis", "v2_diagnosis", "v2_diagnosis_result", "v2_contribution", "v2_strategy", "v2_strategy_result", "v2_execution", "v2_execution_result", "v2_retest"].forEach((key) => params.delete(key));
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
     setV2Analysis(null);
     setV2SourcePreparation(null);
     setV2Diagnosis(null);
+    setV2CitationContribution(null);
     setV2StrategyReadiness(null);
     setV2Strategy(null);
     setV2Execution(null);
@@ -1815,10 +1824,12 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       params.delete("v2_diagnosis");
       params.delete("v2_diagnosis_result");
+      params.delete("v2_contribution");
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
       setV2Diagnosis(null);
+      setV2CitationContribution(null);
       setV2DiagnosisEdits({});
       setV2SourcePreparation(null);
       setV2SourceDrafts({});
@@ -2118,6 +2129,122 @@ export default function App() {
       message.error(error.message || "Evidence 双输入校验或执行失败");
     } finally {
       setV2DiagnosisLoading(false);
+    }
+  }
+
+  function persistV2CitationContributionIdentity(status: SinglePromptV2CitationContributionStatus) {
+    const params = new URLSearchParams(window.location.search);
+    params.set("v2_contribution", status.execution.contribution_id);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+  }
+
+  async function refreshV2CitationContribution(silent = false) {
+    if (!v2Analysis || !projectId || !activePromptId) return;
+    const contributionId = v2CitationContribution?.execution.contribution_id
+      || new URLSearchParams(window.location.search).get("v2_contribution");
+    if (!contributionId) return;
+    if (!silent) setV2CitationContributionLoading(true);
+    try {
+      const status = await api.getSinglePromptV2CitationContribution(
+        v2Analysis.analysis.analysis_id,
+        contributionId,
+        projectId,
+        activePromptId,
+      );
+      setV2CitationContribution(status);
+      persistV2CitationContributionIdentity(status);
+    } catch (error: any) {
+      if (!silent) message.error(error.message || "读取 Citation Contribution 状态失败");
+    } finally {
+      if (!silent) setV2CitationContributionLoading(false);
+    }
+  }
+
+  async function createV2CitationContributionPlan() {
+    if (!v2Analysis || !v2Diagnosis?.result || !v2SourcePreparation?.completion_manifest || !projectId || !activePromptId) return;
+    const input = v2Diagnosis.result.output.input || {};
+    const answerOnly = v2Diagnosis.result.output.result_scope === "ANSWER_ONLY";
+    const answerResultVersion = String(input.answer_result_version || (answerOnly ? v2Diagnosis.result.result_version : ""));
+    const answerResultHash = String(input.answer_result_hash || (answerOnly ? v2Diagnosis.result.output_hash : ""));
+    const answerReviewId = String(input.answer_review_id || v2Diagnosis.review?.review_id || "");
+    if (!answerResultVersion || !answerResultHash || !answerReviewId) {
+      message.error("当前结果没有可精确回指的 Answer Result/Review，不能创建 P1 计划");
+      return;
+    }
+    setV2CitationContributionLoading(true);
+    try {
+      const status = await api.createSinglePromptV2CitationContribution(v2Analysis.analysis.analysis_id, {
+        project_id: projectId,
+        prompt_id: activePromptId,
+        answer_result_version: answerResultVersion,
+        answer_result_hash: answerResultHash,
+        answer_review_id: answerReviewId,
+        citation_manifest_id: v2SourcePreparation.citation_manifest.manifest_id,
+        citation_manifest_hash: v2SourcePreparation.citation_manifest.payload_hash,
+        completion_manifest_id: v2SourcePreparation.completion_manifest.manifest_id,
+        completion_manifest_hash: v2SourcePreparation.completion_manifest.payload_hash,
+        fixed_run_ids: v2Analysis.runs.map((run) => run.run_id).sort((left, right) => left - right),
+        idempotency_key: `citation-contribution-p1-v3-${v2Analysis.analysis.analysis_id}-${answerResultVersion}`,
+      });
+      setV2CitationContribution(status);
+      persistV2CitationContributionIdentity(status);
+      message.success(`P1 计划已冻结：Run ${status.execution.selected_run_id}；尚未触发外部调用`);
+    } catch (error: any) {
+      message.error(error.message || "创建 Citation Contribution P1 计划失败");
+    } finally {
+      setV2CitationContributionLoading(false);
+    }
+  }
+
+  async function completeV2CitationContributionCalibration() {
+    if (!v2Analysis || !v2CitationContribution?.result || !projectId || !activePromptId) return;
+    const calibration = v2CitationContribution.result.output.calibration_set || [];
+    if (calibration.some((item: any) => !v2CitationCalibrationDecisions[item.target_id])) {
+      message.warning("请逐项完成冻结校准集合");
+      return;
+    }
+    const decisions = calibration.map((item: any) => {
+      const selected = v2CitationCalibrationDecisions[item.target_id];
+      const correction = selected.startsWith("CORRECT_") ? selected.slice("CORRECT_".length) : null;
+      const subjectAttributionError = selected === "REJECT_SUBJECT" || selected === "REJECT_BOTH";
+      const decisionRoleError = selected === "REJECT_DECISION_ROLE" || selected === "REJECT_BOTH";
+      const correspondence = correction === "NO_MATCH" ? "NO_CORRESPONDENCE"
+        : correction === "RELATED_ONLY" ? "TOPICAL_ONLY"
+        : correction ? "FAITHFUL_PARAPHRASE" : null;
+      return {
+        target_type: item.target_type,
+        target_id: item.target_id,
+        decision: correction ? "CORRECT" : selected.startsWith("REJECT_") ? "REJECT" : selected,
+        correspondence_mode: correspondence,
+        evidence_relation: correction,
+        subject_attribution_error: subjectAttributionError,
+        decision_role_error: decisionRoleError,
+        note: "",
+      };
+    });
+    setV2CitationContributionLoading(true);
+    try {
+      const status = await api.reviewSinglePromptV2CitationContribution(
+        v2Analysis.analysis.analysis_id,
+        v2CitationContribution.execution.contribution_id,
+        v2CitationContribution.result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          result_hash: v2CitationContribution.result.output_hash,
+          reviewable_set_hash: v2CitationContribution.result.reviewable_set_hash,
+          reviewer: v2CitationCalibrationReviewer.trim() || "本地审核人",
+          decisions,
+          missed_bindings: [],
+          note: "P1 Citation Contribution 人工校准",
+        },
+      );
+      setV2CitationContribution(status);
+      message.success("P1 人工校准已追加保存");
+    } catch (error: any) {
+      message.error(error.message || "保存 P1 人工校准失败");
+    } finally {
+      setV2CitationContributionLoading(false);
     }
   }
 
@@ -3145,6 +3272,20 @@ export default function App() {
     const timer = window.setInterval(() => { void refreshV2Diagnosis(true); }, 3000);
     return () => window.clearInterval(timer);
   }, [v2Diagnosis?.diagnosis.diagnosis_id, v2Diagnosis?.compute_status, projectId, activePromptId]);
+  useEffect(() => {
+    if (page !== "coreV2" || !v2Analysis?.context_id) return;
+    const contributionId = new URLSearchParams(window.location.search).get("v2_contribution");
+    if (!contributionId || v2CitationContribution?.execution.contribution_id === contributionId) return;
+    void refreshV2CitationContribution();
+  }, [page, v2Analysis?.analysis.analysis_id, v2Analysis?.context_id, projectId, activePromptId]);
+  useEffect(() => {
+    if (!v2CitationContribution || !["QUEUED", "RUNNING"].includes(v2CitationContribution.execution.status)) return;
+    const timer = window.setInterval(() => { void refreshV2CitationContribution(true); }, 3000);
+    return () => window.clearInterval(timer);
+  }, [v2CitationContribution?.execution.contribution_id, v2CitationContribution?.execution.status, projectId, activePromptId]);
+  useEffect(() => {
+    setV2CitationCalibrationDecisions({});
+  }, [v2CitationContribution?.result?.result_version]);
   useEffect(() => {
     setV2AnswerReviewDecisions({});
   }, [v2Diagnosis?.diagnosis.diagnosis_id]);
@@ -5735,6 +5876,106 @@ export default function App() {
                       </Popconfirm>}
                     </>}
                   </Space>
+                </Card>
+
+                <Card
+                  id="v2-citation-contribution-p1"
+                  size="small"
+                  title={<Space><ListChecks size={18} />单 Run 引用贡献 P1</Space>}
+                  extra={<Space wrap>
+                    {v2CitationContribution && <Tag color={v2CitationContribution.review ? "green" : v2CitationContribution.execution.status === "AWAITING_EXTERNAL_AUTHORIZATION" ? "gold" : ["QUEUED", "RUNNING"].includes(v2CitationContribution.execution.status) ? "blue" : v2CitationContribution.execution.status === "FAILED" ? "red" : "cyan"}>{v2CitationContribution.review ? "校准完成" : v2CitationContribution.execution.status}</Tag>}
+                    {v2CitationContribution && <Tooltip title="只读取当前 P1 执行状态"><Button icon={<RefreshCw size={14} />} loading={v2CitationContributionLoading} onClick={() => void refreshV2CitationContribution()} aria-label="刷新 P1 状态" /></Tooltip>}
+                  </Space>}
+                >
+                  {!v2CitationContribution ? <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    <Alert type="info" showIcon message="先冻结一个与结果无关的真实 Run 计划" description="系统将覆盖该 Run 的完整 Answer、全部 AnswerUnit 和全部 Citation；这里只创建冻结计划，不调用模型，也不生成策略。" />
+                    <Button type="primary" icon={<ListChecks size={15} />} loading={v2CitationContributionLoading} disabled={!v2SourcePreparation?.completion_manifest || !v2Diagnosis?.result} onClick={createV2CitationContributionPlan}>冻结 P1 计划</Button>
+                  </Space> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                    <Descriptions size="small" column={{ xs: 1, md: 4 }}>
+                      <Descriptions.Item label="选定 Run">#{v2CitationContribution.execution.selected_run_id}</Descriptions.Item>
+                      <Descriptions.Item label="AnswerUnit">{v2CitationContribution.execution.plan.answer_units.length}</Descriptions.Item>
+                      <Descriptions.Item label="本 Run 引用">{v2CitationContribution.execution.plan.citations.length}</Descriptions.Item>
+                      <Descriptions.Item label="完整文本覆盖">{Math.round(100 * Number(v2CitationContribution.execution.plan.answer_semantic_char_coverage.rate || 0))}%</Descriptions.Item>
+                      <Descriptions.Item label="最大新请求">{v2CitationContribution.execution.plan.call_plan.max_new_external_requests}</Descriptions.Item>
+                      <Descriptions.Item label="自动重试">{v2CitationContribution.execution.plan.call_plan.automatic_retries}</Descriptions.Item>
+                      <Descriptions.Item label="Token 保守上界">{Number(v2CitationContribution.execution.plan.call_plan.conservative_token_ceiling || 0).toLocaleString()}</Descriptions.Item>
+                      <Descriptions.Item label="费用保守上界">¥{Number(v2CitationContribution.execution.plan.call_plan.budget_upper_bound_cny || 0).toFixed(4)}</Descriptions.Item>
+                    </Descriptions>
+                    <Text type="secondary">选择规则：固定 Run 按 ID 顺序取首个技术条件合格样本，不读取 SUPPORTS、品牌出现或策略结果。</Text>
+                    <Text code copyable>{v2CitationContribution.execution.plan_hash}</Text>
+                    {v2CitationContribution.execution.status === "AWAITING_EXTERNAL_AUTHORIZATION" && <Alert type="warning" showIcon message="计划已冻结，等待独立外部调用授权" description={`${v2CitationContribution.execution.plan.call_plan.model} · 最多 ${v2CitationContribution.execution.plan.call_plan.max_new_external_requests} 次 · 0 自动重试。当前页面不会自行授权或排队。`} />}
+                    {v2CitationContribution.execution.blocker && <Alert type="error" showIcon message={v2CitationContribution.execution.blocker.code} description={v2CitationContribution.execution.blocker.detail} />}
+                    {["QUEUED", "RUNNING"].includes(v2CitationContribution.execution.status) && <Progress status="active" percent={Math.round(100 * Number(v2CitationContribution.execution.progress.completed || 0) / Math.max(Number(v2CitationContribution.execution.progress.total || 1), 1))} />}
+                    <Collapse size="small" items={[
+                      {
+                        key: "units",
+                        label: `完整 AnswerUnit（${v2CitationContribution.execution.plan.answer_units.length}）`,
+                        children: <Table size="small" pagination={false} rowKey="answer_unit_id" dataSource={v2CitationContribution.execution.plan.answer_units} columns={[
+                          { title: "类型", width: 150, render: (_: unknown, row: any) => <Space wrap><Tag>{row.primary_type}</Tag>{(row.semantic_facets || []).filter((item: string) => item !== row.primary_type).map((item: string) => <Tag key={item}>{item}</Tag>)}</Space> },
+                          { title: "原文", dataIndex: "raw_text" },
+                          { title: "限定", width: 180, render: (_: unknown, row: any) => [...(row.negation_markers || []), ...(row.condition_markers || []), ...(row.comparison_markers || [])].join(" / ") || "无" },
+                        ]} />,
+                      },
+                      {
+                        key: "citations",
+                        label: `全部 Citation（${v2CitationContribution.execution.plan.citations.length}）`,
+                        children: <Table size="small" pagination={false} rowKey="citation_id" dataSource={v2CitationContribution.result?.output.citations || v2CitationContribution.execution.plan.citations} columns={[
+                          { title: "引用", width: 70, render: (_: unknown, row: any) => `#${row.reference_index || row.reference_id}` },
+                          { title: "来源", render: (_: unknown, row: any) => <Space direction="vertical" size={0}><Text>{row.title || row.canonical_url}</Text><Text type="secondary" ellipsis style={{ maxWidth: 680 }}>{row.canonical_url}</Text></Space> },
+                          { title: "处理", width: 170, render: (_: unknown, row: any) => <Tag color={row.processing_status === "DONE" ? "green" : row.processing_status === "FAILED" ? "red" : row.processing_status === "WAIVED" ? "gold" : "blue"}>{row.processing_status}</Tag> },
+                          { title: "Disposition", width: 250, render: (_: unknown, row: any) => row.disposition || row.planned_disposition },
+                        ]} />,
+                      },
+                    ]} />
+                    {v2CitationContribution.result && <>
+                      <Descriptions size="small" column={{ xs: 1, md: 4 }}>
+                        <Descriptions.Item label="候选判断">{v2CitationContribution.result.stats.evaluation_count || 0}</Descriptions.Item>
+                        <Descriptions.Item label="Contribution Binding">{v2CitationContribution.result.stats.binding_count || 0}</Descriptions.Item>
+                        <Descriptions.Item label="Disposition 覆盖">{Math.round(100 * Number(v2CitationContribution.result.stats.citation_disposition_coverage || 0))}%</Descriptions.Item>
+                        <Descriptions.Item label="生成影响"><Tag>UNAVAILABLE</Tag></Descriptions.Item>
+                      </Descriptions>
+                      {!v2CitationContribution.review && <>
+                        <Alert type="warning" showIcon message="请校准机器判断，不是确认模型使用了来源" description="逐项核对内容对应、主体和限定；召回边界样本用于发现被候选预算过滤的真实关系。内容对应不会升级为生成因果。" />
+                        <Input value={v2CitationCalibrationReviewer} onChange={(event) => setV2CitationCalibrationReviewer(event.target.value)} placeholder="审核人" />
+                        <Table
+                          size="small"
+                          pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                          rowKey="target_id"
+                          dataSource={v2CitationContribution.result.output.calibration_set || []}
+                          columns={[
+                            { title: "机器判断", width: 170, render: (_: unknown, row: any) => {
+                              const evaluation = (v2CitationContribution.result?.output.evaluations || []).find((item: any) => item.evaluation_id === row.target_id);
+                              return row.target_type === "RECALL_CONTROL"
+                                ? <Space direction="vertical" size={0}><Tag color="gold">召回边界样本</Tag><Tag>未送模型</Tag></Space>
+                                : <Space direction="vertical" size={0}><Tag>{evaluation?.correspondence_mode}</Tag><Tag>{evaluation?.evidence_relation}</Tag></Space>;
+                            } },
+                            { title: "AnswerUnit / 来源片段", render: (_: unknown, row: any) => {
+                              const evaluation = (v2CitationContribution.result?.output.evaluations || []).find((item: any) => item.evaluation_id === row.target_id);
+                              const control = (v2CitationContribution.result?.output.recall_controls || []).find((item: any) => item.control_id === row.target_id);
+                              const target = evaluation || control;
+                              const unit = (v2CitationContribution.result?.output.answer_units || []).find((item: any) => item.answer_unit_id === target?.answer_unit_id);
+                              return <Space direction="vertical" size={4}><Text>{unit?.raw_text || ""}</Text><Text type="secondary">{evaluation?.source_span || control?.passage_text || "机器未建立内容对应"}</Text></Space>;
+                            } },
+                            { title: "人工校准", width: 230, render: (_: unknown, row: any) => <Select style={{ width: "100%" }} value={v2CitationCalibrationDecisions[row.target_id]} onChange={(value) => setV2CitationCalibrationDecisions((current) => ({ ...current, [row.target_id]: value }))} options={[
+                              { value: "ACCEPT", label: row.target_type === "RECALL_CONTROL" ? "未发现漏召回" : "接受机器判断" },
+                              ...(row.target_type === "EVALUATION" ? [
+                                { value: "REJECT", label: "拒绝该判断" },
+                                { value: "REJECT_SUBJECT", label: "主体归属错误" },
+                                { value: "REJECT_DECISION_ROLE", label: "决策角色错误" },
+                                { value: "REJECT_BOTH", label: "主体与角色均错误" },
+                              ] : []),
+                              { value: "CORRECT_SUPPORTS_FULL", label: "改为完整支持" },
+                              { value: "CORRECT_SUPPORTS_PARTIAL", label: "改为部分支持" },
+                              { value: "CORRECT_RELATED_ONLY", label: "改为仅相关" },
+                              { value: "CORRECT_NO_MATCH", label: "改为不对应" },
+                            ]} /> },
+                          ]}
+                        />
+                        <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2CitationContributionLoading} disabled={(v2CitationContribution.result.output.calibration_set || []).some((item: any) => !v2CitationCalibrationDecisions[item.target_id])} onClick={completeV2CitationContributionCalibration}>完成 P1 人工校准</Button>
+                      </>}
+                      {v2CitationContribution.review && <Alert type="success" showIcon message="P1 人工校准已完成" description={`false positive ${v2CitationContribution.review.metrics.false_positive || 0} · false negative ${v2CitationContribution.review.metrics.false_negative || 0} · 主体错误 ${v2CitationContribution.review.metrics.subject_attribution_error || 0} · 决策角色错误 ${v2CitationContribution.review.metrics.decision_role_error || 0}`} />}
+                    </>}
+                  </Space>}
                 </Card>
 
                 {!RELEASE_FIRST_SLICE && <>

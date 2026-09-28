@@ -23,6 +23,11 @@ from app.models import (
     Prompt,
     ReferenceSource,
     SinglePromptAnalysisContext,
+    SinglePromptCitationContributionExecution,
+    SinglePromptCitationContributionResult,
+    SinglePromptCitationContributionReview,
+    SinglePromptCitationManifest,
+    SinglePromptDiagnosisExecution,
     SinglePromptDiagnosisResult,
     SinglePromptDiagnosisReview,
     SinglePromptPreparedSourceSnapshot,
@@ -37,6 +42,18 @@ from app.modules.single_prompt_v2.diagnosis import (
     get_diagnosis_status,
     queue_evidence_continuation,
     recover_interrupted_diagnoses,
+)
+from app.modules.single_prompt_v2.citation_contribution import (
+    CitationContributionJudge,
+    _rank_candidate_passages,
+    authorize_citation_contribution,
+    build_answer_units,
+    complete_citation_contribution_review,
+    create_citation_contribution_plan,
+    execute_citation_contribution,
+    get_citation_contribution_status,
+    recover_interrupted_citation_contributions,
+    select_p1_run,
 )
 from app.modules.single_prompt_v2 import source_preparation
 from app.modules.single_prompt_v2.schemas import SinglePromptManualSourceContentCreate
@@ -162,6 +179,124 @@ def _submit(db, preparation_id: str, source: dict, text: str, *, title: str = "�
     )
 
 
+def _seed_citation_contribution_fixture(db, monkeypatch, tmp_path: Path):
+    _configure_artifacts(monkeypatch, tmp_path)
+    analysis = _seed_frozen_analysis(
+        db,
+        reference_urls=["https://example.com/ready", "https://example.com/waived"],
+    )
+    run = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).one()
+    context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis.analysis_id).one()
+    preparation, status = _create_preparation(db, analysis)
+    ready_source, waived_source = status["sources"]
+    _submit(
+        db,
+        preparation.preparation_id,
+        ready_source,
+        "甲工具支持批量生成短链。该能力适用于需要批量处理链接的业务场景。"
+        "使用者可以在明确的业务范围内创建和管理短链，并查看每条短链的处理结果。",
+    )
+    refreshed = source_preparation.get_source_preparation_status(
+        db,
+        preparation_id=preparation.preparation_id,
+    )
+    waived_source = next(item for item in refreshed["sources"] if item["source_key"] == waived_source["source_key"])
+    source_preparation.waive_source(
+        db,
+        preparation_id=preparation.preparation_id,
+        source_key=waived_source["source_key"],
+        expected_row_version=waived_source["row_version"],
+        reason="测试来源无法取得",
+        impact="该来源不参与 Contribution 判断",
+        waived_by="qa",
+    )
+    completion = source_preparation.freeze_completion_manifest(
+        db,
+        preparation_id=preparation.preparation_id,
+        created_by="qa",
+    )
+    manifest = db.query(SinglePromptCitationManifest).filter_by(analysis_id=analysis.analysis_id).one()
+
+    raw_start = run.answer_text.index("甲工具")
+    raw_end = len(run.answer_text)
+    answer_output = {
+        "answer_diagnosis": {
+            "events": [{
+                "event_id": "evt-fixture",
+                "run_id": run.id,
+                "entity_text": "甲工具",
+                "raw_start": raw_start,
+                "raw_end": raw_end,
+            }],
+        },
+    }
+    answer_output_json = json.dumps(answer_output, ensure_ascii=False, sort_keys=True)
+    answer_hash = hashlib.sha256(answer_output_json.encode()).hexdigest()
+    diagnosis = SinglePromptDiagnosisExecution(
+        diagnosis_id="diagnosis-contribution-fixture",
+        analysis_id=analysis.analysis_id,
+        context_id=context.context_id,
+        project_id=analysis.project_id,
+        prompt_id=analysis.prompt_id,
+        idempotency_key="diagnosis-contribution-fixture-key",
+        input_fingerprint="d" * 64,
+        raw_output_hash=context.raw_output_hash,
+        brand_snapshot_json="{}",
+        brand_snapshot_hash="b" * 64,
+        truth_snapshot_json="[]",
+        truth_set_hash="t" * 64,
+        contract_config_json="{}",
+        contract_config_hash="c" * 64,
+        status="REVIEW_COMPLETED",
+        active_result_version="diag-v1:contribution-fixture",
+    )
+    result = SinglePromptDiagnosisResult(
+        result_version="diag-v1:contribution-fixture",
+        diagnosis_id=diagnosis.diagnosis_id,
+        version_number=1,
+        output_json=answer_output_json,
+        output_hash=answer_hash,
+        reviewable_set_hash="r" * 64,
+    )
+    review = SinglePromptDiagnosisReview(
+        review_id="review-contribution-fixture",
+        diagnosis_id=diagnosis.diagnosis_id,
+        result_version=result.result_version,
+        result_hash=answer_hash,
+        reviewable_set_hash=result.reviewable_set_hash,
+        reviewer="qa",
+    )
+    db.add_all([diagnosis, result, review])
+    db.commit()
+    return {
+        "analysis": analysis,
+        "run": run,
+        "context": context,
+        "manifest": manifest,
+        "completion": completion,
+        "result": result,
+        "review": review,
+    }
+
+
+def _create_contribution_fixture_plan(db, fixture, *, idempotency_key="citation-contribution-fixture-plan"):
+    return create_citation_contribution_plan(
+        db,
+        analysis_id=fixture["analysis"].analysis_id,
+        project_id=fixture["analysis"].project_id,
+        prompt_id=fixture["analysis"].prompt_id,
+        answer_result_version=fixture["result"].result_version,
+        answer_result_hash=fixture["result"].output_hash,
+        answer_review_id=fixture["review"].review_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        fixed_run_ids=[fixture["run"].id],
+        idempotency_key=idempotency_key,
+    )
+
+
 def test_manual_html_payload_accepts_source_larger_than_legacy_five_million_limit():
     raw_html = "<main>" + ("页面源码内容" * 833_334) + "</main>"
     payload = SinglePromptManualSourceContentCreate(
@@ -205,6 +340,9 @@ def test_release_migration_is_explicit_allowlisted_and_runtime_version_is_checke
     assert "single_prompt_strategy_executions" in status["tables"]
     assert "single_prompt_strategy_results" in status["tables"]
     assert "single_prompt_strategy_reviews" in status["tables"]
+    assert "single_prompt_citation_contribution_executions" in status["tables"]
+    assert "single_prompt_citation_contribution_results" in status["tables"]
+    assert "single_prompt_citation_contribution_reviews" in status["tables"]
     assert "single_prompt_execution_proposals" not in status["tables"]
 
     if sqlite_has_wal_reset_fix(status["sqlite_version"]):
@@ -287,6 +425,7 @@ def test_release_routes_include_strategy_but_exclude_execution_and_legacy_workfl
     assert "/api/v2/single-prompt/analyses" in paths
     assert any("source-preparation" in path for path in paths)
     assert any("evidence-continuations" in path for path in paths)
+    assert any("citation-contributions" in path for path in paths)
     assert any(path.endswith("/strategy-readiness") for path in paths)
     assert any(path.endswith("/strategies") for path in paths)
     assert any(path.endswith("/priority-revisions") for path in paths)
@@ -1411,3 +1550,276 @@ def test_sqlite_version_policy_accepts_only_patched_branches():
     assert sqlite_has_wal_reset_fix("3.44.6") is True
     assert sqlite_has_wal_reset_fix("3.44.5") is False
     assert sqlite_has_wal_reset_fix("not-a-version") is False
+
+
+def test_citation_contribution_plan_is_deterministic_complete_and_zero_call(monkeypatch, tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+        execution, created = _create_contribution_fixture_plan(db, fixture)
+        assert created is True
+        plan = json.loads(execution.plan_json)
+        assert execution.status == "AWAITING_EXTERNAL_AUTHORIZATION"
+        assert execution.selected_run_id == fixture["run"].id
+        assert plan["selection"]["selection_rule"] == "FIRST_TECHNICALLY_ELIGIBLE_RUN_ASC"
+        assert plan["selection"]["selection_uses_semantic_outcome"] is False
+        assert plan["answer_semantic_char_coverage"]["rate"] == 1.0
+        assert len(plan["answer_units"]) == 1
+        assert set(plan["answer_units"][0]["semantic_facets"]) == {"BRAND_CAPABILITY", "DECISION_REASON"}
+        assert len(plan["citations"]) == 2
+        assert {item["processing_status"] for item in plan["citations"]} == {"PENDING", "WAIVED"}
+        assert plan["call_plan"]["max_new_external_requests"] == 1
+        assert plan["call_plan"]["automatic_retries"] == 0
+        assert plan["call_plan"]["budget_upper_bound_cny"] > 0
+        assert db.query(SinglePromptCitationContributionResult).count() == 0
+
+        duplicate, duplicate_created = _create_contribution_fixture_plan(db, fixture)
+        assert duplicate_created is False
+        assert duplicate.contribution_id == execution.contribution_id
+        assert db.query(SinglePromptCitationContributionExecution).count() == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_answer_unit_classifier_keeps_headings_and_operational_choices_out_of_decision_reason():
+    answer = "📱 微信/浏览器打开抖音链接\n直接复制唤醒：长按链接选择复制，再打开抖音。\n建议优先使用官方功能。"
+    units = build_answer_units(answer, 1, [])
+    assert [item["primary_type"] for item in units] == [
+        "MARKET_CRITERION",
+        "PROCEDURE",
+        "DECISION_REASON",
+    ]
+    assert all(item["classification_status"] == "DETERMINISTIC_REVIEW_REQUIRED" for item in units)
+
+
+def test_candidate_budget_preserves_disjoint_recall_boundary_controls():
+    units = [
+        {
+            "answer_unit_id": f"au-{index}",
+            "raw_text": f"能力{index} 支持场景{index}",
+        }
+        for index in range(1, 9)
+    ]
+    passages = [
+        {
+            "passage_id": f"psg-{index}",
+            "text": f"能力{index} 支持场景{index}，并保留必要条件。",
+            "content_hash": hashlib.sha256(f"passage-{index}".encode()).hexdigest(),
+        }
+        for index in range(1, 17)
+    ]
+    snapshot = SinglePromptPreparedSourceSnapshot(
+        snapshot_id="snapshot-recall-controls",
+        source_key="source-recall-controls",
+        passages_json=json.dumps(passages, ensure_ascii=False),
+    )
+    selected, controls = _rank_candidate_passages(units, snapshot)
+    assert len(selected) == 12
+    assert len(controls) == 2
+    selected_pairs = {(item["answer_unit_id"], item["passage_id"]) for item in selected}
+    control_pairs = {(item["answer_unit_id"], item["passage_id"]) for item in controls}
+    assert selected_pairs.isdisjoint(control_pairs)
+
+
+def test_current_plan_supersedes_only_unexecuted_stale_contract(monkeypatch, tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+        stale, _ = _create_contribution_fixture_plan(db, fixture)
+        stale_plan = json.loads(stale.plan_json)
+        stale_plan["plan_version"] = "single_prompt_v2.citation_contribution_plan.p1.v1"
+        stale.plan_json = json.dumps(stale_plan, ensure_ascii=False)
+        db.commit()
+
+        current, created = _create_contribution_fixture_plan(
+            db,
+            fixture,
+            idempotency_key="citation-contribution-fixture-plan-v2",
+        )
+        db.refresh(stale)
+        assert created is True
+        assert stale.status == "SUPERSEDED_BEFORE_AUTHORIZATION"
+        assert stale.blocker_code == "CONTRIBUTION_PLAN_CONTRACT_STALE"
+        assert current.status == "AWAITING_EXTERNAL_AUTHORIZATION"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_citation_contribution_strict_candidate_evaluation_gate():
+    unit = {
+        "answer_unit_id": "au-1",
+        "raw_text": "甲工具支持批量生成短链",
+        "context_heading": "",
+        "primary_type": "DECISION_REASON",
+        "semantic_facets": ["BRAND_CAPABILITY", "DECISION_REASON"],
+    }
+    passage = {"passage_id": "psg-1", "text": "甲工具支持批量生成短链。"}
+    pair = {"answer_unit_id": "au-1", "passage_id": "psg-1"}
+
+    class StaticClient:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def structured_generate_sync(self, **kwargs):
+            return kwargs["response_validator"](self.payload)
+
+    valid = {
+        "evaluations": [{
+            "answer_unit_id": "au-1",
+            "passage_id": "psg-1",
+            "source_span": "甲工具支持批量生成短链",
+            "correspondence_mode": "DIRECT_REUSE",
+            "evidence_relation": "SUPPORTS_FULL",
+            "rationale": "原文直接对应",
+        }],
+        "no_binding_reason": "",
+    }
+    assert CitationContributionJudge(StaticClient(valid)).judge([unit], [passage], [pair]) == valid
+
+    incomplete = {"evaluations": [], "no_binding_reason": "未发现"}
+    with pytest.raises(Exception, match="未覆盖完整冻结候选集合"):
+        CitationContributionJudge(StaticClient(incomplete)).judge([unit], [passage], [pair])
+
+    hallucinated_span = json.loads(json.dumps(valid, ensure_ascii=False))
+    hallucinated_span["evaluations"][0]["source_span"] = "甲工具永久免费"
+    with pytest.raises(Exception, match="无法回指固定 passage"):
+        CitationContributionJudge(StaticClient(hallucinated_span)).judge([unit], [passage], [pair])
+
+
+def test_citation_contribution_execution_separates_evaluations_bindings_and_waiver(monkeypatch, tmp_path):
+    db, engine = _session(tmp_path)
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+        execution, _ = _create_contribution_fixture_plan(db, fixture)
+        plan = json.loads(execution.plan_json)
+        authorize_citation_contribution(
+            db,
+            contribution_id=execution.contribution_id,
+            project_id=execution.project_id,
+            prompt_id=execution.prompt_id,
+            plan_hash=execution.plan_hash,
+            provider="deepseek",
+            model=plan["call_plan"]["model"],
+            max_external_requests=plan["call_plan"]["max_new_external_requests"],
+            max_budget_cny=plan["call_plan"]["budget_upper_bound_cny"],
+            cost_upper_bound_cny=plan["call_plan"]["budget_upper_bound_cny"],
+            pricing_basis=plan["call_plan"]["pricing_basis"],
+            authorized_by="qa",
+        )
+
+        class Counters:
+            call_count = 0
+            external_call_count = 0
+            external_token_count = 0
+
+        class FakeJudge:
+            def __init__(self):
+                self.client = Counters()
+
+            def judge(self, answer_units, passages, candidate_pairs, db=None):
+                self.client.call_count += 1
+                self.client.external_call_count += 1
+                self.client.external_token_count += 100
+                evaluations = []
+                for index, pair in enumerate(candidate_pairs):
+                    passage = next(item for item in passages if item["passage_id"] == pair["passage_id"])
+                    if index == 0:
+                        evaluations.append({
+                            **pair,
+                            "source_span": passage["text"],
+                            "correspondence_mode": "FAITHFUL_PARAPHRASE",
+                            "evidence_relation": "SUPPORTS_FULL",
+                            "rationale": "正文支持该内容单元",
+                        })
+                    else:
+                        evaluations.append({
+                            **pair,
+                            "source_span": None,
+                            "correspondence_mode": "NO_CORRESPONDENCE",
+                            "evidence_relation": "NO_MATCH",
+                            "rationale": "候选段落不对应该内容单元",
+                        })
+                return {"evaluations": evaluations, "no_binding_reason": ""}
+
+        contribution_id = execution.contribution_id
+        db.close()
+        execute_citation_contribution(contribution_id, session_factory=Session, judge=FakeJudge())
+        db = Session()
+        status = get_citation_contribution_status(
+            db,
+            analysis_id=fixture["analysis"].analysis_id,
+            contribution_id=contribution_id,
+            project_id=fixture["analysis"].project_id,
+            prompt_id=fixture["analysis"].prompt_id,
+        )
+        assert status["execution"]["status"] == "READY_FOR_CALIBRATION"
+        assert status["execution"]["usage"] == {
+            "external_llm_calls": 1,
+            "llm_cache_hits": 0,
+            "external_token_usage": 100,
+        }
+        assert status["result"]["stats"]["citation_disposition_coverage"] == 1.0
+        dispositions = {item["disposition"] for item in status["result"]["output"]["citations"]}
+        assert dispositions == {"BOUND", "SOURCE_WAIVED"}
+        assert status["result"]["stats"]["evaluation_count"] >= 1
+        assert status["result"]["stats"]["binding_count"] == 1
+        binding = status["result"]["output"]["bindings"][0]
+        assert binding["answer_anchor"] == "UNPROVEN"
+        assert binding["generation_influence"] == "UNAVAILABLE"
+        assert all(item["target_type"] == "EVALUATION" for item in status["result"]["output"]["calibration_set"])
+
+        decisions = [
+            {
+                **item,
+                "decision": "ACCEPT",
+                "correspondence_mode": None,
+                "evidence_relation": None,
+                "subject_attribution_error": False,
+                "decision_role_error": False,
+                "note": "",
+            }
+            for item in status["result"]["output"]["calibration_set"]
+        ]
+        review = complete_citation_contribution_review(
+            db,
+            contribution_id=contribution_id,
+            result_version=status["result"]["result_version"],
+            project_id=fixture["analysis"].project_id,
+            prompt_id=fixture["analysis"].prompt_id,
+            result_hash=status["result"]["output_hash"],
+            reviewable_set_hash=status["result"]["reviewable_set_hash"],
+            reviewer="qa",
+            decisions=decisions,
+            missed_bindings=[],
+            note="P1 calibration",
+        )
+        metrics = json.loads(review.metrics_json)
+        assert metrics["false_positive"] == 0
+        assert metrics["false_negative"] == 0
+        assert db.query(SinglePromptCitationContributionReview).count() == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_citation_contribution_recovery_preserves_exact_plan(monkeypatch, tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+        execution, _ = _create_contribution_fixture_plan(db, fixture)
+        original_plan_hash = execution.plan_hash
+        execution.status = "RUNNING"
+        execution.active_attempt_token = "interrupted"
+        db.commit()
+        assert recover_interrupted_citation_contributions(db) == 1
+        db.refresh(execution)
+        assert execution.status == "QUEUED"
+        assert execution.active_attempt_token == ""
+        assert execution.plan_hash == original_plan_hash
+        assert execution.blocker_code == "RECOVERED_AFTER_PROCESS_RESTART"
+    finally:
+        db.close()
+        engine.dispose()

@@ -5858,3 +5858,41 @@ review_queue = READY
   brand appearance or expected relation outcomes.
 - External calls, source fetching, browser sampling, Strategy writes, and
   production Evidence writes in Checkpoint 0: 0.
+
+## 2026-09-28 Citation Contribution P1 Checkpoint 1 Pre-authorization
+
+- Release migration `20260928_01` adds only the scoped Citation Contribution
+  execution, immutable result and append-only calibration review tables. The
+  legacy application does not register these routes or query these tables;
+  formal creation, authorization, execution and review belong to the release
+  API and worker.
+- Before migration, SQLite Online Backup captured the release database at
+  revision `20260922_01` and an artifact archive captured the 61 source files
+  for Context `ctx-f06aa92a-6193-4aa0-ab9b-e62974f594f4`. Database integrity,
+  revision, release allowlist, SQLite `3.51.3`, WAL and foreign keys passed after
+  upgrade. Frozen Raw, Answer, historical Evidence and manifest hashes did not
+  change.
+- The formal release API created Contribution
+  `citation-contribution-76074b05-e357-41b0-b563-51bdf3dc720d` with Plan
+  `citation-contribution-plan-1144c02d0a8eb1daf200`. The deterministic rule
+  selected Run `1`; it covers all 714 non-whitespace answer characters with 18
+  AnswerUnits and includes all 19 citation occurrences. All citations are
+  READY, map to 18 immutable snapshots, and freeze 228 candidate pairs.
+- The plan also freezes 34 boundary pairs excluded by the 12-pair-per-citation
+  model budget. Up to 10 are reserved in the 60-item calibration set so a
+  reviewer can record hard-filter false negatives. The review UI separately
+  records subject-attribution and decision-role errors instead of collapsing
+  them into a generic rejection.
+- AnswerUnit primary types are 4 MARKET_CRITERION, 9 PROCEDURE, 4
+  RULE_CONDITION and 1 DECISION_REASON. The single reviewed brand event carries
+  both BRAND_CAPABILITY and DECISION_REASON facets. Section headings and
+  operational text containing the word "选择" are no longer mislabeled as
+  Decision Reasons.
+- The frozen call plan is DeepSeek `deepseek-v4-flash`, at most 19 Citation
+  Contribution requests, no automatic retry, no Answer or SourceClaim calls,
+  conservative token ceiling 159,544 and reference budget ceiling RMB 1.2921.
+  This is an authorization ceiling, not billed cost.
+- Current state is `AWAITING_EXTERNAL_AUTHORIZATION`: external calls, cache
+  hits, ResultVersion, dispositions, bindings and calibration Review are all
+  zero or absent. P1 is not accepted and Strategy remains 0. A separate exact
+  authorization is required before the worker may execute this plan.

@@ -44,6 +44,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     recover_interrupted_diagnoses,
 )
 from app.modules.single_prompt_v2.citation_contribution import (
+    CitationContributionResponse,
     CitationContributionJudge,
     _build_calibration_set,
     _rank_candidate_passages,
@@ -1571,6 +1572,14 @@ def test_citation_contribution_plan_is_deterministic_complete_and_zero_call(monk
         assert {item["processing_status"] for item in plan["citations"]} == {"PENDING", "WAIVED"}
         assert plan["call_plan"]["max_new_external_requests"] == 1
         assert plan["call_plan"]["automatic_retries"] == 0
+        assert plan["call_plan"]["structured_output_mode"] == "JSON_SCHEMA"
+        assert plan["call_plan"]["canary_external_requests"] == 1
+        pending_citation = next(item for item in plan["citations"] if item["processing_status"] == "PENDING")
+        assert plan["call_plan"]["canary_citation_ids"] == [pending_citation["citation_id"]]
+        assert plan["call_plan"]["canary_token_ceiling"] > 0
+        assert plan["call_plan"]["canary_budget_upper_bound_cny"] > 0
+        assert len(plan["response_schema_hash"]) == 64
+        assert len(plan["system_prompt_hash"]) == 64
         assert plan["call_plan"]["budget_upper_bound_cny"] > 0
         assert db.query(SinglePromptCitationContributionResult).count() == 0
 
@@ -1668,16 +1677,22 @@ def test_citation_contribution_strict_candidate_evaluation_gate():
 
     valid = {
         "evaluations": [{
-            "answer_unit_id": "au-1",
-            "passage_id": "psg-1",
+            "candidate_pair_index": 0,
+            "answer_unit_index": 0,
+            "citation_index": 0,
+            "passage_index": 0,
+            "answer_span": "甲工具支持批量生成短链",
             "source_span": "甲工具支持批量生成短链",
             "correspondence_mode": "DIRECT_REUSE",
             "evidence_relation": "SUPPORTS_FULL",
             "rationale": "原文直接对应",
         }],
-        "no_binding_reason": "",
+        "no_binding_reason": None,
     }
-    assert CitationContributionJudge(StaticClient(valid)).judge([unit], [passage], [pair]) == valid
+    admitted = CitationContributionJudge(StaticClient(valid)).judge([unit], [passage], [pair])
+    assert admitted["evaluations"][0]["answer_unit_id"] == "au-1"
+    assert admitted["evaluations"][0]["passage_id"] == "psg-1"
+    assert admitted["evaluations"][0]["candidate_pair_index"] == 0
 
     incomplete = {"evaluations": [], "no_binding_reason": "未发现"}
     with pytest.raises(Exception, match="未覆盖完整冻结候选集合"):
@@ -1685,7 +1700,7 @@ def test_citation_contribution_strict_candidate_evaluation_gate():
 
     hallucinated_span = json.loads(json.dumps(valid, ensure_ascii=False))
     hallucinated_span["evaluations"][0]["source_span"] = "甲工具永久免费"
-    with pytest.raises(Exception, match="无法回指固定 passage"):
+    with pytest.raises(Exception, match="无法回指"):
         CitationContributionJudge(StaticClient(hallucinated_span)).judge([unit], [passage], [pair])
 
 
@@ -1770,7 +1785,7 @@ def test_citation_contribution_execution_separates_evaluations_bindings_and_waiv
             def __init__(self):
                 self.client = Counters()
 
-            def judge(self, answer_units, passages, candidate_pairs, db=None):
+            def judge(self, answer_units, passages, candidate_pairs, citation_index=0, db=None):
                 self.client.call_count += 1
                 self.client.external_call_count += 1
                 self.client.external_token_count += 100
@@ -1780,6 +1795,7 @@ def test_citation_contribution_execution_separates_evaluations_bindings_and_waiv
                     if index == 0:
                         evaluations.append({
                             **pair,
+                            "answer_span": answer_units[0]["raw_text"],
                             "source_span": passage["text"],
                             "correspondence_mode": "FAITHFUL_PARAPHRASE",
                             "evidence_relation": "SUPPORTS_FULL",
@@ -1788,12 +1804,13 @@ def test_citation_contribution_execution_separates_evaluations_bindings_and_waiv
                     else:
                         evaluations.append({
                             **pair,
+                            "answer_span": None,
                             "source_span": None,
                             "correspondence_mode": "NO_CORRESPONDENCE",
                             "evidence_relation": "NO_MATCH",
                             "rationale": "候选段落不对应该内容单元",
                         })
-                return {"evaluations": evaluations, "no_binding_reason": ""}
+                return {"evaluations": evaluations, "no_binding_reason": None}
 
         contribution_id = execution.contribution_id
         db.close()
@@ -1887,7 +1904,7 @@ def test_citation_contribution_all_failed_blocks_empty_calibration_review(monkey
             def __init__(self):
                 self.client = Counters()
 
-            def judge(self, answer_units, passages, candidate_pairs, db=None):
+            def judge(self, answer_units, passages, candidate_pairs, citation_index=0, db=None):
                 self.client.external_call_count += 1
                 self.client.external_token_count += 50
                 error = RuntimeError("strict schema rejected")

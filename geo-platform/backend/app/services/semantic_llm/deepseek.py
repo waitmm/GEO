@@ -13,7 +13,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -22,6 +22,10 @@ from app.services.semantic_llm.base import SemanticLLMClient, SemanticLLMError
 from app.services.semantic_llm.cache import LLMCallCache
 
 logger = logging.getLogger("semantic_llm.deepseek")
+
+
+StructuredOutputMode = Literal["JSON_SCHEMA", "STRICT_TOOL", "JSON_OBJECT_FALLBACK"]
+DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION = "semantic_llm.deepseek.responses_json_schema.v1"
 
 
 def _audit_excerpt(content: str, limit: int = 240) -> str:
@@ -126,6 +130,9 @@ def _input_hash(
     prompt_version: str,
     schema_version: str,
     thinking_mode: str | None = None,
+    structured_output_mode: StructuredOutputMode | None = None,
+    provider_schema_hash: str = "",
+    transport_version: str = "",
 ) -> str:
     identity: dict[str, Any] = {
         "system": system_prompt,
@@ -136,6 +143,12 @@ def _input_hash(
     # Preserve every legacy cache identity unless a caller explicitly opts in.
     if thinking_mode:
         identity["generation"] = {"thinking": {"type": thinking_mode}}
+    if structured_output_mode:
+        identity["structured_output"] = {
+            "mode": structured_output_mode,
+            "provider_schema_hash": provider_schema_hash,
+            "transport_version": transport_version,
+        }
     raw = json.dumps(identity, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -201,6 +214,8 @@ class DeepSeekClient(SemanticLLMClient):
         db=None,
         strict_json: bool = False,
         response_validator: Callable[[Any], dict[str, Any]] | None = None,
+        structured_output_mode: StructuredOutputMode | None = None,
+        transport_version: str = "",
     ) -> dict[str, Any]:
         self._assert_budget(db)
 
@@ -208,13 +223,44 @@ class DeepSeekClient(SemanticLLMClient):
         # v4-flash 是推理模型：reasoning 会消耗 token 预算，
         # 实际可用 max_tokens 需给足（默认 4096，调用方可覆盖）。
         effective_max_tokens = max_tokens if max_tokens >= 2048 else 2048
+        provider_schema: dict[str, Any] | None = None
+        provider_schema_hash = ""
+        if structured_output_mode == "JSON_SCHEMA":
+            if not hasattr(response_schema, "model_json_schema"):
+                raise ValueError("JSON_SCHEMA 模式要求 Pydantic typed response model")
+            provider_schema = response_schema.model_json_schema(mode="validation")
+            provider_schema_hash = hashlib.sha256(
+                json.dumps(
+                    provider_schema,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            if not transport_version:
+                transport_version = DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION
+        elif structured_output_mode == "STRICT_TOOL":
+            raise ValueError("STRICT_TOOL 尚未接入；不得静默降级 transport")
         input_key = _input_hash(
             system_prompt,
             user_payload,
             prompt_version,
             schema_version,
             self.thinking_mode,
+            structured_output_mode,
+            provider_schema_hash,
+            transport_version,
         )
+        request_identity = {
+            "provider": self.provider,
+            "model": model_name,
+            "prompt_version": prompt_version,
+            "schema_version": schema_version,
+            "input_hash": input_key,
+            "structured_output_mode": structured_output_mode or "JSON_OBJECT_FALLBACK",
+            "provider_schema_hash": provider_schema_hash,
+            "transport_version": transport_version,
+        }
 
         # cache hit
         if db is not None:
@@ -238,13 +284,7 @@ class DeepSeekClient(SemanticLLMClient):
                     )
                 except Exception as exc:
                     self._record_response_audit({
-                        "request_identity": {
-                            "provider": self.provider,
-                            "model": model_name,
-                            "prompt_version": prompt_version,
-                            "schema_version": schema_version,
-                            "input_hash": input_key,
-                        },
+                        "request_identity": request_identity,
                         "response_source": "LLM_CALL_CACHE",
                         "validation_status": "REJECTED",
                         "structured_response": cached["parsed_payload"],
@@ -255,13 +295,7 @@ class DeepSeekClient(SemanticLLMClient):
                     })
                     raise
                 self._record_response_audit({
-                    "request_identity": {
-                        "provider": self.provider,
-                        "model": model_name,
-                        "prompt_version": prompt_version,
-                        "schema_version": schema_version,
-                        "input_hash": input_key,
-                    },
+                    "request_identity": request_identity,
                     "response_source": "LLM_CALL_CACHE",
                     "validation_status": "ACCEPTED",
                     "structured_response": cached["parsed_payload"],
@@ -281,19 +315,40 @@ class DeepSeekClient(SemanticLLMClient):
                 content="",
             )
 
-        url = f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions"
-        body = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            "temperature": 0.0,
-            "max_tokens": effective_max_tokens,
-            "response_format": {"type": "json_object"},
-        }
-        if self.thinking_mode:
-            body["thinking"] = {"type": self.thinking_mode}
+        if structured_output_mode == "JSON_SCHEMA":
+            url = f"{self.settings.deepseek_base_url.rstrip('/')}/responses"
+            body = {
+                "model": model_name,
+                "instructions": system_prompt,
+                "input": json.dumps(user_payload, ensure_ascii=False),
+                "temperature": 0.0,
+                "max_output_tokens": effective_max_tokens,
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": re.sub(r"[^a-zA-Z0-9_-]", "_", response_schema.__name__),
+                        "schema": provider_schema,
+                    }
+                },
+            }
+            if self.thinking_mode:
+                body["reasoning"] = {
+                    "effort": "none" if self.thinking_mode == "disabled" else "high"
+                }
+        else:
+            url = f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions"
+            body = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                ],
+                "temperature": 0.0,
+                "max_tokens": effective_max_tokens,
+                "response_format": {"type": "json_object"},
+            }
+            if self.thinking_mode:
+                body["thinking"] = {"type": self.thinking_mode}
         headers = {
             "Authorization": f"Bearer {self.api_key}",  # key 只出现在内存 header，不落日志
             "Content-Type": "application/json",
@@ -318,17 +373,39 @@ class DeepSeekClient(SemanticLLMClient):
                     raise SemanticLLMError(f"DeepSeek HTTP {resp.status_code} (model={model_name}): {detail}")
                 data = resp.json()
                 response_data = data
-                choice = (data.get("choices") or [{}])[0]
-                finish_reason = str(choice.get("finish_reason") or "unknown")
-                content = choice.get("message", {}).get("content", "")
+                if structured_output_mode == "JSON_SCHEMA":
+                    finish_reason = str(data.get("status") or "unknown")
+                    content = "".join(
+                        str(part.get("text") or "")
+                        for item in data.get("output") or []
+                        if item.get("type") == "message"
+                        for part in item.get("content") or []
+                        if part.get("type") == "output_text"
+                    )
+                    choice: dict[str, Any] = {}
+                else:
+                    choice = (data.get("choices") or [{}])[0]
+                    finish_reason = str(choice.get("finish_reason") or "unknown")
+                    content = choice.get("message", {}).get("content", "")
                 usage = data.get("usage") or {}
-                prompt_tokens = int(usage.get("prompt_tokens") or 0)
-                completion_tokens = int(usage.get("completion_tokens") or 0)
+                prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+                completion_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
                 total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
                 self._external_tokens += total_tokens
                 if strict_json and finish_reason == "length":
                     raise _response_error(
                         "模型响应因长度限制被截断",
+                        source="EXTERNAL_LLM",
+                        content=content,
+                        finish_reason=finish_reason,
+                    )
+                if (
+                    strict_json
+                    and structured_output_mode == "JSON_SCHEMA"
+                    and finish_reason != "completed"
+                ):
+                    raise _response_error(
+                        "模型响应未完整完成",
                         source="EXTERNAL_LLM",
                         content=content,
                         finish_reason=finish_reason,
@@ -370,11 +447,7 @@ class DeepSeekClient(SemanticLLMClient):
                 )
                 self._record_response_audit({
                     "request_identity": {
-                        "provider": self.provider,
-                        "model": model_name,
-                        "prompt_version": prompt_version,
-                        "schema_version": schema_version,
-                        "input_hash": input_key,
+                        **request_identity,
                         "attempt": attempt + 1,
                         "max_attempts": self.max_attempts,
                     },
@@ -396,11 +469,7 @@ class DeepSeekClient(SemanticLLMClient):
                 if not audit_recorded:
                     self._record_response_audit({
                         "request_identity": {
-                            "provider": self.provider,
-                            "model": model_name,
-                            "prompt_version": prompt_version,
-                            "schema_version": schema_version,
-                            "input_hash": input_key,
+                            **request_identity,
                             "attempt": attempt + 1,
                             "max_attempts": self.max_attempts,
                         },
@@ -422,11 +491,7 @@ class DeepSeekClient(SemanticLLMClient):
             except httpx.HTTPError as e:
                 self._record_response_audit({
                     "request_identity": {
-                        "provider": self.provider,
-                        "model": model_name,
-                        "prompt_version": prompt_version,
-                        "schema_version": schema_version,
-                        "input_hash": input_key,
+                        **request_identity,
                         "attempt": attempt + 1,
                         "max_attempts": self.max_attempts,
                     },

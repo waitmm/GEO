@@ -1,0 +1,21 @@
+[
+  {"artifact_hash":"954d394db5aafc1e13a72a174f8402e6e8901d846f31ea35f3e45dc49169f4b9","payload":{"results":[]}},
+  {"artifact_hash":"aa95aa711a93fd9bdee08552bbb8cc9cfcbd4325047ab55fc93b96a8ad65ff85","payload":{"results":[],"no_binding_reason":"none","type":"citation_contribution"}},
+  {"artifact_hash":"32696513f3b3691503af98007df21fde0d844b327165fc2f39f9acc193d2dc0f","payload":{"results":[],"no_binding_reason":"none"}},
+  {"artifact_hash":"e79856bb9145a565d7d6845d6b7322bacfc15dd4c43143e1d18628c3c2d3384b","payload":{"results":[],"no_binding_reason":"none"}},
+  {"artifact_hash":"76e899e4ab14ec3a89075070491a63a053092c7252cadf673ea2d1d8c22ac58b","payload":{"candidate_pairs":[]}},
+  {"artifact_hash":"361d59c6bad7a99a646daa6abea6b51b4933ec54508afe54331fb1c67e060659","payload":{"results":[]}},
+  {"artifact_hash":"4f416211f4d4033b046cdc6f0a93ca726bda8bfc977aa86fa882372035d88a12","payload":{"results":[],"no_binding_reason":"none","type":"citation_contribution"}},
+  {"artifact_hash":"91a7d01ad5b191ddc24d9820714ad085a5225beefa957fff3792f5bb3d01195c","payload":{"results":[]}},
+  {"artifact_hash":"ec53216901cea00bd83ea9e472b066d82cd492023636d3a07207d7b2bc5fcfe7","payload":{"results":[],"no_binding_reason":"none"}},
+  {"artifact_hash":"64783d714ced6c3ebdc8dee90c54bb38d56d4df72657ce60657d081cd7507bd7","payload":{"results":[]}},
+  {"artifact_hash":"5947c8924508ff5228aba4b134a0493971867fe1a98323b3a83aa52657223af8","payload":{"results":[],"no_binding_reason":"none"}},
+  {"artifact_hash":"0c114c447592f09b069932314831a9c0f7d2ad1e791e2b9b42b636d16756533c","payload":{"results":[]}},
+  {"artifact_hash":"8c76f021a70c23aabbea8c7a4179f7be522b2a0f7ae8c6226c4cb97faa50bda7","payload":{"results":[],"no_binding_reason":"none"}},
+  {"artifact_hash":"94e03528b04f2eb5b7de741a0c0f286c9d9492fff9c974c8d227eac0a62edb62","payload":{"results":[],"no_binding_reason":"none"}},
+  {"artifact_hash":"ccc9cf810c3dccdd11791f6ecc1fe3d44652cf415c8d8f4c26eeb2692129ea34","payload":{"results":[],"no_binding_reason":"none"}},
+  {"artifact_hash":"934694c46dd64c766aa8ea13c49fde3a8292f259fabffe1207149f8e46dc7807","payload":{"results":[]}},
+  {"artifact_hash":"6ac138e5f932e8ffc3dbdd6b298ec240d1b783ad7f7693374557343d61e30b2d","payload":{"results":[],"no_binding_reason":"none"}},
+  {"artifact_hash":"989a515dd3b00c20899d9ff8e8e21ad9e3781c7e2ea82e814967bce59bc61e30","payload":{"results":[],"no_binding_reason":"none"}},
+  {"artifact_hash":"7827b17cb6683ed63dfaabe9823a132c6a5d80605a73c9fbeb0b88d4f8d6868b","payload":{"results":[]}}
+]

@@ -5919,3 +5919,27 @@ review_queue = READY
   hashes, validation results, token usage and rejection details were written
   to 19 non-Git artifacts with mode `0600`; all 19 artifact hashes were
   independently verified against the immutable result metadata.
+
+## 2026-09-28 Citation Contribution Contract Recovery Checkpoint
+
+- Classified as `IMPLEMENTATION_CHANGE`. The frozen Citation Contribution
+  dimensions, candidate scope and immutable failed P1 output are unchanged.
+- Offline audit proved the 19/19 failure was a generation-protocol drift: the
+  typed response required `evaluations + no_binding_reason`, while production
+  sent only Chat `json_object` and supplied no generated schema or valid nested
+  example. The observed `results` field was not defined by repository prompt or
+  example code; `candidate_pairs` was an input name copied into one output.
+- `CitationContributionResponse` now generates the provider schema, prompt
+  protocol block, validated positive/empty examples and strict local gate.
+  Model output uses frozen indexes only; backend code validates and maps them
+  to formal IDs.
+- Added an opt-in DeepSeek Responses `json_schema` transport to the existing
+  semantic client. All other callers keep their existing default Chat JSON
+  behavior. Cache identity now includes structured-output mode, provider schema
+  hash and transport version.
+- Converted all 19 old response shapes into permanent rejection fixtures and
+  added transport, schema, cross-field, dynamic frozen-input and cache-identity
+  regression coverage.
+- The new Plan contract contains a deterministic first-two Citation Canary. A
+  failed Canary records the remaining scope as not evaluated and stops further
+  model calls. No external call was made in this checkpoint.

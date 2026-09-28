@@ -141,6 +141,7 @@ def authorize_citation_contribution_execution(
         provider=payload.provider,
         model=payload.model,
         max_external_requests=payload.max_external_requests,
+        max_total_tokens=payload.max_total_tokens,
         max_budget_cny=payload.max_budget_cny,
         cost_upper_bound_cny=payload.cost_upper_bound_cny,
         pricing_basis=payload.pricing_basis,

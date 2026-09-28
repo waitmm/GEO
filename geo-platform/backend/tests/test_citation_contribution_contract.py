@@ -141,6 +141,7 @@ def test_deepseek_json_schema_mode_sends_provider_schema_via_responses_api(monke
         def json():
             return {
                 "status": "completed",
+                "model": "deepseek-flash",
                 "output": [{
                     "type": "message",
                     "content": [{"type": "output_text", "text": json.dumps(raw, ensure_ascii=False)}],
@@ -180,6 +181,7 @@ def test_deepseek_json_schema_mode_sends_provider_schema_via_responses_api(monke
     assert result == raw
     assert captured["url"].endswith("/responses")
     assert "response_format" not in captured["body"]
+    assert captured["body"]["model"] == "deepseek-flash"
     assert captured["body"]["reasoning"] == {"effort": "none"}
     assert captured["body"]["text"]["format"] == {
         "type": "json_schema",
@@ -188,6 +190,17 @@ def test_deepseek_json_schema_mode_sends_provider_schema_via_responses_api(monke
     }
     assert client.external_call_count == 1
     assert client.external_token_count == 18
+    assert client.external_input_token_count == 11
+    assert client.external_output_token_count == 7
+
+
+def test_responses_transport_records_requested_and_effective_model_identity(monkeypatch):
+    assert deepseek.resolve_deepseek_request_model(
+        "deepseek-v4-flash", "JSON_SCHEMA"
+    ) == "deepseek-flash"
+    assert deepseek.resolve_deepseek_request_model(
+        "deepseek-v4-flash", None
+    ) == "deepseek-v4-flash"
 
 
 def test_json_schema_transport_changes_cache_identity_without_changing_default_identity():

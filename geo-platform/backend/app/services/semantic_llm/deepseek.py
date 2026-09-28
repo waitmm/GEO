@@ -25,7 +25,20 @@ logger = logging.getLogger("semantic_llm.deepseek")
 
 
 StructuredOutputMode = Literal["JSON_SCHEMA", "STRICT_TOOL", "JSON_OBJECT_FALLBACK"]
-DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION = "semantic_llm.deepseek.responses_json_schema.v1"
+DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION = "semantic_llm.deepseek.responses_json_schema.v2"
+
+
+def resolve_deepseek_request_model(
+    requested_model_alias: str,
+    structured_output_mode: StructuredOutputMode | None,
+) -> str:
+    """Resolve legacy Flash aliases only for the Responses API transport."""
+    if structured_output_mode == "JSON_SCHEMA" and requested_model_alias in {
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+    }:
+        return "deepseek-flash"
+    return requested_model_alias
 
 
 def _audit_excerpt(content: str, limit: int = 240) -> str:
@@ -133,6 +146,8 @@ def _input_hash(
     structured_output_mode: StructuredOutputMode | None = None,
     provider_schema_hash: str = "",
     transport_version: str = "",
+    requested_model_alias: str = "",
+    effective_request_model: str = "",
 ) -> str:
     identity: dict[str, Any] = {
         "system": system_prompt,
@@ -148,6 +163,8 @@ def _input_hash(
             "mode": structured_output_mode,
             "provider_schema_hash": provider_schema_hash,
             "transport_version": transport_version,
+            "requested_model_alias": requested_model_alias,
+            "effective_request_model": effective_request_model,
         }
     raw = json.dumps(identity, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -177,6 +194,8 @@ class DeepSeekClient(SemanticLLMClient):
         self._tokens = 0
         self._external_calls = 0
         self._external_tokens = 0
+        self._external_input_tokens = 0
+        self._external_output_tokens = 0
 
     def _record_response_audit(self, payload: dict[str, Any]) -> None:
         if self.response_audit_sink is not None:
@@ -219,7 +238,11 @@ class DeepSeekClient(SemanticLLMClient):
     ) -> dict[str, Any]:
         self._assert_budget(db)
 
-        model_name = model or self.settings.deepseek_model
+        requested_model_alias = model or self.settings.deepseek_model
+        effective_request_model = resolve_deepseek_request_model(
+            requested_model_alias,
+            structured_output_mode,
+        )
         # v4-flash 是推理模型：reasoning 会消耗 token 预算，
         # 实际可用 max_tokens 需给足（默认 4096，调用方可覆盖）。
         effective_max_tokens = max_tokens if max_tokens >= 2048 else 2048
@@ -250,10 +273,13 @@ class DeepSeekClient(SemanticLLMClient):
             structured_output_mode,
             provider_schema_hash,
             transport_version,
+            requested_model_alias,
+            effective_request_model,
         )
         request_identity = {
             "provider": self.provider,
-            "model": model_name,
+            "requested_model_alias": requested_model_alias,
+            "effective_request_model": effective_request_model,
             "prompt_version": prompt_version,
             "schema_version": schema_version,
             "input_hash": input_key,
@@ -267,7 +293,7 @@ class DeepSeekClient(SemanticLLMClient):
             cached = LLMCallCache.get(
                 db,
                 provider=self.provider,
-                model=model_name,
+                model=effective_request_model,
                 prompt_version=prompt_version,
                 schema_version=schema_version,
                 input_hash=input_key,
@@ -318,7 +344,7 @@ class DeepSeekClient(SemanticLLMClient):
         if structured_output_mode == "JSON_SCHEMA":
             url = f"{self.settings.deepseek_base_url.rstrip('/')}/responses"
             body = {
-                "model": model_name,
+                "model": effective_request_model,
                 "instructions": system_prompt,
                 "input": json.dumps(user_payload, ensure_ascii=False),
                 "temperature": 0.0,
@@ -338,7 +364,7 @@ class DeepSeekClient(SemanticLLMClient):
         else:
             url = f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions"
             body = {
-                "model": model_name,
+                "model": effective_request_model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
@@ -370,11 +396,24 @@ class DeepSeekClient(SemanticLLMClient):
                 if resp.status_code != 200:
                     # 响应体是 API 错误详情（不含 key），截断后透传，便于调试
                     detail = resp.text[:300]
-                    raise SemanticLLMError(f"DeepSeek HTTP {resp.status_code} (model={model_name}): {detail}")
+                    raise SemanticLLMError(
+                        f"DeepSeek HTTP {resp.status_code} (model={effective_request_model}): {detail}"
+                    )
                 data = resp.json()
                 response_data = data
+                response_model = str(data.get("model") or "")
                 if structured_output_mode == "JSON_SCHEMA":
                     finish_reason = str(data.get("status") or "unknown")
+                    if not response_model:
+                        error = SemanticLLMError("DeepSeek Responses API 未返回 response.model")
+                        error.code = "PROVIDER_MODEL_IDENTITY_MISSING"
+                        raise error
+                    if response_model != effective_request_model:
+                        error = SemanticLLMError(
+                            "DeepSeek response.model 与冻结 effective request model 不一致"
+                        )
+                        error.code = "PROVIDER_MODEL_IDENTITY_MISMATCH"
+                        raise error
                     content = "".join(
                         str(part.get("text") or "")
                         for item in data.get("output") or []
@@ -392,6 +431,8 @@ class DeepSeekClient(SemanticLLMClient):
                 completion_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
                 total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
                 self._external_tokens += total_tokens
+                self._external_input_tokens += prompt_tokens
+                self._external_output_tokens += completion_tokens
                 if strict_json and finish_reason == "length":
                     raise _response_error(
                         "模型响应因长度限制被截断",
@@ -454,6 +495,7 @@ class DeepSeekClient(SemanticLLMClient):
                     "response_source": "EXTERNAL_LLM",
                     "validation_status": "ACCEPTED",
                     "finish_reason": finish_reason,
+                    "response_model": response_model,
                     "raw_provider_response": response_data,
                     "structured_response": parsed,
                     "raw_response_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
@@ -522,7 +564,7 @@ class DeepSeekClient(SemanticLLMClient):
             LLMCallCache.put(
                 db,
                 provider=self.provider,
-                model=model_name,
+                model=effective_request_model,
                 prompt_version=prompt_version,
                 schema_version=schema_version,
                 input_hash=input_key,
@@ -547,3 +589,11 @@ class DeepSeekClient(SemanticLLMClient):
     @property
     def external_token_count(self) -> int:
         return self._external_tokens
+
+    @property
+    def external_input_token_count(self) -> int:
+        return self._external_input_tokens
+
+    @property
+    def external_output_token_count(self) -> int:
+        return self._external_output_tokens

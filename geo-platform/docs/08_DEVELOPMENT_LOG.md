@@ -5943,3 +5943,17 @@ review_queue = READY
 - The new Plan contract contains a deterministic first-two Citation Canary. A
   failed Canary records the remaining scope as not evaluated and stops further
   model calls. No external call was made in this checkpoint.
+
+## 2026-09-28 Citation Contribution Responses Model Identity
+
+- Pre-execution verification against the current DeepSeek Responses API found
+  that `deepseek-flash` is the canonical request model while the project still
+  uses the accepted legacy alias `deepseek-v4-flash`.
+- The Responses JSON Schema transport now records the requested alias,
+  effective request model and provider `response.model`. Only the explicit
+  Responses path maps the legacy Flash alias; existing Chat callers retain
+  their configured model behavior.
+- Plan and cache identities include both model identities and transport v2.
+  Provider model mismatches are rejected rather than hidden. External input,
+  output and total token usage are retained separately for the P1 execution
+  report and the authorization now freezes a total-token ceiling.

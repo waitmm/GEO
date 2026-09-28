@@ -160,6 +160,7 @@ class SinglePromptCitationContributionAuthorizationCreate(BaseModel):
     provider: Literal["deepseek"]
     model: str = Field(min_length=1, max_length=120)
     max_external_requests: int = Field(ge=1, le=200)
+    max_total_tokens: int = Field(ge=1, le=10_000_000)
     max_budget_cny: float = Field(gt=0, le=10_000)
     cost_upper_bound_cny: float = Field(gt=0, le=10_000)
     pricing_basis: str = Field(min_length=1, max_length=2000)

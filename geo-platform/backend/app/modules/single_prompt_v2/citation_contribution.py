@@ -33,15 +33,16 @@ from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import (
     DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
     DeepSeekClient,
+    resolve_deepseek_request_model,
 )
 from app.services.serialization import dumps, loads
 
 
 CITATION_CONTRIBUTION_CONTRACT_VERSION = "single_prompt_v2.citation_contribution.v2"
-CITATION_CONTRIBUTION_PLAN_VERSION = "single_prompt_v2.citation_contribution_plan.p1.v4"
+CITATION_CONTRIBUTION_PLAN_VERSION = "single_prompt_v2.citation_contribution_plan.p1.v5"
 CITATION_CONTRIBUTION_PROMPT_VERSION = "single_prompt_v2.citation_contribution.p1.v2"
 CITATION_CONTRIBUTION_SCHEMA_VERSION = "single_prompt_v2.citation_contribution.strict.v2"
-CITATION_CONTRIBUTION_IMPLEMENTATION_VERSION = "single_prompt_v2.citation_contribution.contract_recovery.v1"
+CITATION_CONTRIBUTION_IMPLEMENTATION_VERSION = "single_prompt_v2.citation_contribution.contract_recovery.v2"
 SEMANTIC_LLM_TRANSPORT_VERSION = DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION
 ANSWER_UNIT_VERSION = "single_prompt_v2.answer_unit.deterministic.v2"
 MAX_PASSAGES_PER_CITATION = 12
@@ -111,6 +112,13 @@ def _write_machine_output_artifact(
         "validation_status": str(payload.get("validation_status") or ""),
         "raw_response_hash": str(payload.get("raw_response_hash") or ""),
         "token_usage": payload.get("token_usage") or {},
+        "requested_model_alias": str(
+            (payload.get("request_identity") or {}).get("requested_model_alias") or ""
+        ),
+        "effective_request_model": str(
+            (payload.get("request_identity") or {}).get("effective_request_model") or ""
+        ),
+        "response_model": str(payload.get("response_model") or ""),
         "rejection_code": str(payload.get("rejection_code") or ""),
         "rejection_reason": str(payload.get("rejection_reason") or ""),
     }
@@ -425,6 +433,11 @@ def build_p1_plan(
         * USD_CNY_REFERENCE_RATE,
         4,
     )
+    requested_model_alias = get_settings().deepseek_model
+    effective_request_model = resolve_deepseek_request_model(
+        requested_model_alias,
+        "JSON_SCHEMA",
+    )
     payload = {
         "contract_version": CITATION_CONTRIBUTION_CONTRACT_VERSION,
         "plan_version": CITATION_CONTRIBUTION_PLAN_VERSION,
@@ -449,7 +462,9 @@ def build_p1_plan(
         "citations": citations,
         "call_plan": {
             "provider": "deepseek",
-            "model": get_settings().deepseek_model,
+            "model": requested_model_alias,
+            "requested_model_alias": requested_model_alias,
+            "effective_request_model": effective_request_model,
             "answer_unit_external_calls": 0,
             "source_claim_external_calls": 0,
             "citation_contribution_external_calls": planned_calls,
@@ -919,6 +934,7 @@ def authorize_citation_contribution(
     provider: str,
     model: str,
     max_external_requests: int,
+    max_total_tokens: int,
     max_budget_cny: float,
     cost_upper_bound_cny: float,
     pricing_basis: str,
@@ -937,7 +953,19 @@ def authorize_citation_contribution(
     )
     planned_requests = int((plan.get("call_plan") or {}).get("max_new_external_requests") or 0)
     settings = get_settings()
-    _require(provider == "deepseek" and model == settings.deepseek_model, "CONTRIBUTION_MODEL_MISMATCH", "授权 Provider/Model 与当前配置不一致")
+    call_plan = plan.get("call_plan") or {}
+    requested_model_alias = str(call_plan.get("requested_model_alias") or "")
+    effective_request_model = str(call_plan.get("effective_request_model") or "")
+    _require(
+        provider == "deepseek" and model == requested_model_alias == settings.deepseek_model,
+        "CONTRIBUTION_MODEL_MISMATCH",
+        "授权 Provider/Model 与冻结 requested model alias 不一致",
+    )
+    _require(
+        effective_request_model == resolve_deepseek_request_model(model, "JSON_SCHEMA"),
+        "CONTRIBUTION_EFFECTIVE_MODEL_MISMATCH",
+        "冻结 effective request model 与当前 transport 映射不一致",
+    )
     _require(max_external_requests == planned_requests, "CONTRIBUTION_REQUEST_CAP_MISMATCH", "请求上限必须与冻结计划完全一致")
     _require(
         abs(cost_upper_bound_cny - float((plan.get("call_plan") or {}).get("budget_upper_bound_cny") or 0.0)) < 0.0001,
@@ -945,11 +973,19 @@ def authorize_citation_contribution(
         "授权费用上界必须与冻结计划完全一致",
     )
     _require(cost_upper_bound_cny <= max_budget_cny, "CONTRIBUTION_BUDGET_EXCEEDED", "预计费用上界超过授权预算")
+    _require(
+        int((plan.get("call_plan") or {}).get("conservative_token_ceiling") or 0) <= max_total_tokens,
+        "CONTRIBUTION_TOKEN_BUDGET_EXCEEDED",
+        "冻结计划 token ceiling 超过授权上限",
+    )
     execution.authorization_json = dumps({
         "plan_hash": plan_hash,
         "provider": provider,
-        "model": model,
+        "model": requested_model_alias,
+        "requested_model_alias": requested_model_alias,
+        "effective_request_model": effective_request_model,
         "max_external_requests": max_external_requests,
+        "max_total_tokens": max_total_tokens,
         "max_budget_cny": max_budget_cny,
         "cost_upper_bound_cny": cost_upper_bound_cny,
         "pricing_basis": pricing_basis,
@@ -1178,6 +1214,8 @@ def execute_citation_contribution(
         initial_external = int(getattr(active_judge.client, "external_call_count", 0))
         initial_calls = int(getattr(active_judge.client, "call_count", 0))
         initial_tokens = int(getattr(active_judge.client, "external_token_count", 0))
+        initial_input_tokens = int(getattr(active_judge.client, "external_input_token_count", 0))
+        initial_output_tokens = int(getattr(active_judge.client, "external_output_token_count", 0))
         for index, citation_plan in enumerate(plan["citations"], start=1):
             row = {
                 key: value for key, value in citation_plan.items()
@@ -1385,11 +1423,22 @@ def execute_citation_contribution(
         external_calls = int(getattr(active_judge.client, "external_call_count", 0)) - initial_external
         total_calls = int(getattr(active_judge.client, "call_count", 0)) - initial_calls
         external_tokens = int(getattr(active_judge.client, "external_token_count", 0)) - initial_tokens
+        external_input_tokens = (
+            int(getattr(active_judge.client, "external_input_token_count", 0)) - initial_input_tokens
+        )
+        external_output_tokens = (
+            int(getattr(active_judge.client, "external_output_token_count", 0)) - initial_output_tokens
+        )
         execution.external_llm_calls += max(external_calls, 0)
         execution.llm_cache_hits += max(total_calls - external_calls, 0)
         execution.external_token_usage += max(external_tokens, 0)
         authorization_cap = int(authorization.get("max_external_requests") or 0)
         _require(execution.external_llm_calls <= authorization_cap, "CONTRIBUTION_REQUEST_CAP_EXCEEDED", "实际外部调用超过授权上限")
+        _require(
+            external_tokens <= int(authorization.get("max_total_tokens") or 0),
+            "CONTRIBUTION_TOKEN_CAP_EXCEEDED",
+            "实际 token 使用超过授权上限",
+        )
         evidence_sets = []
         for unit in answer_units:
             unit_bindings = [item for item in bindings if item["answer_unit_id"] == unit["answer_unit_id"]]
@@ -1426,6 +1475,20 @@ def execute_citation_contribution(
             "calibration_set": calibration_population,
             "calibration_sampling": calibration_sampling,
             "machine_output_artifacts": machine_output_artifacts,
+            "model_identity": {
+                "requested_model_alias": authorization.get("requested_model_alias"),
+                "effective_request_model": authorization.get("effective_request_model"),
+                "response_models": sorted({
+                    str(item.get("response_model") or "")
+                    for item in machine_output_artifacts
+                    if item.get("response_model")
+                }),
+            },
+            "external_token_usage": {
+                "input_tokens": external_input_tokens,
+                "output_tokens": external_output_tokens,
+                "total_tokens": external_tokens,
+            },
             "attribution_boundary": {
                 "observable_content_correspondence_only": True,
                 "generation_influence_proven": False,

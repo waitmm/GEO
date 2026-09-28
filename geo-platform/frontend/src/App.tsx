@@ -1577,21 +1577,18 @@ export default function App() {
     const nextResultVersion = status.result?.result_version || null;
     const diagnosisChanged = Boolean(params.get("v2_diagnosis") && params.get("v2_diagnosis") !== status.diagnosis.diagnosis_id);
     const resultChanged = Boolean(params.get("v2_diagnosis_result") && params.get("v2_diagnosis_result") !== nextResultVersion);
-    if (diagnosisChanged || resultChanged) {
+    if (diagnosisChanged) {
       params.delete("v2_contribution");
+      setV2CitationContribution(null);
+    }
+    if (diagnosisChanged || resultChanged) {
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       params.delete("v2_execution_proposal");
       params.delete("v2_execution_result");
       params.delete("v2_retest");
-      params.delete("v2_execution_proposal");
-      params.delete("v2_execution_result");
-      params.delete("v2_retest");
       setV2Strategy(null);
-      setV2CitationContribution(null);
       setV2Execution(null);
-      setV2RetestReadiness(null);
-      setV2Retest(null);
       setV2RetestReadiness(null);
       setV2Retest(null);
     }

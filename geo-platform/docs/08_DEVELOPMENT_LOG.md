@@ -5957,3 +5957,52 @@ review_queue = READY
   Provider model mismatches are rejected rather than hidden. External input,
   output and total token usage are retained separately for the P1 execution
   report and the authorization now freezes a total-token ceiling.
+
+## 2026-09-28 Citation Contribution P1 Contract-Recovery Execution
+
+- Because the effective Responses API model is `deepseek-flash`, the release
+  API superseded the unexecuted alias-only Plan and froze Contribution
+  `citation-contribution-ceab7156-040a-4963-b8b6-635ab012d8e1`, Plan
+  `citation-contribution-plan-21a110f41864ca59ba83`, Plan hash
+  `21a110f41864ca59ba830e9c2bda820f72a9cbef65d40e9b8967c1d4b62e1ac9`
+  and input snapshot hash
+  `c3410c51be33e9b1b10c9f273af8306bc8ccb424504e6789a30728b0abd77419`.
+  The semantic scope remains Run 1, 18 AnswerUnits, 19 Citations, 228
+  candidate pairs and 34 recall controls.
+- The first two fixed Citations passed provider completion, provider JSON
+  Schema, strict local Schema and frozen-input dynamic validation. The worker
+  therefore continued the remaining 17 calls under the same authorization.
+- The 19 calls used requested alias `deepseek-v4-flash`, effective request
+  model `deepseek-flash` and provider response model `deepseek-flash`. They
+  consumed 67,154 input, 22,187 output and 89,341 total tokens, with zero cache
+  hits. At the frozen peak-price ceiling this is an estimated RMB 0.7235, not a
+  provider billing receipt.
+- Sixteen responses were admitted and cached. Three were rejected and were not
+  cached: references 4 and 13 returned spans for negative/no-correspondence
+  candidates; reference 5 returned non-empty evaluations together with a
+  non-null `no_binding_reason`. No field repair, default insertion or retry was
+  used.
+- Immutable Result `contribution-v1:dd80ec35eab9fe62`, output hash
+  `7170f0f1471a5d0146bfc4043ed08a3543a33c371a7190aa1dc5b3cb93718998`
+  and reviewable-set hash
+  `04e7b00c2e1133c12d980a66687ab8ad8f527700626bec053bf1bcbe203e2fb9`
+  record 16 DONE and 3 FAILED Citations, 192 accepted pair evaluations, 22
+  bindings and 100% terminal-disposition coverage. The three failures remain
+  `ANALYSIS_FAILED`, not `NO_MATCH` or `NO_SUPPORT`.
+- All 192 accepted evaluations keep `answer_anchor=UNPROVEN` and
+  `generation_influence=UNAVAILABLE`. The observed relations are 6
+  `FAITHFUL_PARAPHRASE/SUPPORTS_PARTIAL`, 16
+  `TOPICAL_ONLY/RELATED_ONLY` and 170 `NO_CORRESPONDENCE/NO_MATCH`.
+- Nineteen complete response artifacts were retained outside Git with mode
+  `0600`; all stored artifact hashes were independently rechecked. The 16
+  admitted outputs are the only new valid cache entries.
+- The frozen calibration set contains 40 deterministic hash-ordered unbiased
+  evaluation samples and 20 hash-ordered recall-boundary controls. The release
+  page exposes AnswerUnit context, source passage, machine dimensions,
+  rationale, limitations and append-only human calibration controls. No Review
+  was created and no nine-Run expansion or Strategy execution occurred.
+- A release-page identity bug discarded the exact P1 Contribution query
+  parameter when the same Diagnosis had a newer Evidence ResultVersion. The UI
+  now preserves the independently version-bound Contribution when only the
+  Diagnosis result changes; it still clears it when the Diagnosis identity
+  itself changes.

@@ -15,12 +15,14 @@ from app.models import (
     SinglePromptAnalysis,
     SinglePromptCitationContributionExecution,
     SinglePromptDiagnosisExecution,
+    SinglePromptQualificationCriticExecution,
     SinglePromptSourcePreparation,
 )
 from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.services import update_task_status_from_runs
 from app.modules.single_prompt_v2.diagnosis import execute_diagnosis, execute_queued_evidence
 from app.modules.single_prompt_v2.citation_contribution import execute_citation_contribution
+from app.modules.single_prompt_v2.qualification_critic import execute_qualification_critic
 from app.modules.single_prompt_v2.service import execute_analysis
 from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_STATUS, execute_auto_fetch
 from app.release_schema import validate_release_database
@@ -75,9 +77,19 @@ def run_once() -> str | None:
                         .first()
                     )
                     if not contribution:
-                        return None
-                    identity = contribution.contribution_id
-                    work_type = "citation_contribution"
+                        critic = (
+                            db.query(SinglePromptQualificationCriticExecution)
+                            .filter_by(status="QUEUED")
+                            .order_by(SinglePromptQualificationCriticExecution.id.asc())
+                            .first()
+                        )
+                        if not critic:
+                            return None
+                        identity = critic.critic_id
+                        work_type = "qualification_critic"
+                    else:
+                        identity = contribution.contribution_id
+                        work_type = "citation_contribution"
     finally:
         db.close()
 
@@ -114,6 +126,9 @@ def run_once() -> str | None:
     if work_type == "citation_contribution":
         execute_citation_contribution(identity, session_factory=ReleaseSessionLocal)
         return f"citation_contribution:{identity}"
+    if work_type == "qualification_critic":
+        execute_qualification_critic(identity, session_factory=ReleaseSessionLocal)
+        return f"qualification_critic:{identity}"
     execute_diagnosis(identity, session_factory=ReleaseSessionLocal)
     return f"answer:{identity}"
 

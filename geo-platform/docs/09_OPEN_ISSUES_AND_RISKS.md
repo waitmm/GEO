@@ -4,16 +4,19 @@ Status: ACTIVE
 
 ## 2026-09-29 Model B SiliconFlow Verification Boundary
 
-- SiliconFlow Qwen transport is locally implemented and tested, but no
-  `SILICONFLOW_API_KEY` is configured in the current environment and no real
-  provider call has been authorized. Real endpoint/model/schema compatibility
-  remains `NOT_VERIFIED`.
-- The Model B Critic Signal product contract is not implemented. Provider
-  availability must not be interpreted as permission to compare, override or
-  mutate Model A, Qualification, Strategy, Truth or public Claim state.
+- SiliconFlow Qwen transport and the bounded Shadow Critic contract are locally
+  implemented. The key is configured and Model B is locally enabled, but no
+  real business payload has been sent. A non-business synthetic canary verified
+  the endpoint, configured model and strict schema path. Real business-object
+  compatibility and judgment quality remain `NOT_VERIFIED` until an explicitly
+  scoped export is authorized.
+- Provider availability must not be interpreted as permission to override or
+  mutate Model A, Qualification, Strategy, Truth or public Claim state. The
+  current implementation enforces Shadow-only output.
 - SiliconFlow changes its model catalog over time. The configured model identity
   is part of cache/audit identity, and availability must be checked before a
-  future authorized canary rather than silently substituting another Qwen model.
+  future authorized business execution rather than silently substituting
+  another Qwen model.
 
 ## Single Prompt V1 Known Pitfalls
 

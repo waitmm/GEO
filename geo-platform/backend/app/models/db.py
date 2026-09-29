@@ -680,6 +680,66 @@ class SinglePromptCitationContributionReview(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class SinglePromptQualificationCriticExecution(Base):
+    __tablename__ = "single_prompt_qualification_critic_executions"
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "idempotency_key", name="uq_single_prompt_qualification_critic_idempotency"),
+        Index("ix_single_prompt_qualification_critic_analysis", "analysis_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    critic_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    diagnosis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_diagnosis_executions.diagnosis_id"), index=True)
+    diagnosis_result_version: Mapped[str] = mapped_column(String(96), index=True)
+    diagnosis_result_hash: Mapped[str] = mapped_column(String(64))
+    baseline_projection_hash: Mapped[str] = mapped_column(String(64), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    input_snapshot_json: Mapped[str] = mapped_column(Text)
+    input_snapshot_hash: Mapped[str] = mapped_column(String(64), index=True)
+    plan_json: Mapped[str] = mapped_column(Text)
+    plan_hash: Mapped[str] = mapped_column(String(64), index=True)
+    contract_version: Mapped[str] = mapped_column(String(120))
+    provider: Mapped[str] = mapped_column(String(40))
+    requested_model: Mapped[str] = mapped_column(String(160))
+    authorization_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(48), default="QUEUED", index=True)
+    progress_json: Mapped[str] = mapped_column(Text, default="{}")
+    blocker_code: Mapped[str] = mapped_column(String(80), default="")
+    blocker_detail: Mapped[str] = mapped_column(Text, default="")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    external_llm_calls: Mapped[int] = mapped_column(Integer, default=0)
+    llm_cache_hits: Mapped[int] = mapped_column(Integer, default=0)
+    external_token_usage: Mapped[int] = mapped_column(Integer, default=0)
+    active_result_version: Mapped[str] = mapped_column(String(96), default="", index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SinglePromptQualificationCriticResult(Base):
+    __tablename__ = "single_prompt_qualification_critic_results"
+    __table_args__ = (
+        UniqueConstraint("critic_id", "version_number", name="uq_single_prompt_qualification_critic_result_version"),
+        Index("ix_single_prompt_qualification_critic_result", "critic_id", "version_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    result_version: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    critic_id: Mapped[str] = mapped_column(
+        ForeignKey("single_prompt_qualification_critic_executions.critic_id"), index=True
+    )
+    version_number: Mapped[int] = mapped_column(Integer)
+    output_json: Mapped[str] = mapped_column(Text)
+    output_hash: Mapped[str] = mapped_column(String(64))
+    stats_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SinglePromptStrategyExecution(Base):
     __tablename__ = "single_prompt_strategy_executions"
     __table_args__ = (

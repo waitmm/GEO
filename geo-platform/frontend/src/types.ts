@@ -744,6 +744,69 @@ export type SinglePromptV2QualificationProjection = {
   boundary: Record<string, boolean | number>;
 };
 
+export type SinglePromptV2QualificationCriticStatus = {
+  execution: {
+    critic_id: string;
+    status: "QUEUED" | "RUNNING" | "SHADOW_COMPLETED" | "SHADOW_COMPLETED_WITH_LIMITATIONS" | "FAILED";
+    analysis_id: string;
+    context_id: string;
+    diagnosis_id: string;
+    diagnosis_result_version: string;
+    baseline_projection_hash: string;
+    plan_hash: string;
+    candidate_count: number;
+    provider: string;
+    requested_model: string;
+    progress: { completed: number; total: number; stage: string };
+    external_llm_calls: number;
+    llm_cache_hits: number;
+    external_token_usage: number;
+    blocker: null | { code: string; detail: string };
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+  };
+  result: null | {
+    result_version: string;
+    result_hash: string;
+    output: {
+      model_identity: { provider: string; requested_model: string };
+      signals: Array<{
+        candidate_id: string;
+        candidate_type: "CITATION_RELATION" | "STRATEGY_DIRECTION";
+        object_id: string;
+        impact_reasons: string[];
+        processing_status: "DONE" | "FAILED" | "NOT_EVALUATED";
+        critic_verdict?: "AGREE" | "DISAGREE" | "INSUFFICIENT_CONTEXT";
+        issues?: string[];
+        counterexample?: string | null;
+        rationale?: string;
+        failure_code?: string;
+        failure_detail?: string;
+      }>;
+      summary: {
+        candidate_count: number;
+        processing_status: Record<string, number>;
+        critic_verdict: Record<string, number>;
+        issues: Record<string, number>;
+        external_calls: number;
+        cache_hits: number;
+        external_tokens: number;
+      };
+      shadow_comparison: {
+        formal_qualification_changed: false;
+        formal_strategy_changed: false;
+        disagreement_count: number;
+        insufficient_context_count: number;
+        gain_against_human_gold: string;
+      };
+      boundary: Record<string, boolean>;
+    };
+    created_at: string;
+  };
+  allowed_actions: string[];
+};
+
 export type SinglePromptV2StrategyStatus = {
   strategy: {
     strategy_id: string;

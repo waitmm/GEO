@@ -167,6 +167,18 @@ class SinglePromptCitationContributionAuthorizationCreate(BaseModel):
     authorized_by: str = Field(min_length=1, max_length=120)
 
 
+class SinglePromptQualificationCriticCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_id: int
+    prompt_id: int
+    expected_projection_hash: str = Field(min_length=64, max_length=64)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    max_external_requests: int = Field(ge=1, le=10)
+    max_total_tokens: int = Field(ge=1, le=200_000)
+    authorized_by: str = Field(min_length=1, max_length=120)
+
+
 class CitationContributionCalibrationDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

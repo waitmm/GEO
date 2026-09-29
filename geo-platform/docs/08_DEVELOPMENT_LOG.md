@@ -2,6 +2,30 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Qualification Critic Shadow
+
+- Added a release-owned, exact-version Model B Shadow chain with immutable
+  results and a `20260929_01` release migration. The prior Qualification
+  projection is saved as the unchanged single-model baseline.
+- Candidate selection is deterministic and impact-driven. The fixed real case
+  selects six positive Run 1 Citation bindings and one current Strategy
+  Direction; low-impact and negative relations are not sent to Model B.
+- Added strict `AGREE / DISAGREE / INSUFFICIENT_CONTEXT` output, closed issue
+  enums, verbatim-only counterexamples, one request per object, zero automatic
+  retries, token/request ceilings, secure full-response artifacts and cache
+  revalidation.
+- Added explicit POST queueing, single-worker execution, read-only polling and
+  a Chinese progress/result surface. The Shadow output cannot mutate
+  Qualification, Truth, Claim, Strategy or external-action authority.
+- Backed up and migrated the real release database successfully. The formal
+  business replay was stopped before task creation because the external-data
+  authorization did not yet explicitly enumerate the Answer/source excerpts
+  and Strategy dependency payload allowed for SiliconFlow.
+- Ran one non-business synthetic provider canary after configuration. SiliconFlow
+  returned a schema-valid response from `Qwen/Qwen3.6-35B-A3B` using 72 total
+  tokens. This verifies endpoint/model/Structured Output connectivity only;
+  no project payload was sent and no Shadow execution/result row was created.
+
 ## 2026-09-29 SiliconFlow Qwen Model B Transport
 
 - Added an optional `SiliconFlowClient` for the second-model critic role. The
@@ -16,7 +40,8 @@ Status: ACTIVE
   and kept DeepSeek's public behavior and legacy cache identity unchanged.
 - Added tests for the official endpoint/body, Qwen identity, unknown-field
   rejection, disabled external calls, cache-only behavior and model-sensitive
-  identity. No real API key was configured and no external call was made.
+  identity. At this transport checkpoint no real external call had been made;
+  the later synthetic canary is recorded under Qualification Critic Shadow.
 
 ## 2026-09-29 V2 Automatic Qualification Vertical Slice
 

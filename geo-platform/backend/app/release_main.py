@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.release_database import ReleaseSessionLocal, release_engine
 from app.modules.single_prompt_v2.diagnosis import recover_interrupted_diagnoses
 from app.modules.single_prompt_v2.citation_contribution import recover_interrupted_citation_contributions
+from app.modules.single_prompt_v2.qualification_critic import recover_interrupted_qualification_critics
 from app.modules.single_prompt_v2.release_api import router as single_prompt_router
 from app.modules.single_prompt_v2.service import recover_interrupted_analyses
 from app.modules.single_prompt_v2.source_preparation import recover_interrupted_source_preparations
@@ -41,6 +42,7 @@ def create_release_app(*, validate_on_startup: bool = True) -> FastAPI:
             recover_interrupted_analyses(db)
             recover_interrupted_diagnoses(db)
             recover_interrupted_citation_contributions(db)
+            recover_interrupted_qualification_critics(db)
             recover_interrupted_source_preparations(db)
         finally:
             db.close()

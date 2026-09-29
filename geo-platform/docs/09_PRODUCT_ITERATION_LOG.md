@@ -2,6 +2,26 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Model B Shadow Activation
+
+### Product Decision
+
+DeepSeek remains the Primary Analyst. SiliconFlow Qwen is activated only as a
+Critic over deterministically selected high-impact objects. It does not rerun
+the full analysis and does not vote on or rewrite final Strategy.
+
+The first stage is Shadow: preserve the single-model baseline, record Critic
+signals, compare disagreements against Human Gold when available, and make no
+formal eligibility changes. A future cutover is allowed only if measured error
+patterns show that Model B improves the relevant use.
+
+### User Impact
+
+The automatic strategy area now exposes a Chinese Model B Shadow section with
+an explicit start action, stable queued/running progress and per-object results.
+The interface states that the signals are not final decisions and that page
+refreshes do not create calls.
+
 ## 2026-09-29 Model B Provider Selection
 
 ### Product Decision
@@ -11,16 +31,16 @@ The second-model provider is SiliconFlow and its default model is Qwen
 a second provider now that the first automatic Qualification-to-Draft vertical
 slice exists.
 
-Provider readiness is not product activation. Model B remains disabled and has
-no Critic Signal contract, no external-call authorization and no right to
-modify Model A results, Qualification, Strategy or Claims. When activated later,
-its output must remain a bounded signal over an exact frozen object set.
+At this provider-selection checkpoint, provider readiness was not yet product
+activation. The later Shadow activation added the bounded Critic Signal
+contract and local enablement, while preserving the rule that Model B cannot
+modify Model A results, Qualification, Strategy or Claims.
 
 ### User Impact
 
-There is no new user action yet and no current strategy changes. The code can
-now call the selected Qwen provider safely once a concrete critic task is
-approved, without replacing DeepSeek or creating an untracked API path.
+At this checkpoint there was no new user action and no strategy change. The
+later Shadow activation added the explicit user action; a concrete business
+payload still requires scoped external-data authorization.
 
 ## 2026-09-29 Machine Continuation And Per-Use Qualification
 

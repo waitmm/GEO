@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./geo_v0.db"
     release_database_url: str = "sqlite:///./geo_release.db"
     deployment_mode: str = "legacy_dev"
-    release_schema_revision: str = "20260928_01"
+    release_schema_revision: str = "20260929_01"
     evidence_artifact_dir: str = "./artifacts/evidence"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     wenxin_api_key: str = ""
@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     siliconflow_model: str = "Qwen/Qwen3.6-35B-A3B"
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
     siliconflow_timeout_seconds: int = 120
+    model_b_shadow_max_calls: int = 8
+    model_b_shadow_max_tokens: int = 100_000
     semantic_case_max_calls: int = 200
     semantic_case_max_tokens: int = 2_000_000
     # Citation Decision V1.1 Phase 1：默认关闭。仅在显式开启时，正式

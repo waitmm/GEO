@@ -2,6 +2,31 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Model B Qualification Critic Shadow
+
+SiliconFlow Qwen is now enabled locally as the bounded Model B Critic. The
+single-model Qualification Projection is frozen unchanged as the baseline;
+Model B receives only deterministically selected high-impact objects and writes
+an independent immutable Shadow Result. It cannot mutate Qualification,
+Product Truth, Claims, Strategy or external-action authority.
+
+The current fixed nine-Run case deterministically selects seven Shadow objects:
+six positive `SUPPORTS_PARTIAL` Citation bindings from Run 1 and the one current
+Strategy Direction. Ordinary `RELATED_ONLY`, `NO_MATCH`, background facts and
+ineligible public Claims are excluded. The release API and worker path are
+implemented and the release database is migrated to `20260929_01`.
+
+No real business payload has yet been sent to SiliconFlow. The attempted formal
+start was stopped before task creation because external-data authorization must
+explicitly cover the frozen Answer/source excerpts and Strategy dependency
+payload. This is an authorization blocker, not a provider or implementation
+failure.
+
+A one-request synthetic canary used no project or customer data and passed the
+configured endpoint, Qwen model identity and strict JSON Schema path (72 total
+tokens). This proves transport connectivity only; it does not validate the
+seven-object business Shadow or Model B judgment quality.
+
 ## 2026-09-29 Optional Model B Provider
 
 The optional second semantic model is now configured as SiliconFlow Qwen. Its
@@ -9,10 +34,9 @@ default identity is `Qwen/Qwen3.6-35B-A3B` through SiliconFlow's OpenAI-compatib
 Chat Completions API. DeepSeek remains Model A and no existing semantic stage is
 rerouted.
 
-Only the strict provider transport is implemented. Model B is disabled by
-default, has made zero external calls and has no authority over Qualification,
-Strategy, public Claims or external actions. A bounded Critic Signal contract
-and explicit external-call authorization are still required before activation.
+The strict provider transport and bounded Shadow Critic contract are now
+implemented. Model B remains unable to affect Qualification, Strategy, public
+Claims or external actions until a later quality-based cutover decision.
 See `docs/GEO_MODEL_B_SILICONFLOW_QWEN.md`.
 
 ## 2026-09-29 Automatic Qualification Checkpoint

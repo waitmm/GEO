@@ -31,6 +31,7 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptCitationContributionAuthorizationCreate,
     SinglePromptCitationContributionPlanCreate,
     SinglePromptCitationContributionReviewCreate,
+    SinglePromptQualificationCriticCreate,
     SinglePromptDiagnosisReviewCreate,
     SinglePromptDiagnosisRevisionCreate,
     SinglePromptEvidenceContinuationCreate,
@@ -62,6 +63,10 @@ from app.modules.single_prompt_v2.strategy import (
     revise_strategy_priority,
 )
 from app.modules.single_prompt_v2.qualification import build_qualification_projection
+from app.modules.single_prompt_v2.qualification_critic import (
+    get_qualification_critic_status,
+    queue_qualification_critic,
+)
 from app.modules.single_prompt_v2.source_preparation import (
     create_source_preparation,
     freeze_completion_manifest,
@@ -496,6 +501,59 @@ def read_qualification_projection(
         analysis_id=analysis_id,
         diagnosis_id=diagnosis_id,
         result_version=result_version,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
+
+
+@router.post(
+    "/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/qualification-critics",
+    status_code=202,
+)
+def create_qualification_critic(
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    payload: SinglePromptQualificationCriticCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    execution, created = queue_qualification_critic(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        expected_projection_hash=payload.expected_projection_hash,
+        idempotency_key=payload.idempotency_key,
+        max_external_requests=payload.max_external_requests,
+        max_total_tokens=payload.max_total_tokens,
+        authorized_by=payload.authorized_by,
+    )
+    if not created:
+        response.status_code = 200
+    return get_qualification_critic_status(
+        db,
+        analysis_id=analysis_id,
+        critic_id=execution.critic_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.get("/analyses/{analysis_id}/qualification-critics/{critic_id}")
+def read_qualification_critic(
+    analysis_id: str,
+    critic_id: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_qualification_critic_status(
+        db,
+        analysis_id=analysis_id,
+        critic_id=critic_id,
         project_id=project_id,
         prompt_id=prompt_id,
     )

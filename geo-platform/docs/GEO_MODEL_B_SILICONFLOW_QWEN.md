@@ -1,6 +1,6 @@
 # GEO Model B: SiliconFlow Qwen
 
-Status: TRANSPORT READY / PRODUCT PATH DISABLED
+Status: SYNTHETIC TRANSPORT VERIFIED / REAL BUSINESS SHADOW AWAITING DATA AUTHORIZATION
 
 Date: 2026-09-29
 
@@ -16,8 +16,8 @@ Role: Model B critic
 ```
 
 This Product Owner decision supersedes the earlier temporary instruction not to
-connect a second provider. It does not authorize an external call and does not
-define the later Critic Signal business contract.
+connect a second provider. The provider is enabled locally and the bounded
+Critic Signal business contract is implemented in Shadow mode.
 
 Model A remains DeepSeek. Existing Answer Semantic, SourceClaim, Alignment and
 Citation Contribution calls are not rerouted to SiliconFlow.
@@ -54,13 +54,58 @@ The model is configurable because SiliconFlow periodically changes its model
 catalog. Changing the model changes the cache identity; an old Qwen result
 cannot be consumed as though it came from the new model.
 
-## Not Yet Implemented
+## Qualification Critic Shadow
 
-- No Model B Critic prompt or response contract.
-- No automatic comparison with Model A.
+The first product path freezes the current single-model
+`QualificationProjection` and selects only:
+
+```text
+CONSUMABLE Strategy Directions
+positive SUPPORTS_FULL / SUPPORTS_PARTIAL Citation bindings
+```
+
+The current real case produces seven candidates: one Strategy Direction and six
+`SUPPORTS_PARTIAL` Citation relations. Each candidate is sent independently,
+with zero automatic retries, through an explicit POST and the single-concurrency
+release worker. GET, refresh and polling never call the provider.
+
+The response contract is limited to:
+
+```text
+critic_verdict = AGREE | DISAGREE | INSUFFICIENT_CONTEXT
+issues[]
+counterexample
+rationale
+```
+
+Unknown fields are rejected. A non-null counterexample must be a verbatim span
+from the frozen input. The immutable Shadow Result keeps the single-model
+baseline and explicitly records that formal Qualification and Strategy were not
+changed.
+
+## Not Yet Activated
+
 - No Qualification or Strategy mutation from Model B.
-- No external-call authorization, canary or cost budget.
-- No real SiliconFlow API verification.
+- No quality-based cutover policy.
+- No gain measurement until the P1 Human Gold set exists.
+- No real business-payload replay: the exact Answer/source excerpt and Strategy
+  dependency export scope still requires explicit authorization.
+
+## Verification Record
+
+One synthetic, non-business canary completed against SiliconFlow with model
+`Qwen/Qwen3.6-35B-A3B`. Provider Structured Output and local strict validation
+both passed. The call used 72 total tokens. No project text, Answer excerpt,
+Source passage, Product Truth or Strategy dependency was included.
+
+Therefore:
+
+```text
+endpoint/key/model/schema transport = SYNTHETIC_VERIFIED
+real seven-object Shadow execution = NOT_STARTED
+business judgment quality = NOT_VERIFIED
+formal Qualification/Strategy effect = NONE
+```
 
 These are intentionally separate from provider transport readiness. A future
 bounded Critic Signal must consume an exact frozen object set and remain unable

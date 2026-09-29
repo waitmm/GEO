@@ -108,3 +108,11 @@ the independent internal direction.
 The next implementation checkpoint may persist an automatic direction only
 after its ownership and immutable version identity are made explicit. It must
 not fake a Diagnosis Review to satisfy the historical Strategy table contract.
+
+## 2026-09-29 Model B Shadow Extension
+
+The projection remains the immutable single-model baseline. A separate
+Qualification Critic execution may consume its exact hash and a deterministic
+high-impact plan, then persist bounded SiliconFlow Qwen signals. Shadow signals
+cannot alter any eligibility field in this document. GET and polling are
+read-only; only an explicit POST can queue external work.

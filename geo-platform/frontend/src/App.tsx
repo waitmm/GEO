@@ -8,7 +8,7 @@ import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, File
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
-  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
@@ -869,6 +869,32 @@ function v2QualificationLabel(value?: string) {
   return labels[value || ""] || value || "未判断";
 }
 
+function v2CriticLabel(value?: string) {
+  const labels: Record<string, string> = {
+    QUEUED: "等待执行",
+    RUNNING: "正在复核",
+    SHADOW_COMPLETED: "影子复核完成",
+    SHADOW_COMPLETED_WITH_LIMITATIONS: "复核完成，部分受限",
+    FAILED: "复核失败",
+    DONE: "已完成",
+    NOT_EVALUATED: "未评估",
+    AGREE: "同意主分析",
+    DISAGREE: "提出异议",
+    INSUFFICIENT_CONTEXT: "上下文不足",
+    CITATION_RELATION: "引用关系",
+    STRATEGY_DIRECTION: "策略方向",
+    SUBJECT_MISMATCH: "主体错位",
+    QUALIFIER_LOSS: "限定条件丢失",
+    OVERSTATED_SUPPORT: "支持强度夸大",
+    TRUTH_SCOPE_EXPANSION: "事实范围扩大",
+    DECISION_ROLE_MISMATCH: "决策角色错位",
+    STRATEGY_GAP_MISMATCH: "策略缺口误判",
+    CLAIM_OVERREACH: "声明越界",
+    OTHER: "其他问题",
+  };
+  return labels[value || ""] || value || "未判断";
+}
+
 function strategyContentTypeLabel(contentType?: string) {
   const labels: Record<string, string> = {
     VIDEO: "视频教程",
@@ -1505,6 +1531,8 @@ export default function App() {
   const v2PendingDiagnosisKey = useRef<string | null>(null);
   const [v2StrategyReadiness, setV2StrategyReadiness] = useState<SinglePromptV2StrategyReadiness | null>(null);
   const [v2QualificationProjection, setV2QualificationProjection] = useState<SinglePromptV2QualificationProjection | null>(null);
+  const [v2QualificationCritic, setV2QualificationCritic] = useState<SinglePromptV2QualificationCriticStatus | null>(null);
+  const [v2QualificationCriticLoading, setV2QualificationCriticLoading] = useState(false);
   const [v2Strategy, setV2Strategy] = useState<SinglePromptV2StrategyStatus | null>(null);
   const [v2StrategyLoading, setV2StrategyLoading] = useState(false);
   const [v2StrategyEditor, setV2StrategyEditor] = useState("本地审核人");
@@ -1740,6 +1768,7 @@ export default function App() {
       setV2CitationContribution(null);
     }
     if (diagnosisChanged || resultChanged) {
+      params.delete("v2_critic");
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       params.delete("v2_execution_proposal");
@@ -1885,6 +1914,7 @@ export default function App() {
       setV2Diagnosis(null);
       setV2StrategyReadiness(null);
       setV2QualificationProjection(null);
+      setV2QualificationCritic(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2RetestReadiness(null);
@@ -1929,6 +1959,7 @@ export default function App() {
       params.delete("v2_diagnosis");
       params.delete("v2_diagnosis_result");
       params.delete("v2_contribution");
+      params.delete("v2_critic");
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       params.delete("v2_execution");
@@ -1942,6 +1973,7 @@ export default function App() {
       setV2CitationContribution(null);
       setV2StrategyReadiness(null);
       setV2QualificationProjection(null);
+      setV2QualificationCritic(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2RetestReadiness(null);
@@ -1964,6 +1996,7 @@ export default function App() {
     setV2CitationContribution(null);
     setV2StrategyReadiness(null);
     setV2QualificationProjection(null);
+    setV2QualificationCritic(null);
     setV2Strategy(null);
     setV2Execution(null);
     setV2RetestReadiness(null);
@@ -1984,6 +2017,7 @@ export default function App() {
       params.delete("v2_diagnosis");
       params.delete("v2_diagnosis_result");
       params.delete("v2_contribution");
+      params.delete("v2_critic");
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
@@ -1995,6 +2029,7 @@ export default function App() {
       setV2SourceActionNotice(null);
       setV2StrategyReadiness(null);
       setV2QualificationProjection(null);
+      setV2QualificationCritic(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2RetestReadiness(null);
@@ -2232,6 +2267,7 @@ export default function App() {
     setV2DiagnosisLoading(true);
     try {
       const params = new URLSearchParams(window.location.search);
+      params.delete("v2_critic");
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       params.delete("v2_execution_proposal");
@@ -2239,6 +2275,7 @@ export default function App() {
       window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
       setV2StrategyReadiness(null);
       setV2QualificationProjection(null);
+      setV2QualificationCritic(null);
       setV2Strategy(null);
       setV2Execution(null);
       const status = await api.createSinglePromptV2AnswerDiagnosis(v2Analysis.analysis.analysis_id, {
@@ -2719,6 +2756,7 @@ export default function App() {
       } : current);
       setV2StrategyReadiness(null);
       setV2QualificationProjection(null);
+      setV2QualificationCritic(null);
       setV2TruthDraft({ sourceSignalId: "", capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "" });
       message.success(v2TruthDraft.sourceReference.trim()
         ? "能力与公开依据已保存；请更新本次分析"
@@ -2752,6 +2790,7 @@ export default function App() {
       });
       const params = new URLSearchParams(window.location.search);
       params.set("v2_diagnosis", status.diagnosis.diagnosis_id);
+      params.delete("v2_critic");
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       params.delete("v2_execution_proposal");
@@ -2761,6 +2800,7 @@ export default function App() {
       setV2AnswerReviewDecisions({});
       setV2StrategyReadiness(null);
       setV2QualificationProjection(null);
+      setV2QualificationCritic(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2Diagnosis(status);
@@ -2824,6 +2864,56 @@ export default function App() {
       message.error(error.message || "读取 V2 策略状态失败");
     } finally {
       setV2StrategyLoading(false);
+    }
+  }
+
+  async function refreshV2QualificationCritic(quiet = false) {
+    if (!v2Analysis || !projectId || !activePromptId) return;
+    const criticId = new URLSearchParams(window.location.search).get("v2_critic");
+    if (!criticId) return;
+    if (!quiet) setV2QualificationCriticLoading(true);
+    try {
+      const status = await api.getSinglePromptV2QualificationCritic(
+        v2Analysis.analysis.analysis_id,
+        criticId,
+        projectId,
+        activePromptId,
+      );
+      setV2QualificationCritic(status);
+    } catch (error: any) {
+      if (!quiet) message.error(error.message || "读取千问影子复核失败");
+    } finally {
+      if (!quiet) setV2QualificationCriticLoading(false);
+    }
+  }
+
+  async function startV2QualificationCritic() {
+    if (!v2Analysis || !v2Diagnosis?.result || !v2QualificationProjection || !projectId || !activePromptId) return;
+    setV2QualificationCriticLoading(true);
+    try {
+      const status = await api.createSinglePromptV2QualificationCritic(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        v2Diagnosis.result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          expected_projection_hash: v2QualificationProjection.projection_hash,
+          idempotency_key: crypto.randomUUID(),
+          max_external_requests: 8,
+          max_total_tokens: 100000,
+          authorized_by: "本地操作员",
+        },
+      );
+      setV2QualificationCritic(status);
+      const params = new URLSearchParams(window.location.search);
+      params.set("v2_critic", status.execution.critic_id);
+      window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+      message.success("千问影子复核已进入队列；当前正式资格和策略保持不变");
+    } catch (error: any) {
+      message.error(error.message || "启动千问影子复核失败");
+    } finally {
+      setV2QualificationCriticLoading(false);
     }
   }
 
@@ -3479,6 +3569,7 @@ export default function App() {
       setV2SourceDrafts({});
       setV2StrategyReadiness(null);
       setV2QualificationProjection(null);
+      setV2QualificationCritic(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2RetestReadiness(null);
@@ -3542,6 +3633,17 @@ export default function App() {
     if (page !== "coreV2" || !v2Diagnosis?.result || v2Diagnosis.compute_status !== "READY_FOR_REVIEW") return;
     void refreshV2StrategyContext(v2Diagnosis);
   }, [page, v2Diagnosis?.diagnosis.diagnosis_id, v2Diagnosis?.result?.result_version, v2Diagnosis?.review?.review_id, projectId, activePromptId]);
+  useEffect(() => {
+    if (page !== "coreV2" || !v2Analysis || !v2QualificationProjection) return;
+    const criticId = new URLSearchParams(window.location.search).get("v2_critic");
+    if (!criticId || v2QualificationCritic?.execution.critic_id === criticId) return;
+    void refreshV2QualificationCritic();
+  }, [page, v2Analysis?.analysis.analysis_id, v2QualificationProjection?.projection_hash, projectId, activePromptId]);
+  useEffect(() => {
+    if (!v2QualificationCritic || !["QUEUED", "RUNNING"].includes(v2QualificationCritic.execution.status)) return;
+    const timer = window.setInterval(() => { void refreshV2QualificationCritic(true); }, 3000);
+    return () => window.clearInterval(timer);
+  }, [v2QualificationCritic?.execution.critic_id, v2QualificationCritic?.execution.status, projectId, activePromptId]);
   useEffect(() => {
     if (RELEASE_FIRST_SLICE) return;
     if (page !== "coreV2" || !v2Strategy?.result || !v2Strategy.review) return;
@@ -5677,6 +5779,77 @@ export default function App() {
                       description="Answer 已覆盖 Runs 1–9，但 Citation Contribution 仅覆盖 Run 1；下面的方向不会被包装成 9-Run 引用机制结论。"
                     />}
 
+                    <div className="v2-strategy-band">
+                      <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                        <Space wrap style={{ justifyContent: "space-between", width: "100%" }}>
+                          <Space wrap>
+                            <Text strong>千问 Model B 影子复核</Text>
+                            <Tag color="blue">Critic</Tag>
+                            <Tag>不改变正式结果</Tag>
+                          </Space>
+                          {!v2QualificationCritic && <Button
+                            type="primary"
+                            icon={<ShieldCheck size={15} />}
+                            loading={v2QualificationCriticLoading}
+                            onClick={startV2QualificationCritic}
+                          >启动影子复核</Button>}
+                        </Space>
+                        {!v2QualificationCritic && <Alert
+                          type="info"
+                          showIcon
+                          message="当前显示的是已冻结的 DeepSeek 单模型 baseline"
+                          description="启动后，千问只挑战高影响正关系和当前策略方向；不会重新分析全部回答，也不会直接修改 Qualification、Truth、Claim 或 Strategy。"
+                        />}
+                        {v2QualificationCritic && ["QUEUED", "RUNNING"].includes(v2QualificationCritic.execution.status) && <>
+                          <Alert
+                            type="info"
+                            showIcon
+                            message={`千问影子复核${v2QualificationCritic.execution.status === "QUEUED" ? "等待执行" : "正在执行"}`}
+                            description={`冻结对象 ${v2QualificationCritic.execution.candidate_count} 个；已完成 ${v2QualificationCritic.execution.progress.completed || 0}/${v2QualificationCritic.execution.progress.total || v2QualificationCritic.execution.candidate_count}。页面刷新不会重复调用。`}
+                          />
+                          <Progress
+                            percent={Math.round(100 * (v2QualificationCritic.execution.progress.completed || 0) / Math.max(1, v2QualificationCritic.execution.progress.total || v2QualificationCritic.execution.candidate_count))}
+                            status="active"
+                          />
+                        </>}
+                        {v2QualificationCritic?.execution.status === "FAILED" && <Alert
+                          type="error"
+                          showIcon
+                          message="千问影子复核失败，正式结果未受影响"
+                          description={`${v2QualificationCritic.execution.blocker?.code || "UNKNOWN"} · ${v2QualificationCritic.execution.blocker?.detail || "未取得详细原因"}`}
+                        />}
+                        {v2QualificationCritic?.result && <>
+                          <Alert
+                            type={v2QualificationCritic.result.output.shadow_comparison.disagreement_count > 0 ? "warning" : "success"}
+                            showIcon
+                            message={`影子复核完成：${v2QualificationCritic.result.output.shadow_comparison.disagreement_count} 项异议，${v2QualificationCritic.result.output.shadow_comparison.insufficient_context_count} 项上下文不足`}
+                            description="这些是 Critic Signal，不是最终裁决。本轮不会据此改变当前策略方向；后续先与人工 Gold 比较是否真正提高准确率。"
+                          />
+                          <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                            <Descriptions.Item label="模型">{v2QualificationCritic.execution.requested_model}</Descriptions.Item>
+                            <Descriptions.Item label="外部调用">{v2QualificationCritic.result.output.summary.external_calls}</Descriptions.Item>
+                            <Descriptions.Item label="缓存复用">{v2QualificationCritic.result.output.summary.cache_hits}</Descriptions.Item>
+                            <Descriptions.Item label="Token">{v2QualificationCritic.result.output.summary.external_tokens}</Descriptions.Item>
+                            <Descriptions.Item label="Baseline"><Text code copyable>{v2QualificationCritic.execution.baseline_projection_hash}</Text></Descriptions.Item>
+                            <Descriptions.Item label="Result"><Text code copyable>{v2QualificationCritic.result.result_version}</Text></Descriptions.Item>
+                          </Descriptions>
+                          <Table
+                            size="small"
+                            rowKey="candidate_id"
+                            pagination={false}
+                            dataSource={v2QualificationCritic.result.output.signals}
+                            columns={[
+                              { title: "对象", width: 130, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Tag>{v2CriticLabel(row.candidate_type)}</Tag><Text type="secondary" ellipsis={{ tooltip: row.object_id }} style={{ maxWidth: 150 }}>{row.object_id}</Text></Space> },
+                              { title: "处理", width: 100, render: (_: unknown, row: any) => <Tag color={row.processing_status === "DONE" ? "green" : "red"}>{v2CriticLabel(row.processing_status)}</Tag> },
+                              { title: "千问判断", width: 120, render: (_: unknown, row: any) => row.critic_verdict ? <Tag color={row.critic_verdict === "AGREE" ? "green" : row.critic_verdict === "DISAGREE" ? "gold" : "default"}>{v2CriticLabel(row.critic_verdict)}</Tag> : "-" },
+                              { title: "发现的问题", render: (_: unknown, row: any) => <Space wrap>{(row.issues || []).map((issue: string) => <Tag key={issue} color="gold">{v2CriticLabel(issue)}</Tag>)}{row.failure_code && <Tag color="red">{row.failure_code}</Tag>}</Space> },
+                              { title: "理由", dataIndex: "rationale", render: (value: string, row: any) => value || row.failure_detail || "-" },
+                            ]}
+                          />
+                        </>}
+                      </Space>
+                    </div>
+
                     {v2QualificationProjection.directions.map((direction) => {
                       const draft = v2QualificationProjection.execution_drafts.find((row) => row.direction_id === direction.strategy_id);
                       return <div key={direction.strategy_id} className="v2-strategy-band">
@@ -5755,7 +5928,7 @@ export default function App() {
                         <Descriptions.Item label="资格投影 SHA-256"><Text code copyable>{v2QualificationProjection.projection_hash}</Text></Descriptions.Item>
                         <Descriptions.Item label="诊断结果版本"><Text code>{v2QualificationProjection.input_identity.diagnosis_result_version}</Text></Descriptions.Item>
                         <Descriptions.Item label="Citation Contribution 版本"><Text code>{v2QualificationProjection.evidence_scope.result?.result_version || "无"}</Text></Descriptions.Item>
-                        <Descriptions.Item label="计算边界">只读、0 次外部模型调用、0 次业务写入</Descriptions.Item>
+                        <Descriptions.Item label="资格投影边界">本体只读、0 次外部模型调用；Model B 影子结果单独保存且不改写本投影</Descriptions.Item>
                       </Descriptions>,
                     }]} />
                   </Space>}

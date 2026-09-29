@@ -32,6 +32,7 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptCitationContributionPlanCreate,
     SinglePromptCitationContributionReviewCreate,
     SinglePromptQualificationCriticCreate,
+    SinglePromptQualificationCriticGoldReviewCreate,
     SinglePromptQualificationCriticSupplementalCreate,
     SinglePromptDiagnosisReviewCreate,
     SinglePromptDiagnosisRevisionCreate,
@@ -68,6 +69,10 @@ from app.modules.single_prompt_v2.qualification_critic import (
     get_qualification_critic_status,
     queue_qualification_critic,
     queue_qualification_critic_supplemental,
+)
+from app.modules.single_prompt_v2.qualification_critic_gold import (
+    build_critic_gold_review_set,
+    complete_critic_gold_review,
 )
 from app.modules.single_prompt_v2.source_preparation import (
     create_source_preparation,
@@ -603,6 +608,48 @@ def read_qualification_critic(
         critic_id=critic_id,
         project_id=project_id,
         prompt_id=prompt_id,
+    )
+
+
+@router.get("/analyses/{analysis_id}/qualification-critics/{critic_id}/phase-b1")
+def read_qualification_critic_phase_b1(
+    analysis_id: str,
+    critic_id: str,
+    phase_a_result_version: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    return build_critic_gold_review_set(
+        db,
+        analysis_id=analysis_id,
+        phase_a_critic_id=critic_id,
+        phase_a_result_version=phase_a_result_version,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
+
+
+@router.post("/analyses/{analysis_id}/qualification-critics/{critic_id}/phase-b1/reviews", status_code=201)
+def create_qualification_critic_phase_b1_review(
+    analysis_id: str,
+    critic_id: str,
+    payload: SinglePromptQualificationCriticGoldReviewCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    return complete_critic_gold_review(
+        db,
+        analysis_id=analysis_id,
+        phase_a_critic_id=critic_id,
+        phase_a_result_version=payload.phase_a_result_version,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        expected_phase_a_result_hash=payload.expected_phase_a_result_hash,
+        expected_reviewable_set_hash=payload.expected_reviewable_set_hash,
+        expected_prior_review_id=payload.expected_prior_review_id,
+        decisions=[decision.model_dump(mode="json") for decision in payload.decisions],
+        reviewer=payload.reviewer,
+        note=payload.note,
     )
 
 

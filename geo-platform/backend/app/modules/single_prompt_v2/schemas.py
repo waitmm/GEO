@@ -200,6 +200,59 @@ class SinglePromptQualificationCriticSupplementalCreate(BaseModel):
     authorized_by: str = Field(min_length=1, max_length=120)
 
 
+class QualificationCriticGoldDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    object_id: str = Field(min_length=1, max_length=96)
+    gold_identity: str = Field(min_length=64, max_length=64)
+    gold_model_a_correct: bool
+    gold_qwen_challenge_valid: Literal["YES", "NO", "NOT_APPLICABLE", "INSUFFICIENT_CONTEXT"]
+    gold_issue_type: Literal[
+        "NONE",
+        "SUBJECT_MISMATCH",
+        "QUALIFIER_LOSS",
+        "OVERSTATED_SUPPORT",
+        "TOPICAL_ONLY_AS_SUPPORT",
+        "SPAN_INSUFFICIENT",
+        "BRAND_CAPABILITY_EXTRAPOLATION",
+        "TRUTH_SCOPE_EXPANSION",
+        "DECISION_ROLE_MISMATCH",
+        "STRATEGY_GAP_MISMATCH",
+        "SCOPE_OVERREACH",
+        "CLAIM_OVERREACH",
+        "OTHER",
+    ]
+    gold_effective_relation_or_strategy_judgment: Literal[
+        "NO_MATCH",
+        "RELATED_ONLY",
+        "SUPPORTS_PARTIAL",
+        "SUPPORTS_FULL",
+        "CONTRADICTS",
+        "INSUFFICIENT_EVIDENCE",
+        "STRATEGY_DIRECTION_VALID",
+        "STRATEGY_DIRECTION_INVALID",
+        "PUBLIC_CLAIM_ONLY_BLOCKED",
+        "INSUFFICIENT_CONTEXT",
+    ]
+    should_change_qualification: bool
+    should_change_strategy_or_claim: Literal["NONE", "STRATEGY_DIRECTION", "PUBLIC_CLAIM", "BOTH"]
+    review_note: str = Field(min_length=1, max_length=2000)
+
+
+class SinglePromptQualificationCriticGoldReviewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_id: int
+    prompt_id: int
+    phase_a_result_version: str = Field(min_length=1, max_length=96)
+    expected_phase_a_result_hash: str = Field(min_length=64, max_length=64)
+    expected_reviewable_set_hash: str = Field(min_length=64, max_length=64)
+    expected_prior_review_id: str | None = Field(default=None, max_length=80)
+    decisions: list[QualificationCriticGoldDecision] = Field(min_length=1, max_length=100)
+    reviewer: str = Field(min_length=1, max_length=120)
+    note: str = Field(default="", max_length=2000)
+
+
 class CitationContributionCalibrationDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

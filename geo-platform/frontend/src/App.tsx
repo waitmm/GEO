@@ -8,7 +8,7 @@ import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, File
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
-  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
@@ -53,6 +53,7 @@ type V2CitationHumanGoldDraft = {
   boundary_miss_reason?: string;
   review_comment?: string;
 };
+type V2CriticGoldDraft = Partial<Omit<SinglePromptV2QualificationCriticGoldDecision, "object_id" | "gold_identity">>;
 
 function v2CitationGoldKey(target: Record<string, any>) {
   return `${target.target_type}:${target.target_id}`;
@@ -895,6 +896,30 @@ function v2CriticLabel(value?: string) {
     SCOPE_OVERREACH: "分析范围被扩大",
     CLAIM_OVERREACH: "声明越界",
     OTHER: "其他问题",
+    PHASE_A_ORIGINAL: "Phase A 原始对象",
+    SUPPLEMENTAL: "补充恢复对象",
+    YES: "质疑成立",
+    NO: "质疑不成立",
+    NOT_APPLICABLE: "没有提出质疑",
+    NONE: "无问题",
+    TRUE_POSITIVE: "有效纠错",
+    FALSE_CHALLENGE: "错误质疑",
+    NEUTRAL: "中性或信息不足",
+    IMPROVES: "采纳后改善",
+    DEGRADES: "采纳后恶化",
+    NO_CHANGE: "采纳后不变",
+    UNCERTAIN: "影响不确定",
+    NO_MATCH: "无匹配关系",
+    RELATED_ONLY: "仅相关",
+    SUPPORTS_PARTIAL: "部分支持",
+    SUPPORTS_FULL: "完整支持",
+    CONTRADICTS: "相互矛盾",
+    INSUFFICIENT_EVIDENCE: "证据不足",
+    STRATEGY_DIRECTION_VALID: "策略方向成立",
+    STRATEGY_DIRECTION_INVALID: "策略方向不成立",
+    PUBLIC_CLAIM_ONLY_BLOCKED: "仅公开声明受阻",
+    PUBLIC_CLAIM: "公开声明需调整",
+    BOTH: "策略方向与公开声明均需调整",
   };
   return labels[value || ""] || value || "未判断";
 }
@@ -1537,6 +1562,11 @@ export default function App() {
   const [v2QualificationProjection, setV2QualificationProjection] = useState<SinglePromptV2QualificationProjection | null>(null);
   const [v2QualificationCritic, setV2QualificationCritic] = useState<SinglePromptV2QualificationCriticStatus | null>(null);
   const [v2QualificationCriticLoading, setV2QualificationCriticLoading] = useState(false);
+  const [v2CriticGold, setV2CriticGold] = useState<SinglePromptV2QualificationCriticGoldStatus | null>(null);
+  const [v2CriticGoldDrafts, setV2CriticGoldDrafts] = useState<Record<string, V2CriticGoldDraft>>({});
+  const [v2CriticGoldLoading, setV2CriticGoldLoading] = useState(false);
+  const [v2CriticGoldReviewer, setV2CriticGoldReviewer] = useState("本地审核人");
+  const [v2CriticGoldNote, setV2CriticGoldNote] = useState("");
   const [v2Strategy, setV2Strategy] = useState<SinglePromptV2StrategyStatus | null>(null);
   const [v2StrategyLoading, setV2StrategyLoading] = useState(false);
   const [v2StrategyEditor, setV2StrategyEditor] = useState("本地审核人");
@@ -2891,6 +2921,106 @@ export default function App() {
     }
   }
 
+  async function refreshV2CriticGold(statusOverride?: SinglePromptV2QualificationCriticStatus, quiet = false) {
+    const critic = statusOverride || v2QualificationCritic;
+    if (!v2Analysis || !critic?.result || !projectId || !activePromptId) return;
+    if (!quiet) setV2CriticGoldLoading(true);
+    try {
+      const gold = await api.getSinglePromptV2QualificationCriticGold(
+        v2Analysis.analysis.analysis_id,
+        critic.execution.critic_id,
+        critic.result.result_version,
+        projectId,
+        activePromptId,
+      );
+      setV2CriticGold(gold);
+      const latest = gold.reviews[gold.reviews.length - 1];
+      if (latest) {
+        setV2CriticGoldDrafts(Object.fromEntries(latest.decisions.map((decision) => [decision.object_id, decision])));
+        setV2CriticGoldReviewer(latest.reviewer);
+        setV2CriticGoldNote(latest.note || "");
+      } else {
+        setV2CriticGoldDrafts(Object.fromEntries(gold.candidates.map((candidate) => [candidate.object_id, {
+          ...(candidate.qwen_signal.critic_verdict === "AGREE" ? { gold_qwen_challenge_valid: "NOT_APPLICABLE" } : {}),
+        }])));
+      }
+    } catch (error: any) {
+      if (!quiet) message.error(error.message || "读取 Phase B1 人工 Gold 失败");
+    } finally {
+      if (!quiet) setV2CriticGoldLoading(false);
+    }
+  }
+
+  function updateV2CriticGoldDraft(objectId: string, patch: V2CriticGoldDraft) {
+    setV2CriticGoldDrafts((current) => ({
+      ...current,
+      [objectId]: { ...(current[objectId] || {}), ...patch },
+    }));
+  }
+
+  function v2CriticGoldDraftComplete(candidate: SinglePromptV2QualificationCriticGoldStatus["candidates"][number]) {
+    const draft = v2CriticGoldDrafts[candidate.object_id] || {};
+    return Object.prototype.hasOwnProperty.call(draft, "gold_model_a_correct")
+      && Boolean(draft.gold_qwen_challenge_valid)
+      && Boolean(draft.gold_issue_type)
+      && Boolean(draft.gold_effective_relation_or_strategy_judgment)
+      && Object.prototype.hasOwnProperty.call(draft, "should_change_qualification")
+      && Boolean(draft.should_change_strategy_or_claim)
+      && Boolean(draft.review_note?.trim());
+  }
+
+  async function submitV2CriticGoldReview() {
+    if (!v2Analysis || !v2QualificationCritic?.result || !v2CriticGold || !projectId || !activePromptId) return;
+    const incomplete = v2CriticGold.candidates.filter((candidate) => !v2CriticGoldDraftComplete(candidate));
+    if (incomplete.length) {
+      message.warning(`还有 ${incomplete.length} 个对象未完成判断`);
+      return;
+    }
+    if (!v2CriticGoldReviewer.trim()) {
+      message.warning("请填写审核人");
+      return;
+    }
+    setV2CriticGoldLoading(true);
+    try {
+      const latest = v2CriticGold.reviews[v2CriticGold.reviews.length - 1];
+      const decisions: SinglePromptV2QualificationCriticGoldDecision[] = v2CriticGold.candidates.map((candidate) => {
+        const draft = v2CriticGoldDrafts[candidate.object_id];
+        return {
+          object_id: candidate.object_id,
+          gold_identity: candidate.gold_identity,
+          gold_model_a_correct: Boolean(draft.gold_model_a_correct),
+          gold_qwen_challenge_valid: draft.gold_qwen_challenge_valid!,
+          gold_issue_type: draft.gold_issue_type!,
+          gold_effective_relation_or_strategy_judgment: draft.gold_effective_relation_or_strategy_judgment!,
+          should_change_qualification: Boolean(draft.should_change_qualification),
+          should_change_strategy_or_claim: draft.should_change_strategy_or_claim!,
+          review_note: draft.review_note!.trim(),
+        };
+      });
+      const saved = await api.reviewSinglePromptV2QualificationCriticGold(
+        v2Analysis.analysis.analysis_id,
+        v2QualificationCritic.execution.critic_id,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          phase_a_result_version: v2CriticGold.phase_a_result_version,
+          expected_phase_a_result_hash: v2CriticGold.phase_a_result_hash,
+          expected_reviewable_set_hash: v2CriticGold.reviewable_set_hash,
+          expected_prior_review_id: latest?.review_id || null,
+          decisions,
+          reviewer: v2CriticGoldReviewer.trim(),
+          note: v2CriticGoldNote.trim(),
+        },
+      );
+      setV2CriticGold(saved);
+      message.success(`Phase B1 Human Gold v${saved.reviews[saved.reviews.length - 1].version_number} 已追加保存`);
+    } catch (error: any) {
+      message.error(error.message || "保存 Phase B1 Human Gold 失败");
+    } finally {
+      setV2CriticGoldLoading(false);
+    }
+  }
+
   async function startV2QualificationCritic() {
     if (!v2Analysis || !v2Diagnosis?.result || !v2QualificationProjection || !projectId || !activePromptId) return;
     setV2QualificationCriticLoading(true);
@@ -3648,6 +3778,13 @@ export default function App() {
     const timer = window.setInterval(() => { void refreshV2QualificationCritic(true); }, 3000);
     return () => window.clearInterval(timer);
   }, [v2QualificationCritic?.execution.critic_id, v2QualificationCritic?.execution.status, projectId, activePromptId]);
+  useEffect(() => {
+    if (!v2QualificationCritic?.result || !v2Analysis || !projectId || !activePromptId) {
+      setV2CriticGold(null);
+      return;
+    }
+    void refreshV2CriticGold(v2QualificationCritic);
+  }, [v2QualificationCritic?.execution.critic_id, v2QualificationCritic?.result?.result_version, v2Analysis?.analysis.analysis_id, projectId, activePromptId]);
   useEffect(() => {
     if (RELEASE_FIRST_SLICE) return;
     if (page !== "coreV2" || !v2Strategy?.result || !v2Strategy.review) return;
@@ -5857,6 +5994,169 @@ export default function App() {
                             />
                           </div>
                         </>}
+                        {v2QualificationCritic?.result && <Divider orientation="left">Phase B1 · 人工增量价值校准</Divider>}
+                        {v2QualificationCritic?.result && v2CriticGoldLoading && !v2CriticGold && <Progress percent={40} status="active" showInfo={false} />}
+                        {v2CriticGold && (() => {
+                          const latestGoldReview = v2CriticGold.reviews[v2CriticGold.reviews.length - 1];
+                          const completedCount = v2CriticGold.candidates.filter(v2CriticGoldDraftComplete).length;
+                          const metrics = latestGoldReview?.metrics || {};
+                          const issueOptions = [
+                            "NONE", "SUBJECT_MISMATCH", "QUALIFIER_LOSS", "OVERSTATED_SUPPORT", "TOPICAL_ONLY_AS_SUPPORT",
+                            "SPAN_INSUFFICIENT", "BRAND_CAPABILITY_EXTRAPOLATION", "TRUTH_SCOPE_EXPANSION",
+                            "DECISION_ROLE_MISMATCH", "STRATEGY_GAP_MISMATCH", "SCOPE_OVERREACH", "CLAIM_OVERREACH", "OTHER",
+                          ].map((value) => ({ value, label: v2CriticLabel(value) }));
+                          return <Space direction="vertical" size={12} style={{ width: "100%", minWidth: 0 }}>
+                            <Alert
+                              type={latestGoldReview ? "success" : "warning"}
+                              showIcon
+                              message={latestGoldReview ? `7 条 Human Gold 已保存为独立 Review v${latestGoldReview.version_number}` : `需要逐项判断 ${v2CriticGold.candidate_count} 个真实对象`}
+                              description="这里比较 DeepSeek + Rules 的原判断与千问质疑。提交只生成独立 Human Gold，不修改正式 Qualification、Truth、Citation Contribution 或 Strategy，也不调用模型。"
+                            />
+                            <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+                              <Descriptions.Item label="待校准对象">{completedCount}/{v2CriticGold.candidate_count}</Descriptions.Item>
+                              <Descriptions.Item label="原 Phase A">{v2CriticGold.candidates.filter((row) => row.cohort === "PHASE_A_ORIGINAL").length}</Descriptions.Item>
+                              <Descriptions.Item label="Supplemental">{v2CriticGold.candidates.filter((row) => row.cohort === "SUPPLEMENTAL").length}</Descriptions.Item>
+                              <Descriptions.Item label="机器结果"><Text code copyable>{v2CriticGold.phase_a_result_version}</Text></Descriptions.Item>
+                              <Descriptions.Item label="Gold 集合"><Text code copyable>{v2CriticGold.reviewable_set_hash}</Text></Descriptions.Item>
+                              <Descriptions.Item label="外部调用">0</Descriptions.Item>
+                            </Descriptions>
+
+                            <Collapse
+                              size="small"
+                              items={v2CriticGold.candidates.map((candidate, index) => {
+                                const draft = v2CriticGoldDrafts[candidate.object_id] || {};
+                                const answerUnit = candidate.review_context.answer_unit || {};
+                                const source = candidate.review_context.source_evidence || {};
+                                const strategy = candidate.review_context.strategy || {};
+                                const reason = candidate.review_context.reason || {};
+                                const complete = v2CriticGoldDraftComplete(candidate);
+                                return {
+                                  key: candidate.object_id,
+                                  label: <Space wrap>
+                                    <Text strong>{index + 1}. {v2CriticLabel(candidate.candidate_type)}</Text>
+                                    <Tag>{v2CriticLabel(candidate.cohort)}</Tag>
+                                    <Tag color={candidate.qwen_signal.critic_verdict === "DISAGREE" ? "gold" : "green"}>{v2CriticLabel(candidate.qwen_signal.critic_verdict)}</Tag>
+                                    <Tag color={complete ? "green" : "default"}>{complete ? "已填写" : "待判断"}</Tag>
+                                  </Space>,
+                                  children: <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                                    <Descriptions size="small" bordered column={{ xs: 1, md: 2 }}>
+                                      <Descriptions.Item label="对象 ID"><Text copyable>{candidate.object_id}</Text></Descriptions.Item>
+                                      <Descriptions.Item label="输入身份"><Text code copyable>{candidate.input_hash}</Text></Descriptions.Item>
+                                      {candidate.candidate_type === "CITATION_RELATION" ? <>
+                                        <Descriptions.Item label="回答单元" span={2}>{answerUnit.context_heading && <Text type="secondary">{answerUnit.context_heading}<br /></Text>}{answerUnit.raw_text || source.answer_span || "未提供"}</Descriptions.Item>
+                                        <Descriptions.Item label="来源标题" span={2}>{source.citation_title || "未提供"}</Descriptions.Item>
+                                        <Descriptions.Item label="来源正文" span={2}>{source.source_passage_text || source.source_span || "未提供"}</Descriptions.Item>
+                                        <Descriptions.Item label="DeepSeek 原判断">{v2CriticLabel(candidate.model_a_judgment.evidence_relation)} · {v2CriticLabel(candidate.model_a_judgment.correspondence_mode)}</Descriptions.Item>
+                                        <Descriptions.Item label="规则信号">主体 {JSON.stringify(candidate.rule_signals.subject || [])}；条件 {JSON.stringify(candidate.rule_signals.qualifier || {})}</Descriptions.Item>
+                                      </> : <>
+                                        <Descriptions.Item label="策略缺口" span={2}>{strategy.mechanism_gap || candidate.model_a_judgment.mechanism_gap || "未提供"}</Descriptions.Item>
+                                        <Descriptions.Item label="干预方向" span={2}>{strategy.intervention || candidate.model_a_judgment.intervention || "未提供"}</Descriptions.Item>
+                                        <Descriptions.Item label="原始理由" span={2}>{reason.original_semantics || "未提供"}</Descriptions.Item>
+                                        <Descriptions.Item label="策略方向资格">{v2QualificationLabel(strategy.strategy_direction_eligibility)}</Descriptions.Item>
+                                        <Descriptions.Item label="公开声明资格">{v2QualificationLabel(strategy.public_claim_eligibility)}</Descriptions.Item>
+                                      </>}
+                                      <Descriptions.Item label="千问主要质疑">{v2CriticLabel(candidate.qwen_signal.primary_issue)}</Descriptions.Item>
+                                      <Descriptions.Item label="千问结论">{v2CriticLabel(candidate.qwen_signal.critic_verdict)}</Descriptions.Item>
+                                      <Descriptions.Item label="最强反例" span={2}>{candidate.qwen_signal.counterexample || "未提出"}</Descriptions.Item>
+                                      <Descriptions.Item label="千问理由" span={2}>{candidate.qwen_signal.rationale || "未提供"}</Descriptions.Item>
+                                    </Descriptions>
+
+                                    <Divider orientation="left">人工 Gold 判断</Divider>
+                                    <Row gutter={[12, 12]}>
+                                      <Col xs={24} md={8}>
+                                        <Text strong>DeepSeek 原判断是否正确</Text>
+                                        <Segmented block style={{ marginTop: 6 }} value={Object.prototype.hasOwnProperty.call(draft, "gold_model_a_correct") ? String(draft.gold_model_a_correct) : undefined} onChange={(value) => updateV2CriticGoldDraft(candidate.object_id, { gold_model_a_correct: value === "true" })} options={[{ value: "true", label: "正确" }, { value: "false", label: "错误" }]} />
+                                      </Col>
+                                      <Col xs={24} md={8}>
+                                        <Text strong>千问质疑是否成立</Text>
+                                        <Select style={{ width: "100%", marginTop: 6 }} value={draft.gold_qwen_challenge_valid} disabled={candidate.qwen_signal.critic_verdict === "AGREE"} onChange={(value) => updateV2CriticGoldDraft(candidate.object_id, { gold_qwen_challenge_valid: value })} options={(candidate.qwen_signal.critic_verdict === "AGREE" ? ["NOT_APPLICABLE"] : ["YES", "NO", "INSUFFICIENT_CONTEXT"]).map((value) => ({ value, label: v2CriticLabel(value) }))} />
+                                      </Col>
+                                      <Col xs={24} md={8}>
+                                        <Text strong>人工确认的问题类型</Text>
+                                        <Select style={{ width: "100%", marginTop: 6 }} value={draft.gold_issue_type} onChange={(value) => updateV2CriticGoldDraft(candidate.object_id, { gold_issue_type: value })} options={issueOptions} />
+                                      </Col>
+                                      <Col xs={24} md={8}>
+                                        <Text strong>人工最终判断</Text>
+                                        <Select style={{ width: "100%", marginTop: 6 }} value={draft.gold_effective_relation_or_strategy_judgment} onChange={(value) => updateV2CriticGoldDraft(candidate.object_id, { gold_effective_relation_or_strategy_judgment: value })} options={(candidate.candidate_type === "STRATEGY_DIRECTION"
+                                          ? ["STRATEGY_DIRECTION_VALID", "STRATEGY_DIRECTION_INVALID", "PUBLIC_CLAIM_ONLY_BLOCKED", "INSUFFICIENT_CONTEXT"]
+                                          : ["NO_MATCH", "RELATED_ONLY", "SUPPORTS_PARTIAL", "SUPPORTS_FULL", "CONTRADICTS", "INSUFFICIENT_EVIDENCE"]
+                                        ).map((value) => ({ value, label: v2CriticLabel(value) }))} />
+                                      </Col>
+                                      <Col xs={24} md={8}>
+                                        <Text strong>正式资格是否应改变</Text>
+                                        <Segmented block style={{ marginTop: 6 }} value={Object.prototype.hasOwnProperty.call(draft, "should_change_qualification") ? String(draft.should_change_qualification) : undefined} onChange={(value) => updateV2CriticGoldDraft(candidate.object_id, { should_change_qualification: value === "true" })} options={[{ value: "false", label: "不改变" }, { value: "true", label: "应改变" }]} />
+                                      </Col>
+                                      <Col xs={24} md={8}>
+                                        <Text strong>策略或公开声明是否应调整</Text>
+                                        <Select style={{ width: "100%", marginTop: 6 }} value={draft.should_change_strategy_or_claim} onChange={(value) => updateV2CriticGoldDraft(candidate.object_id, { should_change_strategy_or_claim: value })} options={[
+                                          { value: "NONE", label: "无需调整" },
+                                          { value: "STRATEGY_DIRECTION", label: "策略方向需调整" },
+                                          { value: "PUBLIC_CLAIM", label: "公开声明需调整" },
+                                          { value: "BOTH", label: "策略方向与公开声明均需调整" },
+                                        ]} />
+                                      </Col>
+                                    </Row>
+                                    <Input.TextArea rows={3} maxLength={2000} showCount placeholder="说明为什么 DeepSeek 正确或错误，以及千问质疑为什么成立或不成立（必填）" value={draft.review_note} onChange={(event) => updateV2CriticGoldDraft(candidate.object_id, { review_note: event.target.value })} />
+                                  </Space>,
+                                };
+                              })}
+                            />
+
+                            <Space wrap>
+                              <Input style={{ width: 180 }} value={v2CriticGoldReviewer} onChange={(event) => setV2CriticGoldReviewer(event.target.value)} placeholder="审核人" />
+                              <Input style={{ width: 360 }} value={v2CriticGoldNote} onChange={(event) => setV2CriticGoldNote(event.target.value)} placeholder="本轮总体备注（可选）" />
+                              <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2CriticGoldLoading} disabled={completedCount !== v2CriticGold.candidate_count} onClick={submitV2CriticGoldReview}>{latestGoldReview ? "保存为新的 Gold 版本" : "完成 7 条 Human Gold"}</Button>
+                            </Space>
+
+                            {latestGoldReview && <>
+                              <Divider orientation="left">增量价值结果</Divider>
+                              <Row gutter={[12, 12]}>
+                                <Col xs={12} md={6}><Statistic title="有效纠错" value={metrics.qwen_true_challenges || 0} /></Col>
+                                <Col xs={12} md={6}><Statistic title="错误质疑" value={metrics.qwen_false_challenges || 0} /></Col>
+                                <Col xs={12} md={6}><Statistic title="中性/不足" value={metrics.qwen_neutral_or_insufficient || 0} /></Col>
+                                <Col xs={12} md={6}><Statistic title="Gold 对象" value={metrics.gold_object_count || 0} /></Col>
+                              </Row>
+                              <Alert
+                                type={(metrics.erroneously_downgraded_object_ids || []).length ? "warning" : "success"}
+                                showIcon
+                                message={`采纳质疑可正确修正 ${(metrics.correctly_fixed_object_ids || []).length} 项，可能错误降级 ${(metrics.erroneously_downgraded_object_ids || []).length} 项`}
+                                description="这是 B1 的逐对象模拟，不是 Qwen 整体准确率，也不会自动改正式 Qualification。"
+                              />
+                              <Descriptions size="small" bordered column={{ xs: 1, md: 2 }}>
+                                <Descriptions.Item label="品牌主体外推检查">
+                                  有效质疑 {metrics.core_questions?.brand_subject_extrapolation?.true_challenge_count || 0}；错误质疑 {metrics.core_questions?.brand_subject_extrapolation?.false_challenge_count || 0}
+                                </Descriptions.Item>
+                                <Descriptions.Item label="支持强度质疑">
+                                  有效质疑 {metrics.core_questions?.support_strength_challenge?.true_challenge_count || 0}；错误质疑 {metrics.core_questions?.support_strength_challenge?.false_challenge_count || 0}
+                                </Descriptions.Item>
+                                <Descriptions.Item label="策略与公开声明是否混淆">
+                                  {(metrics.core_questions?.strategy_direction_vs_public_claim_confusion_object_ids || []).length
+                                    ? `发现 ${(metrics.core_questions.strategy_direction_vs_public_claim_confusion_object_ids || []).length} 个疑似混淆对象`
+                                    : "本组 Gold 未确认混淆"}
+                                </Descriptions.Item>
+                                <Descriptions.Item label="Supplemental 支持强度质疑">
+                                  已确认 {(metrics.core_questions?.supplemental_overstated_support_confirmed_object_ids || []).length}；已否定 {(metrics.core_questions?.supplemental_overstated_support_rejected_object_ids || []).length}
+                                </Descriptions.Item>
+                              </Descriptions>
+                              <Table
+                                size="small"
+                                pagination={false}
+                                rowKey="object_id"
+                                scroll={{ x: 980 }}
+                                dataSource={latestGoldReview.decisions.map((decision) => ({ ...decision, candidate: v2CriticGold.candidates.find((row) => row.object_id === decision.object_id) }))}
+                                columns={[
+                                  { title: "对象", width: 190, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Tag>{v2CriticLabel(row.candidate?.candidate_type)}</Tag><Text ellipsis={{ tooltip: row.object_id }} style={{ maxWidth: 170 }}>{row.object_id}</Text></Space> },
+                                  { title: "DeepSeek", width: 110, render: (_: unknown, row: any) => <Tag color={row.gold_model_a_correct ? "green" : "red"}>{row.gold_model_a_correct ? "正确" : "错误"}</Tag> },
+                                  { title: "千问质疑", width: 130, render: (_: unknown, row: any) => <Tag>{v2CriticLabel(row.gold_qwen_challenge_valid)}</Tag> },
+                                  { title: "人工结论", width: 160, render: (_: unknown, row: any) => v2CriticLabel(row.gold_effective_relation_or_strategy_judgment) },
+                                  { title: "质疑分类", width: 120, render: (_: unknown, row: any) => <Tag color={row.challenge_classification === "TRUE_POSITIVE" ? "green" : row.challenge_classification === "FALSE_CHALLENGE" ? "red" : "default"}>{v2CriticLabel(row.challenge_classification)}</Tag> },
+                                  { title: "采纳后影响", width: 130, render: (_: unknown, row: any) => <Tag color={row.simulated_qualification_effect === "IMPROVES" ? "green" : row.simulated_qualification_effect === "DEGRADES" ? "red" : "default"}>{v2CriticLabel(row.simulated_qualification_effect)}</Tag> },
+                                  { title: "人工说明", dataIndex: "review_note" },
+                                ]}
+                              />
+                            </>}
+                          </Space>;
+                        })()}
                       </Space>
                     </div>
 

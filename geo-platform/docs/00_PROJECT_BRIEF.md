@@ -2,6 +2,27 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Model B Shadow Phase B1 Human Gold
+
+The six admitted original Phase A signals and the one independently admitted
+Supplemental signal now form one exact seven-object Human Gold review set. B1
+compares the frozen DeepSeek + Rules judgment with the Qwen challenge per
+object; it does not compute a global Qwen accuracy or alter any formal business
+object.
+
+The release page presents six Citation Relations and one Strategy Direction
+with the Answer/source or Strategy dependency context required for judgment.
+Human Gold records Model A correctness, Qwen challenge validity, the confirmed
+issue, effective relation or Strategy judgment and the simulated downstream
+effect. Reviews are append-only and bind the Analysis, machine ResultVersion,
+Critic ResultVersion, object ID and frozen input hash.
+
+The release database is migrated to `20260929_02`. The current real review set
+contains exactly 6 original + 1 Supplemental objects and zero Human Gold Review
+rows. Loading or refreshing B1 makes zero model calls and no Qualification,
+Truth, Citation Contribution or Strategy change. The next user action is to
+complete the seven judgments in the existing release page.
+
 ## 2026-09-29 Model B Critic Contract Recovery
 
 The Phase A incomplete response was isolated to one overlong Critic completion.

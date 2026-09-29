@@ -1,4 +1,4 @@
-import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2RunPool, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
+import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2RunPool, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
 
 const API_BASE = "";
 
@@ -162,6 +162,14 @@ export const api = {
   }) => request<SinglePromptV2QualificationCriticStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/qualification-critics`, { method: "POST", body: JSON.stringify(payload) }),
   getSinglePromptV2QualificationCritic: (analysisId: string, criticId: string, projectId: number, promptId: number) =>
     request<SinglePromptV2QualificationCriticStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/qualification-critics/${encodeURIComponent(criticId)}?project_id=${projectId}&prompt_id=${promptId}`),
+  getSinglePromptV2QualificationCriticGold: (analysisId: string, criticId: string, phaseAResultVersion: string, projectId: number, promptId: number) =>
+    request<SinglePromptV2QualificationCriticGoldStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/qualification-critics/${encodeURIComponent(criticId)}/phase-b1?phase_a_result_version=${encodeURIComponent(phaseAResultVersion)}&project_id=${projectId}&prompt_id=${promptId}`),
+  reviewSinglePromptV2QualificationCriticGold: (analysisId: string, criticId: string, payload: {
+    project_id: number; prompt_id: number; phase_a_result_version: string;
+    expected_phase_a_result_hash: string; expected_reviewable_set_hash: string;
+    expected_prior_review_id: string | null; decisions: SinglePromptV2QualificationCriticGoldDecision[];
+    reviewer: string; note: string;
+  }) => request<SinglePromptV2QualificationCriticGoldStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/qualification-critics/${encodeURIComponent(criticId)}/phase-b1/reviews`, { method: "POST", body: JSON.stringify(payload) }),
   createSinglePromptV2Strategy: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {
     project_id: number; prompt_id: number; idempotency_key: string; diagnosis_result_hash: string;
     reviewable_set_hash: string; review_id: string; review_snapshot_hash: string; input_projection_hash: string;

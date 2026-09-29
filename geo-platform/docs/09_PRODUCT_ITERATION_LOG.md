@@ -2,6 +2,32 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Shadow Phase B1 Incremental Value Human Gold
+
+### Product Decision
+
+B1 evaluates whether adding Qwen improves the final machine decision, not
+whether Qwen is generally accurate. The product therefore keeps Model A,
+rule signals, Qwen Critic Signal and Human Gold visible as separate layers.
+Every human judgment is attached to the exact seven-object frozen set and is
+saved as an independent version.
+
+The page does not reduce review to agree/disagree. It asks whether DeepSeek was
+correct, whether Qwen's challenge was valid, what the actual relation or
+Strategy judgment is, and whether Qualification, Strategy Direction or public
+Claim should change. The resulting report names both useful corrections and
+incorrect downgrades and separately answers the subject-attribution,
+support-strength, Strategy/public-claim and Supplemental questions.
+
+### User Impact
+
+The existing Model B section now contains a visible Chinese B1 entry with seven
+expandable real objects and all evidence needed for judgment. Until all seven
+are filled, save is disabled. Completing the form appends Human Gold only; it
+does not call a model, enable Production Critic or modify any formal result.
+
+The live state is `0/7` reviewed. No B1 conclusion exists yet.
+
 ## 2026-09-29 Critic Output Recovery Boundary
 
 ### Product Decision

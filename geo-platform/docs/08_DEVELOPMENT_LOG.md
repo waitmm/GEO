@@ -2,6 +2,36 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Qualification Critic Phase B1 Human Gold
+
+- Added an exact B1 candidate projection over the six admitted original Phase A
+  signals plus the one admitted Supplemental signal. It rejects duplicate
+  objects and binds each Gold identity to Analysis, machine result, Critic
+  result, object and input hash.
+- Added append-only `single_prompt_qualification_critic_gold_reviews` with
+  release migration `20260929_02` and immutable update/delete triggers. No
+  existing machine or Shadow Result is changed.
+- Added strict review submission requiring all and only the seven frozen
+  objects, exact set/hash/prior-review checks and explicit Model A correctness,
+  Qwen challenge validity, issue type, effective judgment and downstream-change
+  fields.
+- Added deterministic summaries for true challenges, false challenges, neutral
+  cases, Qwen-vs-human issue distributions, correct fixes, erroneous downgrades
+  and the five B1 product questions. Overall Qwen accuracy and Production routing
+  remain prohibited by contract.
+- Added the Chinese release-page editor with direct AnswerUnit/source or
+  Strategy dependency context. The action stays disabled until all seven objects
+  have complete Gold labels; GET and page refresh write nothing and make zero
+  external calls.
+- Backed up and restored-checked the live SQLite database before migration.
+  Post-migration integrity and foreign-key checks pass, the real B1 endpoint
+  returns 6 original + 1 Supplemental candidate and Review count remains zero.
+- Verification: 21 focused Model B/B1 tests pass; the expanded release suite
+  passes 53 tests; release TypeScript and
+  Vite builds pass. Desktop and 390px browser checks show the B1 entry, seven
+  items, readable Chinese controls, disabled incomplete submit and no horizontal
+  overflow.
+
 ## 2026-09-29 Qualification Critic Contract Recovery
 
 - Bounded the v3 Critic response to three issue types, one required primary

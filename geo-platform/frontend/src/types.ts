@@ -818,6 +818,73 @@ export type SinglePromptV2QualificationCriticStatus = {
   allowed_actions: string[];
 };
 
+export type SinglePromptV2QualificationCriticGoldDecision = {
+  object_id: string;
+  gold_identity: string;
+  gold_model_a_correct: boolean;
+  gold_qwen_challenge_valid: "YES" | "NO" | "NOT_APPLICABLE" | "INSUFFICIENT_CONTEXT";
+  gold_issue_type: string;
+  gold_effective_relation_or_strategy_judgment: string;
+  should_change_qualification: boolean;
+  should_change_strategy_or_claim: "NONE" | "STRATEGY_DIRECTION" | "PUBLIC_CLAIM" | "BOTH";
+  review_note: string;
+  challenge_classification?: "TRUE_POSITIVE" | "FALSE_CHALLENGE" | "NEUTRAL";
+  simulated_qualification_effect?: "IMPROVES" | "DEGRADES" | "NO_CHANGE" | "UNCERTAIN";
+};
+
+export type SinglePromptV2QualificationCriticGoldStatus = {
+  phase: "SHADOW_PHASE_B1_INCREMENTAL_VALUE_HUMAN_GOLD";
+  contract_version: string;
+  analysis_id: string;
+  phase_a_critic_id: string;
+  phase_a_result_version: string;
+  phase_a_result_hash: string;
+  supplemental_result_versions: string[];
+  reviewable_set_hash: string;
+  candidate_count: number;
+  candidates: Array<{
+    analysis_id: string;
+    machine_result_version: string;
+    machine_result_hash: string;
+    critic_result_version: string;
+    critic_result_hash: string;
+    object_id: string;
+    input_hash: string;
+    gold_identity: string;
+    cohort: "PHASE_A_ORIGINAL" | "SUPPLEMENTAL";
+    candidate_type: "CITATION_RELATION" | "STRATEGY_DIRECTION";
+    task_id: string;
+    model_a_judgment: Record<string, any>;
+    rule_signals: Record<string, any>;
+    qwen_signal: {
+      critic_verdict: "AGREE" | "DISAGREE" | "INSUFFICIENT_CONTEXT";
+      primary_issue: string;
+      issue_types: string[];
+      counterexample: string | null;
+      rationale: string;
+    };
+    review_context: Record<string, any>;
+  }>;
+  reviews: Array<{
+    review_id: string;
+    version_number: number;
+    parent_review_id: string | null;
+    reviewer: string;
+    note: string;
+    decisions: SinglePromptV2QualificationCriticGoldDecision[];
+    metrics: Record<string, any>;
+    created_at: string;
+  }>;
+  allowed_actions: Array<"COMPLETE_HUMAN_GOLD" | "REVISE_HUMAN_GOLD">;
+  boundary: {
+    external_llm_calls: 0;
+    formal_qualification_effect: "NONE";
+    formal_strategy_effect: "NONE";
+    production_critic_enabled: false;
+    overall_qwen_accuracy_claim_allowed: false;
+  };
+};
+
 export type SinglePromptV2StrategyStatus = {
   strategy: {
     strategy_id: string;

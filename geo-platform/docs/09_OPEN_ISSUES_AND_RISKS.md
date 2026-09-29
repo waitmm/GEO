@@ -2,6 +2,19 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Model B Human Gold Boundary
+
+- The exact B1 set is ready, but no human Gold judgment has been submitted.
+  Therefore no claim about Qwen's incremental value, false-challenge rate or
+  task-level enablement is currently supported.
+- B1 contains only seven high-impact objects selected before Qwen responses.
+  It can diagnose these concrete behaviors but cannot authorize global
+  Production Critic, all-relation routing or a general model-accuracy claim.
+- A B1 Review simulates downstream improvement or degradation but has no formal
+  Qualification, Truth, Citation Contribution, Strategy or public-claim effect.
+  Any later routing policy needs the separately defined, outcome-independent B2
+  validation set.
+
 ## 2026-09-29 Model B SiliconFlow Verification Boundary
 
 - SiliconFlow Qwen transport and the bounded Shadow Critic contract are locally

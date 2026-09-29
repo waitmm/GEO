@@ -1,6 +1,6 @@
 # GEO Model B: SiliconFlow Qwen
 
-Status: SHADOW PHASE A EXECUTED / HUMAN GOLD COMPARISON PENDING
+Status: SHADOW PHASE B1 HUMAN GOLD READY / 0 OF 7 REVIEWED
 
 Date: 2026-09-29
 
@@ -193,6 +193,38 @@ statistics or any formal business state.
 - No Production Critic routing. Phase A is behavior observation only.
 - No quality claim until Phase A disagreements and failure are compared with
   Human Gold.
+
+## Shadow Phase B1 Human Gold
+
+B1 freezes the six admitted original Phase A objects and the one admitted
+Supplemental object as one exact reviewable set:
+
+```text
+original Phase A = 6
+Supplemental = 1
+Citation Relations = 6
+Strategy Directions = 1
+external calls = 0
+formal business effects = 0
+```
+
+Each object binds the Analysis, original machine ResultVersion/hash, Critic
+ResultVersion/hash, object ID and Critic input hash. The human reviewer records
+Model A correctness, Qwen challenge validity, actual issue type, effective
+relation or Strategy judgment, Qualification impact and Strategy/public-claim
+impact. A Review appends a new immutable version and never changes either
+machine result.
+
+The B1 report separates true challenges, false challenges and neutral cases,
+then shows which objects would be corrected or incorrectly downgraded if the
+Qwen signal were adopted. It also reports subject-attribution challenges,
+support-strength challenges, Strategy Direction vs public Claim confusion and
+the Supplemental `OVERSTATED_SUPPORT` decision. It intentionally does not
+report a global Qwen accuracy or enable any Production Critic policy.
+
+The live release database revision is `20260929_02`; its B1 set is ready and
+contains zero submitted Human Gold reviews. Phase B2 remains prohibited until
+the seven real judgments are complete and interpreted.
 
 ## Verification Record
 

@@ -740,6 +740,40 @@ class SinglePromptQualificationCriticResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class SinglePromptQualificationCriticGoldReview(Base):
+    __tablename__ = "single_prompt_qualification_critic_gold_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "phase_a_result_version",
+            "reviewable_set_hash",
+            "version_number",
+            name="uq_single_prompt_critic_gold_review_version",
+        ),
+        Index("ix_single_prompt_critic_gold_analysis", "analysis_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    review_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    phase_a_critic_id: Mapped[str] = mapped_column(
+        ForeignKey("single_prompt_qualification_critic_executions.critic_id"), index=True
+    )
+    phase_a_result_version: Mapped[str] = mapped_column(
+        ForeignKey("single_prompt_qualification_critic_results.result_version"), index=True
+    )
+    phase_a_result_hash: Mapped[str] = mapped_column(String(64))
+    supplemental_result_versions_json: Mapped[str] = mapped_column(Text, default="[]")
+    reviewable_set_hash: Mapped[str] = mapped_column(String(64), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    parent_review_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    candidate_set_json: Mapped[str] = mapped_column(Text)
+    decisions_json: Mapped[str] = mapped_column(Text)
+    metrics_json: Mapped[str] = mapped_column(Text)
+    reviewer: Mapped[str] = mapped_column(String(120))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SinglePromptStrategyExecution(Base):
     __tablename__ = "single_prompt_strategy_executions"
     __table_args__ = (

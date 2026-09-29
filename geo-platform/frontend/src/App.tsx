@@ -58,6 +58,72 @@ function v2CitationGoldKey(target: Record<string, any>) {
   return `${target.target_type}:${target.target_id}`;
 }
 
+const V2_CITATION_CALIBRATION_LABELS: Record<string, string> = {
+  DIRECT_REUSE: "直接复用原文",
+  FAITHFUL_PARAPHRASE: "忠实改写",
+  SUMMARY_OR_SYNTHESIS: "归纳或综合",
+  TOPICAL_ONLY: "仅主题相关",
+  NO_CORRESPONDENCE: "无内容对应",
+  UNKNOWN: "无法判断",
+  SUPPORTS_FULL: "完整支持",
+  SUPPORTS_PARTIAL: "部分支持",
+  CONTRADICTS: "相互矛盾",
+  RELATED_ONLY: "仅相关，不构成支持",
+  NO_MATCH: "没有匹配关系",
+  INSUFFICIENT_EVIDENCE: "证据不足",
+  PROVEN: "已证明回答引用锚点",
+  UNPROVEN: "未证明回答引用锚点",
+  UNAVAILABLE: "不可观测",
+  PROCEDURE: "操作步骤",
+  RULE_CONDITION: "规则或条件",
+  FACT: "事实陈述",
+  MARKET_CRITERION: "市场选择标准",
+  BRAND_CAPABILITY: "品牌能力",
+  DECISION_REASON: "决策理由",
+  GENERATION_INFLUENCE_UNAVAILABLE: "生成影响不可观测",
+  ANSWER_ANCHOR_UNPROVEN: "回答引用锚点未证明",
+  HASH_ORDER_SHA256_V1: "固定哈希顺序抽取",
+  CANDIDATE_RECALL_BOUNDARY: "召回边界检查",
+  ALL_MACHINE_BINDINGS: "全部机器正关系",
+  READY_FOR_CALIBRATION: "待人工校准",
+  CALIBRATION_COMPLETED: "校准完成",
+  CALIBRATION_BLOCKED_NO_VALID_EVALUATIONS: "无合格关系可校准",
+  AWAITING_EXTERNAL_AUTHORIZATION: "等待外部调用授权",
+  SUPERSEDED_BEFORE_AUTHORIZATION: "授权前已被新版本替代",
+  QUEUED: "已排队",
+  RUNNING: "执行中",
+  DONE: "已完成",
+  FAILED: "处理失败",
+  WAIVED: "已人工放弃",
+  PENDING: "待处理",
+  BOUND: "已找到内容对应",
+  NO_BINDING_FOUND_AFTER_SEARCH: "搜索后未找到内容对应",
+  INSUFFICIENT_SOURCE_CONTENT: "来源正文不足",
+  SOURCE_WAIVED: "来源已人工放弃",
+  ANALYSIS_FAILED: "分析失败",
+  NOT_EVALUATED: "未评估",
+  UNBIASED_CHECK: "无偏关系样本",
+  BINDING_CENSUS: "机器正关系全量核对",
+  RECALL_BOUNDARY: "召回边界样本",
+  EVALUATION: "关系判断",
+  BINDING: "机器正关系",
+  RECALL_CONTROL: "召回边界",
+  P1_PASS: "P1 通过",
+  P1_FAIL_AND_FIX: "P1 未通过，需修复",
+  P1_LIMITED_PASS: "P1 有限通过",
+  CONTRACT_RELIABILITY: "协议可靠性",
+  RELATION_QUALITY: "关系质量",
+  RECALL_QUALITY: "召回质量",
+  BLOCKER: "存在阻断",
+  LIMITED: "有限通过",
+  PASS: "通过",
+};
+
+function v2CitationCalibrationLabel(value: unknown) {
+  const key = String(value || "");
+  return V2_CITATION_CALIBRATION_LABELS[key] || key || "未提供";
+}
+
 function CitationHumanGoldEditor({
   target,
   draft,
@@ -68,14 +134,14 @@ function CitationHumanGoldEditor({
   onChange: (patch: Partial<V2CitationHumanGoldDraft>) => void;
 }) {
   if (!target.requires_human_review) {
-    return <Alert type="success" showIcon message="复用既有 Human Gold" description={`Review ${target.reused_human_gold?.source_review_id || "已绑定"}`} />;
+    return <Alert type="success" showIcon message="复用既有人工标准判断" description={`审核记录 ${target.reused_human_gold?.source_review_id || "已绑定"}`} />;
   }
   const boolOptions = [{ value: true, label: "是" }, { value: false, label: "否" }];
   if (target.target_type === "RECALL_CONTROL") {
     return <Space direction="vertical" size={6} style={{ width: "100%" }}>
       <Select placeholder="存在真实内容对应？" value={draft.boundary_has_correspondence} onChange={(value) => onChange({ boundary_has_correspondence: value })} options={boolOptions} />
-      <Select placeholder="存在 SUPPORT？" value={draft.boundary_has_support} onChange={(value) => onChange({ boundary_has_support: value })} options={boolOptions} />
-      <Select placeholder="存在 RELATED？" value={draft.boundary_has_related} onChange={(value) => onChange({ boundary_has_related: value })} options={boolOptions} />
+      <Select placeholder="来源正文是否支持回答内容？" value={draft.boundary_has_support} onChange={(value) => onChange({ boundary_has_support: value })} options={boolOptions} />
+      <Select placeholder="来源正文是否仅与回答内容相关？" value={draft.boundary_has_related} onChange={(value) => onChange({ boundary_has_related: value })} options={boolOptions} />
       <Select placeholder="应该进入正式候选？" value={draft.boundary_should_enter_candidate} onChange={(value) => onChange({ boundary_should_enter_candidate: value, boundary_miss_reason: value ? draft.boundary_miss_reason : undefined })} options={boolOptions} />
       {draft.boundary_should_enter_candidate === true && <Select placeholder="漏召回原因" value={draft.boundary_miss_reason} onChange={(value) => onChange({ boundary_miss_reason: value })} options={[
         ["RANKING_BOUNDARY", "排序边界"], ["ANCHOR_MISS", "锚点遗漏"], ["QUERY_TERM_MISMATCH", "查询词不匹配"],
@@ -87,11 +153,11 @@ function CitationHumanGoldEditor({
   return <Space direction="vertical" size={6} style={{ width: "100%" }}>
     <Select placeholder="人工内容对应方式" value={draft.human_correspondence_mode} onChange={(value) => onChange({ human_correspondence_mode: value })} options={[
       "DIRECT_REUSE", "FAITHFUL_PARAPHRASE", "SUMMARY_OR_SYNTHESIS", "TOPICAL_ONLY", "NO_CORRESPONDENCE", "UNKNOWN",
-    ].map((value) => ({ value, label: value }))} />
+    ].map((value) => ({ value, label: v2CitationCalibrationLabel(value) }))} />
     <Select placeholder="人工证据关系" value={draft.human_evidence_relation} onChange={(value) => onChange({ human_evidence_relation: value })} options={[
       "SUPPORTS_FULL", "SUPPORTS_PARTIAL", "CONTRADICTS", "RELATED_ONLY", "NO_MATCH", "INSUFFICIENT_EVIDENCE",
-    ].map((value) => ({ value, label: value }))} />
-    <Select placeholder="Span 是否有效" value={draft.span_validity} onChange={(value) => onChange({ span_validity: value })} options={[
+    ].map((value) => ({ value, label: v2CitationCalibrationLabel(value) }))} />
+    <Select placeholder="原文片段是否有效" value={draft.span_validity} onChange={(value) => onChange({ span_validity: value })} options={[
       ["VALID", "有效"], ["INVALID", "无效"], ["NOT_APPLICABLE", "不适用"], ["UNCERTAIN", "不确定"],
     ].map(([value, label]) => ({ value, label }))} />
     <Select placeholder="主体归属" value={draft.subject_attribution} onChange={(value) => onChange({ subject_attribution: value })} options={[
@@ -5293,13 +5359,13 @@ export default function App() {
                   type="warning"
                   showIcon
                   message="机器关系质量待人工校准"
-                  description={`当前共有 ${v2PendingCitationCalibrations.reduce((total, item) => total + item.new_human_review_count, 0)} 项 Human Gold 待判断；这不是每次分析的常规逐项审核。`}
+                  description={`当前共有 ${v2PendingCitationCalibrations.reduce((total, item) => total + item.new_human_review_count, 0)} 项人工标准判断待完成；这不是每次分析的常规逐项审核。`}
                   action={<Space wrap>{v2PendingCitationCalibrations.map((item) => <Button
                     key={item.contribution_id}
                     type="primary"
                     loading={v2CitationContributionLoading}
                     onClick={() => void openV2CitationContribution(item.contribution_id)}
-                  >进入 Run #{item.selected_run_id} 校准（{item.new_human_review_count}项）</Button>)}</Space>}
+                  >进入第 {item.selected_run_id} 轮校准（{item.new_human_review_count}项）</Button>)}</Space>}
                 />}
               </Card>}
 
@@ -6050,9 +6116,9 @@ export default function App() {
               {(v2Diagnosis?.result || v2CitationContribution || v2CitationContributionHistory.length > 0) && <Card
                   id="v2-citation-contribution-p1"
                   size="small"
-                  title={<Space><ListChecks size={18} />单 Run 引用贡献 P1</Space>}
+                  title={<Space><ListChecks size={18} />P1 单轮引用贡献校准</Space>}
                   extra={<Space wrap>
-                    {v2CitationContribution && <Tag color={v2CitationContribution.review ? "green" : v2CitationContribution.execution.status === "AWAITING_EXTERNAL_AUTHORIZATION" ? "gold" : ["QUEUED", "RUNNING"].includes(v2CitationContribution.execution.status) ? "blue" : v2CitationContribution.execution.status === "FAILED" ? "red" : "cyan"}>{v2CitationContribution.review ? "校准完成" : v2CitationContribution.execution.status}</Tag>}
+                    {v2CitationContribution && <Tag color={v2CitationContribution.review ? "green" : v2CitationContribution.execution.status === "AWAITING_EXTERNAL_AUTHORIZATION" ? "gold" : ["QUEUED", "RUNNING"].includes(v2CitationContribution.execution.status) ? "blue" : v2CitationContribution.execution.status === "FAILED" ? "red" : "cyan"}>{v2CitationContribution.review ? "校准完成" : v2CitationCalibrationLabel(v2CitationContribution.execution.status)}</Tag>}
                     {v2CitationContribution && <Tooltip title="只读取当前 P1 执行状态"><Button icon={<RefreshCw size={14} />} loading={v2CitationContributionLoading} onClick={() => void refreshV2CitationContribution()} aria-label="刷新 P1 状态" /></Tooltip>}
                   </Space>}
                 >
@@ -6063,23 +6129,23 @@ export default function App() {
                       message="当前 Analysis 已有 P1 执行"
                       description="请选择精确执行继续处理；系统不会自动选择 latest。"
                       action={<Space wrap>{v2CitationContributionHistory.map((item) => <Button key={item.contribution_id} loading={v2CitationContributionLoading} onClick={() => void openV2CitationContribution(item.contribution_id)}>
-                        Run #{item.selected_run_id} · {item.review_id ? "已校准" : item.status}
+                        第 {item.selected_run_id} 轮 · {item.review_id ? "已校准" : v2CitationCalibrationLabel(item.status)}
                       </Button>)}</Space>}
                     />}
-                    <Alert type="info" showIcon message="先冻结一个与结果无关的真实 Run 计划" description="系统将覆盖该 Run 的完整 Answer、全部 AnswerUnit 和全部 Citation；这里只创建冻结计划，不调用模型，也不生成策略。" />
+                    <Alert type="info" showIcon message="先冻结一个与结果无关的真实采样轮次计划" description="系统将覆盖该轮的完整回答、全部回答内容单元和全部引用；这里只创建冻结计划，不调用模型，也不生成策略。" />
                     <Button type="primary" icon={<ListChecks size={15} />} loading={v2CitationContributionLoading || v2CitationContributionHistoryLoading} disabled={v2CitationContributionHistory.length > 0 || !v2SourcePreparation?.completion_manifest || !v2Diagnosis?.result} onClick={createV2CitationContributionPlan}>冻结 P1 计划</Button>
                   </Space> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
                     <Descriptions size="small" column={{ xs: 1, md: 4 }}>
-                      <Descriptions.Item label="选定 Run">#{v2CitationContribution.execution.selected_run_id}</Descriptions.Item>
-                      <Descriptions.Item label="AnswerUnit">{v2CitationContribution.execution.plan.answer_units.length}</Descriptions.Item>
-                      <Descriptions.Item label="本 Run 引用">{v2CitationContribution.execution.plan.citations.length}</Descriptions.Item>
+                      <Descriptions.Item label="选定采样轮次">第 {v2CitationContribution.execution.selected_run_id} 轮</Descriptions.Item>
+                      <Descriptions.Item label="回答内容单元">{v2CitationContribution.execution.plan.answer_units.length}</Descriptions.Item>
+                      <Descriptions.Item label="本轮引用">{v2CitationContribution.execution.plan.citations.length}</Descriptions.Item>
                       <Descriptions.Item label="完整文本覆盖">{Math.round(100 * Number(v2CitationContribution.execution.plan.answer_semantic_char_coverage.rate || 0))}%</Descriptions.Item>
                       <Descriptions.Item label="最大新请求">{v2CitationContribution.execution.plan.call_plan.max_new_external_requests}</Descriptions.Item>
                       <Descriptions.Item label="自动重试">{v2CitationContribution.execution.plan.call_plan.automatic_retries}</Descriptions.Item>
-                      <Descriptions.Item label="Token 保守上界">{Number(v2CitationContribution.execution.plan.call_plan.conservative_token_ceiling || 0).toLocaleString()}</Descriptions.Item>
+                      <Descriptions.Item label="令牌数保守上界">{Number(v2CitationContribution.execution.plan.call_plan.conservative_token_ceiling || 0).toLocaleString()}</Descriptions.Item>
                       <Descriptions.Item label="费用保守上界">¥{Number(v2CitationContribution.execution.plan.call_plan.budget_upper_bound_cny || 0).toFixed(4)}</Descriptions.Item>
                     </Descriptions>
-                    <Text type="secondary">选择规则：固定 Run 按 ID 顺序取首个技术条件合格样本，不读取 SUPPORTS、品牌出现或策略结果。</Text>
+                    <Text type="secondary">选择规则：固定采样轮次按编号顺序取首个技术条件合格样本，不读取“支持”判断、品牌出现或策略结果。</Text>
                     <Text code copyable>{v2CitationContribution.execution.plan_hash}</Text>
                     {v2CitationContribution.execution.status === "AWAITING_EXTERNAL_AUTHORIZATION" && <Alert type="warning" showIcon message="计划已冻结，等待独立外部调用授权" description={`${v2CitationContribution.execution.plan.call_plan.model} · 最多 ${v2CitationContribution.execution.plan.call_plan.max_new_external_requests} 次 · 0 自动重试。当前页面不会自行授权或排队。`} />}
                     {v2CitationContribution.execution.blocker && <Alert type="error" showIcon message={v2CitationContribution.execution.blocker.code} description={v2CitationContribution.execution.blocker.detail} />}
@@ -6087,43 +6153,43 @@ export default function App() {
                     <Collapse size="small" items={[
                       {
                         key: "units",
-                        label: `完整 AnswerUnit（${v2CitationContribution.execution.plan.answer_units.length}）`,
+                        label: `完整回答内容单元（${v2CitationContribution.execution.plan.answer_units.length}）`,
                         children: <Table size="small" pagination={false} rowKey="answer_unit_id" dataSource={v2CitationContribution.execution.plan.answer_units} columns={[
-                          { title: "类型", width: 150, render: (_: unknown, row: any) => <Space wrap><Tag>{row.primary_type}</Tag>{(row.semantic_facets || []).filter((item: string) => item !== row.primary_type).map((item: string) => <Tag key={item}>{item}</Tag>)}</Space> },
+                          { title: "类型", width: 150, render: (_: unknown, row: any) => <Space wrap><Tag>{v2CitationCalibrationLabel(row.primary_type)}</Tag>{(row.semantic_facets || []).filter((item: string) => item !== row.primary_type).map((item: string) => <Tag key={item}>{v2CitationCalibrationLabel(item)}</Tag>)}</Space> },
                           { title: "原文", dataIndex: "raw_text" },
                           { title: "限定", width: 180, render: (_: unknown, row: any) => [...(row.negation_markers || []), ...(row.condition_markers || []), ...(row.comparison_markers || [])].join(" / ") || "无" },
                         ]} />,
                       },
                       {
                         key: "citations",
-                        label: `全部 Citation（${v2CitationContribution.execution.plan.citations.length}）`,
+                        label: `全部引用（${v2CitationContribution.execution.plan.citations.length}）`,
                         children: <Table size="small" pagination={false} rowKey="citation_id" dataSource={v2CitationContribution.result?.output.citations || v2CitationContribution.execution.plan.citations} columns={[
                           { title: "引用", width: 70, render: (_: unknown, row: any) => `#${row.reference_index || row.reference_id}` },
                           { title: "来源", render: (_: unknown, row: any) => <Space direction="vertical" size={0}><Text>{row.title || row.canonical_url}</Text><Text type="secondary" ellipsis style={{ maxWidth: 680 }}>{row.canonical_url}</Text></Space> },
-                          { title: "处理", width: 170, render: (_: unknown, row: any) => <Tag color={row.processing_status === "DONE" ? "green" : row.processing_status === "FAILED" ? "red" : row.processing_status === "WAIVED" ? "gold" : "blue"}>{row.processing_status}</Tag> },
-                          { title: "Disposition", width: 250, render: (_: unknown, row: any) => row.disposition || row.planned_disposition },
+                          { title: "处理状态", width: 170, render: (_: unknown, row: any) => <Tag color={row.processing_status === "DONE" ? "green" : row.processing_status === "FAILED" ? "red" : row.processing_status === "WAIVED" ? "gold" : "blue"}>{v2CitationCalibrationLabel(row.processing_status)}</Tag> },
+                          { title: "处置结果", width: 250, render: (_: unknown, row: any) => v2CitationCalibrationLabel(row.disposition || row.planned_disposition) },
                         ]} />,
                       },
                     ]} />
                     {v2CitationContribution.result && <>
                       <Descriptions size="small" column={{ xs: 1, md: 4 }}>
                         <Descriptions.Item label="候选判断">{v2CitationContribution.result.stats.evaluation_count || 0}</Descriptions.Item>
-                        <Descriptions.Item label="Contribution Binding">{v2CitationContribution.result.stats.binding_count || 0}</Descriptions.Item>
-                        <Descriptions.Item label="Disposition 覆盖">{Math.round(100 * Number(v2CitationContribution.result.stats.citation_disposition_coverage || 0))}%</Descriptions.Item>
-                        <Descriptions.Item label="生成影响"><Tag>UNAVAILABLE</Tag></Descriptions.Item>
+                        <Descriptions.Item label="机器正关系">{v2CitationContribution.result.stats.binding_count || 0}</Descriptions.Item>
+                        <Descriptions.Item label="引用处置覆盖">{Math.round(100 * Number(v2CitationContribution.result.stats.citation_disposition_coverage || 0))}%</Descriptions.Item>
+                        <Descriptions.Item label="生成影响"><Tag>{v2CitationCalibrationLabel("UNAVAILABLE")}</Tag></Descriptions.Item>
                       </Descriptions>
                       {!v2CitationContribution.review && !(v2CitationContribution.allowed_operations || []).includes("COMPLETE_CALIBRATION") && <Alert type="error" showIcon message="暂无可人工校准的合格关系" description={v2CitationContribution.execution.blocker?.detail || "机器输出未通过准入，不能通过空审核继续主链。"} />}
                       {!v2CitationContribution.review && (v2CitationContribution.allowed_operations || []).includes("COMPLETE_CALIBRATION") && <>
-                        <Alert type="warning" showIcon message="P1 Human Calibration：关系质量、Binding 与召回边界分别审核" description="冻结的40项无偏 Evaluation 与20项 Recall Boundary 不变；全部机器 Binding 另做 Census，重叠对象复用同一 Human Gold。内容对应不会升级为生成因果。" />
+                        <Alert type="warning" showIcon message="P1 人工校准：分别核对关系质量、机器正关系和召回边界" description="冻结的40项无偏关系样本与20项召回边界样本不变；全部机器正关系另做全量核对，重叠对象复用同一人工标准判断。内容对应不会升级为生成因果。" />
                         {v2CitationContribution.human_calibration && <Descriptions size="small" column={{ xs: 1, md: 4 }}>
                           <Descriptions.Item label="冻结样本">{v2CitationContribution.human_calibration.frozen_sample_count}</Descriptions.Item>
-                          <Descriptions.Item label="无偏 Evaluation">{v2CitationContribution.human_calibration.unbiased_evaluation_count}</Descriptions.Item>
-                          <Descriptions.Item label="Recall Boundary">{v2CitationContribution.human_calibration.recall_boundary_count}</Descriptions.Item>
-                          <Descriptions.Item label="Binding Census">{v2CitationContribution.human_calibration.binding_census_count}</Descriptions.Item>
+                          <Descriptions.Item label="无偏关系样本">{v2CitationContribution.human_calibration.unbiased_evaluation_count}</Descriptions.Item>
+                          <Descriptions.Item label="召回边界样本">{v2CitationContribution.human_calibration.recall_boundary_count}</Descriptions.Item>
+                          <Descriptions.Item label="机器正关系全量核对">{v2CitationContribution.human_calibration.binding_census_count}</Descriptions.Item>
                           <Descriptions.Item label="去重后审核对象">{v2CitationContribution.human_calibration.deduplicated_target_count}</Descriptions.Item>
                           <Descriptions.Item label="本次需人工判断">{v2CitationContribution.human_calibration.new_human_review_count}</Descriptions.Item>
-                          <Descriptions.Item label="复用既有 Gold">{v2CitationContribution.human_calibration.reused_human_gold_count}</Descriptions.Item>
-                          <Descriptions.Item label="Gold 冲突">{v2CitationContribution.human_calibration.human_gold_conflict_count}</Descriptions.Item>
+                          <Descriptions.Item label="复用既有人工标准">{v2CitationContribution.human_calibration.reused_human_gold_count}</Descriptions.Item>
+                          <Descriptions.Item label="人工标准冲突">{v2CitationContribution.human_calibration.human_gold_conflict_count}</Descriptions.Item>
                         </Descriptions>}
                         <Input value={v2CitationCalibrationReviewer} onChange={(event) => setV2CitationCalibrationReviewer(event.target.value)} placeholder="审核人" />
                         <Table
@@ -6133,21 +6199,21 @@ export default function App() {
                           rowKey={(row: any) => v2CitationGoldKey(row)}
                           dataSource={v2CitationContribution.human_calibration?.review_targets || []}
                           columns={[
-                            { title: "审核集合", width: 190, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Tag color={row.sample_group === "UNBIASED_CHECK" ? "blue" : row.sample_group === "BINDING_CENSUS" ? "green" : "gold"}>{row.sample_group === "UNBIASED_CHECK" ? "无偏 Evaluation" : row.sample_group === "BINDING_CENSUS" ? "Binding Census" : "Recall Boundary"}</Tag><Text type="secondary">{row.sampling_reason}</Text>{row.binding_id && <Text type="secondary">Binding {row.binding_id}</Text>}</Space> },
-                            { title: "AnswerUnit", width: 380, render: (_: unknown, row: any) => {
+                            { title: "审核集合", width: 190, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Tag color={row.sample_group === "UNBIASED_CHECK" ? "blue" : row.sample_group === "BINDING_CENSUS" ? "green" : "gold"}>{row.sample_group === "UNBIASED_CHECK" ? "无偏关系样本" : row.sample_group === "BINDING_CENSUS" ? "机器正关系全量核对" : "召回边界样本"}</Tag><Text type="secondary">{v2CitationCalibrationLabel(row.sampling_reason)}</Text>{row.binding_id && <Text type="secondary">正关系编号 {row.binding_id}</Text>}</Space> },
+                            { title: "回答内容单元", width: 380, render: (_: unknown, row: any) => {
                               const evaluation = (v2CitationContribution.result?.output.evaluations || []).find((item: any) => item.evaluation_id === (row.evaluation_id || row.target_id));
                               const control = (v2CitationContribution.result?.output.recall_controls || []).find((item: any) => item.control_id === (row.control_id || row.target_id));
                               const target = evaluation || control;
                               const unit = (v2CitationContribution.result?.output.answer_units || []).find((item: any) => item.answer_unit_id === target?.answer_unit_id);
                               const qualifiers = [...(unit?.negation_markers || []), ...(unit?.condition_markers || []), ...(unit?.comparison_markers || [])];
                               return <Space direction="vertical" size={4}>
-                                <Space wrap><Tag>{unit?.primary_type}</Tag>{(unit?.semantic_facets || []).map((item: string) => <Tag key={item}>{item}</Tag>)}</Space>
+                                <Space wrap><Tag>{v2CitationCalibrationLabel(unit?.primary_type)}</Tag>{(unit?.semantic_facets || []).map((item: string) => <Tag key={item}>{v2CitationCalibrationLabel(item)}</Tag>)}</Space>
                                 {unit?.context_heading && <Text type="secondary">上下文：{unit.context_heading}</Text>}
                                 <Text>{unit?.raw_text || ""}</Text>
                                 <Text type="secondary">主体：{(unit?.subject_markers || []).join(" / ") || "未显式标记"}；条件/限定：{qualifiers.join(" / ") || "无"}</Text>
                               </Space>;
                             } },
-                            { title: "Citation / Source passage", width: 460, render: (_: unknown, row: any) => {
+                            { title: "引用来源与正文片段", width: 460, render: (_: unknown, row: any) => {
                               const evaluation = (v2CitationContribution.result?.output.evaluations || []).find((item: any) => item.evaluation_id === (row.evaluation_id || row.target_id));
                               const control = (v2CitationContribution.result?.output.recall_controls || []).find((item: any) => item.control_id === (row.control_id || row.target_id));
                               const target = evaluation || control;
@@ -6163,25 +6229,25 @@ export default function App() {
                               const control = (v2CitationContribution.result?.output.recall_controls || []).find((item: any) => item.control_id === (row.control_id || row.target_id));
                               const target = evaluation || control;
                               return row.target_type === "RECALL_CONTROL"
-                                ? <Space direction="vertical" size={2}><Tag color="gold">召回边界样本</Tag><Tag>未送模型</Tag><Tag>{target?.answer_anchor}</Tag><Tag>{target?.generation_influence}</Tag>{(target?.validation_limitations || []).map((item: string) => <Text key={item} type="secondary">{item}</Text>)}</Space>
-                                : <Space direction="vertical" size={2}><Tag>{evaluation?.correspondence_mode}</Tag><Tag>{evaluation?.evidence_relation}</Tag><Tag>{evaluation?.answer_anchor}</Tag><Tag>{evaluation?.generation_influence}</Tag><Text>{evaluation?.rationale}</Text>{(evaluation?.validation_limitations || []).map((item: string) => <Text key={item} type="secondary">{item}</Text>)}</Space>;
+                                ? <Space direction="vertical" size={2}><Tag color="gold">召回边界样本</Tag><Tag>未送模型</Tag><Tag>{v2CitationCalibrationLabel(target?.answer_anchor)}</Tag><Tag>{v2CitationCalibrationLabel(target?.generation_influence)}</Tag>{(target?.validation_limitations || []).map((item: string) => <Text key={item} type="secondary">{v2CitationCalibrationLabel(item)}</Text>)}</Space>
+                                : <Space direction="vertical" size={2}><Tag>{v2CitationCalibrationLabel(evaluation?.correspondence_mode)}</Tag><Tag>{v2CitationCalibrationLabel(evaluation?.evidence_relation)}</Tag><Tag>{v2CitationCalibrationLabel(evaluation?.answer_anchor)}</Tag><Tag>{v2CitationCalibrationLabel(evaluation?.generation_influence)}</Tag><Text>{evaluation?.rationale}</Text>{(evaluation?.validation_limitations || []).map((item: string) => <Text key={item} type="secondary">{v2CitationCalibrationLabel(item)}</Text>)}</Space>;
                             } },
-                            { title: "Human Gold", width: 430, render: (_: unknown, row: any) => <CitationHumanGoldEditor target={row} draft={v2CitationHumanGold[v2CitationGoldKey(row)] || {}} onChange={(patch) => setV2CitationHumanGold((current) => ({ ...current, [v2CitationGoldKey(row)]: { ...current[v2CitationGoldKey(row)], ...patch } }))} /> },
+                            { title: "人工标准判断", width: 430, render: (_: unknown, row: any) => <CitationHumanGoldEditor target={row} draft={v2CitationHumanGold[v2CitationGoldKey(row)] || {}} onChange={(patch) => setV2CitationHumanGold((current) => ({ ...current, [v2CitationGoldKey(row)]: { ...current[v2CitationGoldKey(row)], ...patch } }))} /> },
                           ]}
                         />
-                        <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2CitationContributionLoading} disabled={!v2CitationContribution.human_calibration} onClick={completeV2CitationContributionCalibration}>提交 Human Gold 并生成三项 Gate 报告</Button>
+                        <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2CitationContributionLoading} disabled={!v2CitationContribution.human_calibration} onClick={completeV2CitationContributionCalibration}>提交人工标准并生成三项校准报告</Button>
                       </>}
                       {v2CitationContribution.review && <Space direction="vertical" size={10} style={{ width: "100%" }}>
-                        <Alert type={v2CitationContribution.review.metrics.recommendation === "P1_PASS" ? "success" : v2CitationContribution.review.metrics.recommendation === "P1_FAIL_AND_FIX" ? "error" : "warning"} showIcon message={`P1 人工校准已完成：${v2CitationContribution.review.metrics.recommendation}`} description="三个 Gate 独立呈现，不用一个 overall accuracy 覆盖 Contract、Relation 与 Recall 的差异。" />
+                        <Alert type={v2CitationContribution.review.metrics.recommendation === "P1_PASS" ? "success" : v2CitationContribution.review.metrics.recommendation === "P1_FAIL_AND_FIX" ? "error" : "warning"} showIcon message={`P1 人工校准已完成：${v2CitationCalibrationLabel(v2CitationContribution.review.metrics.recommendation)}`} description="协议可靠性、关系质量和召回质量三项结果独立呈现，不用一个总准确率掩盖差异。" />
                         <Descriptions size="small" column={{ xs: 1, md: 3 }}>
-                          {Object.entries(v2CitationContribution.review.metrics.gates || {}).map(([name, gate]: [string, any]) => <Descriptions.Item key={name} label={name}><Space direction="vertical" size={1}><Tag color={gate.status === "BLOCKER" ? "red" : gate.status === "LIMITED" ? "gold" : "green"}>{gate.status}</Tag>{(gate.blockers || []).map((item: string) => <Text key={item} type="danger">{item}</Text>)}</Space></Descriptions.Item>)}
-                          <Descriptions.Item label="Binding precision">{v2CitationContribution.review.metrics.binding_census?.binding_precision?.value == null ? "不可计算" : `${Math.round(100 * v2CitationContribution.review.metrics.binding_census.binding_precision.value)}% (${v2CitationContribution.review.metrics.binding_census.binding_precision.numerator}/${v2CitationContribution.review.metrics.binding_census.binding_precision.denominator})`}</Descriptions.Item>
-                          <Descriptions.Item label="Boundary miss">{v2CitationContribution.review.metrics.recall_boundary?.boundary_miss_count ?? 0}</Descriptions.Item>
-                          <Descriptions.Item label="NO_MATCH 漏 Support">{v2CitationContribution.review.metrics.relation_calibration?.no_match_to_human_support ?? 0}</Descriptions.Item>
+                          {Object.entries(v2CitationContribution.review.metrics.gates || {}).map(([name, gate]: [string, any]) => <Descriptions.Item key={name} label={v2CitationCalibrationLabel(name)}><Space direction="vertical" size={1}><Tag color={gate.status === "BLOCKER" ? "red" : gate.status === "LIMITED" ? "gold" : "green"}>{v2CitationCalibrationLabel(gate.status)}</Tag>{(gate.blockers || []).map((item: string) => <Text key={item} type="danger">{v2CitationCalibrationLabel(item)}</Text>)}</Space></Descriptions.Item>)}
+                          <Descriptions.Item label="机器正关系准确率">{v2CitationContribution.review.metrics.binding_census?.binding_precision?.value == null ? "不可计算" : `${Math.round(100 * v2CitationContribution.review.metrics.binding_census.binding_precision.value)}% (${v2CitationContribution.review.metrics.binding_census.binding_precision.numerator}/${v2CitationContribution.review.metrics.binding_census.binding_precision.denominator})`}</Descriptions.Item>
+                          <Descriptions.Item label="召回边界漏召回">{v2CitationContribution.review.metrics.recall_boundary?.boundary_miss_count ?? 0}</Descriptions.Item>
+                          <Descriptions.Item label="机器判定无匹配但人工认为支持">{v2CitationContribution.review.metrics.relation_calibration?.no_match_to_human_support ?? 0}</Descriptions.Item>
                         </Descriptions>
                         <Collapse size="small" items={[{
                           key: "calibration-report",
-                          label: "查看 confusion matrix、Binding Census、Recall Boundary 与错误案例",
+                          label: "查看混淆矩阵、机器正关系全量核对、召回边界与错误案例",
                           children: <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(v2CitationContribution.review.metrics, null, 2)}</pre>,
                         }]} />
                       </Space>}

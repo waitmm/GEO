@@ -6052,3 +6052,11 @@ review_queue = READY
   calibration workload: 40 unbiased evaluations, 20 recall-boundary controls
   and 18 additional deduplicated Binding Census objects. They are not a
   per-analysis production review requirement.
+- The release UI now localizes the P1 calibration controls and result labels.
+  Correspondence modes, evidence relations, sample groups, processing states,
+  dispositions, semantic facets and report gates are displayed in Chinese,
+  while their persisted API enum values remain unchanged.
+- Browser verification against the exact Run 1 Contribution confirmed that the
+  correspondence dropdown exposes six Chinese choices and the evidence
+  relation dropdown exposes six Chinese choices. No Human Gold decision or
+  Review was submitted during verification.

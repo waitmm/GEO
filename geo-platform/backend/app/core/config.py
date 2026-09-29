@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_timeout_seconds: int = 120
+    # Optional Model B critic. It is configured here but never runs unless an
+    # explicit product path and external-call authorization enable it.
+    model_b_enabled: bool = False
+    model_b_provider: str = "siliconflow"
+    siliconflow_api_key: str = ""
+    siliconflow_model: str = "Qwen/Qwen3.6-35B-A3B"
+    siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    siliconflow_timeout_seconds: int = 120
     semantic_case_max_calls: int = 200
     semantic_case_max_tokens: int = 2_000_000
     # Citation Decision V1.1 Phase 1：默认关闭。仅在显式开启时，正式

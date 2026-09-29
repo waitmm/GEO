@@ -20,6 +20,13 @@ import httpx
 from app.core.config import get_settings
 from app.services.semantic_llm.base import SemanticLLMClient, SemanticLLMError
 from app.services.semantic_llm.cache import LLMCallCache
+from app.services.semantic_llm.common import (
+    audit_excerpt as _audit_excerpt,
+    extract_json_object as _extract_json_object,
+    response_error as _response_error,
+    structured_input_hash as _input_hash,
+    validate_response_payload as _validate_response_payload,
+)
 
 logger = logging.getLogger("semantic_llm.deepseek")
 
@@ -39,135 +46,6 @@ def resolve_deepseek_request_model(
     }:
         return "deepseek-flash"
     return requested_model_alias
-
-
-def _audit_excerpt(content: str, limit: int = 240) -> str:
-    compact = " ".join((content or "").split())
-    compact = re.sub(r"(?i)bearer\s+[a-z0-9._-]+", "Bearer [REDACTED]", compact)
-    compact = re.sub(r"(?i)\bsk-[a-z0-9_-]+", "[REDACTED_KEY]", compact)
-    return compact[:limit]
-
-
-def _response_error(
-    message: str,
-    *,
-    code: str = "FAILED_PARSE",
-    source: str,
-    content: str,
-    finish_reason: str = "",
-    raw_response_hash: str = "",
-    validation_errors: list[dict[str, Any]] | None = None,
-) -> SemanticLLMError:
-    exc = SemanticLLMError(message)
-    exc.code = code
-    exc.audit = {
-        "response_source": source,
-        "raw_response_hash": raw_response_hash or hashlib.sha256((content or "").encode("utf-8")).hexdigest(),
-        "finish_reason": finish_reason or "unknown",
-        "response_length": len(content or ""),
-        "response_excerpt": _audit_excerpt(content),
-        "validation_errors": validation_errors or [],
-    }
-    return exc
-
-
-def _validate_response_payload(
-    payload: Any,
-    validator: Callable[[Any], dict[str, Any]] | None,
-    *,
-    source: str,
-    content: str,
-    finish_reason: str = "",
-    raw_response_hash: str = "",
-) -> dict[str, Any]:
-    if validator is None:
-        return payload
-    try:
-        return validator(payload)
-    except SemanticLLMError as exc:
-        audit = dict(getattr(exc, "audit", {}) or {})
-        audit.update({
-            "response_source": source,
-            "raw_response_hash": raw_response_hash or hashlib.sha256((content or "").encode("utf-8")).hexdigest(),
-            "finish_reason": finish_reason or audit.get("finish_reason") or "unknown",
-            "response_length": len(content or ""),
-            "response_excerpt": _audit_excerpt(content),
-        })
-        exc.audit = audit
-        raise
-    except Exception as exc:
-        raise _response_error(
-            f"模型响应未通过适用准入校验: {exc}",
-            source=source,
-            content=content,
-            finish_reason=finish_reason,
-            raw_response_hash=raw_response_hash,
-        ) from exc
-
-
-def _extract_json_object(content: str) -> dict | None:
-    """从文本中提取第一个完整 JSON 对象（容错推理模型的额外文本）。"""
-    start = content.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    in_str = False
-    escape = False
-    for i in range(start, len(content)):
-        ch = content[i]
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(content[start:i + 1])
-                except json.JSONDecodeError:
-                    return None
-    return None
-
-
-def _input_hash(
-    system_prompt: str,
-    user_payload: dict,
-    prompt_version: str,
-    schema_version: str,
-    thinking_mode: str | None = None,
-    structured_output_mode: StructuredOutputMode | None = None,
-    provider_schema_hash: str = "",
-    transport_version: str = "",
-    requested_model_alias: str = "",
-    effective_request_model: str = "",
-) -> str:
-    identity: dict[str, Any] = {
-        "system": system_prompt,
-        "payload": user_payload,
-        "pv": prompt_version,
-        "sv": schema_version,
-    }
-    # Preserve every legacy cache identity unless a caller explicitly opts in.
-    if thinking_mode:
-        identity["generation"] = {"thinking": {"type": thinking_mode}}
-    if structured_output_mode:
-        identity["structured_output"] = {
-            "mode": structured_output_mode,
-            "provider_schema_hash": provider_schema_hash,
-            "transport_version": transport_version,
-            "requested_model_alias": requested_model_alias,
-            "effective_request_model": effective_request_model,
-        }
-    raw = json.dumps(identity, ensure_ascii=False, sort_keys=True)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class DeepSeekClient(SemanticLLMClient):

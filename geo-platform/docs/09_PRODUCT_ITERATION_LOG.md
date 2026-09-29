@@ -2,6 +2,26 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Model B Provider Selection
+
+### Product Decision
+
+The second-model provider is SiliconFlow and its default model is Qwen
+`Qwen/Qwen3.6-35B-A3B`. This overrides the earlier temporary hold on connecting
+a second provider now that the first automatic Qualification-to-Draft vertical
+slice exists.
+
+Provider readiness is not product activation. Model B remains disabled and has
+no Critic Signal contract, no external-call authorization and no right to
+modify Model A results, Qualification, Strategy or Claims. When activated later,
+its output must remain a bounded signal over an exact frozen object set.
+
+### User Impact
+
+There is no new user action yet and no current strategy changes. The code can
+now call the selected Qwen provider safely once a concrete critic task is
+approved, without replacing DeepSeek or creating an untracked API path.
+
 ## 2026-09-29 Machine Continuation And Per-Use Qualification
 
 ### Product Decision

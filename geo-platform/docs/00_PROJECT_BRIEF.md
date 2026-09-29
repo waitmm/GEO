@@ -2,6 +2,19 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Optional Model B Provider
+
+The optional second semantic model is now configured as SiliconFlow Qwen. Its
+default identity is `Qwen/Qwen3.6-35B-A3B` through SiliconFlow's OpenAI-compatible
+Chat Completions API. DeepSeek remains Model A and no existing semantic stage is
+rerouted.
+
+Only the strict provider transport is implemented. Model B is disabled by
+default, has made zero external calls and has no authority over Qualification,
+Strategy, public Claims or external actions. A bounded Critic Signal contract
+and explicit external-call authorization are still required before activation.
+See `docs/GEO_MODEL_B_SILICONFLOW_QWEN.md`.
+
 ## 2026-09-29 Automatic Qualification Checkpoint
 
 The release path now has a read-only, exact-version qualification projection.

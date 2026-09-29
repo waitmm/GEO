@@ -2,6 +2,22 @@
 
 Status: ACTIVE
 
+## 2026-09-29 SiliconFlow Qwen Model B Transport
+
+- Added an optional `SiliconFlowClient` for the second-model critic role. The
+  default model is `Qwen/Qwen3.6-35B-A3B`; Model A remains DeepSeek.
+- Added SiliconFlow environment configuration and an explicit
+  `create_model_b_client()` factory. External construction is blocked while
+  `MODEL_B_ENABLED=false`; cache-only misses make zero external calls.
+- The transport uses SiliconFlow Chat Completions with provider `json_schema`,
+  local typed response validation, exact model identity, provider trace IDs,
+  token accounting and provider/model/version-aware cache identity.
+- Extracted the existing admission/hash helpers into a provider-neutral module
+  and kept DeepSeek's public behavior and legacy cache identity unchanged.
+- Added tests for the official endpoint/body, Qwen identity, unknown-field
+  rejection, disabled external calls, cache-only behavior and model-sensitive
+  identity. No real API key was configured and no external call was made.
+
 ## 2026-09-29 V2 Automatic Qualification Vertical Slice
 
 - Added a read-only Qualification Projection over an exact active

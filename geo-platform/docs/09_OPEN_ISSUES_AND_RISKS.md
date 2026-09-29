@@ -2,6 +2,19 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Model B SiliconFlow Verification Boundary
+
+- SiliconFlow Qwen transport is locally implemented and tested, but no
+  `SILICONFLOW_API_KEY` is configured in the current environment and no real
+  provider call has been authorized. Real endpoint/model/schema compatibility
+  remains `NOT_VERIFIED`.
+- The Model B Critic Signal product contract is not implemented. Provider
+  availability must not be interpreted as permission to compare, override or
+  mutate Model A, Qualification, Strategy, Truth or public Claim state.
+- SiliconFlow changes its model catalog over time. The configured model identity
+  is part of cache/audit identity, and availability must be checked before a
+  future authorized canary rather than silently substituting another Qwen model.
+
 ## Single Prompt V1 Known Pitfalls
 
 - `PromptAnalysisRun` recency is not by itself the whole current-chain truth.

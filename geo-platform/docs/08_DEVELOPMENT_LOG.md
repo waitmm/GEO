@@ -6039,10 +6039,11 @@ review_queue = READY
 - The release API now exposes a read-only list of Citation Contribution
   executions scoped to the exact Analysis, Project and Prompt. It does not
   select a latest execution and does not create or mutate a Review.
-- The current-analysis progress card shows pending P1 Human Calibration and
-  opens the selected exact Contribution while preserving its identity in the
-  URL. The lower P1 card also lists existing executions instead of presenting
-  an existing result as though a new plan were required.
+- The Analysis-level page shows pending P1 Human Calibration independently of
+  whether a Diagnosis query parameter is present, then opens the selected
+  exact Contribution while preserving its identity in the URL. The lower P1
+  card also lists existing executions instead of presenting an existing result
+  as though a new plan were required.
 - The 78 Human Gold decisions are explicitly presented as the one-time P1
   calibration workload: 40 unbiased evaluations, 20 recall-boundary controls
   and 18 additional deduplicated Binding Census objects. They are not a

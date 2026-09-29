@@ -5282,6 +5282,27 @@ export default function App() {
                 {v2Analysis.warnings.map((warning) => <Alert key={warning.code} style={{ marginTop: 10 }} type="warning" showIcon message={warning.code === "RETRIEVAL_OBSERVATION_UNAVAILABLE" ? "检索观测不可用" : "独立会话证明不可用"} description={warning.detail} />)}
               </Card>
 
+              {(v2CitationContributionHistoryLoading || v2PendingCitationCalibrations.length > 0) && <Card
+                id="v2-calibration-entry"
+                size="small"
+                loading={v2CitationContributionHistoryLoading && v2CitationContributionHistory.length === 0}
+                title={<Space><ShieldCheck size={18} />P1 引用贡献人工校准</Space>}
+                extra={<Tag color="gold">一次性质量校准</Tag>}
+              >
+                {v2PendingCitationCalibrations.length > 0 && <Alert
+                  type="warning"
+                  showIcon
+                  message="机器关系质量待人工校准"
+                  description={`当前共有 ${v2PendingCitationCalibrations.reduce((total, item) => total + item.new_human_review_count, 0)} 项 Human Gold 待判断；这不是每次分析的常规逐项审核。`}
+                  action={<Space wrap>{v2PendingCitationCalibrations.map((item) => <Button
+                    key={item.contribution_id}
+                    type="primary"
+                    loading={v2CitationContributionLoading}
+                    onClick={() => void openV2CitationContribution(item.contribution_id)}
+                  >进入 Run #{item.selected_run_id} 校准（{item.new_human_review_count}项）</Button>)}</Space>}
+                />}
+              </Card>}
+
               <Card size="small" title="本次分析的原始采样结果" extra={<Text type="secondary">只读取 Task #{v2Analysis.analysis.task_id}</Text>}>
                 <Alert
                   className="v2-sampling-explanation"
@@ -5484,19 +5505,6 @@ export default function App() {
               {v2Diagnosis?.result && <>
                 <Card size="small" title="当前分析进度" extra={<Tag color={v2EvidenceReviewComplete ? "green" : "blue"}>{v2EvidenceReviewComplete ? "证据审核已完成" : v2IsEvidenceResult ? "当前：审核证据结果" : v2AnswerReviewConsumed ? "当前：生成证据" : "当前：审核回答"}</Tag>}>
                   <Steps size="small" responsive current={v2AnalysisFlowCurrent} items={v2AnalysisFlowItems} />
-                  {v2PendingCitationCalibrations.length > 0 && <Alert
-                    style={{ marginTop: 16 }}
-                    type="warning"
-                    showIcon
-                    message="P1 引用贡献人工校准待完成"
-                    description={`这是首轮机器关系质量校准，不是每次分析的常规逐项审核。当前共有 ${v2PendingCitationCalibrations.reduce((total, item) => total + item.new_human_review_count, 0)} 项 Human Gold 待判断。`}
-                    action={<Space wrap>{v2PendingCitationCalibrations.map((item) => <Button
-                      key={item.contribution_id}
-                      type="primary"
-                      loading={v2CitationContributionLoading}
-                      onClick={() => void openV2CitationContribution(item.contribution_id)}
-                    >进入 Run #{item.selected_run_id} 校准（{item.new_human_review_count}项）</Button>)}</Space>}
-                  />}
                   {v2Coverage && <>
                     <Descriptions size="small" column={{ xs: 1, md: 4 }} style={{ marginTop: 16 }}>
                       <Descriptions.Item label="固定输入">{v2Coverage.input_scope_coverage.readable_answer_count}/{v2Coverage.input_scope_coverage.expected_run_count} Runs</Descriptions.Item>

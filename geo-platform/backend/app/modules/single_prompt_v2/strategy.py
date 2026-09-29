@@ -304,6 +304,8 @@ def build_strategy_input_projection(
             "diagnosis_contract_config_hash": execution.contract_config_hash,
         },
         "diagnosis_review": review_payload,
+        "brand_snapshot": loads(execution.brand_snapshot_json, {}),
+        "brand_snapshot_hash": execution.brand_snapshot_hash,
         "answer_semantic_eligibility": answer_eligibility,
         "coverage_projections": coverage_projections,
         "review_snapshot_hash": _hash(review_payload) if review_payload else None,

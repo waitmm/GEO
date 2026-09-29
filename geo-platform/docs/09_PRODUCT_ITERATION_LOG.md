@@ -2,6 +2,33 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Machine Continuation And Per-Use Qualification
+
+### Product Decision
+
+Human review is no longer a global permission switch for machine computation.
+An admitted object can automatically support a Strategy Direction or internal
+Execution Draft when that use's own dependencies are satisfied. Human review
+remains available as a correction overlay. Public claims and external actions
+continue to require their separate evidence and business-approval gates.
+
+The product must never collapse these states into one readiness flag. A
+first-party confirmed target capability may establish that a direction is
+applicable while still being ineligible for public copy until its target-brand
+source is supplied.
+
+### User Impact
+
+The current real case now shows an automatic, explainable Strategy Direction
+and content skeleton instead of stopping at another review screen. Users can see
+the exact Reason, Truth dependencies, draft Sections and blocked Claims. The
+page also makes clear that the citation mechanism analysis covers only Run 1,
+so it does not pretend to explain all nine Runs or select a publication channel.
+
+This checkpoint is read-only. It proves that the main chain can continue
+without weakening claim or publication safety; it does not silently create a
+formal Strategy, approve a claim or authorize publication.
+
 ## 2026-09-22 V2 Evidence Review Handoff
 
 ### Product Decision

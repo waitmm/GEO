@@ -2,6 +2,22 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Automatic Qualification Checkpoint
+
+The release path now has a read-only, exact-version qualification projection.
+It evaluates admitted machine objects per intended use instead of treating a
+global human Review as permission to continue all computation. Human Review is
+an optional correction overlay; public claims and external actions retain their
+own hard gates.
+
+For the current real nine-Run case, the projection produces one grounded
+Strategy Direction and one internal Execution Draft. The Answer scope remains
+Runs 1-9 while Citation Contribution remains Run 1 only. Four manually
+confirmed target-brand capabilities establish strategy applicability but still
+need target-brand source references before they may appear as public claims.
+No Strategy, Review, publication or other business row is written by this
+checkpoint. See `docs/GEO_1_0_QUALIFICATION_VERTICAL_SLICE.md`.
+
 ## 2026-09-28 Current Delivery Baseline
 
 - Fixed case: Analysis `19b0be0f-f794-4435-9fa7-2723257f26cc`, Context `ctx-f06aa92a-6193-4aa0-ab9b-e62974f594f4`, Runs 1-9.

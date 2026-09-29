@@ -431,6 +431,7 @@ def test_release_routes_include_strategy_but_exclude_execution_and_legacy_workfl
     assert any("evidence-continuations" in path for path in paths)
     assert any("citation-contributions" in path for path in paths)
     assert any(path.endswith("/strategy-readiness") for path in paths)
+    assert any(path.endswith("/qualification-projection") for path in paths)
     assert any(path.endswith("/strategies") for path in paths)
     assert any(path.endswith("/priority-revisions") for path in paths)
     assert any("/strategies/" in path and path.endswith("/reviews") for path in paths)

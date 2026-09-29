@@ -61,6 +61,7 @@ from app.modules.single_prompt_v2.strategy import (
     get_strategy_status,
     revise_strategy_priority,
 )
+from app.modules.single_prompt_v2.qualification import build_qualification_projection
 from app.modules.single_prompt_v2.source_preparation import (
     create_source_preparation,
     freeze_completion_manifest,
@@ -472,6 +473,25 @@ def read_strategy_readiness(
     db: Session = Depends(get_db),
 ) -> dict:
     return build_strategy_readiness(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
+
+
+@router.get("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/qualification-projection")
+def read_qualification_projection(
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    return build_qualification_projection(
         db,
         analysis_id=analysis_id,
         diagnosis_id=diagnosis_id,

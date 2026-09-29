@@ -712,6 +712,42 @@ supersedes: null
 last_verified_at: 2026-09-10
 ```
 
+### SC-AUTOMATION-001 Machine Continuation And Per-Use Qualification
+
+```yaml
+contract_id: SC-AUTOMATION-001
+contract_name: Machine Continuation And Per-Use Qualification
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: PARTIAL
+definition: Machine computation does not require a global human Review. Each exact-version object is qualified independently for Diagnosis, Strategy Direction, internal Execution Draft, public Claim and Publication. Human Review is an optional correction overlay; business approval remains required for external action.
+allowed_inferences:
+  - A grounded Answer Reason fully covered by confirmed target-brand capabilities may produce a Strategy Direction and internal Execution Draft.
+  - A first-party asserted target capability may establish target applicability while its public Claim remains VERIFY_FIRST.
+  - Partial Citation Contribution may enrich a direction only inside its exact Run scope.
+forbidden_inferences:
+  - Treating Review completion as universal fact, claim or publication eligibility.
+  - Treating missing Review as a global blocker for all machine computation.
+  - Expanding Run 1 Citation Contribution into a nine-Run citation, channel or generation-causality conclusion.
+  - Using a source-free target capability as public copy.
+  - Treating an internal Execution Draft as external-action authorization.
+unknown_behavior: Missing or insufficient object dependencies remain VERIFY_FIRST, OBSERVE_ONLY or NOT_CONSUMABLE for the affected use without erasing independently qualified uses.
+step_boundary: V2 read-only Strategy Direction and internal Execution Draft projection; no StrategyCandidate, Review, Publication or external action is created.
+source_references:
+  - docs/GEO_1_0_QUALIFICATION_VERTICAL_SLICE.md
+observed_implementation_refs:
+  - backend/app/modules/single_prompt_v2/qualification.py
+enforcement_refs:
+  - backend/tests/test_single_prompt_v2_qualification.py
+approved_by: Product Owner
+approved_at: 2026-09-29
+approval_reference: GEO Platform 1.0 four-plane implementation final override
+golden_case_ids: [CASE-REAL-V2-QUALIFICATION]
+effective_from: 2026-09-29
+supersedes: null
+last_verified_at: 2026-09-29
+```
+
 ## 3. Definition Freeze Queue
 
 `SC-RUNTIME-001@0.1.0` 已由 Product Owner 在独立 Review 005 通过后正式

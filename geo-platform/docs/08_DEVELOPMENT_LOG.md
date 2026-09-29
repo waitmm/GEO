@@ -2,6 +2,29 @@
 
 Status: ACTIVE
 
+## 2026-09-29 V2 Automatic Qualification Vertical Slice
+
+- Added a read-only Qualification Projection over an exact active
+  DiagnosisResultVersion. It reuses admitted Answer Reasons, atomic target-brand
+  Truth coverage and the exact current Citation Contribution; it does not call
+  a legacy Runner, query a latest Strategy/Package or write business state.
+- Removed global Diagnosis Review as a computation dependency for this path.
+  Eligibility is emitted per use: Diagnosis, Strategy Direction, internal
+  Execution Draft, public Claim and Publication.
+- The current real nine-Run input produces one deterministic mechanism
+  direction and one internal draft. Its grounded Reason is from Run 4 and is
+  fully covered by four manually confirmed target-brand capabilities.
+- Those capabilities remain `VERIFY_FIRST` for public claims because source
+  references are missing. The backend returns claim-level limiting dependencies
+  and always keeps `external_action_authorized=false`.
+- Citation Contribution is explicitly bound to Run 1 only. It is represented as
+  an enriching, observe-only dependency and never becomes a nine-Run citation or
+  channel conclusion.
+- Added the release/API GET endpoint, focused qualification tests and a release
+  page that shows the real direction, draft Sections, Claims, scope mismatch and
+  hard public-claim blockers. The checkpoint adds no migration, external call,
+  StrategyCandidate, Review or Publication row.
+
 ## 2026-09-22 V2 Evidence Review Handoff Clarity
 
 - Classified as `IMPLEMENTATION_CHANGE` under the exact-version review and

@@ -675,6 +675,75 @@ export type SinglePromptV2StrategyReadiness = {
   boundary: Record<string, boolean | number>;
 };
 
+export type SinglePromptV2QualificationProjection = {
+  contract_version: string;
+  projection_hash: string;
+  input_identity: Record<string, any>;
+  input_projection_hash: string;
+  analysis_scope: { run_ids: number[]; label: string };
+  evidence_scope: {
+    run_ids: number[];
+    label: string;
+    status: string;
+    result: null | {
+      contribution_id: string;
+      result_version: string;
+      result_hash: string;
+      processing: { done: number; failed: number; binding_count: number; evaluation_count: number };
+      answer_anchor: string;
+      generation_influence: string;
+    };
+  };
+  scope_limitations: string[];
+  object_qualifications: Array<Record<string, any>>;
+  directions: Array<{
+    strategy_id: string;
+    direction_type: "MECHANISM";
+    mechanism_gap: string;
+    intervention_goal: string;
+    reason_id: string;
+    reason_text: string;
+    reason_run_ids: number[];
+    truth_ids: number[];
+    dependencies: Array<Record<string, any>>;
+    eligibility_by_use: Record<string, string>;
+    strategy_direction_eligibility: string;
+    execution_draft_eligibility: string;
+    public_claim_eligibility: string;
+    limiting_dependencies: string[];
+    scope_limitations: string[];
+    reasoning_trace: Array<Record<string, any>>;
+  }>;
+  execution_drafts: Array<{
+    draft_id: string;
+    direction_id: string;
+    title: string;
+    goal: string;
+    asset_role: string;
+    asset_operation: "CREATE_NEW";
+    asset_type_candidates: string[];
+    channel_candidate: Record<string, any>;
+    sections: Array<Record<string, any>>;
+    claims: Array<Record<string, any>>;
+    required_truth_ids: number[];
+    required_evidence_ids: string[];
+    eligibility_by_use: Record<string, string>;
+    limiting_dependencies: string[];
+    internal_checklist: string[];
+    boundary: Record<string, boolean | string>;
+  }>;
+  final_plan: {
+    analysis_completed: boolean;
+    machine_direction_count: number;
+    execution_draft_count: number;
+    execution_ready_count: number;
+    draftable_verify_first_count: number;
+    human_review_global_blocker: boolean;
+    external_action_authorized: boolean;
+  };
+  boundary: Record<string, boolean | number>;
+};
+
 export type SinglePromptV2StrategyStatus = {
   strategy: {
     strategy_id: string;

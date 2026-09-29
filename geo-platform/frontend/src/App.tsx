@@ -8,7 +8,7 @@ import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, File
 import { api } from "./api/client";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
-  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
@@ -846,6 +846,29 @@ function v2StrategyVerificationLabel(code?: string) {
   return labels[code || ""] || code || "待处理";
 }
 
+function v2QualificationLabel(value?: string) {
+  const labels: Record<string, string> = {
+    CONSUMABLE: "可使用",
+    VERIFY_FIRST: "先补依据",
+    NOT_CONSUMABLE: "不可使用",
+    OBSERVE_ONLY: "仅观察",
+    DRAFT_ALLOWED: "可生成草案",
+    READY: "可用",
+    SATISFIED: "已满足",
+    UNSATISFIED: "未满足",
+    LIMITED: "范围有限",
+    BLOCKING: "硬依赖",
+    SUPPORTING: "支撑依赖",
+    ENRICHING: "补充依赖",
+    FIRST_PARTY_ASSERTED: "企业自行确认",
+    MACHINE_GROUNDED: "机器已回指原文",
+    SOURCE_REFERENCE_REQUIRED: "缺少公开依据",
+    CITATION_CONTRIBUTION_RUN_1_ONLY: "引用分析仅覆盖 Run 1",
+    CITATION_CONTRIBUTION_DOES_NOT_COVER_DIRECTION_REASON_RUN: "引用分析未覆盖本方向所在 Run",
+  };
+  return labels[value || ""] || value || "未判断";
+}
+
 function strategyContentTypeLabel(contentType?: string) {
   const labels: Record<string, string> = {
     VIDEO: "视频教程",
@@ -1481,6 +1504,7 @@ export default function App() {
   const [v2TruthSaving, setV2TruthSaving] = useState(false);
   const v2PendingDiagnosisKey = useRef<string | null>(null);
   const [v2StrategyReadiness, setV2StrategyReadiness] = useState<SinglePromptV2StrategyReadiness | null>(null);
+  const [v2QualificationProjection, setV2QualificationProjection] = useState<SinglePromptV2QualificationProjection | null>(null);
   const [v2Strategy, setV2Strategy] = useState<SinglePromptV2StrategyStatus | null>(null);
   const [v2StrategyLoading, setV2StrategyLoading] = useState(false);
   const [v2StrategyEditor, setV2StrategyEditor] = useState("本地审核人");
@@ -1860,6 +1884,7 @@ export default function App() {
       setV2SourcePreparation(null);
       setV2Diagnosis(null);
       setV2StrategyReadiness(null);
+      setV2QualificationProjection(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2RetestReadiness(null);
@@ -1916,6 +1941,7 @@ export default function App() {
       setV2Diagnosis(null);
       setV2CitationContribution(null);
       setV2StrategyReadiness(null);
+      setV2QualificationProjection(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2RetestReadiness(null);
@@ -1937,6 +1963,7 @@ export default function App() {
     setV2Diagnosis(null);
     setV2CitationContribution(null);
     setV2StrategyReadiness(null);
+    setV2QualificationProjection(null);
     setV2Strategy(null);
     setV2Execution(null);
     setV2RetestReadiness(null);
@@ -1967,6 +1994,7 @@ export default function App() {
       setV2SourceDrafts({});
       setV2SourceActionNotice(null);
       setV2StrategyReadiness(null);
+      setV2QualificationProjection(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2RetestReadiness(null);
@@ -2210,6 +2238,7 @@ export default function App() {
       params.delete("v2_execution_result");
       window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
       setV2StrategyReadiness(null);
+      setV2QualificationProjection(null);
       setV2Strategy(null);
       setV2Execution(null);
       const status = await api.createSinglePromptV2AnswerDiagnosis(v2Analysis.analysis.analysis_id, {
@@ -2689,6 +2718,7 @@ export default function App() {
         )),
       } : current);
       setV2StrategyReadiness(null);
+      setV2QualificationProjection(null);
       setV2TruthDraft({ sourceSignalId: "", capabilityLabel: "", productTruthStatus: "SUPPORTED", sourceReference: "", note: "" });
       message.success(v2TruthDraft.sourceReference.trim()
         ? "能力与公开依据已保存；请更新本次分析"
@@ -2730,6 +2760,7 @@ export default function App() {
       setV2DiagnosisEdits({});
       setV2AnswerReviewDecisions({});
       setV2StrategyReadiness(null);
+      setV2QualificationProjection(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2Diagnosis(status);
@@ -2749,14 +2780,24 @@ export default function App() {
     if (!v2Analysis || !diagnosisStatus?.result || !projectId || !activePromptId) return;
     setV2StrategyLoading(true);
     try {
-      const readiness = await api.getSinglePromptV2StrategyReadiness(
-        v2Analysis.analysis.analysis_id,
-        diagnosisStatus.diagnosis.diagnosis_id,
-        diagnosisStatus.result.result_version,
-        projectId,
-        activePromptId,
-      );
+      const [readiness, qualification] = await Promise.all([
+        api.getSinglePromptV2StrategyReadiness(
+          v2Analysis.analysis.analysis_id,
+          diagnosisStatus.diagnosis.diagnosis_id,
+          diagnosisStatus.result.result_version,
+          projectId,
+          activePromptId,
+        ),
+        api.getSinglePromptV2QualificationProjection(
+          v2Analysis.analysis.analysis_id,
+          diagnosisStatus.diagnosis.diagnosis_id,
+          diagnosisStatus.result.result_version,
+          projectId,
+          activePromptId,
+        ),
+      ]);
       setV2StrategyReadiness(readiness);
+      setV2QualificationProjection(qualification);
       const params = new URLSearchParams(window.location.search);
       const strategyId = params.get("v2_strategy");
       if (!strategyId) {
@@ -3437,6 +3478,7 @@ export default function App() {
       setV2SourcePreparation(null);
       setV2SourceDrafts({});
       setV2StrategyReadiness(null);
+      setV2QualificationProjection(null);
       setV2Strategy(null);
       setV2Execution(null);
       setV2RetestReadiness(null);
@@ -5604,93 +5646,118 @@ export default function App() {
                   {v2EvidenceReviewComplete && <Alert style={{ marginTop: 16 }} type="success" showIcon message="当前 Evidence ResultVersion 已审核" description="下一步可以查看策略资格；目标品牌能力核对仍只影响依赖这些事实的策略声明和公开内容。" />}
                 </Card>
 
-                {RELEASE_FIRST_SLICE && v2EvidenceReviewComplete && <Card
+                {RELEASE_FIRST_SLICE && v2Diagnosis?.result && <Card
                   id="v2-strategy-readiness"
                   size="small"
-                  title={<Space><ListChecks size={18} />下一步：生成并确认策略</Space>}
+                  title={<Space><ListChecks size={18} />自动策略方向与执行草案</Space>}
                   extra={<Button icon={<RefreshCw size={14} />} loading={v2StrategyLoading} onClick={() => refreshV2StrategyContext()} aria-label="刷新策略状态">刷新</Button>}
                 >
-                  {!v2StrategyReadiness ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={v2StrategyLoading ? "正在检查当前结果能否进入策略" : "尚未取得策略资格报告"} /> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                  {!v2QualificationProjection ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={v2StrategyLoading ? "正在计算用途资格、策略方向和执行草案" : "尚未取得自动资格投影"} /> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
                     <Alert
-                      type={v2StrategyReadiness.classification === "C" ? "success" : "warning"}
+                      type={v2QualificationProjection.final_plan.machine_direction_count > 0 ? "success" : "warning"}
                       showIcon
-                      message={v2StrategyReadiness.classification === "C" ? `${v2StrategyReadiness.qualified_direction_count} 个方向已具备策略资格` : "当前诊断已审核，但还没有可直接生成的策略方向"}
-                      description={v2StrategyReadiness.blocker?.detail || "策略只会消费已通过事实、关系和干预依据 Gate 的方向。"}
+                      message={v2QualificationProjection.final_plan.machine_direction_count > 0 ? "机器分析已自动到达策略和执行草案" : "当前没有通过用途资格检查的策略方向"}
+                      description={v2QualificationProjection.final_plan.machine_direction_count > 0
+                        ? "人工审核不再阻断内部计算；每个方向、Section 和 Claim 仍按自身依赖决定能否继续使用。"
+                        : "系统不会用待审核、局部证据或缺失事实拼出一个看似完整的策略。"}
                     />
                     <Descriptions size="small" column={{ xs: 1, md: 3 }}>
-                      <Descriptions.Item label="可消费理由">{v2StrategyReadiness.current_observation.fact_consumable_reason_count || 0}</Descriptions.Item>
-                      <Descriptions.Item label="合格正文来源">{v2StrategyReadiness.current_observation.source_count || 0}</Descriptions.Item>
-                      <Descriptions.Item label="有效证据关系">{v2StrategyReadiness.current_observation.effective_evidence_relation_count || 0}</Descriptions.Item>
-                      <Descriptions.Item label="已确认能力">{v2StrategyReadiness.current_observation.confirmed_capability_count || 0}</Descriptions.Item>
-                      <Descriptions.Item label="公开可写事实">{v2StrategyReadiness.current_observation.public_claim_eligible_count || 0}</Descriptions.Item>
-                      <Descriptions.Item label="合格策略方向">{v2StrategyReadiness.qualified_direction_count}</Descriptions.Item>
-                      <Descriptions.Item label="完整范围结论">{v2StrategyReadiness.strategy_dependency_coverage?.full_scope_conclusion_eligible ? <Tag color="green">可用</Tag> : <Tag color="gold">不可用</Tag>}</Descriptions.Item>
+                      <Descriptions.Item label="Answer 分析范围">Runs {v2QualificationProjection.analysis_scope.run_ids.join("、")}</Descriptions.Item>
+                      <Descriptions.Item label="引用贡献范围">{v2QualificationProjection.evidence_scope.run_ids.length ? `Run ${v2QualificationProjection.evidence_scope.run_ids.join("、")} only` : "暂无可用范围"}</Descriptions.Item>
+                      <Descriptions.Item label="自动策略方向">{v2QualificationProjection.final_plan.machine_direction_count}</Descriptions.Item>
+                      <Descriptions.Item label="自动执行草案">{v2QualificationProjection.final_plan.execution_draft_count}</Descriptions.Item>
+                      <Descriptions.Item label="公开 Claim 已具备依据">{v2QualificationProjection.final_plan.execution_ready_count}</Descriptions.Item>
+                      <Descriptions.Item label="草案可生成但需补依据">{v2QualificationProjection.final_plan.draftable_verify_first_count}</Descriptions.Item>
                     </Descriptions>
-                    <div className="v2-strategy-band">
-                      <Space wrap><Text strong>目标品牌事实基础</Text><Tag color={v2StrategyReadiness.foundation.state === "REQUIRED" ? "green" : v2StrategyReadiness.foundation.state === "UNKNOWN" ? "gold" : "default"}>{v2StrategyReadiness.foundation.state}</Tag></Space>
-                      <Text type="secondary">{v2StrategyReadiness.foundation.reason}</Text>
-                    </div>
-                    {v2StrategyReadiness.verification_items.length > 0 && <div>
-                      <Text strong>接下来需要处理</Text>
-                      <div className="v2-strategy-list" style={{ marginTop: 8 }}>
-                        {v2StrategyReadiness.verification_items.map((item) => <div key={item.code} className="v2-strategy-list-row"><Tag color="gold">{v2StrategyVerificationLabel(item.code)}</Tag><Text>{item.detail}</Text></div>)}
-                      </div>
-                    </div>}
-                    {v2StrategyReadiness.classification === "B" && <Space wrap>
-                      <Button onClick={() => document.getElementById("v2-target-brand-truth")?.scrollIntoView({ behavior: "smooth", block: "start" })}>核对目标品牌能力</Button>
-                      <Button onClick={() => document.getElementById("v2-evidence-review-focus")?.scrollIntoView({ behavior: "smooth", block: "start" })}>查看 Evidence 限制</Button>
-                    </Space>}
-                    {v2StrategyReadiness.can_create_strategy && !v2Strategy && <Alert
-                      type="success"
+
+                    {v2QualificationProjection.scope_limitations.length > 0 && <Alert
+                      type="warning"
                       showIcon
-                      message={`${v2StrategyReadiness.qualified_direction_count} 个方向通过策略资格 Gate`}
-                      description="生成只会冻结当前合格方向、依据和限制，不调用外部模型，也不会创建执行方案。"
-                      action={<Button type="primary" icon={<Play size={15} />} loading={v2StrategyLoading} onClick={createV2Strategy}>生成策略候选</Button>}
+                      message="引用机制证据目前只覆盖局部范围"
+                      description="Answer 已覆盖 Runs 1–9，但 Citation Contribution 仅覆盖 Run 1；下面的方向不会被包装成 9-Run 引用机制结论。"
                     />}
-                    {v2Strategy?.result && <>
-                      <Divider orientation="left">策略候选</Divider>
-                      <Descriptions size="small" column={{ xs: 1, md: 3 }}>
-                        <Descriptions.Item label="策略 ID"><Text code copyable>{v2Strategy.strategy.strategy_id}</Text></Descriptions.Item>
-                        <Descriptions.Item label="结果版本"><Text code>{v2Strategy.result.result_version}</Text></Descriptions.Item>
-                        <Descriptions.Item label="状态">{v2Strategy.review ? <Tag color={v2Strategy.review.decision === "ACCEPTED" ? "green" : "red"}>{v2Strategy.review.decision === "ACCEPTED" ? "已确认" : "已拒绝"}</Tag> : <Tag color="gold">待确认</Tag>}</Descriptions.Item>
-                      </Descriptions>
-                      {!v2Strategy.applicability.is_current_input && <Alert type="warning" showIcon message="该策略候选已过期" description="诊断、审核或安全输入已经变化；历史版本保留，但不能继续确认。" />}
-                      <div className="v2-strategy-list">
-                        {v2OrderedStrategyDirections.map((direction, index) => <div key={direction.direction_id} className="v2-strategy-direction">
-                          <div className="v2-strategy-direction-order"><Text strong>{v2Strategy.result?.output.needs_human_prioritization ? "同层" : index + 1}</Text></div>
-                          <div className="v2-strategy-direction-body">
-                            <Space wrap>
-                              <Text strong>{direction.direction_type === "FOUNDATION" ? "目标品牌事实基础" : direction.channel_label}</Text>
-                              <Tag color="green">{direction.level}</Tag>
-                              {direction.channel_role && <Tag color={direction.channel_role === "PRIMARY" ? "blue" : "purple"}>{direction.channel_role}</Tag>}
-                            </Space>
-                            <Text>{direction.rationale}</Text>
-                            {direction.hypothesis && <Text type="secondary">测试假设：{direction.hypothesis}</Text>}
-                          </div>
-                          {!v2Strategy.review && v2Strategy.allowed_operations.includes("REVISE") && v2StrategyOutput?.needs_human_prioritization && <Space size={4}>
-                            <Tooltip title="上移"><Button icon={<ArrowUp size={14} />} disabled={index === 0} onClick={() => moveV2StrategyDirection(direction.direction_id, -1)} aria-label="上移策略方向" /></Tooltip>
-                            <Tooltip title="下移"><Button icon={<ArrowDown size={14} />} disabled={index === v2OrderedStrategyDirections.length - 1} onClick={() => moveV2StrategyDirection(direction.direction_id, 1)} aria-label="下移策略方向" /></Tooltip>
-                          </Space>}
-                        </div>)}
-                      </div>
-                      {!v2Strategy.review && v2Strategy.allowed_operations.includes("REVIEW") ? <Space direction="vertical" size={10} style={{ width: "100%" }}>
-                        {v2Strategy.result.output.needs_human_prioritization && <Alert type="warning" showIcon message="多个同层方向需要人工排序" description="系统不会用引用次数或隐藏评分替你制造优先级。" />}
-                        <Row gutter={[12, 12]}>
-                          <Col xs={24} md={8}><Input value={v2StrategyEditor} onChange={(event) => setV2StrategyEditor(event.target.value)} placeholder="策略审核人" /></Col>
-                          <Col xs={24} md={16}><Input value={v2StrategyPriorityReason} onChange={(event) => setV2StrategyPriorityReason(event.target.value)} placeholder="调整优先顺序时填写判断依据" /></Col>
-                        </Row>
-                        {v2Strategy.result.output.needs_human_prioritization && <Button icon={<ListChecks size={15} />} loading={v2StrategyLoading} onClick={saveV2StrategyPriority}>保存优先顺序为新版本</Button>}
-                        <Input.TextArea value={v2StrategyNote} onChange={(event) => setV2StrategyNote(event.target.value)} rows={2} placeholder="策略审核说明；未知和限制不会因确认而消失" />
-                        <Space wrap>
-                          <Popconfirm title="确认当前策略候选？" description="确认只追加策略审核记录，不会创建执行方案。" onConfirm={() => reviewV2Strategy("ACCEPTED")} okText="确认" cancelText="取消">
-                            <Button type="primary" icon={<ShieldCheck size={15} />} disabled={v2Strategy.result.output.needs_human_prioritization} loading={v2StrategyLoading}>确认策略</Button>
-                          </Popconfirm>
-                          <Popconfirm title="拒绝当前策略候选？" onConfirm={() => reviewV2Strategy("REJECTED")} okText="拒绝" cancelText="取消">
-                            <Button danger loading={v2StrategyLoading}>拒绝</Button>
-                          </Popconfirm>
+
+                    {v2QualificationProjection.directions.map((direction) => {
+                      const draft = v2QualificationProjection.execution_drafts.find((row) => row.direction_id === direction.strategy_id);
+                      return <div key={direction.strategy_id} className="v2-strategy-band">
+                        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                          <Space wrap>
+                            <Text strong>策略方向：强化目标品牌的场景能力表达</Text>
+                            <Tag color="green">策略可用</Tag>
+                            <Tag color="blue">可生成执行草案</Tag>
+                            <Tag color={direction.public_claim_eligibility === "CONSUMABLE" ? "green" : "gold"}>{direction.public_claim_eligibility === "CONSUMABLE" ? "公开声明可用" : "公开声明待补依据"}</Tag>
+                          </Space>
+                          <Text>{direction.intervention_goal}</Text>
+                          <Text type="secondary">真实理由（Run {direction.reason_run_ids.join("、")}）：{direction.reason_text}</Text>
+                          <Space wrap>
+                            <Tag>Reason {direction.reason_id}</Tag>
+                            {direction.truth_ids.map((truthId) => <Tag key={truthId}>事实 #{truthId}</Tag>)}
+                          </Space>
+
+                          <Collapse size="small" items={[{
+                            key: `dependencies-${direction.strategy_id}`,
+                            label: `查看 ${direction.dependencies.length} 条资格依赖与推理链`,
+                            children: <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                              {direction.dependencies.map((dependency: any) => <div key={dependency.dependency_id} className="v2-strategy-list-row">
+                                <Space wrap>
+                                  <Tag color={dependency.dependency_role === "BLOCKING" ? "red" : dependency.dependency_role === "SUPPORTING" ? "blue" : "default"}>{v2QualificationLabel(dependency.dependency_role)}</Tag>
+                                  <Text>{dependency.object_type} · {dependency.object_id}</Text>
+                                  <Tag color={dependency.state === "SATISFIED" ? "green" : dependency.state === "UNSATISFIED" ? "gold" : "default"}>{v2QualificationLabel(dependency.state)}</Tag>
+                                  <Text type="secondary">用于 {(dependency.required_for || []).join("、")}</Text>
+                                </Space>
+                              </div>)}
+                            </Space>,
+                          }]} />
+
+                          {draft && <>
+                            <Divider orientation="left">自动执行草案</Divider>
+                            <Descriptions size="small" column={{ xs: 1, md: 2 }}>
+                              <Descriptions.Item label="标题">{draft.title}</Descriptions.Item>
+                              <Descriptions.Item label="资产作用">目标品牌事实锚点</Descriptions.Item>
+                              <Descriptions.Item label="资产操作">新建资产</Descriptions.Item>
+                              <Descriptions.Item label="渠道">尚未选择；当前证据不足以指定发布渠道</Descriptions.Item>
+                            </Descriptions>
+                            <Table
+                              size="small"
+                              rowKey="section_id"
+                              pagination={false}
+                              dataSource={draft.sections}
+                              columns={[
+                                { title: "内容区块", dataIndex: "title", width: 190 },
+                                { title: "作用", dataIndex: "purpose" },
+                                { title: "草案资格", width: 120, render: (_: unknown, row: any) => <Tag color={row.section_eligibility === "READY" ? "green" : "blue"}>{v2QualificationLabel(row.section_eligibility)}</Tag> },
+                                { title: "公开资格", width: 130, render: (_: unknown, row: any) => <Tag color={row.public_claim_eligibility === "CONSUMABLE" ? "green" : "gold"}>{v2QualificationLabel(row.public_claim_eligibility)}</Tag> },
+                              ]}
+                            />
+                            <Text strong>目标品牌 Claim</Text>
+                            <div className="v2-strategy-list">
+                              {draft.claims.map((claim: any) => <div key={claim.claim_id} className="v2-strategy-list-row">
+                                <Space wrap>
+                                  <Text>{claim.text}</Text>
+                                  <Tag color="gold">{v2QualificationLabel(claim.claim_eligibility)}</Tag>
+                                  <Tag>{v2QualificationLabel(claim.truth_provenance)}</Tag>
+                                  {(claim.reason_codes || []).map((code: string) => <Tag key={code} color="gold">{v2QualificationLabel(code)}</Tag>)}
+                                </Space>
+                              </div>)}
+                            </div>
+                            <Alert type="info" showIcon message="草案已生成，但没有授权任何外部动作" description="缺公开依据的 Claim 已由后端硬拦截；补充依据前不会被标记为可公开发布。" />
+                          </>}
                         </Space>
-                      </Space> : v2Strategy.review ? <Alert type={v2Strategy.review.decision === "ACCEPTED" ? "success" : "warning"} showIcon message={v2Strategy.review.decision === "ACCEPTED" ? "策略已确认" : "策略已拒绝"} description="本批到策略确认结束；执行方案入口仍保持关闭。" /> : null}
-                    </>}
+                      </div>;
+                    })}
+
+                    {v2QualificationProjection.directions.length === 0 && <Alert type="warning" showIcon message="当前没有可自动生成的真实方向" description="这不是等待人工 Review；而是当前对象没有满足该方向自身所需的 Reason 与目标品牌适用性依赖。" />}
+
+                    <Collapse ghost items={[{
+                      key: "qualification-audit",
+                      label: "查看资格投影版本与边界",
+                      children: <Descriptions size="small" column={1}>
+                        <Descriptions.Item label="资格投影 SHA-256"><Text code copyable>{v2QualificationProjection.projection_hash}</Text></Descriptions.Item>
+                        <Descriptions.Item label="诊断结果版本"><Text code>{v2QualificationProjection.input_identity.diagnosis_result_version}</Text></Descriptions.Item>
+                        <Descriptions.Item label="Citation Contribution 版本"><Text code>{v2QualificationProjection.evidence_scope.result?.result_version || "无"}</Text></Descriptions.Item>
+                        <Descriptions.Item label="计算边界">只读、0 次外部模型调用、0 次业务写入</Descriptions.Item>
+                      </Descriptions>,
+                    }]} />
                   </Space>}
                 </Card>}
 

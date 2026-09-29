@@ -2,6 +2,25 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Critic Output Recovery Boundary
+
+### Product Decision
+
+An overlong Critic completion is a contract/transport failure, not a reason to
+reinterpret partial JSON or to rerun valid Shadow objects. The Critic now emits
+one compact challenge with bounded fields. Incomplete responses remain
+non-consumable and non-cacheable.
+
+The six valid Phase A signals can enter Human Gold incremental-value validation
+now. The seventh object may be recovered later through its exact Supplemental
+task after separate authorization; it does not hold calibration hostage.
+
+### User Impact
+
+No formal Qualification, Product Truth, Citation Contribution, Strategy or
+Execution state changed. This patch improves the reliability and auditability
+of future Critic calls without making Model B more authoritative.
+
 ## 2026-09-29 Model B Shadow Activation
 
 ### Product Decision

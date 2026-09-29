@@ -2,6 +2,24 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Qualification Critic Contract Recovery
+
+- Bounded the v3 Critic response to three issue types, one required primary
+  issue, a 200-character counterexample and a 300-character/two-sentence
+  rationale. Provider JSON Schema and local validation enforce the same limits.
+- Tightened the Qwen task to one strongest falsification reason and removed
+  duplicate baseline/rule structures from the provider payload. The frozen
+  audit plan remains complete; task, semantic input and provider payload now
+  have separate hashes.
+- Increased the completion ceiling from 1,200 to 1,600 only as JSON completion
+  margin. Any non-stop finish remains a hard `FAILED_INCOMPLETE_RESPONSE` with
+  no parse, cache write or Critic Signal.
+- Added a deterministic one-object Supplemental plan builder for failed Phase A
+  recovery. It does not queue work or grant external-call authority. The fixed
+  failed object has a 2,555-token ceiling and estimated RMB 0.018999 ceiling.
+- Preserved `critic-v1:d9f8b0fd5f1c89ad` unchanged at six admitted and one
+  failed result. Phase B Human Gold remains unblocked.
+
 ## 2026-09-29 Qualification Critic Shadow
 
 - Added a release-owned, exact-version Model B Shadow chain with immutable

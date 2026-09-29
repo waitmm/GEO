@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -28,10 +29,11 @@ from app.services.semantic_llm.model_b import create_model_b_client
 from app.services.serialization import dumps, loads
 
 
-QUALIFICATION_CRITIC_CONTRACT_VERSION = "single_prompt_v2.qualification_critic_shadow.v2"
-QUALIFICATION_CRITIC_PROMPT_VERSION = "single_prompt_v2.qualification_critic.qwen.v2"
-QUALIFICATION_CRITIC_SCHEMA_VERSION = "single_prompt_v2.qualification_critic.strict.v2"
-QUALIFICATION_CRITIC_IMPLEMENTATION_VERSION = "single_prompt_v2.qualification_critic.impl.v2"
+QUALIFICATION_CRITIC_CONTRACT_VERSION = "single_prompt_v2.qualification_critic_shadow.v3"
+QUALIFICATION_CRITIC_PROMPT_VERSION = "single_prompt_v2.qualification_critic.qwen.v3"
+QUALIFICATION_CRITIC_SCHEMA_VERSION = "single_prompt_v2.qualification_critic.strict.v3"
+QUALIFICATION_CRITIC_PROVIDER_PAYLOAD_VERSION = "single_prompt_v2.qualification_critic.provider_payload.v1"
+QUALIFICATION_CRITIC_IMPLEMENTATION_VERSION = "single_prompt_v2.qualification_critic.impl.v3"
 
 _SILICONFLOW_INPUT_CNY_PER_MILLION = 1.8
 _SILICONFLOW_OUTPUT_CNY_PER_MILLION = 10.8
@@ -55,27 +57,47 @@ _ISSUES = {
     "OTHER",
 }
 
+CriticIssue = Literal[
+    "SUBJECT_MISMATCH",
+    "QUALIFIER_LOSS",
+    "OVERSTATED_SUPPORT",
+    "TOPICAL_ONLY_AS_SUPPORT",
+    "SPAN_INSUFFICIENT",
+    "BRAND_CAPABILITY_EXTRAPOLATION",
+    "TRUTH_SCOPE_EXPANSION",
+    "DECISION_ROLE_MISMATCH",
+    "STRATEGY_GAP_MISMATCH",
+    "SCOPE_OVERREACH",
+    "CLAIM_OVERREACH",
+    "OTHER",
+]
+
+PrimaryCriticIssue = Literal[
+    "NONE",
+    "INSUFFICIENT_CONTEXT",
+    "SUBJECT_MISMATCH",
+    "QUALIFIER_LOSS",
+    "OVERSTATED_SUPPORT",
+    "TOPICAL_ONLY_AS_SUPPORT",
+    "SPAN_INSUFFICIENT",
+    "BRAND_CAPABILITY_EXTRAPOLATION",
+    "TRUTH_SCOPE_EXPANSION",
+    "DECISION_ROLE_MISMATCH",
+    "STRATEGY_GAP_MISMATCH",
+    "SCOPE_OVERREACH",
+    "CLAIM_OVERREACH",
+    "OTHER",
+]
+
 
 class QualificationCriticResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     critic_verdict: Literal["AGREE", "DISAGREE", "INSUFFICIENT_CONTEXT"]
-    issue_types: list[Literal[
-        "SUBJECT_MISMATCH",
-        "QUALIFIER_LOSS",
-        "OVERSTATED_SUPPORT",
-        "TOPICAL_ONLY_AS_SUPPORT",
-        "SPAN_INSUFFICIENT",
-        "BRAND_CAPABILITY_EXTRAPOLATION",
-        "TRUTH_SCOPE_EXPANSION",
-        "DECISION_ROLE_MISMATCH",
-        "STRATEGY_GAP_MISMATCH",
-        "SCOPE_OVERREACH",
-        "CLAIM_OVERREACH",
-        "OTHER",
-    ]]
-    counterexample: str | None
-    rationale: str = Field(min_length=1, max_length=1200)
+    issue_types: list[CriticIssue] = Field(max_length=3)
+    primary_issue: PrimaryCriticIssue
+    counterexample: str | None = Field(max_length=200)
+    rationale: str = Field(min_length=1, max_length=300)
 
 
 def _canonical_json(value: Any) -> str:
@@ -140,7 +162,20 @@ def _load_contribution_output(db: Session, projection: dict[str, Any]) -> dict[s
 
 def _freeze_task(task: dict[str, Any]) -> dict[str, Any]:
     frozen = dict(task)
-    frozen["input_hash"] = _hash({key: value for key, value in frozen.items() if key != "input_hash"})
+    frozen["semantic_input_hash"] = _hash(frozen.get("critic_input") or {})
+    frozen["input_hash"] = _hash({
+        key: value
+        for key, value in frozen.items()
+        if key not in {"input_hash", "provider_payload_hash"}
+    })
+    system_prompt, provider_payload = _prompt(frozen)
+    frozen["provider_payload_hash"] = _hash({
+        "system_prompt": system_prompt,
+        "user_payload": provider_payload,
+        "prompt_version": QUALIFICATION_CRITIC_PROMPT_VERSION,
+        "schema_version": QUALIFICATION_CRITIC_SCHEMA_VERSION,
+        "provider_payload_version": QUALIFICATION_CRITIC_PROVIDER_PAYLOAD_VERSION,
+    })
     return frozen
 
 
@@ -335,7 +370,7 @@ def _citation_candidates(contribution: dict[str, Any] | None) -> list[dict[str, 
 
 def _estimated_task_tokens(task: dict[str, Any]) -> int:
     system_prompt, payload = _prompt(task)
-    return max(1, (len(system_prompt) + len(_canonical_json(payload))) // 3) + 1200
+    return max(1, (len(system_prompt) + len(_canonical_json(payload))) // 3) + 1600
 
 
 def build_qualification_critic_plan(
@@ -372,6 +407,9 @@ def build_qualification_critic_plan(
     plan = {
         "phase": "SHADOW_PHASE_A_CRITIC_BEHAVIOR_VALIDATION",
         "contract_version": QUALIFICATION_CRITIC_CONTRACT_VERSION,
+        "prompt_version": QUALIFICATION_CRITIC_PROMPT_VERSION,
+        "schema_version": QUALIFICATION_CRITIC_SCHEMA_VERSION,
+        "provider_payload_version": QUALIFICATION_CRITIC_PROVIDER_PAYLOAD_VERSION,
         "selection_policy": "HIGH_IMPACT_POSITIVE_RELATION_OR_CONSUMABLE_STRATEGY_V1",
         "baseline_projection_hash": projection["projection_hash"],
         "candidate_count": len(candidates),
@@ -381,6 +419,68 @@ def build_qualification_critic_plan(
     plan["estimated_token_ceiling"] = sum(_estimated_task_tokens(task) for task in candidates)
     plan["plan_hash"] = _hash(plan)
     return {"projection": projection, "plan": plan}
+
+
+def build_qualification_critic_supplemental_plan(
+    db: Session,
+    *,
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    project_id: int,
+    prompt_id: int,
+    object_id: str,
+    parent_critic_id: str,
+    parent_result_version: str,
+) -> dict[str, Any]:
+    """Freeze one failed Phase A object for a separately authorized recovery."""
+    built = build_qualification_critic_plan(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
+    matches = [task for task in built["plan"]["tasks"] if task["object_id"] == object_id]
+    _require(len(matches) == 1, "CRITIC_SUPPLEMENTAL_OBJECT_NOT_UNIQUE", "Supplemental Critic 对象不存在或不唯一")
+    source_task = matches[0]
+    identity = {
+        "phase": "SHADOW_PHASE_A_CONTRACT_RECOVERY",
+        "object_id": object_id,
+        "source_task_id": source_task["task_id"],
+        "parent_critic_id": parent_critic_id,
+        "parent_result_version": parent_result_version,
+        "contract_version": QUALIFICATION_CRITIC_CONTRACT_VERSION,
+        "prompt_version": QUALIFICATION_CRITIC_PROMPT_VERSION,
+        "schema_version": QUALIFICATION_CRITIC_SCHEMA_VERSION,
+        "provider_payload_version": QUALIFICATION_CRITIC_PROVIDER_PAYLOAD_VERSION,
+    }
+    task = {
+        key: value
+        for key, value in source_task.items()
+        if key not in {"task_id", "input_hash", "semantic_input_hash", "provider_payload_hash"}
+    }
+    task.update({
+        "task_id": f"critic-supplemental-{_hash(identity)[:20]}",
+        "supplements_task_id": source_task["task_id"],
+        "parent_critic_id": parent_critic_id,
+        "parent_result_version": parent_result_version,
+        "recovery_reason": "FAILED_INCOMPLETE_RESPONSE",
+    })
+    task = _freeze_task(task)
+    plan = {
+        **identity,
+        "selection_policy": "EXACT_FAILED_PHASE_A_OBJECT_ONLY",
+        "candidate_count": 1,
+        "tasks": [task],
+        "max_external_requests": 1,
+        "automatic_retries": 0,
+        "estimated_token_ceiling": _estimated_task_tokens(task),
+        "formal_qualification_effect": "SHADOW_ONLY",
+    }
+    plan["plan_hash"] = _hash(plan)
+    return {"projection": built["projection"], "plan": plan}
 
 
 def queue_qualification_critic(
@@ -478,30 +578,25 @@ def queue_qualification_critic(
 
 def _prompt(candidate: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     system = """你是 Model B Selective Critic，只复核一个已经冻结的高影响判断。
-你不能重做主分析、不能生成新策略、不能改变任何 ID、事实、渠道、角色或资格。
-你的唯一任务是寻找 Model A 当前判断不成立的最强理由；如果冻结输入不足，必须返回 INSUFFICIENT_CONTEXT。
+你是 Critic，不是主分析器。只寻找 Model A 当前判断不成立的一个最强理由；如果冻结输入不足，返回 INSUFFICIENT_CONTEXT。
 Citation Relation 重点检查主体错位、限定丢失、支持强度夸大、把主题相关误作支持、品牌能力外推、span 不足以支持 verdict。
 Strategy Direction 重点检查 Gap 与 Intervention 错位、关键依赖不足、主体或 Truth 错误、把 Run 1 局部 Citation 证据外推为 Runs 1-9 结论、scope overreach 和足以推翻方向的反例。
-禁止重新生成 Strategy、新增 Channel、新增 Product Truth、新增 Evidence，或自行提升/降低正式 Qualification。
+禁止重述完整 Answer 或 Source、逐项复盘所有字段、输出完整替代分析、讨论多个替代标签、重新生成 Strategy、长篇解释、空白填充或输出思维过程。
+禁止新增 Channel、Product Truth 或 Evidence，禁止自行提升或降低正式 Qualification。
 现实世界事实未包含在输入中时必须返回 INSUFFICIENT_CONTEXT，不能使用世界知识补齐。
-counterexample 如非 null，必须逐字引用 supplied_object 中已有的连续文本；不得自由编写反例。
-AGREE 时 issue_types 必须为空；DISAGREE 时 issue_types 至少一项。输出只能是符合 Schema 的 JSON。"""
+counterexample 如非 null，必须逐字引用 semantic_input 中已有的连续文本；不得自由编写反例。
+直接返回紧凑 JSON。issue_types 最多三项；primary_issue 只保留一个最主要问题；counterexample 最多 200 字符；rationale 最多 300 字符、最多两句话且不得重述输入。
+AGREE 时 primary_issue=NONE 且 issue_types=[]；DISAGREE 时 primary_issue 必须属于 issue_types；INSUFFICIENT_CONTEXT 时 primary_issue=INSUFFICIENT_CONTEXT 且 issue_types=[]。"""
     payload = {
         "task": "FIND_STRONGEST_REASON_MODEL_A_JUDGMENT_MAY_NOT_HOLD",
         "task_id": candidate["task_id"],
         "critic_mode": candidate["critic_mode"],
         "candidate_type": candidate["candidate_type"],
         "object_id": candidate["object_id"],
-        "impact_level": candidate["impact_level"],
-        "impact_reasons": candidate["impact_reasons"],
-        "downstream_dependency": candidate["downstream_dependency"],
-        "required_for": candidate["required_for"],
-        "input_object_ids": candidate["input_object_ids"],
-        "input_hash": candidate["input_hash"],
-        "model_a_baseline": candidate["model_a_baseline"],
-        "rule_signals": candidate["rule_signals"],
+        "provider_payload_version": QUALIFICATION_CRITIC_PROVIDER_PAYLOAD_VERSION,
+        "semantic_input_hash": candidate["semantic_input_hash"],
         "allowed_issue_types": sorted(_ISSUES),
-        "supplied_object": candidate["critic_input"],
+        "semantic_input": candidate["critic_input"],
         "authority_boundary": {
             "shadow_only": True,
             "may_change_qualification": False,
@@ -517,10 +612,23 @@ def _validator(candidate: dict[str, Any]):
 
     def validate(payload: Any) -> dict[str, Any]:
         row = QualificationCriticResponse.model_validate(payload).model_dump(mode="json")
-        if row["critic_verdict"] == "AGREE" and row["issue_types"]:
-            raise SemanticLLMError("AGREE 不得携带 issue")
-        if row["critic_verdict"] == "DISAGREE" and not row["issue_types"]:
-            raise SemanticLLMError("DISAGREE 必须携带至少一个 issue")
+        verdict = row["critic_verdict"]
+        issues = row["issue_types"]
+        primary_issue = row["primary_issue"]
+        if len(issues) != len(set(issues)):
+            raise SemanticLLMError("issue_types 不得重复")
+        if verdict == "AGREE" and (issues or primary_issue != "NONE"):
+            raise SemanticLLMError("AGREE 必须使用 primary_issue=NONE 且不得携带 issue")
+        if verdict == "DISAGREE" and (not issues or primary_issue not in issues):
+            raise SemanticLLMError("DISAGREE 的 primary_issue 必须属于非空 issue_types")
+        if verdict == "INSUFFICIENT_CONTEXT" and (issues or primary_issue != "INSUFFICIENT_CONTEXT"):
+            raise SemanticLLMError("INSUFFICIENT_CONTEXT 必须使用同名 primary_issue 且不得携带 issue")
+        rationale = row["rationale"]
+        if rationale != rationale.strip() or re.search(r"\s{4,}", rationale):
+            raise SemanticLLMError("rationale 不得包含首尾空白或空白填充")
+        sentence_parts = [part for part in re.split(r"[。！？!?]+|(?<!\d)\.(?:\s|$)", rationale) if part.strip()]
+        if len(sentence_parts) > 2:
+            raise SemanticLLMError("rationale 最多两句话")
         counterexample = str(row.get("counterexample") or "").strip()
         if counterexample and counterexample not in searchable:
             raise SemanticLLMError("counterexample 未逐字出现在冻结输入中")
@@ -575,6 +683,7 @@ def execute_qualification_critic(
                     "contract_version": QUALIFICATION_CRITIC_CONTRACT_VERSION,
                     "prompt_version": QUALIFICATION_CRITIC_PROMPT_VERSION,
                     "schema_version": QUALIFICATION_CRITIC_SCHEMA_VERSION,
+                    "provider_payload_version": QUALIFICATION_CRITIC_PROVIDER_PAYLOAD_VERSION,
                     "implementation_version": QUALIFICATION_CRITIC_IMPLEMENTATION_VERSION,
                     **payload,
                 },
@@ -610,6 +719,8 @@ def execute_qualification_critic(
                 "candidate_type": candidate["candidate_type"],
                 "object_id": candidate["object_id"],
                 "input_hash": candidate["input_hash"],
+                "semantic_input_hash": candidate["semantic_input_hash"],
+                "provider_payload_hash": candidate["provider_payload_hash"],
             })
             started = perf_counter()
             try:
@@ -619,7 +730,7 @@ def execute_qualification_critic(
                     response_schema=QualificationCriticResponse,
                     prompt_version=QUALIFICATION_CRITIC_PROMPT_VERSION,
                     schema_version=QUALIFICATION_CRITIC_SCHEMA_VERSION,
-                    max_tokens=1200,
+                    max_tokens=1600,
                     db=db,
                     strict_json=True,
                     response_validator=_validator(candidate),
@@ -669,6 +780,7 @@ def execute_qualification_critic(
             "contract_version": QUALIFICATION_CRITIC_CONTRACT_VERSION,
             "prompt_version": QUALIFICATION_CRITIC_PROMPT_VERSION,
             "schema_version": QUALIFICATION_CRITIC_SCHEMA_VERSION,
+            "provider_payload_version": QUALIFICATION_CRITIC_PROVIDER_PAYLOAD_VERSION,
             "implementation_version": QUALIFICATION_CRITIC_IMPLEMENTATION_VERSION,
             "critic_id": critic_id,
             "input_identity": {

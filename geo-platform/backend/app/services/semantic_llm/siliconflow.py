@@ -253,6 +253,7 @@ class SiliconFlowClient(SemanticLLMClient):
                 if finish_reason != "stop":
                     raise response_error(
                         "SiliconFlow 响应未完整结束",
+                        code="FAILED_INCOMPLETE_RESPONSE",
                         source="EXTERNAL_LLM",
                         content=content,
                         finish_reason=finish_reason,

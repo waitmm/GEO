@@ -2,6 +2,18 @@
 
 Status: ACTIVE
 
+## 2026-09-29 Model B Critic Contract Recovery
+
+The Phase A incomplete response was isolated to one overlong Critic completion.
+The Critic contract now enforces compact output in both provider JSON Schema and
+local admission, rejects every non-stop completion before parsing or caching,
+and sends one deduplicated semantic payload while retaining complete Plan/Audit
+records. The old six-accepted/one-failed Shadow result remains immutable.
+
+One deterministic Supplemental task exists only as a frozen, single-object
+plan; it is not queued and requires separate authorization. Human Gold Phase B
+continues with the six valid Shadow results and does not wait for recovery.
+
 ## 2026-09-29 Model B Qualification Critic Shadow
 
 SiliconFlow Qwen is now enabled locally as the bounded Model B Critic. The

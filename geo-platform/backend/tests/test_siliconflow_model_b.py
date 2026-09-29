@@ -161,6 +161,72 @@ def test_siliconflow_rejects_unknown_fields_without_retry(monkeypatch):
     assert cache_writes == []
 
 
+def test_siliconflow_rejects_incomplete_response_without_parse_or_cache(monkeypatch):
+    audits: list[dict] = []
+    cache_writes: list[dict] = []
+    post_calls = 0
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+        headers = {"x-siliconcloud-trace-id": "trace-incomplete"}
+
+        @staticmethod
+        def json():
+            return {
+                "model": "Qwen/Qwen3.6-35B-A3B",
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {"content": '{"decision":"KEEP","object_ids":['},
+                }],
+                "usage": {"prompt_tokens": 1419, "completion_tokens": 1200, "total_tokens": 2619},
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def post(self, url, headers, json):
+            nonlocal post_calls
+            post_calls += 1
+            return FakeResponse()
+
+    monkeypatch.setattr(siliconflow.httpx, "Client", FakeHttpClient)
+    monkeypatch.setattr(siliconflow.LLMCallCache, "get", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        siliconflow.LLMCallCache,
+        "put",
+        lambda *_args, **kwargs: cache_writes.append(kwargs),
+    )
+    client = siliconflow.SiliconFlowClient(max_attempts=1, response_audit_sink=audits.append)
+    client.settings.siliconflow_api_key = "test-key"
+
+    with pytest.raises(SemanticLLMError) as rejected:
+        client.structured_generate_sync(
+            system_prompt="Return JSON.",
+            user_payload={"allowed_object_ids": ["direction-1"]},
+            response_schema=CriticResponse,
+            prompt_version="model-b-critic.v1",
+            schema_version="model-b-critic.strict.v1",
+            db=object(),
+        )
+
+    assert getattr(rejected.value, "code", "") == "FAILED_INCOMPLETE_RESPONSE"
+    assert post_calls == 1
+    assert client.external_call_count == 1
+    assert client.call_count == 0
+    assert audits[-1]["validation_status"] == "REJECTED"
+    assert audits[-1]["finish_reason"] == "length"
+    assert audits[-1]["rejection_code"] == "FAILED_INCOMPLETE_RESPONSE"
+    assert cache_writes == []
+
+
 def test_model_b_is_disabled_for_external_calls_by_default(monkeypatch):
     settings = model_b.get_settings()
     monkeypatch.setattr(settings, "model_b_enabled", False)

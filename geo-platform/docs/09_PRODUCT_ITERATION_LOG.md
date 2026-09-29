@@ -15,6 +15,12 @@ The six valid Phase A signals can enter Human Gold incremental-value validation
 now. The seventh object may be recovered later through its exact Supplemental
 task after separate authorization; it does not hold calibration hostage.
 
+The authorized Supplemental call subsequently completed and produced one
+schema-valid `DISAGREE / OVERSTATED_SUPPORT` signal. Product interpretation is
+still deferred to Human Gold. The original six valid Phase A signals remain the
+baseline cohort; the Supplemental result is appended as a seventh Gold
+candidate without changing Phase A's historical counts.
+
 ### User Impact
 
 No formal Qualification, Product Truth, Citation Contribution, Strategy or

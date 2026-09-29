@@ -152,10 +152,38 @@ token ceiling = 2,555
 estimated cost ceiling = RMB 0.018999, not billed amount
 ```
 
-This plan has not been queued or executed. A new explicit external-call
-authorization is required. Human Gold Phase B can proceed immediately with the
-six valid Phase A objects; the failed object remains an incomplete-response
-diagnostic case and does not block calibration.
+At the recovery-code checkpoint this plan was not queued and still required
+explicit external-call authorization. Human Gold Phase B was already able to
+proceed with the six valid Phase A objects; the failed object remained an
+incomplete-response diagnostic case and did not block calibration.
+
+### Supplemental Execution Outcome
+
+The separately authorized one-object recovery completed through the release API
+and single-concurrency worker. A stale pre-restart worker first rejected one
+queued execution at the plan-drift gate before any provider call; that
+zero-call operational failure remains recorded. After the worker was restarted
+on the committed recovery code, the same frozen task executed once:
+
+```text
+Execution = qualification-critic-supplemental-1ee93435-7bce-4ab6-8b42-482240ef6bf1
+Result = critic-supplemental-v1:bb50b3176bc25927
+Result hash = bb50b3176bc25927a3098f6647f02f2fd73187392ddb3446d89eebcf1d2957d1
+finish_reason = stop
+processing = DONE 1/1
+verdict = DISAGREE
+primary issue = OVERSTATED_SUPPORT
+requests / retries / cache hits = 1 / 0 / 0
+input / output / total tokens = 1,100 / 111 / 1,211
+estimated cost = RMB 0.003179, not billed amount
+latency = 4,728 ms
+```
+
+The complete accepted response artifact is retained with mode `0600`; its file
+hash and recorded size were reverified. The old Phase A result is unchanged at
+six admitted and one failed response. This Supplemental signal is only an
+additional Human Gold candidate and is not included in the original Phase A
+statistics or any formal business state.
 
 ## Not Yet Activated
 

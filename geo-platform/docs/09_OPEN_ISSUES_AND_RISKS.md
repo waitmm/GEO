@@ -8,7 +8,9 @@ Status: ACTIVE
   implemented. The key is configured and Model B is locally enabled. A
   non-business synthetic canary verified transport, and the later explicitly
   authorized seven-object Phase A run verified real business-payload admission
-  for six objects. Judgment quality remains unverified until Human Gold review.
+  for six original Phase A objects plus one independently recovered Supplemental
+  object. Judgment quality remains unverified until Human Gold review; the
+  Supplemental signal does not rewrite original Phase A statistics.
 - Provider availability must not be interpreted as permission to override or
   mutate Model A, Qualification, Strategy, Truth or public Claim state. The
   current implementation enforces Shadow-only output.

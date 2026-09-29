@@ -19,6 +19,18 @@ Status: ACTIVE
   failed object has a 2,555-token ceiling and estimated RMB 0.018999 ceiling.
 - Preserved `critic-v1:d9f8b0fd5f1c89ad` unchanged at six admitted and one
   failed result. Phase B Human Gold remains unblocked.
+- Added an exact Supplemental POST/worker path with parent-failure, task, plan,
+  semantic-input, provider-payload, request, token and budget checks. The first
+  queued execution was rejected before external I/O because a stale resident
+  worker still used the pre-Supplemental executor; that zero-call failure is
+  retained rather than overwritten.
+- Restarted the worker on the committed path and executed the same frozen task
+  once. Result `critic-supplemental-v1:bb50b3176bc25927` admitted one compact
+  `DISAGREE / OVERSTATED_SUPPORT` signal using 1,211 tokens and an estimated
+  RMB 0.003179. The full artifact hash and `0600` file were verified.
+- Kept the Supplemental result outside original Phase A statistics. It joins
+  Phase B only as one additional Human Gold candidate; Qualification, Citation
+  Contribution, Product Truth and Strategy writes remain zero.
 
 ## 2026-09-29 Qualification Critic Shadow
 

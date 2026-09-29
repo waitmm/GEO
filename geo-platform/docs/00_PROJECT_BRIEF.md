@@ -10,9 +10,15 @@ local admission, rejects every non-stop completion before parsing or caching,
 and sends one deduplicated semantic payload while retaining complete Plan/Audit
 records. The old six-accepted/one-failed Shadow result remains immutable.
 
-One deterministic Supplemental task exists only as a frozen, single-object
-plan; it is not queued and requires separate authorization. Human Gold Phase B
-continues with the six valid Shadow results and does not wait for recovery.
+One deterministic Supplemental task was frozen as a single-object plan and was
+held until separate authorization. Human Gold Phase B continued with the six
+valid Shadow results without waiting for recovery.
+
+The later explicit authorization executed that exact task once. Supplemental
+Result `critic-supplemental-v1:bb50b3176bc25927` passed the complete-response,
+strict-schema and local-validation gates with one `DISAGREE / OVERSTATED_SUPPORT`
+signal. It is an additional Gold candidate only. Original Phase A statistics
+and every formal business object remain unchanged.
 
 ## 2026-09-29 Model B Qualification Critic Shadow
 

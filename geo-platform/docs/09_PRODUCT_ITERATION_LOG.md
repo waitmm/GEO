@@ -22,6 +22,15 @@ an explicit start action, stable queued/running progress and per-object results.
 The interface states that the signals are not final decisions and that page
 refreshes do not create calls.
 
+### Phase A Outcome
+
+The first seven-object real Shadow run completed with six admitted responses
+and one incomplete response. Qwen produced four disagreements, including a
+useful brand-subject warning and several judgments that may themselves be
+false positives. This is the intended Phase A outcome: concrete Critic signals
+are now available for Human Gold comparison, while every formal Model A and
+strategy object remains unchanged.
+
 ## 2026-09-29 Model B Provider Selection
 
 ### Product Decision

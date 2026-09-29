@@ -55,13 +55,21 @@ def test_critic_selects_positive_binding_but_not_related_only():
     assert len(positive) == 1
     assert positive[0]["candidate_type"] == "CITATION_RELATION"
     assert positive[0]["object_id"] == "binding-1"
+    assert positive[0]["task_id"] == positive[0]["candidate_id"]
+    assert positive[0]["impact_level"] == "HIGH"
+    assert positive[0]["critic_mode"] == "FALSIFICATION"
+    assert positive[0]["model_a_baseline"]["evidence_relation"] == "SUPPORTS_PARTIAL"
+    assert "binding-1" in positive[0]["input_object_ids"]
+    assert positive[0]["input_hash"] == critic._hash({
+        key: value for key, value in positive[0].items() if key != "input_hash"
+    })
     assert related == []
 
 
 def test_critic_response_schema_is_strict_and_closed():
     valid = critic.QualificationCriticResponse.model_validate({
         "critic_verdict": "DISAGREE",
-        "issues": ["OVERSTATED_SUPPORT"],
+        "issue_types": ["OVERSTATED_SUPPORT"],
         "counterexample": "来源只支持部分操作。",
         "rationale": "支持范围被扩大。",
     })
@@ -70,10 +78,17 @@ def test_critic_response_schema_is_strict_and_closed():
     with pytest.raises(ValidationError):
         critic.QualificationCriticResponse.model_validate({
             "critic_verdict": "AGREE",
-            "issues": [],
+            "issue_types": [],
             "counterexample": None,
             "rationale": "一致。",
             "final_strategy": "官网优先",
+        })
+    with pytest.raises(ValidationError):
+        critic.QualificationCriticResponse.model_validate({
+            "critic_verdict": "AGREE",
+            "issues": [],
+            "counterexample": None,
+            "rationale": "旧字段不得通过。",
         })
 
 
@@ -84,14 +99,14 @@ def test_critic_dynamic_gate_rejects_cross_field_and_invented_counterexample():
     with pytest.raises(SemanticLLMError, match="AGREE"):
         validate({
             "critic_verdict": "AGREE",
-            "issues": ["OTHER"],
+            "issue_types": ["OTHER"],
             "counterexample": None,
             "rationale": "不合法。",
         })
     with pytest.raises(SemanticLLMError, match="未逐字出现"):
         validate({
             "critic_verdict": "DISAGREE",
-            "issues": ["OVERSTATED_SUPPORT"],
+            "issue_types": ["OVERSTATED_SUPPORT"],
             "counterexample": "输入里不存在的能力承诺",
             "rationale": "不合法。",
         })
@@ -111,10 +126,44 @@ def test_strategy_critic_is_shadow_only_and_does_not_rewrite_direction():
         "dependencies": [],
         "scope_limitations": ["CITATION_CONTRIBUTION_RUN_1_ONLY"],
     }
-    candidate = critic._strategy_candidate(direction, {"claims": []})
+    projection = {
+        "analysis_scope": {"run_ids": list(range(1, 10))},
+        "evidence_scope": {
+            "run_ids": [1],
+            "result": {
+                "result_version": "contribution-v1:test",
+                "result_hash": "c" * 64,
+                "processing": {"binding_count": 2},
+            },
+        },
+        "scope_limitations": ["CITATION_CONTRIBUTION_RUN_1_ONLY"],
+        "object_qualifications": [{
+            "object_id": "1",
+            "object_type": "PRODUCT_TRUTH",
+            "quality_state": "FIRST_PARTY_ASSERTED",
+            "provenance": {"source": "MANUAL_CONFIRMED"},
+            "eligibility_by_use": {"strategy_direction": "CONSUMABLE", "public_claim": "VERIFY_FIRST"},
+            "scope_limitation": ["SOURCE_REFERENCE_REQUIRED"],
+        }],
+    }
+    candidate = critic._strategy_candidate(direction, {"claims": [{
+        "truth_id": 1,
+        "text": "支持活码更新",
+        "scope": "TARGET_BRAND_ONLY",
+        "conditions": [],
+        "truth_provenance": "FIRST_PARTY_ASSERTED",
+    }]}, projection)
 
     assert candidate["candidate_type"] == "STRATEGY_DIRECTION"
-    assert candidate["critic_input"]["model_a_judgment"]["mechanism_gap"] == direction["mechanism_gap"]
+    assert candidate["critic_input"]["strategy"]["mechanism_gap"] == direction["mechanism_gap"]
+    assert candidate["impact_level"] == "HIGH"
+    assert candidate["critic_mode"] == "FALSIFICATION"
+    assert candidate["input_hash"] == critic._hash({key: value for key, value in candidate.items() if key != "input_hash"})
+    assert candidate["critic_input"]["truth_dependencies"][0]["statement"] == "支持活码更新"
+    assert candidate["critic_input"]["truth_dependencies"][0]["verification_state"] == "FIRST_PARTY_ASSERTED"
+    assert candidate["critic_input"]["scope_contract"]["answer_intelligence"]["run_ids"] == list(range(1, 10))
+    assert candidate["critic_input"]["scope_contract"]["citation_contribution"]["run_ids"] == [1]
+    assert candidate["critic_input"]["evidence_dependency"]["eligibility"] == "OBSERVE_ONLY"
     assert "final_strategy" not in candidate["critic_input"]
     assert direction["strategy_direction_eligibility"] == "CONSUMABLE"
 
@@ -146,7 +195,8 @@ def test_shadow_execution_persists_signal_without_mutating_baseline(monkeypatch)
         "selection_policy": "test",
         "baseline_projection_hash": projection["projection_hash"],
         "candidate_count": 1,
-        "candidates": [candidate],
+        "tasks": [candidate],
+        "estimated_token_ceiling": critic._estimated_task_tokens(candidate),
         "formal_qualification_effect": "SHADOW_ONLY",
     }
     plan["plan_hash"] = critic._hash(plan)
@@ -202,7 +252,7 @@ def test_shadow_execution_persists_signal_without_mutating_baseline(monkeypatch)
             self.external_token_count += 20
             return {
                 "critic_verdict": "AGREE",
-                "issues": [],
+                "issue_types": [],
                 "counterexample": None,
                 "rationale": "冻结输入内未发现明显冲突。",
             }

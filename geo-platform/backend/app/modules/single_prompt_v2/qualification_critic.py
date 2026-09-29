@@ -7,6 +7,7 @@ import json
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -27,18 +28,29 @@ from app.services.semantic_llm.model_b import create_model_b_client
 from app.services.serialization import dumps, loads
 
 
-QUALIFICATION_CRITIC_CONTRACT_VERSION = "single_prompt_v2.qualification_critic_shadow.v1"
-QUALIFICATION_CRITIC_PROMPT_VERSION = "single_prompt_v2.qualification_critic.qwen.v1"
-QUALIFICATION_CRITIC_SCHEMA_VERSION = "single_prompt_v2.qualification_critic.strict.v1"
-QUALIFICATION_CRITIC_IMPLEMENTATION_VERSION = "single_prompt_v2.qualification_critic.impl.v1"
+QUALIFICATION_CRITIC_CONTRACT_VERSION = "single_prompt_v2.qualification_critic_shadow.v2"
+QUALIFICATION_CRITIC_PROMPT_VERSION = "single_prompt_v2.qualification_critic.qwen.v2"
+QUALIFICATION_CRITIC_SCHEMA_VERSION = "single_prompt_v2.qualification_critic.strict.v2"
+QUALIFICATION_CRITIC_IMPLEMENTATION_VERSION = "single_prompt_v2.qualification_critic.impl.v2"
+
+_SILICONFLOW_INPUT_CNY_PER_MILLION = 1.8
+_SILICONFLOW_OUTPUT_CNY_PER_MILLION = 10.8
+_SILICONFLOW_PRICING_BASIS = (
+    "SiliconFlow public pricing checked 2026-09-29: "
+    "Qwen/Qwen3.6-35B-A3B input RMB 1.8/M, output RMB 10.8/M; estimate, not billed amount"
+)
 
 _ISSUES = {
     "SUBJECT_MISMATCH",
     "QUALIFIER_LOSS",
     "OVERSTATED_SUPPORT",
+    "TOPICAL_ONLY_AS_SUPPORT",
+    "SPAN_INSUFFICIENT",
+    "BRAND_CAPABILITY_EXTRAPOLATION",
     "TRUTH_SCOPE_EXPANSION",
     "DECISION_ROLE_MISMATCH",
     "STRATEGY_GAP_MISMATCH",
+    "SCOPE_OVERREACH",
     "CLAIM_OVERREACH",
     "OTHER",
 }
@@ -48,13 +60,17 @@ class QualificationCriticResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     critic_verdict: Literal["AGREE", "DISAGREE", "INSUFFICIENT_CONTEXT"]
-    issues: list[Literal[
+    issue_types: list[Literal[
         "SUBJECT_MISMATCH",
         "QUALIFIER_LOSS",
         "OVERSTATED_SUPPORT",
+        "TOPICAL_ONLY_AS_SUPPORT",
+        "SPAN_INSUFFICIENT",
+        "BRAND_CAPABILITY_EXTRAPOLATION",
         "TRUTH_SCOPE_EXPANSION",
         "DECISION_ROLE_MISMATCH",
         "STRATEGY_GAP_MISMATCH",
+        "SCOPE_OVERREACH",
         "CLAIM_OVERREACH",
         "OTHER",
     ]]
@@ -122,30 +138,115 @@ def _load_contribution_output(db: Session, projection: dict[str, Any]) -> dict[s
     return loads(row.output_json, {})
 
 
-def _strategy_candidate(direction: dict[str, Any], draft: dict[str, Any] | None) -> dict[str, Any]:
-    return {
-        "candidate_id": f"critic-strategy-{_hash(direction)[:20]}",
+def _freeze_task(task: dict[str, Any]) -> dict[str, Any]:
+    frozen = dict(task)
+    frozen["input_hash"] = _hash({key: value for key, value in frozen.items() if key != "input_hash"})
+    return frozen
+
+
+def _strategy_candidate(
+    direction: dict[str, Any],
+    draft: dict[str, Any] | None,
+    projection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    projection = projection or {}
+    task_id = f"critic-strategy-{_hash(direction)[:20]}"
+    claims = {str(row.get("truth_id")): row for row in (draft or {}).get("claims") or []}
+    qualifications = {
+        str(row.get("object_id")): row
+        for row in projection.get("object_qualifications") or []
+        if row.get("object_type") == "PRODUCT_TRUTH"
+    }
+    truth_dependencies = []
+    for truth_id in direction.get("truth_ids") or []:
+        claim = claims.get(str(truth_id), {})
+        qualification = qualifications.get(str(truth_id), {})
+        truth_dependencies.append({
+            "truth_id": truth_id,
+            "statement": claim.get("text"),
+            "scope": claim.get("scope") or (qualification.get("scope") or {}),
+            "conditions": claim.get("conditions") or [],
+            "provenance": qualification.get("provenance") or {"source": claim.get("truth_provenance")},
+            "verification_state": qualification.get("quality_state") or claim.get("truth_provenance"),
+            "eligibility_by_use": qualification.get("eligibility_by_use") or {},
+            "limitations": qualification.get("scope_limitation") or claim.get("reason_codes") or [],
+        })
+    evidence_scope = projection.get("evidence_scope") or {}
+    evidence_result = evidence_scope.get("result") or {}
+    required_for = sorted({
+        item
+        for dependency in direction.get("dependencies") or []
+        for item in dependency.get("required_for") or []
+    })
+    input_object_ids = [str(direction.get("reason_id") or "")]
+    input_object_ids.extend(str(item) for item in direction.get("truth_ids") or [])
+    input_object_ids.extend(
+        str(item.get("dependency_id")) for item in direction.get("dependencies") or [] if item.get("dependency_id")
+    )
+    if evidence_result.get("result_version"):
+        input_object_ids.append(str(evidence_result["result_version"]))
+    task = {
+        "task_id": task_id,
+        "candidate_id": task_id,
         "candidate_type": "STRATEGY_DIRECTION",
         "object_id": direction["strategy_id"],
         "impact_reasons": ["STRATEGY_DIRECTION_CONSUMABLE", "EXECUTION_DRAFT_DEPENDENCY"],
+        "impact_level": "HIGH",
+        "downstream_dependency": [
+            str(item.get("dependency_id"))
+            for item in direction.get("dependencies") or []
+            if item.get("dependency_id")
+        ],
+        "required_for": required_for,
+        "critic_mode": "FALSIFICATION",
+        "input_object_ids": sorted(set(item for item in input_object_ids if item)),
+        "model_a_baseline": {
+            "mechanism_gap": direction.get("mechanism_gap"),
+            "intervention": direction.get("intervention_goal"),
+            "reasoning_trace": direction.get("reasoning_trace") or [],
+            "scope_limitations": direction.get("scope_limitations") or [],
+            "strategy_direction_eligibility": direction.get("strategy_direction_eligibility"),
+            "public_claim_eligibility": direction.get("public_claim_eligibility"),
+        },
+        "rule_signals": {
+            "dependency_states": direction.get("dependencies") or [],
+            "limiting_dependencies": direction.get("limiting_dependencies") or [],
+            "answer_intelligence_scope": projection.get("analysis_scope") or {},
+            "citation_contribution_scope": evidence_scope,
+        },
         "critic_input": {
-            "model_a_judgment": {
+            "strategy": {
                 "mechanism_gap": direction.get("mechanism_gap"),
-                "intervention_goal": direction.get("intervention_goal"),
+                "intervention": direction.get("intervention_goal"),
+                "reasoning_trace": direction.get("reasoning_trace") or [],
+                "scope_limitations": direction.get("scope_limitations") or [],
                 "strategy_direction_eligibility": direction.get("strategy_direction_eligibility"),
                 "public_claim_eligibility": direction.get("public_claim_eligibility"),
             },
-            "grounded_reason": {
+            "reason": {
                 "reason_id": direction.get("reason_id"),
-                "text": direction.get("reason_text"),
-                "run_ids": direction.get("reason_run_ids") or [],
+                "original_semantics": direction.get("reason_text"),
+                "scope": {"run_ids": direction.get("reason_run_ids") or []},
             },
-            "truth_ids": direction.get("truth_ids") or [],
-            "dependencies": direction.get("dependencies") or [],
-            "scope_limitations": direction.get("scope_limitations") or [],
-            "draft_claims": (draft or {}).get("claims") or [],
+            "truth_dependencies": truth_dependencies,
+            "evidence_dependency": {
+                "relation": "NO_DIRECTION_LEVEL_RELATION_BOUND",
+                "scope": evidence_scope.get("run_ids") or [],
+                "quality": evidence_result.get("processing") or {},
+                "eligibility": "OBSERVE_ONLY",
+                "result_identity": {
+                    "result_version": evidence_result.get("result_version"),
+                    "result_hash": evidence_result.get("result_hash"),
+                },
+                "source_limitations": projection.get("scope_limitations") or [],
+            },
+            "scope_contract": {
+                "answer_intelligence": projection.get("analysis_scope") or {},
+                "citation_contribution": evidence_scope,
+            },
         },
     }
+    return _freeze_task(task)
 
 
 def _citation_candidates(contribution: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -161,19 +262,54 @@ def _citation_candidates(contribution: dict[str, Any] | None) -> list[dict[str, 
         unit = units.get(str(binding.get("answer_unit_id") or ""))
         if not evaluation or not unit:
             continue
-        result.append({
-            "candidate_id": f"critic-citation-{_hash(binding)[:20]}",
+        task_id = f"critic-citation-{_hash(binding)[:20]}"
+        model_a_baseline = {
+            "correspondence_mode": binding.get("correspondence_mode"),
+            "evidence_relation": binding.get("evidence_relation"),
+            "answer_anchor": binding.get("answer_anchor"),
+            "generation_influence": binding.get("generation_influence"),
+            "answer_span": evaluation.get("answer_span"),
+            "source_span": evaluation.get("source_span"),
+            "rationale": binding.get("rationale"),
+        }
+        rule_signals = {
+            "subject": unit.get("subject_markers") or [],
+            "qualifier": {
+                "conditions": unit.get("condition_markers") or [],
+                "negations": unit.get("negation_markers") or [],
+                "comparisons": unit.get("comparison_markers") or [],
+            },
+            "span_validation": {
+                "answer_span_present": bool(evaluation.get("answer_span")),
+                "source_span_present": bool(evaluation.get("source_span")),
+                "binding_source_span_matches": binding.get("source_span") == evaluation.get("source_span"),
+            },
+            "scope_limitations": evaluation.get("validation_limitations") or [],
+        }
+        input_object_ids = [
+            binding.get("binding_id"),
+            binding.get("evaluation_id"),
+            binding.get("answer_unit_id"),
+            binding.get("citation_id"),
+            binding.get("reference_id"),
+            binding.get("snapshot_id"),
+            binding.get("passage_id"),
+        ]
+        result.append(_freeze_task({
+            "task_id": task_id,
+            "candidate_id": task_id,
             "candidate_type": "CITATION_RELATION",
             "object_id": binding["binding_id"],
             "impact_reasons": ["POSITIVE_EVIDENCE_RELATION", "DOWNSTREAM_MECHANISM_INPUT"],
+            "impact_level": "HIGH",
+            "downstream_dependency": ["QUALIFICATION_EVIDENCE_SCOPE", "STRATEGY_EVIDENCE_INPUT"],
+            "required_for": ["CITATION_RELATION_DIAGNOSIS", "DOWNSTREAM_QUALIFICATION_INPUT"],
+            "critic_mode": "FALSIFICATION",
+            "input_object_ids": sorted(set(str(item) for item in input_object_ids if item)),
+            "model_a_baseline": model_a_baseline,
+            "rule_signals": rule_signals,
             "critic_input": {
-                "model_a_judgment": {
-                    "correspondence_mode": binding.get("correspondence_mode"),
-                    "evidence_relation": binding.get("evidence_relation"),
-                    "answer_anchor": binding.get("answer_anchor"),
-                    "generation_influence": binding.get("generation_influence"),
-                    "rationale": binding.get("rationale"),
-                },
+                "model_a_judgment": model_a_baseline,
                 "answer_unit": {
                     "answer_unit_id": unit.get("answer_unit_id"),
                     "primary_type": unit.get("primary_type"),
@@ -191,9 +327,15 @@ def _citation_candidates(contribution: dict[str, Any] | None) -> list[dict[str, 
                     "source_passage_text": evaluation.get("source_passage_text"),
                     "validation_limitations": evaluation.get("validation_limitations") or [],
                 },
+                "rule_signals": rule_signals,
             },
-        })
+        }))
     return result
+
+
+def _estimated_task_tokens(task: dict[str, Any]) -> int:
+    system_prompt, payload = _prompt(task)
+    return max(1, (len(system_prompt) + len(_canonical_json(payload))) // 3) + 1200
 
 
 def build_qualification_critic_plan(
@@ -215,7 +357,7 @@ def build_qualification_critic_plan(
     )
     drafts = {str(row.get("direction_id")): row for row in projection.get("execution_drafts") or []}
     candidates = [
-        _strategy_candidate(row, drafts.get(str(row.get("strategy_id"))))
+        _strategy_candidate(row, drafts.get(str(row.get("strategy_id"))), projection)
         for row in projection.get("directions") or []
         if row.get("strategy_direction_eligibility") == "CONSUMABLE"
     ]
@@ -228,13 +370,15 @@ def build_qualification_critic_plan(
         f"高影响对象 {len(candidates)} 个，超过配置上限 {settings.model_b_shadow_max_calls}",
     )
     plan = {
+        "phase": "SHADOW_PHASE_A_CRITIC_BEHAVIOR_VALIDATION",
         "contract_version": QUALIFICATION_CRITIC_CONTRACT_VERSION,
         "selection_policy": "HIGH_IMPACT_POSITIVE_RELATION_OR_CONSUMABLE_STRATEGY_V1",
         "baseline_projection_hash": projection["projection_hash"],
         "candidate_count": len(candidates),
-        "candidates": candidates,
+        "tasks": candidates,
         "formal_qualification_effect": "SHADOW_ONLY",
     }
+    plan["estimated_token_ceiling"] = sum(_estimated_task_tokens(task) for task in candidates)
     plan["plan_hash"] = _hash(plan)
     return {"projection": projection, "plan": plan}
 
@@ -277,6 +421,11 @@ def queue_qualification_critic(
     plan = built["plan"]
     _require(projection["projection_hash"] == expected_projection_hash, "CRITIC_BASELINE_STALE", "资格投影已变化，请刷新后重新启动")
     _require(plan["candidate_count"] <= max_external_requests, "CRITIC_AUTHORIZATION_SCOPE_TOO_SMALL", "授权请求数不足以覆盖冻结计划")
+    _require(
+        int(plan["estimated_token_ceiling"]) <= max_total_tokens,
+        "CRITIC_TOKEN_AUTHORIZATION_SCOPE_TOO_SMALL",
+        "冻结计划的保守 token 上界超过本次授权",
+    )
     diagnosis_result = db.query(SinglePromptDiagnosisResult).filter_by(
         diagnosis_id=diagnosis_id,
         result_version=result_version,
@@ -328,17 +477,29 @@ def queue_qualification_critic(
 
 
 def _prompt(candidate: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    system = """你是 Model B Critic，只复核一个已经冻结的高影响判断。
+    system = """你是 Model B Selective Critic，只复核一个已经冻结的高影响判断。
 你不能重做主分析、不能生成新策略、不能改变任何 ID、事实、渠道、角色或资格。
-只根据 supplied_object 判断 Model A 是否存在明显主体错位、限定丢失、支持强度夸大、Truth 范围扩张、决策角色错位、策略 Gap 错诊或 Claim 越界。
+你的唯一任务是寻找 Model A 当前判断不成立的最强理由；如果冻结输入不足，必须返回 INSUFFICIENT_CONTEXT。
+Citation Relation 重点检查主体错位、限定丢失、支持强度夸大、把主题相关误作支持、品牌能力外推、span 不足以支持 verdict。
+Strategy Direction 重点检查 Gap 与 Intervention 错位、关键依赖不足、主体或 Truth 错误、把 Run 1 局部 Citation 证据外推为 Runs 1-9 结论、scope overreach 和足以推翻方向的反例。
+禁止重新生成 Strategy、新增 Channel、新增 Product Truth、新增 Evidence，或自行提升/降低正式 Qualification。
 现实世界事实未包含在输入中时必须返回 INSUFFICIENT_CONTEXT，不能使用世界知识补齐。
 counterexample 如非 null，必须逐字引用 supplied_object 中已有的连续文本；不得自由编写反例。
-AGREE 时 issues 必须为空；DISAGREE 时 issues 至少一项。输出只能是符合 Schema 的 JSON。"""
+AGREE 时 issue_types 必须为空；DISAGREE 时 issue_types 至少一项。输出只能是符合 Schema 的 JSON。"""
     payload = {
-        "task": "CRITIQUE_FROZEN_HIGH_IMPACT_OBJECT",
+        "task": "FIND_STRONGEST_REASON_MODEL_A_JUDGMENT_MAY_NOT_HOLD",
+        "task_id": candidate["task_id"],
+        "critic_mode": candidate["critic_mode"],
         "candidate_type": candidate["candidate_type"],
         "object_id": candidate["object_id"],
+        "impact_level": candidate["impact_level"],
         "impact_reasons": candidate["impact_reasons"],
+        "downstream_dependency": candidate["downstream_dependency"],
+        "required_for": candidate["required_for"],
+        "input_object_ids": candidate["input_object_ids"],
+        "input_hash": candidate["input_hash"],
+        "model_a_baseline": candidate["model_a_baseline"],
+        "rule_signals": candidate["rule_signals"],
         "allowed_issue_types": sorted(_ISSUES),
         "supplied_object": candidate["critic_input"],
         "authority_boundary": {
@@ -356,9 +517,9 @@ def _validator(candidate: dict[str, Any]):
 
     def validate(payload: Any) -> dict[str, Any]:
         row = QualificationCriticResponse.model_validate(payload).model_dump(mode="json")
-        if row["critic_verdict"] == "AGREE" and row["issues"]:
+        if row["critic_verdict"] == "AGREE" and row["issue_types"]:
             raise SemanticLLMError("AGREE 不得携带 issue")
-        if row["critic_verdict"] == "DISAGREE" and not row["issues"]:
+        if row["critic_verdict"] == "DISAGREE" and not row["issue_types"]:
             raise SemanticLLMError("DISAGREE 必须携带至少一个 issue")
         counterexample = str(row.get("counterexample") or "").strip()
         if counterexample and counterexample not in searchable:
@@ -427,24 +588,30 @@ def execute_qualification_critic(
         initial_external = int(getattr(active_client, "external_call_count", 0))
         initial_calls = int(getattr(active_client, "call_count", 0))
         initial_tokens = int(getattr(active_client, "external_token_count", 0))
+        initial_input_tokens = int(getattr(active_client, "external_input_token_count", 0))
+        initial_output_tokens = int(getattr(active_client, "external_output_token_count", 0))
         signals: list[dict[str, Any]] = []
-        for index, candidate in enumerate(plan["candidates"], start=1):
+        latencies_ms: list[int] = []
+        for index, candidate in enumerate(plan["tasks"], start=1):
             used_external = int(getattr(active_client, "external_call_count", 0)) - initial_external
             used_tokens = int(getattr(active_client, "external_token_count", 0)) - initial_tokens
             if used_external >= int(authorization["max_external_requests"]):
-                signals.append({**candidate, "processing_status": "NOT_EVALUATED", "failure_code": "REQUEST_LIMIT_REACHED"})
+                signals.append({**candidate, "processing_status": "NOT_EVALUATED", "latency_ms": 0, "failure_code": "REQUEST_LIMIT_REACHED"})
                 continue
             system_prompt, payload = _prompt(candidate)
-            estimated_tokens = max(1, (len(system_prompt) + len(_canonical_json(payload))) // 3) + 1200
+            estimated_tokens = _estimated_task_tokens(candidate)
             if used_tokens + estimated_tokens > int(authorization["max_total_tokens"]):
-                signals.append({**candidate, "processing_status": "NOT_EVALUATED", "failure_code": "TOKEN_LIMIT_WOULD_BE_EXCEEDED"})
+                signals.append({**candidate, "processing_status": "NOT_EVALUATED", "latency_ms": 0, "failure_code": "TOKEN_LIMIT_WOULD_BE_EXCEEDED"})
                 continue
             active_context.clear()
             active_context.update({
+                "task_id": candidate["task_id"],
                 "candidate_id": candidate["candidate_id"],
                 "candidate_type": candidate["candidate_type"],
                 "object_id": candidate["object_id"],
+                "input_hash": candidate["input_hash"],
             })
+            started = perf_counter()
             try:
                 response = active_client.structured_generate_sync(
                     system_prompt=system_prompt,
@@ -457,21 +624,21 @@ def execute_qualification_critic(
                     strict_json=True,
                     response_validator=_validator(candidate),
                 )
+                latency_ms = max(0, round((perf_counter() - started) * 1000))
+                latencies_ms.append(latency_ms)
                 signals.append({
-                    "candidate_id": candidate["candidate_id"],
-                    "candidate_type": candidate["candidate_type"],
-                    "object_id": candidate["object_id"],
-                    "impact_reasons": candidate["impact_reasons"],
+                    **candidate,
                     "processing_status": "DONE",
+                    "latency_ms": latency_ms,
                     **response,
                 })
             except Exception as exc:
+                latency_ms = max(0, round((perf_counter() - started) * 1000))
+                latencies_ms.append(latency_ms)
                 signals.append({
-                    "candidate_id": candidate["candidate_id"],
-                    "candidate_type": candidate["candidate_type"],
-                    "object_id": candidate["object_id"],
-                    "impact_reasons": candidate["impact_reasons"],
+                    **candidate,
                     "processing_status": "FAILED",
+                    "latency_ms": latency_ms,
                     "failure_code": str(getattr(exc, "code", exc.__class__.__name__)),
                     "failure_detail": str(exc)[:1000],
                 })
@@ -481,10 +648,24 @@ def execute_qualification_critic(
         external_calls = int(getattr(active_client, "external_call_count", 0)) - initial_external
         admitted_calls = int(getattr(active_client, "call_count", 0)) - initial_calls
         token_usage = int(getattr(active_client, "external_token_count", 0)) - initial_tokens
+        input_tokens = int(getattr(active_client, "external_input_token_count", 0)) - initial_input_tokens
+        output_tokens = int(getattr(active_client, "external_output_token_count", 0)) - initial_output_tokens
         verdicts = Counter(row.get("critic_verdict") for row in signals if row.get("processing_status") == "DONE")
-        issues = Counter(issue for row in signals for issue in row.get("issues") or [])
+        issues = Counter(issue for row in signals for issue in row.get("issue_types") or [])
         statuses = Counter(str(row.get("processing_status")) for row in signals)
+        schema_failures = sum(
+            1
+            for row in signals
+            if row.get("processing_status") == "FAILED"
+            and any(marker in str(row.get("failure_code") or "").upper() for marker in ("SCHEMA", "VALIDATION", "JSON"))
+        )
+        estimated_cost_cny = round(
+            input_tokens * _SILICONFLOW_INPUT_CNY_PER_MILLION / 1_000_000
+            + output_tokens * _SILICONFLOW_OUTPUT_CNY_PER_MILLION / 1_000_000,
+            6,
+        )
         output = {
+            "phase": "SHADOW_PHASE_A_CRITIC_BEHAVIOR_VALIDATION",
             "contract_version": QUALIFICATION_CRITIC_CONTRACT_VERSION,
             "prompt_version": QUALIFICATION_CRITIC_PROMPT_VERSION,
             "schema_version": QUALIFICATION_CRITIC_SCHEMA_VERSION,
@@ -509,10 +690,21 @@ def execute_qualification_critic(
                 "candidate_count": plan["candidate_count"],
                 "processing_status": dict(sorted(statuses.items())),
                 "critic_verdict": dict(sorted((str(k), v) for k, v in verdicts.items())),
-                "issues": dict(sorted(issues.items())),
+                "issue_types": dict(sorted(issues.items())),
                 "external_calls": external_calls,
                 "cache_hits": max(0, admitted_calls - external_calls),
                 "external_tokens": token_usage,
+                "external_input_tokens": input_tokens,
+                "external_output_tokens": output_tokens,
+                "estimated_cost_cny": estimated_cost_cny,
+                "pricing_status": "ESTIMATE_NOT_BILLED_AMOUNT",
+                "pricing_basis": _SILICONFLOW_PRICING_BASIS,
+                "latency_ms": {
+                    "total": sum(latencies_ms),
+                    "average": round(sum(latencies_ms) / len(latencies_ms)) if latencies_ms else 0,
+                    "maximum": max(latencies_ms) if latencies_ms else 0,
+                },
+                "schema_failure_count": schema_failures,
             },
             "machine_output_artifacts": artifacts,
             "shadow_comparison": {

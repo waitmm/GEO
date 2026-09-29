@@ -1,6 +1,6 @@
 # GEO Model B: SiliconFlow Qwen
 
-Status: SYNTHETIC TRANSPORT VERIFIED / REAL BUSINESS SHADOW AWAITING DATA AUTHORIZATION
+Status: SHADOW PHASE A EXECUTED / HUMAN GOLD COMPARISON PENDING
 
 Date: 2026-09-29
 
@@ -73,7 +73,7 @@ The response contract is limited to:
 
 ```text
 critic_verdict = AGREE | DISAGREE | INSUFFICIENT_CONTEXT
-issues[]
+issue_types[]
 counterexample
 rationale
 ```
@@ -83,13 +83,37 @@ from the frozen input. The immutable Shadow Result keeps the single-model
 baseline and explicitly records that formal Qualification and Strategy were not
 changed.
 
+The first real Phase A execution froze all seven tasks before the first model
+response. Each task records its router reason, impact, downstream dependency,
+required use, Model A baseline, rule signals, input object IDs and input hash.
+The Strategy task includes the actual Reason, four Truth statements and their
+eligibility, the Run 1 Citation limitation and the Runs 1-9 Answer scope.
+
+```text
+Execution = qualification-critic-907d6ec8-48c7-45d1-a720-c3a0653a6fd4
+Plan hash = ee9b3e85da28c1b5cf462155f1738408421d5fdb1892d9290531822a2fe19fb8
+Result = critic-v1:d9f8b0fd5f1c89ad
+Requests = 7
+Admitted / failed = 6 / 1
+AGREE / DISAGREE / INSUFFICIENT_CONTEXT = 2 / 4 / 0
+Tokens = 16,437
+Estimated cost = RMB 0.057865, not billed amount
+Formal business changes = 0
+```
+
+The failed task returned an incomplete response at the 1,200-token output
+ceiling and was not retried. All seven complete provider artifacts, including
+the rejected response, are retained outside Git with mode `0600` and verified
+SHA-256 hashes.
+
 ## Not Yet Activated
 
 - No Qualification or Strategy mutation from Model B.
 - No quality-based cutover policy.
 - No gain measurement until the P1 Human Gold set exists.
-- No real business-payload replay: the exact Answer/source excerpt and Strategy
-  dependency export scope still requires explicit authorization.
+- No Production Critic routing. Phase A is behavior observation only.
+- No quality claim until Phase A disagreements and failure are compared with
+  Human Gold.
 
 ## Verification Record
 
@@ -102,8 +126,8 @@ Therefore:
 
 ```text
 endpoint/key/model/schema transport = SYNTHETIC_VERIFIED
-real seven-object Shadow execution = NOT_STARTED
-business judgment quality = NOT_VERIFIED
+real seven-object Shadow execution = COMPLETED_WITH_LIMITATIONS
+business judgment quality = AWAITING_HUMAN_GOLD
 formal Qualification/Strategy effect = NONE
 ```
 

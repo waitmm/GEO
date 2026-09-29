@@ -25,6 +25,14 @@ Status: ACTIVE
   returned a schema-valid response from `Qwen/Qwen3.6-35B-A3B` using 72 total
   tokens. This verifies endpoint/model/Structured Output connectivity only;
   no project payload was sent and no Shadow execution/result row was created.
+- Tightened the real Phase A contract before execution: task-level router and
+  input identities, complete Strategy semantics, `issue_types`, token preflight,
+  latency, schema-failure and estimated-cost reporting are now frozen in v2.
+- Executed the authorized seven-task real Shadow plan. Six responses passed
+  strict admission and one was rejected as incomplete at the output-token
+  ceiling; zero automatic retries occurred. The immutable result
+  `critic-v1:d9f8b0fd5f1c89ad` records 2 agreements, 4 disagreements, 16,437
+  tokens and no formal business-state mutation.
 
 ## 2026-09-29 SiliconFlow Qwen Model B Transport
 

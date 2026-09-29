@@ -5,11 +5,10 @@ Status: ACTIVE
 ## 2026-09-29 Model B SiliconFlow Verification Boundary
 
 - SiliconFlow Qwen transport and the bounded Shadow Critic contract are locally
-  implemented. The key is configured and Model B is locally enabled, but no
-  real business payload has been sent. A non-business synthetic canary verified
-  the endpoint, configured model and strict schema path. Real business-object
-  compatibility and judgment quality remain `NOT_VERIFIED` until an explicitly
-  scoped export is authorized.
+  implemented. The key is configured and Model B is locally enabled. A
+  non-business synthetic canary verified transport, and the later explicitly
+  authorized seven-object Phase A run verified real business-payload admission
+  for six objects. Judgment quality remains unverified until Human Gold review.
 - Provider availability must not be interpreted as permission to override or
   mutate Model A, Qualification, Strategy, Truth or public Claim state. The
   current implementation enforces Shadow-only output.
@@ -17,6 +16,12 @@ Status: ACTIVE
   is part of cache/audit identity, and availability must be checked before a
   future authorized business execution rather than silently substituting
   another Qwen model.
+- Phase A shows that contract compliance and judgment quality are separate. Six
+  of seven responses were admitted, but several disagreements may reflect Qwen
+  over-reading ordinary semantics or confusing Strategy eligibility with public
+  Claim eligibility. No disagreement is authoritative until Human Gold review.
+- One Citation task exhausted the 1,200-token output ceiling. It remains failed
+  with its full artifact; it was not retried or rewritten as a negative result.
 
 ## Single Prompt V1 Known Pitfalls
 

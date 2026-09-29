@@ -886,9 +886,13 @@ function v2CriticLabel(value?: string) {
     SUBJECT_MISMATCH: "主体错位",
     QUALIFIER_LOSS: "限定条件丢失",
     OVERSTATED_SUPPORT: "支持强度夸大",
+    TOPICAL_ONLY_AS_SUPPORT: "仅相关内容被误作支持",
+    SPAN_INSUFFICIENT: "原文片段不足以支撑判断",
+    BRAND_CAPABILITY_EXTRAPOLATION: "品牌能力被外推",
     TRUTH_SCOPE_EXPANSION: "事实范围扩大",
     DECISION_ROLE_MISMATCH: "决策角色错位",
     STRATEGY_GAP_MISMATCH: "策略缺口误判",
+    SCOPE_OVERREACH: "分析范围被扩大",
     CLAIM_OVERREACH: "声明越界",
     OTHER: "其他问题",
   };
@@ -5779,8 +5783,8 @@ export default function App() {
                       description="Answer 已覆盖 Runs 1–9，但 Citation Contribution 仅覆盖 Run 1；下面的方向不会被包装成 9-Run 引用机制结论。"
                     />}
 
-                    <div className="v2-strategy-band">
-                      <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                    <div className="v2-strategy-band" style={{ overflow: "hidden" }}>
+                      <Space direction="vertical" size={10} style={{ width: "100%", minWidth: 0 }}>
                         <Space wrap style={{ justifyContent: "space-between", width: "100%" }}>
                           <Space wrap>
                             <Text strong>千问 Model B 影子复核</Text>
@@ -5830,22 +5834,28 @@ export default function App() {
                             <Descriptions.Item label="外部调用">{v2QualificationCritic.result.output.summary.external_calls}</Descriptions.Item>
                             <Descriptions.Item label="缓存复用">{v2QualificationCritic.result.output.summary.cache_hits}</Descriptions.Item>
                             <Descriptions.Item label="Token">{v2QualificationCritic.result.output.summary.external_tokens}</Descriptions.Item>
+                            <Descriptions.Item label="费用估算">¥{v2QualificationCritic.result.output.summary.estimated_cost_cny.toFixed(4)}（非账单实扣）</Descriptions.Item>
+                            <Descriptions.Item label="平均耗时">{v2QualificationCritic.result.output.summary.latency_ms.average} ms</Descriptions.Item>
+                            <Descriptions.Item label="Schema 失败">{v2QualificationCritic.result.output.summary.schema_failure_count}</Descriptions.Item>
                             <Descriptions.Item label="Baseline"><Text code copyable>{v2QualificationCritic.execution.baseline_projection_hash}</Text></Descriptions.Item>
                             <Descriptions.Item label="Result"><Text code copyable>{v2QualificationCritic.result.result_version}</Text></Descriptions.Item>
                           </Descriptions>
-                          <Table
-                            size="small"
-                            rowKey="candidate_id"
-                            pagination={false}
-                            dataSource={v2QualificationCritic.result.output.signals}
-                            columns={[
-                              { title: "对象", width: 130, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Tag>{v2CriticLabel(row.candidate_type)}</Tag><Text type="secondary" ellipsis={{ tooltip: row.object_id }} style={{ maxWidth: 150 }}>{row.object_id}</Text></Space> },
-                              { title: "处理", width: 100, render: (_: unknown, row: any) => <Tag color={row.processing_status === "DONE" ? "green" : "red"}>{v2CriticLabel(row.processing_status)}</Tag> },
-                              { title: "千问判断", width: 120, render: (_: unknown, row: any) => row.critic_verdict ? <Tag color={row.critic_verdict === "AGREE" ? "green" : row.critic_verdict === "DISAGREE" ? "gold" : "default"}>{v2CriticLabel(row.critic_verdict)}</Tag> : "-" },
-                              { title: "发现的问题", render: (_: unknown, row: any) => <Space wrap>{(row.issues || []).map((issue: string) => <Tag key={issue} color="gold">{v2CriticLabel(issue)}</Tag>)}{row.failure_code && <Tag color="red">{row.failure_code}</Tag>}</Space> },
-                              { title: "理由", dataIndex: "rationale", render: (value: string, row: any) => value || row.failure_detail || "-" },
-                            ]}
-                          />
+                          <div style={{ width: "100%", maxWidth: "100%", overflowX: "auto" }}>
+                            <Table
+                              size="small"
+                              rowKey="candidate_id"
+                              pagination={false}
+                              scroll={{ x: 900 }}
+                              dataSource={v2QualificationCritic.result.output.signals}
+                              columns={[
+                                { title: "对象", width: 130, render: (_: unknown, row: any) => <Space direction="vertical" size={2}><Tag>{v2CriticLabel(row.candidate_type)}</Tag><Text type="secondary" ellipsis={{ tooltip: row.object_id }} style={{ maxWidth: 150 }}>{row.object_id}</Text></Space> },
+                                { title: "处理", width: 100, render: (_: unknown, row: any) => <Tag color={row.processing_status === "DONE" ? "green" : "red"}>{v2CriticLabel(row.processing_status)}</Tag> },
+                                { title: "千问判断", width: 120, render: (_: unknown, row: any) => row.critic_verdict ? <Tag color={row.critic_verdict === "AGREE" ? "green" : row.critic_verdict === "DISAGREE" ? "gold" : "default"}>{v2CriticLabel(row.critic_verdict)}</Tag> : "-" },
+                                { title: "发现的问题", render: (_: unknown, row: any) => <Space wrap>{(row.issue_types || []).map((issue: string) => <Tag key={issue} color="gold">{v2CriticLabel(issue)}</Tag>)}{row.failure_code && <Tag color="red">{row.failure_code}</Tag>}</Space> },
+                                { title: "理由", dataIndex: "rationale", render: (value: string, row: any) => value || row.failure_detail || "-" },
+                              ]}
+                            />
+                          </div>
                         </>}
                       </Space>
                     </div>

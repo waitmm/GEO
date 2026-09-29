@@ -16,16 +16,24 @@ Strategy Direction. Ordinary `RELATED_ONLY`, `NO_MATCH`, background facts and
 ineligible public Claims are excluded. The release API and worker path are
 implemented and the release database is migrated to `20260929_01`.
 
-No real business payload has yet been sent to SiliconFlow. The attempted formal
-start was stopped before task creation because external-data authorization must
-explicitly cover the frozen Answer/source excerpts and Strategy dependency
-payload. This is an authorization blocker, not a provider or implementation
-failure.
+Before Phase A authorization, an attempted formal start was stopped before task
+creation because external-data authorization did not yet explicitly cover the
+frozen Answer/source excerpts and Strategy dependency payload. The later scoped
+authorization enabled the seven-object execution recorded below.
 
 A one-request synthetic canary used no project or customer data and passed the
 configured endpoint, Qwen model identity and strict JSON Schema path (72 total
 tokens). This proves transport connectivity only; it does not validate the
 seven-object business Shadow or Model B judgment quality.
+
+Shadow Phase A then executed the exact authorized seven-object real plan as
+`qualification-critic-907d6ec8-48c7-45d1-a720-c3a0653a6fd4`. The immutable
+result is `critic-v1:d9f8b0fd5f1c89ad`: 7 external requests, 6 admitted
+responses, 1 incomplete-response rejection, 2 `AGREE`, 4 `DISAGREE`, 16,437
+tokens and an estimated RMB 0.057865 (not billed amount). The result changed no
+formal Qualification, Product Truth, Citation Contribution, Strategy Direction
+or Execution Draft. Human Gold comparison remains required before any routing
+cutover.
 
 ## 2026-09-29 Optional Model B Provider
 

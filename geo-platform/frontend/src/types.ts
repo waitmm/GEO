@@ -776,11 +776,15 @@ export type SinglePromptV2QualificationCriticStatus = {
         candidate_type: "CITATION_RELATION" | "STRATEGY_DIRECTION";
         object_id: string;
         impact_reasons: string[];
+        impact_level: "HIGH";
+        required_for: string[];
+        input_hash: string;
         processing_status: "DONE" | "FAILED" | "NOT_EVALUATED";
         critic_verdict?: "AGREE" | "DISAGREE" | "INSUFFICIENT_CONTEXT";
-        issues?: string[];
+        issue_types?: string[];
         counterexample?: string | null;
         rationale?: string;
+        latency_ms?: number;
         failure_code?: string;
         failure_detail?: string;
       }>;
@@ -788,10 +792,17 @@ export type SinglePromptV2QualificationCriticStatus = {
         candidate_count: number;
         processing_status: Record<string, number>;
         critic_verdict: Record<string, number>;
-        issues: Record<string, number>;
+        issue_types: Record<string, number>;
         external_calls: number;
         cache_hits: number;
         external_tokens: number;
+        external_input_tokens: number;
+        external_output_tokens: number;
+        estimated_cost_cny: number;
+        pricing_status: string;
+        pricing_basis: string;
+        latency_ms: { total: number; average: number; maximum: number };
+        schema_failure_count: number;
       };
       shadow_comparison: {
         formal_qualification_changed: false;

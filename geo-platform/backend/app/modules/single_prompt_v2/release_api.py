@@ -32,6 +32,7 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptCitationContributionPlanCreate,
     SinglePromptCitationContributionReviewCreate,
     SinglePromptQualificationCriticCreate,
+    SinglePromptQualificationCriticSupplementalCreate,
     SinglePromptDiagnosisReviewCreate,
     SinglePromptDiagnosisRevisionCreate,
     SinglePromptEvidenceContinuationCreate,
@@ -66,6 +67,7 @@ from app.modules.single_prompt_v2.qualification import build_qualification_proje
 from app.modules.single_prompt_v2.qualification_critic import (
     get_qualification_critic_status,
     queue_qualification_critic,
+    queue_qualification_critic_supplemental,
 )
 from app.modules.single_prompt_v2.source_preparation import (
     create_source_preparation,
@@ -529,6 +531,51 @@ def create_qualification_critic(
         idempotency_key=payload.idempotency_key,
         max_external_requests=payload.max_external_requests,
         max_total_tokens=payload.max_total_tokens,
+        authorized_by=payload.authorized_by,
+    )
+    if not created:
+        response.status_code = 200
+    return get_qualification_critic_status(
+        db,
+        analysis_id=analysis_id,
+        critic_id=execution.critic_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.post(
+    "/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/qualification-critics/supplemental",
+    status_code=202,
+)
+def create_qualification_critic_supplemental(
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    payload: SinglePromptQualificationCriticSupplementalCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    execution, created = queue_qualification_critic_supplemental(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        parent_critic_id=payload.parent_critic_id,
+        parent_result_version=payload.parent_result_version,
+        object_id=payload.object_id,
+        expected_task_id=payload.expected_task_id,
+        expected_plan_hash=payload.expected_plan_hash,
+        expected_semantic_input_hash=payload.expected_semantic_input_hash,
+        expected_provider_payload_hash=payload.expected_provider_payload_hash,
+        provider=payload.provider,
+        model=payload.model,
+        idempotency_key=payload.idempotency_key,
+        max_external_requests=payload.max_external_requests,
+        max_total_tokens=payload.max_total_tokens,
+        max_budget_cny=payload.max_budget_cny,
         authorized_by=payload.authorized_by,
     )
     if not created:

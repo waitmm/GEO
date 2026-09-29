@@ -483,6 +483,139 @@ def build_qualification_critic_supplemental_plan(
     return {"projection": built["projection"], "plan": plan}
 
 
+def queue_qualification_critic_supplemental(
+    db: Session,
+    *,
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    project_id: int,
+    prompt_id: int,
+    parent_critic_id: str,
+    parent_result_version: str,
+    object_id: str,
+    expected_task_id: str,
+    expected_plan_hash: str,
+    expected_semantic_input_hash: str,
+    expected_provider_payload_hash: str,
+    provider: str,
+    model: str,
+    idempotency_key: str,
+    max_external_requests: int,
+    max_total_tokens: int,
+    max_budget_cny: float,
+    authorized_by: str,
+) -> tuple[SinglePromptQualificationCriticExecution, bool]:
+    existing = db.query(SinglePromptQualificationCriticExecution).filter_by(
+        analysis_id=analysis_id,
+        idempotency_key=idempotency_key,
+    ).one_or_none()
+    if existing:
+        _require(existing.diagnosis_result_version == result_version, "CRITIC_IDEMPOTENCY_CONFLICT", "幂等键已绑定其他结果版本")
+        return existing, False
+
+    settings = get_settings()
+    _require(settings.model_b_enabled, "MODEL_B_DISABLED", "Model B 尚未在环境中启用")
+    _require(provider == settings.model_b_provider == "siliconflow", "CRITIC_PROVIDER_MISMATCH", "Supplemental Provider 与当前配置不一致")
+    _require(model == settings.siliconflow_model, "CRITIC_MODEL_MISMATCH", "Supplemental Model 与当前配置不一致")
+    _require(max_external_requests == 1, "CRITIC_SUPPLEMENTAL_REQUEST_LIMIT", "Supplemental 只允许一次外部请求")
+
+    parent_execution = db.query(SinglePromptQualificationCriticExecution).filter_by(
+        critic_id=parent_critic_id,
+        analysis_id=analysis_id,
+    ).one_or_none()
+    _require(parent_execution is not None, "CRITIC_PARENT_EXECUTION_MISSING", "父 Phase A Execution 不存在")
+    parent_result = db.query(SinglePromptQualificationCriticResult).filter_by(
+        critic_id=parent_critic_id,
+        result_version=parent_result_version,
+    ).one_or_none()
+    _require(parent_result is not None, "CRITIC_PARENT_RESULT_MISSING", "父 Phase A Result 不存在")
+    parent_output = loads(parent_result.output_json, {})
+    failed_matches = [
+        signal
+        for signal in parent_output.get("signals") or []
+        if signal.get("object_id") == object_id and signal.get("processing_status") == "FAILED"
+    ]
+    _require(len(failed_matches) == 1, "CRITIC_SUPPLEMENTAL_PARENT_FAILURE_MISMATCH", "指定对象不是父 Result 中唯一失败对象")
+
+    built = build_qualification_critic_supplemental_plan(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        object_id=object_id,
+        parent_critic_id=parent_critic_id,
+        parent_result_version=parent_result_version,
+    )
+    projection = built["projection"]
+    plan = built["plan"]
+    task = plan["tasks"][0]
+    _require(task["task_id"] == expected_task_id, "CRITIC_SUPPLEMENTAL_TASK_MISMATCH", "Supplemental Task ID 不一致")
+    _require(plan["plan_hash"] == expected_plan_hash, "CRITIC_SUPPLEMENTAL_PLAN_MISMATCH", "Supplemental Plan hash 不一致")
+    _require(task["semantic_input_hash"] == expected_semantic_input_hash, "CRITIC_SUPPLEMENTAL_SEMANTIC_INPUT_MISMATCH", "Supplemental semantic input hash 不一致")
+    _require(task["provider_payload_hash"] == expected_provider_payload_hash, "CRITIC_SUPPLEMENTAL_PROVIDER_PAYLOAD_MISMATCH", "Supplemental provider payload hash 不一致")
+    _require(int(plan["estimated_token_ceiling"]) <= max_total_tokens, "CRITIC_TOKEN_AUTHORIZATION_SCOPE_TOO_SMALL", "Supplemental token 授权不足")
+    estimated_cost = (
+        max(0, int(plan["estimated_token_ceiling"]) - 1600) * _SILICONFLOW_INPUT_CNY_PER_MILLION / 1_000_000
+        + 1600 * _SILICONFLOW_OUTPUT_CNY_PER_MILLION / 1_000_000
+    )
+    _require(estimated_cost <= max_budget_cny, "CRITIC_BUDGET_AUTHORIZATION_SCOPE_TOO_SMALL", "Supplemental 费用授权不足")
+
+    diagnosis_result = db.query(SinglePromptDiagnosisResult).filter_by(
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+    ).one_or_none()
+    _require(diagnosis_result is not None, "CRITIC_DIAGNOSIS_RESULT_MISSING", "精确 DiagnosisResultVersion 不存在")
+    input_snapshot = {
+        "analysis_id": analysis_id,
+        "context_id": projection["input_identity"]["context_id"],
+        "project_id": project_id,
+        "prompt_id": prompt_id,
+        "diagnosis_id": diagnosis_id,
+        "diagnosis_result_version": result_version,
+        "diagnosis_result_hash": diagnosis_result.output_hash,
+        "baseline_projection": projection,
+        "baseline_projection_hash": projection["projection_hash"],
+        "parent_critic_id": parent_critic_id,
+        "parent_result_version": parent_result_version,
+    }
+    execution = SinglePromptQualificationCriticExecution(
+        critic_id=f"qualification-critic-supplemental-{uuid4()}",
+        analysis_id=analysis_id,
+        context_id=projection["input_identity"]["context_id"],
+        project_id=project_id,
+        prompt_id=prompt_id,
+        diagnosis_id=diagnosis_id,
+        diagnosis_result_version=result_version,
+        diagnosis_result_hash=diagnosis_result.output_hash,
+        baseline_projection_hash=projection["projection_hash"],
+        idempotency_key=idempotency_key,
+        input_snapshot_json=dumps(input_snapshot),
+        input_snapshot_hash=_hash(input_snapshot),
+        plan_json=dumps(plan),
+        plan_hash=plan["plan_hash"],
+        contract_version=QUALIFICATION_CRITIC_CONTRACT_VERSION,
+        provider=provider,
+        requested_model=model,
+        authorization_json=dumps({
+            "authorized_by": authorized_by,
+            "max_external_requests": 1,
+            "max_total_tokens": max_total_tokens,
+            "max_budget_cny": max_budget_cny,
+            "estimated_cost_ceiling_cny": round(estimated_cost, 6),
+            "automatic_retries": 0,
+        }),
+        status="QUEUED",
+        progress_json=dumps({"completed": 0, "total": 1, "stage": "QUEUED"}),
+    )
+    db.add(execution)
+    db.commit()
+    db.refresh(execution)
+    return execution, True
+
+
 def queue_qualification_critic(
     db: Session,
     *,
@@ -655,14 +788,29 @@ def execute_qualification_critic(
         db.commit()
 
         snapshot = loads(execution.input_snapshot_json, {})
-        built = build_qualification_critic_plan(
-            db,
-            analysis_id=execution.analysis_id,
-            diagnosis_id=execution.diagnosis_id,
-            result_version=execution.diagnosis_result_version,
-            project_id=execution.project_id,
-            prompt_id=execution.prompt_id,
-        )
+        stored_plan = loads(execution.plan_json, {})
+        is_supplemental = stored_plan.get("phase") == "SHADOW_PHASE_A_CONTRACT_RECOVERY"
+        if is_supplemental:
+            built = build_qualification_critic_supplemental_plan(
+                db,
+                analysis_id=execution.analysis_id,
+                diagnosis_id=execution.diagnosis_id,
+                result_version=execution.diagnosis_result_version,
+                project_id=execution.project_id,
+                prompt_id=execution.prompt_id,
+                object_id=str(stored_plan.get("object_id") or ""),
+                parent_critic_id=str(stored_plan.get("parent_critic_id") or ""),
+                parent_result_version=str(stored_plan.get("parent_result_version") or ""),
+            )
+        else:
+            built = build_qualification_critic_plan(
+                db,
+                analysis_id=execution.analysis_id,
+                diagnosis_id=execution.diagnosis_id,
+                result_version=execution.diagnosis_result_version,
+                project_id=execution.project_id,
+                prompt_id=execution.prompt_id,
+            )
         _require(built["projection"]["projection_hash"] == execution.baseline_projection_hash, "CRITIC_BASELINE_DRIFT", "worker 执行前 baseline 已变化")
         _require(built["plan"]["plan_hash"] == execution.plan_hash, "CRITIC_PLAN_DRIFT", "worker 执行前 plan 已变化")
         _require(_hash(snapshot) == execution.input_snapshot_hash, "CRITIC_INPUT_SNAPSHOT_DRIFT", "冻结输入 hash 不一致")
@@ -776,7 +924,7 @@ def execute_qualification_critic(
             6,
         )
         output = {
-            "phase": "SHADOW_PHASE_A_CRITIC_BEHAVIOR_VALIDATION",
+            "phase": plan.get("phase") or "SHADOW_PHASE_A_CRITIC_BEHAVIOR_VALIDATION",
             "contract_version": QUALIFICATION_CRITIC_CONTRACT_VERSION,
             "prompt_version": QUALIFICATION_CRITIC_PROMPT_VERSION,
             "schema_version": QUALIFICATION_CRITIC_SCHEMA_VERSION,
@@ -791,6 +939,8 @@ def execute_qualification_critic(
                 "diagnosis_result_hash": execution.diagnosis_result_hash,
                 "baseline_projection_hash": execution.baseline_projection_hash,
                 "plan_hash": execution.plan_hash,
+                "parent_critic_id": plan.get("parent_critic_id"),
+                "parent_result_version": plan.get("parent_result_version"),
             },
             "model_identity": {
                 "provider": execution.provider,
@@ -835,7 +985,8 @@ def execute_qualification_critic(
             },
         }
         output_hash = _hash(output)
-        result_version = f"critic-v1:{output_hash[:16]}"
+        result_prefix = "critic-supplemental-v1" if is_supplemental else "critic-v1"
+        result_version = f"{result_prefix}:{output_hash[:16]}"
         result = SinglePromptQualificationCriticResult(
             result_version=result_version,
             critic_id=critic_id,

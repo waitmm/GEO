@@ -6,7 +6,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.models import Base, SinglePromptQualificationCriticExecution, SinglePromptQualificationCriticResult
+from app.models import (
+    Base,
+    SinglePromptDiagnosisResult,
+    SinglePromptQualificationCriticExecution,
+    SinglePromptQualificationCriticResult,
+)
 from app.modules.single_prompt_v2 import qualification_critic as critic
 from app.services.semantic_llm.base import SemanticLLMError
 
@@ -424,3 +429,183 @@ def test_shadow_execution_persists_signal_without_mutating_baseline(monkeypatch)
         assert output["shadow_comparison"]["formal_qualification_changed"] is False
         assert output["shadow_comparison"]["formal_strategy_changed"] is False
         assert FakeClient.seen_max_tokens == [1600]
+
+
+def test_supplemental_queue_and_execution_preserve_parent_result(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    source = critic._citation_candidates(_contribution())[0]
+    projection = {
+        "projection_hash": "a" * 64,
+        "input_identity": {"context_id": "context-1"},
+    }
+    full_plan = {"tasks": [source], "plan_hash": "b" * 64}
+
+    def fake_full_plan(*_args, **_kwargs):
+        return {"projection": projection, "plan": full_plan}
+
+    monkeypatch.setattr(critic, "build_qualification_critic_plan", fake_full_plan)
+    supplemental = critic.build_qualification_critic_supplemental_plan(
+        object(),
+        analysis_id="analysis-1",
+        diagnosis_id="diagnosis-1",
+        result_version="diag-v1:test",
+        project_id=1,
+        prompt_id=1,
+        object_id="binding-1",
+        parent_critic_id="critic-parent",
+        parent_result_version="critic-v1:parent",
+    )["plan"]
+    task = supplemental["tasks"][0]
+    parent_output = {
+        "signals": [{
+            "object_id": "binding-1",
+            "processing_status": "FAILED",
+            "failure_code": "FAILED_PARSE",
+            "failure_detail": "SiliconFlow 响应未完整结束",
+        }],
+    }
+    parent_hash = critic._hash(parent_output)
+    with factory() as db:
+        db.add(SinglePromptDiagnosisResult(
+            result_version="diag-v1:test",
+            diagnosis_id="diagnosis-1",
+            version_number=1,
+            output_json="{}",
+            output_hash="d" * 64,
+            reviewable_set_hash="e" * 64,
+        ))
+        db.add(SinglePromptQualificationCriticExecution(
+            critic_id="critic-parent",
+            analysis_id="analysis-1",
+            context_id="context-1",
+            project_id=1,
+            prompt_id=1,
+            diagnosis_id="diagnosis-1",
+            diagnosis_result_version="diag-v1:test",
+            diagnosis_result_hash="d" * 64,
+            baseline_projection_hash=projection["projection_hash"],
+            idempotency_key="parent-key",
+            input_snapshot_json="{}",
+            input_snapshot_hash="f" * 64,
+            plan_json=critic.dumps(full_plan),
+            plan_hash=full_plan["plan_hash"],
+            contract_version="v2",
+            provider="siliconflow",
+            requested_model="Qwen/test",
+            authorization_json="{}",
+            status="SHADOW_COMPLETED_WITH_LIMITATIONS",
+            active_result_version="critic-v1:parent",
+        ))
+        db.add(SinglePromptQualificationCriticResult(
+            result_version="critic-v1:parent",
+            critic_id="critic-parent",
+            version_number=1,
+            output_json=critic.dumps(parent_output),
+            output_hash=parent_hash,
+        ))
+        db.commit()
+
+    settings = critic.get_settings()
+    monkeypatch.setattr(settings, "model_b_enabled", True)
+    monkeypatch.setattr(settings, "model_b_provider", "siliconflow")
+    monkeypatch.setattr(settings, "siliconflow_model", "Qwen/test")
+    with factory() as db:
+        execution, created = critic.queue_qualification_critic_supplemental(
+            db,
+            analysis_id="analysis-1",
+            diagnosis_id="diagnosis-1",
+            result_version="diag-v1:test",
+            project_id=1,
+            prompt_id=1,
+            parent_critic_id="critic-parent",
+            parent_result_version="critic-v1:parent",
+            object_id="binding-1",
+            expected_task_id=task["task_id"],
+            expected_plan_hash=supplemental["plan_hash"],
+            expected_semantic_input_hash=task["semantic_input_hash"],
+            expected_provider_payload_hash=task["provider_payload_hash"],
+            provider="siliconflow",
+            model="Qwen/test",
+            idempotency_key="supplement-key",
+            max_external_requests=1,
+            max_total_tokens=supplemental["estimated_token_ceiling"],
+            max_budget_cny=0.03,
+            authorized_by="owner",
+        )
+        assert created is True
+        supplemental_critic_id = execution.critic_id
+        repeated, repeated_created = critic.queue_qualification_critic_supplemental(
+            db,
+            analysis_id="analysis-1",
+            diagnosis_id="diagnosis-1",
+            result_version="diag-v1:test",
+            project_id=1,
+            prompt_id=1,
+            parent_critic_id="critic-parent",
+            parent_result_version="critic-v1:parent",
+            object_id="binding-1",
+            expected_task_id=task["task_id"],
+            expected_plan_hash=supplemental["plan_hash"],
+            expected_semantic_input_hash=task["semantic_input_hash"],
+            expected_provider_payload_hash=task["provider_payload_hash"],
+            provider="siliconflow",
+            model="Qwen/test",
+            idempotency_key="supplement-key",
+            max_external_requests=1,
+            max_total_tokens=supplemental["estimated_token_ceiling"],
+            max_budget_cny=0.03,
+            authorized_by="owner",
+        )
+        assert repeated.critic_id == supplemental_critic_id
+        assert repeated_created is False
+
+    class FakeClient:
+        call_count = 0
+        external_call_count = 0
+        external_token_count = 0
+        external_input_token_count = 0
+        external_output_token_count = 0
+        seen_objects: list[str] = []
+
+        def structured_generate_sync(self, **kwargs):
+            self.call_count += 1
+            self.external_call_count += 1
+            self.external_token_count += 30
+            self.external_input_token_count += 20
+            self.external_output_token_count += 10
+            self.seen_objects.append(kwargs["user_payload"]["object_id"])
+            return {
+                "critic_verdict": "AGREE",
+                "issue_types": [],
+                "primary_issue": "NONE",
+                "counterexample": None,
+                "rationale": "未发现足以推翻当前判断的反例。",
+            }
+
+    client = FakeClient()
+    critic.execute_qualification_critic(supplemental_critic_id, session_factory=factory, client=client)
+
+    with factory() as db:
+        execution = db.query(SinglePromptQualificationCriticExecution).filter_by(
+            critic_id=supplemental_critic_id
+        ).one()
+        result = db.query(SinglePromptQualificationCriticResult).filter_by(
+            critic_id=supplemental_critic_id
+        ).one()
+        parent = db.query(SinglePromptQualificationCriticResult).filter_by(
+            result_version="critic-v1:parent"
+        ).one()
+        output = critic.loads(result.output_json, {})
+        assert execution.status == "SHADOW_COMPLETED"
+        assert execution.external_llm_calls == 1
+        assert result.result_version.startswith("critic-supplemental-v1:")
+        assert output["phase"] == "SHADOW_PHASE_A_CONTRACT_RECOVERY"
+        assert output["input_identity"]["parent_result_version"] == "critic-v1:parent"
+        assert client.seen_objects == ["binding-1"]
+        assert parent.output_hash == parent_hash

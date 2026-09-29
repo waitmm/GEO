@@ -179,6 +179,27 @@ class SinglePromptQualificationCriticCreate(BaseModel):
     authorized_by: str = Field(min_length=1, max_length=120)
 
 
+class SinglePromptQualificationCriticSupplementalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_id: int
+    prompt_id: int
+    parent_critic_id: str = Field(min_length=1, max_length=80)
+    parent_result_version: str = Field(min_length=1, max_length=96)
+    object_id: str = Field(min_length=1, max_length=96)
+    expected_task_id: str = Field(min_length=1, max_length=96)
+    expected_plan_hash: str = Field(min_length=64, max_length=64)
+    expected_semantic_input_hash: str = Field(min_length=64, max_length=64)
+    expected_provider_payload_hash: str = Field(min_length=64, max_length=64)
+    provider: Literal["siliconflow"]
+    model: str = Field(min_length=1, max_length=160)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    max_external_requests: Literal[1]
+    max_total_tokens: int = Field(ge=1, le=200_000)
+    max_budget_cny: float = Field(gt=0, le=10_000)
+    authorized_by: str = Field(min_length=1, max_length=120)
+
+
 class CitationContributionCalibrationDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

@@ -6044,6 +6044,10 @@ review_queue = READY
   exact Contribution while preserving its identity in the URL. The lower P1
   card also lists existing executions instead of presenting an existing result
   as though a new plan were required.
+- The P1 calibration card itself is also independent of Diagnosis rendering.
+  Opening an exact Contribution from an Analysis-only URL now renders and
+  scrolls to the Human Gold table instead of updating the URL with no visible
+  destination.
 - The 78 Human Gold decisions are explicitly presented as the one-time P1
   calibration workload: 40 unbiased evaluations, 20 recall-boundary controls
   and 18 additional deduplicated Binding Census objects. They are not a

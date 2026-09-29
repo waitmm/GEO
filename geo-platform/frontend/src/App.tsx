@@ -6045,7 +6045,9 @@ export default function App() {
                   </Space>
                 </Card>
 
-                <Card
+              </>}
+
+              {(v2Diagnosis?.result || v2CitationContribution || v2CitationContributionHistory.length > 0) && <Card
                   id="v2-citation-contribution-p1"
                   size="small"
                   title={<Space><ListChecks size={18} />单 Run 引用贡献 P1</Space>}
@@ -6185,8 +6187,9 @@ export default function App() {
                       </Space>}
                     </>}
                   </Space>}
-                </Card>
+                </Card>}
 
+              {v2Diagnosis?.result && <>
                 {!RELEASE_FIRST_SLICE && <>
                 <Card
                   id="v2-strategy"

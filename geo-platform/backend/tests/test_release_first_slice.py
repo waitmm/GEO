@@ -56,6 +56,7 @@ from app.modules.single_prompt_v2.citation_contribution import (
     execute_citation_contribution,
     get_citation_contribution_status,
     list_citation_contributions,
+    materialize_compatible_citation_contribution,
     recover_interrupted_citation_contributions,
     select_p1_run,
 )
@@ -233,6 +234,16 @@ def _seed_citation_contribution_fixture(db, monkeypatch, tmp_path: Path):
                 "raw_end": raw_end,
             }],
         },
+        "answer_semantic_eligibility": {
+            "status": "ADMITTED",
+            "total_answer_count": 1,
+            "admitted_answer_count": 1,
+            "valid_zero_answer_count": 0,
+            "failed_answer_count": 0,
+            "review_required_answer_count": 0,
+            "partial_failure": False,
+            "no_consumable_answer_semantic_result": False,
+        },
     }
     answer_output_json = json.dumps(answer_output, ensure_ascii=False, sort_keys=True)
     answer_hash = hashlib.sha256(answer_output_json.encode()).hexdigest()
@@ -347,7 +358,12 @@ def test_release_migration_is_explicit_allowlisted_and_runtime_version_is_checke
     assert "single_prompt_citation_contribution_executions" in status["tables"]
     assert "single_prompt_citation_contribution_results" in status["tables"]
     assert "single_prompt_citation_contribution_reviews" in status["tables"]
-    assert "single_prompt_execution_proposals" not in status["tables"]
+    assert "single_prompt_execution_proposals" in status["tables"]
+    assert "single_prompt_execution_proposal_results" in status["tables"]
+    assert "single_prompt_execution_confirmations" in status["tables"]
+    assert "single_prompt_publication_records" in status["tables"]
+    assert "single_prompt_retest_executions" in status["tables"]
+    assert "single_prompt_comparison_results" in status["tables"]
 
     if sqlite_has_wal_reset_fix(status["sqlite_version"]):
         assert validate_release_database(engine)["status"] == "READY"
@@ -423,7 +439,7 @@ def test_release_startup_contract_rejects_unmigrated_database(tmp_path):
     engine.dispose()
 
 
-def test_release_routes_include_strategy_but_exclude_execution_and_legacy_workflows():
+def test_release_routes_include_delivery_loop_but_exclude_legacy_workflows():
     app = create_release_app(validate_on_startup=False)
     paths = {getattr(route, "path", "") for route in app.routes}
     assert "/api/v2/single-prompt/analyses" in paths
@@ -435,8 +451,9 @@ def test_release_routes_include_strategy_but_exclude_execution_and_legacy_workfl
     assert any(path.endswith("/strategies") for path in paths)
     assert any(path.endswith("/priority-revisions") for path in paths)
     assert any("/strategies/" in path and path.endswith("/reviews") for path in paths)
-    assert not any("execution-proposal" in path for path in paths)
-    assert not any("retest" in path for path in paths)
+    assert any("execution-proposal" in path for path in paths)
+    assert any(path.endswith("/publications") for path in paths)
+    assert any("retest" in path for path in paths)
     assert not any(path.startswith("/api/optimization") for path in paths)
 
     response = TestClient(app).get("/api/optimization/workflow/1/prompt-overview")
@@ -1618,6 +1635,196 @@ def test_citation_contribution_plan_is_deterministic_complete_and_zero_call(monk
         assert duplicate_created is False
         assert duplicate.contribution_id == execution.contribution_id
         assert db.query(SinglePromptCitationContributionExecution).count() == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_single_run_reuses_exact_sources_and_materializes_compatible_contribution(monkeypatch, tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+        source_execution, _ = _create_contribution_fixture_plan(db, fixture)
+        source_plan = json.loads(source_execution.plan_json)
+        recall_controls = [
+            control
+            for citation in source_plan["citations"]
+            for control in citation.get("recall_audit_controls") or []
+        ]
+        source_output = {
+            "selected_run_id": fixture["run"].id,
+            "answer_units": source_plan["answer_units"],
+            "citations": source_plan["citations"],
+            "evaluations": [],
+            "bindings": [],
+            "recall_controls": recall_controls,
+            "calibration_set": [],
+        }
+        source_output_json = json.dumps(source_output, ensure_ascii=False, sort_keys=True)
+        source_output_hash = hashlib.sha256(source_output_json.encode()).hexdigest()
+        source_result = SinglePromptCitationContributionResult(
+            result_version="contribution-v1:exact-source-fixture",
+            contribution_id=source_execution.contribution_id,
+            version_number=1,
+            output_json=source_output_json,
+            output_hash=source_output_hash,
+            reviewable_set_hash="e" * 64,
+            limitations_json=json.dumps([{"code": "SOURCE_WAIVED_WITH_LIMITATION"}]),
+            stats_json=json.dumps({"external_llm_calls": 1}),
+        )
+        source_execution.active_result_version = source_result.result_version
+        source_execution.status = "CALIBRATION_BLOCKED_NO_VALID_EVALUATIONS"
+        db.add(source_result)
+        db.commit()
+
+        pool = list_prompt_run_pool(db, project_id=1, prompt_id=44, page=1, page_size=20)
+        selected_run = next(item for item in pool["items"] if item["run_id"] == fixture["run"].id)
+        analysis, created = create_analysis_from_runs(
+            db,
+            project_id=1,
+            prompt_id=44,
+            run_ids=[fixture["run"].id],
+            run_fingerprints={fixture["run"].id: selected_run["input_fingerprint"]},
+            base_context_id=fixture["context"].context_id,
+            idempotency_key="exact-compatible-single-run",
+        )
+        assert created is True
+        context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis.analysis_id).one()
+        preparation, _ = source_preparation.create_source_preparation(
+            db,
+            analysis_id=analysis.analysis_id,
+            project_id=1,
+            prompt_id=44,
+            idempotency_key="exact-compatible-source-preparation",
+            created_by="qa",
+        )
+        reuse = source_preparation.reuse_completed_sources(
+            db,
+            preparation_id=preparation.preparation_id,
+            project_id=1,
+            prompt_id=44,
+            source_completion_manifest_id=fixture["completion"].manifest_id,
+            source_completion_manifest_hash=fixture["completion"].payload_hash,
+            reused_by="qa",
+        )
+        assert len(reuse["reused"]) == 1
+        assert reuse["reused"][0]["reused_from_snapshot_id"]
+        assert reuse["reused"][0]["content_hash"]
+
+        preparation_status = source_preparation.get_source_preparation_status(
+            db, preparation_id=preparation.preparation_id
+        )
+        pending = next(item for item in preparation_status["sources"] if item["state"] != "READY")
+        source_preparation.waive_source(
+            db,
+            preparation_id=preparation.preparation_id,
+            source_key=pending["source_key"],
+            expected_row_version=pending["row_version"],
+            reason="沿用测试来源无法取得的人工处置",
+            impact="该来源不参与 Contribution 判断",
+            waived_by="qa",
+        )
+        completion = source_preparation.freeze_completion_manifest(
+            db,
+            preparation_id=preparation.preparation_id,
+            created_by="qa",
+        )
+        frozen_status = source_preparation.get_source_preparation_status(
+            db, preparation_id=preparation.preparation_id
+        )
+        assert frozen_status["preparation"]["status"] == "FROZEN"
+        assert frozen_status["allowed_operations"] == ["VIEW"]
+        manifest = db.query(SinglePromptCitationManifest).filter_by(analysis_id=analysis.analysis_id).one()
+
+        answer_output = json.loads(fixture["result"].output_json)
+        answer_output_json = json.dumps(answer_output, ensure_ascii=False, sort_keys=True)
+        answer_hash = hashlib.sha256(answer_output_json.encode()).hexdigest()
+        diagnosis = SinglePromptDiagnosisExecution(
+            diagnosis_id="diagnosis-exact-compatible-single-run",
+            analysis_id=analysis.analysis_id,
+            context_id=context.context_id,
+            project_id=1,
+            prompt_id=44,
+            idempotency_key="diagnosis-exact-compatible-single-run",
+            input_fingerprint="f" * 64,
+            raw_output_hash=context.raw_output_hash,
+            brand_snapshot_json="{}",
+            brand_snapshot_hash="b" * 64,
+            truth_snapshot_json="[]",
+            truth_set_hash="t" * 64,
+            contract_config_json="{}",
+            contract_config_hash="c" * 64,
+            status="COMPLETED",
+            active_result_version="diag-v1:exact-compatible-single-run",
+        )
+        answer_result = SinglePromptDiagnosisResult(
+            result_version=diagnosis.active_result_version,
+            diagnosis_id=diagnosis.diagnosis_id,
+            version_number=1,
+            output_json=answer_output_json,
+            output_hash=answer_hash,
+            reviewable_set_hash="a" * 64,
+        )
+        db.add_all([diagnosis, answer_result])
+        db.commit()
+
+        materialized, materialized_created = materialize_compatible_citation_contribution(
+            db,
+            analysis_id=analysis.analysis_id,
+            project_id=1,
+            prompt_id=44,
+            source_contribution_id=source_execution.contribution_id,
+            source_result_version=source_result.result_version,
+            source_result_hash=source_result.output_hash,
+            answer_result_version=answer_result.result_version,
+            answer_result_hash=answer_result.output_hash,
+            citation_manifest_id=manifest.manifest_id,
+            citation_manifest_hash=manifest.payload_hash,
+            completion_manifest_id=completion.manifest_id,
+            completion_manifest_hash=completion.payload_hash,
+            fixed_run_ids=[fixture["run"].id],
+            idempotency_key="materialize-exact-compatible-contribution",
+        )
+        assert materialized_created is True
+        assert materialized.external_llm_calls == 0
+        assert materialized.selected_run_id == fixture["run"].id
+        materialized_result = db.query(SinglePromptCitationContributionResult).filter_by(
+            result_version=materialized.active_result_version
+        ).one()
+        materialized_output = json.loads(materialized_result.output_json)
+        assert materialized_output["materialization"] == {
+            "mode": "EXACT_COMPATIBLE_RESULT_REUSE",
+            "source_contribution_id": source_execution.contribution_id,
+            "source_result_version": source_result.result_version,
+            "source_result_hash": source_result.output_hash,
+            "source_plan_hash": source_execution.plan_hash,
+            "current_plan_hash": json.loads(materialized.plan_json)["plan_hash"],
+            "external_llm_calls": 0,
+        }
+        assert materialized_result.limitations_json == source_result.limitations_json
+        assert db.query(SinglePromptCitationContributionResult).filter_by(
+            result_version=source_result.result_version
+        ).one().output_json == source_output_json
+
+        with pytest.raises(HTTPException) as mismatch:
+            materialize_compatible_citation_contribution(
+                db,
+                analysis_id=analysis.analysis_id,
+                project_id=1,
+                prompt_id=44,
+                source_contribution_id=source_execution.contribution_id,
+                source_result_version=source_result.result_version,
+                source_result_hash=source_result.output_hash,
+                answer_result_version=answer_result.result_version,
+                answer_result_hash="0" * 64,
+                citation_manifest_id=manifest.manifest_id,
+                citation_manifest_hash=manifest.payload_hash,
+                completion_manifest_id=completion.manifest_id,
+                completion_manifest_hash=completion.payload_hash,
+                fixed_run_ids=[fixture["run"].id],
+                idempotency_key="materialize-rejects-changed-input",
+            )
+        assert mismatch.value.detail["code"] == "ANSWER_RESULT_MISMATCH"
     finally:
         db.close()
         engine.dispose()

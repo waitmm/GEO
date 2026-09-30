@@ -421,8 +421,8 @@ def _conditions_from_context(context: SinglePromptAnalysisContext) -> tuple[dict
     return {"source": "FROZEN_RETEST_CONTEXT", "runs": rows}, unavailable
 
 
-def execute_retest_sampling(retest_id: str) -> None:
-    db = SessionLocal()
+def execute_retest_sampling(retest_id: str, *, session_factory: Any = SessionLocal) -> None:
+    db = session_factory()
     try:
         retest = db.query(SinglePromptRetestExecution).filter_by(retest_id=retest_id).one_or_none()
         if not retest or retest.status != "SAMPLING":
@@ -430,8 +430,8 @@ def execute_retest_sampling(retest_id: str) -> None:
         analysis_id = retest.retest_analysis_id
     finally:
         db.close()
-    execute_analysis(analysis_id, freeze_with_failures=False)
-    db = SessionLocal()
+    execute_analysis(analysis_id, freeze_with_failures=False, session_factory=session_factory)
+    db = session_factory()
     try:
         retest = db.query(SinglePromptRetestExecution).filter_by(retest_id=retest_id).one_or_none()
         analysis = db.query(SinglePromptAnalysis).filter_by(analysis_id=analysis_id).one_or_none()
@@ -508,8 +508,13 @@ def start_semantic_measurement(
     return retest
 
 
-def execute_semantic_measurement(retest_id: str, authorize_external_llm: bool) -> None:
-    db = SessionLocal()
+def execute_semantic_measurement(
+    retest_id: str,
+    authorize_external_llm: bool,
+    *,
+    session_factory: Any = SessionLocal,
+) -> None:
+    db = session_factory()
     try:
         retest = db.query(SinglePromptRetestExecution).filter_by(retest_id=retest_id).one_or_none()
         if not retest or retest.status != "SEMANTIC_MEASURING":

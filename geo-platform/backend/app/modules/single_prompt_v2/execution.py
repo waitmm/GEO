@@ -202,8 +202,9 @@ def _strategy_input_for_execution(
         SinglePromptStrategyReview.strategy_id == strategy_id,
         SinglePromptStrategyReview.result_version == strategy_result_version,
     ).one_or_none()
-    if not result or not review or review.decision != "ACCEPTED":
-        raise HTTPException(status_code=409, detail="当前精确策略版本尚未确认，不能生成执行方案")
+    is_machine_authority = strategy.input_authority_type == "MACHINE_QUALIFICATION"
+    if not result or (not is_machine_authority and (not review or review.decision != "ACCEPTED")):
+        raise HTTPException(status_code=409, detail="当前精确策略版本没有有效的机器资格或人工确认")
     applicability = _strategy_applicability(db, strategy)
     if not applicability["is_current_input"]:
         raise HTTPException(status_code=409, detail="策略输入已过期，不能授权新的执行方案")
@@ -224,10 +225,13 @@ def _strategy_input_for_execution(
     ).one_or_none()
     if not analysis or not context or not diagnosis:
         raise HTTPException(status_code=409, detail="策略引用的冻结 V2 输入不完整")
-    review_snapshot = strategy_review_snapshot(review)
+    review_snapshot = strategy_review_snapshot(review) if review else {}
     baseline = _baseline_snapshot(analysis, context)
-    truths = _confirmed_truths(strategy_input, direction)
-    if not truths or {row["product_truth_id"] for row in truths} != {int(value) for value in direction.get("truth_ids") or []}:
+    truths = _confirmed_truths(strategy_input, direction) if not is_machine_authority else []
+    if not is_machine_authority and (
+        not truths
+        or {row["product_truth_id"] for row in truths} != {int(value) for value in direction.get("truth_ids") or []}
+    ):
         raise HTTPException(
             status_code=409,
             detail={
@@ -245,11 +249,22 @@ def _strategy_input_for_execution(
             "strategy_id": strategy.strategy_id,
             "strategy_result_version": result.result_version,
             "strategy_result_hash": result.output_hash,
-            "strategy_review_id": review.review_id,
-            "strategy_review_snapshot_hash": _hash(review_snapshot),
+            "strategy_review_id": review.review_id if review else None,
+            "strategy_review_snapshot_hash": _hash(review_snapshot) if review else "",
+            "input_authority_type": strategy.input_authority_type,
+            "input_authority_id": strategy.input_authority_id,
+            "input_authority_hash": strategy.input_authority_hash,
             "strategy_input_snapshot_hash": strategy.input_snapshot_hash,
         },
         "strategy_review_snapshot": review_snapshot,
+        "automatic_draft": next(
+            (
+                copy.deepcopy(row)
+                for row in output.get("execution_drafts") or []
+                if row.get("direction_id") == direction_id
+            ),
+            None,
+        ),
         "direction": copy.deepcopy(direction),
         "themes": [
             copy.deepcopy(row) for row in output.get("themes") or []
@@ -271,7 +286,7 @@ def _strategy_input_for_execution(
         "brand_snapshot_hash": diagnosis.brand_snapshot_hash,
         "baseline": baseline,
         "boundary": {
-            "asset_operation": "CREATE_NEW",
+            "asset_operation": "CONDITIONAL" if is_machine_authority else "CREATE_NEW",
             "update_managed_enabled": False,
             "external_llm_calls": 0,
             "web_refetches": 0,
@@ -282,7 +297,7 @@ def _strategy_input_for_execution(
 
 
 def _asset_options(direction: dict[str, Any]) -> tuple[list[dict], list[dict]]:
-    if direction["direction_type"] == "FOUNDATION":
+    if direction["direction_type"] in {"FOUNDATION", "MECHANISM", "DISCOVERY"}:
         assets = [
             {"asset_type": value, "label": {"PRODUCT_PAGE": "产品页", "FEATURE_PAGE": "功能页", "HELP_DOC": "帮助文档"}[value]}
             for value in FOUNDATION_ASSET_TYPES
@@ -308,6 +323,70 @@ def _reason_adapter(row: dict[str, Any], truth_ids: list[int]) -> dict[str, Any]
 
 
 def _compile_output(proposal_id: str, input_snapshot: dict[str, Any]) -> dict[str, Any]:
+    automatic_draft = input_snapshot.get("automatic_draft") or {}
+    if automatic_draft:
+        direction = input_snapshot["direction"]
+        asset_types, surfaces = _asset_options(direction)
+        blocks = []
+        for index, row in enumerate(automatic_draft.get("content_blocks") or automatic_draft.get("sections") or []):
+            block_id = str(row.get("block_id") or row.get("section_id") or f"section:{proposal_id}:{index + 1}")
+            blocks.append({
+                "section_id": block_id,
+                "content_class": "PUBLIC_CONTENT",
+                "purpose": str(row.get("content_role") or row.get("purpose") or "GROUNDED_CONTENT"),
+                "title": str(row.get("heading") or row.get("title") or f"内容 {index + 1}"),
+                "draft_text": str(row.get("draft_text") or ""),
+                "truth_ids": [],
+                "reason_ids": [],
+                "theme_ids": [],
+                "allowed_claim_ids": [],
+                "answer_unit_id": row.get("answer_unit_id"),
+                "binding_id": row.get("binding_id"),
+                "citation_id": row.get("citation_id"),
+                "evidence_relation": row.get("evidence_relation"),
+            })
+        title = str(automatic_draft.get("title") or "执行内容草稿")
+        output = {
+            "contract_version": EXECUTION_CONTRACT_VERSION,
+            "proposal_id": proposal_id,
+            "input_identity": copy.deepcopy(input_snapshot["identity"]),
+            "direction": copy.deepcopy(direction),
+            "strategy_channel": {
+                "channel_key": direction.get("channel_key"),
+                "channel_label": direction.get("channel_label"),
+                "channel_role": direction.get("channel_role"),
+                "immutable": True,
+            },
+            "asset_operation": "CONDITIONAL",
+            "asset_type_candidates": asset_types,
+            "publication_surface_candidates": surfaces,
+            "package_candidates": [{"package_key": "MACHINE_DRAFT", "label": "当前机器资格草稿", "direction_id": direction["direction_id"], "truth_ids": []}],
+            "title_candidates": [{"title_id": "MACHINE_GROUNDED_TITLE", "title": title, "truth_ids": []}],
+            "public_content_candidates": blocks,
+            "internal_checklist": copy.deepcopy(automatic_draft.get("internal_checklist") or []),
+            "claim_usage_policy": [],
+            "selection": {
+                "asset_operation": "CONDITIONAL",
+                "asset_type": None,
+                "package_key": "MACHINE_DRAFT",
+                "publication_surface": None,
+                "publishing_account": "",
+                "publishing_location": "",
+                "account_control_status": "UNVERIFIED",
+                "title": title,
+                "section_order": [row["section_id"] for row in blocks],
+                "execution_note": "",
+            },
+            "selected_public_content": blocks,
+            "baseline": copy.deepcopy(input_snapshot["baseline"]),
+            "limitations": copy.deepcopy(input_snapshot.get("limitations") or []),
+            "advisories": copy.deepcopy(input_snapshot.get("advisories") or []),
+            "automatic_qa": copy.deepcopy(automatic_draft.get("qa") or {}),
+            "validation": {},
+            "boundary": copy.deepcopy(input_snapshot["boundary"]),
+        }
+        output["validation"] = validate_execution_output(output, input_snapshot)
+        return output
     direction = input_snapshot["direction"]
     truths = input_snapshot["truths"]
     truth_ids = [row["product_truth_id"] for row in truths]
@@ -422,7 +501,7 @@ def validate_execution_output(output: dict[str, Any], input_snapshot: dict[str, 
     selection = output.get("selection") or {}
     direction = input_snapshot["direction"]
     if output.get("asset_operation") != "CREATE_NEW" or selection.get("asset_operation") != "CREATE_NEW":
-        errors.append("UPDATE_MANAGED_NOT_ENABLED")
+        errors.append("ASSET_OPERATION_SELECTION_REQUIRED")
     if output.get("strategy_channel") != {
         "channel_key": direction.get("channel_key"),
         "channel_label": direction.get("channel_label"),
@@ -445,34 +524,45 @@ def validate_execution_output(output: dict[str, Any], input_snapshot: dict[str, 
         errors.append("PUBLISHING_LOCATION_REQUIRED")
     if selection.get("account_control_status") != "USER_REPORTED_CONTROL":
         errors.append("PUBLICATION_AUTHORITY_NOT_CONFIRMED")
-    if selection.get("package_key") != "FULL_DIRECTION_SCOPE":
+    allowed_packages = {row.get("package_key") for row in output.get("package_candidates") or []}
+    if selection.get("package_key") not in allowed_packages:
         errors.append("INVALID_PACKAGE_SELECTION")
     candidate_sections = {row["section_id"]: row for row in output.get("public_content_candidates") or []}
     order = selection.get("section_order") or []
     if not order or len(order) != len(set(order)) or not set(order).issubset(candidate_sections):
         errors.append("INVALID_PUBLIC_SECTION_SELECTION")
-    if not any(candidate_sections.get(value, {}).get("purpose") == "PRODUCT_TRUTH" for value in order):
+    machine_authority = (input_snapshot.get("identity") or {}).get("input_authority_type") == "MACHINE_QUALIFICATION"
+    if not machine_authority and not any(candidate_sections.get(value, {}).get("purpose") == "PRODUCT_TRUTH" for value in order):
         errors.append("PRODUCT_TRUTH_SECTION_REQUIRED")
     if any(candidate_sections.get(value, {}).get("content_class") != "PUBLIC_CONTENT" for value in order):
         errors.append("INTERNAL_ITEM_IN_PUBLIC_CONTENT")
-    errors.extend(_title_validation(
-        str(selection.get("title") or ""),
-        str((input_snapshot.get("brand_snapshot") or {}).get("brand_name") or "目标品牌"),
-        input_snapshot["truths"],
-    ))
+    if machine_authority:
+        if str(selection.get("title") or "") not in {
+            str(row.get("title") or "") for row in output.get("title_candidates") or []
+        }:
+            errors.append("TITLE_CONTAINS_UNAPPROVED_WORDING")
+        qa = output.get("automatic_qa") or {}
+        if qa.get("status") != "READY_INTERNAL":
+            errors.append("AUTOMATIC_QA_NOT_READY")
+    else:
+        errors.extend(_title_validation(
+            str(selection.get("title") or ""),
+            str((input_snapshot.get("brand_snapshot") or {}).get("brand_name") or "目标品牌"),
+            input_snapshot["truths"],
+        ))
     baseline = output.get("baseline") or {}
     if baseline != input_snapshot.get("baseline"):
         errors.append("BASELINE_MUTATION")
     if baseline.get("baseline_run_ids") != (baseline.get("run_manifest") or {}).get("valid_run_ids"):
         errors.append("BASELINE_NOT_COMPLETE_VALID_RUN_SET")
-    if set(direction.get("truth_ids") or []) != {row["product_truth_id"] for row in input_snapshot["truths"]}:
+    if not machine_authority and set(direction.get("truth_ids") or []) != {row["product_truth_id"] for row in input_snapshot["truths"]}:
         errors.append("PARTIAL_OR_UNCONFIRMED_TRUTH_IN_PUBLIC_SCOPE")
     return {
         "status": "READY_FOR_CONFIRMATION" if not errors else "NEEDS_HUMAN_SELECTION",
         "errors": errors,
         "validators": {
             "strategy_channel_immutable": "PASS" if "STRATEGY_CHANNEL_MUTATION" not in errors else "FAIL",
-            "create_new_only": "PASS" if "UPDATE_MANAGED_NOT_ENABLED" not in errors else "FAIL",
+            "asset_operation_selected": "PASS" if "ASSET_OPERATION_SELECTION_REQUIRED" not in errors else "FAIL",
             "truth_grounding": "PASS" if "PARTIAL_OR_UNCONFIRMED_TRUTH_IN_PUBLIC_SCOPE" not in errors else "FAIL",
             "baseline_exact": "PASS" if not {"BASELINE_MUTATION", "BASELINE_NOT_COMPLETE_VALID_RUN_SET"} & set(errors) else "FAIL",
             "public_internal_separation": "PASS" if "INTERNAL_ITEM_IN_PUBLIC_CONTENT" not in errors else "FAIL",
@@ -490,18 +580,35 @@ def create_execution_proposal(
     direction_id: str,
     idempotency_key: str,
     strategy_result_hash: str,
-    strategy_review_id: str,
+    strategy_review_id: str | None,
     strategy_review_snapshot_hash: str,
+    input_authority_type: str = "HUMAN_REVIEW",
+    input_authority_id: str = "",
+    input_authority_hash: str = "",
 ) -> tuple[SinglePromptExecutionProposal, SinglePromptExecutionProposalResult, bool]:
     snapshot = _strategy_input_for_execution(
         db, strategy_id=strategy_id, strategy_result_version=strategy_result_version,
         project_id=project_id, prompt_id=prompt_id, direction_id=direction_id,
     )
     current = snapshot["identity"]
-    if (
-        strategy_result_hash != current["strategy_result_hash"]
-        or strategy_review_id != current["strategy_review_id"]
-        or strategy_review_snapshot_hash != current["strategy_review_snapshot_hash"]
+    expected_authority = {
+        "input_authority_type": current.get("input_authority_type") or "HUMAN_REVIEW",
+        "input_authority_id": current.get("input_authority_id") or "",
+        "input_authority_hash": current.get("input_authority_hash") or "",
+    }
+    submitted_authority = {
+        "input_authority_type": input_authority_type,
+        "input_authority_id": input_authority_id,
+        "input_authority_hash": input_authority_hash,
+    }
+    if strategy_result_hash != current["strategy_result_hash"] or (
+        input_authority_type == "MACHINE_QUALIFICATION" and submitted_authority != expected_authority
+    ) or (
+        input_authority_type == "HUMAN_REVIEW"
+        and (
+            strategy_review_id != current["strategy_review_id"]
+            or strategy_review_snapshot_hash != current["strategy_review_snapshot_hash"]
+        )
     ):
         raise HTTPException(status_code=409, detail="策略结果或审核快照已变化，请重新加载")
     snapshot["input_snapshot_hash"] = _hash(snapshot)
@@ -545,6 +652,9 @@ def create_execution_proposal(
         direction_id=direction_id, idempotency_key=idempotency_key, input_fingerprint=fingerprint,
         strategy_result_version=strategy_result_version, strategy_result_hash=strategy_result_hash,
         strategy_review_id=strategy_review_id, strategy_review_snapshot_hash=strategy_review_snapshot_hash,
+        input_authority_type=input_authority_type,
+        input_authority_id=input_authority_id,
+        input_authority_hash=input_authority_hash,
         validation_contract_version=EXECUTION_INPUT_VALIDATION_VERSION,
         input_snapshot_json=_canonical_json(snapshot), input_snapshot_hash=snapshot["input_snapshot_hash"],
         status=output["validation"]["status"], active_result_version=result.result_version,
@@ -571,10 +681,20 @@ def _proposal_applicability(db: Session, proposal: SinglePromptExecutionProposal
     checks["strategy_result_is_active"] = bool(strategy and strategy.active_result_version == proposal.strategy_result_version)
     checks["strategy_input_is_current"] = bool(strategy and _strategy_applicability(db, strategy)["is_current_input"])
     result = db.query(SinglePromptStrategyResult).filter_by(result_version=proposal.strategy_result_version).one_or_none()
-    review = db.query(SinglePromptStrategyReview).filter_by(review_id=proposal.strategy_review_id).one_or_none()
     checks["strategy_result_hash_matches"] = bool(result and result.output_hash == proposal.strategy_result_hash)
-    checks["strategy_review_accepted"] = bool(review and review.decision == "ACCEPTED")
-    checks["strategy_review_snapshot_matches"] = bool(review and _hash(strategy_review_snapshot(review)) == proposal.strategy_review_snapshot_hash)
+    if proposal.input_authority_type == "MACHINE_QUALIFICATION":
+        checks["machine_authority_matches"] = bool(
+            strategy
+            and strategy.input_authority_type == "MACHINE_QUALIFICATION"
+            and strategy.input_authority_id == proposal.input_authority_id
+            and strategy.input_authority_hash == proposal.input_authority_hash
+        )
+    else:
+        review = db.query(SinglePromptStrategyReview).filter_by(review_id=proposal.strategy_review_id).one_or_none()
+        checks["strategy_review_accepted"] = bool(review and review.decision == "ACCEPTED")
+        checks["strategy_review_snapshot_matches"] = bool(
+            review and _hash(strategy_review_snapshot(review)) == proposal.strategy_review_snapshot_hash
+        )
     return {"is_current_input": all(checks.values()), "checks": checks}
 
 
@@ -598,7 +718,7 @@ def revise_execution_proposal(
     ).one_or_none()
     if not base or base.output_hash != base_result_hash or base.reviewable_set_hash != reviewable_set_hash:
         raise HTTPException(status_code=409, detail="执行方案编辑目标已变化，请重新加载")
-    if str(edit.get("asset_operation") or "CREATE_NEW") != "CREATE_NEW":
+    if str(edit.get("asset_operation") or "") != "CREATE_NEW":
         raise HTTPException(status_code=422, detail="当前 V2 未启用 UPDATE；执行方案不能自动降级成其他操作")
     output = copy.deepcopy(loads(base.output_json, {}))
     selection = output["selection"]
@@ -611,6 +731,7 @@ def revise_execution_proposal(
         raise HTTPException(status_code=422, detail=f"包含不可编辑字段：{', '.join(sorted(unknown))}")
     selection.update(copy.deepcopy(edit))
     selection["asset_operation"] = "CREATE_NEW"
+    output["asset_operation"] = "CREATE_NEW"
     sections = {row["section_id"]: row for row in output["public_content_candidates"]}
     output["selected_public_content"] = [sections[value] for value in selection.get("section_order") or [] if value in sections]
     snapshot = loads(proposal.input_snapshot_json, {})
@@ -889,6 +1010,9 @@ def get_execution_proposal_status(
             "strategy_result_hash": proposal.strategy_result_hash,
             "strategy_review_id": proposal.strategy_review_id,
             "strategy_review_snapshot_hash": proposal.strategy_review_snapshot_hash,
+            "input_authority_type": proposal.input_authority_type,
+            "input_authority_id": proposal.input_authority_id,
+            "input_authority_hash": proposal.input_authority_hash,
             "input_snapshot_hash": proposal.input_snapshot_hash,
             "status": proposal.status,
         },

@@ -1060,7 +1060,154 @@ def create_strategy_candidate(
     return execution, result, True
 
 
+def create_automatic_strategy_candidate(
+    db: Session,
+    *,
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    project_id: int,
+    prompt_id: int,
+    idempotency_key: str,
+    expected_projection_hash: str,
+) -> tuple[SinglePromptStrategyExecution, SinglePromptStrategyResult, bool]:
+    from app.modules.single_prompt_v2.qualification import build_qualification_projection
+
+    qualification = build_qualification_projection(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
+    projection_hash = str(qualification.get("projection_hash") or "")
+    if projection_hash != expected_projection_hash:
+        raise HTTPException(status_code=409, detail="机器资格投影已变化，请重新加载精确版本")
+    directions = copy.deepcopy(qualification.get("directions") or [])
+    drafts = copy.deepcopy(qualification.get("execution_drafts") or [])
+    if not directions or not drafts:
+        raise HTTPException(status_code=409, detail="当前机器资格投影没有可交付的策略方向或执行草稿")
+    identity = qualification["input_identity"]
+    authority_id = f"qualification:{projection_hash}"
+    input_fingerprint = _hash({
+        "identity": identity,
+        "authority_id": authority_id,
+        "qualification_contract_version": qualification.get("contract_version"),
+    })
+    existing = db.query(SinglePromptStrategyExecution).filter(
+        SinglePromptStrategyExecution.diagnosis_id == diagnosis_id,
+        SinglePromptStrategyExecution.idempotency_key == idempotency_key,
+    ).one_or_none()
+    if existing:
+        if existing.input_fingerprint != input_fingerprint:
+            raise HTTPException(status_code=409, detail="幂等键已用于不同机器策略输入")
+        existing_result = db.query(SinglePromptStrategyResult).filter_by(
+            result_version=existing.active_result_version
+        ).one()
+        return existing, existing_result, False
+
+    strategy_id = f"strategy-{uuid4()}"
+    output = {
+        "contract_version": "single_prompt_v2.automatic_strategy_result.v1",
+        "strategy_id": strategy_id,
+        "authority": {
+            "type": "MACHINE_QUALIFICATION",
+            "authority_id": authority_id,
+            "authority_hash": projection_hash,
+            "human_review_required_for_computation": False,
+            "business_confirmation_required_for_external_action": True,
+        },
+        "input_identity": copy.deepcopy(identity),
+        "input_projection_hash": projection_hash,
+        "directions": directions,
+        "execution_drafts": drafts,
+        "object_qualifications": copy.deepcopy(qualification.get("object_qualifications") or []),
+        "analysis_scope": copy.deepcopy(qualification.get("analysis_scope") or {}),
+        "evidence_scope": copy.deepcopy(qualification.get("evidence_scope") or {}),
+        "limitations": copy.deepcopy(qualification.get("scope_limitations") or []),
+        "boundary": copy.deepcopy(qualification.get("boundary") or {}),
+    }
+    output_hash = _hash(output)
+    reviewable_set_hash = _hash({
+        "direction_ids": sorted(str(row.get("direction_id") or row.get("strategy_id")) for row in directions),
+        "draft_ids": sorted(str(row.get("draft_id")) for row in drafts),
+        "authority_hash": projection_hash,
+    })
+    result = SinglePromptStrategyResult(
+        result_version=f"strategy-v1:{output_hash[:16]}",
+        strategy_id=strategy_id,
+        version_number=1,
+        parent_result_version=None,
+        output_json=_canonical_json(output),
+        output_hash=output_hash,
+        reviewable_set_hash=reviewable_set_hash,
+        limitations_json=_canonical_json(output["limitations"]),
+    )
+    execution = SinglePromptStrategyExecution(
+        strategy_id=strategy_id,
+        analysis_id=analysis_id,
+        context_id=str(identity["context_id"]),
+        diagnosis_id=diagnosis_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        idempotency_key=idempotency_key,
+        input_fingerprint=input_fingerprint,
+        diagnosis_result_version=result_version,
+        diagnosis_result_hash=str(identity["diagnosis_result_hash"]),
+        diagnosis_review_id="",
+        review_snapshot_hash="",
+        input_authority_type="MACHINE_QUALIFICATION",
+        input_authority_id=authority_id,
+        input_authority_hash=projection_hash,
+        validation_contract_version="single_prompt_v2.machine_qualification.v1",
+        input_snapshot_json=_canonical_json(qualification),
+        input_snapshot_hash=projection_hash,
+        status="READY_FOR_EXECUTION_DRAFT",
+        active_result_version=result.result_version,
+    )
+    db.add_all([execution, result])
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent = db.query(SinglePromptStrategyExecution).filter(
+            SinglePromptStrategyExecution.diagnosis_id == diagnosis_id,
+            SinglePromptStrategyExecution.idempotency_key == idempotency_key,
+        ).one_or_none()
+        if concurrent and concurrent.input_fingerprint == input_fingerprint:
+            concurrent_result = db.query(SinglePromptStrategyResult).filter_by(
+                result_version=concurrent.active_result_version
+            ).one()
+            return concurrent, concurrent_result, False
+        raise
+    db.refresh(execution)
+    db.refresh(result)
+    return execution, result, True
+
+
 def _strategy_applicability(db: Session, execution: SinglePromptStrategyExecution) -> dict[str, Any]:
+    if execution.input_authority_type == "MACHINE_QUALIFICATION":
+        from app.modules.single_prompt_v2.qualification import build_qualification_projection
+
+        qualification = build_qualification_projection(
+            db,
+            analysis_id=execution.analysis_id,
+            diagnosis_id=execution.diagnosis_id,
+            result_version=execution.diagnosis_result_version,
+            project_id=execution.project_id,
+            prompt_id=execution.prompt_id,
+        )
+        checks = {
+            "diagnosis_result_hash_matches": (
+                qualification["input_identity"]["diagnosis_result_hash"] == execution.diagnosis_result_hash
+            ),
+            "qualification_projection_matches": qualification.get("projection_hash") == execution.input_authority_hash,
+            "authority_identity_matches": execution.input_authority_id == f"qualification:{execution.input_authority_hash}",
+            "validation_contract_matches": execution.validation_contract_version == "single_prompt_v2.machine_qualification.v1",
+            "input_snapshot_hash_matches": execution.input_snapshot_hash == execution.input_authority_hash,
+        }
+        return {"is_current_input": all(checks.values()), "checks": checks}
     projection = build_strategy_input_projection(
         db,
         analysis_id=execution.analysis_id,
@@ -1123,6 +1270,9 @@ def get_strategy_status(
             "validation_contract_version": execution.validation_contract_version,
             "input_snapshot_hash": execution.input_snapshot_hash,
             "status": execution.status,
+            "input_authority_type": execution.input_authority_type,
+            "input_authority_id": execution.input_authority_id,
+            "input_authority_hash": execution.input_authority_hash,
         },
         "result": {
             "result_version": result.result_version,
@@ -1144,7 +1294,12 @@ def get_strategy_status(
             "created_at": _iso(review.created_at),
         } if review else None,
         "applicability": applicability,
-        "allowed_operations": ["VIEW"] if review or not applicability["is_current_input"] else ["VIEW", "REVISE", "REVIEW"],
+        "allowed_operations": (
+            ["VIEW", "GENERATE_EXECUTION_DRAFT"]
+            if execution.input_authority_type == "MACHINE_QUALIFICATION" and applicability["is_current_input"]
+            else ["VIEW"] if review or not applicability["is_current_input"]
+            else ["VIEW", "REVISE", "REVIEW"]
+        ),
         "created_at": _iso(execution.created_at),
     }
 

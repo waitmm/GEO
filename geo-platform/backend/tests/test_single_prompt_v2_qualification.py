@@ -102,15 +102,22 @@ def test_officially_eligible_statement_removes_public_claim_blocker_only():
     assert result["final_plan"]["human_review_global_blocker"] is False
 
 
-def test_partial_truth_coverage_does_not_create_machine_direction():
+def test_partial_truth_coverage_creates_only_non_claim_discovery_direction():
     result = evaluate_qualification_projection(
         _projection(full_coverage=False),
         _contribution_scope(),
     )
 
-    assert result["directions"] == []
-    assert result["execution_drafts"] == []
-    assert result["final_plan"]["machine_direction_count"] == 0
+    assert len(result["directions"]) == 1
+    direction = result["directions"][0]
+    assert direction["direction_type"] == "DISCOVERY"
+    assert direction["mechanism_gap"] == "TARGET_BRAND_NOT_PRESENT_IN_OBSERVED_ANSWER"
+    assert direction["truth_ids"] == []
+    assert direction["public_claim_eligibility"] == "NOT_CONSUMABLE"
+    assert len(result["execution_drafts"]) == 1
+    assert result["execution_drafts"][0]["claims"] == []
+    assert result["final_plan"]["machine_direction_count"] == 1
+    assert result["final_plan"]["execution_ready_count"] == 0
 
 
 def test_run_one_contribution_never_becomes_nine_run_evidence_scope():

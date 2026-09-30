@@ -2,16 +2,36 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
-from app.core.release_database import get_release_db
+from app.core.release_database import ReleaseSessionLocal, get_release_db
+from app.modules.single_prompt_v2.execution import (
+    confirm_execution_proposal,
+    create_execution_proposal,
+    get_execution_proposal_status,
+    record_publication,
+    revise_execution_proposal,
+)
+from app.modules.single_prompt_v2.retest import (
+    build_retest_readiness,
+    create_comparison,
+    create_retest,
+    execute_retest_sampling,
+    execute_semantic_measurement,
+    finalize_retest_with_failures,
+    get_retest_status,
+    retry_retest_sampling,
+    start_retest_sampling,
+    start_semantic_measurement,
+)
 from app.modules.single_prompt_v2.citation_contribution import (
     authorize_citation_contribution,
     complete_citation_contribution_review,
     create_citation_contribution_plan,
     get_citation_contribution_status,
     list_citation_contributions,
+    materialize_compatible_citation_contribution,
 )
 from app.modules.single_prompt_v2.diagnosis import (
     complete_diagnosis_review,
@@ -25,11 +45,13 @@ from app.modules.single_prompt_v2.diagnosis import (
 )
 from app.modules.single_prompt_v2.schemas import (
     SinglePromptAnalysisCreate,
+    SinglePromptAutomaticStrategyCreate,
     SinglePromptRunRetryCreate,
     SinglePromptRunSelectionCreate,
     SinglePromptAnswerDiagnosisCreate,
     SinglePromptCitationContributionAuthorizationCreate,
     SinglePromptCitationContributionPlanCreate,
+    SinglePromptCitationContributionReuseCreate,
     SinglePromptCitationContributionReviewCreate,
     SinglePromptQualificationCriticCreate,
     SinglePromptQualificationCriticGoldReviewCreate,
@@ -37,11 +59,19 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptDiagnosisReviewCreate,
     SinglePromptDiagnosisRevisionCreate,
     SinglePromptEvidenceContinuationCreate,
+    SinglePromptExecutionConfirmationCreate,
+    SinglePromptExecutionProposalCreate,
+    SinglePromptExecutionProposalRevisionCreate,
     SinglePromptManualSourceContentCreate,
     SinglePromptSourceCompletionCreate,
     SinglePromptSourceAutoFetchCreate,
+    SinglePromptSourceReuseCreate,
     SinglePromptSourcePreparationCreate,
     SinglePromptSourceWaiverCreate,
+    SinglePromptPublicationCreate,
+    SinglePromptRetestAction,
+    SinglePromptRetestCreate,
+    SinglePromptSemanticMeasurementCreate,
     SinglePromptStrategyCreate,
     SinglePromptStrategyPriorityRevisionCreate,
     SinglePromptStrategyReviewCreate,
@@ -61,6 +91,7 @@ from app.modules.single_prompt_v2.strategy import (
     build_strategy_readiness,
     complete_strategy_review,
     create_strategy_candidate,
+    create_automatic_strategy_candidate,
     get_strategy_status,
     revise_strategy_priority,
 )
@@ -80,6 +111,7 @@ from app.modules.single_prompt_v2.source_preparation import (
     get_source_preparation_for_analysis,
     get_source_preparation_status,
     queue_auto_fetch,
+    reuse_completed_sources,
     submit_manual_content,
     waive_source,
 )
@@ -104,6 +136,41 @@ def plan_citation_contribution(
         answer_result_version=payload.answer_result_version,
         answer_result_hash=payload.answer_result_hash,
         answer_review_id=payload.answer_review_id,
+        citation_manifest_id=payload.citation_manifest_id,
+        citation_manifest_hash=payload.citation_manifest_hash,
+        completion_manifest_id=payload.completion_manifest_id,
+        completion_manifest_hash=payload.completion_manifest_hash,
+        fixed_run_ids=payload.fixed_run_ids,
+        idempotency_key=payload.idempotency_key,
+    )
+    if not created:
+        response.status_code = 200
+    return get_citation_contribution_status(
+        db,
+        analysis_id=analysis_id,
+        contribution_id=execution.contribution_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.post("/analyses/{analysis_id}/citation-contributions/materializations", status_code=201)
+def materialize_citation_contribution(
+    analysis_id: str,
+    payload: SinglePromptCitationContributionReuseCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    execution, created = materialize_compatible_citation_contribution(
+        db,
+        analysis_id=analysis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        source_contribution_id=payload.source_contribution_id,
+        source_result_version=payload.source_result_version,
+        source_result_hash=payload.source_result_hash,
+        answer_result_version=payload.answer_result_version,
+        answer_result_hash=payload.answer_result_hash,
         citation_manifest_id=payload.citation_manifest_id,
         citation_manifest_hash=payload.citation_manifest_hash,
         completion_manifest_id=payload.completion_manifest_id,
@@ -369,6 +436,24 @@ def start_source_auto_fetch(preparation_id: str, payload: SinglePromptSourceAuto
         preparation_id=preparation_id,
         project_id=payload.project_id,
         prompt_id=payload.prompt_id,
+    )
+    return get_source_preparation_status(db, preparation_id=preparation_id)
+
+
+@router.post("/source-preparations/{preparation_id}/reuse-completed-sources")
+def reuse_source_completion(
+    preparation_id: str,
+    payload: SinglePromptSourceReuseCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    reuse_completed_sources(
+        db,
+        preparation_id=preparation_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        source_completion_manifest_id=payload.source_completion_manifest_id,
+        source_completion_manifest_hash=payload.source_completion_manifest_hash,
+        reused_by=payload.reused_by,
     )
     return get_source_preparation_status(db, preparation_id=preparation_id)
 
@@ -688,6 +773,40 @@ def generate_strategy(
     )
 
 
+@router.post(
+    "/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/automatic-strategies",
+    status_code=201,
+)
+def generate_automatic_strategy(
+    analysis_id: str,
+    diagnosis_id: str,
+    result_version: str,
+    payload: SinglePromptAutomaticStrategyCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    execution, _result, created = create_automatic_strategy_candidate(
+        db,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        result_version=result_version,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        idempotency_key=payload.idempotency_key,
+        expected_projection_hash=payload.expected_projection_hash,
+    )
+    if not created:
+        response.status_code = 200
+    return get_strategy_status(
+        db,
+        strategy_id=execution.strategy_id,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
 @router.get("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/strategies/{strategy_id}")
 def read_strategy(
     analysis_id: str,
@@ -781,6 +900,284 @@ def review_strategy(
         project_id=payload.project_id,
         prompt_id=payload.prompt_id,
     )
+
+
+@router.post(
+    "/analyses/{analysis_id}/diagnoses/{diagnosis_id}/strategies/{strategy_id}/results/{result_version}/execution-proposals",
+    status_code=201,
+)
+def generate_execution_proposal(
+    analysis_id: str,
+    diagnosis_id: str,
+    strategy_id: str,
+    result_version: str,
+    payload: SinglePromptExecutionProposalCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    strategy_status = get_strategy_status(
+        db,
+        strategy_id=strategy_id,
+        analysis_id=analysis_id,
+        diagnosis_id=diagnosis_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+    authority_type = str(strategy_status["strategy"].get("input_authority_type") or "HUMAN_REVIEW")
+    if authority_type == "HUMAN_REVIEW" and (
+        not strategy_status.get("review") or strategy_status["review"].get("decision") != "ACCEPTED"
+    ):
+        raise HTTPException(status_code=409, detail="当前精确策略版本尚未确认")
+    proposal, _result, created = create_execution_proposal(
+        db,
+        strategy_id=strategy_id,
+        strategy_result_version=result_version,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        direction_id=payload.direction_id,
+        idempotency_key=payload.idempotency_key,
+        strategy_result_hash=payload.strategy_result_hash,
+        strategy_review_id=payload.strategy_review_id,
+        strategy_review_snapshot_hash=payload.strategy_review_snapshot_hash,
+        input_authority_type=payload.input_authority_type,
+        input_authority_id=payload.input_authority_id,
+        input_authority_hash=payload.input_authority_hash,
+    )
+    if not created:
+        response.status_code = 200
+    return get_execution_proposal_status(
+        db,
+        proposal_id=proposal.proposal_id,
+        strategy_id=strategy_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.get("/strategies/{strategy_id}/execution-proposals/{proposal_id}")
+def read_execution_proposal(
+    strategy_id: str,
+    proposal_id: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_execution_proposal_status(
+        db,
+        proposal_id=proposal_id,
+        strategy_id=strategy_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+    )
+
+
+@router.post("/strategies/{strategy_id}/execution-proposals/{proposal_id}/results/{result_version}/revisions")
+def revise_execution(
+    strategy_id: str,
+    proposal_id: str,
+    result_version: str,
+    payload: SinglePromptExecutionProposalRevisionCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    if result_version != payload.base_result_version:
+        raise HTTPException(status_code=409, detail="路径执行方案版本与提交版本不一致")
+    revise_execution_proposal(
+        db,
+        proposal_id=proposal_id,
+        base_result_version=result_version,
+        base_result_hash=payload.base_result_hash,
+        reviewable_set_hash=payload.reviewable_set_hash,
+        editor=payload.editor,
+        edit=payload.edit,
+    )
+    return get_execution_proposal_status(
+        db,
+        proposal_id=proposal_id,
+        strategy_id=strategy_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.post("/strategies/{strategy_id}/execution-proposals/{proposal_id}/results/{result_version}/confirmations")
+def confirm_execution(
+    strategy_id: str,
+    proposal_id: str,
+    result_version: str,
+    payload: SinglePromptExecutionConfirmationCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    _confirmation, created = confirm_execution_proposal(
+        db,
+        proposal_id=proposal_id,
+        result_version=result_version,
+        result_hash=payload.result_hash,
+        reviewable_set_hash=payload.reviewable_set_hash,
+        idempotency_key=payload.idempotency_key,
+        confirmer=payload.confirmer,
+        note=payload.note,
+    )
+    if not created:
+        response.status_code = 200
+    return get_execution_proposal_status(
+        db,
+        proposal_id=proposal_id,
+        strategy_id=strategy_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.post(
+    "/strategies/{strategy_id}/execution-proposals/{proposal_id}/confirmations/{confirmation_id}/publications",
+    status_code=201,
+)
+def record_execution_publication(
+    strategy_id: str,
+    proposal_id: str,
+    confirmation_id: str,
+    payload: SinglePromptPublicationCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    report = payload.model_dump(
+        exclude={"project_id", "prompt_id", "idempotency_key", "prior_publication_id", "recorder"}
+    )
+    _publication, created = record_publication(
+        db,
+        confirmation_id=confirmation_id,
+        proposal_id=proposal_id,
+        idempotency_key=payload.idempotency_key,
+        prior_publication_id=payload.prior_publication_id,
+        recorder=payload.recorder,
+        report=report,
+    )
+    if not created:
+        response.status_code = 200
+    return get_execution_proposal_status(
+        db,
+        proposal_id=proposal_id,
+        strategy_id=strategy_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+
+
+@router.get("/retests/readiness")
+def read_retest_readiness(
+    project_id: int,
+    prompt_id: int,
+    confirmation_id: str | None = None,
+    publication_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    return build_retest_readiness(
+        db,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        confirmation_id=confirmation_id,
+        publication_id=publication_id,
+    )
+
+
+@router.post("/retests", status_code=201)
+def plan_retest(payload: SinglePromptRetestCreate, response: Response, db: Session = Depends(get_db)) -> dict:
+    retest, created = create_retest(
+        db,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        confirmation_id=payload.confirmation_id,
+        publication_id=payload.publication_id,
+        confirmation_snapshot_hash=payload.confirmation_snapshot_hash,
+        publication_report_hash=payload.publication_report_hash,
+        idempotency_key=payload.idempotency_key,
+        sample_count=payload.sample_count,
+        measurement_identity=payload.measurement_identity.model_dump() if payload.measurement_identity else None,
+    )
+    if not created:
+        response.status_code = 200
+    return get_retest_status(db, retest_id=retest.retest_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
+
+
+@router.get("/retests/{retest_id}")
+def read_retest(retest_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> dict:
+    return get_retest_status(db, retest_id=retest_id, project_id=project_id, prompt_id=prompt_id)
+
+
+@router.post("/retests/{retest_id}/sampling", status_code=202)
+def run_retest_sampling(
+    retest_id: str,
+    payload: SinglePromptRetestAction,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict:
+    start_retest_sampling(db, retest_id=retest_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
+    background_tasks.add_task(execute_retest_sampling, retest_id, session_factory=ReleaseSessionLocal)
+    return get_retest_status(db, retest_id=retest_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
+
+
+@router.post("/retests/{retest_id}/sampling/retry", status_code=202)
+def retry_retest(
+    retest_id: str,
+    payload: SinglePromptRetestAction,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict:
+    retry_retest_sampling(db, retest_id=retest_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
+    background_tasks.add_task(execute_retest_sampling, retest_id, session_factory=ReleaseSessionLocal)
+    return get_retest_status(db, retest_id=retest_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
+
+
+@router.post("/retests/{retest_id}/sampling/finalize")
+def finalize_retest(
+    retest_id: str,
+    payload: SinglePromptRetestAction,
+    db: Session = Depends(get_db),
+) -> dict:
+    finalize_retest_with_failures(db, retest_id=retest_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
+    return get_retest_status(db, retest_id=retest_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
+
+
+@router.post("/retests/{retest_id}/semantic-measurement", status_code=202)
+def run_retest_semantics(
+    retest_id: str,
+    payload: SinglePromptSemanticMeasurementCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict:
+    start_semantic_measurement(
+        db,
+        retest_id=retest_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+        authorize_external_llm=payload.authorize_external_llm,
+    )
+    background_tasks.add_task(
+        execute_semantic_measurement,
+        retest_id,
+        payload.authorize_external_llm,
+        session_factory=ReleaseSessionLocal,
+    )
+    return get_retest_status(db, retest_id=retest_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
+
+
+@router.post("/retests/{retest_id}/comparisons", status_code=201)
+def create_retest_comparison(
+    retest_id: str,
+    payload: SinglePromptRetestAction,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    _comparison, created = create_comparison(
+        db,
+        retest_id=retest_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
+    if not created:
+        response.status_code = 200
+    return get_retest_status(db, retest_id=retest_id, project_id=payload.project_id, prompt_id=payload.prompt_id)
 
 
 @router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/target-brand-truths", status_code=201)

@@ -443,6 +443,7 @@ class SinglePromptPreparedSourceSnapshot(Base):
     coverage_scope: Mapped[str] = mapped_column(String(40))
     acquired_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     submitted_by: Mapped[str] = mapped_column(String(120))
+    reused_from_snapshot_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     @property
@@ -460,11 +461,6 @@ class SinglePromptPreparedSourceSnapshot(Base):
     @property
     def fetch_source(self) -> str:
         return "V2_SOURCE_PREPARATION"
-
-    @property
-    def reused_from_snapshot_id(self) -> None:
-        return None
-
 
 class SinglePromptSourceCompletionManifest(Base):
     __tablename__ = "single_prompt_source_completion_manifests"
@@ -794,6 +790,9 @@ class SinglePromptStrategyExecution(Base):
     diagnosis_result_hash: Mapped[str] = mapped_column(String(64))
     diagnosis_review_id: Mapped[str] = mapped_column(String(80), index=True)
     review_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    input_authority_type: Mapped[str] = mapped_column(String(40), default="HUMAN_REVIEW", index=True)
+    input_authority_id: Mapped[str] = mapped_column(String(120), default="")
+    input_authority_hash: Mapped[str] = mapped_column(String(64), default="")
     validation_contract_version: Mapped[str] = mapped_column(String(120))
     input_snapshot_json: Mapped[str] = mapped_column(Text)
     input_snapshot_hash: Mapped[str] = mapped_column(String(64))
@@ -860,8 +859,13 @@ class SinglePromptExecutionProposal(Base):
     input_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     strategy_result_version: Mapped[str] = mapped_column(ForeignKey("single_prompt_strategy_results.result_version"), index=True)
     strategy_result_hash: Mapped[str] = mapped_column(String(64))
-    strategy_review_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_strategy_reviews.review_id"), index=True)
-    strategy_review_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    strategy_review_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("single_prompt_strategy_reviews.review_id"), nullable=True, index=True
+    )
+    strategy_review_snapshot_hash: Mapped[str] = mapped_column(String(64), default="")
+    input_authority_type: Mapped[str] = mapped_column(String(40), default="HUMAN_REVIEW", index=True)
+    input_authority_id: Mapped[str] = mapped_column(String(120), default="")
+    input_authority_hash: Mapped[str] = mapped_column(String(64), default="")
     validation_contract_version: Mapped[str] = mapped_column(String(120))
     input_snapshot_json: Mapped[str] = mapped_column(Text)
     input_snapshot_hash: Mapped[str] = mapped_column(String(64))

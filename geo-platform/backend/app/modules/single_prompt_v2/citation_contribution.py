@@ -813,6 +813,362 @@ def _load_fixed_inputs(
     }
 
 
+def _load_machine_admitted_inputs(
+    db: Session,
+    *,
+    analysis_id: str,
+    project_id: int,
+    prompt_id: int,
+    answer_result_version: str,
+    answer_result_hash: str,
+    citation_manifest_id: str,
+    citation_manifest_hash: str,
+    completion_manifest_id: str,
+    completion_manifest_hash: str,
+    fixed_run_ids: list[int],
+) -> dict[str, Any]:
+    analysis = db.query(SinglePromptAnalysis).filter_by(analysis_id=analysis_id).one_or_none()
+    _require(bool(analysis), "ANALYSIS_NOT_FOUND", "Analysis 不存在")
+    _require(
+        analysis.project_id == project_id and analysis.prompt_id == prompt_id,
+        "ANALYSIS_SCOPE_MISMATCH",
+        "Analysis 与 Project/Prompt 不匹配",
+    )
+    context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis_id).one_or_none()
+    _require(bool(context), "CONTEXT_NOT_FOUND", "AnalysisContext 不存在")
+    run_scope = loads(context.run_scope_json, {})
+    normalized_run_ids = sorted({int(item) for item in fixed_run_ids})
+    _require(
+        sorted(int(item) for item in run_scope.get("run_ids") or []) == normalized_run_ids,
+        "FIXED_RUN_SCOPE_MISMATCH",
+        "固定 Run 集与 Context 不一致",
+    )
+    _require(len(normalized_run_ids) == 1, "SINGLE_RUN_SCOPE_REQUIRED", "兼容物化只接受明确的 1/1 Run 范围")
+
+    answer_result = db.query(SinglePromptDiagnosisResult).filter_by(result_version=answer_result_version).one_or_none()
+    _require(
+        bool(answer_result) and answer_result.output_hash == answer_result_hash,
+        "ANSWER_RESULT_MISMATCH",
+        "Answer ResultVersion/hash 不匹配",
+    )
+    answer_execution = db.query(SinglePromptDiagnosisExecution).filter_by(
+        diagnosis_id=answer_result.diagnosis_id
+    ).one_or_none()
+    _require(
+        bool(answer_execution)
+        and answer_execution.analysis_id == analysis_id
+        and answer_execution.context_id == context.context_id
+        and answer_execution.active_result_version == answer_result_version,
+        "ANSWER_CONTEXT_MISMATCH",
+        "Answer Result 不是当前 Analysis/Context 的活动精确版本",
+    )
+    answer_output = loads(answer_result.output_json, {})
+    eligibility = answer_output.get("answer_semantic_eligibility") or {}
+    _require(
+        eligibility.get("status") == "ADMITTED"
+        and int(eligibility.get("total_answer_count") or 0) == 1
+        and int(eligibility.get("failed_answer_count") or 0) == 0,
+        "ANSWER_MACHINE_ADMISSION_REQUIRED",
+        "Answer Result 未形成完整 1/1 机器准入，不能复用 Citation 计算",
+    )
+
+    citation_manifest = db.query(SinglePromptCitationManifest).filter_by(
+        manifest_id=citation_manifest_id
+    ).one_or_none()
+    _require(
+        bool(citation_manifest)
+        and citation_manifest.analysis_id == analysis_id
+        and citation_manifest.context_id == context.context_id
+        and citation_manifest.payload_hash == citation_manifest_hash,
+        "CITATION_MANIFEST_MISMATCH",
+        "Citation Manifest 身份/hash 不匹配",
+    )
+    completion = db.query(SinglePromptSourceCompletionManifest).filter_by(
+        manifest_id=completion_manifest_id
+    ).one_or_none()
+    _require(
+        bool(completion)
+        and completion.analysis_id == analysis_id
+        and completion.context_id == context.context_id
+        and completion.citation_manifest_id == citation_manifest_id
+        and completion.citation_manifest_hash == citation_manifest_hash
+        and completion.payload_hash == completion_manifest_hash
+        and completion.status == "FROZEN",
+        "SOURCE_COMPLETION_MISMATCH",
+        "Source Completion Manifest 身份/hash 或状态不匹配",
+    )
+    completion_payload = loads(completion.payload_json, {})
+    snapshot_ids = [
+        str(item.get("snapshot_id") or "")
+        for item in _completion_sources(completion_payload)
+        if item.get("snapshot_id")
+    ]
+    snapshots = (
+        db.query(SinglePromptPreparedSourceSnapshot)
+        .filter(SinglePromptPreparedSourceSnapshot.snapshot_id.in_(snapshot_ids))
+        .all()
+        if snapshot_ids
+        else []
+    )
+    return {
+        "analysis": analysis,
+        "context": context,
+        "answer_result": answer_result,
+        "answer_execution": answer_execution,
+        "citation_manifest": citation_manifest,
+        "completion": completion,
+        "raw_output": loads(context.raw_output_json, {}),
+        "answer_output": answer_output,
+        "manifest_payload": loads(citation_manifest.payload_json, {}),
+        "completion_payload": completion_payload,
+        "snapshots": snapshots,
+    }
+
+
+def _plan_semantic_identity(plan: dict[str, Any]) -> dict[str, Any]:
+    citations = []
+    for citation in plan.get("citations") or []:
+        normalized = dict(citation)
+        normalized.pop("snapshot_id", None)
+        citations.append(normalized)
+    return {
+        "contract_version": plan.get("contract_version"),
+        "plan_version": plan.get("plan_version"),
+        "prompt_version": plan.get("prompt_version"),
+        "schema_version": plan.get("schema_version"),
+        "response_schema_hash": plan.get("response_schema_hash"),
+        "system_prompt_hash": plan.get("system_prompt_hash"),
+        "semantic_llm_transport_version": plan.get("semantic_llm_transport_version"),
+        "implementation_version": plan.get("implementation_version"),
+        "answer_unit_version": plan.get("answer_unit_version"),
+        "retrieval_version": plan.get("retrieval_version"),
+        "selected_run_id": (plan.get("selection") or {}).get("selected_run_id"),
+        "answer_text_hash": plan.get("answer_text_hash"),
+        "answer_units": plan.get("answer_units") or [],
+        "answer_semantic_char_coverage": plan.get("answer_semantic_char_coverage") or {},
+        "citations": citations,
+    }
+
+
+def _remap_snapshot_ids(value: Any, snapshot_id_map: dict[str, str]) -> Any:
+    if isinstance(value, list):
+        return [_remap_snapshot_ids(item, snapshot_id_map) for item in value]
+    if isinstance(value, dict):
+        remapped = {}
+        for key, item in value.items():
+            if key == "snapshot_id" and isinstance(item, str):
+                _require(item in snapshot_id_map, "SOURCE_SNAPSHOT_REUSE_MISMATCH", "旧结果引用了当前范围不存在的正文快照")
+                remapped[key] = snapshot_id_map[item]
+            else:
+                remapped[key] = _remap_snapshot_ids(item, snapshot_id_map)
+        return remapped
+    return value
+
+
+def materialize_compatible_citation_contribution(
+    db: Session,
+    *,
+    analysis_id: str,
+    project_id: int,
+    prompt_id: int,
+    source_contribution_id: str,
+    source_result_version: str,
+    source_result_hash: str,
+    answer_result_version: str,
+    answer_result_hash: str,
+    citation_manifest_id: str,
+    citation_manifest_hash: str,
+    completion_manifest_id: str,
+    completion_manifest_hash: str,
+    fixed_run_ids: list[int],
+    idempotency_key: str,
+) -> tuple[SinglePromptCitationContributionExecution, bool]:
+    existing = db.query(SinglePromptCitationContributionExecution).filter_by(
+        analysis_id=analysis_id,
+        idempotency_key=idempotency_key,
+    ).one_or_none()
+    if existing:
+        return existing, False
+
+    fixed = _load_machine_admitted_inputs(
+        db,
+        analysis_id=analysis_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        answer_result_version=answer_result_version,
+        answer_result_hash=answer_result_hash,
+        citation_manifest_id=citation_manifest_id,
+        citation_manifest_hash=citation_manifest_hash,
+        completion_manifest_id=completion_manifest_id,
+        completion_manifest_hash=completion_manifest_hash,
+        fixed_run_ids=fixed_run_ids,
+    )
+    source_execution = db.query(SinglePromptCitationContributionExecution).filter_by(
+        contribution_id=source_contribution_id
+    ).one_or_none()
+    source_result = db.query(SinglePromptCitationContributionResult).filter_by(
+        contribution_id=source_contribution_id,
+        result_version=source_result_version,
+    ).one_or_none()
+    _require(
+        bool(source_execution)
+        and bool(source_result)
+        and source_result.output_hash == source_result_hash
+        and source_execution.active_result_version == source_result_version,
+        "SOURCE_CONTRIBUTION_MISMATCH",
+        "复用来源 Contribution ResultVersion/hash 不匹配",
+    )
+    selected_run_id = int(fixed_run_ids[0])
+    _require(
+        int(source_execution.selected_run_id) == selected_run_id,
+        "SOURCE_CONTRIBUTION_RUN_MISMATCH",
+        "复用来源不是同一 Run 的正式结果",
+    )
+    source_output = loads(source_result.output_json, {})
+    _require(
+        int(source_output.get("selected_run_id") or 0) == selected_run_id
+        and all(int(row.get("run_id") or 0) == selected_run_id for key in ("answer_units", "citations", "evaluations", "bindings", "recall_controls") for row in (source_output.get(key) or [])),
+        "SOURCE_CONTRIBUTION_SCOPE_MISMATCH",
+        "复用来源包含所选 Run 之外的对象",
+    )
+
+    plan = build_p1_plan(
+        raw_output=fixed["raw_output"],
+        answer_output=fixed["answer_output"],
+        manifest_payload=fixed["manifest_payload"],
+        completion_payload=fixed["completion_payload"],
+        snapshots=fixed["snapshots"],
+        fixed_run_ids=fixed_run_ids,
+    )
+    source_plan = loads(source_execution.plan_json, {})
+    _require(
+        _plan_semantic_identity(plan) == _plan_semantic_identity(source_plan),
+        "CONTRIBUTION_SEMANTIC_INPUT_MISMATCH",
+        "AnswerUnit、引用、正文或候选输入已变化，不能复用旧 Citation 计算",
+    )
+
+    new_citations = {str(row.get("citation_id") or ""): row for row in plan.get("citations") or []}
+    source_citations = {str(row.get("citation_id") or ""): row for row in source_output.get("citations") or []}
+    _require(set(new_citations) == set(source_citations), "CITATION_SET_MISMATCH", "复用前后的 Citation 集合不一致")
+    snapshot_id_map: dict[str, str] = {}
+    for citation_id, source_citation in source_citations.items():
+        current = new_citations[citation_id]
+        _require(
+            source_citation.get("source_key") == current.get("source_key")
+            and source_citation.get("snapshot_content_hash") == current.get("snapshot_content_hash")
+            and source_citation.get("snapshot_passages_hash") == current.get("snapshot_passages_hash"),
+            "SOURCE_CONTENT_VERSION_MISMATCH",
+            "复用前后的来源正文或 passage 版本不一致",
+        )
+        snapshot_id_map[str(source_citation.get("snapshot_id") or "")] = str(current.get("snapshot_id") or "")
+
+    input_snapshot = {
+        "analysis_id": analysis_id,
+        "context_id": fixed["context"].context_id,
+        "raw_result_version": fixed["context"].result_version,
+        "raw_output_hash": fixed["context"].raw_output_hash,
+        "fixed_run_ids": [selected_run_id],
+        "answer_result_version": answer_result_version,
+        "answer_result_hash": answer_result_hash,
+        "answer_authority_type": "MACHINE_ADMISSION",
+        "answer_authority_id": fixed["answer_execution"].diagnosis_id,
+        "answer_authority_hash": fixed["answer_result"].reviewable_set_hash,
+        "citation_manifest_id": citation_manifest_id,
+        "citation_manifest_hash": citation_manifest_hash,
+        "completion_manifest_id": completion_manifest_id,
+        "completion_manifest_hash": completion_manifest_hash,
+        "selected_run_id": selected_run_id,
+        "contract_version": CITATION_CONTRIBUTION_CONTRACT_VERSION,
+        "plan_version": CITATION_CONTRIBUTION_PLAN_VERSION,
+        "prompt_version": CITATION_CONTRIBUTION_PROMPT_VERSION,
+        "schema_version": CITATION_CONTRIBUTION_SCHEMA_VERSION,
+        "semantic_llm_transport_version": SEMANTIC_LLM_TRANSPORT_VERSION,
+        "implementation_version": CITATION_CONTRIBUTION_IMPLEMENTATION_VERSION,
+        "materialized_from": {
+            "contribution_id": source_contribution_id,
+            "result_version": source_result_version,
+            "result_hash": source_result_hash,
+        },
+    }
+    contribution_id = f"citation-contribution-{uuid4()}"
+    output = _remap_snapshot_ids(source_output, snapshot_id_map)
+    output["input"] = input_snapshot
+    output["materialization"] = {
+        "mode": "EXACT_COMPATIBLE_RESULT_REUSE",
+        "source_contribution_id": source_contribution_id,
+        "source_result_version": source_result_version,
+        "source_result_hash": source_result_hash,
+        "source_plan_hash": source_execution.plan_hash,
+        "current_plan_hash": plan["plan_hash"],
+        "external_llm_calls": 0,
+    }
+    output_hash = _hash(output)
+    reviewable_set_hash = _hash({
+        "evaluations": output.get("evaluations") or [],
+        "bindings": output.get("bindings") or [],
+        "recall_controls": output.get("recall_controls") or [],
+    })
+    result_identity_hash = _hash({
+        "contribution_id": contribution_id,
+        "output_hash": output_hash,
+        "version_number": 1,
+    })
+    result = SinglePromptCitationContributionResult(
+        result_version=f"contribution-v1:{result_identity_hash[:16]}",
+        contribution_id=contribution_id,
+        version_number=1,
+        output_json=dumps(output),
+        output_hash=output_hash,
+        reviewable_set_hash=reviewable_set_hash,
+        limitations_json=source_result.limitations_json,
+        stats_json=dumps({
+            **loads(source_result.stats_json, {}),
+            "materialization_mode": "EXACT_COMPATIBLE_RESULT_REUSE",
+            "source_result_version": source_result_version,
+            "external_llm_calls": 0,
+        }),
+    )
+    execution = SinglePromptCitationContributionExecution(
+        contribution_id=contribution_id,
+        analysis_id=analysis_id,
+        context_id=fixed["context"].context_id,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        idempotency_key=idempotency_key,
+        selected_run_id=selected_run_id,
+        input_snapshot_json=dumps(input_snapshot),
+        input_snapshot_hash=_hash(input_snapshot),
+        plan_json=dumps(plan),
+        plan_hash=plan["plan_hash"],
+        contract_version=CITATION_CONTRIBUTION_CONTRACT_VERSION,
+        status="READY_FOR_CALIBRATION" if output.get("calibration_set") else "CALIBRATION_BLOCKED_NO_VALID_EVALUATIONS",
+        authorization_json=dumps({
+            "provider": "NONE",
+            "model": "COMPATIBLE_RESULT_REUSE",
+            "max_external_requests": 0,
+            "authorized_by": "EXACT_VERSION_COMPATIBILITY_GATE",
+        }),
+        progress_json=dumps({
+            "stage": "COMPATIBLE_RESULT_MATERIALIZED",
+            "completed": len(output.get("citations") or []),
+            "total": len(output.get("citations") or []),
+        }),
+        blocker_code="",
+        blocker_detail="",
+        external_llm_calls=0,
+        llm_cache_hits=0,
+        external_token_usage=0,
+        active_result_version=result.result_version,
+        started_at=datetime.utcnow(),
+        finished_at=datetime.utcnow(),
+    )
+    db.add(execution)
+    db.add(result)
+    db.commit()
+    db.refresh(execution)
+    return execution, True
+
+
 def create_citation_contribution_plan(
     db: Session,
     *,

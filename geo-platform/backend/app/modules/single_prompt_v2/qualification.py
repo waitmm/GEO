@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models import (
+    Prompt,
     SinglePromptCitationContributionExecution,
     SinglePromptCitationContributionResult,
 )
@@ -139,6 +140,8 @@ def _load_current_contribution_scope(
             },
             "answer_anchor": "UNPROVEN",
             "generation_influence": "UNAVAILABLE",
+            "answer_units": copy.deepcopy(output.get("answer_units") or []),
+            "bindings": copy.deepcopy(output.get("bindings") or []),
         },
     }
 
@@ -276,7 +279,7 @@ def _build_execution_draft(
         "title": title,
         "goal": direction["intervention_goal"],
         "asset_role": "TARGET_CAPABILITY_FACT_ANCHOR",
-        "asset_operation": "CREATE_NEW",
+        "asset_operation": "CONDITIONAL",
         "asset_type_candidates": ["PRODUCT_PAGE", "FEATURE_PAGE", "HELP_DOC"],
         "channel_candidate": {
             "status": "NOT_SELECTED",
@@ -305,13 +308,169 @@ def _build_execution_draft(
                 if claims and len(public_ready_claims) == len(claims)
                 else "VERIFY_FIRST"
             ),
+            "asset_operation_decision": "USER_SELECTION_REQUIRED",
         },
     }
+
+
+def _build_exploratory_direction_and_draft(
+    *,
+    projection: dict[str, Any],
+    contribution_scope: dict[str, Any],
+    prompt_text: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    run_ids = sorted(int(value) for value in projection.get("analyzable_run_ids") or [])
+    contribution = contribution_scope.get("result") or {}
+    units = {str(row.get("answer_unit_id")): row for row in contribution.get("answer_units") or []}
+    supported = []
+    seen_units: set[str] = set()
+    for binding in contribution.get("bindings") or []:
+        if binding.get("processing_status") != "DONE" or binding.get("evidence_relation") not in {
+            "SUPPORTS_FULL", "SUPPORTS_PARTIAL",
+        }:
+            continue
+        unit_id = str(binding.get("answer_unit_id") or "")
+        unit = units.get(unit_id)
+        if not unit or unit_id in seen_units:
+            continue
+        seen_units.add(unit_id)
+        supported.append({
+            "answer_unit_id": unit_id,
+            "raw_text": str(unit.get("raw_text") or ""),
+            "context_heading": str(unit.get("context_heading") or ""),
+            "primary_type": str(unit.get("primary_type") or ""),
+            "binding_id": str(binding.get("binding_id") or ""),
+            "citation_id": str(binding.get("citation_id") or ""),
+            "source_key": str(binding.get("source_key") or ""),
+            "evidence_relation": str(binding.get("evidence_relation") or ""),
+        })
+        if len(supported) >= 5:
+            break
+    direction_id = f"strategy-machine-{_hash({'prompt': prompt_text, 'runs': run_ids, 'mode': 'exploratory'})[:20]}"
+    contribution_exact = bool(run_ids and run_ids == sorted(int(value) for value in contribution_scope.get("run_ids") or []))
+    dependency_state = "SATISFIED" if supported and contribution_exact else "LIMITED"
+    dependency = {
+        "dependency_id": f"dep:{direction_id}:citation-contribution",
+        "object_id": str(contribution.get("result_version") or "UNAVAILABLE"),
+        "object_type": "CITATION_CONTRIBUTION_SCOPE",
+        "dependency_role": "SUPPORTING",
+        "required_for": ["EXECUTION_DRAFT"],
+        "state": dependency_state,
+        "eligibility": "CONSUMABLE" if dependency_state == "SATISFIED" else "OBSERVE_ONLY",
+        "provenance": "MACHINE_RESULT",
+        "reason_codes": [] if dependency_state == "SATISFIED" else ["SOURCE_GROUNDING_INCOMPLETE"],
+    }
+    direction = {
+        "contract_version": AUTOMATIC_STRATEGY_VERSION,
+        "direction_id": direction_id,
+        "strategy_id": direction_id,
+        "direction_type": "DISCOVERY",
+        "level": "ACTIONABLE",
+        "mechanism_gap": "TARGET_BRAND_NOT_PRESENT_IN_OBSERVED_ANSWER",
+        "intervention_goal": f"围绕“{prompt_text}”形成一份可核验的问题解答资产，让目标品牌有机会进入后续答案候选。",
+        "reason_id": None,
+        "reason_ids": [],
+        "reason_text": "",
+        "reason_run_ids": run_ids,
+        "truth_ids": [],
+        "evidence_relation_ids": [row["binding_id"] for row in supported if row["binding_id"]],
+        "dependencies": [dependency],
+        "eligibility_by_use": _use_eligibility(
+            diagnosis="CONSUMABLE",
+            strategy_direction="CONSUMABLE",
+            execution_draft="CONSUMABLE",
+            public_claim="NOT_CONSUMABLE",
+            publication="VERIFY_FIRST",
+        ),
+        "strategy_direction_eligibility": "CONSUMABLE",
+        "execution_draft_eligibility": "CONSUMABLE",
+        "public_claim_eligibility": "NOT_CONSUMABLE",
+        "limiting_dependencies": [dependency["dependency_id"]] if dependency_state != "SATISFIED" else [],
+        "scope_limitations": [
+            "OBSERVED_ABSENCE_IS_NOT_CAPABILITY_ABSENCE",
+            "NO_TARGET_BRAND_PUBLIC_CLAIM_AUTHORIZED",
+            "GENERATION_INFLUENCE_UNAVAILABLE",
+        ],
+        "reasoning_trace": [
+            {"step": "ANSWER_SCOPE", "run_ids": run_ids, "result": "TARGET_BRAND_NOT_OBSERVED"},
+            {"step": "CITATION_SCOPE", "run_ids": contribution_scope.get("run_ids") or [], "result": dependency_state},
+            {"step": "PUBLIC_CLAIM", "result": "NOT_CONSUMABLE_WITHOUT_PRODUCT_TRUTH"},
+        ],
+    }
+    blocks = [{
+        "block_id": f"block:{direction_id}:{index + 1}",
+        "heading": row["context_heading"] or f"核心问题 {index + 1}",
+        "draft_text": row["raw_text"],
+        "content_role": "SOURCE_GROUNDED_REFERENCE_BLOCK",
+        "answer_unit_id": row["answer_unit_id"],
+        "binding_id": row["binding_id"],
+        "citation_id": row["citation_id"],
+        "evidence_relation": row["evidence_relation"],
+        "publication_eligibility": "VERIFY_FIRST",
+    } for index, row in enumerate(supported)]
+    if not blocks:
+        blocks = [{
+            "block_id": f"block:{direction_id}:scope",
+            "heading": "用户问题与适用场景",
+            "draft_text": f"解释“{prompt_text}”的主要使用场景、前置条件、可行路径和风险边界。",
+            "content_role": "GROUNDING_REQUIRED_BRIEF",
+            "answer_unit_id": None,
+            "binding_id": None,
+            "citation_id": None,
+            "evidence_relation": "NOT_EVALUATED",
+            "publication_eligibility": "VERIFY_FIRST",
+        }]
+    draft = {
+        "contract_version": AUTOMATIC_EXECUTION_DRAFT_VERSION,
+        "draft_id": f"draft-{_hash({'direction_id': direction_id, 'blocks': blocks})[:20]}",
+        "direction_id": direction_id,
+        "title": f"{prompt_text}：场景、方法与注意事项",
+        "goal": direction["intervention_goal"],
+        "asset_role": "DISCOVERY_CONTENT",
+        "asset_operation": "CONDITIONAL",
+        "asset_type_candidates": ["PRODUCT_PAGE", "HELP_DOC", "ARTICLE"],
+        "channel_candidate": {
+            "status": "USER_SELECTION_REQUIRED",
+            "channel_key": None,
+            "channel_role": None,
+            "eligibility": "VERIFY_FIRST",
+            "reason": "当前没有已验证的 ManagedAsset 和发布位置，不能推断 CREATE_NEW、UPDATE 或渠道角色。",
+        },
+        "content_blocks": blocks,
+        "claims": [],
+        "required_truth_ids": [],
+        "required_evidence_ids": [row["binding_id"] for row in supported if row["binding_id"]],
+        "eligibility_by_use": copy.deepcopy(direction["eligibility_by_use"]),
+        "limiting_dependencies": copy.deepcopy(direction["limiting_dependencies"]),
+        "internal_checklist": [
+            "选择实际资产操作、资产类型与发布位置",
+            "如需写入目标品牌能力，先使用可消费 Product Truth；当前稿件不得自行补写品牌能力",
+            "发布前对引用事实、条件和时效做最终核验",
+        ],
+        "qa": {
+            "status": "READY_INTERNAL",
+            "checks": {
+                "target_brand_claims_without_truth": "PASS",
+                "source_grounding": "PASS" if supported else "VERIFY_FIRST",
+                "asset_operation_inference": "PASS",
+                "external_action_authorized": "NO",
+            },
+            "blocking_for_publication": ["ASSET_DECISION_REQUIRED", "BUSINESS_CONFIRMATION_REQUIRED"],
+        },
+        "boundary": {
+            "internal_draft_only": True,
+            "external_action_authorized": False,
+            "public_claims_ready": False,
+            "publication_eligibility": "VERIFY_FIRST",
+        },
+    }
+    return direction, draft
 
 
 def evaluate_qualification_projection(
     projection: dict[str, Any],
     contribution_scope: dict[str, Any],
+    prompt_text: str = "",
 ) -> dict[str, Any]:
     run_ids = sorted(int(value) for value in projection.get("analyzable_run_ids") or [])
     candidates = _direction_candidates(projection)
@@ -356,14 +515,18 @@ def evaluate_qualification_projection(
         observed_run_ids = [int(reason["run_id"])] if reason.get("run_id") is not None else []
         direction = {
             "contract_version": AUTOMATIC_STRATEGY_VERSION,
+            "direction_id": direction_id,
             "strategy_id": direction_id,
             "direction_type": "MECHANISM",
+            "level": "ACTIONABLE",
             "mechanism_gap": "TARGET_CAPABILITY_ASSOCIATION_UNDERREPRESENTED",
             "intervention_goal": "将已确认的抖音跳转微信能力整理为可核验、可引用的场景化事实表达。",
             "reason_id": reason["reason_id"],
+            "reason_ids": [reason["reason_id"]],
             "reason_text": reason.get("grounded_text") or "",
             "reason_run_ids": observed_run_ids,
             "truth_ids": candidate["truth_ids"],
+            "evidence_relation_ids": [],
             "dependencies": dependencies,
             "eligibility_by_use": _use_eligibility(
                 diagnosis="CONSUMABLE",
@@ -426,6 +589,14 @@ def evaluate_qualification_projection(
                 "scope_limitation": [] if public_ready else copy.deepcopy(statement.get("issues") or []),
                 "reason_codes": copy.deepcopy(statement.get("issues") or []),
             })
+    elif run_ids:
+        direction, draft = _build_exploratory_direction_and_draft(
+            projection=projection,
+            contribution_scope=contribution_scope,
+            prompt_text=prompt_text or "当前问题",
+        )
+        directions.append(direction)
+        drafts.append(draft)
 
     result = {
         "contract_version": QUALIFICATION_CONTRACT_VERSION,
@@ -498,4 +669,9 @@ def build_qualification_projection(
         analysis_id=analysis_id,
         context_id=str(projection["identity"]["context_id"]),
     )
-    return evaluate_qualification_projection(projection, contribution_scope)
+    prompt = db.get(Prompt, prompt_id)
+    return evaluate_qualification_projection(
+        projection,
+        contribution_scope,
+        str(prompt.prompt_text if prompt else "当前问题"),
+    )

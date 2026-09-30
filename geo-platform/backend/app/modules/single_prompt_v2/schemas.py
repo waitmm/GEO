@@ -88,6 +88,14 @@ class SinglePromptSourceAutoFetchCreate(BaseModel):
     prompt_id: int
 
 
+class SinglePromptSourceReuseCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    source_completion_manifest_id: str = Field(min_length=1, max_length=80)
+    source_completion_manifest_hash: str = Field(min_length=64, max_length=64)
+    reused_by: str = Field(min_length=1, max_length=120)
+
+
 class SinglePromptManualSourceContentCreate(BaseModel):
     project_id: int
     prompt_id: int
@@ -150,6 +158,24 @@ class SinglePromptCitationContributionPlanCreate(BaseModel):
     completion_manifest_id: str = Field(min_length=1, max_length=80)
     completion_manifest_hash: str = Field(min_length=64, max_length=64)
     fixed_run_ids: list[int] = Field(min_length=1, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
+class SinglePromptCitationContributionReuseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_id: int
+    prompt_id: int
+    source_contribution_id: str = Field(min_length=1, max_length=80)
+    source_result_version: str = Field(min_length=1, max_length=96)
+    source_result_hash: str = Field(min_length=64, max_length=64)
+    answer_result_version: str = Field(min_length=1, max_length=96)
+    answer_result_hash: str = Field(min_length=64, max_length=64)
+    citation_manifest_id: str = Field(min_length=1, max_length=80)
+    citation_manifest_hash: str = Field(min_length=64, max_length=64)
+    completion_manifest_id: str = Field(min_length=1, max_length=80)
+    completion_manifest_hash: str = Field(min_length=64, max_length=64)
+    fixed_run_ids: list[int] = Field(min_length=1, max_length=1)
     idempotency_key: str = Field(min_length=8, max_length=120)
 
 
@@ -389,6 +415,15 @@ class SinglePromptStrategyCreate(BaseModel):
     input_projection_hash: str = Field(min_length=64, max_length=64)
 
 
+class SinglePromptAutomaticStrategyCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_id: int
+    prompt_id: int
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    expected_projection_hash: str = Field(min_length=64, max_length=64)
+
+
 class SinglePromptStrategyPriorityRevisionCreate(BaseModel):
     project_id: int
     prompt_id: int
@@ -416,8 +451,11 @@ class SinglePromptExecutionProposalCreate(BaseModel):
     direction_id: str = Field(min_length=1, max_length=96)
     idempotency_key: str = Field(min_length=8, max_length=120)
     strategy_result_hash: str = Field(min_length=64, max_length=64)
-    strategy_review_id: str = Field(min_length=1, max_length=80)
-    strategy_review_snapshot_hash: str = Field(min_length=64, max_length=64)
+    strategy_review_id: str | None = Field(default=None, max_length=80)
+    strategy_review_snapshot_hash: str = Field(default="", max_length=64)
+    input_authority_type: Literal["HUMAN_REVIEW", "MACHINE_QUALIFICATION"] = "HUMAN_REVIEW"
+    input_authority_id: str = Field(default="", max_length=120)
+    input_authority_hash: str = Field(default="", max_length=64)
 
 
 class SinglePromptExecutionProposalRevisionCreate(BaseModel):

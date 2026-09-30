@@ -636,6 +636,111 @@ def submit_manual_content(
     return snapshot
 
 
+def reuse_completed_sources(
+    db: Session,
+    *,
+    preparation_id: str,
+    project_id: int,
+    prompt_id: int,
+    source_completion_manifest_id: str,
+    source_completion_manifest_hash: str,
+    reused_by: str,
+) -> dict[str, Any]:
+    """Copy exact immutable source content into a new analysis-owned preparation."""
+    preparation = db.query(SinglePromptSourcePreparation).filter_by(preparation_id=preparation_id).one_or_none()
+    if not preparation:
+        raise HTTPException(status_code=404, detail="来源准备不存在")
+    if preparation.project_id != project_id or preparation.prompt_id != prompt_id:
+        raise HTTPException(status_code=409, detail="来源准备与当前 Project/Prompt 不匹配")
+    if preparation.status in ACTIVE_AUTO_FETCH_STATUSES:
+        raise HTTPException(status_code=409, detail="自动获取正在执行，不能同时复用历史正文")
+    source_manifest = db.query(SinglePromptSourceCompletionManifest).filter_by(
+        manifest_id=source_completion_manifest_id
+    ).one_or_none()
+    if not source_manifest or source_manifest.payload_hash != source_completion_manifest_hash:
+        raise HTTPException(status_code=409, detail="指定 Source Completion Manifest 不存在或 hash 不匹配")
+    source_preparation = db.query(SinglePromptSourcePreparation).filter_by(
+        preparation_id=source_manifest.preparation_id
+    ).one_or_none()
+    if (
+        not source_preparation
+        or source_preparation.project_id != project_id
+        or source_preparation.prompt_id != prompt_id
+    ):
+        raise HTTPException(status_code=409, detail="来源复用禁止跨 Project/Prompt")
+    source_payload = loads(source_manifest.payload_json, {})
+    source_rows = {
+        str(row.get("source_key")): row
+        for row in source_payload.get("sources") or []
+        if row.get("disposition") == READY_STATE and row.get("snapshot_id")
+    }
+    dispositions = (
+        db.query(SinglePromptSourceDisposition)
+        .filter_by(preparation_id=preparation_id)
+        .order_by(SinglePromptSourceDisposition.source_key)
+        .all()
+    )
+    reused: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for disposition in dispositions:
+        if disposition.state == READY_STATE:
+            skipped.append({"source_key": disposition.source_key, "reason": "ALREADY_READY"})
+            continue
+        source_row = source_rows.get(disposition.source_key)
+        if not source_row:
+            skipped.append({"source_key": disposition.source_key, "reason": "NOT_READY_IN_SOURCE_MANIFEST"})
+            continue
+        prior = db.query(SinglePromptPreparedSourceSnapshot).filter_by(
+            snapshot_id=str(source_row["snapshot_id"])
+        ).one_or_none()
+        if not prior:
+            raise HTTPException(status_code=409, detail=f"复用 Snapshot 不存在：{source_row['snapshot_id']}")
+        prior_passages = _verify_snapshot(prior)
+        if (
+            prior.source_key != disposition.source_key
+            or prior.canonical_url != disposition.canonical_url
+            or prior.content_hash != source_row.get("content_hash")
+            or prior.artifact_hash != source_row.get("artifact_hash")
+            or prior.passages_hash != source_row.get("passages_hash")
+            or [row["passage_id"] for row in prior_passages] != list(source_row.get("passage_ids") or [])
+        ):
+            raise HTTPException(status_code=409, detail=f"复用来源身份或正文版本不一致：{disposition.source_key}")
+        snapshot = _snapshot_from_content(
+            db,
+            preparation=preparation,
+            disposition=disposition,
+            title=prior.title,
+            clean_text=prior.clean_text,
+            coverage_scope=prior.coverage_scope,
+            acquisition_method="EXACT_SNAPSHOT_REUSE",
+            submitted_by=reused_by.strip(),
+            acquired_at=prior.acquired_at,
+        )
+        snapshot.reused_from_snapshot_id = prior.snapshot_id
+        if (
+            snapshot.content_hash != prior.content_hash
+            or snapshot.artifact_hash != prior.artifact_hash
+            or snapshot.passages_hash != prior.passages_hash
+        ):
+            raise HTTPException(status_code=409, detail=f"复用后正文 hash 不守恒：{disposition.source_key}")
+        reused.append({
+            "source_key": disposition.source_key,
+            "snapshot_id": snapshot.snapshot_id,
+            "reused_from_snapshot_id": prior.snapshot_id,
+            "content_hash": snapshot.content_hash,
+            "passages_hash": snapshot.passages_hash,
+        })
+    _refresh_preparation_status(db, preparation)
+    db.commit()
+    return {
+        "preparation_id": preparation_id,
+        "source_completion_manifest_id": source_completion_manifest_id,
+        "source_completion_manifest_hash": source_completion_manifest_hash,
+        "reused": reused,
+        "skipped": skipped,
+    }
+
+
 def waive_source(
     db: Session,
     *,
@@ -912,6 +1017,24 @@ def get_source_preparation_status(db: Session, *, preparation_id: str) -> dict[s
                 "created_at": row.created_at.isoformat(),
             }
     terminal_count = sum(counts.get(state, 0) for state in TERMINAL_STATES)
+    if preparation.status in {"FROZEN", "NO_USABLE_SOURCE"}:
+        allowed_operations = ["VIEW"]
+    else:
+        allowed_operations = [
+            *(
+                ["QUEUE_AUTO_FETCH"]
+                if citation.source_count
+                and preparation.status not in ACTIVE_AUTO_FETCH_STATUSES
+                and terminal_count < citation.source_count
+                else []
+            ),
+            *(
+                ["SUBMIT_MANUAL_CONTENT", "WAIVE_SOURCE"]
+                if citation.source_count and preparation.status not in ACTIVE_AUTO_FETCH_STATUSES
+                else []
+            ),
+            *(["FREEZE_COMPLETION"] if terminal_count == citation.source_count else []),
+        ]
     return {
         "preparation": {
             "preparation_id": preparation.preparation_id,
@@ -939,21 +1062,7 @@ def get_source_preparation_status(db: Session, *, preparation_id: str) -> dict[s
         },
         "sources": sources,
         "completion_manifest": completion,
-        "allowed_operations": [
-            *(
-                ["QUEUE_AUTO_FETCH"]
-                if citation.source_count
-                and preparation.status not in ACTIVE_AUTO_FETCH_STATUSES
-                and terminal_count < citation.source_count
-                else []
-            ),
-            *(
-                ["SUBMIT_MANUAL_CONTENT", "WAIVE_SOURCE"]
-                if citation.source_count and preparation.status not in ACTIVE_AUTO_FETCH_STATUSES
-                else []
-            ),
-            *(["FREEZE_COMPLETION"] if terminal_count == citation.source_count else []),
-        ],
+        "allowed_operations": allowed_operations,
     }
 
 

@@ -41,7 +41,7 @@ from app.services.serialization import loads
 EXECUTION_CONTRACT_VERSION = "single_prompt_execution.optimize_delivery.v1"
 EXECUTION_INPUT_VALIDATION_VERSION = "single_prompt_execution_input.v2"
 EXECUTION_DELIVERABLE_VERSION = "single_prompt_execution_deliverable.v1"
-EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v2"
+EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v3"
 PUBLICATION_CONFORMANCE_VERSION = "single_prompt_publication_conformance.v1"
 
 VALID_RUN_STATUSES = {"success", "partial_success"}
@@ -363,7 +363,9 @@ def _target_brand_snapshot(
     selected = sorted(candidates, key=score)[0]
     lines: list[str] = []
     risky_excerpt = re.compile(
-        r"(?:防封|防劫持|保证|承诺|永久|百分百|最强|领先|日均.{0,12}(?:万|亿)|\d+(?:\.\d+)?\s*(?:万|亿|%))",
+        r"(?:防封|防劫持|保证|承诺|永久|百分百|最强|领先|稳定|"
+        r"日均.{0,12}(?:万|亿)|累计(?:生成|处理)|提升.{0,12}(?:率|效果|效率|转化)|"
+        r"\d+(?:\.\d+)?\s*(?:万|亿|%))",
         re.IGNORECASE,
     )
     for raw in selected.clean_text.splitlines():
@@ -532,6 +534,7 @@ def _unsupported_public_claims(body: str) -> list[str]:
         "STABLE_JUMP_PROMISE": re.compile(r"稳定跳转"),
         "BLOCKING_AVOIDANCE_PROMISE": re.compile(r"(?:防封防劫持|降低.{0,10}(?:屏蔽|封禁).{0,4}(?:风险|概率))"),
         "UNVERIFIED_SCALE_CLAIM": re.compile(r"日均.{0,12}(?:万|亿).{0,8}访问"),
+        "UNVERIFIED_CONVERSION_CLAIM": re.compile(r"提升.{0,12}(?:率|效果|效率|转化)"),
         "UNBOUNDED_ACCOUNT_SCOPE": re.compile(r"适用于所有账号"),
         "UNSUPPORTED_ENTERPRISE_WECHAT_DESTINATION": re.compile(r"可直接跳转企微"),
         "UNBOUNDED_DESTINATION": re.compile(r"任意指定页面"),

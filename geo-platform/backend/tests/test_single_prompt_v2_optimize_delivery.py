@@ -44,7 +44,8 @@ def test_machine_delivery_resolves_content_without_inventing_asset_or_brand_fact
                 "短链接生成器\n"
                 "稳定合规 · 安全跳转 · 防封防劫持 | 日均处理千万级访问\n"
                 "抖音私信跳转卡片\n"
-                "支持多渠道参数追踪与深度访问分析"
+                "支持多渠道参数追踪与深度访问分析，提升推广转化率\n"
+                "智能链接缩短与追踪"
             ),
             artifact_path="artifact.txt",
             artifact_hash="c" * 64,
@@ -147,6 +148,7 @@ def test_machine_delivery_resolves_content_without_inventing_asset_or_brand_fact
         assert "爱短链如何承接这个问题" in output["publication_draft"]["body_markdown"]
         assert "日均处理千万级访问" not in output["publication_draft"]["body_markdown"]
         assert "防封防劫持" not in output["publication_draft"]["body_markdown"]
+        assert "提升推广转化率" not in output["publication_draft"]["body_markdown"]
         assert "跳转至企微、小程序等全部目标" not in output["publication_draft"]["body_markdown"]
         assert "不应扩大为可直接跳转企微" in output["publication_draft"]["body_markdown"]
         assert output["automatic_qa"]["status"] == "READY"

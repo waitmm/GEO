@@ -40,7 +40,12 @@ def test_machine_delivery_resolves_content_without_inventing_asset_or_brand_fact
             reference_observations_json="[]",
             occurrence_count=1,
             content_hash="b" * 64,
-            clean_text="短链接生成器\n抖音私信跳转卡片\n支持多渠道参数追踪与深度访问分析",
+            clean_text=(
+                "短链接生成器\n"
+                "稳定合规 · 安全跳转 · 防封防劫持 | 日均处理千万级访问\n"
+                "抖音私信跳转卡片\n"
+                "支持多渠道参数追踪与深度访问分析"
+            ),
             artifact_path="artifact.txt",
             artifact_hash="c" * 64,
             passages_json="[]",
@@ -140,9 +145,12 @@ def test_machine_delivery_resolves_content_without_inventing_asset_or_brand_fact
         assert output["strategy_channel"]["channel_role"] is None
         assert output["publication_draft"]["body_markdown"].count("抖音跳转链接") >= 2
         assert "爱短链如何承接这个问题" in output["publication_draft"]["body_markdown"]
+        assert "日均处理千万级访问" not in output["publication_draft"]["body_markdown"]
+        assert "防封防劫持" not in output["publication_draft"]["body_markdown"]
         assert "跳转至企微、小程序等全部目标" not in output["publication_draft"]["body_markdown"]
         assert "不应扩大为可直接跳转企微" in output["publication_draft"]["body_markdown"]
         assert output["automatic_qa"]["status"] == "READY"
+        assert output["automatic_qa"]["checks"]["unsupported_effect_claims_removed"] == "PASS"
         assert output["validation"]["content_delivery_status"] == "READY"
         assert output["validation"]["status"] == "READY_FOR_BUSINESS_INPUT"
         failure = output["evidence_processing_audit"]["historical_failures"][0]

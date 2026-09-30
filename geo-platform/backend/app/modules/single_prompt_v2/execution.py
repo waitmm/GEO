@@ -41,6 +41,7 @@ from app.services.serialization import loads
 EXECUTION_CONTRACT_VERSION = "single_prompt_execution.optimize_delivery.v1"
 EXECUTION_INPUT_VALIDATION_VERSION = "single_prompt_execution_input.v2"
 EXECUTION_DELIVERABLE_VERSION = "single_prompt_execution_deliverable.v1"
+EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v2"
 PUBLICATION_CONFORMANCE_VERSION = "single_prompt_publication_conformance.v1"
 
 VALID_RUN_STATUSES = {"success", "partial_success"}
@@ -361,9 +362,15 @@ def _target_brand_snapshot(
 
     selected = sorted(candidates, key=score)[0]
     lines: list[str] = []
+    risky_excerpt = re.compile(
+        r"(?:防封|防劫持|保证|承诺|永久|百分百|最强|领先|日均.{0,12}(?:万|亿)|\d+(?:\.\d+)?\s*(?:万|亿|%))",
+        re.IGNORECASE,
+    )
     for raw in selected.clean_text.splitlines():
         line = re.sub(r"\s+", " ", raw).strip()
         if not 4 <= len(line) <= 120:
+            continue
+        if risky_excerpt.search(line):
             continue
         if terms and not any(term.lower() in line.lower() for term in terms):
             continue
@@ -520,6 +527,27 @@ def _build_publication_draft(
     }
 
 
+def _unsupported_public_claims(body: str) -> list[str]:
+    patterns = {
+        "STABLE_JUMP_PROMISE": re.compile(r"稳定跳转"),
+        "BLOCKING_AVOIDANCE_PROMISE": re.compile(r"(?:防封防劫持|降低.{0,10}(?:屏蔽|封禁).{0,4}(?:风险|概率))"),
+        "UNVERIFIED_SCALE_CLAIM": re.compile(r"日均.{0,12}(?:万|亿).{0,8}访问"),
+        "UNBOUNDED_ACCOUNT_SCOPE": re.compile(r"适用于所有账号"),
+        "UNSUPPORTED_ENTERPRISE_WECHAT_DESTINATION": re.compile(r"可直接跳转企微"),
+        "UNBOUNDED_DESTINATION": re.compile(r"任意指定页面"),
+    }
+    negation = re.compile(r"(?:不证明|不应|不能|不支持|未验证|不得|不承诺|不适用|不等于).{0,24}$")
+    violations: list[str] = []
+    for code, pattern in patterns.items():
+        for match in pattern.finditer(body):
+            prefix = body[max(0, match.start() - 24):match.start()]
+            if negation.search(prefix):
+                continue
+            violations.append(code)
+            break
+    return violations
+
+
 def _delivery_qa(
     *,
     draft: dict[str, Any],
@@ -530,12 +558,13 @@ def _delivery_qa(
     failures: list[dict[str, Any]],
 ) -> dict[str, Any]:
     body = str(draft.get("body_markdown") or "")
+    unsupported_claims = _unsupported_public_claims(body)
     checks = {
         "prompt_specificity": "PASS" if prompt_text and prompt_text in body else "FAIL",
         "complete_publication_text": "PASS" if draft.get("title") and len(sections) >= 1 and "## 结论" in body else "FAIL",
         "selected_evidence_bound": "PASS" if sections and all(row.get("binding_ids") and row.get("source_excerpt") for row in sections) else "FAIL",
         "target_brand_attribution": "PASS" if not brand_snapshot or (brand_name in body and brand_snapshot.canonical_url) else "FAIL",
-        "unsupported_effect_claims_removed": "PASS",
+        "unsupported_effect_claims_removed": "PASS" if not unsupported_claims else "FAIL",
         "internal_items_separated": "PASS" if not any(token in body for token in ("TODO", "待补资料", "内部待确认")) else "FAIL",
         "failed_citations_excluded": "PASS" if all(not row.get("used_in_deliverable") for row in failures) else "FAIL",
     }
@@ -545,7 +574,7 @@ def _delivery_qa(
         "status": "READY" if not failed else "NEEDS_REPAIR",
         "publication_eligibility": "NEEDS_BUSINESS_CONFIRMATION" if not failed else "NOT_ELIGIBLE",
         "checks": checks,
-        "issues": failed,
+        "issues": [*failed, *unsupported_claims],
         "repairs": [
             {"code": "REMOVE_UNSUPPORTED_STABLE_JUMP", "result": "APPLIED", "detail": "删除稳定跳转效果承诺。"},
             {"code": "NARROW_LIVE_DESTINATION", "result": "APPLIED", "detail": "直播组件只保留来源明确支持的微信小程序范围。"},
@@ -602,6 +631,7 @@ def _compile_machine_delivery(db: Session, proposal_id: str, input_snapshot: dic
     output = {
         "contract_version": EXECUTION_CONTRACT_VERSION,
         "deliverable_contract_version": EXECUTION_DELIVERABLE_VERSION,
+        "deliverable_implementation_version": EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION,
         "proposal_id": proposal_id,
         "input_identity": copy.deepcopy(input_snapshot["identity"]),
         "direction": copy.deepcopy(direction),
@@ -614,6 +644,11 @@ def _compile_machine_delivery(db: Session, proposal_id: str, input_snapshot: dic
         "asset_operation": "CONDITIONAL",
         "asset_resolution": {
             "resolver_contract": "SC-ASSET-001@1.0.0",
+            "resolver_reuse": {
+                "legacy_resolver": "execution_proposal_shadow.resolve_asset_operation",
+                "status": "NOT_CALLED_FOR_INCOMPLETE_INVENTORY",
+                "reason": "旧入口把空 ManagedAsset 列表直接解释为 CREATE_NEW；当前冻结契约要求先返回 UNKNOWN/条件方案。",
+            },
             "inventory_state": "UNKNOWN",
             "existing_asset_checks": existing_asset_checks,
             "recommended_asset_type": recommended_asset_type,
@@ -631,6 +666,11 @@ def _compile_machine_delivery(db: Session, proposal_id: str, input_snapshot: dic
             "known_website": project.website_url if project else "",
             "reason": "该动作需要建立目标品牌与当前问题的可核验关联；自有站点便于保留完整问题解答、来源和后续版本。选择该发布位置不创建 OFFICIAL_SITE PRIMARY，也不证明引用效果。",
             "strategy_channel_role_changed": False,
+            "upstream_channel_resolver_reused": True,
+            "upstream_strategy_channel": {
+                "channel_key": direction.get("channel_key"),
+                "channel_role": direction.get("channel_role"),
+            },
         },
         "asset_type_candidates": asset_types,
         "publication_surface_candidates": surfaces,
@@ -1186,7 +1226,10 @@ def generate_complete_execution_deliverable(
     if not base or base.output_hash != base_result_hash or base.reviewable_set_hash != reviewable_set_hash:
         raise HTTPException(status_code=409, detail="执行方案交付目标已变化，请重新加载")
     base_output = loads(base.output_json, {})
-    if base_output.get("deliverable_contract_version") == EXECUTION_DELIVERABLE_VERSION:
+    if (
+        base_output.get("deliverable_contract_version") == EXECUTION_DELIVERABLE_VERSION
+        and base_output.get("deliverable_implementation_version") == EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION
+    ):
         return base, False
     snapshot = loads(proposal.input_snapshot_json, {})
     output = _compile_machine_delivery(db, proposal_id, snapshot)

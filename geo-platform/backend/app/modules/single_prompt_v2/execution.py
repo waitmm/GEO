@@ -41,7 +41,7 @@ from app.services.serialization import loads
 EXECUTION_CONTRACT_VERSION = "single_prompt_execution.optimize_delivery.v1"
 EXECUTION_INPUT_VALIDATION_VERSION = "single_prompt_execution_input.v2"
 EXECUTION_DELIVERABLE_VERSION = "single_prompt_execution_deliverable.v1"
-EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v3"
+EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v4"
 PUBLICATION_CONFORMANCE_VERSION = "single_prompt_publication_conformance.v1"
 
 VALID_RUN_STATUSES = {"success", "partial_success"}
@@ -361,25 +361,17 @@ def _target_brand_snapshot(
         return (-sum(1 for term in terms if term.lower() in haystack), row.snapshot_id)
 
     selected = sorted(candidates, key=score)[0]
-    lines: list[str] = []
-    risky_excerpt = re.compile(
-        r"(?:防封|防劫持|保证|承诺|永久|百分百|最强|领先|稳定|"
-        r"日均.{0,12}(?:万|亿)|累计(?:生成|处理)|提升.{0,12}(?:率|效果|效率|转化)|"
-        r"\d+(?:\.\d+)?\s*(?:万|亿|%))",
-        re.IGNORECASE,
+    # Keep exact functional phrases only. Full marketing sentences remain in the
+    # immutable source snapshot for audit, but do not become publishable claims.
+    safe_function_phrases = (
+        "短链接生成器",
+        "智能链接缩短与追踪",
+        "抖音私信跳转卡片",
+        "微信外链跳转",
+        "多渠道参数追踪",
+        "深度访问分析",
     )
-    for raw in selected.clean_text.splitlines():
-        line = re.sub(r"\s+", " ", raw).strip()
-        if not 4 <= len(line) <= 120:
-            continue
-        if risky_excerpt.search(line):
-            continue
-        if terms and not any(term.lower() in line.lower() for term in terms):
-            continue
-        if line not in lines:
-            lines.append(line)
-        if len(lines) == 6:
-            break
+    lines = [phrase for phrase in safe_function_phrases if phrase in selected.clean_text]
     return selected, lines
 
 

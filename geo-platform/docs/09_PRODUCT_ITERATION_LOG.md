@@ -4693,3 +4693,18 @@ Gate。T00 没有据此推倒现有 V2，而是逐项核对真实 release 控制
 实现；自动 Optimize 编排和 release 权威 Monitor 指标尚未形成；Execution、Publication、Retest 虽有代码，
 但没有进入 release schema/router，不能当作正式交付。详细分类和验证证据记录在
 `docs/geo-v1.0/implementation-map.md`。69 条功能场景和 5 条端到端场景仍保持未验收状态。
+
+### 2026-09-30：优先走通一条真实单 Run 正式交付链
+
+按产品负责人调整后的顺序，先从既有真实样本池选择唯一具备完整来源范围的 Run 1，建立独立 1/1
+Analysis。旧九条 Analysis 不变；18 份正文通过精确版本和 hash 校验转为新 Context 拥有的 Snapshot，
+Answer 和 Citation Contribution 只复用当前契约兼容结果，没有重新采样、抓取或调用模型。
+
+没有人工审核和可公开 Product Truth 时，自动计算不再停成“无策略”。系统可以形成一个受限 Discovery
+方向：围绕当前问题制作可核验的解答资产，并产出绑定 AnswerUnit、Citation 和 Evidence relation 的标题、
+内容骨架与自动 QA。但它不会虚构目标品牌能力、发布渠道、可编辑资产、账号权限或 URL。
+
+正式链已推进到不可变 StrategyResult 和 ExecutionProposal。当前需要用户选择资产类型、发布位置和真实
+账号后才能确认；真实发布、PublicationRecord、发布后新 Run 和 Validate 尚未完成。这个停止点是产品的
+真实业务输入，不是用 fixture 或假发布可以越过的工程状态。完整证据见
+`docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md`。

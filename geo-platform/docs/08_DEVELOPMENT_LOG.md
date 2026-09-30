@@ -6212,3 +6212,34 @@ review_queue = READY
   remain unexecuted.
 - No business code, database row or external provider was changed or called by T00.
   T00 is DONE and T01 is READY.
+
+## 2026-09-30 Formal Single-Run Delivery Slice
+
+- Classified as `IMPLEMENTATION_CHANGE` under the Product Owner's explicit priority
+  override. The nine-Run Analysis and all immutable historical results remain unchanged.
+- Release migration `20260930_01` brings the existing Execution, Publication and Retest
+  tables and routes into the release allowlist. Startup still validates a migrated schema;
+  it does not call `create_all()` or patch business columns.
+- Created a formal 1/1 Analysis for existing real Run 1. All 18 sources were materialized
+  as new Analysis-owned Snapshots through exact Completion/content/artifact/passage hash
+  compatibility. No refetch, domain guess or latest lookup was used.
+- Answer Semantic reused one currently valid strict cache entry. Citation Contribution was
+  materialized from the exact compatible Run 1 result, remapping old snapshot identities to
+  the new Context while preserving 16 DONE, three FAILED and every limitation. No human
+  Review or external call was copied.
+- Added machine qualification as a non-human computation authority. With no usable target
+  brand claim, it produces one bounded DISCOVERY direction and a source-grounded internal
+  draft; public claims remain ineligible. Strategy and Execution are immutable formal result
+  versions, while external action still requires explicit business confirmation.
+- The real path reached Strategy `strategy-v1:178f23f7c8de96a1` and Execution
+  `execution-v1:a7a640779ae7e104`. Automatic QA is `READY_INTERNAL`; actual publication and
+  post-publication Retest remain incomplete because no asset/account selection or real
+  publication has occurred.
+- Frozen Source Preparation now exposes only `VIEW`. The frontend labels DISCOVERY
+  directions explicitly instead of rendering empty channel text.
+- Verification: release first-slice 33 passed; qualification 6 passed; frontend production
+  build passed. The broader execution fixture suite remains 32 passed / 19 failed because
+  its old fixtures declare three fixed Runs while calculating one. The fixed-scope Gate was
+  retained; those fixture cases require replacement.
+- Full object chain and remaining business action are recorded in
+  `docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md`.

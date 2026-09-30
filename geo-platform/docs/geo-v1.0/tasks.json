@@ -2,6 +2,31 @@
   "schema_version": "1.0",
   "baseline_date": "2026-09-30",
   "implementation_verified": true,
+  "active_delivery_slice": {
+    "name": "one_prompt_one_run_formal_delivery",
+    "status": "WAITING_BUSINESS_SELECTION",
+    "analysis_id": "925ef2dc-605f-467d-a025-52033a574d92",
+    "context_id": "ctx-5407fb2f-acd5-41ac-8ac7-41713a08a5aa",
+    "selected_run_ids": [1],
+    "completed": [
+      "EXPLICIT_1_OF_1_ANALYSIS",
+      "EXACT_SOURCE_SNAPSHOT_REUSE",
+      "ANSWER_ADMISSION",
+      "CITATION_CONTRIBUTION_MATERIALIZATION",
+      "MACHINE_STRATEGY_RESULT",
+      "EXECUTION_DRAFT",
+      "AUTOMATIC_QA"
+    ],
+    "not_completed": [
+      "EXECUTION_CONFIRMATION",
+      "REAL_PUBLICATION",
+      "POST_PUBLICATION_RETEST",
+      "VALIDATE_COMPARISON"
+    ],
+    "current_blocker": "真实资产类型、发布位置、账号和栏目尚未由用户选择",
+    "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md",
+    "code_commits": ["4d6724d", "3622fcf"]
+  },
   "tasks": [
     {
       "id": "T00",

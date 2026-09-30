@@ -4,7 +4,7 @@
   "implementation_verified": true,
   "active_delivery_slice": {
     "name": "one_prompt_one_run_formal_delivery",
-    "status": "WAITING_BUSINESS_SELECTION",
+    "status": "WAITING_BUSINESS_CONFIRMATION",
     "analysis_id": "925ef2dc-605f-467d-a025-52033a574d92",
     "context_id": "ctx-5407fb2f-acd5-41ac-8ac7-41713a08a5aa",
     "selected_run_ids": [1],
@@ -15,7 +15,8 @@
       "CITATION_CONTRIBUTION_MATERIALIZATION",
       "MACHINE_STRATEGY_RESULT",
       "EXECUTION_DRAFT",
-      "AUTOMATIC_QA"
+      "COMPLETE_EXECUTION_DELIVERABLE",
+      "ACTUAL_TEXT_QA"
     ],
     "not_completed": [
       "EXECUTION_CONFIRMATION",
@@ -23,9 +24,9 @@
       "POST_PUBLICATION_RETEST",
       "VALIDATE_COMPARISON"
     ],
-    "current_blocker": "真实资产类型、发布位置、账号和栏目尚未由用户选择",
+    "current_blocker": "完整稿件已生成；仍需确认更新已有页面或新建帮助文档，并确认实际账号、栏目和编辑权限",
     "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md",
-    "code_commits": ["4d6724d", "3622fcf"]
+    "code_commits": ["4d6724d", "3622fcf", "8b19388", "c7ce35e", "56eaf9f", "8a0ece1"]
   },
   "tasks": [
     {

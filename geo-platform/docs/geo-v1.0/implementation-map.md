@@ -10,15 +10,16 @@
 |---|---|---|
 | 后端 | FastAPI + SQLAlchemy + Alembic；正式入口 `app.release_main:app` | 可复用 |
 | 前端 | React 19 + TypeScript + Ant Design + Vite；当前为单页纵向工作台 | 技术栈可复用，信息架构需修复 |
-| 发布数据库 | 单机 SQLite；`backend/geo_release.db`；revision `20260929_02` | READY |
+| 发布数据库 | 单机 SQLite；`backend/geo_release.db`；revision `20260930_01` | READY |
 | SQLite | 应用实际加载 `3.51.3`，WAL，foreign keys=1 | 满足当前单机发布边界 |
 | Worker | `backend/scripts/release_worker.py`，业务重任务并发 1 | 可复用 |
-| 正式路由 | `release_catalog` + `single_prompt_v2.release_api` | 主链目前止于 Strategy/Critic |
+| 正式路由 | `release_catalog` + `single_prompt_v2.release_api` | 已含 Execution、Publication、Retest；真实链当前停在发布确认前 |
 | 当前真实数据 | 1 Project、1 Prompt、9 Runs、5 Analyses/Contexts、91 Source Snapshots、6 Diagnosis Results、0 Strategy Results、1 Critic Gold Review | 可用于回归，不代表完整闭环验收 |
 | 外部模型 | DeepSeek 为主分析；SiliconFlow/Qwen 仅 Shadow Critic | 配置存在；T00 未外调 |
 | 浏览器采样 | 文心 Playwright 采集器 + 持久 Run 池 | 核心可复用 |
 
-发布 schema 白名单当前包含目录、采样、来源、诊断、Citation Contribution、Critic、Strategy 表；明确不包含 Execution Proposal、Publication、Retest、Comparison 表。因此这些模块即使已有代码和 fixture，也不能写成“release 已完成”。
+2026-10-01 增量更新：migration `20260930_01` 已将 Execution Proposal、Publication、Retest、Comparison
+表和正式路由纳入 release。表/路由接入不等于真实发布或复测完成；当前单 Run 只完成到完整执行稿与文本 QA。
 
 ## 2. 功能实现映射
 
@@ -34,9 +35,9 @@
 | CIT | CIT-001..004 | 需接入 | `citation_contribution.py`; `evidence_plan.py`; `optimization/passage_retrieval.py`; Citation Contribution APIs | 多维 relation contract、冻结 Plan、artifact、human calibration 已实现；当前真实 P1 为 Run 1 | 旧 SourceClaim/Alignment 可作计算能力，不能恢复旧 workflow 状态 | 扩展现有冻结 DTO/Plan 到选定 Analysis scope | 当前 release 真实贡献分析只覆盖 Run 1，存在 16 DONE/3 FAILED；未完成全选定 Runs 自动路径；人工 calibration 仍是 Gate | T12 | contribution contract/release tests 通过；真实全范围未验收 | `test_citation_contribution_contract.py`; release DB | 2026-09-30 |
 | TRU | TRU-001..004 | 需修复 | `diagnosis.py` truth projection; `/target-brand-truths`; `/truth-reprojections`; `models/db.py::TargetBrandCapabilityTruth` | 原子目标品牌事实、用途资格、独立重投影已有；不核验竞品 Truth | 当前多为人工 asserted；诊断冻结快照与项目当前事实并存 | 保留原子事实和 eligibility-by-use | 缺 EMPTY/BASIC ContextProvider；官方 Snapshot 到充分事实的自动路径未闭合；不应让 Truth 缺失全局阻断 Optimize | T13 | qualification/truth 测试；AC-TRU-* 未完整执行 | V2 tests；release API | 2026-09-30 |
 | STR | STR-001..005 | 需修复 | `strategy.py`; `qualification.py`; strategy readiness/qualification/strategy/review APIs | Foundation/Channel 分离、方向 Gate、readiness、不可变 Strategy Result 已实现 | 旧 resolver/latest Package 已隔离；正式创建仍要求 Review/完整 scope | 复用纯方向计算和 qualification projection | release 当前真实 Strategy Results=0；有效输入可能返回无 Candidate；人工 Review 默认 Gate；与“非空具体行动、自动默认”未对齐；资产角色仍不完整 | T14,T15 | strategy/qualification tests 通过；真实 Strategy 未形成 | strategy tests；release DB | 2026-09-30 |
-| EXE | EXE-001..005 | 需接入且需修复 | `execution.py`; 非 release `single_prompt_v2/api.py` execution routes; `App.tsx` | 有确定性骨架、版本、确认、公开/内部分离、fixture | 使用 legacy `get_db`，表不在 release 白名单；fixture 当前与 fixed-scope Gate 不兼容 | 迁入 release DB/路由后复用 DTO 编译和校验 | 未进入 release；当前偏“内容骨架”而非产品要求的可复制完整执行稿；自动 QA/局部修复缺失；19 个 execution/retest tests 失败 | T16,T17,T18 | `test_single_prompt_v2_execution.py`: 19 failed | `execution.py`; `api.py`; test summary | 2026-09-30 |
-| PUB | PUB-001..004 | 需接入且需修复 | `execution.py::record_publication`; non-release publication API; publication models/UI | USER_REPORTED、版本、符合性、历史保留逻辑已有 | 表与路由不在 release；只接受已有 ExecutionConfirmation | 复用 append-only PublicationRecord 逻辑 | 未进入 release；缺实际页面抓取 Snapshot、实际稿差异自动核对、最小 URL/时间入口与失败限制的完整产品路径 | T20 | execution fixture tests 当前受上游失败影响 | publication models/API | 2026-09-30 |
-| VAL | VAL-001..005 | 需接入且需修复 | `retest.py`; non-release retest/comparison APIs; UI | 固定 baseline、retest plan、measurement identity、comparison version 已编码 | 使用非 release DB/API；与 Monitor 指标未统一 | 复用不可变 plan/comparison 与采样接线 | 未进入 release；测试被新 scope Gate 阻断；缺正式 Monitor 指标复用与真实发布闭环验证 | T21,T22 | execution/retest fixture 中相关用例失败 | `retest.py`; `api.py`; test summary | 2026-09-30 |
+| EXE | EXE-001..005 | 已接入/当前切片可用 | `execution.py`; `release_api.py`; `App.tsx` | release 内生成不可变 Proposal/Result、资产与承载位置判断、完整正文、实际文本 QA、确认 Gate | 无 legacy DB/latest 依赖；旧 fixture 仍与 fixed-scope Gate 不兼容 | 复用版本/确认/公开内部分离；按 `SC-ASSET-001` 隔离过时的“空资产即新建”判断 | 单 Run 真实稿件已 READY；仍需业务确认资产分支和权限；全场景/多 Run 尚未验收 | T16,T17,T18 | Optimize/release 34 passed；frontend build PASS | `execution-v5:2121b5e21d0ac6df`; acceptance record | 2026-10-01 |
+| PUB | PUB-001..004 | 已接入/未真实执行 | `execution.py::record_publication`; `release_api.py`; publication UI | append-only USER_REPORTED、版本和符合性入口已在 release | 必须绑定 ExecutionConfirmation | 保留现有 PublicationRecord 逻辑 | 当前 confirmation=0、publication=0；没有真实发布，不能验收实际稿差异与线上材料 | T20 | 当前单 Run 验证未越过发布 Gate | release DB；acceptance record | 2026-10-01 |
+| VAL | VAL-001..005 | 已接入/未真实执行 | `retest.py`; release retest/comparison APIs; UI | 固定 baseline、retest plan、measurement identity、comparison version 已进 release | 必须绑定真实确认与 PublicationRecord | 保留不可变 plan/comparison 与采样接线 | 当前 retest=0；缺发布后新 Run 和真实比较，不能用 baseline 冒充 | T21,T22 | 当前单 Run 验证未启动 Retest | `retest.py`; release API | 2026-10-01 |
 | COR | COR-001..004 | 需修复 | diagnosis revision、truth reprojection、strategy priority revision、execution revision | 多个对象已有 append-only revision，不覆盖旧结果 | 当前纠错分散且多数需人工 Review 后推进 | 复用各对象版本机制 | 缺统一影响清单、局部重算任务和“人工可选而非主链 Gate”行为；不存在跨阶段一致的 stale 投影 | T19 | 各模块单测；AC-COR-* 未执行 | release/non-release APIs | 2026-09-30 |
 | OPS | OPS-001..004 | 可直接复用（基础）/需修复（交付） | `release_main.py`; `release_database.py`; `release_schema.py`; Alembic; `release_worker.py` | 独立 SQLite、显式迁移、schema allowlist、启动校验、恢复与单 worker 已有 | release 与 legacy DB 已物理隔离；部分非 release 模块仍引用 legacy Session | 保留 release 控制面和 allowlist | 缺真实组织/用户授权边界、任务取消、完整备份恢复验收；`settings.release_schema_revision` 仍为旧值且未作为权威；后半主链未进 allowlist | T00,T01,T02,T25 | schema validation READY；Alembic current/head；专项 tests | release schema/DB/worker | 2026-09-30 |
 
@@ -57,7 +58,7 @@
 ## 4. 真实优先缺口
 
 1. **M0 状态统一**：当前 fixed-scope Gate、合法零结果、待授权、失败和 review eligibility 已在不同阶段出现过口径漂移；先完成 T01。
-2. **主链 release 断点**：正式 schema/route 止于 Strategy；Execution、Publication、Retest 不能使用当前 release 数据库完成。
+2. **真实发布断点**：Execution/Publication/Retest 已进入 release，但当前真实链尚未确认执行或发布，因此复测和 Validate 仍没有业务输入。
 3. **自动 Optimize 缺失**：现有能力是多个人工阶段，不是产品文档定义的自动默认、可选纠错。
 4. **Monitor 指标不权威**：采样数据存在，但 release 后端没有统一 Mention/Option/Recommendation 与 Macro/Weighted 计算版本。
 5. **版本缺口**：Project/Brand/Prompt 仍是可变当前行，虽然 AnalysisContext 已冻结运行输入。
@@ -106,4 +107,6 @@ npm run build:release
 
 ## 7. T00 退出结论
 
-T00 完成。当前仓库不是“从零开发”，也不是“完整 1.0 已存在”：采样、来源、Answer、Citation、Truth、Strategy 有大量成熟能力可复用；自动 Optimize 编排和 Monitor 权威指标确实缺失；Execution/Publication/Validate 已有代码但尚未进入 release。下一项应从 T01 的范围与状态统一开始，不能直接把非 release 后半链注册上线。
+T00 的原始核查已完成；2026-10-01 状态更新后，Execution/Publication/Retest 已进入 release，单 Run 的
+完整执行稿与实际文本 QA 已形成真实结果。完整 1.0 仍未验收：自动 Optimize 编排、Monitor 权威指标、
+真实发布和发布后 Validate 仍是明确未完成项。

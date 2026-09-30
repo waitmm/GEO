@@ -6243,3 +6243,23 @@ review_queue = READY
   retained; those fixture cases require replacement.
 - Full object chain and remaining business action are recorded in
   `docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md`.
+
+## 2026-10-01 Complete Single-Run Optimize Deliverable
+
+- Upgraded the exact active 1/1 Execution Proposal through the formal release API. The
+  initial skeleton remains immutable; active result is now
+  `execution-v5:2121b5e21d0ac6df` with full publication text and actual-text QA.
+- The system now recommends `HELP_DOC` on the owned help/news surface and explains why.
+  Asset inventory remains `UNKNOWN`: an observed first-party page is a candidate to inspect,
+  not a ManagedAsset. The result therefore freezes explicit UPDATE/CREATE conditions instead
+  of requiring the user to invent the decision or silently defaulting to CREATE_NEW.
+- Strategy channel identity remains unchanged (`channel_key/channel_role = null`). The
+  publication destination is recorded separately and cannot create an official-site PRIMARY.
+- The target-brand section uses only exact functional phrases present in the frozen first-party
+  Snapshot. Scale, conversion, stability and blocking-avoidance marketing language is excluded.
+  Actual-text QA checks the generated body and records applied repairs.
+- Citation failures ref4/ref5/ref13 remain not evaluated and not consumable. They are excluded
+  from both completed counts and the draft; no NO_MATCH/NO_SUPPORT fallback was introduced.
+- Verification: 34 focused/release tests passed; frontend production build passed. No external
+  call, refetch, confirmation, publication or retest was created. Commits: `8b19388`,
+  `c7ce35e`, `56eaf9f`, `8a0ece1`.

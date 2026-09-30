@@ -8,8 +8,9 @@
 本轮没有重新采样、没有新增外部模型调用、没有重抓网页，也没有修改原九条 Analysis。正文和
 Citation Contribution 只在精确身份、内容 hash、passage hash 和合同版本兼容时复用。
 
-当前真实停止点是用户业务选择，不是计算失败：需要选择资产类型、计划发布位置、可操作账号和栏目，
-然后确认执行方案。实际发布、PublicationRecord、发布后新采样和 Validate 均未伪造。
+当前真实停止点是用户业务确认，不是计算失败：系统已自动完成资产类型、建议承载渠道、条件式新建/更新
+判断和可直接编辑的完整稿件；用户只需确认实际可编辑页面或新建位置、账号/栏目及权限。实际发布、
+PublicationRecord、发布后新采样和 Validate 均未伪造。
 
 ## 2. 固定输入
 
@@ -84,7 +85,7 @@ passages hash；没有域名猜测或 `latest` 回退。冻结后 API 只返回 
 本轮没有复制旧 Human Review。三条历史 Contract 失败继续是限制，未改写成 `NO_MATCH`。目标品牌“爱短链”
 未出现在 Run 1 回答正文中；某条引用来自爱短链页面不能被提升为回答推荐目标品牌或生成因果。
 
-## 5. 自动策略、执行稿与 QA
+## 5. 自动策略、完整执行稿与 QA
 
 | 对象 | 精确身份 / 状态 |
 | --- | --- |
@@ -95,19 +96,37 @@ passages hash；没有域名猜测或 `latest` 回退。冻结后 API 只返回 
 | Strategy authority | `MACHINE_QUALIFICATION`，不伪造人工 Review |
 | Direction | `strategy-machine-40561c088482ff4d480d`，`DISCOVERY / ACTIONABLE` |
 | Execution Proposal | `execution-proposal-43feb8f4-26b1-4eb2-b6c0-74298af17fb4` |
-| Execution Result | `execution-v1:a7a640779ae7e104` |
-| Execution hash | `a7a640779ae7e10492a1b11b0c5fed1a83ee14bb9bbdff07c6d1738e5d072dbe` |
-| 当前状态 | `NEEDS_HUMAN_SELECTION` |
+| 初始骨架 Result | `execution-v1:a7a640779ae7e104`（保持不可变） |
+| 当前 Execution Result | `execution-v5:2121b5e21d0ac6df` |
+| 当前 Execution hash | `2121b5e21d0ac6df1529d5f66d865a6f63fb63bb69646348e9382679a357a9f7` |
+| Reviewable set hash | `e44886aca7a59781e11c753bbb65f76ed9fbfd7a9abd2bc3e70f5fddd4be37d2` |
+| 正文 content hash | `a3ec35fd54f7a86965afcbcd2e9db6151eda45e0cd4ffef2e46bbefc00d2fd9e` |
+| 当前状态 | `READY_FOR_BUSINESS_INPUT`；内容 `READY`，发布 `NEEDS_BUSINESS_CONFIRMATION` |
 
 策略明确回答：本 Run 未观察到目标品牌，因此建立一份围绕“抖音跳转链接”的可核验问题解答资产，争取进入
 后续答案候选；这不是“目标品牌没有能力”的结论，也不授权任何目标品牌公开能力声明。
 
-机器交付的标题为“抖音跳转链接：场景、方法与注意事项”，并给出三段来源绑定内容骨架：私信卡片跳转、
-合规短链工具路径、直播间小风车。每段都绑定 AnswerUnit、Citation 和 Contribution binding；
-`SUPPORTS_PARTIAL` 不会被升级为生成影响或目标品牌事实。
+系统自动选择 `HELP_DOC`，建议承载位置为爱短链官网帮助/资讯区域。资产清单不完整，因此没有把“数据库无
+ManagedAsset”误判为资产不存在：当前结论是先核查已观察页面 `https://aifabu.com/details/42615`；确认
+归属、编辑权限和内容适配后可 `UPDATE_EXISTING`，否则在完整核查后 `CREATE_NEW`。发布位置只是内容目的地，
+没有反向修改上游 Strategy 的 `channel_key/channel_role = null`。
 
-自动 QA 为 `READY_INTERNAL`：来源绑定、无 Truth 时不生成目标品牌声明、资产操作不被擅自推断均通过。
-外部动作仍为 `NO`。发布前还必须完成：资产操作选择、资产类型、发布位置、账号/栏目和业务确认。
+机器已生成完整稿《抖音跳转链接怎么选：场景、路径与上线检查》，而非只生成标题与三个结构块。正文覆盖
+私信卡片、合规短链、直播间小风车、上线检查、爱短链关联和结论。每个方法段继续绑定 AnswerUnit、Citation
+和 Contribution binding；`SUPPORTS_PARTIAL` 不会被升级为生成影响或目标品牌事实。
+
+品牌关联只使用冻结一方 Snapshot 中确实存在的功能性原词：“短链接生成器”“智能链接缩短与追踪”
+“抖音私信跳转卡片”“微信外链跳转”。规模、转化、防封、稳定等营销效果句未进入稿件。该段明确标为一方
+页面当前表述，不表示独立验证，也不证明发布后会被 AI 引用。
+
+实际文本 QA 为 `READY`：完整正文、Prompt 针对性、来源绑定、内部/公开内容分离、品牌归因、失败引用排除
+和无依据效果承诺检查均通过。自动修复记录包括删除稳定跳转承诺、把直播目的地收窄到来源支持的小程序，
+以及把目标品牌内容限制为归因陈述。外部模型调用和网页重抓均为 0。
+
+三条历史失败逐项保留且不进入完成统计或稿件：`citation-run1-ref4`、`citation-run1-ref13` 为
+`FAILED_NEGATIVE_SPAN`，`citation-run1-ref5` 为 `FAILED_SCHEMA`。当前均为
+`CURRENT_NOT_CONSUMABLE / NOT_EVALUATED_CURRENT_CONTRACT`；只有未来交付确实依赖对应来源时才定点重评，
+没有将其改写为 `NO_MATCH/NO_SUPPORT`。
 
 ## 6. 正式链阶段状态
 
@@ -120,8 +139,8 @@ passages hash；没有域名猜测或 `latest` 回退。冻结后 API 只返回 
 | Citation Contribution | PASS WITH LIMITATIONS，16 DONE / 3 FAILED |
 | Truth | EMPTY/不参与公开声明；不阻断内部 Discovery |
 | Strategy | PASS，正式不可变机器 StrategyResult |
-| Execution Draft | PASS，正式不可变 Proposal/Result 和自动 QA |
-| Execution Confirmation | NOT COMPLETED，需要真实资产和账号选择 |
+| Execution Draft | PASS，完整正文、正式不可变 Result 和实际文本 QA |
+| Execution Confirmation | NOT COMPLETED，需要确认资产分支与实际账号/栏目权限 |
 | Publication | NOT COMPLETED，没有真实发布记录 |
 | Retest | NOT STARTED，禁止复用 Baseline 冒充发布后样本 |
 | Validate | NOT STARTED，没有发布后新 Run 可比较 |
@@ -133,7 +152,9 @@ passages hash；没有域名猜测或 `latest` 回退。冻结后 API 只返回 
   SHA-256 `fb6347d8bb91bd591ab220d08356fd722c86fac7ba931d5704e209c7303e58f1`。
 - 迁移前正文 archive：`/private/tmp/geo-single-run-acceptance-20260930/evidence.pre_20260930_01.tgz`，
   SHA-256 `653f9a8ed9253099d66a7a7cd49abb8073d7ae307b504294db506b731d997c15`。
-- release first-slice：33 passed。
+- 本轮在线备份：`/private/tmp/geo-optimize-delivery-backup-20261001/geo_release.db`，
+  SHA-256 `d9434acad392cda5907dd3dea9036607521cf86c4d55232e3be37885f7ac4538`，恢复副本完整性 `ok`。
+- release first-slice + Optimize 专项：34 passed。
 - qualification：6 passed。
 - frontend production build：PASS；保留现有 bundle size warning。
 - 扩展 strategy/execution/retest：32 passed，19 failed。19 个失败均为旧 fixture 固定 3 Runs 但只计算和
@@ -142,16 +163,17 @@ passages hash；没有域名猜测或 `latest` 回退。冻结后 API 只返回 
 
 ## 8. 页面操作与下一真实步骤
 
-release 页面：`http://127.0.0.1:8021/`。
+release 页面：`http://127.0.0.1:5173/`（API `http://127.0.0.1:8000` 当前运行 `app.release_main`）。
 
 选择 Project 1、Prompt 1 和 Analysis `925ef2dc-605f-467d-a025-52033a574d92` 后，执行区域展示：
 
-1. “新增可核验问题解答资产”方向；
-2. 资产类型候选：产品页、功能页、帮助文档；
-3. 对应发布位置、发布账号、栏目和账号可操作性；
-4. 标题、三段内容骨架、内部检查项、固定 Baseline 和自动 QA；
+1. 系统推荐的帮助文档、官网承载位置和选择理由；
+2. 已观察品牌页面的核查结果，以及“可更新 / 应新建”的明确条件；
+3. 可复制的完整公开稿、品牌关联依据、内部检查项和固定 Baseline；
+4. 实际文本 QA、自动修复记录和三条未评估引用的当前处置；
 5. 保存并重新校验、确认执行方案、登记实际发布、发布后复测入口。
 
-下一步必须由用户提供真实选择。实际发布后再登记 URL、时间和实际内容；之后需单独授权并取得新的真实
+下一步只需用户确认：已观察页面是否可编辑且适合更新；若不适合则新建帮助文档；以及真实账号、栏目和
+编辑权限。实际发布后再登记 URL、时间和实际内容；之后需单独授权并取得新的真实
 Run 才能 Retest/Validate。当前没有手工 SQL 绕过、`latest` 替换、跨项目事实、自动 Review、模拟发布或
 Baseline 复用为 Retest。

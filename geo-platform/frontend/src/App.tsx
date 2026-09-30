@@ -1567,6 +1567,7 @@ export default function App() {
   const [v2CriticGoldLoading, setV2CriticGoldLoading] = useState(false);
   const [v2CriticGoldReviewer, setV2CriticGoldReviewer] = useState("本地审核人");
   const [v2CriticGoldNote, setV2CriticGoldNote] = useState("");
+  const [v2CriticGoldOpenKeys, setV2CriticGoldOpenKeys] = useState<string[]>([]);
   const [v2Strategy, setV2Strategy] = useState<SinglePromptV2StrategyStatus | null>(null);
   const [v2StrategyLoading, setV2StrategyLoading] = useState(false);
   const [v2StrategyEditor, setV2StrategyEditor] = useState("本地审核人");
@@ -2958,22 +2959,34 @@ export default function App() {
     }));
   }
 
-  function v2CriticGoldDraftComplete(candidate: SinglePromptV2QualificationCriticGoldStatus["candidates"][number]) {
+  function v2CriticGoldMissingFields(candidate: SinglePromptV2QualificationCriticGoldStatus["candidates"][number]) {
     const draft = v2CriticGoldDrafts[candidate.object_id] || {};
-    return Object.prototype.hasOwnProperty.call(draft, "gold_model_a_correct")
-      && Boolean(draft.gold_qwen_challenge_valid)
-      && Boolean(draft.gold_issue_type)
-      && Boolean(draft.gold_effective_relation_or_strategy_judgment)
-      && Object.prototype.hasOwnProperty.call(draft, "should_change_qualification")
-      && Boolean(draft.should_change_strategy_or_claim)
-      && Boolean(draft.review_note?.trim());
+    const missing: string[] = [];
+    if (!Object.prototype.hasOwnProperty.call(draft, "gold_model_a_correct")) missing.push("DeepSeek 原判断");
+    if (!draft.gold_qwen_challenge_valid) missing.push("千问质疑");
+    if (!draft.gold_issue_type) missing.push("问题类型");
+    if (!draft.gold_effective_relation_or_strategy_judgment) missing.push("人工最终判断");
+    if (!Object.prototype.hasOwnProperty.call(draft, "should_change_qualification")) missing.push("正式资格是否改变");
+    if (!draft.should_change_strategy_or_claim) missing.push("策略或公开声明是否调整");
+    if (!draft.review_note?.trim()) missing.push("人工说明");
+    return missing;
+  }
+
+  function v2CriticGoldDraftComplete(candidate: SinglePromptV2QualificationCriticGoldStatus["candidates"][number]) {
+    return v2CriticGoldMissingFields(candidate).length === 0;
   }
 
   async function submitV2CriticGoldReview() {
     if (!v2Analysis || !v2QualificationCritic?.result || !v2CriticGold || !projectId || !activePromptId) return;
     const incomplete = v2CriticGold.candidates.filter((candidate) => !v2CriticGoldDraftComplete(candidate));
     if (incomplete.length) {
-      message.warning(`还有 ${incomplete.length} 个对象未完成判断`);
+      const first = incomplete[0];
+      const position = v2CriticGold.candidates.findIndex((candidate) => candidate.object_id === first.object_id) + 1;
+      setV2CriticGoldOpenKeys((current) => Array.from(new Set([...current, first.object_id])));
+      window.setTimeout(() => {
+        document.getElementById(`critic-gold-${first.object_id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 0);
+      message.warning(`第 ${position} 条还缺：${v2CriticGoldMissingFields(first).join("、")}`);
       return;
     }
     if (!v2CriticGoldReviewer.trim()) {
@@ -6023,6 +6036,8 @@ export default function App() {
 
                             <Collapse
                               size="small"
+                              activeKey={v2CriticGoldOpenKeys}
+                              onChange={(keys) => setV2CriticGoldOpenKeys(Array.isArray(keys) ? keys.map(String) : [String(keys)])}
                               items={v2CriticGold.candidates.map((candidate, index) => {
                                 const draft = v2CriticGoldDrafts[candidate.object_id] || {};
                                 const answerUnit = candidate.review_context.answer_unit || {};
@@ -6032,7 +6047,7 @@ export default function App() {
                                 const complete = v2CriticGoldDraftComplete(candidate);
                                 return {
                                   key: candidate.object_id,
-                                  label: <Space wrap>
+                                  label: <Space id={`critic-gold-${candidate.object_id}`} wrap>
                                     <Text strong>{index + 1}. {v2CriticLabel(candidate.candidate_type)}</Text>
                                     <Tag>{v2CriticLabel(candidate.cohort)}</Tag>
                                     <Tag color={candidate.qwen_signal.critic_verdict === "DISAGREE" ? "gold" : "green"}>{v2CriticLabel(candidate.qwen_signal.critic_verdict)}</Tag>
@@ -6105,8 +6120,9 @@ export default function App() {
                             <Space wrap>
                               <Input style={{ width: 180 }} value={v2CriticGoldReviewer} onChange={(event) => setV2CriticGoldReviewer(event.target.value)} placeholder="审核人" />
                               <Input style={{ width: 360 }} value={v2CriticGoldNote} onChange={(event) => setV2CriticGoldNote(event.target.value)} placeholder="本轮总体备注（可选）" />
-                              <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2CriticGoldLoading} disabled={completedCount !== v2CriticGold.candidate_count} onClick={submitV2CriticGoldReview}>{latestGoldReview ? "保存为新的 Gold 版本" : "完成 7 条 Human Gold"}</Button>
+                              <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2CriticGoldLoading} onClick={submitV2CriticGoldReview}>{latestGoldReview ? "保存为新的 Gold 版本" : "完成 7 条 Human Gold"}</Button>
                             </Space>
+                            {completedCount !== v2CriticGold.candidate_count && <Text type="secondary">点击完成后会定位到第一条未填内容；不会提交不完整审核。</Text>}
 
                             {latestGoldReview && <>
                               <Divider orientation="left">增量价值结果</Divider>

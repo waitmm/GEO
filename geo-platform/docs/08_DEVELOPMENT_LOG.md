@@ -6192,3 +6192,23 @@ review_queue = READY
   correspondence dropdown exposes six Chinese choices and the evidence
   relation dropdown exposes six Chinese choices. No Human Gold decision or
   Review was submitted during verification.
+
+## 2026-09-30 GEO 1.0 Product Package T00 Repository Audit
+
+- Added the 23 modular product/development Markdown documents plus the machine-readable
+  task and acceptance ledgers under `docs/geo-v1.0/`.
+- Completed T00 against the real release app, database, routes, worker, frontend and
+  selected regression suite. The authoritative result is
+  `docs/geo-v1.0/implementation-map.md`; `tasks.json` now records real implementation
+  locations, owners, remaining estimates and audit classifications.
+- The release database validates at revision `20260929_02` with SQLite `3.51.3`, WAL,
+  foreign keys and the exact table allowlist. Current release routing ends at
+  Strategy/Critic. Existing Execution, Publication and Retest code remains outside the
+  release schema/router and is not reported as delivered.
+- Selected backend regression finished with 151 passed and 19 failed. All 19 failures
+  are in the execution/retest fixture suite and originate from fixtures with only one
+  reviewed run being rejected by the newer fixed-scope gate. The gate was not relaxed
+  and no assertion was deleted. The 69 functional and five end-to-end acceptance cases
+  remain unexecuted.
+- No business code, database row or external provider was changed or called by T00.
+  T00 is DONE and T01 is READY.

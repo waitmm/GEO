@@ -1,0 +1,924 @@
+{
+  "schema_version": "1.0",
+  "baseline_date": "2026-09-30",
+  "implementation_verified": true,
+  "tasks": [
+    {
+      "id": "T00",
+      "title": "仓库现状与成熟能力核查",
+      "milestone": "M0",
+      "owner_role": "开发/Codex",
+      "owner_name": "Codex",
+      "status": "DONE",
+      "depends_on": [],
+      "requirements": [
+        "OPS-001",
+        "OPS-002",
+        "OPS-003",
+        "OPS-004"
+      ],
+      "deliverable": "implementation-map、现有验证命令、调用边界和真实缺口清单",
+      "definition_of_done": "每项功能标明可复用/需接入/需修复/缺失并附真实文件位置；不得只写未实现或建议重构。",
+      "implementation_files": [
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/app/release_schema.py",
+        "backend/app/release_main.py",
+        "backend/scripts/release_worker.py"
+      ],
+      "acceptance_evidence": [
+        "release schema validation: READY (revision 20260929_02, SQLite 3.51.3, WAL, FK=1)",
+        "backend selected regression: 151 passed, 19 failed (all execution/retest fixture scope mismatch)",
+        "frontend npm run build:release: PASS",
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "1人日（已完成）",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "2026-09-30",
+      "actual_end": "2026-09-30",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "可直接复用并已核查"
+    },
+    {
+      "id": "T01",
+      "title": "统一输入范围与业务状态映射",
+      "milestone": "M0",
+      "owner_role": "后端",
+      "owner_name": "Codex（后端）",
+      "status": "READY",
+      "depends_on": [
+        "T00"
+      ],
+      "requirements": [
+        "PRM-002",
+        "OPT-003",
+        "OPS-001"
+      ],
+      "deliverable": "对象/版本/状态映射与必要最小改动",
+      "definition_of_done": "固定范围、零事件、缺失缓存、待授权和失败语义一致。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/service.py",
+        "backend/app/modules/single_prompt_v2/diagnosis.py",
+        "backend/app/modules/single_prompt_v2/coverage.py",
+        "backend/app/modules/single_prompt_v2/schemas.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "2人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T02",
+      "title": "任务持久性与项目边界",
+      "milestone": "M0",
+      "owner_role": "后端",
+      "owner_name": "Codex（后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T01"
+      ],
+      "requirements": [
+        "OPS-001",
+        "OPS-002",
+        "OPS-003",
+        "OPS-004",
+        "OPT-004"
+      ],
+      "deliverable": "任务恢复、幂等、查询零业务写入和隔离",
+      "definition_of_done": "通过重启、重复提交、跨项目访问与查询检查。",
+      "implementation_files": [
+        "backend/app/release_main.py",
+        "backend/app/core/release_database.py",
+        "backend/app/modules/single_prompt_v2/release_api.py",
+        "backend/scripts/release_worker.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "3人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T03",
+      "title": "项目品牌与配置版本",
+      "milestone": "M1",
+      "owner_role": "全栈",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T01"
+      ],
+      "requirements": [
+        "BRD-001",
+        "BRD-002",
+        "BRD-003",
+        "BRD-004"
+      ],
+      "deliverable": "创建/设置页面及配置服务",
+      "definition_of_done": "BRD 场景通过，历史配置不被静默改写。",
+      "implementation_files": [
+        "backend/app/api/release_catalog.py",
+        "backend/app/models/db.py",
+        "frontend/src/App.tsx"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "3人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T04",
+      "title": "Prompt 管理与明确分析范围",
+      "milestone": "M1",
+      "owner_role": "全栈",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T03"
+      ],
+      "requirements": [
+        "PRM-001",
+        "PRM-002",
+        "PRM-003",
+        "PRM-004"
+      ],
+      "deliverable": "Prompt 列表、目标标签、版本和范围选择",
+      "definition_of_done": "支持继续旧分析、历史+新增选择和范围冻结。",
+      "implementation_files": [
+        "backend/app/api/release_catalog.py",
+        "backend/app/modules/single_prompt_v2/service.py",
+        "frontend/src/App.tsx"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "3人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T05",
+      "title": "采样任务与样本池接入",
+      "milestone": "M1",
+      "owner_role": "后端/前端",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T02",
+        "T04"
+      ],
+      "requirements": [
+        "SAM-001",
+        "SAM-002",
+        "SAM-003",
+        "SAM-004"
+      ],
+      "deliverable": "复用采样能力，完成任务与 Run 页面",
+      "definition_of_done": "合法零品牌、单 Run 重试和累计样本可正确使用。",
+      "implementation_files": [
+        "backend/app/modules/monitoring/collectors/wenxin/collector.py",
+        "backend/app/modules/monitoring/executor.py",
+        "backend/app/modules/monitoring/services.py",
+        "backend/app/modules/single_prompt_v2/release_api.py",
+        "frontend/src/App.tsx"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "3人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T06",
+      "title": "基础品牌行为识别与公共指标",
+      "milestone": "M1",
+      "owner_role": "分析/后端",
+      "owner_name": "Codex（分析/后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T05"
+      ],
+      "requirements": [
+        "MON-001",
+        "MON-002",
+        "ANS-002"
+      ],
+      "deliverable": "共用指标计算与行为投影",
+      "definition_of_done": "计数可回原文；失败/未知不计零；同输入同版本一致。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/diagnosis.py",
+        "backend/app/modules/single_prompt_v2/coverage.py",
+        "backend/app/modules/monitoring/services.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "4人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需接入"
+    },
+    {
+      "id": "T07",
+      "title": "Monitor 页面与项目聚合",
+      "milestone": "M1",
+      "owner_role": "前端/后端",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T06"
+      ],
+      "requirements": [
+        "MON-002",
+        "MON-003"
+      ],
+      "deliverable": "摘要、列表、趋势、明细和覆盖展示",
+      "definition_of_done": "Macro/Weighted 分开，0/N 与 N/A 分开，范围变化明确。",
+      "implementation_files": [
+        "frontend/src/App.tsx",
+        "backend/app/modules/analytics",
+        "backend/app/modules/single_prompt_v2/release_api.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "5人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需接入"
+    },
+    {
+      "id": "T08",
+      "title": "机会建议与 Optimize 入口",
+      "milestone": "M1",
+      "owner_role": "全栈",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T07"
+      ],
+      "requirements": [
+        "MON-004",
+        "PRM-003"
+      ],
+      "deliverable": "解释性机会规则、主动分析入口",
+      "definition_of_done": "目标适用性影响建议，范围正确传递，无综合伪精确评分。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/qualification.py",
+        "backend/app/modules/single_prompt_v2/strategy.py",
+        "frontend/src/App.tsx"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "2人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T09",
+      "title": "引用资料抓取与快照接入",
+      "milestone": "M1",
+      "owner_role": "后端",
+      "owner_name": "Codex（后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T05"
+      ],
+      "requirements": [
+        "SRC-001",
+        "SRC-002",
+        "SRC-003",
+        "SRC-004"
+      ],
+      "deliverable": "自动抓取、正文判定、可选补录和快照",
+      "definition_of_done": "登录墙拒绝；引用观察保留；补录不覆盖旧快照。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/source_preparation.py",
+        "backend/app/modules/optimization/passage_service.py",
+        "backend/app/modules/single_prompt_v2/release_api.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "3人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "可直接复用核心，需补范围"
+    },
+    {
+      "id": "T10",
+      "title": "Optimize 自动任务编排",
+      "milestone": "M2",
+      "owner_role": "后端",
+      "owner_name": "Codex（后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T02",
+        "T08",
+        "T09"
+      ],
+      "requirements": [
+        "OPT-001",
+        "OPT-002",
+        "OPT-003",
+        "OPT-004"
+      ],
+      "deliverable": "唯一自动主链、阶段状态、缓存与恢复",
+      "definition_of_done": "空 Context 不阻断，重试幂等，显式结果交接。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/release_api.py",
+        "backend/scripts/release_worker.py",
+        "backend/app/modules/single_prompt_v2/diagnosis.py",
+        "backend/app/modules/single_prompt_v2/strategy.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "5人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "确实缺失编排层"
+    },
+    {
+      "id": "T11",
+      "title": "答案分析成熟能力接入",
+      "milestone": "M2",
+      "owner_role": "分析/后端",
+      "owner_name": "Codex（分析/后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T10"
+      ],
+      "requirements": [
+        "ANS-001",
+        "ANS-002",
+        "ANS-003",
+        "ANS-004"
+      ],
+      "deliverable": "答案单位、行为、理由归属和需求输出",
+      "definition_of_done": "零事件可消费，原文定位和品牌归属正确。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/diagnosis.py",
+        "backend/app/modules/single_prompt_v2/schemas.py",
+        "backend/app/modules/single_prompt_v2/llm_safety.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "4人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "可直接复用安全内核，需统一产品契约"
+    },
+    {
+      "id": "T12",
+      "title": "引用贡献与召回能力接入",
+      "milestone": "M2",
+      "owner_role": "分析/后端",
+      "owner_name": "Codex（分析/后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T11",
+        "T09"
+      ],
+      "requirements": [
+        "CIT-001",
+        "CIT-002",
+        "CIT-003",
+        "CIT-004"
+      ],
+      "deliverable": "对应/证据/锚点/影响分离及覆盖",
+      "definition_of_done": "低匹配形成支撑缺口，未知与未评估不混同。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/citation_contribution.py",
+        "backend/app/modules/single_prompt_v2/evidence_plan.py",
+        "backend/app/modules/optimization/passage_retrieval.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "5人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需接入完整 Analysis 范围"
+    },
+    {
+      "id": "T13",
+      "title": "品牌事实与 EMPTY/BASIC 上下文",
+      "milestone": "M2",
+      "owner_role": "分析/后端",
+      "owner_name": "Codex（分析/后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T11",
+        "T09"
+      ],
+      "requirements": [
+        "TRU-001",
+        "TRU-002",
+        "TRU-003",
+        "TRU-004"
+      ],
+      "deliverable": "原子事实、来源、用途资格和 ContextProvider",
+      "definition_of_done": "自动充分事实可用，未知局部控制，不建立完整知识库。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/diagnosis.py",
+        "backend/app/modules/single_prompt_v2/qualification.py",
+        "backend/app/modules/single_prompt_v2/source_preparation.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "4人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T14",
+      "title": "策略编译与非空交付路径",
+      "milestone": "M2",
+      "owner_role": "分析/后端",
+      "owner_name": "Codex（分析/后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T12",
+        "T13"
+      ],
+      "requirements": [
+        "STR-001",
+        "STR-002",
+        "STR-005"
+      ],
+      "deliverable": "有依据的行动候选与探索验证条件",
+      "definition_of_done": "三类证据场景均有具体可交付行动；非空不是通用凑数。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/strategy.py",
+        "backend/app/modules/single_prompt_v2/qualification.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "6人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T15",
+      "title": "资产与渠道解析",
+      "milestone": "M2",
+      "owner_role": "分析/后端",
+      "owner_name": "Codex（分析/后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T14"
+      ],
+      "requirements": [
+        "STR-003",
+        "STR-004"
+      ],
+      "deliverable": "资产角色、更新/新建条件与渠道理由",
+      "definition_of_done": "不因资产未登记盲目新建，不固定官网/高引用渠道为主。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/strategy.py",
+        "backend/app/modules/single_prompt_v2/execution.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "4人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T16",
+      "title": "具体执行稿编译",
+      "milestone": "M2",
+      "owner_role": "分析/全栈",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T15"
+      ],
+      "requirements": [
+        "EXE-001",
+        "EXE-002",
+        "EXE-004"
+      ],
+      "deliverable": "可复制的稿件/页面修改及执行说明",
+      "definition_of_done": "非只有大纲，内部假设不混入正文，不伪造材料。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/execution.py",
+        "backend/app/modules/single_prompt_v2/api.py",
+        "frontend/src/App.tsx"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "7人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需接入 release 且需补完整执行稿"
+    },
+    {
+      "id": "T17",
+      "title": "生成后 QA 与自动局部修复",
+      "milestone": "M2",
+      "owner_role": "分析/后端",
+      "owner_name": "Codex（分析/后端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T16"
+      ],
+      "requirements": [
+        "EXE-003",
+        "EXE-005"
+      ],
+      "deliverable": "实际文本 claim 检查、修复与版本资格",
+      "definition_of_done": "范围扩大可拦截并改写；预算异常可恢复，不能假成功。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/execution.py",
+        "backend/app/modules/single_prompt_v2/llm_safety.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "5人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "确实缺失自动 QA/局部修复"
+    },
+    {
+      "id": "T18",
+      "title": "Optimize 结果与编辑界面",
+      "milestone": "M2",
+      "owner_role": "前端",
+      "owner_name": "Codex（前端）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T17"
+      ],
+      "requirements": [
+        "OPT-001",
+        "EXE-001",
+        "EXE-002",
+        "EXE-003",
+        "EXE-004",
+        "EXE-005"
+      ],
+      "deliverable": "诊断、行动、交付、来源与版本界面",
+      "definition_of_done": "主要信息可直接消费；编辑后重新检查受影响版本。",
+      "implementation_files": [
+        "frontend/src/App.tsx",
+        "frontend/src/api/client.ts",
+        "frontend/src/types.ts"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "5人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T19",
+      "title": "人工纠错与局部重算",
+      "milestone": "M2",
+      "owner_role": "全栈",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T13",
+        "T18"
+      ],
+      "requirements": [
+        "COR-001",
+        "COR-002",
+        "COR-003",
+        "COR-004"
+      ],
+      "deliverable": "可选补充、影响范围和版本替代",
+      "definition_of_done": "不要求人工审核，纠错不全库外调、不改历史实验。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/diagnosis.py",
+        "backend/app/modules/single_prompt_v2/strategy.py",
+        "backend/app/modules/single_prompt_v2/execution.py",
+        "backend/app/modules/single_prompt_v2/retest.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "4人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    },
+    {
+      "id": "T20",
+      "title": "发布登记与实际内容快照",
+      "milestone": "M3",
+      "owner_role": "全栈",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T18"
+      ],
+      "requirements": [
+        "PUB-001",
+        "PUB-002",
+        "PUB-003",
+        "PUB-004"
+      ],
+      "deliverable": "最小登记、自动关联、内容差异与一致性",
+      "definition_of_done": "URL/时间即可登记，实际稿不同于原稿，抓取失败如实限制。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/execution.py",
+        "backend/app/modules/single_prompt_v2/api.py",
+        "backend/app/models/db.py",
+        "frontend/src/App.tsx"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "5人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需接入 release 且需修复"
+    },
+    {
+      "id": "T21",
+      "title": "复测计划与采样接入",
+      "milestone": "M3",
+      "owner_role": "后端/前端",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T20",
+        "T05"
+      ],
+      "requirements": [
+        "VAL-001",
+        "VAL-002"
+      ],
+      "deliverable": "固定基线、窗口、配置和复测范围",
+      "definition_of_done": "前后版本与入口可比较或显式标差异，不静默换样本。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/retest.py",
+        "backend/app/modules/monitoring/executor.py",
+        "backend/app/modules/single_prompt_v2/api.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "4人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需接入 release 且需修复"
+    },
+    {
+      "id": "T22",
+      "title": "Validate 报告与实验记录",
+      "milestone": "M3",
+      "owner_role": "全栈",
+      "owner_name": "Codex（全栈）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T21",
+        "T07"
+      ],
+      "requirements": [
+        "VAL-003",
+        "VAL-004",
+        "VAL-005"
+      ],
+      "deliverable": "计数/百分点、来源变化、限制和历史轮次",
+      "definition_of_done": "小样本不夸大，负向/无变化保留，不自动晋升规则。",
+      "implementation_files": [
+        "backend/app/modules/single_prompt_v2/retest.py",
+        "frontend/src/App.tsx",
+        "backend/app/modules/analytics"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "5人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需接入 release 且需修复"
+    },
+    {
+      "id": "T23",
+      "title": "三类真实场景交付验收",
+      "milestone": "M4",
+      "owner_role": "产品/验收",
+      "owner_name": "产品负责人（验收）/Codex（支持）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T19",
+        "T22"
+      ],
+      "requirements": [
+        "E2E-01",
+        "E2E-02",
+        "E2E-03"
+      ],
+      "deliverable": "三类样本、输入版本、输出与 QA 证据",
+      "definition_of_done": "每类均有针对性行动和具体稿件；所有结果与输入可追溯。",
+      "implementation_files": [
+        "docs/geo-v1.0/17_验收矩阵.md",
+        "docs/geo-v1.0/acceptance_cases.json",
+        "backend/tests",
+        "frontend/src"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "4人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "未验收"
+    },
+    {
+      "id": "T24",
+      "title": "真实发布复测闭环验收",
+      "milestone": "M4",
+      "owner_role": "产品/验收",
+      "owner_name": "产品负责人（业务操作）/Codex（支持）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T23"
+      ],
+      "requirements": [
+        "E2E-04"
+      ],
+      "deliverable": "实际发布记录、快照、复测样本和结果",
+      "definition_of_done": "完整链路可回溯，结果如实，不以必须提升作为通过条件。",
+      "implementation_files": [
+        "docs/geo-v1.0/17_验收矩阵.md",
+        "backend/app/modules/single_prompt_v2/execution.py",
+        "backend/app/modules/single_prompt_v2/retest.py"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "2人日工程支持 + 真实发布观察窗口",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "未验收"
+    },
+    {
+      "id": "T25",
+      "title": "运行恢复与交付检查",
+      "milestone": "M4",
+      "owner_role": "开发/验收",
+      "owner_name": "Codex（开发/验收）",
+      "status": "WAITING_DEPENDENCIES",
+      "depends_on": [
+        "T24",
+        "T02"
+      ],
+      "requirements": [
+        "OPS-001",
+        "OPS-002",
+        "OPS-003",
+        "OPS-004",
+        "E2E-05"
+      ],
+      "deliverable": "启动、迁移、备份恢复说明和交付记录",
+      "definition_of_done": "真实环境验证完成；未跑项列为未验收，不用文档替代证据。",
+      "implementation_files": [
+        "backend/app/release_main.py",
+        "backend/app/release_schema.py",
+        "backend/app/core/release_database.py",
+        "backend/scripts/release_worker.py",
+        "backend/alembic_release"
+      ],
+      "acceptance_evidence": [
+        "docs/geo-v1.0/implementation-map.md"
+      ],
+      "estimate": "3人日",
+      "planned_start": "",
+      "planned_end": "",
+      "actual_start": "",
+      "actual_end": "",
+      "blocker": "",
+      "commit": "",
+      "audit_classification": "需修复"
+    }
+  ],
+  "implementation_verification_date": "2026-09-30",
+  "implementation_map": "docs/geo-v1.0/implementation-map.md"
+}

@@ -1,0 +1,960 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "id": "AC-BRD-01",
+      "module": "BRD",
+      "name": "创建品牌",
+      "given": "输入合法品牌名和域名",
+      "when": "保存并打开项目",
+      "then": "品牌信息一致，Monitor 空态提示添加 Prompt。",
+      "requirements": [
+        "BRD-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-BRD-02",
+      "module": "BRD",
+      "name": "缺少域名",
+      "given": "品牌名有效且域名为空",
+      "when": "保存并添加 Prompt",
+      "then": "允许继续，官方域名引用指标显示配置限制。",
+      "requirements": [
+        "BRD-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-BRD-03",
+      "module": "BRD",
+      "name": "歧义别名",
+      "given": "别名同时是常用词",
+      "when": "识别含该词的答案",
+      "then": "不能仅凭词面强制归入品牌。",
+      "requirements": [
+        "BRD-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-BRD-04",
+      "module": "BRD",
+      "name": "历史配置",
+      "given": "已有分析绑定配置 V1",
+      "when": "修改别名为 V2",
+      "then": "旧结果仍引用 V1，新任务绑定 V2。",
+      "requirements": [
+        "BRD-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-PRM-01",
+      "module": "PRM",
+      "name": "范围冻结",
+      "given": "已有九个选定 Run",
+      "when": "提交后再增加三个 Run",
+      "then": "旧分析范围仍为九个，新 Run 留在样本池。",
+      "requirements": [
+        "PRM-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-PRM-02",
+      "module": "PRM",
+      "name": "继续任务",
+      "given": "已有未完成分析",
+      "when": "点击继续",
+      "then": "复用原范围、来源和已完成计算。",
+      "requirements": [
+        "PRM-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-PRM-03",
+      "module": "PRM",
+      "name": "问题改版",
+      "given": "已有 V1 样本",
+      "when": "修改问题并采样",
+      "then": "新样本绑定 V2；趋势标识版本变化。",
+      "requirements": [
+        "PRM-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-PRM-04",
+      "module": "PRM",
+      "name": "意图适用",
+      "given": "概念解释 Prompt 推荐率为零",
+      "when": "计算机会建议",
+      "then": "不能仅据推荐率为零判为高机会。",
+      "requirements": [
+        "PRM-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-SAM-01",
+      "module": "SAM",
+      "name": "合法零品牌",
+      "given": "平台返回完整答案但没有目标品牌",
+      "when": "保存 Run",
+      "then": "采集成功，品牌观察为未出现。",
+      "requirements": [
+        "SAM-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-SAM-02",
+      "module": "SAM",
+      "name": "单 Run 重试",
+      "given": "一条采样失败",
+      "when": "仅重试该逻辑 Run",
+      "then": "成功结果只计一个样本，其他 Run 不重采。",
+      "requirements": [
+        "SAM-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-SAM-03",
+      "module": "SAM",
+      "name": "中途取消",
+      "given": "任务有部分完成",
+      "when": "取消剩余任务",
+      "then": "已完成数据保留，状态与数量准确。",
+      "requirements": [
+        "SAM-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-SAM-04",
+      "module": "SAM",
+      "name": "入口差异",
+      "given": "网页与 API 各有样本",
+      "when": "查看趋势和范围选择",
+      "then": "展示入口区别，不默认完全可比。",
+      "requirements": [
+        "SAM-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-SAM-05",
+      "module": "SAM",
+      "name": "外部等待",
+      "given": "采样凭证缺失或平台限流",
+      "when": "启动/恢复任务",
+      "then": "显示等待原因和恢复操作，不伪装采样结果，也不无限请求。",
+      "requirements": [
+        "SAM-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-SRC-01",
+      "module": "SRC",
+      "name": "登录墙",
+      "given": "抓取返回大量登录说明",
+      "when": "正文校验",
+      "then": "标为不可用内容，不切成支持品牌事实的 passages。",
+      "requirements": [
+        "SRC-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-SRC-02",
+      "module": "SRC",
+      "name": "抓取失败",
+      "given": "答案有引用 URL 但正文不可取",
+      "when": "继续 Optimize",
+      "then": "引用观察保留，策略仍生成并标注信息限制。",
+      "requirements": [
+        "SRC-001",
+        "SRC-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-SRC-03",
+      "module": "SRC",
+      "name": "补录正文",
+      "given": "用户提供真实正文",
+      "when": "保存并重新分析受影响项",
+      "then": "生成新快照和新结果，旧结果可追溯。",
+      "requirements": [
+        "SRC-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-SRC-04",
+      "module": "SRC",
+      "name": "补充资料",
+      "given": "系统获取品牌官网页面",
+      "when": "参与 Truth 判断",
+      "then": "标记为额外公开资料，不计入原答案引用数。",
+      "requirements": [
+        "SRC-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-MON-01",
+      "module": "MON",
+      "name": "分母与缺失",
+      "given": "选定九条，三条完成推荐判断且一条推荐",
+      "when": "展示指标",
+      "then": "显示 1/3 与覆盖 3/9；不能显示 1/9 或全集完成。",
+      "requirements": [
+        "MON-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-MON-02",
+      "module": "MON",
+      "name": "全零观察",
+      "given": "九条均完成且没有推荐",
+      "when": "展示指标",
+      "then": "显示 0/9，而非暂无数据。",
+      "requirements": [
+        "MON-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-MON-03",
+      "module": "MON",
+      "name": "宏平均",
+      "given": "两个 Prompt 分别 1/2 和 9/10",
+      "when": "项目聚合",
+      "then": "Macro 为 70%；若展示 Run 加权 83.3%须分开命名。",
+      "requirements": [
+        "MON-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-MON-04",
+      "module": "MON",
+      "name": "机会跳转",
+      "given": "用户点某机会",
+      "when": "打开 Optimize",
+      "then": "项目、Prompt、版本和选定范围准确，不触发其他 Prompt 计算。",
+      "requirements": [
+        "MON-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-MON-05",
+      "module": "MON",
+      "name": "行为口径",
+      "given": "三条答案分别为无关提及、有效候选和明确推荐",
+      "when": "计算基础行为",
+      "then": "Mention/Option/Recommendation 按定义分开，明确推荐计入候选与提及。",
+      "requirements": [
+        "MON-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPT-01",
+      "module": "OPT",
+      "name": "无知识库",
+      "given": "品牌及有效答案存在，Context 为空",
+      "when": "执行完整分析",
+      "then": "生成诊断、具体动作和交付，不出现配置知识库 Gate。",
+      "requirements": [
+        "OPT-001",
+        "OPT-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPT-02",
+      "module": "OPT",
+      "name": "低引用匹配",
+      "given": "答案有效而引用匹配低",
+      "when": "执行分析",
+      "then": "产出探索策略和具体内容，说明依据与验证条件。",
+      "requirements": [
+        "OPT-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPT-03",
+      "module": "OPT",
+      "name": "重复点击",
+      "given": "同范围任务已运行",
+      "when": "再次点击开始或刷新",
+      "then": "复用现有任务或幂等返回，不重复外调。",
+      "requirements": [
+        "OPT-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPT-04",
+      "module": "OPT",
+      "name": "恢复与版本",
+      "given": "中间阶段完成后服务重启",
+      "when": "继续任务并生成新结果",
+      "then": "已完成部分可复用，身份、范围和历史版本不串用。",
+      "requirements": [
+        "OPT-003",
+        "OPT-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPT-05",
+      "module": "OPT",
+      "name": "缓存缺失",
+      "given": "有效输入尚无分析缓存",
+      "when": "启动分析",
+      "then": "进入待计算后正常处理，不能直接显示失败或零事件。",
+      "requirements": [
+        "OPT-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-ANS-01",
+      "module": "ANS",
+      "name": "合法零事件",
+      "given": "答案只有步骤，没有品牌选择",
+      "when": "分析",
+      "then": "返回步骤和需求、零选择事件，继续进入策略。",
+      "requirements": [
+        "ANS-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-ANS-02",
+      "module": "ANS",
+      "name": "否定推荐",
+      "given": "答案明确不建议使用品牌 A",
+      "when": "分类",
+      "then": "不能计为正向推荐。",
+      "requirements": [
+        "ANS-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-ANS-03",
+      "module": "ANS",
+      "name": "归属正确",
+      "given": "答案为竞品 B 给出某优势",
+      "when": "绑定理由",
+      "then": "不得计为目标品牌优势。",
+      "requirements": [
+        "ANS-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-ANS-04",
+      "module": "ANS",
+      "name": "原文可定位",
+      "given": "用户打开一条策略依据",
+      "when": "跳转答案单位",
+      "then": "正确定位当前 Run 原文及上下文。",
+      "requirements": [
+        "ANS-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-ANS-05",
+      "module": "ANS",
+      "name": "答案事实未核实",
+      "given": "答案声称品牌有某项能力，尚无证明",
+      "when": "输出答案分析",
+      "then": "记录这是答案中的声称，并交给 Truth 判断，不直接变为产品事实。",
+      "requirements": [
+        "ANS-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-CIT-01",
+      "module": "CIT",
+      "name": "弱匹配",
+      "given": "答案谈能力 A，引用只有泛介绍",
+      "when": "分析关系",
+      "then": "返回低对应或 RELATED/NONE，并仍提供可行动的支撑缺口。",
+      "requirements": [
+        "CIT-002",
+        "CIT-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-CIT-02",
+      "module": "CIT",
+      "name": "正文缺失",
+      "given": "有引用观察但来源无法取得",
+      "when": "分析",
+      "then": "保留引用平台，证据关系 UNKNOWN；不假装 NONE。",
+      "requirements": [
+        "CIT-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-CIT-03",
+      "module": "CIT",
+      "name": "补充证据",
+      "given": "非原引用官网支持该事实",
+      "when": "展示证据",
+      "then": "事实可消费，但原答案引用统计不增长。",
+      "requirements": [
+        "CIT-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-CIT-04",
+      "module": "CIT",
+      "name": "未评估关系",
+      "given": "部分关系尚未处理",
+      "when": "显示统计",
+      "then": "未评估单列，不混入 NONE 或支持率分母。",
+      "requirements": [
+        "CIT-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-CIT-05",
+      "module": "CIT",
+      "name": "召回差异",
+      "given": "两条理由分别只有一个相关片段和多个相关来源",
+      "when": "进行召回",
+      "then": "不为凑固定片段数加入无关内容；候选由相关性及已声明预算决定。",
+      "requirements": [
+        "CIT-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-TRU-01",
+      "module": "TRU",
+      "name": "自动可用事实",
+      "given": "当前官方资料明确支持原子能力且条件一致",
+      "when": "投影资格",
+      "then": "可进入相应公开稿，不要求必经人工确认。",
+      "requirements": [
+        "TRU-002",
+        "TRU-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-TRU-02",
+      "module": "TRU",
+      "name": "复合能力",
+      "given": "资料只支持复合句中的一部分",
+      "when": "拆分并生成",
+      "then": "只使用已支持部分，其他部分另行处理。",
+      "requirements": [
+        "TRU-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-TRU-03",
+      "module": "TRU",
+      "name": "竞品外推",
+      "given": "竞品具有能力但目标品牌未知",
+      "when": "核对 Truth",
+      "then": "目标保持 UNKNOWN，不能从竞品外推。",
+      "requirements": [
+        "TRU-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-TRU-04",
+      "module": "TRU",
+      "name": "空上下文",
+      "given": "ContextProvider 返回 EMPTY",
+      "when": "完成优化",
+      "then": "仍产出针对性行动和具体稿件，无知识库阻断。",
+      "requirements": [
+        "TRU-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-TRU-05",
+      "module": "TRU",
+      "name": "推断不升级",
+      "given": "模型仅从竞品类比推断目标能力",
+      "when": "投影公开使用资格",
+      "then": "保持待核实，不能把推断变成有来源证明的公开事实。",
+      "requirements": [
+        "TRU-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-STR-01",
+      "module": "STR",
+      "name": "低匹配行动",
+      "given": "引用不充分支持答案但需求清晰",
+      "when": "编译策略",
+      "then": "仍输出基于需求的具体动作、适配渠道和验证安排。",
+      "requirements": [
+        "STR-001",
+        "STR-002",
+        "STR-005"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-STR-02",
+      "module": "STR",
+      "name": "资产未知",
+      "given": "未登记场景页",
+      "when": "编译资产动作",
+      "then": "先检查已知资产；交付具体方案及条件，不盲目新增重复页。",
+      "requirements": [
+        "STR-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-STR-03",
+      "module": "STR",
+      "name": "渠道选择",
+      "given": "引用平台多但不适合可执行交付",
+      "when": "选择渠道",
+      "then": "说明取舍，不按引用次数硬选主渠道。",
+      "requirements": [
+        "STR-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-STR-04",
+      "module": "STR",
+      "name": "事实受限",
+      "given": "一个动作依赖未知品牌能力",
+      "when": "生成最终计划",
+      "then": "自动调整或替换动作，仍有有用的具体交付。",
+      "requirements": [
+        "STR-001",
+        "STR-005"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-EXE-01",
+      "module": "EXE",
+      "name": "具体交付",
+      "given": "策略为修改场景页",
+      "when": "编译",
+      "then": "提供可替换的标题、正文或对应区块，而不只有写作建议。",
+      "requirements": [
+        "EXE-001",
+        "EXE-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-EXE-02",
+      "module": "EXE",
+      "name": "新增虚假承诺",
+      "given": "模型稿扩大了已支持能力",
+      "when": "自动 QA",
+      "then": "定位并改写该表述，保留其余有效内容。",
+      "requirements": [
+        "EXE-003",
+        "EXE-005"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-EXE-03",
+      "module": "EXE",
+      "name": "材料缺失",
+      "given": "动作涉及案例但无真实数据",
+      "when": "编译可发布稿",
+      "then": "不编造案例数字；调整表达，另列材料任务。",
+      "requirements": [
+        "EXE-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-EXE-04",
+      "module": "EXE",
+      "name": "版本资格",
+      "given": "已合格草稿被改入新价格",
+      "when": "保存",
+      "then": "生成新版本并重新检查，不能继承旧资格。",
+      "requirements": [
+        "EXE-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-EXE-05",
+      "module": "EXE",
+      "name": "修复预算耗尽",
+      "given": "生成检查失败且已到明确调用预算",
+      "when": "继续任务",
+      "then": "停止隐式外调，显示可恢复技术状态；不能用空草稿宣告成功。",
+      "requirements": [
+        "EXE-005"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-PUB-01",
+      "module": "PUB",
+      "name": "最小登记",
+      "given": "已有合格执行稿",
+      "when": "只提交 URL 与发布时间",
+      "then": "策略与来源自动关联，不要求重复填写。",
+      "requirements": [
+        "PUB-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-PUB-02",
+      "module": "PUB",
+      "name": "正文修改",
+      "given": "实际页面改掉了核心事实",
+      "when": "自动比较",
+      "then": "明确差异并对新表述做必要检查，保留实际快照。",
+      "requirements": [
+        "PUB-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-PUB-03",
+      "module": "PUB",
+      "name": "页面不可抓取",
+      "given": "发布 URL 有效但抓取受限",
+      "when": "登记",
+      "then": "保存限制并允许复测，不能伪称页面已核验。",
+      "requirements": [
+        "PUB-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-PUB-04",
+      "module": "PUB",
+      "name": "重复登记",
+      "given": "同干预同页面相同版本已保存",
+      "when": "重试提交",
+      "then": "不重复创建同一次发布；实际更新允许新版本。",
+      "requirements": [
+        "PUB-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-VAL-01",
+      "module": "VAL",
+      "name": "小样本增加",
+      "given": "基线 0/9，复测 1/9",
+      "when": "生成报告",
+      "then": "正确展示计数和百分点，描述本轮观察，不自动判定策略有效。",
+      "requirements": [
+        "VAL-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-VAL-02",
+      "module": "VAL",
+      "name": "入口变化",
+      "given": "基线网页端，复测 API",
+      "when": "比较",
+      "then": "提示条件变化，不输出无条件的同口径提升。",
+      "requirements": [
+        "VAL-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-VAL-03",
+      "module": "VAL",
+      "name": "新引用",
+      "given": "复测引用了新发布 URL",
+      "when": "评价",
+      "then": "记录来源采用，不能直接宣布推荐变化由该页导致。",
+      "requirements": [
+        "VAL-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-VAL-04",
+      "module": "VAL",
+      "name": "负向记录",
+      "given": "一轮效果下降",
+      "when": "保存和查看实验历史",
+      "then": "保留真实结果，不剔除以美化规则效果。",
+      "requirements": [
+        "VAL-005"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-VAL-05",
+      "module": "VAL",
+      "name": "指标实现复用",
+      "given": "相同范围与相同指标版本",
+      "when": "分别在 Monitor 与 Validate 查询",
+      "then": "计数、分母、未知处理一致，只有展示上下文不同。",
+      "requirements": [
+        "VAL-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-COR-01",
+      "module": "COR",
+      "name": "无人工路径",
+      "given": "用户从未点击审核",
+      "when": "运行完整优化",
+      "then": "系统仍交付具体稿件。",
+      "requirements": [
+        "COR-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-COR-02",
+      "module": "COR",
+      "name": "局部事实修改",
+      "given": "仅一条 Truth 发生改变",
+      "when": "重新投影",
+      "then": "相关行动更新，其他答案与来源不重复计算。",
+      "requirements": [
+        "COR-002",
+        "COR-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-COR-03",
+      "module": "COR",
+      "name": "版本冲突",
+      "given": "编辑基于旧版本",
+      "when": "提交纠错",
+      "then": "提示冲突，不静默覆盖新版本。",
+      "requirements": [
+        "COR-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-COR-04",
+      "module": "COR",
+      "name": "保留实验",
+      "given": "已发布旧稿后发生纠错",
+      "when": "查看旧复测",
+      "then": "仍能看到当时事实与内容，另标后续变化。",
+      "requirements": [
+        "COR-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPS-01",
+      "module": "OPS",
+      "name": "GET 零业务写入",
+      "given": "系统已有结果",
+      "when": "连续刷新和查询",
+      "then": "不创建新分析、发布记录或外调。",
+      "requirements": [
+        "OPS-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPS-02",
+      "module": "OPS",
+      "name": "跨项目访问",
+      "given": "当前身份/项目 A",
+      "when": "请求 B 的对象",
+      "then": "拒绝或不可见，不返回 B 内容。",
+      "requirements": [
+        "OPS-002"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPS-03",
+      "module": "OPS",
+      "name": "重启持久",
+      "given": "任务已有阶段结果",
+      "when": "重启服务并继续",
+      "then": "状态与范围恢复，不出现重复成功产物。",
+      "requirements": [
+        "OPS-001"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPS-04",
+      "module": "OPS",
+      "name": "恢复演练",
+      "given": "可用备份及迁移脚本",
+      "when": "在隔离环境恢复",
+      "then": "能读回配置、范围、结果和发布/复测关联；记录实际证据。",
+      "requirements": [
+        "OPS-004"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "AC-OPS-05",
+      "module": "OPS",
+      "name": "技术基线核查",
+      "given": "真实启动配置和数据库可访问",
+      "when": "执行 M0 检查",
+      "then": "记录实际技术栈、数据库设置、写入模式与迁移值，发现偏差时明确修复而不建第二主链。",
+      "requirements": [
+        "OPS-003"
+      ],
+      "status": "NOT_RUN",
+      "evidence": ""
+    }
+  ],
+  "end_to_end": [
+    {
+      "id": "E2E-01",
+      "name": "引用支撑充分的自动交付",
+      "given": "使用真实品牌、Prompt、答案和可取来源，知识库为空且不执行人工审核。",
+      "when": "采样/选范围→Monitor→Optimize→自动 QA。",
+      "then": "得到针对当前问题的具体行动和可用稿件；事实和来源可定位；全范围状态准确。",
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "E2E-02",
+      "name": "低匹配引用仍有具体行动",
+      "given": "使用真实有效答案及低匹配/泛化引用；不得把正文篡改后冒称真实。",
+      "when": "分析答案需求、引用关系、渠道，再生成探索行动和稿件。",
+      "then": "非空且与问题对应；说明探索假设和验证条件；不谎称引用支持或因果已知。",
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "E2E-03",
+      "name": "品牌事实部分缺失仍交付",
+      "given": "使用存在未知原子能力、同时仍有可用信息的真实输入。",
+      "when": "Truth 投影→策略改写/替换→具体稿→QA。",
+      "then": "未知能力不写成确定宣传；其他有依据内容形成可发布版本；不能只返回待补清单。",
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "E2E-04",
+      "name": "真实发布与复测闭环",
+      "given": "选取真实执行稿，在用户授权范围内实际发布/更新；保留实际内容与时间。",
+      "when": "登记 URL→抓取快照/差异→固定复测→Monitor 同口径比较。",
+      "then": "从输入到发布和复测全程可追溯；正向、负向或无变化均如实；真实发布尚未发生时状态为未验收。",
+      "status": "NOT_RUN",
+      "evidence": ""
+    },
+    {
+      "id": "E2E-05",
+      "name": "运行和数据语义恢复",
+      "given": "已有多项目或可验证归属样本、运行任务、结果和发布复测关联。",
+      "when": "重复提交、查询、重启、恢复备份及边界访问。",
+      "then": "无额外业务写入或重复外调，无跨项目数据泄漏；范围/版本/历史关联保持。",
+      "status": "NOT_RUN",
+      "evidence": ""
+    }
+  ]
+}

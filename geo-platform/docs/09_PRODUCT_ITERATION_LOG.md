@@ -4683,3 +4683,13 @@ hash 复验。当前 ResultVersion 保留 19 条 `ANALYSIS_FAILED` 终态，但�
 
 打开或刷新页面不会创建审核记录。只有用户完成全部未复用判断并显式提交，系统才追加独立 Review；
 原机器 Result、3 条失败 Citation、9-Run 范围和 Strategy 均不会因此被修改或推进。
+
+### 2026-09-30：GEO 1.0 产品文档包完成真实仓库核查
+
+新的 1.0 产品基线固定为 Monitor、Optimize、Validate，并将人工定位为可选纠错而非每次运行的默认生产
+Gate。T00 没有据此推倒现有 V2，而是逐项核对真实 release 控制面。
+
+核查确认：采样、来源准备、Answer 安全准入、Citation Contribution、目标品牌事实和策略投影具备大量可复用
+实现；自动 Optimize 编排和 release 权威 Monitor 指标尚未形成；Execution、Publication、Retest 虽有代码，
+但没有进入 release schema/router，不能当作正式交付。详细分类和验证证据记录在
+`docs/geo-v1.0/implementation-map.md`。69 条功能场景和 5 条端到端场景仍保持未验收状态。

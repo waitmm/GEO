@@ -468,6 +468,14 @@ class SinglePromptExecutionProposalRevisionCreate(BaseModel):
     edit: dict[str, Any]
 
 
+class SinglePromptExecutionDeliverableCreate(BaseModel):
+    project_id: int
+    prompt_id: int
+    base_result_version: str = Field(min_length=1, max_length=96)
+    base_result_hash: str = Field(min_length=64, max_length=64)
+    reviewable_set_hash: str = Field(min_length=64, max_length=64)
+
+
 class SinglePromptExecutionConfirmationCreate(BaseModel):
     project_id: int
     prompt_id: int

@@ -30,6 +30,7 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptStrategyPriorityRevisionCreate,
     SinglePromptStrategyReviewCreate,
     SinglePromptExecutionConfirmationCreate,
+    SinglePromptExecutionDeliverableCreate,
     SinglePromptExecutionProposalCreate,
     SinglePromptExecutionProposalRevisionCreate,
     SinglePromptPublicationCreate,
@@ -48,6 +49,7 @@ from app.modules.single_prompt_v2.source_preparation import (
 from app.modules.single_prompt_v2.execution import (
     confirm_execution_proposal,
     create_execution_proposal,
+    generate_complete_execution_deliverable,
     get_execution_proposal_status,
     record_publication,
     revise_execution_proposal,
@@ -770,6 +772,33 @@ def revise_execution(
         base_result_hash=payload.base_result_hash, reviewable_set_hash=payload.reviewable_set_hash,
         editor=payload.editor, edit=payload.edit,
     )
+    return get_execution_proposal_status(
+        db, proposal_id=proposal_id, strategy_id=strategy_id,
+        project_id=payload.project_id, prompt_id=payload.prompt_id,
+    )
+
+
+@router.post("/strategies/{strategy_id}/execution-proposals/{proposal_id}/results/{result_version}/deliverable")
+def generate_execution_deliverable(
+    strategy_id: str,
+    proposal_id: str,
+    result_version: str,
+    payload: SinglePromptExecutionDeliverableCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    if result_version != payload.base_result_version:
+        raise HTTPException(status_code=409, detail="路径执行方案版本与提交版本不一致")
+    get_execution_proposal_status(
+        db, proposal_id=proposal_id, strategy_id=strategy_id,
+        project_id=payload.project_id, prompt_id=payload.prompt_id,
+    )
+    _result, created = generate_complete_execution_deliverable(
+        db, proposal_id=proposal_id, base_result_version=result_version,
+        base_result_hash=payload.base_result_hash, reviewable_set_hash=payload.reviewable_set_hash,
+    )
+    if not created:
+        response.status_code = 200
     return get_execution_proposal_status(
         db, proposal_id=proposal_id, strategy_id=strategy_id,
         project_id=payload.project_id, prompt_id=payload.prompt_id,

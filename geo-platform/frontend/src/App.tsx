@@ -292,6 +292,9 @@ function v2ExecutionValidationLabel(code: string) {
     PRODUCT_TRUTH_SECTION_REQUIRED: "至少保留一个品牌事实 Section",
     INVALID_PUBLIC_SECTION_SELECTION: "公开内容 Section 选择无效",
     UPDATE_MANAGED_NOT_ENABLED: "当前仅支持新建资产",
+    FINAL_ASSET_OPERATION_REQUIRED: "请确认是更新已核实的现有资产，还是在完整核查后新建",
+    MANAGED_ASSET_REQUIRED_FOR_UPDATE: "更新前需确认现有资产的归属、版本和编辑权限",
+    ASSET_OPERATION_SELECTION_MISMATCH: "资产操作与当前选择不一致",
   };
   return labels[code] || code;
 }
@@ -3276,9 +3279,37 @@ export default function App() {
       setV2Execution(status);
       persistV2ExecutionIdentity(status);
       hydrateV2ExecutionEdit(status);
-      message.success("执行内容骨架已生成；尚未确认，也尚未发布");
+      message.success("完整执行方案与稿件已生成；尚未确认，也尚未发布");
     } catch (error: any) {
       message.error(error.message || "生成执行方案失败");
+    } finally {
+      setV2ExecutionLoading(false);
+    }
+  }
+
+  async function generateV2CompleteDeliverable() {
+    if (!v2Execution?.result || !v2Strategy || !projectId || !activePromptId) return;
+    setV2ExecutionLoading(true);
+    try {
+      const result = v2Execution.result;
+      const status = await api.generateSinglePromptV2ExecutionDeliverable(
+        v2Strategy.strategy.strategy_id,
+        v2Execution.proposal.proposal_id,
+        result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          base_result_version: result.result_version,
+          base_result_hash: result.output_hash,
+          reviewable_set_hash: result.reviewable_set_hash,
+        },
+      );
+      setV2Execution(status);
+      persistV2ExecutionIdentity(status);
+      hydrateV2ExecutionEdit(status);
+      message.success("已生成完整稿件并完成自动质量检查");
+    } catch (error: any) {
+      message.error(error.message || "生成完整稿件失败");
     } finally {
       setV2ExecutionLoading(false);
     }
@@ -3300,7 +3331,7 @@ export default function App() {
           base_result_hash: result.output_hash,
           reviewable_set_hash: result.reviewable_set_hash,
           editor: v2ExecutionEditor.trim(),
-          edit: { ...v2ExecutionEdit, asset_operation: "CREATE_NEW" },
+          edit: { ...v2ExecutionEdit },
         },
       );
       setV2Execution(status);
@@ -7041,34 +7072,77 @@ export default function App() {
                             : `${row.channel_label} · ${row.channel_role}`,
                       }))}
                     />
-                    <Button type="primary" icon={<FileText size={15} />} disabled={!v2ExecutionDirectionId} loading={v2ExecutionLoading} onClick={createV2ExecutionProposal}>生成执行内容骨架</Button>
+                    <Button type="primary" icon={<FileText size={15} />} disabled={!v2ExecutionDirectionId} loading={v2ExecutionLoading} onClick={createV2ExecutionProposal}>生成完整执行方案与稿件</Button>
                   </Space> : v2ExecutionOutput ? <Space direction="vertical" size={14} style={{ width: "100%" }}>
                     <Descriptions size="small" column={{ xs: 1, md: 3 }}>
                       <Descriptions.Item label="方案 ID"><Text code copyable>{v2Execution.proposal.proposal_id}</Text></Descriptions.Item>
                       <Descriptions.Item label="结果版本"><Text code>{v2Execution.result?.result_version}</Text></Descriptions.Item>
-                      <Descriptions.Item label="状态"><Tag color={v2ExecutionConfirmation ? "green" : v2ExecutionOutput.validation.status === "READY_FOR_CONFIRMATION" ? "blue" : "gold"}>{v2ExecutionConfirmation ? "已确认，待发布" : v2ExecutionOutput.validation.status === "READY_FOR_CONFIRMATION" ? "可确认" : "待补充"}</Tag></Descriptions.Item>
+                      <Descriptions.Item label="状态"><Tag color={v2ExecutionConfirmation ? "green" : v2ExecutionOutput.validation.status === "READY_FOR_CONFIRMATION" ? "blue" : v2ExecutionOutput.validation.status === "READY_FOR_BUSINESS_INPUT" ? "cyan" : "gold"}>{v2ExecutionConfirmation ? "已确认，待发布" : v2ExecutionOutput.validation.status === "READY_FOR_CONFIRMATION" ? "可确认" : v2ExecutionOutput.validation.status === "READY_FOR_BUSINESS_INPUT" ? "稿件完成，待发布信息" : "待补充"}</Tag></Descriptions.Item>
                       <Descriptions.Item label="策略方向">{v2ExecutionOutput.direction.direction_type === "FOUNDATION"
                         ? "权威事实基础"
                         : v2ExecutionOutput.direction.direction_type === "DISCOVERY"
                           ? "新增可核验问题解答资产"
                           : v2ExecutionOutput.direction.channel_label}</Descriptions.Item>
                       <Descriptions.Item label="策略渠道 Role">{v2ExecutionOutput.strategy_channel.channel_role || "无（本方向不指定引用渠道）"}</Descriptions.Item>
-                      <Descriptions.Item label="资产操作"><Tag color={v2ExecutionOutput.asset_operation === "CREATE_NEW" ? "blue" : "gold"}>{v2ExecutionOutput.asset_operation === "CREATE_NEW" ? "新建资产" : "待用户选择"}</Tag></Descriptions.Item>
+                      <Descriptions.Item label="资产操作"><Tag color={v2ExecutionOutput.asset_operation === "CREATE_NEW" ? "blue" : v2ExecutionOutput.asset_operation === "UPDATE_EXISTING" ? "green" : "gold"}>{v2ExecutionOutput.asset_operation === "CREATE_NEW" ? "新建资产" : v2ExecutionOutput.asset_operation === "UPDATE_EXISTING" ? "更新已有资产" : "先核查，再更新或新建"}</Tag></Descriptions.Item>
                     </Descriptions>
+                    {!v2ExecutionOutput.publication_draft && <Alert type="warning" showIcon message="当前仍是旧内容骨架" description={<Button type="primary" icon={<FileText size={15} />} loading={v2ExecutionLoading} onClick={generateV2CompleteDeliverable}>生成完整稿件并自动检查</Button>} />}
                     {v2ExecutionOutput.direction.direction_type === "FOUNDATION" && <Alert type="info" showIcon message="Foundation 与渠道 Role 保持分离" description="下面选择的官网产品页、功能页或帮助中心只是执行目的地，不会把策略改成 OFFICIAL_SITE PRIMARY。" />}
                     {!v2Execution.applicability.is_current_input && <Alert type="warning" showIcon message="执行输入已经过期" description="历史方案和发布记录仍保留，但该版本不能继续授权新编辑或确认。" />}
+
+                    {v2ExecutionOutput.asset_resolution && <>
+                      <Divider orientation="left">系统资产与渠道决策</Divider>
+                      <Descriptions size="small" column={{ xs: 1, md: 2 }}>
+                        <Descriptions.Item label="资产类型">{v2ExecutionOutput.asset_resolution.recommended_asset_type === "HELP_DOC" ? "帮助文章 / 问题解答页" : v2ExecutionOutput.asset_resolution.recommended_asset_type}</Descriptions.Item>
+                        <Descriptions.Item label="具体问题">{v2ExecutionOutput.publication_draft?.title}</Descriptions.Item>
+                        <Descriptions.Item label="建议发布渠道">{v2ExecutionOutput.channel_resolution?.publication_channel_label}</Descriptions.Item>
+                        <Descriptions.Item label="建议位置">{v2ExecutionOutput.channel_resolution?.recommended_surface === "OWNED_HELP_CENTER" ? "官网帮助中心或资讯中心" : v2ExecutionOutput.channel_resolution?.recommended_surface}</Descriptions.Item>
+                        <Descriptions.Item label="渠道理由" span={2}>{v2ExecutionOutput.channel_resolution?.reason}</Descriptions.Item>
+                        <Descriptions.Item label="资产判断" span={2}>{v2ExecutionOutput.asset_resolution.reason}</Descriptions.Item>
+                      </Descriptions>
+                      <Table
+                        rowKey="candidate_id"
+                        size="small"
+                        pagination={false}
+                        locale={{ emptyText: "当前固定范围没有已观察到的目标品牌页面；这不等于资产不存在" }}
+                        dataSource={v2ExecutionOutput.asset_resolution.existing_asset_checks || []}
+                        columns={[
+                          { title: "已观察页面", dataIndex: "title" },
+                          { title: "URL", dataIndex: "url", render: (value: string) => <Link href={value} target="_blank">{value}</Link> },
+                          { title: "当前资格", render: () => <Tag color="gold">已观察，尚未纳管</Tag> },
+                          { title: "编辑权限", render: (_: unknown, row: any) => <Tag>{row.editable_permission === "UNVERIFIED" ? "待确认" : row.editable_permission}</Tag> },
+                        ]}
+                      />
+                      <div className="v2-strategy-list">{(v2ExecutionOutput.asset_resolution.conditions || []).map((row: any, index: number) => <div className="v2-strategy-list-row" key={`asset-condition-${index}`}><Tag color={row.operation === "UPDATE_EXISTING" ? "green" : "blue"}>{row.operation === "UPDATE_EXISTING" ? "更新" : "新建"}</Tag><Text>{row.when}</Text></div>)}</div>
+                    </>}
 
                     <Divider orientation="left">资产制作简报</Divider>
                     <Row gutter={[12, 12]}>
                       <Col xs={24} md={8}><Text type="secondary">资产类型</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_type || undefined} options={v2ExecutionOutput.asset_type_candidates.map((row) => ({ label: row.label, value: row.asset_type }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_type: value, publication_surface: null }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">计划发布位置</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.publication_surface || undefined} options={v2ExecutionOutput.publication_surface_candidates.filter((row) => row.asset_type === v2ExecutionEdit.asset_type).map((row) => ({ label: row.label, value: row.surface_key }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, publication_surface: value }))} /></Col>
-                      <Col xs={24} md={8}><Text type="secondary">方案范围</Text><Input style={{ marginTop: 5 }} value="完整承接已确认方向" disabled /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">最终资产操作</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_operation || "CONDITIONAL"} options={[
+                        { value: "CONDITIONAL", label: "先核查已有资产" },
+                        { value: "CREATE_NEW", label: "核查后确认新建" },
+                        { value: "UPDATE_EXISTING", label: "更新已有资产（需先确认纳管）", disabled: true },
+                      ]} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_operation: value }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">发布账号</Text><Input style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_account || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_account: event.target.value }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">栏目或拟建页面位置</Text><Input style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_location || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_location: event.target.value }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">账号可操作性</Text><div style={{ marginTop: 9 }}><Checkbox checked={v2ExecutionEdit.account_control_status === "USER_REPORTED_CONTROL"} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, account_control_status: event.target.checked ? "USER_REPORTED_CONTROL" : "UNVERIFIED" }))}>用户确认可操作</Checkbox></div></Col>
                     </Row>
 
-                    <Divider orientation="left">公开内容骨架</Divider>
+                    {v2ExecutionOutput.publication_draft && <>
+                      <Divider orientation="left">完整可用稿件</Divider>
+                      <Alert type="success" showIcon message="正文已生成并完成实际文本检查" description="可直接复制正文；内部假设、权限核对和未评估引用没有混入发布内容。" />
+                      <Typography.Paragraph copyable={{ text: v2ExecutionOutput.publication_draft.body_markdown }} style={{ whiteSpace: "pre-wrap", marginTop: 12, maxHeight: 620, overflow: "auto", padding: 16, background: "#fafafa", border: "1px solid #e5e7eb" }}>{v2ExecutionOutput.publication_draft.body_markdown}</Typography.Paragraph>
+                      {v2ExecutionOutput.brand_association && <Descriptions size="small" column={1}>
+                        <Descriptions.Item label="品牌关联依据">{v2ExecutionOutput.brand_association.action_hypothesis}</Descriptions.Item>
+                        <Descriptions.Item label="已观察事实">{v2ExecutionOutput.brand_association.observed_fact}</Descriptions.Item>
+                        <Descriptions.Item label="验证条件">{v2ExecutionOutput.brand_association.validation_condition}</Descriptions.Item>
+                        <Descriptions.Item label="事实边界">{v2ExecutionOutput.brand_association.claim_boundary}</Descriptions.Item>
+                      </Descriptions>}
+                    </>}
+
+                    <Divider orientation="left">稿件结构与依据</Divider>
                     <Input value={v2ExecutionEdit.title || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, title: event.target.value }))} addonBefore="安全标题" />
                     <Checkbox.Group
                       style={{ width: "100%" }}
@@ -7102,7 +7176,26 @@ export default function App() {
                     </Descriptions>
                     <Space wrap>{(v2ExecutionOutput.baseline.collector_capability_snapshot?.warnings || []).map((code: string) => <Tag color="gold" key={code}>{code}</Tag>)}</Space>
 
-                    {v2ExecutionOutput.validation.errors.length > 0 && <Alert type="warning" showIcon message="方案尚不能确认" description={v2ExecutionOutput.validation.errors.map(v2ExecutionValidationLabel).join("；")} />}
+                    {v2ExecutionOutput.automatic_qa && <>
+                      <Divider orientation="left">自动质量检查</Divider>
+                      <Alert type={v2ExecutionOutput.automatic_qa.status === "READY" ? "success" : "warning"} showIcon message={v2ExecutionOutput.automatic_qa.status === "READY" ? "实际稿件已通过内容 QA" : "稿件仍需修复"} description={`内容资格：${v2ExecutionOutput.automatic_qa.status}；发布资格：${v2ExecutionOutput.automatic_qa.publication_eligibility}`} />
+                      <Space wrap style={{ marginTop: 10 }}>{Object.entries(v2ExecutionOutput.automatic_qa.checks || {}).map(([key, value]) => <Tag color={value === "PASS" ? "green" : "red"} key={key}>{key} · {String(value)}</Tag>)}</Space>
+                      {(v2ExecutionOutput.repair_history || []).map((row: any) => <div className="v2-strategy-list-row" key={row.code}><Tag color="blue">已修复</Tag><Text>{row.detail}</Text></div>)}
+                    </>}
+
+                    {(v2ExecutionOutput.evidence_processing_audit?.historical_failures || []).length > 0 && <>
+                      <Divider orientation="left">3 条未评估引用的当前处置</Divider>
+                      <Alert type="info" showIcon message="这些对象未计入已完成证据，也没有进入本稿件" description="它们保留当前失败原因；只有未来稿件确实依赖对应来源时才定点重评，不做全库重算。" />
+                      <Table rowKey="citation_id" size="small" pagination={false} dataSource={v2ExecutionOutput.evidence_processing_audit?.historical_failures || []} columns={[
+                        { title: "引用", dataIndex: "citation_id" },
+                        { title: "当前状态", render: () => <Tag color="red">当前不可消费</Tag> },
+                        { title: "原因", dataIndex: "failure_code" },
+                        { title: "本稿使用", render: () => <Tag>未使用</Tag> },
+                        { title: "下一步", render: () => "未来确有依赖时定点重评" },
+                      ]} />
+                    </>}
+
+                    {v2ExecutionOutput.validation.errors.length > 0 && <Alert type="warning" showIcon message={v2ExecutionOutput.validation.content_delivery_status === "READY" ? "稿件已完成，发布前还需要最少业务信息" : "方案尚不能确认"} description={v2ExecutionOutput.validation.errors.map(v2ExecutionValidationLabel).join("；")} />}
                     {v2Execution.allowed_operations.includes("REVISE") && <Row gutter={[12, 12]} align="middle">
                       <Col xs={24} md={8}><Input value={v2ExecutionEditor} onChange={(event) => setV2ExecutionEditor(event.target.value)} placeholder="执行人/确认人" /></Col>
                       <Col xs={24} md={16}><Space wrap><Button icon={<ListChecks size={15} />} loading={v2ExecutionLoading} onClick={saveV2ExecutionRevision}>保存并重新校验</Button>{v2Execution.allowed_operations.includes("CONFIRM") && <Popconfirm title="确认当前执行方案？" description="确认后仍需人工发布并单独登记。" okText="确认" cancelText="取消" onConfirm={confirmV2ExecutionProposal}><Button type="primary" icon={<ShieldCheck size={15} />} loading={v2ExecutionLoading}>确认执行方案</Button></Popconfirm>}</Space></Col>

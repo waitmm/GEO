@@ -198,6 +198,9 @@ export const api = {
     project_id: number; prompt_id: number; base_result_version: string; base_result_hash: string;
     reviewable_set_hash: string; editor: string; edit: Record<string, any>;
   }) => request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/strategies/${encodeURIComponent(strategyId)}/execution-proposals/${encodeURIComponent(proposalId)}/results/${encodeURIComponent(resultVersion)}/revisions`, { method: "POST", body: JSON.stringify(payload) }),
+  generateSinglePromptV2ExecutionDeliverable: (strategyId: string, proposalId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; base_result_version: string; base_result_hash: string; reviewable_set_hash: string;
+  }) => request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/strategies/${encodeURIComponent(strategyId)}/execution-proposals/${encodeURIComponent(proposalId)}/results/${encodeURIComponent(resultVersion)}/deliverable`, { method: "POST", body: JSON.stringify(payload) }),
   confirmSinglePromptV2ExecutionProposal: (strategyId: string, proposalId: string, resultVersion: string, payload: {
     project_id: number; prompt_id: number; result_hash: string; reviewable_set_hash: string;
     idempotency_key: string; confirmer: string; note: string;

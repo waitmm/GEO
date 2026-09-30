@@ -971,16 +971,24 @@ export type SinglePromptV2ExecutionStatus = {
     output: {
       direction: SinglePromptV2StrategyDirection;
       strategy_channel: { channel_key: string | null; channel_label: string | null; channel_role: string | null; immutable: boolean };
-      asset_operation: "CREATE_NEW" | "CONDITIONAL";
+      deliverable_contract_version?: string;
+      asset_operation: "CREATE_NEW" | "UPDATE_EXISTING" | "CONDITIONAL";
+      asset_resolution?: Record<string, any>;
+      channel_resolution?: Record<string, any>;
       asset_type_candidates: Array<{ asset_type: string; label: string }>;
       publication_surface_candidates: Array<{ surface_key: string; label: string; asset_type: string }>;
       package_candidates: Array<{ package_key: string; label: string; direction_id: string; truth_ids: number[] }>;
       title_candidates: Array<{ title_id: string; title: string; truth_ids: number[] }>;
       public_content_candidates: Array<Record<string, any>>;
       selected_public_content: Array<Record<string, any>>;
+      publication_draft?: { deliverable_type: string; title: string; body_markdown: string; content_hash: string; sections: Array<Record<string, any>> };
+      brand_association?: Record<string, any>;
+      evidence_processing_audit?: Record<string, any>;
+      automatic_qa?: Record<string, any>;
+      repair_history?: Array<Record<string, any>>;
       internal_checklist: Array<{ code: string; detail: any } | string>;
       selection: {
-        asset_operation: "CREATE_NEW" | "CONDITIONAL";
+        asset_operation: "CREATE_NEW" | "UPDATE_EXISTING" | "CONDITIONAL";
         asset_type: string | null;
         package_key: string;
         publication_surface: string | null;
@@ -994,7 +1002,7 @@ export type SinglePromptV2ExecutionStatus = {
       baseline: Record<string, any>;
       limitations: any[];
       advisories: any[];
-      validation: { status: "READY_FOR_CONFIRMATION" | "NEEDS_HUMAN_SELECTION"; errors: string[]; validators: Record<string, string> };
+      validation: { status: "READY_FOR_CONFIRMATION" | "READY_FOR_BUSINESS_INPUT" | "NEEDS_HUMAN_SELECTION"; content_delivery_status?: string; publication_status?: string; errors: string[]; validators: Record<string, string> };
       boundary: Record<string, any>;
     };
     created_at: string;

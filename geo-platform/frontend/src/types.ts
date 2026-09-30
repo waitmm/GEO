@@ -632,19 +632,21 @@ export type SinglePromptV2CitationContributionListItem = {
 
 export type SinglePromptV2StrategyDirection = {
   direction_id: string;
-  direction_type: "FOUNDATION" | "CHANNEL";
-  channel_key: string | null;
-  channel_label: string | null;
-  channel_role: "PRIMARY" | "TEST" | null;
+  direction_type: "FOUNDATION" | "CHANNEL" | "MECHANISM" | "DISCOVERY";
+  channel_key?: string | null;
+  channel_label?: string | null;
+  channel_role?: "PRIMARY" | "TEST" | null;
   level: "ACTIONABLE" | "VERIFY_FIRST" | "OBSERVE" | "BLOCKED";
   reason_ids: string[];
   truth_ids: number[];
   evidence_relation_ids: string[];
-  rationale: string;
-  hypothesis: string | null;
-  effect_status: string;
-  priority_order: number | null;
-  priority_basis: string;
+  rationale?: string;
+  mechanism_gap?: string;
+  intervention_goal?: string;
+  hypothesis?: string | null;
+  effect_status?: string;
+  priority_order?: number | null;
+  priority_basis?: string;
 };
 
 export type SinglePromptV2StrategyReadiness = {
@@ -697,14 +699,18 @@ export type SinglePromptV2QualificationProjection = {
   scope_limitations: string[];
   object_qualifications: Array<Record<string, any>>;
   directions: Array<{
+    direction_id: string;
     strategy_id: string;
-    direction_type: "MECHANISM";
+    direction_type: "MECHANISM" | "DISCOVERY";
+    level: "ACTIONABLE";
     mechanism_gap: string;
     intervention_goal: string;
-    reason_id: string;
+    reason_id: string | null;
+    reason_ids: string[];
     reason_text: string;
     reason_run_ids: number[];
     truth_ids: number[];
+    evidence_relation_ids: string[];
     dependencies: Array<Record<string, any>>;
     eligibility_by_use: Record<string, string>;
     strategy_direction_eligibility: string;
@@ -720,10 +726,11 @@ export type SinglePromptV2QualificationProjection = {
     title: string;
     goal: string;
     asset_role: string;
-    asset_operation: "CREATE_NEW";
+    asset_operation: "CREATE_NEW" | "CONDITIONAL";
     asset_type_candidates: string[];
     channel_candidate: Record<string, any>;
     sections: Array<Record<string, any>>;
+    content_blocks?: Array<Record<string, any>>;
     claims: Array<Record<string, any>>;
     required_truth_ids: number[];
     required_evidence_ids: string[];
@@ -901,6 +908,9 @@ export type SinglePromptV2StrategyStatus = {
     validation_contract_version: string;
     input_snapshot_hash: string;
     status: string;
+    input_authority_type: "HUMAN_REVIEW" | "MACHINE_QUALIFICATION";
+    input_authority_id: string;
+    input_authority_hash: string;
   };
   result: null | {
     result_version: string;
@@ -913,6 +923,7 @@ export type SinglePromptV2StrategyStatus = {
       current_observation: Record<string, number>;
       themes: Array<Record<string, any>>;
       directions: SinglePromptV2StrategyDirection[];
+      execution_drafts?: Array<Record<string, any>>;
       foundation: SinglePromptV2StrategyReadiness["foundation"];
       needs_human_prioritization: boolean;
       unresolved: { blocked_directions: Array<Record<string, any>>; verification_items: Array<{ code: string; detail: string }> };
@@ -943,8 +954,11 @@ export type SinglePromptV2ExecutionStatus = {
     direction_id: string;
     strategy_result_version: string;
     strategy_result_hash: string;
-    strategy_review_id: string;
+    strategy_review_id: string | null;
     strategy_review_snapshot_hash: string;
+    input_authority_type: "HUMAN_REVIEW" | "MACHINE_QUALIFICATION";
+    input_authority_id: string;
+    input_authority_hash: string;
     input_snapshot_hash: string;
     status: string;
   };
@@ -957,16 +971,16 @@ export type SinglePromptV2ExecutionStatus = {
     output: {
       direction: SinglePromptV2StrategyDirection;
       strategy_channel: { channel_key: string | null; channel_label: string | null; channel_role: string | null; immutable: boolean };
-      asset_operation: "CREATE_NEW";
+      asset_operation: "CREATE_NEW" | "CONDITIONAL";
       asset_type_candidates: Array<{ asset_type: string; label: string }>;
       publication_surface_candidates: Array<{ surface_key: string; label: string; asset_type: string }>;
       package_candidates: Array<{ package_key: string; label: string; direction_id: string; truth_ids: number[] }>;
       title_candidates: Array<{ title_id: string; title: string; truth_ids: number[] }>;
       public_content_candidates: Array<Record<string, any>>;
       selected_public_content: Array<Record<string, any>>;
-      internal_checklist: Array<{ code: string; detail: any }>;
+      internal_checklist: Array<{ code: string; detail: any } | string>;
       selection: {
-        asset_operation: "CREATE_NEW";
+        asset_operation: "CREATE_NEW" | "CONDITIONAL";
         asset_type: string | null;
         package_key: string;
         publication_surface: string | null;

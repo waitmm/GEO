@@ -174,6 +174,9 @@ export const api = {
     project_id: number; prompt_id: number; idempotency_key: string; diagnosis_result_hash: string;
     reviewable_set_hash: string; review_id: string; review_snapshot_hash: string; input_projection_hash: string;
   }) => request<SinglePromptV2StrategyStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/strategies`, { method: "POST", body: JSON.stringify(payload) }),
+  createSinglePromptV2AutomaticStrategy: (analysisId: string, diagnosisId: string, resultVersion: string, payload: {
+    project_id: number; prompt_id: number; idempotency_key: string; expected_projection_hash: string;
+  }) => request<SinglePromptV2StrategyStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/results/${encodeURIComponent(resultVersion)}/automatic-strategies`, { method: "POST", body: JSON.stringify(payload) }),
   getSinglePromptV2Strategy: (analysisId: string, diagnosisId: string, strategyId: string, projectId: number, promptId: number) =>
     request<SinglePromptV2StrategyStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/strategies/${encodeURIComponent(strategyId)}?project_id=${projectId}&prompt_id=${promptId}`),
   reviseSinglePromptV2StrategyPriority: (analysisId: string, diagnosisId: string, strategyId: string, resultVersion: string, payload: {
@@ -186,7 +189,8 @@ export const api = {
   }) => request<SinglePromptV2StrategyStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/strategies/${encodeURIComponent(strategyId)}/results/${encodeURIComponent(resultVersion)}/reviews`, { method: "POST", body: JSON.stringify(payload) }),
   createSinglePromptV2ExecutionProposal: (analysisId: string, diagnosisId: string, strategyId: string, resultVersion: string, payload: {
     project_id: number; prompt_id: number; direction_id: string; idempotency_key: string;
-    strategy_result_hash: string; strategy_review_id: string; strategy_review_snapshot_hash: string;
+    strategy_result_hash: string; strategy_review_id?: string | null; strategy_review_snapshot_hash: string;
+    input_authority_type: "HUMAN_REVIEW" | "MACHINE_QUALIFICATION"; input_authority_id: string; input_authority_hash: string;
   }) => request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/strategies/${encodeURIComponent(strategyId)}/results/${encodeURIComponent(resultVersion)}/execution-proposals`, { method: "POST", body: JSON.stringify(payload) }),
   getSinglePromptV2ExecutionProposal: (strategyId: string, proposalId: string, projectId: number, promptId: number) =>
     request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/strategies/${encodeURIComponent(strategyId)}/execution-proposals/${encodeURIComponent(proposalId)}?project_id=${projectId}&prompt_id=${promptId}`),

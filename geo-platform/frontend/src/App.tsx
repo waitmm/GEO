@@ -3102,6 +3102,42 @@ export default function App() {
     }
   }
 
+  async function createV2AutomaticStrategy() {
+    if (!v2Analysis || !v2Diagnosis?.result || !v2QualificationProjection || !projectId || !activePromptId) return;
+    if (!v2QualificationProjection.directions.length || !v2QualificationProjection.execution_drafts.length) {
+      message.warning("当前机器资格投影没有可交付的策略方向或执行草案");
+      return;
+    }
+    const key = v2PendingStrategyKey.current || crypto.randomUUID();
+    v2PendingStrategyKey.current = key;
+    setV2StrategyLoading(true);
+    try {
+      const status = await api.createSinglePromptV2AutomaticStrategy(
+        v2Analysis.analysis.analysis_id,
+        v2Diagnosis.diagnosis.diagnosis_id,
+        v2Diagnosis.result.result_version,
+        {
+          project_id: projectId,
+          prompt_id: activePromptId,
+          idempotency_key: key,
+          expected_projection_hash: v2QualificationProjection.projection_hash,
+        },
+      );
+      v2PendingStrategyKey.current = null;
+      setV2Strategy(status);
+      persistV2StrategyIdentity(status);
+      const directions = status.result?.output.directions || [];
+      setV2StrategyDirectionOrder(directions.map((row) => row.direction_id));
+      if (directions.length === 1) setV2ExecutionDirectionId(directions[0].direction_id);
+      message.success("自动策略已绑定精确资格版本；现在可以生成正式执行内容骨架");
+      window.setTimeout(() => document.getElementById("v2-execution")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    } catch (error: any) {
+      message.error(error.message || "固化自动策略失败");
+    } finally {
+      setV2StrategyLoading(false);
+    }
+  }
+
   function moveV2StrategyDirection(directionId: string, delta: -1 | 1) {
     setV2StrategyDirectionOrder((current) => {
       const index = current.indexOf(directionId);
@@ -3208,9 +3244,10 @@ export default function App() {
   }
 
   async function createV2ExecutionProposal() {
-    if (!v2Strategy?.result || !v2Strategy.review || !projectId || !activePromptId || !v2ExecutionDirectionId) return;
-    if (v2Strategy.review.decision !== "ACCEPTED") {
-      message.warning("只有已确认的精确策略版本可以生成执行方案");
+    if (!v2Strategy?.result || !projectId || !activePromptId || !v2ExecutionDirectionId) return;
+    const machineAuthority = v2Strategy.strategy.input_authority_type === "MACHINE_QUALIFICATION";
+    if (!machineAuthority && v2Strategy.review?.decision !== "ACCEPTED") {
+      message.warning("当前精确策略版本没有有效的机器资格或人工确认");
       return;
     }
     const key = v2PendingExecutionKey.current || crypto.randomUUID();
@@ -3228,8 +3265,11 @@ export default function App() {
           direction_id: v2ExecutionDirectionId,
           idempotency_key: key,
           strategy_result_hash: v2Strategy.result.output_hash,
-          strategy_review_id: v2Strategy.review.review_id,
-          strategy_review_snapshot_hash: v2Strategy.review.review_snapshot_hash,
+          strategy_review_id: v2Strategy.review?.review_id || null,
+          strategy_review_snapshot_hash: v2Strategy.review?.review_snapshot_hash || "",
+          input_authority_type: v2Strategy.strategy.input_authority_type,
+          input_authority_id: v2Strategy.strategy.input_authority_id,
+          input_authority_hash: v2Strategy.strategy.input_authority_hash,
         },
       );
       v2PendingExecutionKey.current = null;
@@ -3799,14 +3839,13 @@ export default function App() {
     void refreshV2CriticGold(v2QualificationCritic);
   }, [v2QualificationCritic?.execution.critic_id, v2QualificationCritic?.result?.result_version, v2Analysis?.analysis.analysis_id, projectId, activePromptId]);
   useEffect(() => {
-    if (RELEASE_FIRST_SLICE) return;
-    if (page !== "coreV2" || !v2Strategy?.result || !v2Strategy.review) return;
+    if (page !== "coreV2" || !v2Strategy?.result) return;
+    if (v2Strategy.strategy.input_authority_type !== "MACHINE_QUALIFICATION" && !v2Strategy.review) return;
     const proposalId = new URLSearchParams(window.location.search).get("v2_execution_proposal");
     if (!proposalId || v2Execution?.proposal.strategy_id === v2Strategy.strategy.strategy_id) return;
     void refreshV2Execution();
   }, [page, v2Strategy?.strategy.strategy_id, v2Strategy?.result?.result_version, v2Strategy?.review?.review_id, projectId, activePromptId]);
   useEffect(() => {
-    if (RELEASE_FIRST_SLICE) return;
     if (page !== "coreV2" || !projectId || !activePromptId || !v2Diagnosis?.result) return;
     const retestId = new URLSearchParams(window.location.search).get("v2_retest");
     if (retestId) {
@@ -3816,7 +3855,6 @@ export default function App() {
     if (!v2RetestReadiness) void refreshV2RetestReadiness("");
   }, [page, projectId, activePromptId, v2Diagnosis?.result?.result_version, v2Execution?.publications.length]);
   useEffect(() => {
-    if (RELEASE_FIRST_SLICE) return;
     if (!v2Retest || !["SAMPLING", "SEMANTIC_MEASURING"].includes(v2Retest.retest.status)) return;
     const timer = window.setInterval(() => { void refreshV2Retest(); }, 3000);
     return () => window.clearInterval(timer);
@@ -6177,11 +6215,12 @@ export default function App() {
                     </div>
 
                     {v2QualificationProjection.directions.map((direction) => {
-                      const draft = v2QualificationProjection.execution_drafts.find((row) => row.direction_id === direction.strategy_id);
-                      return <div key={direction.strategy_id} className="v2-strategy-band">
+                      const directionId = direction.direction_id || direction.strategy_id;
+                      const draft = v2QualificationProjection.execution_drafts.find((row) => row.direction_id === directionId);
+                      return <div key={directionId} className="v2-strategy-band">
                         <Space direction="vertical" size={10} style={{ width: "100%" }}>
                           <Space wrap>
-                            <Text strong>策略方向：强化目标品牌的场景能力表达</Text>
+                            <Text strong>策略方向：{direction.direction_type === "DISCOVERY" ? "补齐目标品牌在当前问题中的可见表达" : "强化目标品牌的场景能力表达"}</Text>
                             <Tag color="green">策略可用</Tag>
                             <Tag color="blue">可生成执行草案</Tag>
                             <Tag color={direction.public_claim_eligibility === "CONSUMABLE" ? "green" : "gold"}>{direction.public_claim_eligibility === "CONSUMABLE" ? "公开声明可用" : "公开声明待补依据"}</Tag>
@@ -6189,7 +6228,7 @@ export default function App() {
                           <Text>{direction.intervention_goal}</Text>
                           <Text type="secondary">真实理由（Run {direction.reason_run_ids.join("、")}）：{direction.reason_text}</Text>
                           <Space wrap>
-                            <Tag>Reason {direction.reason_id}</Tag>
+                            <Tag>Reason {direction.reason_id || direction.reason_ids?.join("、") || "当前回答观察"}</Tag>
                             {direction.truth_ids.map((truthId) => <Tag key={truthId}>事实 #{truthId}</Tag>)}
                           </Space>
 
@@ -6213,14 +6252,14 @@ export default function App() {
                             <Descriptions size="small" column={{ xs: 1, md: 2 }}>
                               <Descriptions.Item label="标题">{draft.title}</Descriptions.Item>
                               <Descriptions.Item label="资产作用">目标品牌事实锚点</Descriptions.Item>
-                              <Descriptions.Item label="资产操作">新建资产</Descriptions.Item>
+                              <Descriptions.Item label="资产操作">{draft.asset_operation === "CONDITIONAL" ? "待用户选择；不推断新建" : "新建资产"}</Descriptions.Item>
                               <Descriptions.Item label="渠道">尚未选择；当前证据不足以指定发布渠道</Descriptions.Item>
                             </Descriptions>
                             <Table
                               size="small"
                               rowKey="section_id"
                               pagination={false}
-                              dataSource={draft.sections}
+                              dataSource={draft.sections || draft.content_blocks || []}
                               columns={[
                                 { title: "内容区块", dataIndex: "title", width: 190 },
                                 { title: "作用", dataIndex: "purpose" },
@@ -6246,6 +6285,21 @@ export default function App() {
                     })}
 
                     {v2QualificationProjection.directions.length === 0 && <Alert type="warning" showIcon message="当前没有可自动生成的真实方向" description="这不是等待人工 Review；而是当前对象没有满足该方向自身所需的 Reason 与目标品牌适用性依赖。" />}
+
+                    {v2QualificationProjection.directions.length > 0 && !v2Strategy && <Alert
+                      type="success"
+                      showIcon
+                      message="自动分析已形成可交付方向"
+                      description="固化后会保存精确资格版本和限制，再进入正式执行内容骨架；不会自动确认资产、发布或复测。"
+                      action={<Button type="primary" icon={<Play size={15} />} loading={v2StrategyLoading} onClick={createV2AutomaticStrategy}>固化策略并继续</Button>}
+                    />}
+                    {v2Strategy?.strategy.input_authority_type === "MACHINE_QUALIFICATION" && <Alert
+                      type="info"
+                      showIcon
+                      message="自动策略已绑定当前资格版本"
+                      description={`Strategy ${v2Strategy.strategy.strategy_id}；外部执行仍需用户选择资产并确认。`}
+                      action={<Button onClick={() => document.getElementById("v2-execution")?.scrollIntoView({ behavior: "smooth", block: "start" })}>前往执行草案</Button>}
+                    />}
 
                     <Collapse ghost items={[{
                       key: "qualification-audit",
@@ -6822,7 +6876,7 @@ export default function App() {
                 </Card>}
 
               {v2Diagnosis?.result && <>
-                {!RELEASE_FIRST_SLICE && <>
+                {!RELEASE_FIRST_SLICE &&
                 <Card
                   id="v2-strategy"
                   size="small"
@@ -6911,7 +6965,11 @@ export default function App() {
                           <div className="v2-strategy-direction-order"><Text strong>{v2Strategy.result?.output.needs_human_prioritization ? "同层" : index + 1}</Text></div>
                           <div className="v2-strategy-direction-body">
                             <Space wrap>
-                              <Text strong>{direction.direction_type === "FOUNDATION" ? "权威事实基础" : direction.channel_label}</Text>
+                              <Text strong>{direction.direction_type === "FOUNDATION"
+                                ? "权威事实基础"
+                                : direction.direction_type === "DISCOVERY"
+                                  ? "新增可核验问题解答资产"
+                                  : direction.channel_label}</Text>
                               <Tag color="green">{direction.level}</Tag>
                               {direction.channel_role && <Tag color={direction.channel_role === "PRIMARY" ? "blue" : "purple"}>{direction.channel_role}</Tag>}
                               <Tag>{direction.effect_status}</Tag>
@@ -6962,13 +7020,13 @@ export default function App() {
                       }]} />
                     </>}
                   </Space>}
-                </Card>
+                </Card>}
 
-                <Card size="small" title={<Space><FileText size={18} />执行内容骨架、确认与发布登记</Space>} extra={v2Execution && <Tooltip title="只读取当前执行方案、确认和发布记录"><Button icon={<RefreshCw size={15} />} loading={v2ExecutionLoading} onClick={refreshV2Execution} aria-label="刷新执行方案" /></Tooltip>}>
+                <Card id="v2-execution" size="small" title={<Space><FileText size={18} />执行内容骨架、确认与发布登记</Space>} extra={v2Execution && <Tooltip title="只读取当前执行方案、确认和发布记录"><Button icon={<RefreshCw size={15} />} loading={v2ExecutionLoading} onClick={refreshV2Execution} aria-label="刷新执行方案" /></Tooltip>}>
                   {!v2Strategy?.result ? <Alert type="info" showIcon message="尚无策略候选" description="当前诊断需要先形成合法策略方向。" />
-                  : !v2Strategy.review || v2Strategy.review.decision !== "ACCEPTED" ? <Alert type="warning" showIcon message="策略尚未确认" description="执行方案只能消费已确认的精确策略结果版本；人工排序不等于确认。" />
+                  : v2Strategy.strategy.input_authority_type !== "MACHINE_QUALIFICATION" && (!v2Strategy.review || v2Strategy.review.decision !== "ACCEPTED") ? <Alert type="warning" showIcon message="策略尚未确认" description="执行方案只能消费有效机器资格或已确认的精确策略结果版本；人工排序不等于确认。" />
                   : !v2Execution ? <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                    <Alert type="info" showIcon message="选择一个已确认方向" description="一次方案只承接一个方向和一个新资产，不会合并多个渠道或页面。" />
+                    <Alert type="info" showIcon message="选择一个合格方向" description="一次方案只承接一个方向和一个明确资产选择，不会合并多个渠道或页面。" />
                     <Select
                       style={{ width: "100%", maxWidth: 620 }}
                       placeholder="选择执行方向"
@@ -6976,7 +7034,11 @@ export default function App() {
                       onChange={setV2ExecutionDirectionId}
                       options={(v2Strategy.result.output.directions || []).map((row) => ({
                         value: row.direction_id,
-                        label: row.direction_type === "FOUNDATION" ? "权威事实基础" : `${row.channel_label} · ${row.channel_role}`,
+                        label: row.direction_type === "FOUNDATION"
+                          ? "权威事实基础"
+                          : row.direction_type === "DISCOVERY"
+                            ? "新增可核验问题解答资产"
+                            : `${row.channel_label} · ${row.channel_role}`,
                       }))}
                     />
                     <Button type="primary" icon={<FileText size={15} />} disabled={!v2ExecutionDirectionId} loading={v2ExecutionLoading} onClick={createV2ExecutionProposal}>生成执行内容骨架</Button>
@@ -6985,9 +7047,13 @@ export default function App() {
                       <Descriptions.Item label="方案 ID"><Text code copyable>{v2Execution.proposal.proposal_id}</Text></Descriptions.Item>
                       <Descriptions.Item label="结果版本"><Text code>{v2Execution.result?.result_version}</Text></Descriptions.Item>
                       <Descriptions.Item label="状态"><Tag color={v2ExecutionConfirmation ? "green" : v2ExecutionOutput.validation.status === "READY_FOR_CONFIRMATION" ? "blue" : "gold"}>{v2ExecutionConfirmation ? "已确认，待发布" : v2ExecutionOutput.validation.status === "READY_FOR_CONFIRMATION" ? "可确认" : "待补充"}</Tag></Descriptions.Item>
-                      <Descriptions.Item label="策略方向">{v2ExecutionOutput.direction.direction_type === "FOUNDATION" ? "权威事实基础" : v2ExecutionOutput.direction.channel_label}</Descriptions.Item>
-                      <Descriptions.Item label="策略渠道 Role">{v2ExecutionOutput.strategy_channel.channel_role || "无（Foundation 独立）"}</Descriptions.Item>
-                      <Descriptions.Item label="资产操作"><Tag color="blue">新建资产</Tag></Descriptions.Item>
+                      <Descriptions.Item label="策略方向">{v2ExecutionOutput.direction.direction_type === "FOUNDATION"
+                        ? "权威事实基础"
+                        : v2ExecutionOutput.direction.direction_type === "DISCOVERY"
+                          ? "新增可核验问题解答资产"
+                          : v2ExecutionOutput.direction.channel_label}</Descriptions.Item>
+                      <Descriptions.Item label="策略渠道 Role">{v2ExecutionOutput.strategy_channel.channel_role || "无（本方向不指定引用渠道）"}</Descriptions.Item>
+                      <Descriptions.Item label="资产操作"><Tag color={v2ExecutionOutput.asset_operation === "CREATE_NEW" ? "blue" : "gold"}>{v2ExecutionOutput.asset_operation === "CREATE_NEW" ? "新建资产" : "待用户选择"}</Tag></Descriptions.Item>
                     </Descriptions>
                     {v2ExecutionOutput.direction.direction_type === "FOUNDATION" && <Alert type="info" showIcon message="Foundation 与渠道 Role 保持分离" description="下面选择的官网产品页、功能页或帮助中心只是执行目的地，不会把策略改成 OFFICIAL_SITE PRIMARY。" />}
                     {!v2Execution.applicability.is_current_input && <Alert type="warning" showIcon message="执行输入已经过期" description="历史方案和发布记录仍保留，但该版本不能继续授权新编辑或确认。" />}
@@ -7014,7 +7080,7 @@ export default function App() {
                           const selectedIndex = (v2ExecutionEdit.section_order || []).indexOf(section.section_id);
                           return <div key={section.section_id} className="v2-execution-section">
                             <Checkbox value={section.section_id} />
-                            <div><Text strong>{section.title}</Text><div><Text type="secondary">{section.purpose} · Truth {(section.truth_ids || []).join("、")}</Text></div></div>
+                            <div><Text strong>{section.title}</Text><div><Text type="secondary">{section.purpose} · Truth {(section.truth_ids || []).join("、") || "无目标品牌声明"}</Text></div>{section.draft_text && <div><Text>{section.draft_text}</Text></div>}</div>
                             <Space size={4} className="v2-execution-section-order">
                               <Tooltip title="上移"><Button size="small" icon={<ArrowUp size={14} />} disabled={selectedIndex <= 0} onClick={() => moveV2ExecutionSection(section.section_id, -1)} aria-label="上移公开 Section" /></Tooltip>
                               <Tooltip title="下移"><Button size="small" icon={<ArrowDown size={14} />} disabled={selectedIndex < 0 || selectedIndex >= (v2ExecutionEdit.section_order || []).length - 1} onClick={() => moveV2ExecutionSection(section.section_id, 1)} aria-label="下移公开 Section" /></Tooltip>
@@ -7026,7 +7092,9 @@ export default function App() {
                     <Input.TextArea rows={2} value={v2ExecutionEdit.execution_note || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, execution_note: event.target.value }))} placeholder="执行备注" />
 
                     <Divider orientation="left">内部待确认清单</Divider>
-                    <div className="v2-strategy-list">{v2ExecutionOutput.internal_checklist.map((item, index) => <div className="v2-strategy-list-row" key={`${item.code}-${index}`}><Tag color="gold">{item.code}</Tag><Text type="secondary">{typeof item.detail === "string" ? item.detail : JSON.stringify(item.detail)}</Text></div>)}</div>
+                    <div className="v2-strategy-list">{v2ExecutionOutput.internal_checklist.map((item, index) => typeof item === "string"
+                      ? <div className="v2-strategy-list-row" key={`check-${index}`}><Tag color="gold">待确认</Tag><Text type="secondary">{item}</Text></div>
+                      : <div className="v2-strategy-list-row" key={`${item.code}-${index}`}><Tag color="gold">{item.code}</Tag><Text type="secondary">{typeof item.detail === "string" ? item.detail : JSON.stringify(item.detail)}</Text></div>)}</div>
                     <Descriptions size="small" column={{ xs: 1, md: 3 }}>
                       <Descriptions.Item label="固定 Baseline">{v2ExecutionOutput.baseline.baseline_run_ids?.length || 0} 个有效 Run</Descriptions.Item>
                       <Descriptions.Item label="计划/有效/失败">{v2ExecutionOutput.baseline.run_manifest?.planned_count || 0} / {v2ExecutionOutput.baseline.run_manifest?.valid_count || 0} / {v2ExecutionOutput.baseline.run_manifest?.failed_count || 0}</Descriptions.Item>
@@ -7068,7 +7136,7 @@ export default function App() {
 
                     <Collapse ghost items={[{ key: "execution-audit", label: "查看执行输入与版本审计", children: <Descriptions size="small" column={1}>
                       <Descriptions.Item label="策略结果"><Text code>{v2Execution.proposal.strategy_result_version}</Text></Descriptions.Item>
-                      <Descriptions.Item label="策略审核"><Text code>{v2Execution.proposal.strategy_review_id}</Text></Descriptions.Item>
+                      <Descriptions.Item label="输入授权"><Text code>{v2Execution.proposal.input_authority_type === "MACHINE_QUALIFICATION" ? `机器资格 · ${v2Execution.proposal.input_authority_id}` : `人工审核 · ${v2Execution.proposal.strategy_review_id}`}</Text></Descriptions.Item>
                       <Descriptions.Item label="执行输入 SHA-256"><Text code copyable>{v2Execution.proposal.input_snapshot_hash}</Text></Descriptions.Item>
                       <Descriptions.Item label="Baseline Raw Result"><Text code>{v2ExecutionOutput.baseline.raw_result_version}</Text></Descriptions.Item>
                     </Descriptions> }]} />
@@ -7152,7 +7220,6 @@ export default function App() {
                     </Descriptions> }]} />
                   </Space>}
                 </Card>
-                </>}
               </>}
             </>}
           </>}

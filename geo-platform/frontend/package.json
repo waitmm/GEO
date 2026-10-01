@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build --mode release",
     "build:release": "tsc && vite build --mode release",
+    "build:legacy": "tsc && vite build --outDir dist-legacy",
     "preview": "vite preview"
   },
   "dependencies": {

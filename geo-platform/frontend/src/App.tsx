@@ -1793,7 +1793,7 @@ export default function App() {
     params.set("v2_analysis", status.analysis.analysis_id);
     params.set("v2_project", String(status.analysis.project_id));
     params.set("v2_prompt", String(status.analysis.prompt_id));
-    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}${window.location.hash}`);
   }
 
   function persistV2DiagnosisIdentity(status: SinglePromptV2DiagnosisStatus) {
@@ -1820,7 +1820,7 @@ export default function App() {
     params.set("v2_diagnosis", status.diagnosis.diagnosis_id);
     if (nextResultVersion) params.set("v2_diagnosis_result", nextResultVersion);
     else params.delete("v2_diagnosis_result");
-    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}${window.location.hash}`);
   }
 
   function persistV2StrategyIdentity(status: SinglePromptV2StrategyStatus) {
@@ -1841,14 +1841,14 @@ export default function App() {
     params.set("v2_strategy", status.strategy.strategy_id);
     if (status.result) params.set("v2_strategy_result", status.result.result_version);
     else params.delete("v2_strategy_result");
-    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}${window.location.hash}`);
   }
 
   function persistV2ExecutionIdentity(status: SinglePromptV2ExecutionStatus) {
     const params = new URLSearchParams(window.location.search);
     params.set("v2_execution_proposal", status.proposal.proposal_id);
     if (status.result) params.set("v2_execution_result", status.result.result_version);
-    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}${window.location.hash}`);
   }
 
   function persistV2RetestIdentity(status: SinglePromptV2RetestStatus) {
@@ -1985,6 +1985,21 @@ export default function App() {
     }
   }
 
+  function savedV2DeliveryHref(summary: SinglePromptV2AnalysisListItem, delivery: SinglePromptV2AnalysisListItem["saved_deliveries"][number]) {
+    const params = new URLSearchParams({
+      v2_project: String(summary.analysis.project_id),
+      v2_prompt: String(summary.analysis.prompt_id),
+      v2_analysis: summary.analysis.analysis_id,
+      v2_diagnosis: delivery.diagnosis_id,
+      v2_diagnosis_result: delivery.diagnosis_result_version,
+      v2_strategy: delivery.strategy_id,
+      v2_strategy_result: delivery.strategy_result_version,
+      v2_execution_proposal: delivery.proposal_id,
+      v2_execution_result: delivery.result_version,
+    });
+    return `${window.location.pathname}?${params.toString()}#v2-execution`;
+  }
+
   async function openV2Analysis(summary: SinglePromptV2AnalysisListItem) {
     if (!projectId || !activePromptId) return;
     setV2Loading(true);
@@ -2001,6 +2016,7 @@ export default function App() {
       params.delete("v2_strategy");
       params.delete("v2_strategy_result");
       params.delete("v2_execution");
+      params.delete("v2_execution_proposal");
       params.delete("v2_execution_result");
       params.delete("v2_retest");
       window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
@@ -2026,7 +2042,7 @@ export default function App() {
 
   function showV2AnalysisHistory() {
     const params = new URLSearchParams(window.location.search);
-    ["v2_analysis", "v2_diagnosis", "v2_diagnosis_result", "v2_contribution", "v2_strategy", "v2_strategy_result", "v2_execution", "v2_execution_result", "v2_retest"].forEach((key) => params.delete(key));
+    ["v2_analysis", "v2_diagnosis", "v2_diagnosis_result", "v2_contribution", "v2_strategy", "v2_strategy_result", "v2_execution", "v2_execution_proposal", "v2_execution_result", "v2_retest"].forEach((key) => params.delete(key));
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
     setV2Analysis(null);
     setV2SourcePreparation(null);
@@ -3877,6 +3893,11 @@ export default function App() {
     void refreshV2Execution();
   }, [page, v2Strategy?.strategy.strategy_id, v2Strategy?.result?.result_version, v2Strategy?.review?.review_id, projectId, activePromptId]);
   useEffect(() => {
+    if (v2Execution?.result && window.location.hash === "#v2-execution") {
+      document.getElementById("v2-execution")?.scrollIntoView({ block: "start" });
+    }
+  }, [v2Execution?.proposal.proposal_id, v2Execution?.result?.result_version]);
+  useEffect(() => {
     if (page !== "coreV2" || !projectId || !activePromptId || !v2Diagnosis?.result) return;
     const retestId = new URLSearchParams(window.location.search).get("v2_retest");
     if (retestId) {
@@ -5693,10 +5714,25 @@ export default function App() {
                     ? `${row.source_preparation_summary.ready_source_count}/${row.source_preparation_summary.required_source_count} 正文就绪，${row.source_preparation_summary.nonterminal_source_count} 待处理`
                     : row.context_id ? "采样已冻结，待准备正文" : "采样尚未冻结" },
                   { title: "创建时间", width: 180, render: (_: unknown, row) => formatDateTime(row.created_at) },
-                  { title: "操作", width: 110, render: (_: unknown, row) => <Button type="primary" size="small" onClick={() => openV2Analysis(row)}>继续处理</Button> },
+                  { title: "操作", width: 180, render: (_: unknown, row) => <Space direction="vertical">
+                    <Button type="primary" size="small" onClick={() => openV2Analysis(row)}>继续处理</Button>
+                    {(row.saved_deliveries || []).map((delivery, index) => <Button key={delivery.proposal_id} size="small" icon={<FileText size={14} />} href={savedV2DeliveryHref(row, delivery)}>
+                      查看方案与稿件{row.saved_deliveries.length > 1 ? ` ${index + 1}` : ""}
+                    </Button>)}
+                  </Space> },
                 ]}
               />}
             </Card> : <>
+              {v2AnalysisHistory.filter((row) => row.analysis.analysis_id === v2Analysis.analysis.analysis_id).flatMap((row) =>
+                (row.saved_deliveries || []).map((delivery, index) => <Alert
+                  key={delivery.proposal_id}
+                  type="info"
+                  showIcon
+                  message={`已有执行方案${row.saved_deliveries.length > 1 ? ` ${index + 1}` : ""}与稿件`}
+                  description={delivery.result_version}
+                  action={<Button icon={<FileText size={14} />} href={savedV2DeliveryHref(row, delivery)}>查看方案与稿件</Button>}
+                />)
+              )}
               <Card size="small" title={<Space>{v2AnalysisStatusTag(v2Analysis.sampling.status)}<Text code>{v2Analysis.analysis.analysis_id}</Text></Space>} extra={<Space><Tag color={v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "green" : "blue"}>{v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "固定分析输入" : "实时采样状态"}</Tag><Button size="small" onClick={showV2AnalysisHistory}>切换已有分析</Button></Space>}>
                 <div className="v2-status-grid">
                   <Statistic title="计划采样" value={v2Analysis.sampling.planned_run_count} suffix="次" />

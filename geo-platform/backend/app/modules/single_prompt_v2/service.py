@@ -22,6 +22,9 @@ from app.models import (
     RunArtifact,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
+    SinglePromptExecutionProposal,
+    SinglePromptExecutionProposalResult,
+    SinglePromptStrategyExecution,
     SinglePromptSourceDisposition,
     SinglePromptSourcePreparation,
 )
@@ -1045,6 +1048,41 @@ def list_analysis_statuses(
         return statuses
 
     analysis_ids = [analysis.analysis_id for analysis in analyses]
+    # Navigation lists explicit saved identities, never selecting a latest execution.
+    deliveries = (
+        db.query(SinglePromptExecutionProposal, SinglePromptExecutionProposalResult, SinglePromptStrategyExecution)
+        .join(SinglePromptExecutionProposalResult,
+              (SinglePromptExecutionProposalResult.proposal_id == SinglePromptExecutionProposal.proposal_id)
+              & (SinglePromptExecutionProposalResult.result_version == SinglePromptExecutionProposal.active_result_version))
+        .join(SinglePromptStrategyExecution,
+              SinglePromptStrategyExecution.strategy_id == SinglePromptExecutionProposal.strategy_id)
+        .filter(
+            SinglePromptExecutionProposal.analysis_id.in_(analysis_ids),
+            SinglePromptExecutionProposal.project_id == project_id,
+            SinglePromptExecutionProposal.prompt_id == prompt_id,
+            SinglePromptStrategyExecution.analysis_id == SinglePromptExecutionProposal.analysis_id,
+            SinglePromptStrategyExecution.context_id == SinglePromptExecutionProposal.context_id,
+            SinglePromptStrategyExecution.diagnosis_id == SinglePromptExecutionProposal.diagnosis_id,
+            SinglePromptStrategyExecution.project_id == project_id,
+            SinglePromptStrategyExecution.prompt_id == prompt_id,
+        )
+        .order_by(SinglePromptExecutionProposal.created_at, SinglePromptExecutionProposal.proposal_id)
+        .all()
+    )
+    deliveries_by_analysis: dict[str, list[dict[str, Any]]] = {}
+    for proposal, result, strategy in deliveries:
+        deliveries_by_analysis.setdefault(proposal.analysis_id, []).append({
+            "proposal_id": proposal.proposal_id,
+            "result_version": result.result_version,
+            "result_hash": result.output_hash,
+            "strategy_id": proposal.strategy_id,
+            "strategy_result_version": proposal.strategy_result_version,
+            "diagnosis_id": proposal.diagnosis_id,
+            "diagnosis_result_version": strategy.diagnosis_result_version,
+        })
+    for status in statuses:
+        status["saved_deliveries"] = deliveries_by_analysis.get(status["analysis"]["analysis_id"], [])
+
     preparations = (
         db.query(SinglePromptSourcePreparation)
         .filter(SinglePromptSourcePreparation.analysis_id.in_(analysis_ids))

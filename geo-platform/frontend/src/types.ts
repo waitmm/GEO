@@ -274,6 +274,15 @@ export type SinglePromptV2RunPool = {
 };
 
 export type SinglePromptV2AnalysisListItem = {
+  saved_deliveries: Array<{
+    proposal_id: string;
+    result_version: string;
+    result_hash: string;
+    strategy_id: string;
+    strategy_result_version: string;
+    diagnosis_id: string;
+    diagnosis_result_version: string;
+  }>;
   analysis: SinglePromptV2Status["analysis"];
   sampling: SinglePromptV2Status["sampling"];
   result_version: string | null;

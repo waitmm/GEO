@@ -6263,3 +6263,21 @@ review_queue = READY
 - Verification: 34 focused/release tests passed; frontend production build passed. No external
   call, refetch, confirmation, publication or retest was created. Commits: `8b19388`,
   `c7ce35e`, `56eaf9f`, `8a0ece1`.
+
+## 2026-10-01 Release UI and Saved Delivery Navigation
+
+- Reproduced the empty/loading homepage: a legacy frontend build had overwritten the
+  release `dist`, causing requests to retired routes. Rebuilt release assets and made
+  the default build use release mode. Explicit legacy builds now use `dist-legacy`.
+- The analysis list previously restored only sampling/source identity, hiding an existing
+  diagnosis and execution draft. It now lists each saved delivery with its exact diagnosis,
+  strategy and proposal bindings. Users explicitly open a delivery; no latest execution
+  lookup, generation, review or result mutation is performed.
+- Corrected the documented live address to `http://127.0.0.1:8021/`. Added entry links in
+  both analysis history and the selected analysis, preserving the execution scroll target.
+- Verification: 35 focused/release tests passed; default build produced the release marker.
+  Real browser navigation from the homepage opened `execution-v5:2121b5e21d0ac6df`,
+  including the full draft, asset/channel decision, brand basis and actual-text QA.
+  Refresh restored the same result; desktop/mobile checks produced no JavaScript errors
+  or non-GET requests. Existing historical fixture failures were not changed or hidden.
+- No model call, sampling, fetching, review, publication or retest was performed.

@@ -6,21 +6,16 @@ BACKEND_DIR="$ROOT_DIR/geo-platform/backend"
 FRONTEND_DIR="$ROOT_DIR/geo-platform/frontend"
 
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
-BACKEND_PORT="${BACKEND_PORT:-8000}"
+BACKEND_PORT="${BACKEND_PORT:-8021}"
 FRONTEND_HOST="${FRONTEND_HOST:-localhost}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 BACKEND_RELOAD="${BACKEND_RELOAD:-0}"
 DAILY_SCHEDULER="${DAILY_SCHEDULER:-0}"
-DAILY_SCHEDULER_EXECUTE_NOW="${DAILY_SCHEDULER_EXECUTE_NOW:-0}"
-DAILY_SCHEDULER_PROJECT_ID="${DAILY_SCHEDULER_PROJECT_ID:-}"
-DAILY_SCHEDULER_INTERVAL="${DAILY_SCHEDULER_INTERVAL:-300}"
 MONITORING_WORKER="${MONITORING_WORKER:-0}"
 MONITORING_WORKER_INTERVAL="${MONITORING_WORKER_INTERVAL:-10}"
-MONITORING_WORKER_BATCH_SIZE="${MONITORING_WORKER_BATCH_SIZE:-1}"
 
 BACKEND_PID=""
 FRONTEND_PID=""
-DAILY_SCHEDULER_PID=""
 MONITORING_WORKER_PID=""
 
 cleanup() {
@@ -29,9 +24,6 @@ cleanup() {
   fi
   if [[ -n "$BACKEND_PID" ]] && kill -0 "$BACKEND_PID" 2>/dev/null; then
     kill "$BACKEND_PID" 2>/dev/null || true
-  fi
-  if [[ -n "$DAILY_SCHEDULER_PID" ]] && kill -0 "$DAILY_SCHEDULER_PID" 2>/dev/null; then
-    kill "$DAILY_SCHEDULER_PID" 2>/dev/null || true
   fi
   if [[ -n "$MONITORING_WORKER_PID" ]] && kill -0 "$MONITORING_WORKER_PID" 2>/dev/null; then
     kill "$MONITORING_WORKER_PID" 2>/dev/null || true
@@ -99,13 +91,18 @@ if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
   exit 1
 fi
 
-UVICORN_ARGS=(app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT")
+if [[ "$DAILY_SCHEDULER" == "1" ]]; then
+  echo "Legacy daily scheduler is not part of the release dev stack." >&2
+  exit 1
+fi
+
+UVICORN_ARGS=(app.release_main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT")
 if [[ "$BACKEND_RELOAD" == "1" ]]; then
   UVICORN_ARGS+=(--reload)
 fi
 
 if port_is_open "$BACKEND_HOST" "$BACKEND_PORT"; then
-  echo "GEO backend already listening: http://$BACKEND_HOST:$BACKEND_PORT"
+  echo "Checking existing GEO backend: http://$BACKEND_HOST:$BACKEND_PORT"
 else
   echo "Starting GEO backend: http://$BACKEND_HOST:$BACKEND_PORT"
   (
@@ -115,7 +112,44 @@ else
   BACKEND_PID="$!"
 fi
 
+# A listening socket alone is not proof of a compatible release service.
+"$PYTHON_BIN" - "$BACKEND_HOST" "$BACKEND_PORT" <<'PY'
+import json
+import sys
+import time
+from urllib.request import ProxyHandler, build_opener
+
+url = f"http://{sys.argv[1]}:{sys.argv[2]}/api/health"
+local_open = build_opener(ProxyHandler({})).open
+for attempt in range(30):
+    try:
+        with local_open(url, timeout=1) as response:
+            health = json.load(response)
+    except (OSError, ValueError):
+        time.sleep(.5)
+        continue
+    if health.get("mode") != "release_1_0_first_slice":
+        raise SystemExit(f"Backend at {url} is not the release API; stop the conflicting service first.")
+    break
+else:
+    raise SystemExit(f"Release backend did not become ready: {url}. Check migration/version errors.")
+PY
+
+export GEO_API_PROXY_TARGET="http://$BACKEND_HOST:$BACKEND_PORT"
 if port_is_open "$FRONTEND_HOST" "$FRONTEND_PORT"; then
+  "$PYTHON_BIN" - "http://$FRONTEND_HOST:$FRONTEND_PORT" "$GEO_API_PROXY_TARGET" <<'PY'
+import json
+import sys
+from urllib.request import ProxyHandler, build_opener
+
+try:
+    with build_opener(ProxyHandler({})).open(sys.argv[1] + "/__geo_dev_config", timeout=3) as response:
+        config = json.load(response)
+except (OSError, ValueError):
+    raise SystemExit("Existing frontend is not the release dev server; restart it with npm run dev.")
+if config != {"release": True, "api_target": sys.argv[2]}:
+    raise SystemExit("Existing frontend mode or API target differs; restart it with the release settings.")
+PY
   echo "GEO frontend already listening: http://$FRONTEND_HOST:$FRONTEND_PORT"
 else
   echo "Starting GEO frontend: http://$FRONTEND_HOST:$FRONTEND_PORT"
@@ -126,32 +160,16 @@ else
   FRONTEND_PID="$!"
 fi
 
-if [[ "$DAILY_SCHEDULER" == "1" ]]; then
-  echo "Starting GEO daily scheduler: interval=${DAILY_SCHEDULER_INTERVAL}s"
-  DAILY_ARGS=(scripts/queue_daily_schedules.py --loop --interval "$DAILY_SCHEDULER_INTERVAL")
-  if [[ -n "$DAILY_SCHEDULER_PROJECT_ID" ]]; then
-    DAILY_ARGS+=(--project-id "$DAILY_SCHEDULER_PROJECT_ID")
-  fi
-  if [[ "$DAILY_SCHEDULER_EXECUTE_NOW" == "1" ]]; then
-    DAILY_ARGS+=(--execute-now)
-  fi
-  (
-    cd "$BACKEND_DIR"
-    "$PYTHON_BIN" "${DAILY_ARGS[@]}"
-  ) &
-  DAILY_SCHEDULER_PID="$!"
-fi
-
 if [[ "$MONITORING_WORKER" == "1" ]]; then
-  echo "Starting GEO monitoring worker: interval=${MONITORING_WORKER_INTERVAL}s batch=${MONITORING_WORKER_BATCH_SIZE}"
+  echo "Starting GEO release worker: interval=${MONITORING_WORKER_INTERVAL}s"
   (
     cd "$BACKEND_DIR"
-    "$PYTHON_BIN" scripts/worker_monitoring_loop.py --interval "$MONITORING_WORKER_INTERVAL" --batch-size "$MONITORING_WORKER_BATCH_SIZE"
+    "$PYTHON_BIN" scripts/release_worker.py --interval "$MONITORING_WORKER_INTERVAL"
   ) &
   MONITORING_WORKER_PID="$!"
 fi
 
-if [[ -z "$BACKEND_PID" && -z "$FRONTEND_PID" && -z "$DAILY_SCHEDULER_PID" && -z "$MONITORING_WORKER_PID" ]]; then
+if [[ -z "$BACKEND_PID" && -z "$FRONTEND_PID" && -z "$MONITORING_WORKER_PID" ]]; then
   echo "GEO dev stack is already running."
   exit 0
 fi
@@ -160,6 +178,5 @@ echo "GEO dev stack is starting. Press Ctrl+C to stop started services."
 PIDS=()
 [[ -n "$BACKEND_PID" ]] && PIDS+=("$BACKEND_PID")
 [[ -n "$FRONTEND_PID" ]] && PIDS+=("$FRONTEND_PID")
-[[ -n "$DAILY_SCHEDULER_PID" ]] && PIDS+=("$DAILY_SCHEDULER_PID")
 [[ -n "$MONITORING_WORKER_PID" ]] && PIDS+=("$MONITORING_WORKER_PID")
 wait "${PIDS[@]}"

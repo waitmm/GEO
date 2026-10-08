@@ -81,8 +81,16 @@ From the workspace root:
 
 Default services:
 
-- Backend: `http://127.0.0.1:8000`
-- Frontend: `http://localhost:5173`
+- Release backend: `http://127.0.0.1:8021` (`app.release_main`, existing migrated release DB)
+- Frontend: `http://localhost:5173` (release mode; `127.0.0.1:5173` when bound there)
+
+`npm run dev` and bare Vite use the release UI by default. `GEO_API_PROXY_TARGET`
+overrides the API proxy when a custom backend port is needed; `scripts/dev.sh`
+sets it from `BACKEND_HOST/BACKEND_PORT`. Existing services must pass the mode/target
+checks, not just occupy the ports. The legacy UI is explicit `npm run dev:legacy`
+on port 5174 and must not be used to validate the release product. Default startup
+does not start workers or external operations; opt-in `MONITORING_WORKER=1` runs
+the release worker, not the retired monitoring scheduler.
 
 ## Validation Commands
 

@@ -6281,3 +6281,21 @@ review_queue = READY
   Refresh restored the same result; desktop/mobile checks produced no JavaScript errors
   or non-GET requests. Existing historical fixture failures were not changed or hidden.
 - No model call, sampling, fetching, review, publication or retest was performed.
+
+## 2026-10-08 Fix the Actual 5173 Development Entry
+
+- The previous correction covered static release builds but left `npm run dev` and
+  `scripts/dev.sh` on the legacy frontend/backend defaults. The user's screenshot was
+  the 5173 legacy dashboard calling retired routes, not the verified 8021 page.
+- Default and bare Vite now use release mode and proxy 8021. Legacy is explicit;
+  custom backend ports use `GEO_API_PROXY_TARGET`. Strict ports prevent silently
+  opening another port while users keep seeing a stale entry.
+- `scripts/dev.sh` starts `app.release_main`, checks the release health mode and
+  existing frontend mode/proxy, and does not start retired schedulers. Local health
+  probes bypass environment proxies so localhost is not incorrectly reported as 502.
+- Validation: five startup-config tests passed; release build passed. Isolated Chrome
+  opened the user's exact 127.0.0.1:5173 homepage, selected the saved delivery, displayed
+  `execution-v5:2121b5e21d0ac6df` and actual-text QA, and restored it after refresh.
+  localhost:5173 also loaded successfully. No JavaScript errors, failed HTTP responses,
+  or non-GET requests were recorded in those browser checks.
+- No schema, business result, raw data, model call, review, publication or retest change.

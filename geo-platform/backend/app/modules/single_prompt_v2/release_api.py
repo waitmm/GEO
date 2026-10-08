@@ -1012,6 +1012,10 @@ def generate_execution_deliverable(
 ) -> dict:
     if result_version != payload.base_result_version:
         raise HTTPException(status_code=409, detail="路径执行方案版本与提交版本不一致")
+    get_execution_proposal_status(
+        db, proposal_id=proposal_id, strategy_id=strategy_id,
+        project_id=payload.project_id, prompt_id=payload.prompt_id,
+    )
     _result, created = generate_complete_execution_deliverable(
         db,
         proposal_id=proposal_id,

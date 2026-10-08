@@ -15,16 +15,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Project,
-    Prompt,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
     SinglePromptCitationContributionResult,
     SinglePromptDiagnosisExecution,
+    SinglePromptDiagnosisResult,
     SinglePromptExecutionConfirmation,
     SinglePromptExecutionProposal,
     SinglePromptExecutionProposalResult,
-    SinglePromptPreparedSourceSnapshot,
     SinglePromptPublicationRecord,
     SinglePromptStrategyExecution,
     SinglePromptStrategyResult,
@@ -35,13 +33,17 @@ from app.modules.optimization.execution_proposal_shadow import (
     build_claim_usage_policy,
 )
 from app.modules.single_prompt_v2.strategy import _strategy_applicability, strategy_review_snapshot
+from app.modules.single_prompt_v2.source_preparation import _content_block_reason, validate_completion_for_evidence
+from app.modules.single_prompt_v2.delivery_text import (
+    INPUT_VERSION, audit_draft, build_sections, digest, render_draft, text_digest,
+)
 from app.services.serialization import loads
 
 
-EXECUTION_CONTRACT_VERSION = "single_prompt_execution.optimize_delivery.v1"
+EXECUTION_CONTRACT_VERSION = "single_prompt_execution.optimize_delivery.v2"
 EXECUTION_INPUT_VALIDATION_VERSION = "single_prompt_execution_input.v2"
-EXECUTION_DELIVERABLE_VERSION = "single_prompt_execution_deliverable.v1"
-EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v4"
+EXECUTION_DELIVERABLE_VERSION = "single_prompt_execution_deliverable.v2"
+EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v5"
 PUBLICATION_CONFORMANCE_VERSION = "single_prompt_publication_conformance.v1"
 
 VALID_RUN_STATUSES = {"success", "partial_success"}
@@ -328,63 +330,146 @@ def _reason_adapter(row: dict[str, Any], truth_ids: list[int]) -> dict[str, Any]
     }
 
 
-def _host(value: str) -> str:
-    parsed = urlparse(value if "://" in value else f"https://{value}")
-    return (parsed.hostname or "").lower().removeprefix("www.")
-
-
-def _prompt_terms(prompt_text: str) -> list[str]:
-    compact = re.sub(r"\s+", "", prompt_text)
-    chunks = re.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9]+", compact)
-    terms: list[str] = []
-    for chunk in chunks:
-        if re.fullmatch(r"[\u4e00-\u9fff]+", chunk):
-            terms.extend(chunk[index:index + 2] for index in range(max(1, len(chunk) - 1)))
-        elif len(chunk) >= 2:
-            terms.append(chunk.lower())
-    return list(dict.fromkeys(value for value in terms if len(value) >= 2))
-
-
-def _target_brand_snapshot(
-    project: Project | None,
-    prompt: Prompt | None,
-    snapshots: list[SinglePromptPreparedSourceSnapshot],
-) -> tuple[SinglePromptPreparedSourceSnapshot | None, list[str]]:
-    brand_host = _host(project.website_url) if project and project.website_url else ""
-    candidates = [row for row in snapshots if brand_host and _host(row.canonical_url) == brand_host]
-    if not candidates:
-        return None, []
-    terms = _prompt_terms(prompt.prompt_text if prompt else "")
-
-    def score(row: SinglePromptPreparedSourceSnapshot) -> tuple[int, str]:
-        haystack = f"{row.title}\n{row.clean_text}".lower()
-        return (-sum(1 for term in terms if term.lower() in haystack), row.snapshot_id)
-
-    selected = sorted(candidates, key=score)[0]
-    # Keep exact functional phrases only. Full marketing sentences remain in the
-    # immutable source snapshot for audit, but do not become publishable claims.
-    safe_function_phrases = (
-        "短链接生成器",
-        "智能链接缩短与追踪",
-        "抖音私信跳转卡片",
-        "微信外链跳转",
-        "多渠道参数追踪",
-        "深度访问分析",
+def _freeze_delivery_input(
+    db: Session, snapshot: dict[str, Any], prior_result: SinglePromptExecutionProposalResult | None = None,
+) -> dict[str, Any]:
+    """Load exact immutable records once; the text compiler receives no Session."""
+    identity = snapshot["identity"]
+    context = db.query(SinglePromptAnalysisContext).filter_by(
+        context_id=identity["context_id"], analysis_id=identity["analysis_id"],
+        project_id=identity["project_id"], prompt_id=identity["prompt_id"],
+    ).one_or_none()
+    if not context:
+        raise HTTPException(409, detail="稿件缺少准确 Context")
+    raw = loads(context.raw_output_json, {})
+    if _hash(raw) != context.raw_output_hash or context.raw_output_hash != snapshot["baseline"]["raw_output_hash"]:
+        raise HTTPException(409, detail="稿件原始输入 hash 不匹配")
+    version = next((row["object_id"] for row in snapshot["direction"].get("dependencies", [])
+                    if row.get("object_type") == "CITATION_CONTRIBUTION_SCOPE"), None)
+    result = db.query(SinglePromptCitationContributionResult).filter_by(result_version=version).one_or_none()
+    if not result:
+        raise HTTPException(409, detail="稿件必须绑定明确的引用贡献版本")
+    contribution = loads(result.output_json, {})
+    if _hash(contribution) != result.output_hash:
+        raise HTTPException(409, detail="引用贡献内容 hash 不匹配")
+    inputs = contribution["input"]
+    if any(inputs[key] != identity[key] for key in ("analysis_id", "context_id")) or inputs["raw_output_hash"] != context.raw_output_hash:
+        raise HTTPException(409, detail="引用贡献与稿件范围不一致")
+    answer = db.query(SinglePromptDiagnosisResult).filter_by(
+        diagnosis_id=identity["diagnosis_id"], result_version=inputs["answer_result_version"],
+    ).one_or_none()
+    if not answer or answer.output_hash != inputs["answer_result_hash"] or _hash(loads(answer.output_json, {})) != answer.output_hash:
+        raise HTTPException(409, detail="Answer 版本或内容 hash 不匹配")
+    strategy = db.query(SinglePromptStrategyResult).filter_by(
+        strategy_id=identity["strategy_id"], result_version=identity["strategy_result_version"],
+    ).one_or_none()
+    if not strategy or strategy.output_hash != identity["strategy_result_hash"] or _hash(loads(strategy.output_json, {})) != strategy.output_hash:
+        raise HTTPException(409, detail="Strategy 版本或内容 hash 不匹配")
+    _, sources, _ = validate_completion_for_evidence(
+        db, **{key: inputs[key] for key in (
+            "analysis_id", "context_id", "citation_manifest_id", "citation_manifest_hash",
+            "completion_manifest_id", "completion_manifest_hash",
+        )},
     )
-    lines = [phrase for phrase in safe_function_phrases if phrase in selected.clean_text]
-    return selected, lines
-
-
-def _contribution_output(db: Session, direction: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    result_version = next((
-        str(row.get("object_id") or "")
-        for row in direction.get("dependencies") or []
-        if row.get("object_type") == "CITATION_CONTRIBUTION_SCOPE"
-    ), "")
-    if not result_version:
-        return {}, ""
-    row = db.query(SinglePromptCitationContributionResult).filter_by(result_version=result_version).one_or_none()
-    return (loads(row.output_json, {}) if row else {}), result_version
+    source_map = {row.snapshot_id: row for row in sources}
+    units = {row["answer_unit_id"]: row for row in contribution["answer_units"]}
+    bindings = {row["binding_id"]: row for row in contribution["bindings"]}
+    citations = {row["citation_id"]: row for row in contribution["citations"]}
+    answers = {int(row["run_id"]): row["answer_text"] for row in raw["runs"]}
+    if sorted(inputs["fixed_run_ids"]) != sorted(answers):
+        raise HTTPException(409, detail="引用贡献的完整 Run 范围与稿件不一致")
+    selected = []
+    for block in snapshot["automatic_draft"].get("content_blocks", []):
+        binding = bindings.get(block.get("binding_id"))
+        if not binding or binding["processing_status"] != "DONE" or binding["evidence_relation"] not in {"SUPPORTS_FULL", "SUPPORTS_PARTIAL"}:
+            raise HTTPException(409, detail="稿件依据不是合格的精确关系")
+        if block.get("citation_id") != binding["citation_id"] or block.get("answer_unit_id") != binding["answer_unit_id"]:
+            raise HTTPException(409, detail="内容块关系身份不匹配")
+        citation = citations[binding["citation_id"]]
+        source = source_map.get(binding["snapshot_id"])
+        unit = units[binding["answer_unit_id"]]
+        answer_text = answers.get(int(binding["run_id"]), "")
+        if (not source or source.snapshot_id != citation["snapshot_id"]
+                or citation["processing_status"] != "DONE"
+                or source.content_hash != citation["snapshot_content_hash"]
+                or source.passages_hash != citation["snapshot_passages_hash"]
+                or unit["run_id"] != binding["run_id"]
+                or answer_text[unit["raw_start"]:unit["raw_end"]] != unit["raw_text"]):
+            raise HTTPException(409, detail="稿件回答或来源范围不匹配")
+        passage = next((p for p in loads(source.passages_json, []) if p["passage_id"] == binding["passage_id"]), None)
+        if not passage or binding["source_span"] not in passage["text"] or passage["text"] not in source.clean_text:
+            raise HTTPException(409, detail="稿件来源片段不在固定正文中")
+        if _content_block_reason(source.title, source.clean_text):
+            raise HTTPException(409, detail="稿件来源被当前正文安全规则阻断")
+        selected.append({
+            "section_id": block["block_id"], "proposed_text": block["draft_text"],
+            "binding_id": binding["binding_id"], "citation_id": binding["citation_id"],
+            "answer_unit_id": unit["answer_unit_id"], "answer_unit": copy.deepcopy(unit),
+            "snapshot_id": source.snapshot_id, "title": source.title, "url": source.canonical_url,
+            "source_content_hash": source.content_hash, "source_artifact_hash": source.artifact_hash,
+            "source_artifact_path": source.artifact_path, "source_passages_hash": source.passages_hash,
+            "passage_id": passage["passage_id"], "passage_text": passage["text"],
+            "passage_hash": text_digest(passage["text"]), "source_span": binding["source_span"],
+            "evidence_relation": binding["evidence_relation"], "answer_anchor": binding["answer_anchor"],
+            "generation_influence": binding["generation_influence"],
+        })
+    brand = copy.deepcopy(snapshot["brand_snapshot"])
+    if _hash(brand) != snapshot["brand_snapshot_hash"]:
+        raise HTTPException(409, detail="冻结品牌输入 hash 不匹配")
+    # Older proposals did not freeze a domain. Carry only the exact prior result's
+    # observed page, explicitly attributed to that result; never consult Project.
+    asset_observations = []
+    if prior_result:
+        prior = loads(prior_result.output_json, {})
+        if _hash(prior) != prior_result.output_hash:
+            raise HTTPException(409, detail="上一稿件内容 hash 不匹配")
+        for candidate in (prior.get("asset_resolution") or {}).get("existing_asset_checks", []):
+            source = source_map.get(candidate.get("snapshot_id"))
+            if not source or source.content_hash != candidate.get("content_hash") or source.canonical_url != candidate.get("url"):
+                raise HTTPException(409, detail="已有页面观察与冻结来源不匹配")
+            asset_observations.append({
+                **copy.deepcopy(candidate), "provenance_result_version": prior_result.result_version,
+                "provenance_result_hash": prior_result.output_hash,
+                "can_authorize_update": False, "editable_permission": "UNVERIFIED",
+                "brand_ownership": "PRIOR_RESULT_OBSERVATION_NOT_VERIFIED",
+            })
+            terms = {raw["prompt_text"][i:i + 2] for i in range(len(raw["prompt_text"]) - 1)}
+            passages = loads(source.passages_json, [])
+            ranked = sorted(passages, key=lambda p: (-sum(term in p["text"] for term in terms), p["passage_id"]))
+            if ranked and any(term in ranked[0]["text"] for term in terms) and not _content_block_reason(source.title, source.clean_text):
+                passage = ranked[0]
+                if passage["text"] not in source.clean_text:
+                    raise HTTPException(409, detail="品牌页面片段不在固定正文中")
+                selected.append({
+                    "section_id": f"brand-page:{source.snapshot_id}", "proposed_text": "",
+                    "binding_id": None, "citation_id": next(row["citation_id"] for row in contribution["citations"] if row.get("snapshot_id") == source.snapshot_id),
+                    "answer_unit_id": None, "snapshot_id": source.snapshot_id,
+                    "title": source.title, "url": source.canonical_url,
+                    "source_content_hash": source.content_hash, "source_artifact_hash": source.artifact_hash,
+                    "source_artifact_path": source.artifact_path, "source_passages_hash": source.passages_hash,
+                    "passage_id": passage["passage_id"], "passage_text": passage["text"],
+                    "passage_hash": text_digest(passage["text"]), "evidence_relation": None,
+                    "material_use": "ATTRIBUTED_BRAND_PAGE_OBSERVATION_NOT_TRUTH",
+                    "provenance_result_version": prior_result.result_version,
+                })
+    events = loads(answer.output_json, {}).get("answer_diagnosis", {}).get("events", [])
+    return {
+        "contract_version": INPUT_VERSION, "identity": copy.deepcopy(identity),
+        "brand": brand, "brand_hash": snapshot["brand_snapshot_hash"],
+        "prompt_text": raw["prompt_text"], "prompt_hash": text_digest(raw["prompt_text"]),
+        "raw_result_version": context.result_version, "raw_output_hash": context.raw_output_hash,
+        "answers": [{"run_id": key, "text": text, "text_hash": text_digest(text)} for key, text in answers.items()],
+        "answer_result_version": answer.result_version, "answer_result_hash": answer.output_hash,
+        "answer_events": copy.deepcopy(events),
+        "contribution_result_version": result.result_version, "contribution_result_hash": result.output_hash,
+        "source_manifest": {key: inputs[key] for key in (
+            "citation_manifest_id", "citation_manifest_hash", "completion_manifest_id", "completion_manifest_hash")},
+        "selected_evidence": selected, "asset_observations": asset_observations,
+        "subjects": sorted({brand["brand_name"], *(str(row.get("entity_text") or "") for row in events)} - {""}),
+        "strategy_direction": copy.deepcopy(snapshot["direction"]),
+        "truths": copy.deepcopy(snapshot.get("truths") or []),
+        "historical_failures": _evidence_failure_audit(contribution),
+    }
 
 
 def _evidence_failure_audit(contribution: dict[str, Any]) -> list[dict[str, Any]]:
@@ -409,226 +494,30 @@ def _evidence_failure_audit(contribution: dict[str, Any]) -> list[dict[str, Any]
     return results
 
 
-def _safe_delivery_sections(automatic_draft: dict[str, Any], bindings: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    sections = []
-    for index, row in enumerate(automatic_draft.get("content_blocks") or automatic_draft.get("sections") or []):
-        answer_text = re.sub(r"[\u200b-\u200d\ufeff]", "", str(row.get("draft_text") or "")).strip()
-        label = answer_text.split("：", 1)[0].strip(" ：。") or f"路径 {index + 1}"
-        binding = bindings.get(str(row.get("binding_id") or ""), {})
-        source_span = str(binding.get("source_span") or "").strip()
-        combined = f"{answer_text} {source_span}"
-        if "短链" in combined or "短链接" in combined:
-            public_text = (
-                "一种可核实的路径是使用合规短链生成器生成短链，再按平台允许的形式放入视频描述、"
-                "评论区或私信卡片。现有材料只支持“生成”和“放置”步骤，不证明稳定跳转、防封效果或任意品牌能力。"
-            )
-        elif "小风车" in combined or "直播间" in combined:
-            public_text = (
-                "直播场景可以使用已获权限的组件承接跳转。当前材料明确支持在直播间通过小风车组件跳转至微信小程序，"
-                "不应扩大为可直接跳转企微或所有外部目标；具体入口和审核条件以发布时的平台规则为准。"
-            )
-        elif "私信" in combined or "卡片" in combined:
-            public_text = (
-                "私信场景可以把链接或跳转卡片与自动回复结合，减少用户再次搜索路径。"
-                "具体落地页类型和跳转结果取决于当前账号权限与实际配置，现有材料不支持承诺任意指定页面。"
-            )
-        else:
-            public_text = f"{answer_text} 上线前请核对当前账号权限、目标页面和平台最新规则。"
-        sections.append({
-            "section_id": str(row.get("block_id") or row.get("section_id") or f"delivery:{index + 1}"),
-            "title": label,
-            "content_class": "PUBLIC_CONTENT",
-            "purpose": "SOURCE_GROUNDED_METHOD",
-            "draft_text": public_text,
-            "answer_unit_id": row.get("answer_unit_id"),
-            "binding_ids": [row.get("binding_id")] if row.get("binding_id") else [],
-            "citation_ids": [row.get("citation_id")] if row.get("citation_id") else [],
-            "source_excerpt": source_span,
-            "evidence_relation": binding.get("evidence_relation") or row.get("evidence_relation"),
-            "answer_anchor": binding.get("answer_anchor") or "UNPROVEN",
-            "generation_influence": binding.get("generation_influence") or "UNAVAILABLE",
-            "truth_ids": [],
-            "reason_ids": [],
-            "theme_ids": [],
-            "allowed_claim_ids": [],
-        })
-    return sections
-
-
-def _build_publication_draft(
-    *,
-    prompt_text: str,
-    brand_name: str,
-    sections: list[dict[str, Any]],
-    brand_snapshot: SinglePromptPreparedSourceSnapshot | None,
-    brand_lines: list[str],
-) -> dict[str, Any]:
-    title = f"{prompt_text}怎么选：场景、路径与上线检查"
-    body = [
-        f"# {title}",
-        "",
-        f"处理“{prompt_text}”时，先确认跳转发生在哪个场景、目标页面是什么，以及当前账号具备哪些平台权限。"
-        "不同路径解决的问题不同，不能把某一种工具或组件的能力直接外推到所有场景。",
-        "",
-        "## 三种可核实的承接路径",
-    ]
-    for index, section in enumerate(sections, 1):
-        body.extend(["", f"### {index}. {section['title']}", "", section["draft_text"]])
-    body.extend([
-        "",
-        "## 上线前检查",
-        "",
-        "1. 确认账号已经获得所选组件或发布位置的操作权限。",
-        "2. 用真实设备测试跳转目标、失败提示和返回路径，不用推测结果代替测试。",
-        "3. 核对抖音及目标平台的当前规则；规则和审核结果可能变化。",
-        "4. 发布后单独记录实际 URL 与版本，再用新的采样观察品牌是否进入回答或引用。",
-    ])
-    brand_section = None
-    if brand_snapshot:
-        observed = "、".join(f"“{line}”" for line in brand_lines[:4]) or f"页面《{brand_snapshot.title}》"
-        brand_text = (
-            f"{brand_name}当前一方页面中可观察到{observed}等与本问题相关的表述。"
-            f"因此，这份内容可以由{brand_name}围绕“{prompt_text}”提供场景判断、路径边界和上线检查，"
-            "并连接到相应产品页面。这里记录的是该页面当前如何表述，不证明具体账号套餐、平台审核结果，"
-            "也不证明发布后一定会被 AI 引用。"
-        )
-        body.extend(["", f"## {brand_name}如何承接这个问题", "", brand_text])
-        brand_section = {
-            "section_id": "brand-association",
-            "title": f"{brand_name}如何承接这个问题",
-            "content_class": "PUBLIC_CONTENT",
-            "purpose": "ATTRIBUTED_FIRST_PARTY_CONTEXT",
-            "draft_text": brand_text,
-            "source_snapshot_ids": [brand_snapshot.snapshot_id],
-            "source_urls": [brand_snapshot.canonical_url],
-            "source_excerpts": brand_lines[:4],
-            "attribution": "TARGET_FIRST_PARTY_PAGE_OBSERVATION",
-            "limitations": ["NOT_INDEPENDENTLY_VERIFIED", "NO_AI_CITATION_EFFECT_CLAIM"],
-        }
-    body.extend([
-        "",
-        "## 结论",
-        "",
-        "先按场景选择可执行路径，再确认权限、规则和真实跳转结果。短链、私信卡片和直播组件可以承担不同环节，"
-        "但任何路径都不应在未验证时承诺稳定性、防封效果或适用于所有账号。",
-    ])
-    return {
-        "deliverable_type": "HELP_ARTICLE",
-        "title": title,
-        "body_markdown": "\n".join(body),
-        "content_hash": _hash("\n".join(body)),
-        "sections": [*sections, *([brand_section] if brand_section else [])],
-    }
-
-
-def _unsupported_public_claims(body: str) -> list[str]:
-    patterns = {
-        "STABLE_JUMP_PROMISE": re.compile(r"稳定跳转"),
-        "BLOCKING_AVOIDANCE_PROMISE": re.compile(r"(?:防封防劫持|降低.{0,10}(?:屏蔽|封禁).{0,4}(?:风险|概率))"),
-        "UNVERIFIED_SCALE_CLAIM": re.compile(r"日均.{0,12}(?:万|亿).{0,8}访问"),
-        "UNVERIFIED_CONVERSION_CLAIM": re.compile(r"提升.{0,12}(?:率|效果|效率|转化)"),
-        "UNBOUNDED_ACCOUNT_SCOPE": re.compile(r"适用于所有账号"),
-        "UNSUPPORTED_ENTERPRISE_WECHAT_DESTINATION": re.compile(r"可直接跳转企微"),
-        "UNBOUNDED_DESTINATION": re.compile(r"任意指定页面"),
-    }
-    negation = re.compile(r"(?:不证明|不应|不能|不支持|未验证|不得|不承诺|不适用|不等于).{0,24}$")
-    violations: list[str] = []
-    for code, pattern in patterns.items():
-        for match in pattern.finditer(body):
-            prefix = body[max(0, match.start() - 24):match.start()]
-            if negation.search(prefix):
-                continue
-            violations.append(code)
-            break
-    return violations
-
-
-def _delivery_qa(
-    *,
-    draft: dict[str, Any],
-    prompt_text: str,
-    brand_name: str,
-    sections: list[dict[str, Any]],
-    brand_snapshot: SinglePromptPreparedSourceSnapshot | None,
-    failures: list[dict[str, Any]],
-) -> dict[str, Any]:
-    body = str(draft.get("body_markdown") or "")
-    unsupported_claims = _unsupported_public_claims(body)
-    checks = {
-        "prompt_specificity": "PASS" if prompt_text and prompt_text in body else "FAIL",
-        "complete_publication_text": "PASS" if draft.get("title") and len(sections) >= 1 and "## 结论" in body else "FAIL",
-        "selected_evidence_bound": "PASS" if sections and all(row.get("binding_ids") and row.get("source_excerpt") for row in sections) else "FAIL",
-        "target_brand_attribution": "PASS" if not brand_snapshot or (brand_name in body and brand_snapshot.canonical_url) else "FAIL",
-        "unsupported_effect_claims_removed": "PASS" if not unsupported_claims else "FAIL",
-        "internal_items_separated": "PASS" if not any(token in body for token in ("TODO", "待补资料", "内部待确认")) else "FAIL",
-        "failed_citations_excluded": "PASS" if all(not row.get("used_in_deliverable") for row in failures) else "FAIL",
-    }
-    failed = [key for key, value in checks.items() if value != "PASS"]
-    return {
-        "contract_version": "single_prompt_execution_text_qa.v1",
-        "status": "READY" if not failed else "NEEDS_REPAIR",
-        "publication_eligibility": "NEEDS_BUSINESS_CONFIRMATION" if not failed else "NOT_ELIGIBLE",
-        "checks": checks,
-        "issues": [*failed, *unsupported_claims],
-        "repairs": [
-            {"code": "REMOVE_UNSUPPORTED_STABLE_JUMP", "result": "APPLIED", "detail": "删除稳定跳转效果承诺。"},
-            {"code": "NARROW_LIVE_DESTINATION", "result": "APPLIED", "detail": "直播组件只保留来源明确支持的微信小程序范围。"},
-            {"code": "ATTRIBUTE_TARGET_BRAND_SOURCE", "result": "APPLIED", "detail": "品牌能力仅按一方页面当前表述归因，不写成独立核实结论。"},
-        ],
-    }
-
-
-def _compile_machine_delivery(db: Session, proposal_id: str, input_snapshot: dict[str, Any]) -> dict[str, Any]:
+def _compile_machine_delivery(proposal_id: str, input_snapshot: dict[str, Any]) -> dict[str, Any]:
+    frozen = input_snapshot["delivery_input"]
+    if frozen["contract_version"] != INPUT_VERSION or digest(frozen) != input_snapshot["delivery_input_hash"]:
+        raise HTTPException(409, detail="稿件冻结输入版本或 hash 不匹配")
     direction = input_snapshot["direction"]
-    project = db.get(Project, int((input_snapshot.get("identity") or {}).get("project_id") or 0))
-    prompt = db.get(Prompt, int((input_snapshot.get("identity") or {}).get("prompt_id") or 0))
-    snapshots = db.query(SinglePromptPreparedSourceSnapshot).filter_by(
-        context_id=(input_snapshot.get("identity") or {}).get("context_id")
-    ).order_by(SinglePromptPreparedSourceSnapshot.snapshot_id).all()
-    contribution, contribution_version = _contribution_output(db, direction)
-    bindings = {str(row.get("binding_id")): row for row in contribution.get("bindings") or []}
-    sections = _safe_delivery_sections(input_snapshot.get("automatic_draft") or {}, bindings)
-    brand_snapshot, brand_lines = _target_brand_snapshot(project, prompt, snapshots)
-    brand_name = str(project.brand_name if project else (input_snapshot.get("brand_snapshot") or {}).get("brand_name") or "目标品牌")
-    prompt_text = str(prompt.prompt_text if prompt else "当前问题")
-    draft = _build_publication_draft(
-        prompt_text=prompt_text,
-        brand_name=brand_name,
-        sections=sections,
-        brand_snapshot=brand_snapshot,
-        brand_lines=brand_lines,
-    )
-    failures = _evidence_failure_audit(contribution)
-    qa = _delivery_qa(
-        draft=draft,
-        prompt_text=prompt_text,
-        brand_name=brand_name,
-        sections=sections,
-        brand_snapshot=brand_snapshot,
-        failures=failures,
-    )
+    brand_name = frozen["brand"]["brand_name"]
+    prompt_text = frozen["prompt_text"]
+    sections, findings, repairs = build_sections(frozen)
+    draft = render_draft(frozen, sections)
+    qa = audit_draft(frozen, draft, findings=findings, repairs=repairs)
+    failures = frozen["historical_failures"]
+    contribution_version = frozen["contribution_result_version"]
     asset_types, surfaces = _asset_options(direction)
     recommended_asset_type = "HELP_DOC" if any(row["asset_type"] == "HELP_DOC" for row in asset_types) else (asset_types[0]["asset_type"] if asset_types else None)
     recommended_surface = next((row["surface_key"] for row in surfaces if row["asset_type"] == recommended_asset_type), None)
-    existing_asset_checks = []
-    if brand_snapshot:
-        existing_asset_checks.append({
-            "candidate_id": f"observed:{brand_snapshot.snapshot_id}",
-            "snapshot_id": brand_snapshot.snapshot_id,
-            "url": brand_snapshot.canonical_url,
-            "title": brand_snapshot.title,
-            "content_hash": brand_snapshot.content_hash,
-            "status": "OBSERVED_BRAND_PAGE_NOT_MANAGED",
-            "relevance": "RELATED_TO_PROMPT",
-            "editable_permission": "UNVERIFIED",
-            "can_authorize_update": False,
-        })
+    existing_asset_checks = copy.deepcopy(frozen["asset_observations"])
     output = {
         "contract_version": EXECUTION_CONTRACT_VERSION,
         "deliverable_contract_version": EXECUTION_DELIVERABLE_VERSION,
         "deliverable_implementation_version": EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION,
         "proposal_id": proposal_id,
         "input_identity": copy.deepcopy(input_snapshot["identity"]),
+        "delivery_input": copy.deepcopy(frozen),
+        "delivery_input_hash": digest(frozen),
         "direction": copy.deepcopy(direction),
         "strategy_channel": {
             "channel_key": direction.get("channel_key"),
@@ -655,10 +544,10 @@ def _compile_machine_delivery(db: Session, proposal_id: str, input_snapshot: dic
             "reason": "缺少 ManagedAsset 记录不等于资产不存在；先核查已观察的一方页面，再决定更新或新建。",
         },
         "channel_resolution": {
-            "publication_channel_key": "OWNED_SITE" if project and project.website_url else "OWNED_SURFACE_UNRESOLVED",
-            "publication_channel_label": f"{brand_name}官网帮助/资讯" if project and project.website_url else "目标品牌自有内容入口",
+            "publication_channel_key": direction.get("channel_key") or "OWNED_SURFACE_UNRESOLVED",
+            "publication_channel_label": direction.get("channel_label") or f"{brand_name}自有帮助/资讯入口（待确认）",
             "recommended_surface": recommended_surface,
-            "known_website": project.website_url if project else "",
+            "known_website": "",
             "reason": "该动作需要建立目标品牌与当前问题的可核验关联；自有站点便于保留完整问题解答、来源和后续版本。选择该发布位置不创建 OFFICIAL_SITE PRIMARY，也不证明引用效果。",
             "strategy_channel_role_changed": False,
             "upstream_channel_resolver_reused": True,
@@ -676,10 +565,12 @@ def _compile_machine_delivery(db: Session, proposal_id: str, input_snapshot: dic
         "publication_draft": draft,
         "brand_association": {
             "brand_name": brand_name,
-            "observed_fact": "目标品牌未出现在基线回答正文中。",
+            "observed_fact": "固定回答正文包含目标品牌名称；名称出现不等于推荐。" if any(brand_name in row["text"] for row in frozen["answers"]) else "固定回答正文未出现目标品牌名称；不代表品牌不具备能力。",
             "action_hypothesis": f"由{brand_name}发布针对“{prompt_text}”的完整问题解答，建立品牌、场景和可核验一方资料之间的关联。",
             "validation_condition": "发布后使用新的真实 Run 观察品牌提及、推荐和准确 URL 引用；结果只作描述性比较。",
-            "first_party_source": ({"snapshot_id": brand_snapshot.snapshot_id, "url": brand_snapshot.canonical_url, "content_hash": brand_snapshot.content_hash} if brand_snapshot else None),
+            "first_party_source": None,
+            "brand_snapshot_hash": frozen["brand_hash"],
+            "asset_observations": existing_asset_checks,
             "claim_boundary": "一方页面表述不等于独立验证，也不证明 AI 会采用该来源。",
         },
         "evidence_processing_audit": {
@@ -691,7 +582,7 @@ def _compile_machine_delivery(db: Session, proposal_id: str, input_snapshot: dic
         "internal_checklist": [
             {"code": "VERIFY_EXISTING_ASSET", "detail": "确认已观察的一方页面是否为当前可编辑资产，以及更适合追加模块还是另建帮助文章。"},
             {"code": "VERIFY_PUBLICATION_AUTHORITY", "detail": "确认实际账号、栏目和页面编辑权限；系统不会把已知域名等同于账号控制。"},
-            {"code": "VERIFY_CURRENT_PLATFORM_RULES", "detail": "发布前核对抖音及目标平台当前规则和账号权限。"},
+            {"code": "VERIFY_CURRENT_PLATFORM_RULES", "detail": "发布前核对所选平台当前规则和账号权限。"},
             {"code": "PRESERVE_EFFECT_LIMIT", "detail": "该动作是探索假设，不承诺发布后一定被引用、推荐或带来效果。"},
         ],
         "claim_usage_policy": [],
@@ -700,7 +591,7 @@ def _compile_machine_delivery(db: Session, proposal_id: str, input_snapshot: dic
             "asset_type": recommended_asset_type,
             "package_key": "COMPLETE_HELP_ARTICLE",
             "publication_surface": recommended_surface,
-            "publishing_account": f"{brand_name}官网（{project.website_url}）" if project and project.website_url else "",
+            "publishing_account": "",
             "publishing_location": "帮助中心或资讯中心；优先核查现有相关页面",
             "account_control_status": "UNVERIFIED",
             "title": draft["title"],
@@ -719,73 +610,9 @@ def _compile_machine_delivery(db: Session, proposal_id: str, input_snapshot: dic
     return output
 
 
-def _compile_output(proposal_id: str, input_snapshot: dict[str, Any], db: Session | None = None) -> dict[str, Any]:
-    automatic_draft = input_snapshot.get("automatic_draft") or {}
-    if automatic_draft:
-        if db is not None:
-            return _compile_machine_delivery(db, proposal_id, input_snapshot)
-        direction = input_snapshot["direction"]
-        asset_types, surfaces = _asset_options(direction)
-        blocks = []
-        for index, row in enumerate(automatic_draft.get("content_blocks") or automatic_draft.get("sections") or []):
-            block_id = str(row.get("block_id") or row.get("section_id") or f"section:{proposal_id}:{index + 1}")
-            blocks.append({
-                "section_id": block_id,
-                "content_class": "PUBLIC_CONTENT",
-                "purpose": str(row.get("content_role") or row.get("purpose") or "GROUNDED_CONTENT"),
-                "title": str(row.get("heading") or row.get("title") or f"内容 {index + 1}"),
-                "draft_text": str(row.get("draft_text") or ""),
-                "truth_ids": [],
-                "reason_ids": [],
-                "theme_ids": [],
-                "allowed_claim_ids": [],
-                "answer_unit_id": row.get("answer_unit_id"),
-                "binding_id": row.get("binding_id"),
-                "citation_id": row.get("citation_id"),
-                "evidence_relation": row.get("evidence_relation"),
-            })
-        title = str(automatic_draft.get("title") or "执行内容草稿")
-        output = {
-            "contract_version": EXECUTION_CONTRACT_VERSION,
-            "proposal_id": proposal_id,
-            "input_identity": copy.deepcopy(input_snapshot["identity"]),
-            "direction": copy.deepcopy(direction),
-            "strategy_channel": {
-                "channel_key": direction.get("channel_key"),
-                "channel_label": direction.get("channel_label"),
-                "channel_role": direction.get("channel_role"),
-                "immutable": True,
-            },
-            "asset_operation": "CONDITIONAL",
-            "asset_type_candidates": asset_types,
-            "publication_surface_candidates": surfaces,
-            "package_candidates": [{"package_key": "MACHINE_DRAFT", "label": "当前机器资格草稿", "direction_id": direction["direction_id"], "truth_ids": []}],
-            "title_candidates": [{"title_id": "MACHINE_GROUNDED_TITLE", "title": title, "truth_ids": []}],
-            "public_content_candidates": blocks,
-            "internal_checklist": copy.deepcopy(automatic_draft.get("internal_checklist") or []),
-            "claim_usage_policy": [],
-            "selection": {
-                "asset_operation": "CONDITIONAL",
-                "asset_type": None,
-                "package_key": "MACHINE_DRAFT",
-                "publication_surface": None,
-                "publishing_account": "",
-                "publishing_location": "",
-                "account_control_status": "UNVERIFIED",
-                "title": title,
-                "section_order": [row["section_id"] for row in blocks],
-                "execution_note": "",
-            },
-            "selected_public_content": blocks,
-            "baseline": copy.deepcopy(input_snapshot["baseline"]),
-            "limitations": copy.deepcopy(input_snapshot.get("limitations") or []),
-            "advisories": copy.deepcopy(input_snapshot.get("advisories") or []),
-            "automatic_qa": copy.deepcopy(automatic_draft.get("qa") or {}),
-            "validation": {},
-            "boundary": copy.deepcopy(input_snapshot["boundary"]),
-        }
-        output["validation"] = validate_execution_output(output, input_snapshot)
-        return output
+def _compile_output(proposal_id: str, input_snapshot: dict[str, Any]) -> dict[str, Any]:
+    if input_snapshot.get("automatic_draft"):
+        return _compile_machine_delivery(proposal_id, input_snapshot)
     direction = input_snapshot["direction"]
     truths = input_snapshot["truths"]
     truth_ids = [row["product_truth_id"] for row in truths]
@@ -949,6 +776,18 @@ def validate_execution_output(output: dict[str, Any], input_snapshot: dict[str, 
         }:
             errors.append("TITLE_CONTAINS_UNAPPROVED_WORDING")
         qa = output.get("automatic_qa") or {}
+        if complete_delivery:
+            frozen = output.get("delivery_input") or {}
+            if (
+                frozen.get("contract_version") != INPUT_VERSION
+                or digest(frozen) != output.get("delivery_input_hash")
+                or frozen.get("identity") != input_snapshot.get("identity")
+            ):
+                errors.append("DELIVERY_INPUT_MISMATCH")
+            else:
+                qa = audit_draft(frozen, output.get("publication_draft") or {})
+                if (output.get("publication_draft") or {}).get("sections") != output.get("selected_public_content"):
+                    errors.append("PUBLIC_TEXT_SELECTION_MISMATCH")
         accepted_qa_statuses = {"READY", "READY_INTERNAL"} if complete_delivery else {"READY_INTERNAL"}
         if qa.get("status") not in accepted_qa_statuses:
             errors.append("AUTOMATIC_QA_NOT_READY")
@@ -1036,6 +875,9 @@ def create_execution_proposal(
         )
     ):
         raise HTTPException(status_code=409, detail="策略结果或审核快照已变化，请重新加载")
+    if snapshot.get("automatic_draft"):
+        snapshot["delivery_input"] = _freeze_delivery_input(db, snapshot)
+        snapshot["delivery_input_hash"] = digest(snapshot["delivery_input"])
     snapshot["input_snapshot_hash"] = _hash(snapshot)
     fingerprint = _hash({
         "identity": current,
@@ -1055,7 +897,7 @@ def create_execution_proposal(
         ).one()
         return existing, result, False
     proposal_id = f"execution-proposal-{uuid4()}"
-    output = _compile_output(proposal_id, snapshot, db)
+    output = _compile_output(proposal_id, snapshot)
     output_hash = _hash(output)
     reviewable_set_hash = _hash({
         "direction_id": direction_id,
@@ -1165,6 +1007,12 @@ def revise_execution_proposal(
     sections = {row["section_id"]: row for row in output["public_content_candidates"]}
     output["selected_public_content"] = [sections[value] for value in selection.get("section_order") or [] if value in sections]
     snapshot = loads(proposal.input_snapshot_json, {})
+    if complete_delivery:
+        frozen = output["delivery_input"]
+        output["publication_draft"] = render_draft(frozen, output["selected_public_content"], title=selection.get("title"))
+        output["automatic_qa"] = audit_draft(frozen, output["publication_draft"])
+        # The parent result keeps its repair evidence; this edit did not apply it again.
+        output["repair_history"] = []
     output["validation"] = validate_execution_output(output, snapshot)
     output["human_revision"] = {
         "editor": editor,
@@ -1227,9 +1075,17 @@ def generate_complete_execution_deliverable(
     ):
         return base, False
     snapshot = loads(proposal.input_snapshot_json, {})
-    output = _compile_machine_delivery(db, proposal_id, snapshot)
+    if base_output.get("delivery_input"):
+        frozen = base_output["delivery_input"]
+        if digest(frozen) != base_output.get("delivery_input_hash"):
+            raise HTTPException(409, detail="已保存稿件输入 hash 不匹配")
+    else:
+        frozen = _freeze_delivery_input(db, snapshot, prior_result=base)
+    snapshot["delivery_input"] = copy.deepcopy(frozen)
+    snapshot["delivery_input_hash"] = digest(frozen)
+    output = _compile_machine_delivery(proposal_id, snapshot)
     output["system_revision"] = {
-        "reason": "UPGRADE_CONTENT_SKELETON_TO_COMPLETE_OPTIMIZE_DELIVERABLE",
+        "reason": "FROZEN_INPUT_GROUNDED_DELIVERY_AND_TEXT_QA",
         "base_result_version": base_result_version,
         "external_calls": 0,
         "source_refetches": 0,
@@ -1492,9 +1348,15 @@ def get_execution_proposal_status(
     applicability = _proposal_applicability(db, proposal)
     active_confirmation = next((row for row in confirmations if row.result_version == proposal.active_result_version), None)
     allowed_operations = ["VIEW"]
+    output = loads(result.output_json, {}) if result else {}
+    needs_upgrade = bool(
+        proposal.input_authority_type == "MACHINE_QUALIFICATION"
+        and output.get("deliverable_contract_version") != EXECUTION_DELIVERABLE_VERSION
+    )
     if applicability["is_current_input"]:
-        allowed_operations.append("REVISE")
-        if result and (loads(result.output_json, {}).get("validation") or {}).get("status") == "READY_FOR_CONFIRMATION" and not active_confirmation:
+        allowed_operations.append("GENERATE_DELIVERABLE" if needs_upgrade else "REVISE")
+        current_validation = validate_execution_output(output, loads(proposal.input_snapshot_json, {})) if result and not needs_upgrade else {}
+        if current_validation.get("status") == "READY_FOR_CONFIRMATION" and not active_confirmation:
             allowed_operations.append("CONFIRM")
     if confirmations:
         allowed_operations.append("RECORD_PUBLICATION")
@@ -1535,6 +1397,11 @@ def get_execution_proposal_status(
         } for row in publications],
         "applicability": applicability,
         "allowed_operations": allowed_operations,
+        "delivery_status": {
+            "needs_upgrade": needs_upgrade,
+            "content_available": bool(output.get("publication_draft")),
+            "next_action": "GENERATE_DELIVERABLE" if needs_upgrade else "PROVIDE_PUBLICATION_DETAILS",
+        },
         "boundary": {
             "external_llm_calls": 0, "web_refetches": 0, "automatic_publication": False,
             "update_managed_enabled": False, "retest_computation": True,

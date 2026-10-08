@@ -981,6 +981,8 @@ export type SinglePromptV2ExecutionStatus = {
       direction: SinglePromptV2StrategyDirection;
       strategy_channel: { channel_key: string | null; channel_label: string | null; channel_role: string | null; immutable: boolean };
       deliverable_contract_version?: string;
+      delivery_input_hash?: string;
+      delivery_input?: Record<string, any>;
       asset_operation: "CREATE_NEW" | "UPDATE_EXISTING" | "CONDITIONAL";
       asset_resolution?: Record<string, any>;
       channel_resolution?: Record<string, any>;

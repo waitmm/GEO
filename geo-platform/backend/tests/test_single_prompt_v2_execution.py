@@ -62,10 +62,11 @@ def _session(tmp_path):
     return sessionmaker(bind=engine)(), engine
 
 
-def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, accept_strategy=True, publishable=True):
+def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, accept_strategy=True, publishable=True,
+                            include_sampling_failure=False, complete_semantics=True):
     plan = {
         "contract_version": "single-prompt-sampling-plan-v1", "project_id": 1, "prompt_id": 44,
-        "prompt_text": "哪个二维码工具值得推荐", "sample_count": 3, "platform": "wenxin",
+        "prompt_text": "哪个二维码工具值得推荐", "sample_count": 3 if include_sampling_failure else 2, "platform": "wenxin",
         "source_type": "browser_audit", "adapter": "wenxin_web_audit", "collection_mode": "single_independent",
     }
     raw = {
@@ -74,8 +75,8 @@ def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, acce
         "runs": [
             {"run_id": 101, "status": "success", "answer_text": "竞品甲值得推荐，因为支持批量生成二维码。",
              "environment": {"sampling_mode": "UNKNOWN"}, "references": [{"reference_id": 1}], "retrieval_candidates": []},
-            {"run_id": 102, "status": "failed", "answer_text": "", "environment": {"sampling_mode": "UNKNOWN"},
-             "references": [], "retrieval_candidates": [], "error": {"type": "blocked"}},
+            *([{"run_id": 102, "status": "failed", "answer_text": "", "environment": {"sampling_mode": "UNKNOWN"},
+                "references": [], "retrieval_candidates": [], "error": {"type": "blocked"}}] if include_sampling_failure else []),
             {"run_id": 103, "status": "success", "answer_text": "另一个有效回答未包含本方向。",
              "environment": {"sampling_mode": "UNKNOWN"}, "references": [], "retrieval_candidates": []},
         ],
@@ -84,11 +85,11 @@ def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, acce
         analysis_id="analysis-1", project_id=1, prompt_id=44, task_id=52,
         idempotency_key="analysis-fixture", prompt_text_snapshot=plan["prompt_text"],
         sampling_plan_json=json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        sampling_plan_hash=_hash(plan), status="READY_WITH_FAILURES",
+        sampling_plan_hash=_hash(plan), status="READY_WITH_FAILURES" if include_sampling_failure else "READY",
     ))
     run_scope = {
         "contract_version": "single-prompt-run-scope-v1", "task_id": 52,
-        "run_ids": [101, 102, 103], "planned_run_count": 3,
+        "run_ids": [row["run_id"] for row in raw["runs"]], "planned_run_count": len(raw["runs"]),
     }
     db.add(SinglePromptAnalysisContext(
         context_id="context-1", analysis_id="analysis-1", project_id=1, prompt_id=44, task_id=52,
@@ -96,14 +97,18 @@ def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, acce
         run_scope_json=json.dumps(run_scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         run_scope_hash=_hash(run_scope),
         raw_output_json=json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        raw_output_hash=_hash(raw), valid_run_count=2, failed_run_count=1,
+        raw_output_hash=_hash(raw), valid_run_count=2, failed_run_count=int(include_sampling_failure),
     ))
     output = {
         "contract_version": "single_prompt_diagnosis.v2_second_slice",
         "answer_diagnosis": {"events": [{
             "event_id": "event-1", "run_id": 101, "entity_text": "竞品甲", "effective_speech_act": "RECOMMEND",
             "reasons": [{"reason_id": "reason-1", "reason_span": "支持批量生成二维码", "normalized_reason": "支持批量生成二维码", "fact_consumption_eligible": True}],
-        }], "unresolved_items": [], "failures": []},
+        }], "unresolved_items": [], "failures": [], "answer_jobs": [
+            {"answer_hash": hashlib.sha256(row["answer_text"].encode()).hexdigest(),
+             "status": "DONE" if row["run_id"] == 101 else "DONE_ZERO_EVENTS"}
+            for row in raw["runs"] if row["run_id"] == 101 or (row["run_id"] == 103 and complete_semantics)
+        ]},
         "source_diagnosis": {"snapshots": [{"snapshot_id": "source-1"}]},
         "evidence_diagnosis": {"source_relations": [{
             "relation_id": "evidence-rel-1", "reason_id": "reason-1", "source_snapshot_id": "source-1",
@@ -210,10 +215,30 @@ def test_test_direction_without_primary_generates_create_new_and_exact_baseline(
         observed_theme_run_ids = json.loads(proposal.input_snapshot_json)["themes"][0]["observed_run_ids"]
         assert observed_theme_run_ids == [101]
         assert output["baseline"]["baseline_run_ids"] != observed_theme_run_ids
-        assert output["baseline"]["run_manifest"]["failed"][0]["run_id"] == 102
+        assert output["baseline"]["run_manifest"]["failed"] == []
         assert "RETRIEVAL_OBSERVATION_UNAVAILABLE" in output["baseline"]["collector_capability_snapshot"]["warnings"]
         assert output["validation"]["status"] == "NEEDS_HUMAN_SELECTION"
         assert db.query(SinglePromptExecutionProposal).count() == 1
+    finally:
+        db.close(); engine.dispose()
+
+
+@pytest.mark.parametrize("sampling_failure", [False, True])
+def test_incomplete_fixed_scope_remains_blocked_and_failed_samples_are_preserved(tmp_path, sampling_failure):
+    from app.modules.single_prompt_v2.execution import _baseline_snapshot
+    db, engine = _session(tmp_path)
+    try:
+        with pytest.raises(HTTPException) as blocked:
+            _seed_accepted_strategy(db, include_sampling_failure=sampling_failure, complete_semantics=False)
+        assert blocked.value.status_code == 409
+        assert blocked.value.detail["code"] == "FIXED_ANALYSIS_SCOPE_INCOMPLETE"
+        assert db.query(SinglePromptExecutionProposal).count() == 0
+        baseline = _baseline_snapshot(db.query(SinglePromptAnalysis).one(), db.query(SinglePromptAnalysisContext).one())
+        assert baseline["baseline_run_ids"] == [101, 103]
+        assert baseline["run_manifest"]["planned_count"] == (3 if sampling_failure else 2)
+        assert baseline["run_manifest"]["failed_count"] == int(sampling_failure)
+        if sampling_failure:
+            assert baseline["run_manifest"]["failed"][0]["run_id"] == 102
     finally:
         db.close(); engine.dispose()
 

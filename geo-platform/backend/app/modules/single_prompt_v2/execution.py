@@ -42,8 +42,8 @@ from app.services.serialization import loads
 
 EXECUTION_CONTRACT_VERSION = "single_prompt_execution.optimize_delivery.v2"
 EXECUTION_INPUT_VALIDATION_VERSION = "single_prompt_execution_input.v2"
-EXECUTION_DELIVERABLE_VERSION = "single_prompt_execution_deliverable.v2"
-EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v5"
+EXECUTION_DELIVERABLE_VERSION = "single_prompt_execution_deliverable.v3"
+EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v6"
 PUBLICATION_CONFORMANCE_VERSION = "single_prompt_publication_conformance.v1"
 
 VALID_RUN_STATUSES = {"success", "partial_success"}
@@ -548,7 +548,13 @@ def _compile_machine_delivery(proposal_id: str, input_snapshot: dict[str, Any]) 
             "publication_channel_label": direction.get("channel_label") or f"{brand_name}自有帮助/资讯入口（待确认）",
             "recommended_surface": recommended_surface,
             "known_website": "",
-            "reason": "该动作需要建立目标品牌与当前问题的可核验关联；自有站点便于保留完整问题解答、来源和后续版本。选择该发布位置不创建 OFFICIAL_SITE PRIMARY，也不证明引用效果。",
+            "reason": (
+                f"冻结资料中已有相关页面：{existing_asset_checks[0]['url']}。本稿承接的是选型说明、来源对照和操作前检查，"
+                "适合该站帮助/资讯栏目；已有页先核对是否能容纳完整说明，若是产品落地页则保留它作为资料入口，另设帮助页。"
+                "这是内容承载的条件建议，不是引用效果排名，也不声称官网优于第三方渠道。"
+                if existing_asset_checks else
+                "固定输入没有可核对的已有承载页，发布位置仍待确定；帮助文档仅为内容形式建议，不推定目标品牌控制官网。"
+            ),
             "strategy_channel_role_changed": False,
             "upstream_channel_resolver_reused": True,
             "upstream_strategy_channel": {

@@ -10,7 +10,7 @@ from typing import Any
 
 
 INPUT_VERSION = "single_prompt_delivery_input.v1"
-TEXT_QA_VERSION = "single_prompt_execution_text_qa.v2"
+TEXT_QA_VERSION = "single_prompt_execution_text_qa.v3"
 
 
 def digest(value: Any) -> str:
@@ -58,7 +58,10 @@ def check_statement(text: str, evidence: dict, subjects: list[str]) -> list[dict
 def build_sections(frozen: dict) -> tuple[list[dict], list[dict], list[dict]]:
     sections, findings, repairs = [], [], []
     for item in frozen["selected_evidence"]:
-        before = quote_text(item) if item.get("material_use") == "ATTRIBUTED_BRAND_PAGE_OBSERVATION_NOT_TRUTH" else item["proposed_text"]
+        if item.get("material_use") == "ATTRIBUTED_BRAND_PAGE_OBSERVATION_NOT_TRUTH":
+            # A product page observation provides a lookup destination, not a claim.
+            continue
+        before = item["proposed_text"]
         issues = check_statement(before, item, frozen["subjects"])
         after = quote_text(item)
         section_id = item["section_id"]
@@ -94,20 +97,46 @@ def build_sections(frozen: dict) -> tuple[list[dict], list[dict], list[dict]]:
 def render_draft(frozen: dict, sections: list[dict], title: str | None = None) -> dict:
     prompt = frozen["prompt_text"]
     brand = frozen["brand"]["brand_name"]
-    title = title or f"{prompt}：资料解读与适用边界"
-    body = [f"# {title}", "", f"围绕“{prompt}”，下文按资料分别说明相关做法及适用范围。"
-            "不同来源的主体和条件不能互相替换；所列内容是来源表述，不代表独立验证或效果保证。"]
+    title = title or f"{prompt}：场景对照与选择检查"
+    body = [f"# {title}", "", f"选择“{prompt}”相关方案时，先写清自己的使用场景、期望结果和实际可操作条件，"
+            "再对照具体资料。下面把相关话题与各自出处放在一起，便于判断应继续核对哪一项，而不是把所有做法同时照搬。",
+            "", "## 先对照自己的需求", "",
+            "| 需要了解的话题 | 对照资料 | 选择前要核对 |", "| --- | --- | --- |"]
+    evidence = {item["section_id"]: item for item in frozen["selected_evidence"]}
+    checks = {
+        "PROCEDURE": "操作环境、账号权限和适用条件是否与自己的场景一致？",
+        "DECISION_REASON": "资料里的例子属于哪个工具，是否覆盖自己的具体需求？",
+        "RULE_CONDITION": "规则适用于什么对象和条件，当前是否仍然适用？",
+    }
+    for section in sections:
+        item = evidence.get(section["section_id"], {})
+        unit = item.get("answer_unit") or {}
+        raw = str(unit.get("raw_text") or "")
+        label = raw.split("：", 1)[0] if "：" in raw and len(raw.split("：", 1)[0]) <= 40 else item.get("title", section["title"])
+        cell = lambda text: str(text).replace("|", "\\|").replace("\n", " ")
+        check = checks.get(unit.get("primary_type"), "主体、适用范围和时间是否与自己的需求一致？")
+        body.append(f"| {cell(label)} | {cell(item.get('title', section['title']))} | {check} |")
+    body.extend(["", "这些核对问题是选型步骤，不代表资料里的方法已经在你的账号或环境中验证通过。",
+                 "", "## 对照资料原文", "", "请连同主体和适用条件阅读，不将一个工具的例子当成其他工具的能力说明。"])
     for section in sections:
         body.extend(["", f"## {section['title']}", "", section["draft_text"]])
-    body.extend(["", f"## {brand}与这个问题", "",
-                 f"这份解读围绕“{prompt}”整理可回查资料，供读者对照自身场景选择下一步。"
-                 f"资料中其他工具的功能不代表{brand}具备相同能力；具体产品范围应以明确的产品说明为准。",
-                 "", "## 如何使用这些资料", "",
-                 "先确定自己的使用场景，再逐项对照来源中的主体、适用条件和操作前提。"
-                 "涉及实际操作时，先核对当前版本和权限，再在可控范围验证；不要把不同资料的片段拼成未经验证的承诺。",
+    body.extend(["", f"## 准备了解{brand}时，去哪里核对", ""])
+    observations = frozen.get("asset_observations") or []
+    if observations:
+        body.append(f"准备比较{brand}时，可以先查看以下相关资料，再向服务方核对与你的场景对应的具体支持范围：")
+        for page in observations:
+            body.append(f"- {page['title']}：{page['url']}")
+    else:
+        body.append(f"准备比较{brand}时，请向服务方核对适用场景和产品说明；本文没有提供未经核实的产品能力承诺。")
+    body.extend([f"不要把上文其他工具的例子当成{brand}的能力，也不要仅凭页面的效果描述决定上线。",
+                 "", "## 选择后，按这个顺序检查", "",
+                 "1. 写清你的使用场景、期望结果，以及准备采用上表中的哪一种做法。",
+                 "2. 对照该项资料，核对实际账号、使用环境、前提条件和服务方说明；条件不一致时先停止套用步骤。",
+                 "3. 在自己可控制的小范围内实际尝试，记录采用的方法、测试环境、实际结果及失败情况。",
+                 "4. 只有实际结果符合预期，才决定扩大使用；不符合时保留失败记录并调整选择，不把个别成功当成普遍保证。",
                  "", "## 结论", "",
-                 f"对于“{prompt}”，应保留各来源自己的适用边界。"
-                 "本文提供可回查的资料和使用次序，不把内容发布等同于效果已经实现。"])
+                 f"对于“{prompt}”，先选适用场景，再核对具体方法和产品范围，最后用实际尝试决定是否采用。"
+                 "这比把不同资料中的做法拼成一个通用承诺更稳妥。"])
     text = "\n".join(body)
     return {"deliverable_type": "EVIDENCE_BASED_ARTICLE", "title": title,
             "body_markdown": text, "content_hash": text_digest(text), "sections": copy.deepcopy(sections)}

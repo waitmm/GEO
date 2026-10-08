@@ -73,6 +73,23 @@ def test_no_problem_has_no_repair_record(frozen):
     assert findings == [] and repairs == []
 
 
+def test_reader_guide_and_brand_lookup_do_not_promote_marketing_to_claim(frozen):
+    frozen["asset_observations"] = [{"candidate_id": "observed:fixture", "url": "https://example.com/product", "title": "乙厂产品说明"}]
+    frozen["selected_evidence"].append({
+        **frozen["selected_evidence"][0], "section_id": "brand-observation",
+        "material_use": "ATTRIBUTED_BRAND_PAGE_OBSERVATION_NOT_TRUTH", "binding_id": None,
+        "passage_text": "乙厂效率提升99.99%，适用所有环境。",
+    })
+    result = execution._compile_machine_delivery("proposal", snapshot(frozen))
+    body = result["publication_draft"]["body_markdown"]
+    assert "先对照自己的需求" in body and "选择后，按这个顺序检查" in body
+    assert "https://example.com/product" in body and "向服务方核对" in body
+    assert "99.99%" not in body and "适用所有环境" not in body
+    assert len(result["selected_public_content"]) == 1
+    assert result["strategy_channel"]["channel_role"] is None
+    assert result["automatic_qa"]["status"] == "READY"
+
+
 @pytest.mark.parametrize("change", ["subject", "number", "qualifier", "unbound_body", "title"])
 def test_qa_rechecks_actual_text_not_just_existing_citation(frozen, change):
     sections, _, _ = build_sections(frozen)

@@ -4,7 +4,7 @@
   "implementation_verified": true,
   "active_delivery_slice": {
     "name": "one_prompt_one_run_formal_delivery",
-    "status": "FROZEN_ATTRIBUTED_DRAFT_VERIFIED",
+    "status": "WAITING_EDITORIAL_AND_PUBLICATION_INPUT",
     "analysis_id": "925ef2dc-605f-467d-a025-52033a574d92",
     "context_id": "ctx-5407fb2f-acd5-41ac-8ac7-41713a08a5aa",
     "selected_run_ids": [
@@ -21,7 +21,9 @@
       "ACTUAL_TEXT_QA",
       "FROZEN_DELIVERY_INPUT",
       "SOURCE_ATTRIBUTED_TEXT_QA_AND_LOCAL_REPAIR",
-      "FORMAL_UI_GENERATION_AND_READ_ONLY_REFRESH"
+      "FORMAL_UI_GENERATION_AND_READ_ONLY_REFRESH",
+      "READER_SELECTION_GUIDE_AND_BRAND_LOOKUP",
+      "HISTORICAL_19_FIXTURE_FAILURES_RESOLVED"
     ],
     "not_completed": [
       "EXECUTION_CONFIRMATION",
@@ -29,7 +31,7 @@
       "POST_PUBLICATION_RETEST",
       "VALIDATE_COMPARISON"
     ],
-    "current_blocker": "本切片的冻结输入、归因式完整稿、逐段 QA/真实修复及页面已验证；自由改写语义 QA 与通用稿件质量未据此宣布完成。发布仍需真实资产/账号/权限，未进行发布及复测。",
+    "current_blocker": "v6 业务核查发现资料排列和品牌关联偏弱，已生成 v7 选择检查稿并展示全文；待用户编辑验收及实际位置/权限确认。没有真实发布，旧授权不覆盖本次发布后复测。UPDATE 正式确认仍未启用，不以 CREATE_NEW 冒充更新。",
     "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md",
     "code_commits": [
       "4d6724d",
@@ -38,9 +40,10 @@
       "c7ce35e",
       "56eaf9f",
       "8a0ece1",
-      "2109c3f"
+      "2109c3f",
+      "3585917"
     ],
-    "result_version": "execution-v6:851eeab2713cd944"
+    "result_version": "execution-v7:c2dc55b0d25749c7"
   },
   "tasks": [
     {
@@ -115,6 +118,16 @@
       "blocker": "",
       "commit": "",
       "audit_classification": "需修复",
+      "corrective_task": {
+        "id": "T01-fixed-scope-fixture-repair",
+        "commit": "3585917",
+        "owner": "Codex",
+        "status": "DONE",
+        "completed_at": "2026-10-08",
+        "scope": "已登记的19项 execution/retest 前置范围失败；正例覆盖完整有效Run，负例继续拒绝不完整范围并保留失败Run清单",
+        "verification": "原22项加2项固定范围负例：24 passed；相关四文件组合61 passed；不改生产Gate、不跳过测试",
+        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#10-2026-10-08-业务交付验收与发布准备"
+      },
       "slice_progress": {
         "date": "2026-10-08",
         "status": "PARTIALLY_VERIFIED",
@@ -647,12 +660,12 @@
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "归因式完整稿正式验证；自由综合改写和更多交付类型未验收",
+      "audit_classification": "v7选择检查稿与品牌查询入口已保存并展示；等待用户编辑验收，通用多类型未验收",
       "slice_progress": {
         "date": "2026-10-08",
         "status": "PARTIALLY_VERIFIED",
-        "scope": "单 Prompt / Run 1；归因式正文；不是全模块 DONE",
-        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+        "scope": "单 Prompt / Run 1；v7增加场景对照、选择检查及具体品牌入口，不是全模块 DONE",
+        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#10-2026-10-08-业务交付验收与发布准备"
       }
     },
     {
@@ -690,8 +703,8 @@
       "slice_progress": {
         "date": "2026-10-08",
         "status": "PARTIALLY_VERIFIED",
-        "scope": "单 Prompt / Run 1；归因式正文；不是全模块 DONE",
-        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+        "scope": "单 Prompt / Run 1；v7三处归因投影复检，不证明来源事实；不同主题营销段落隔离回归通过",
+        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#10-2026-10-08-业务交付验收与发布准备"
       }
     },
     {
@@ -734,8 +747,8 @@
       "slice_progress": {
         "date": "2026-10-08",
         "status": "PARTIALLY_VERIFIED",
-        "scope": "单 Prompt / Run 1；归因式正文；不是全模块 DONE",
-        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+        "scope": "单 Prompt / Run 1；首页进入v7、刷新保留、桌面/移动端只读验证；发布未发生",
+        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#10-2026-10-08-业务交付验收与发布准备"
       }
     },
     {

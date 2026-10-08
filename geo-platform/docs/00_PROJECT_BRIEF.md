@@ -1,7 +1,7 @@
 # 00 Project Brief
 
 ## 2026-10-08 Current Delivery Checkpoint
-The active single-Run result is execution-v6:851eeab2713cd944 (Analysis 925ef2dc-605f-467d-a025-52033a574d92). Frozen-input source-attributed drafting and actual-text QA/local repair have formal UI/API evidence; arbitrary free-form synthesis and comprehensive semantic verification are not claimed.
+The active single-Run result is execution-v7:c2dc55b0d25749c7 (Analysis 925ef2dc-605f-467d-a025-52033a574d92). V6 business inspection led to a reader selection guide and explicit brand lookup using the same frozen inputs. Full text and publication conditions are in acceptance section 10. User editorial acceptance/publication are pending; no real Retest has run. The 19 historical fixture failures are resolved (24 execution/retest tests passed, including two incomplete-scope negatives). Arbitrary free-form synthesis and comprehensive semantic verification are not claimed.
 Publication, confirmation, post-publication Retest and Comparison remain zero. Release revision is 20260930_01; one historical B1 Human Gold review exists. Earlier dated counts below are historical, not current.
 See [status audit](geo-v1.0/PROJECT_STATUS_2026-10-08.md) and [repair acceptance, section 9](geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补).
 

@@ -1,5 +1,13 @@
 # 09 Product Iteration Log
 
+## 2026-10-08 V6 Business Inspection and V7 Reader Guide
+
+V6 was inspected as content, not accepted based on implementation status. The narrow improvement adds selection utility and a concrete frozen brand lookup while removing a marketing paragraph from public content. V7 remains attributed source interpretation, not a product capability proof or a promise of citation gains.
+
+The intended intervention is a help/info asset that makes relevant scenarios easier to compare and gives readers a verifiable path to investigate the brand. The observed absence of the brand in one answer does not prove its cause. Placement depends on the user's real page and permissions; UPDATE confirmation is still unavailable and must not be disguised as CREATE_NEW.
+
+Formal-page read and refresh are verified. User business approval is not automatic. Publication and a separately authorized new post-publication sample are the next gates; universal generation maturity is not made a prerequisite.
+
 ## 2026-10-08 Draft Delivery Before Publication
 The Product Owner authorized four repairs: frozen generation inputs, removal of scenario templates, actual-text QA/local repair, and formal-page delivery. This does not authorize new external calls or publication.
 The implemented offline path produces attributed source interpretation, not unsupported brand copy. QA READY proves the frozen text projection passed its checks, not that source claims are independently true. Unverifiable paraphrases are replaced locally; no issue means no repair entry.

@@ -1,5 +1,13 @@
 # 08 Development Log
 
+## 2026-10-08 Single-Run Business Delivery Acceptance
+
+- IMPLEMENTATION_CHANGE, existing T01/T16/T17/T18 only. Inspected the full v6 body; it lacked useful selection structure and used a marketing source paragraph for brand association.
+- Reused frozen delivery compiler/QA/formal API. Added a scenario/source/check table and practical selection sequence; brand observation is a lookup destination, not a public capability claim. Conditional help/info placement explains why the format fits, without claiming channel effectiveness.
+- Saved execution-v7:c2dc55b0d25749c7 through the formal API; same input hash as v6. All historical results and all other business tables remain unchanged. Backup and integrity evidence stay outside Git.
+- Fixed the 19 recorded execution/retest fixture failures by supplying complete valid semantic coverage. Added two incomplete-scope negative cases; production Gate unchanged. Four-file regression: 61 passed. Browser read/refresh: v7 retained, no writes or page errors, desktop and mobile checked.
+- Full body, QA scope and five business answers are in acceptance section 10. User editorial acceptance, real location/permission and publication remain pending. No LLM, sampling, fetching, Review, Truth, publication or Retest operations.
+
 ## 2026-10-08 Frozen Draft Delivery Repair
 - Scoped implementation correction for existing T01/T16/T17/T18; no new workflow, migration, model call, fetch or sampling.
 - Removed scenario-specific delivery paragraphs and live Project/Prompt reads from compilation. Exact immutable inputs are loaded/validated once; pure delivery_text functions receive the frozen DTO.

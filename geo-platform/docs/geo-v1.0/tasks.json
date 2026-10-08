@@ -4,10 +4,12 @@
   "implementation_verified": true,
   "active_delivery_slice": {
     "name": "one_prompt_one_run_formal_delivery",
-    "status": "WAITING_BUSINESS_CONFIRMATION",
+    "status": "FROZEN_ATTRIBUTED_DRAFT_VERIFIED",
     "analysis_id": "925ef2dc-605f-467d-a025-52033a574d92",
     "context_id": "ctx-5407fb2f-acd5-41ac-8ac7-41713a08a5aa",
-    "selected_run_ids": [1],
+    "selected_run_ids": [
+      1
+    ],
     "completed": [
       "EXPLICIT_1_OF_1_ANALYSIS",
       "EXACT_SOURCE_SNAPSHOT_REUSE",
@@ -16,7 +18,10 @@
       "MACHINE_STRATEGY_RESULT",
       "EXECUTION_DRAFT",
       "COMPLETE_EXECUTION_DELIVERABLE",
-      "ACTUAL_TEXT_QA"
+      "ACTUAL_TEXT_QA",
+      "FROZEN_DELIVERY_INPUT",
+      "SOURCE_ATTRIBUTED_TEXT_QA_AND_LOCAL_REPAIR",
+      "FORMAL_UI_GENERATION_AND_READ_ONLY_REFRESH"
     ],
     "not_completed": [
       "EXECUTION_CONFIRMATION",
@@ -24,9 +29,18 @@
       "POST_PUBLICATION_RETEST",
       "VALIDATE_COMPARISON"
     ],
-    "current_blocker": "完整稿件已生成；仍需确认更新已有页面或新建帮助文档，并确认实际账号、栏目和编辑权限",
+    "current_blocker": "本切片的冻结输入、归因式完整稿、逐段 QA/真实修复及页面已验证；自由改写语义 QA 与通用稿件质量未据此宣布完成。发布仍需真实资产/账号/权限，未进行发布及复测。",
     "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md",
-    "code_commits": ["4d6724d", "3622fcf", "8b19388", "c7ce35e", "56eaf9f", "8a0ece1"]
+    "code_commits": [
+      "4d6724d",
+      "3622fcf",
+      "8b19388",
+      "c7ce35e",
+      "56eaf9f",
+      "8a0ece1",
+      "2109c3f"
+    ],
+    "result_version": "execution-v6:851eeab2713cd944"
   },
   "tasks": [
     {
@@ -90,7 +104,8 @@
         "backend/app/modules/single_prompt_v2/schemas.py"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
       ],
       "estimate": "2人日",
       "planned_start": "",
@@ -99,7 +114,13 @@
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "需修复"
+      "audit_classification": "需修复",
+      "slice_progress": {
+        "date": "2026-10-08",
+        "status": "PARTIALLY_VERIFIED",
+        "scope": "单 Prompt / Run 1；归因式正文；不是全模块 DONE",
+        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+      }
     },
     {
       "id": "T02",
@@ -598,7 +619,7 @@
       "milestone": "M2",
       "owner_role": "分析/全栈",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T15"
       ],
@@ -612,19 +633,27 @@
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/execution.py",
         "backend/app/modules/single_prompt_v2/api.py",
-        "frontend/src/App.tsx"
+        "frontend/src/App.tsx",
+        "backend/app/modules/single_prompt_v2/delivery_text.py"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
       ],
       "estimate": "7人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-08",
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "需接入 release 且需补完整执行稿"
+      "audit_classification": "归因式完整稿正式验证；自由综合改写和更多交付类型未验收",
+      "slice_progress": {
+        "date": "2026-10-08",
+        "status": "PARTIALLY_VERIFIED",
+        "scope": "单 Prompt / Run 1；归因式正文；不是全模块 DONE",
+        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+      }
     },
     {
       "id": "T17",
@@ -632,7 +661,7 @@
       "milestone": "M2",
       "owner_role": "分析/后端",
       "owner_name": "Codex（分析/后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T16"
       ],
@@ -647,16 +676,23 @@
         "backend/app/modules/single_prompt_v2/llm_safety.py"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
       ],
       "estimate": "5人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-08",
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "确实缺失自动 QA/局部修复"
+      "audit_classification": "实际引用投影 QA 和局部修复已验证；非全面自然语言真假判断",
+      "slice_progress": {
+        "date": "2026-10-08",
+        "status": "PARTIALLY_VERIFIED",
+        "scope": "单 Prompt / Run 1；归因式正文；不是全模块 DONE",
+        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+      }
     },
     {
       "id": "T18",
@@ -664,7 +700,7 @@
       "milestone": "M2",
       "owner_role": "前端",
       "owner_name": "Codex（前端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T17"
       ],
@@ -684,16 +720,23 @@
         "frontend/src/types.ts"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
       ],
       "estimate": "5人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-08",
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "需修复"
+      "audit_classification": "需修复",
+      "slice_progress": {
+        "date": "2026-10-08",
+        "status": "PARTIALLY_VERIFIED",
+        "scope": "单 Prompt / Run 1；归因式正文；不是全模块 DONE",
+        "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+      }
     },
     {
       "id": "T19",

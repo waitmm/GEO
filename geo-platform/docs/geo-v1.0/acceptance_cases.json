@@ -618,8 +618,8 @@
         "EXE-001",
         "EXE-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-08：单 Run execution-v6:851eeab2713cd944 正式 UI/API 归因式稿件与逐段 QA；隔离错误主体/数字/条件测试，见单 Run 验收记录第9节。不代表自由生成、所有页面修改类型、真实发布或预算恢复完成。"
     },
     {
       "id": "AC-EXE-02",
@@ -632,8 +632,8 @@
         "EXE-003",
         "EXE-005"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-08：单 Run execution-v6:851eeab2713cd944 正式 UI/API 归因式稿件与逐段 QA；隔离错误主体/数字/条件测试，见单 Run 验收记录第9节。不代表自由生成、所有页面修改类型、真实发布或预算恢复完成。"
     },
     {
       "id": "AC-EXE-03",
@@ -645,8 +645,8 @@
       "requirements": [
         "EXE-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-08：单 Run execution-v6:851eeab2713cd944 正式 UI/API 归因式稿件与逐段 QA；隔离错误主体/数字/条件测试，见单 Run 验收记录第9节。不代表自由生成、所有页面修改类型、真实发布或预算恢复完成。"
     },
     {
       "id": "AC-EXE-04",
@@ -658,8 +658,8 @@
       "requirements": [
         "EXE-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-08：单 Run execution-v6:851eeab2713cd944 正式 UI/API 归因式稿件与逐段 QA；隔离错误主体/数字/条件测试，见单 Run 验收记录第9节。不代表自由生成、所有页面修改类型、真实发布或预算恢复完成。"
     },
     {
       "id": "AC-EXE-05",

@@ -1,5 +1,13 @@
 # 08 Development Log
 
+## 2026-10-08 Frozen Draft Delivery Repair
+- Scoped implementation correction for existing T01/T16/T17/T18; no new workflow, migration, model call, fetch or sampling.
+- Removed scenario-specific delivery paragraphs and live Project/Prompt reads from compilation. Exact immutable inputs are loaded/validated once; pure delivery_text functions receive the frozen DTO.
+- Actual source-attributed text QA rejects altered subjects, added numeric claims, lost conditions and unverified paraphrases. Local replacement keeps complete attributed paragraphs; this is NOT general natural-language truth verification.
+- Repairs carry actual before/after text, hashes and recheck results. Business-only revisions do not replay parent repair records.
+- Official release UI generated execution-v6:851eeab2713cd944 from v5; prior versions and raw/source/Answer/Contribution/Strategy records unchanged. Publication/Retest remain zero.
+- Formal API repeated request reuses v6; stale version 409; cross-project request rejected before write. See the single-Run acceptance record section 9 for hashes, QA and remaining 19 fixture failures.
+
 Status: ACTIVE
 
 ## 2026-09-29 Qualification Critic Phase B1 Human Gold

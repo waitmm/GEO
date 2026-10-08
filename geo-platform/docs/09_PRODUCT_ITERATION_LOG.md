@@ -1,5 +1,10 @@
 # 09 Product Iteration Log
 
+## 2026-10-08 Draft Delivery Before Publication
+The Product Owner authorized four repairs: frozen generation inputs, removal of scenario templates, actual-text QA/local repair, and formal-page delivery. This does not authorize new external calls or publication.
+The implemented offline path produces attributed source interpretation, not unsupported brand copy. QA READY proves the frozen text projection passed its checks, not that source claims are independently true. Unverifiable paraphrases are replaced locally; no issue means no repair entry.
+The page presents recommendations, full text, QA and then required publication information. Missing business information prevents confirmation, not reading the draft. T16/T17/T18 remain IN_PROGRESS with slice-level evidence, not globally DONE.
+
 Status: ACTIVE
 
 ## 2026-09-29 Shadow Phase B1 Incremental Value Human Gold

@@ -1,5 +1,10 @@
 # 00 Project Brief
 
+## 2026-10-08 Current Delivery Checkpoint
+The active single-Run result is execution-v6:851eeab2713cd944 (Analysis 925ef2dc-605f-467d-a025-52033a574d92). Frozen-input source-attributed drafting and actual-text QA/local repair have formal UI/API evidence; arbitrary free-form synthesis and comprehensive semantic verification are not claimed.
+Publication, confirmation, post-publication Retest and Comparison remain zero. Release revision is 20260930_01; one historical B1 Human Gold review exists. Earlier dated counts below are historical, not current.
+See [status audit](geo-v1.0/PROJECT_STATUS_2026-10-08.md) and [repair acceptance, section 9](geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补).
+
 Status: ACTIVE
 
 ## 2026-09-29 Model B Shadow Phase B1 Human Gold

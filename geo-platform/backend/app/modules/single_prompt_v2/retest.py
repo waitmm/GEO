@@ -45,9 +45,9 @@ from app.services.url_identity import CANONICALIZATION_VERSION, canonicalize_url
 RETEST_CONTRACT_VERSION = "single_prompt_retest.v2_fifth_slice.v1"
 RETEST_PLAN_VERSION = "single_prompt_retest_plan.v1"
 MEASUREMENT_IDENTITY_VERSION = "single_prompt_measurement_identity.v1"
-MEASUREMENT_CONTRACT_VERSION = "single_prompt_measurement.v3_admitted_run"
+MEASUREMENT_CONTRACT_VERSION = "single_prompt_measurement.v4_alias_evidence"
 COMPARISON_CONTRACT_VERSION = "single_prompt_comparison.v1"
-BRAND_IDENTITY_RULE_VERSION = "single_prompt_brand_identity.casefold_boundary.v1"
+BRAND_IDENTITY_RULE_VERSION = "single_prompt_brand_identity.alias_evidence.v2"
 ACTIVE_RETEST_STATUSES = {"SAMPLING", "SEMANTIC_MEASURING"}
 VALID_RUN_STATUSES = {"success", "partial_success"}
 
@@ -656,8 +656,9 @@ def measure_frozen_runs(
 ) -> dict[str, Any]:
     runs = _valid_runs(raw)
     terms = _identity_terms(identity)
-    mention_eval = [int(run["run_id"]) for run in runs]
-    mention_hits = [int(run["run_id"]) for run in runs if _contains_identity(str(run.get("answer_text") or ""), terms)]
+    mention_eval: list[int] = []
+    mention_hits: list[int] = []
+    mention_unknown: list[dict[str, Any]] = []
 
     jobs = _answer_job_by_hash(answer_diagnosis)
     events_by_run: dict[int, list[dict[str, Any]]] = {}
@@ -679,6 +680,21 @@ def measure_frozen_runs(
             event for event in events_by_run.get(run_id, [])
             if admitted and event.get("fact_consumption_eligible") is True and _contains_identity(str(event.get("entity_text") or ""), terms)
         ]
+        answer_text = str(run.get("answer_text") or "")
+        canonical_hit = _contains_identity(answer_text, [str(identity.get("canonical_brand_name") or "")])
+        alias_hit = _contains_identity(answer_text, identity.get("accepted_aliases") or [])
+        # An alias may also be an ordinary word. Literal occurrence alone cannot
+        # establish the brand entity; unresolved occurrences are not negatives.
+        grounded_alias = any(str(event.get("entity_text") or "").strip().casefold() in
+            {str(alias).strip().casefold() for alias in identity.get("accepted_aliases") or []}
+            and _contains_identity(answer_text, [str(event.get("entity_text") or "")])
+            for event in eligible_events)
+        if canonical_hit or (alias_hit and grounded_alias):
+            mention_eval.append(run_id); mention_hits.append(run_id)
+        elif alias_hit:
+            mention_unknown.append({"run_id": run_id, "reason": "BRAND_ALIAS_AMBIGUOUS"})
+        else:
+            mention_eval.append(run_id)
         uncertain = any(event.get("fact_consumption_eligible") is not True
                         and _contains_identity(str(event.get("entity_text") or ""), terms)
                         for event in events_by_run.get(run_id, []))
@@ -743,7 +759,7 @@ def measure_frozen_runs(
         "raw_output_hash": _hash(raw),
         "measurement_identity_hash": identity.get("identity_snapshot_hash"),
         "metrics": {
-            "brand_mention_rate": _metric_row("brand_mention_rate", raw, mention_eval, mention_hits, []),
+            "brand_mention_rate": _metric_row("brand_mention_rate", raw, mention_eval, mention_hits, mention_unknown),
             "brand_option_rate": _metric_row("brand_option_rate", raw, option_eval, option_hits, option_unknown),
             "brand_recommendation_rate": _metric_row("brand_recommendation_rate", raw, recommendation_eval, recommendation_hits, recommendation_unknown),
             "target_brand_official_reference_rate": _metric_row("target_brand_official_reference_rate", raw, official_eval, official_hits, official_unknown),

@@ -98,6 +98,14 @@ def _semantic_region_projection(rows: list[RunArtifact]) -> tuple[dict[str, Any]
     return None, None
 
 
+def _require_sampling_enabled(db: Session, project_id: int, prompt_id: int) -> None:
+    prompt = db.get(Prompt, prompt_id)
+    if not prompt or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Prompt 不存在或不属于当前项目")
+    if not prompt.enabled:
+        raise HTTPException(status_code=409, detail="问题已停用，不能发起新采样；历史样本和已有分析仍可使用")
+
+
 def create_analysis(
     db: Session,
     *,
@@ -139,6 +147,7 @@ def create_analysis(
             raise HTTPException(status_code=409, detail="幂等键已用于不同的 Prompt 或采样计划")
         return existing, False
 
+    _require_sampling_enabled(db, project_id, prompt_id)
     analysis_id = str(uuid4())
     task = create_browser_task(
         db,
@@ -210,6 +219,7 @@ def queue_run_retry(
         existing_run = db.query(BrowserMonitorRun).filter_by(task_id=existing_task.id).one()
         return existing_run, False
 
+    _require_sampling_enabled(db, project_id, prompt_id)
     task = create_browser_task_from_frozen_prompt(
         db,
         project_id=project_id,
@@ -262,6 +272,7 @@ def create_frozen_analysis(
             raise HTTPException(status_code=409, detail="幂等键已用于不同的冻结采样计划")
         return existing, False
 
+    _require_sampling_enabled(db, project_id, prompt_id)
     analysis_id = str(uuid4())
     task = create_browser_task_from_frozen_prompt(
         db,
@@ -300,6 +311,7 @@ def queue_frozen_analysis(db: Session, analysis_id: str) -> SinglePromptAnalysis
         raise HTTPException(status_code=404, detail="冻结复测 Analysis 不存在")
     if analysis.status != "PLANNED":
         raise HTTPException(status_code=409, detail=f"当前状态 {analysis.status} 不能启动采样")
+    _require_sampling_enabled(db, analysis.project_id, analysis.prompt_id)
     plan = loads(analysis.sampling_plan_json, {})
     runs = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).order_by(BrowserMonitorRun.id).all()
     if len(runs) != int(plan.get("sample_count") or 0):
@@ -839,6 +851,7 @@ def retry_analysis(db: Session, analysis_id: str) -> SinglePromptAnalysis:
         raise HTTPException(status_code=409, detail="AnalysisContext 已冻结，不能原地重采样；请创建一次新分析")
     if analysis.status not in {"FAILED", "INTERRUPTED"}:
         raise HTTPException(status_code=409, detail=f"当前状态 {analysis.status} 不允许重试")
+    _require_sampling_enabled(db, analysis.project_id, analysis.prompt_id)
 
     runs = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == analysis.task_id).all()
     history = loads(analysis.retry_history_json, [])

@@ -1059,7 +1059,13 @@
       "backend/backups/delivery-20261009-optimize-restore02/upgrade-report.json",
       "backend/artifacts/acceptance/20261009T111737Z/report.json",
       "backend/artifacts/acceptance/browser-20261009T111411Z/report.json",
-      "backend/backups/delivery-20261009-schedule-restore03/upgrade-report.json"
+      "backend/backups/delivery-20261009-schedule-restore03/upgrade-report.json",
+      "backend/artifacts/acceptance/20261009-expanded/pytest.xml",
+      "backend/artifacts/acceptance/20261009-catalog/pytest.xml",
+      "backend/artifacts/acceptance/20261009-alias/pytest.xml",
+      "backend/artifacts/acceptance/browser-20261009T114029Z/report.json",
+      "backend/artifacts/acceptance/20261009T121448Z/report.json",
+      "backend/artifacts/acceptance/20261009-clean-install/pytest.xml"
     ],
     "implemented": [
       "Explicit Monitor/Validate range API sharing existing metric calculator",
@@ -1075,7 +1081,10 @@
       "Protected migration02 and isolated full artifact restore; 44 historical tables unchanged",
       "Optional every-N-sampling-batches Optimize with fixed configuration and finite cumulative authority; focused tests passed",
       "Pause-during-child-authorization cancellation and protected migration03 deployed",
-      "Intent-aware opportunity navigation without interpreting unknown semantics as a negative"
+      "Intent-aware opportunity navigation without interpreting unknown semantics as a negative",
+      "Qualified exact Truth DTOs in generation; not automatic official-source verification",
+      "Release catalog validation, disabled-Prompt sampling guards, edit/search/priority UI",
+      "Versioned ambiguous-alias exclusion and Chinese per-Run unknown reasons"
     ],
     "remaining": [
       "Full new-project and recovery E2E acceptance, real model quality authorization",

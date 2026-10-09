@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -28,6 +29,67 @@ from app.services.serialization import dumps, loads
 
 router = APIRouter(prefix="/api", tags=["release-catalog"])
 get_db = get_release_db
+
+
+def _text(value: object, label: str, limit: int, *, required: bool = False) -> str:
+    if not isinstance(value, str):
+        raise HTTPException(422, f"{label}不能为 null")
+    value = value.strip()
+    if (required and not value) or len(value) > limit:
+        raise HTTPException(422, f"{label}须为{'1' if required else '0'}到{limit}字符")
+    return value
+
+
+def _website(value: object) -> str:
+    value = _text(value, "官网地址", 2048)
+    if not value:
+        return value
+    try:
+        parsed = urlsplit(value)
+        parsed.port  # Reject malformed ports even though configuration does not fetch this URL.
+        valid = parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password
+    except ValueError:
+        valid = False
+    if not valid or any(char.isspace() for char in value):
+        raise HTTPException(422, "官网地址须为不含账号密码的完整 HTTP/HTTPS 地址")
+    return value
+
+
+def _aliases(value: object) -> list[str]:
+    if not isinstance(value, list) or len(value) > 50:
+        raise HTTPException(422, "别名须为最多50项的列表")
+    return list(dict.fromkeys(_text(item, "别名", 200, required=True) for item in value))
+
+
+def _project_values(values: dict) -> dict:
+    values = dict(values)
+    for key, label, limit in [("name", "项目名称", 200), ("brand_name", "品牌名称", 200),
+            ("industry", "行业", 200), ("region", "地区", 100), ("language", "语言", 100), ("status", "状态", 50)]:
+        if key in values:
+            values[key] = _text(values[key], label, limit, required=key in {"name", "brand_name", "region", "language", "status"})
+    if "website_url" in values:
+        values["website_url"] = _website(values["website_url"])
+    if "brand_aliases" in values:
+        values["brand_aliases"] = _aliases(values["brand_aliases"])
+    if "competitors" in values:
+        if not isinstance(values["competitors"], list) or len(values["competitors"]) > 50:
+            raise HTTPException(422, "竞品须为最多50项的列表")
+        values["competitors"] = [{"name": _text(item.get("name"), "竞品名称", 200, required=True),
+            "aliases": _aliases(item.get("aliases", [])), "website_url": _website(item.get("website_url", ""))}
+            for item in values["competitors"]]
+    return values
+
+
+def _prompt_values(values: dict) -> dict:
+    values = dict(values)
+    for key, value in values.items():
+        if value is None and key not in {"topic_id", "cluster_id"}:
+            raise HTTPException(422, f"问题字段 {key} 不能为 null")
+    for key, label, limit in [("prompt_text", "问题原文", 10000), ("title", "问题标题", 200),
+            ("prompt_group", "问题组", 160), ("intent_type", "问题意图", 100)]:
+        if key in values:
+            values[key] = _text(values[key], label, limit, required=key in {"prompt_text", "intent_type"})
+    return values
 
 
 def _default_org(db: Session) -> Organization:
@@ -90,27 +152,21 @@ def list_projects(request: Request, db: Session = Depends(get_db)) -> list[Proje
 
 @router.post("/projects", response_model=ProjectRead)
 def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> ProjectRead:
-    organization_id = payload.organization_id or _default_org(db).id
+    values = _project_values(payload.model_dump())
+    organization_id = values.pop("organization_id") or _default_org(db).id
     if not db.get(Organization, organization_id):
         raise HTTPException(status_code=422, detail="Organization 不存在")
-    project = Project(
-        organization_id=organization_id,
-        name=payload.name,
-        brand_name=payload.brand_name,
-        brand_aliases_json=dumps(payload.brand_aliases),
-        website_url=payload.website_url,
-        industry=payload.industry,
-        region=payload.region,
-        language=payload.language,
-    )
+    aliases = values.pop("brand_aliases")
+    competitors = values.pop("competitors")
+    project = Project(organization_id=organization_id, brand_aliases_json=dumps(aliases), **values)
     db.add(project)
     db.flush()
-    for item in payload.competitors:
+    for item in competitors:
         db.add(Competitor(
             project_id=project.id,
-            name=item.name,
-            aliases_json=dumps(item.aliases),
-            website_url=item.website_url,
+            name=item["name"],
+            aliases_json=dumps(item["aliases"]),
+            website_url=item["website_url"],
         ))
     db.commit()
     db.refresh(project)
@@ -122,20 +178,14 @@ def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depend
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project 不存在")
-    values = payload.model_dump(exclude_unset=True)
+    values = _project_values(payload.model_dump(exclude_unset=True))
     aliases = values.pop("brand_aliases", None)
     competitors = values.pop("competitors", None)
     if aliases is not None:
         project.brand_aliases_json = dumps(aliases)
     if competitors is not None:
-        validated = []
-        for item in competitors:
-            name = str(item.get("name") or "").strip()
-            if not name:
-                raise HTTPException(status_code=422, detail="竞品名称不能为空")
-            validated.append(item)
         db.query(Competitor).filter_by(project_id=project_id).delete()
-        for item in validated:
+        for item in competitors:
             db.add(Competitor(
                 project_id=project_id,
                 name=str(item["name"]).strip(),
@@ -158,9 +208,8 @@ def list_prompts(project_id: int, db: Session = Depends(get_db)) -> list[Prompt]
 def create_prompt(project_id: int, payload: PromptCreate, db: Session = Depends(get_db)) -> Prompt:
     if not db.get(Project, project_id):
         raise HTTPException(status_code=404, detail="Project 不存在")
-    if not payload.prompt_text.strip() or len(payload.prompt_text) > 10000:
-        raise HTTPException(422, "问题原文须为1到10000字符")
-    if db.query(Prompt).filter_by(project_id=project_id, prompt_text=payload.prompt_text.strip()).first():
+    values = _prompt_values(payload.model_dump())
+    if db.query(Prompt).filter_by(project_id=project_id, prompt_text=values["prompt_text"]).first():
         raise HTTPException(409, "该项目已有相同问题，请继续使用已有问题")
     if payload.daily_tracking_enabled:
         raise HTTPException(422, "请通过正式采样计划入口明确时区与授权次数")
@@ -172,7 +221,7 @@ def create_prompt(project_id: int, payload: PromptCreate, db: Session = Depends(
         cluster = db.get(PromptCluster, payload.cluster_id)
         if not cluster or cluster.project_id != project_id:
             raise HTTPException(status_code=422, detail="Prompt Cluster 不属于当前 Project")
-    prompt = Prompt(project_id=project_id, **payload.model_dump())
+    prompt = Prompt(project_id=project_id, **values)
     db.add(prompt)
     db.commit()
     db.refresh(prompt)
@@ -184,7 +233,7 @@ def update_prompt(project_id: int, prompt_id: int, payload: PromptUpdate, db: Se
     prompt = db.get(Prompt, prompt_id)
     if not prompt or prompt.project_id != project_id:
         raise HTTPException(status_code=404, detail="Prompt 不存在")
-    values = payload.model_dump(exclude_unset=True)
+    values = _prompt_values(payload.model_dump(exclude_unset=True))
     if values.get("daily_tracking_enabled"):
         raise HTTPException(422, "请通过正式采样计划入口明确时区与授权次数")
     if "prompt_text" in values:

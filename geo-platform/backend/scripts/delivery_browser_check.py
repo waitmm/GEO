@@ -266,10 +266,29 @@ def main():
             page.screenshot(path=str(out / 'prompt-entry.png'), full_page=True)
             (out / 'prompt-entry.txt').write_text(page.locator('body').inner_text())
             page.get_by_label('问题原文', exact=True).fill('空气过滤器如何清洗？\n有哪些前提条件？')
-            page.get_by_label('意图', exact=True).click()
+            page.get_by_label('意图', exact=True).press('ArrowDown')
             page.get_by_text('使用与操作', exact=True).filter(visible=True).click()
             page.get_by_role('button', name='创建问题', exact=True).click()
             expect(page.get_by_role('cell', name='空气过滤器如何清洗？ 有哪些前提条件？', exact=True)).to_be_visible()
+            page.get_by_role('button', name='编辑问题1', exact=True).click()
+            page.get_by_label('问题组（可选）', exact=True).fill('维护')
+            page.get_by_label('业务优先级（1最低，5最高）', exact=True).fill('5')
+            page.get_by_role('button', name='保存问题', exact=True).click()
+            expect(page.get_by_role('cell', name='维护', exact=True)).to_be_visible()
+            page.get_by_label('搜索问题或问题组', exact=True).fill('不存在的问题')
+            expect(page.get_by_role('cell', name='维护', exact=True)).to_have_count(0)
+            page.get_by_label('搜索问题或问题组', exact=True).fill('维护')
+            expect(page.get_by_role('cell', name='维护', exact=True)).to_be_visible()
+            page.get_by_role('button', name='停用', exact=True).click()
+            expect(page.get_by_role('cell', name='已停用', exact=True)).to_be_visible()
+            page.reload()
+            expect(page.get_by_role('cell', name='已停用', exact=True)).to_be_visible()
+            page.get_by_role('menuitem', name='Optimize · 分析与稿件', exact=True).click()
+            expect(page.get_by_role('button', name='开始首次采样', exact=True)).to_be_disabled()
+            expect(page.get_by_text('问题已停用：不再发起新采样，历史样本和已有分析仍可使用', exact=True)).to_be_visible()
+            page.get_by_role('menuitem', name='问题与采样配置', exact=True).click()
+            page.get_by_role('button', name='启用', exact=True).click()
+            expect(page.get_by_role('cell', name='可用', exact=True)).to_be_visible()
             page.get_by_role('menuitem', name='品牌资料', exact=True).click()
             page.get_by_label('资料标题', exact=True).fill('隔离品牌说明')
             page.get_by_label('品牌资料正文', exact=True).fill('测试过滤器提供过滤器维护资料，具体清洗条件应按型号确认。')
@@ -302,7 +321,9 @@ def main():
                 page.screenshot(path=str(out / path), full_page=True)
                 report['screenshots'].append(path)
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'page overflow: {width}'
-            report['verified'] = ['UI_PROJECT_CREATE', 'MULTILINE_PROMPT_PRESERVED', 'CONTEXT_SAVE_RELOAD', 'SCHEDULE_CREATE_PAUSE', 'FINITE_OPTIONAL_OPTIMIZE_AUTHORITY', 'RESPONSIVE_NO_PAGE_OVERFLOW']
+            report['verified'] = ['UI_PROJECT_CREATE', 'MULTILINE_PROMPT_PRESERVED', 'PROMPT_EDIT_SEARCH_PRIORITY',
+                'DISABLED_PROMPT_PERSISTS_AND_BLOCKS_NEW_SAMPLING', 'PROMPT_REENABLE', 'CONTEXT_SAVE_RELOAD',
+                'SCHEDULE_CREATE_PAUSE', 'FINITE_OPTIONAL_OPTIMIZE_AUTHORITY', 'RESPONSIVE_NO_PAGE_OVERFLOW']
             report['not_verified'] = ['REAL_SAMPLING', 'AUTOMATIC_OPTIMIZE', 'COMPARISON_WITH_REAL_NEW_RUN']
             assert not report['errors'], report['errors']
             report['status'] = 'PASS_SCOPED_CHECKS_NOT_FULL_DELIVERY'

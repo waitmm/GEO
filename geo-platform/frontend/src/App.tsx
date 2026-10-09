@@ -1735,6 +1735,11 @@ export default function App() {
     setV2StrategyLoading(false); setV2ExecutionLoading(false); setV2RetestLoading(false);
     setV2QualificationCriticLoading(false); setV2CriticGoldLoading(false);
   }
+  function resetV2PendingKeys() {
+    [v2PendingIdempotencyKey, v2PendingDiagnosisKey, v2PendingStrategyKey,
+      v2PendingExecutionKey, v2PendingConfirmationKey, v2PendingPublicationKey,
+      v2PendingRetestKey].forEach(ref => { ref.current = null; });
+  }
   const scopedPrompt = activePromptId ? prompts.find((item) => item.id === activePromptId) : undefined;
   const visibleRuns = activePromptId ? runs.filter((item) => item.prompt_id === activePromptId) : runs;
 
@@ -1828,6 +1833,7 @@ export default function App() {
   function selectReleaseProject(id: number) {
     if (RELEASE_FIRST_SLICE) {
       invalidateV2Reads();
+      resetV2PendingKeys();
       const params = new URLSearchParams({ release_view: page, v2_project: String(id) });
       window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
       ++projectRequestSeq.current;
@@ -1854,6 +1860,7 @@ export default function App() {
   function selectReleasePrompt(id: number | "ALL") {
     if (RELEASE_FIRST_SLICE && projectId) {
       invalidateV2Reads();
+      resetV2PendingKeys();
       const params = new URLSearchParams({ release_view: page, v2_project: String(projectId), v2_prompt: String(id) });
       window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
       setV2Analysis(null); setV2AnalysisHistory([]); setV2RunPool(null);
@@ -2023,6 +2030,7 @@ export default function App() {
       message.error(`Run #${missingFingerprint} 缺少当前输入指纹，请刷新记录池后重新选择`);
       return;
     }
+    const current = beginV2Read('analysis', false);
     setV2Loading(true);
     try {
       const status = await api.createSinglePromptV2AnalysisFromRuns({
@@ -2033,6 +2041,7 @@ export default function App() {
         base_context_id: v2Analysis?.context_id || null,
         idempotency_key: crypto.randomUUID(),
       });
+      if (!current()) return;
       setV2Analysis(status);
       setV2SourcePreparation(null);
       setV2Diagnosis(null);
@@ -2045,11 +2054,13 @@ export default function App() {
       setV2Retest(null);
       persistV2Identity(status);
       await refreshV2AnalysisHistory();
+      if (!current()) return;
       message.success(`已用 ${runIds.length} 个明确 Run 创建新的不可变分析版本`);
     } catch (error: any) {
+      if (!current()) return;
       message.error(error.message || "按所选 Run 创建分析失败");
     } finally {
-      setV2Loading(false);
+      if (current()) setV2Loading(false);
     }
   }
 
@@ -2154,6 +2165,7 @@ export default function App() {
       message.warning("请先选择一个 Prompt");
       return;
     }
+    const current = beginV2Read('analysis', false);
     setV2Loading(true);
     const key = v2PendingIdempotencyKey.current || crypto.randomUUID();
     v2PendingIdempotencyKey.current = key;
@@ -2185,30 +2197,36 @@ export default function App() {
         sample_count: v2SampleCount,
         idempotency_key: key,
       });
+      if (!current()) return;
       v2PendingIdempotencyKey.current = null;
       setV2Analysis(status);
       await refreshV2AnalysisHistory();
+      if (!current()) return;
       setV2SampleCount(status.sampling.planned_run_count);
       persistV2Identity(status);
       message.success("V2 分析已创建，采样计划已经固定");
     } catch (error: any) {
+      if (!current()) return;
       message.error(error.message || "创建 V2 分析失败");
     } finally {
-      setV2Loading(false);
+      if (current()) setV2Loading(false);
     }
   }
 
   async function retryV2Analysis() {
     if (!v2Analysis || !projectId || !activePromptId) return;
+    const current = beginV2Read('analysis', false);
     setV2Loading(true);
     try {
       const status = await api.retrySinglePromptV2Analysis(v2Analysis.analysis.analysis_id, projectId, activePromptId);
+      if (!current()) return;
       setV2Analysis(status);
       message.success("已明确重试未完成的采样");
     } catch (error: any) {
+      if (!current()) return;
       message.error(error.message || "重试失败");
     } finally {
-      setV2Loading(false);
+      if (current()) setV2Loading(false);
     }
   }
 
@@ -5745,7 +5763,7 @@ export default function App() {
           <Select aria-label="当前项目" className="project-select" value={projectId} placeholder="选择项目" onChange={selectReleaseProject} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
           {projectId && prompts.length>0 && <Select aria-label="当前问题" className="prompt-select" size="small" placeholder="选择 Prompt"
             value={promptContext ?? "ALL"}
-            options={[{label:"全部 Prompt（项目视图）",value:"ALL"},...prompts.map((p:any)=>({label:`#${p.id} ${p.prompt_text}`,value:p.id}))]}
+            options={[{label:"全部 Prompt（项目视图）",value:"ALL"},...prompts.map((p:any)=>({label:`#${p.id} ${p.prompt_text}${p.enabled ? "" : "（已停用）"}`,value:p.id}))]}
             onChange={selectReleasePrompt}
           />}
           <Button icon={<Plus size={16} />} onClick={() => openProjectModal()}>新建项目</Button>
@@ -5767,7 +5785,7 @@ export default function App() {
                 onConfirm={startV2Analysis}
               >
                 <Tooltip title="只新增采样记录；继续历史分析请使用下方已有分析">
-                  <Button icon={<Play size={15} />} loading={v2Loading} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")}>
+                  <Button icon={<Play size={15} />} loading={v2Loading} disabled={scopedPrompt?.enabled === false || v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")}>
                     {v2AnalysisHistory.length ? "新增采样" : "开始首次采样"}
                   </Button>
                 </Tooltip>
@@ -5777,6 +5795,7 @@ export default function App() {
               </Tooltip>
             </Space>}>
               <Text>{scopedPrompt?.prompt_text}</Text>
+              {scopedPrompt?.enabled === false && <Alert type="info" message="问题已停用：不再发起新采样，历史样本和已有分析仍可使用" />}
             </Card>
 
             <Card size="small" title={<Space><Monitor size={18} />采样记录池<Tag>{v2RunPool?.total || 0} Runs</Tag></Space>} extra={<Space>

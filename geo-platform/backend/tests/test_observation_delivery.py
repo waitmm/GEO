@@ -20,6 +20,34 @@ from app.services.url_identity import canonicalize_url
 IDENTITY = {'canonical_brand_name': 'Target', 'accepted_aliases': [], 'official_domains': [], 'official_urls': []}
 
 
+def test_ambiguous_alias_requires_admitted_grounded_entity_not_literal_occurrence():
+    identity = {**IDENTITY, 'accepted_aliases': ['过滤']}
+    current = scope(1, answer='使用前请先过滤水中的颗粒。')
+    current['raw']['runs'].append(scope(2, answer='普通维护建议。')['raw']['runs'][0])
+    measured = measure_scope(current, identity)['metrics']['brand_mention_rate']
+    assert measured['hit_count'] == 0 and measured['evaluable_run_ids'] == [2]
+    assert measured['value'] == 0 and measured['status'] == 'PARTIAL'
+    assert measured['unevaluated'] == [{'run_id': 1, 'reason': 'BRAND_ALIAS_AMBIGUOUS'}]
+    current['semantics'] = {'answer_jobs': [{'answer_hash': hashlib.sha256(current['raw']['runs'][0]['answer_text'].encode()).hexdigest(),
+        'status': 'FAILED_SCHEMA', 'run_ids': [1]}], 'events': [
+            {'run_id': 1, 'entity_text': '过滤', 'fact_consumption_eligible': True, 'effective_speech_act': 'MENTION'}]}
+    assert measure_scope(current, identity)['metrics']['brand_mention_rate']['hit_count'] == 0
+    current['raw']['runs'][0]['answer_text'] = '过滤工具可用于资料整理。'
+    current['semantics']['answer_jobs'][0].update(status='DONE', answer_hash=hashlib.sha256('过滤工具可用于资料整理。'.encode()).hexdigest())
+    measured = measure_scope(current, identity)['metrics']['brand_mention_rate']
+    assert measured['hit_run_ids'] == [1] and measured['evaluable_count'] == 2
+    current['semantics']['events'][0]['fact_consumption_eligible'] = False
+    assert measure_scope(current, identity)['metrics']['brand_mention_rate']['unevaluated_count'] == 1
+
+
+def test_canonical_mention_remains_observable_without_semantics_and_alias_unknown_is_not_zero():
+    identity = {**IDENTITY, 'accepted_aliases': ['普通']}
+    measured = measure_scope(scope(1, answer='普通维护建议'), identity)['metrics']['brand_mention_rate']
+    assert measured['value'] is None and measured['evaluable_count'] == 0
+    measured = measure_scope(scope(2, answer='Target 的普通维护建议'), identity)['metrics']['brand_mention_rate']
+    assert measured['value'] == 1 and measured['evaluable_run_ids'] == [2]
+
+
 def test_opportunity_uses_intent_and_does_not_turn_unknown_into_brand_gap():
     sample = scope(1, answer='General explanation with no brand')
     metrics = measure_scope(sample, IDENTITY)['metrics']

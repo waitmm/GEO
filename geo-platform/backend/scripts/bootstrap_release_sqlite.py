@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -11,6 +12,8 @@ import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
+
+import certifi
 
 
 PYSQLITE_URL = "https://files.pythonhosted.org/packages/source/p/pysqlite3/pysqlite3-0.6.0.tar.gz"
@@ -21,7 +24,8 @@ SQLITE_SHA256 = "acb1e6f5d832484bf6d32b681e858c38add8b2acdfd42ac5df24b8afb46552b
 
 def _download(url: str, destination: Path, expected_hash: str) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "GEO-Release-Bootstrap/1.0"})
-    with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as output:
+    context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(request, timeout=120, context=context) as response, destination.open("wb") as output:
         shutil.copyfileobj(response, output)
     actual_hash = hashlib.sha256(destination.read_bytes()).hexdigest()
     if actual_hash != expected_hash:

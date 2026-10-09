@@ -30,6 +30,7 @@ allowed_inferences:
   - Freeze an explicit PARTIAL source-input manifest retaining every unavailable occurrence; consume only its READY snapshots. PARTIAL is not completion, WAIVE, NO_SUPPORT or global evidence sufficiency.
   - Restrict a machine contribution to an explicitly admitted Run while retaining the entire fixed Context identity; failed Runs do not inherit its qualification.
   - Use versioned user-supplied context with its provenance, not as independently verified Truth.
+  - Under approved BRD-002 / AC-BRD-03, an alias-only literal hit without an admitted, grounded entity remains unknown, not a brand hit or negative. Canonical-name occurrence remains an observable mention, not a recommendation.
 forbidden_inferences:
   - Failed/unevaluated semantic results imply no recommendation.
   - Missing or failed references imply a source disappeared.
@@ -41,6 +42,11 @@ unknown_behavior: Report per-metric evaluable members and limitations; zero deno
 history: Preserve raw Runs, valid historical results, v7 and publication facts; new inputs create new versions.
 acceptance: AC-VAL-01..05, E2E-01..05, release acceptance harness
 ```
+
+2026-10-09 implementation clarification: measurement `v4_alias_evidence` and identity
+rule `alias_evidence.v2` apply the already approved ambiguous-alias constraint.
+Stored older measurements are not rewritten. This does not claim universal entity
+disambiguation or upgrade a literal canonical-name mention to a recommendation.
 
 ### SC-PT-001 Target Brand Product Truth Isolation
 

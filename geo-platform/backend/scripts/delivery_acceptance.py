@@ -35,10 +35,43 @@ def coverage_report(tasks: dict, cases: dict) -> dict:
     }
 
 
+def applicable_test_paths(root: Path = ROOT) -> list[str]:
+    patterns = ['test_single_prompt_v2*.py', 'test_answer_semantic.py', 'test_citation_contribution_contract.py',
+                'test_release*.py', 'test_automatic*.py', 'test_delivery*.py', 'test_deepseek_generation_contract.py',
+                'test_observation_delivery.py', 'test_scheduled_optimization.py', 'test_private_site_contract.py']
+    return sorted({str(path.relative_to(root / 'backend')) for pattern in patterns
+                   for path in (root / 'backend/tests').glob(pattern)})
+
+
+def requirement_checks(cases: dict, junit: Path) -> dict:
+    """Match explicit assertions to this run, without promoting product acceptance."""
+    executed = {}
+    if junit.exists():
+        for case in ET.parse(junit).getroot().iter('testcase'):
+            key = case.get('classname', '') + '::' + case.get('name', '').split('[', 1)[0]
+            state = 'FAIL' if case.find('failure') is not None or case.find('error') is not None else 'SKIPPED' if case.find('skipped') is not None else 'PASS'
+            executed.setdefault(key, []).append(state)
+    results = {}
+    for case in cases['cases'] + cases['end_to_end']:
+        refs = case.get('automated_checks') or []
+        if not refs:
+            continue
+        checks = []
+        for ref in refs:
+            states = executed.get(ref, [])
+            status = 'NOT_RUN' if not states else 'FAIL' if 'FAIL' in states else 'SKIPPED' if 'SKIPPED' in states else 'PASS'
+            checks.append({'test': ref, 'status': status, 'executed_cases': len(states)})
+        results[case['id']] = {'checks': checks,
+            'status': 'PASS' if all(row['status'] == 'PASS' for row in checks) else 'INCOMPLETE',
+            'product_acceptance_status': case['status']}
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--checks-only', action='store_true', help='Run engineering checks without claiming complete product acceptance')
     parser.add_argument('--coverage-only', action='store_true')
+    parser.add_argument('--skip-browser', action='store_true', help='Engineering-only check; cannot report product complete')
     args = parser.parse_args()
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     out = ROOT / 'backend/artifacts/acceptance' / stamp
@@ -47,21 +80,14 @@ def main() -> int:
     report = {'batch': stamp, 'commit': git('rev-parse', 'HEAD'), 'worktree': git('status', '--short'),
               'source_fingerprint': source_fingerprint(), 'commands': [], 'external_calls_authorized': False, 'scope': 'OFFLINE', 'finished': False}
     commands = [] if args.coverage_only else [
-        ('backend', [sys.executable, '-m', 'pytest', 'tests/test_release_first_slice.py',
-                     'tests/test_single_prompt_v2_execution.py', 'tests/test_single_prompt_v2_optimize_delivery.py',
-                     'tests/test_single_prompt_v2_delivery_navigation.py', 'tests/test_single_prompt_v2_strategy.py',
-                     'tests/test_delivery_acceptance.py', '-q', '--disable-warnings', '--tb=short',
-                     'tests/test_observation_delivery.py', 'tests/test_release_scheduling.py',
-                     'tests/test_release_access.py', 'tests/test_release_worker_lifecycle.py',
-                     'tests/test_automatic_contribution.py', 'tests/test_single_prompt_v2_qualification.py',
-                     'tests/test_delivery_generation.py', 'tests/test_deepseek_generation_contract.py',
-                     'tests/test_automatic_delivery.py',
-                     'tests/test_scheduled_optimization.py',
-                     'tests/test_private_site_contract.py',
+        ('backend', [sys.executable, '-m', 'pytest', *applicable_test_paths(), '-q', '--disable-warnings', '--tb=short',
                      f'--junitxml={out / "backend.xml"}', '-p', 'scripts.delivery_offline_guard']),
         ('frontend', ['npm', 'run', 'test:startup']),
         ('frontend', ['npm', 'run', 'build:release']),
     ]
+    if not args.coverage_only and not args.skip_browser:
+        commands.extend(('backend', [sys.executable, 'scripts/delivery_browser_check.py', *mode])
+                        for mode in [[], ['--observe'], ['--optimize']])
     for directory, command in commands:
         log = out / f'command-{len(report["commands"])+1}.log'
         started = datetime.now(timezone.utc)
@@ -79,6 +105,7 @@ def main() -> int:
     tasks = json.loads((ROOT / 'docs/geo-v1.0/tasks.json').read_text())
     report['coverage'] = coverage_report(tasks, cases)
     junit = out / 'backend.xml'
+    report['requirement_checks'] = requirement_checks(cases, junit)
     if junit.exists():
         suites = ET.parse(junit).getroot()
         report['tests'] = [dict(s.attrib) for s in suites.iter('testsuite')]
@@ -88,7 +115,8 @@ def main() -> int:
     failed = failed or report['source_changed_during_validation']
     incomplete = any(report['coverage'].values())
     report.update(finished=True, status='FAIL' if failed else 'INCOMPLETE' if incomplete else 'PASS',
-                  product_complete=not failed and not incomplete and not args.coverage_only and not args.checks_only)
+                  product_complete=not failed and not incomplete and not args.coverage_only and not args.checks_only and not args.skip_browser,
+                  browser_required_executed=not args.coverage_only and not args.skip_browser)
     (out / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps({'report': str(out / 'report.json'), 'status': report['status'], 'product_complete': report['product_complete']}, ensure_ascii=False))
     return 1 if failed or (incomplete and not args.checks_only) else 0

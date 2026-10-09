@@ -8,6 +8,21 @@ import { SamplingSchedulePanel } from "./SamplingSchedulePanel";
 const names: Record<string, string> = { brand_mention_rate: "正文提及", brand_option_rate: "列为选项", brand_recommendation_rate: "明确推荐", target_brand_official_reference_rate: "官方来源引用", published_url_reference_rate: "目标 URL 引用" };
 const ratio = (m: any) => m?.value == null ? "不可计算" : `${m.hit_count}/${m.evaluable_count} (${(m.value * 100).toFixed(1)}%)`;
 const runStates: Record<string, string> = { success: "采样成功", partial_success: "部分成功", failed: "采样失败", blocked: "采样受阻", cancelled: "未执行" };
+const unknownReasons: Record<string, string> = {
+  BRAND_ALIAS_AMBIGUOUS: "只出现别名，尚不能确定是否指向目标品牌",
+  ANSWER_SEMANTIC_NOT_EVALUATED: "回答语义尚未完成有效计算",
+  ANSWER_SEMANTIC_UNCERTAIN: "回答中的主体或选择行为尚不确定",
+  OFFICIAL_IDENTITY_NOT_PROVIDED: "尚未配置官方域名或页面",
+  REFERENCE_OBSERVATION_INCOMPLETE: "引用采集不完整，不能判断未出现",
+  PUBLISHED_URL_IDENTITY_UNAVAILABLE: "未指定要观察的目标页面",
+};
+
+function UnknownMembers({ metric }: { metric: any }) {
+  if (!metric?.unevaluated?.length) return <span>无未评估样本</span>;
+  return <>{metric.unevaluated.map((item: any) => <div key={`${item.run_id}:${item.reason}`}>
+    Run {item.run_id}：{unknownReasons[item.reason] || (String(item.reason).startsWith("FAILED") ? "回答计算失败，未按零计入" : "尚未获得有效判断，未按零计入")}
+  </div>)}</>;
+}
 
 function AnswerDetails({ measurement }: { measurement: any }) {
   return <Collapse items={(measurement?.runs || []).map((run: any) => ({
@@ -169,6 +184,12 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
           ...(mode === "compare" ? [{ title: "对照", render: (_: any, r: any) => ratio(r.data.comparison) }, { title: "差值（百分点）", render: (_: any, r: any) => r.data.delta_percentage_points ?? "不可比/不可计算" }] : []),
           { title: "可评估 / 有效原始 / 计划", render: (_, r) => { const m = mode === "monitor" ? r.data : r.data.baseline; return `${m.evaluable_count} / ${m.valid_raw_count} / ${m.planned_count}`; } },
         ]} />
+        <Collapse style={{ marginTop: 12 }} items={[{ key: "unknown", label: "哪些样本未计入，为什么", children:
+          <Table size="small" rowKey="key" pagination={false} dataSource={rows} scroll={{ x: 520 }} columns={[
+            { title: "指标", dataIndex: "name" },
+            { title: mode === "monitor" ? "未评估原因" : "基线未评估原因", render: (_, r) => <UnknownMembers metric={mode === "monitor" ? r.data : r.data.baseline} /> },
+            ...(mode === "compare" ? [{ title: "对照未评估原因", render: (_: any, r: any) => <UnknownMembers metric={r.data.comparison} /> }] : []),
+          ]} /> }]} />
         <Alert style={{ marginTop: 16 }} type="warning" message="仅报告观察变化，不证明优化效果或生成因果" description={output.conflicts?.length ? `条件冲突：${output.conflicts.join("、")}` : "未知条件及未计算语义不按零结果处理。"} />
         {mode === "monitor" && <>
           <Typography.Title level={5}>按日期观察（UTC）</Typography.Title>

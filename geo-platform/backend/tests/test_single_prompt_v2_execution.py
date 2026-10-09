@@ -12,6 +12,9 @@ from app.models import (
     Base,
     BrowserMonitorRun,
     BrowserMonitorTask,
+    Organization,
+    Project,
+    Prompt,
     ReferenceSource,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
@@ -64,6 +67,11 @@ def _session(tmp_path):
 
 def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, accept_strategy=True, publishable=True,
                             include_sampling_failure=False, complete_semantics=True):
+    db.add(Organization(id=1, name="Isolated fixture"))
+    db.add(Project(id=1, organization_id=1, name="Fixture", brand_name="Geo"))
+    db.add(Prompt(id=44, project_id=1, title="Changed live title",
+                  prompt_text="当前配置的问题，不得替换冻结复测问题", enabled=True))
+    db.flush()
     plan = {
         "contract_version": "single-prompt-sampling-plan-v1", "project_id": 1, "prompt_id": 44,
         "prompt_text": "哪个二维码工具值得推荐", "sample_count": 3 if include_sampling_failure else 2, "platform": "wenxin",

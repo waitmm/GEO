@@ -3,6 +3,9 @@
   "cases": [
     {
       "id": "AC-BRD-01",
+      "automated_checks": [
+        "tests.test_release_catalog::test_catalog_normalizes_and_rejects_duplicates_without_partial_mutation"
+      ],
       "module": "BRD",
       "name": "创建品牌",
       "given": "输入合法品牌名和域名",
@@ -29,6 +32,10 @@
     },
     {
       "id": "AC-BRD-03",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_ambiguous_alias_requires_admitted_grounded_entity_not_literal_occurrence",
+        "tests.test_observation_delivery::test_canonical_mention_remains_observable_without_semantics_and_alias_unknown_is_not_zero"
+      ],
       "module": "BRD",
       "name": "歧义别名",
       "given": "别名同时是常用词",
@@ -55,6 +62,9 @@
     },
     {
       "id": "AC-PRM-01",
+      "automated_checks": [
+        "tests.test_single_prompt_v2::test_frozen_context_ignores_later_run_mutation_and_new_sampling"
+      ],
       "module": "PRM",
       "name": "范围冻结",
       "given": "已有九个选定 Run",
@@ -94,6 +104,9 @@
     },
     {
       "id": "AC-PRM-04",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_opportunity_uses_intent_and_does_not_turn_unknown_into_brand_gap"
+      ],
       "module": "PRM",
       "name": "意图适用",
       "given": "概念解释 Prompt 推荐率为零",
@@ -120,6 +133,10 @@
     },
     {
       "id": "AC-SAM-02",
+      "automated_checks": [
+        "tests.test_release_first_slice::test_release_single_run_retry_creates_new_attempt_and_preserves_source_run",
+        "tests.test_release_first_slice::test_release_worker_executes_only_the_queued_single_run_retry"
+      ],
       "module": "SAM",
       "name": "单 Run 重试",
       "given": "一条采样失败",
@@ -159,6 +176,9 @@
     },
     {
       "id": "AC-SAM-05",
+      "automated_checks": [
+        "tests.test_release_scheduling::test_collector_stops_later_samples_after_access_block"
+      ],
       "module": "SAM",
       "name": "外部等待",
       "given": "采样凭证缺失或平台限流",
@@ -172,6 +192,9 @@
     },
     {
       "id": "AC-SRC-01",
+      "automated_checks": [
+        "tests.test_release_first_slice::test_blocked_content_and_all_waived_scope_never_become_evidence_ready"
+      ],
       "module": "SRC",
       "name": "登录墙",
       "given": "抓取返回大量登录说明",
@@ -199,6 +222,9 @@
     },
     {
       "id": "AC-SRC-03",
+      "automated_checks": [
+        "tests.test_release_first_slice::test_new_manual_content_creates_new_snapshot_and_manifest_without_mutating_history"
+      ],
       "module": "SRC",
       "name": "补录正文",
       "given": "用户提供真实正文",
@@ -225,6 +251,9 @@
     },
     {
       "id": "AC-MON-01",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option"
+      ],
       "module": "MON",
       "name": "分母与缺失",
       "given": "选定九条，三条完成推荐判断且一条推荐",
@@ -238,6 +267,9 @@
     },
     {
       "id": "AC-MON-02",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option"
+      ],
       "module": "MON",
       "name": "全零观察",
       "given": "九条均完成且没有推荐",
@@ -251,6 +283,9 @@
     },
     {
       "id": "AC-MON-03",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_macro_and_weighted_average_use_independent_expected_counts_and_unknown_is_not_zero"
+      ],
       "module": "MON",
       "name": "宏平均",
       "given": "两个 Prompt 分别 1/2 和 9/10",
@@ -290,6 +325,9 @@
     },
     {
       "id": "AC-OPT-01",
+      "automated_checks": [
+        "tests.test_automatic_delivery::test_worker_real_stage_wiring_with_simulated_transport_not_real_llm"
+      ],
       "module": "OPT",
       "name": "无知识库",
       "given": "品牌及有效答案存在，Context 为空",
@@ -317,6 +355,9 @@
     },
     {
       "id": "AC-OPT-03",
+      "automated_checks": [
+        "tests.test_automatic_delivery::test_creation_is_idempotent_and_never_confers_external_or_review_authority"
+      ],
       "module": "OPT",
       "name": "重复点击",
       "given": "同范围任务已运行",
@@ -330,6 +371,9 @@
     },
     {
       "id": "AC-OPT-04",
+      "automated_checks": [
+        "tests.test_automatic_delivery::test_interruption_requires_explicit_recovery_and_keeps_budget"
+      ],
       "module": "OPT",
       "name": "恢复与版本",
       "given": "中间阶段完成后服务重启",
@@ -515,6 +559,9 @@
     },
     {
       "id": "AC-TRU-03",
+      "automated_checks": [
+        "tests.test_delivery_generation::test_missing_fake_and_cross_brand_evidence_are_rejected"
+      ],
       "module": "TRU",
       "name": "竞品外推",
       "given": "竞品具有能力但目标品牌未知",
@@ -528,6 +575,9 @@
     },
     {
       "id": "AC-TRU-04",
+      "automated_checks": [
+        "tests.test_automatic_delivery::test_worker_real_stage_wiring_with_simulated_transport_not_real_llm"
+      ],
       "module": "TRU",
       "name": "空上下文",
       "given": "ContextProvider 返回 EMPTY",
@@ -541,6 +591,9 @@
     },
     {
       "id": "AC-TRU-05",
+      "automated_checks": [
+        "tests.test_delivery_generation::test_internal_truth_missing_source_or_tampered_snapshot_cannot_become_public"
+      ],
       "module": "TRU",
       "name": "推断不升级",
       "given": "模型仅从竞品类比推断目标能力",
@@ -623,6 +676,9 @@
     },
     {
       "id": "AC-EXE-02",
+      "automated_checks": [
+        "tests.test_delivery_generation::test_static_checks_override_model_pass_and_record_real_local_repair"
+      ],
       "module": "EXE",
       "name": "新增虚假承诺",
       "given": "模型稿扩大了已支持能力",
@@ -637,6 +693,9 @@
     },
     {
       "id": "AC-EXE-03",
+      "automated_checks": [
+        "tests.test_delivery_generation::test_no_sources_do_not_become_invented_facts_and_rejected_all_is_not_success"
+      ],
       "module": "EXE",
       "name": "材料缺失",
       "given": "动作涉及案例但无真实数据",
@@ -663,6 +722,9 @@
     },
     {
       "id": "AC-EXE-05",
+      "automated_checks": [
+        "tests.test_automatic_delivery::test_budget_rejected_answer_is_pending_not_failed_and_has_no_external_call"
+      ],
       "module": "EXE",
       "name": "修复预算耗尽",
       "given": "生成检查失败且已到明确调用预算",
@@ -745,6 +807,9 @@
     },
     {
       "id": "AC-VAL-02",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_condition_conflict_blocks_delta_not_raw_values"
+      ],
       "module": "VAL",
       "name": "入口变化",
       "given": "基线网页端，复测 API",
@@ -758,6 +823,10 @@
     },
     {
       "id": "AC-VAL-03",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_compare_without_publication_uses_independent_denominators_and_url_sets",
+        "tests.test_observation_delivery::test_url_query_identity_does_not_remove_business_parameters"
+      ],
       "module": "VAL",
       "name": "新引用",
       "given": "两个明确批次，没有发布记录，对照样本观察到新URL",
@@ -771,6 +840,9 @@
     },
     {
       "id": "AC-VAL-04",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_compare_without_publication_uses_independent_denominators_and_url_sets"
+      ],
       "module": "VAL",
       "name": "负向记录",
       "given": "一轮效果下降",
@@ -797,6 +869,9 @@
     },
     {
       "id": "AC-COR-01",
+      "automated_checks": [
+        "tests.test_automatic_delivery::test_worker_real_stage_wiring_with_simulated_transport_not_real_llm"
+      ],
       "module": "COR",
       "name": "无人工路径",
       "given": "用户从未点击审核",
@@ -850,6 +925,10 @@
     },
     {
       "id": "AC-OPS-01",
+      "automated_checks": [
+        "tests.test_release_first_slice::test_source_preparation_status_read_has_no_business_writes",
+        "tests.test_automatic_delivery::test_official_task_api_is_scoped_read_only_and_requires_exact_authorization"
+      ],
       "module": "OPS",
       "name": "GET 零业务写入",
       "given": "系统已有结果",
@@ -863,6 +942,10 @@
     },
     {
       "id": "AC-OPS-02",
+      "automated_checks": [
+        "tests.test_release_access::test_invitation_scope_revocation_and_logout",
+        "tests.test_release_first_slice::test_release_run_selection_combines_tasks_and_rejects_cross_project_runs"
+      ],
       "module": "OPS",
       "name": "跨项目访问",
       "given": "当前身份/项目 A",
@@ -876,6 +959,10 @@
     },
     {
       "id": "AC-OPS-03",
+      "automated_checks": [
+        "tests.test_release_worker_lifecycle::test_exclusive_worker_and_readonly_health",
+        "tests.test_automatic_delivery::test_interruption_requires_explicit_recovery_and_keeps_budget"
+      ],
       "module": "OPS",
       "name": "重启持久",
       "given": "任务已有阶段结果",

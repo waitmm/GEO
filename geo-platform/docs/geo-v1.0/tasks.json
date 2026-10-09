@@ -346,7 +346,7 @@
       "definition_of_done": "Macro/Weighted 分开，0/N 与 N/A 分开，范围变化明确。",
       "implementation_files": [
         "frontend/src/App.tsx",
-        "backend/app/modules/analytics",
+        "backend/app/modules/single_prompt_v2/observation.py",
         "backend/app/modules/single_prompt_v2/release_api.py",
         "frontend/src/ObservationPanel.tsx"
       ],
@@ -483,7 +483,7 @@
       "milestone": "M2",
       "owner_role": "分析/后端",
       "owner_name": "Codex（分析/后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T10"
       ],
@@ -498,15 +498,18 @@
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/diagnosis.py",
         "backend/app/modules/single_prompt_v2/schemas.py",
-        "backend/app/modules/single_prompt_v2/llm_safety.py"
+        "backend/app/modules/single_prompt_v2/llm_safety.py",
+        "frontend/src/DeliveryEvidence.tsx",
+        "frontend/src/api/evidence.ts"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T143304Z/report.json"
       ],
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
       "blocker": "",
       "commit": "",
@@ -518,7 +521,7 @@
       "milestone": "M2",
       "owner_role": "分析/后端",
       "owner_name": "Codex（分析/后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T11",
         "T09"
@@ -534,15 +537,18 @@
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/citation_contribution.py",
         "backend/app/modules/single_prompt_v2/evidence_plan.py",
-        "backend/app/modules/optimization/passage_retrieval.py"
+        "backend/app/modules/optimization/passage_retrieval.py",
+        "backend/app/modules/single_prompt_v2/automatic_delivery.py",
+        "frontend/src/DeliveryEvidence.tsx"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T143304Z/report.json"
       ],
       "estimate": "5人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
       "blocker": "",
       "commit": "",
@@ -920,7 +926,7 @@
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/retest.py",
         "frontend/src/App.tsx",
-        "backend/app/modules/analytics",
+        "backend/app/modules/single_prompt_v2/observation.py",
         "frontend/src/ObservationPanel.tsx",
         "backend/tests/test_observation_delivery.py"
       ],
@@ -958,8 +964,10 @@
       "implementation_files": [
         "docs/geo-v1.0/17_验收矩阵.md",
         "docs/geo-v1.0/acceptance_cases.json",
-        "backend/tests",
-        "frontend/src"
+        "backend/tests/test_automatic_delivery.py",
+        "backend/tests/test_delivery_generation.py",
+        "backend/scripts/delivery_browser_check.py",
+        "frontend/src/AutomaticOptimizePanel.tsx"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
@@ -996,7 +1004,7 @@
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
       ],
-      "estimate": "2人日工程支持 + 真实发布观察窗口",
+      "estimate": "2人日工程支持 + 已授权的新采样验收，不等待发布窗口",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "",
@@ -1030,7 +1038,8 @@
         "backend/app/release_schema.py",
         "backend/app/core/release_database.py",
         "backend/scripts/release_worker.py",
-        "backend/alembic_release",
+        "backend/alembic_release/env.py",
+        "backend/alembic_release/versions/20261009_03_schedule_handoff.py",
         "backend/scripts/delivery_acceptance.py",
         "backend/scripts/delivery_browser_check.py"
       ],

@@ -194,7 +194,7 @@ def test_budget_rejected_answer_is_pending_not_failed_and_has_no_external_call(s
     assert payload['answer_diagnosis']['answer_jobs'][0]['result_source'] == 'REQUEST_NOT_SENT'
 
 
-def simulated_delivery_transport(monkeypatch, on_request=None, qa_response=None):
+def simulated_delivery_transport(monkeypatch, on_request=None, qa_response=None, citation_response=None):
     """Test-only Responses/chat boundary for offline API and browser wiring checks."""
     from app.services.semantic_llm import deepseek
     calls = []
@@ -219,7 +219,7 @@ def simulated_delivery_transport(monkeypatch, on_request=None, qa_response=None)
                 response = {'sections': [{'heading': '选用工具前的核对顺序', 'blocks': [{'kind': 'INSTRUCTION',
                     'text': '先列出需要处理的链接数量和使用场景，再向服务方核对当前限制；以实际说明为准，不把答案中的工具名称当成能力保证。', 'evidence_ids': []}]}]}
             elif 'frozen_candidate_pairs' in payload:
-                response = {'evaluations': [{**pair, 'answer_span': None, 'source_span': None,
+                response = citation_response(payload) if citation_response else {'evaluations': [{**pair, 'answer_span': None, 'source_span': None,
                     'correspondence_mode': 'NO_CORRESPONDENCE', 'evidence_relation': 'NO_MATCH',
                     'rationale': '已逐项检查该固定候选，模拟结果为没有内容对应。'}
                     for pair in payload['frozen_candidate_pairs']], 'no_binding_reason': None}

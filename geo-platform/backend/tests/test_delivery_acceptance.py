@@ -1,4 +1,4 @@
-from scripts.delivery_acceptance import applicable_test_paths, coverage_report, requirement_checks
+from scripts.delivery_acceptance import applicable_test_paths, coverage_report, requirement_checks, delivery_gaps
 
 
 def test_missing_cases_and_evidence_are_not_product_pass():
@@ -50,3 +50,26 @@ def test_requirement_evidence_is_this_run_and_never_promotes_product_acceptance(
     assert [row['status'] for row in result['AC-TWO']['checks']] == ['FAIL', 'SKIPPED', 'NOT_RUN']
     assert result['AC-TWO']['checks'][0]['executed_cases'] == 2
     assert requirement_checks(cases, tmp_path / 'missing.xml')['AC-ONE']['status'] == 'INCOMPLETE'
+
+
+def test_pass_labels_cannot_hide_unfinished_tasks_missing_code_or_unexecuted_checks(tmp_path):
+    (tmp_path / 'implemented.py').write_text('')
+    tasks = {'tasks': [
+        {'id': 'T1', 'status': 'IN_PROGRESS', 'implementation_files': ['implemented.py']},
+        {'id': 'T2', 'status': 'DONE', 'implementation_files': ['missing.py']},
+        {'id': 'T3', 'status': 'DONE', 'implementation_files': []},
+        {'id': 'T4', 'status': 'OUT_OF_SCOPE', 'implementation_files': ['removed.py']},
+    ]}
+    cases = {'cases': [{'id': 'AC-1', 'status': 'PASS', 'evidence': 'historical'}], 'end_to_end': []}
+    report = delivery_gaps(tasks, cases, {'AC-1': {'status': 'INCOMPLETE'}}, tmp_path)
+    assert report['unfinished_tasks'] == [{'id': 'T1', 'status': 'IN_PROGRESS'}]
+    assert [item['task_id'] for item in report['missing_implementation']] == ['T2', 'T3']
+    assert report['required_checks_not_passed'] == [{'id': 'AC-1', 'status': 'INCOMPLETE'}]
+
+
+def test_delivery_mapping_rejects_escape_and_keeps_superseded_cases_out(tmp_path):
+    tasks = {'tasks': [{'id': 'T1', 'status': 'DONE', 'implementation_files': ['../outside.py']}]}
+    cases = {'cases': [{'id': 'AC-old', 'status': 'SUPERSEDED'}], 'end_to_end': []}
+    report = delivery_gaps(tasks, cases, {'AC-old': {'status': 'INCOMPLETE'}}, tmp_path)
+    assert report['missing_implementation'][0]['reason'] == 'IMPLEMENTATION_FILE_MISSING'
+    assert not report['required_checks_not_passed']

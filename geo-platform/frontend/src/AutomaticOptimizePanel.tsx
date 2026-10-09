@@ -4,6 +4,7 @@ import { Copy, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { ManuscriptEditor } from "./ManuscriptEditor";
+import { DeliveryEvidence } from "./DeliveryEvidence";
 
 type Task = {
   task_kind: string; pending_draft?: { sections: { heading: string; blocks: { text: string }[] }[] };
@@ -142,6 +143,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           <Descriptions.Item label="文本检查">{delivery.output.automatic_qa.status === "READY" ? "通过当前文本检查" : "需要修正"}</Descriptions.Item>
         </Descriptions>
         <Space wrap><Button icon={<Copy size={16} />} onClick={() => navigator.clipboard.writeText(delivery.output.publication_draft.body_markdown).then(() => message.success("正文已复制")).catch(() => message.error("复制失败，请检查浏览器权限"))}>复制完整正文</Button>
+          <DeliveryEvidence key={`evidence:${delivery.result_version}`} frozen={delivery.output.delivery_input} resultVersion={delivery.result_version} />
           <ManuscriptEditor key={delivery.result_version} delivery={delivery} taskId={task!.task_id} projectId={projectId} promptId={promptId}
             onQueued={saved => { ++sequence.current; setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />
           <Button href={href(delivery)}>方案详情与可选发布记录</Button></Space>

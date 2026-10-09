@@ -67,6 +67,29 @@ def requirement_checks(cases: dict, junit: Path) -> dict:
     return results
 
 
+def delivery_gaps(tasks: dict, cases: dict, checks: dict, root: Path = ROOT) -> dict:
+    active_tasks = [t for t in tasks['tasks'] if t.get('status') not in {'SUPERSEDED', 'OUT_OF_SCOPE'}]
+    active_cases = {c['id'] for c in cases['cases'] + cases['end_to_end']
+                    if c.get('status') not in {'SUPERSEDED', 'OUT_OF_SCOPE'}}
+    missing = []
+    for task in active_tasks:
+        paths = task.get('implementation_files') or []
+        if not paths:
+            missing.append({'task_id': task['id'], 'path': None, 'reason': 'NO_IMPLEMENTATION_MAPPING'})
+        for value in paths:
+            path = (root / value).resolve()
+            if root.resolve() not in path.parents or not path.is_file():
+                missing.append({'task_id': task['id'], 'path': value, 'reason': 'IMPLEMENTATION_FILE_MISSING'})
+    return {
+        'unfinished_tasks': [{'id': t['id'], 'status': t.get('status', 'NOT_STARTED')}
+                             for t in active_tasks if t.get('status') != 'DONE'],
+        'missing_implementation': missing,
+        'required_checks_not_passed': [{'id': key, 'status': value['status']}
+                                      for key, value in checks.items()
+                                      if key in active_cases and value['status'] != 'PASS'],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--checks-only', action='store_true', help='Run engineering checks without claiming complete product acceptance')
@@ -107,6 +130,7 @@ def main() -> int:
     report['coverage'] = coverage_report(tasks, cases)
     junit = out / 'backend.xml'
     report['requirement_checks'] = requirement_checks(cases, junit)
+    report['delivery_gaps'] = delivery_gaps(tasks, cases, report['requirement_checks'])
     if junit.exists():
         suites = ET.parse(junit).getroot()
         report['tests'] = [dict(s.attrib) for s in suites.iter('testsuite')]
@@ -114,8 +138,9 @@ def main() -> int:
     report['source_fingerprint_after'] = source_fingerprint()
     report['source_changed_during_validation'] = report['source_fingerprint'] != report['source_fingerprint_after']
     failed = failed or report['source_changed_during_validation']
-    incomplete = any(report['coverage'].values())
+    incomplete = any(report['coverage'].values()) or any(report['delivery_gaps'].values())
     report.update(finished=True, status='FAIL' if failed else 'INCOMPLETE' if incomplete else 'PASS',
+                  engineering_status='FAIL' if failed else 'NOT_RUN' if args.coverage_only else 'PASS',
                   product_complete=not failed and not incomplete and not args.coverage_only and not args.checks_only and not args.skip_browser,
                   browser_required_executed=not args.coverage_only and not args.skip_browser)
     (out / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))

@@ -184,7 +184,23 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         return {'checks': [{'segment_id': s['segment_id'],
             'verdict': 'UNSUPPORTED' if '99元' in s['text'] else 'PASS',
             'rationale': '该价格没有来源支持。' if '99元' in s['text'] else '该段是核对建议。'} for s in payload['segments']]}
-    calls = simulated_delivery_transport(monkeypatch, qa_response=manuscript_qa)
+    def citation_with_one_grounded_binding(payload):
+        evaluations = []
+        selected = False
+        for pair in payload['frozen_candidate_pairs']:
+            answer_text = payload['untrusted_answer_units'][pair['answer_unit_index']]['raw_text']
+            source_text = payload['untrusted_source_passages'][pair['passage_index']]['text']
+            span = '支持批量生成短链'
+            positive = not selected and span in answer_text and span in source_text
+            selected = selected or positive
+            evaluations.append({**pair, 'answer_span': span if positive else None,
+                'source_span': span if positive else None,
+                'correspondence_mode': 'DIRECT_REUSE' if positive else 'NO_CORRESPONDENCE',
+                'evidence_relation': 'SUPPORTS_PARTIAL' if positive else 'NO_MATCH',
+                'rationale': '离线测试中两个原文片段一致，仅支持批量能力，不推导品牌推荐或生成因果。' if positive else '离线模拟未发现对应。'})
+        assert selected, 'Offline fixture must contain the independently expected shared span'
+        return {'evaluations': evaluations, 'no_binding_reason': None}
+    calls = simulated_delivery_transport(monkeypatch, qa_response=manuscript_qa, citation_response=citation_with_one_grounded_binding)
     execute_task(task_id, session_factory=Session)
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
     expect(panel.get_by_text('选用工具前的核对顺序', exact=False)).to_be_visible()
@@ -194,6 +210,26 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     persisted = page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{task_id}/deliveries?project_id=1&prompt_id=44')
     assert persisted.ok
     expected_body = persisted.json()[0]['output']['publication_draft']['body_markdown']
+    frozen = persisted.json()[0]['output']['delivery_input']
+    assert len(frozen['selected_evidence']) == 1
+    panel.get_by_role('button', name='查看分析依据', exact=True).click()
+    evidence = page.get_by_role('dialog', name='方案依据与原始回答', exact=True)
+    expect(evidence.get_by_role('region', name='Run 1 完整回答', exact=True)).to_contain_text(frozen['answers'][0]['text'])
+    evidence.get_by_role('tab', name='来源证据', exact=True).click()
+    expect(evidence.get_by_text('仅部分支持', exact=True)).to_be_visible()
+    expect(evidence.get_by_text(frozen['selected_evidence'][0]['passage_text'], exact=True)).to_be_visible()
+    page.set_viewport_size({'width': 390, 'height': 1000})
+    accessibility_check(page, out, report, 'delivery-evidence-390')
+    assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+    page.screenshot(path=str(out / 'delivery-evidence-390.png'), full_page=True)
+    report['screenshots'].append('delivery-evidence-390.png')
+    evidence.get_by_role('button', name='定位完整回答', exact=True).click()
+    expect(evidence.locator('mark')).to_have_text(frozen['selected_evidence'][0]['answer_unit']['raw_text'])
+    evidence.get_by_role('tab', name='品牌资料', exact=True).click()
+    expect(evidence.get_by_text('本版没有采用已核实品牌事实；这不表示品牌没有相应能力', exact=True)).to_be_visible()
+    evidence.press('Escape')
+    expect(evidence).not_to_be_visible()
+    page.set_viewport_size({'width': 1440, 'height': 1000})
     page.context.grant_permissions(['clipboard-read', 'clipboard-write'], origin=origin)
     copy_button = panel.get_by_role('button', name='复制完整正文', exact=True)
     copy_button.focus()

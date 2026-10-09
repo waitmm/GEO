@@ -453,8 +453,8 @@
       "requirements": [
         "ANS-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "backend/artifacts/acceptance/browser-20261009T143304Z/report.json: isolated release UI opens exact frozen answer/source, locates selected AnswerUnit and preserves result after refresh. 390px screenshot and accessibility results retained. frontend/tests/evidence.test.mjs covers Unicode offsets and stale bindings. Simulated provider input, not real semantic quality acceptance."
     },
     {
       "id": "AC-ANS-05",

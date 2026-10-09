@@ -313,6 +313,8 @@ def test_formal_api_context_and_comparison_persist_without_reviews(tmp_path, mon
         for side, ref in [('baseline', refs[0]), ('comparison', refs[1])]:
             measurement = client.post('/api/v2/projects/1/prompts/44/measurements', json={'scope': ref, 'identity': IDENTITY})
             assert measurement.status_code == 200
+            assert measurement.json()['identity'] == IDENTITY
+            assert measurement.json()['target_url'] == ''
             for name, metric in measurement.json()['metrics'].items():
                 assert saved['output']['metrics'][name][side] == metric
         negative = client.post(uri, json={'baseline': refs[1], 'comparison': refs[0], 'identity': IDENTITY})
@@ -322,6 +324,15 @@ def test_formal_api_context_and_comparison_persist_without_reviews(tmp_path, mon
         assert {r['result_version'] for r in history} == {saved['result_version'], negative.json()['result_version']}
         assert client.get(uri + '/' + negative.json()['result_version']).json()['output'] == negative.json()['output']
         assert client.get(uri + '/' + saved['result_version']).json()['output_hash'] == saved['output_hash']
+        from app.models import Project
+        project = db.get(Project, 1)
+        project.brand_name = 'Changed brand identity'
+        project.brand_aliases_json = json.dumps(['Changed alias'])
+        db.commit()
+        reread = client.get(uri + '/' + saved['result_version']).json()
+        assert reread['input']['identity'] == IDENTITY
+        assert reread['output_hash'] == saved['output_hash'] and reread['output'] == saved['output']
+        assert client.get(monitor_uri).json()['identity']['canonical_brand_name'] == 'Changed brand identity'
         assert client.get(uri.replace('/1/', '/2/') + '/' + saved['result_version']).status_code == 404
         altered = copy.deepcopy(payload); altered['baseline']['raw_output_hash'] = '0' * 64
         assert client.post(uri, json=altered).status_code == 409

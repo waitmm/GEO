@@ -9,12 +9,16 @@ from sqlalchemy.exc import IntegrityError
 from app.models import SinglePromptExecutionProposal, SinglePromptExecutionProposalResult, SinglePromptOptimizationTask
 from app.services.serialization import loads
 from .automatic_delivery import checkpoint, encode, require_task, scoped_client
-from .delivery_generation import admit_draft, generation_input, editable_draft
+from .delivery_generation import admit_draft, generation_input, editable_draft, GENERATION_VERSION, QA_VERSION
 from .delivery_text import digest
 from .execution import _generated_qa, _proposal_applicability, generate_complete_execution_deliverable
 
 
 REVISION_CONTRACT = "delivery_text_revision.v1"
+
+
+def revision_computation_contracts() -> dict:
+    return {"revision": REVISION_CONTRACT, "generation": GENERATION_VERSION, "text_qa": QA_VERSION}
 
 
 def create_revision_task(db, *, parent_task_id: str, project_id: int, prompt_id: int,
@@ -39,10 +43,11 @@ def create_revision_task(db, *, parent_task_id: str, project_id: int, prompt_id:
         raise HTTPException(409, "当前稿件缺少可复检的生成记录，不能继承其文本资格")
     _generated_qa(output, frozen)
     try:
-        draft = admit_draft(draft, generation_input(frozen))
+        draft = admit_draft(draft, generation_input(frozen, output['generation_receipt'].get('official_facts')))
     except ValueError as error:
         raise HTTPException(422, "修改内容的段落或证据绑定不合法") from error
     fixed = loads(parent.input_json, {})
+    fixed['computation_contracts'] = revision_computation_contracts()
     fixed["source_fetch_authorized"] = False
     fixed["delivery_revision"] = {"contract_version": REVISION_CONTRACT, "parent_task_id": parent_task_id,
         "proposal_id": proposal_id, "base_result_version": result_version, "base_result_hash": result_hash,

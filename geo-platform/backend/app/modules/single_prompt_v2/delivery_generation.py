@@ -11,8 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from .delivery_text import digest, text_digest
 
 
-GENERATION_VERSION = "single_prompt_delivery_generation.v2_qualified_truth"
-QA_VERSION = "single_prompt_delivery_judgment.v1"
+LEGACY_GENERATION_VERSION = "single_prompt_delivery_generation.v2_qualified_truth"
+GENERATION_VERSION = "single_prompt_delivery_generation.v3_official_attested"
+LEGACY_QA_VERSION = "single_prompt_delivery_judgment.v1"
+QA_VERSION = "single_prompt_delivery_judgment.v2_official_attested"
 MAX_OUTPUT_TOKENS = 6000
 
 
@@ -51,6 +53,7 @@ WRITER_PROMPT = """你是面向中文读者的内容编辑，只使用本次冻�
 INSTRUCTION 是建议读者采取的动作，不得伪装成关于产品能力、平台规则或数字效果的事实。
 SOURCE_STATEMENT 只表达 public_evidence 中原文支持的陈述，并给出准确 evidence_ids，保留主体、条件、否定和时效；不是目标品牌事实。
 TARGET_STATEMENT 只能绑定 TARGET_VERIFIED evidence，不允许把竞品能力或一般行业事实转写给目标品牌。
+来源核实的目标事实必须逐字保留 attribution_prefix，明确官网出处和获取日期，不得写成无时效限定的当前能力或独立实测。
 没有证据时，转为针对问题的探索、比较或查证方法，不编造定义、参数、案例、截图、数据或平台操作。
 internal_context 仅帮助理解用户关注点，属于私有未核实资料；不得复制到正文或当作公开事实依据。
 answer_topics 是观察到的答案话题，不是已核实事实，不能只把它们换词当事实发布。
@@ -63,6 +66,7 @@ QA_PROMPT = """逐段核查 supplied segments 的实际文本，严格返回完�
 不要因为有 evidence_ids 就判 PASS。核对主体、数字、条件、否定、范围及目标品牌归属。
 每个 SOURCE_STATEMENT 必须由其绑定原文支持；来源说法不等于独立验证，也不等于目标品牌能力。
 TARGET_STATEMENT 只能使用 TARGET_VERIFIED 的完整限定。章节标题同样不能夸大。
+来源核实事实必须保留 attribution_prefix；官网陈述只在其取得时间与已给文档范围内核实，不得升级成独立产品实测或当前保证。
 INSTRUCTION 可以是可操作的建议，但不能夹带无依据的产品能力、事实、规则或效果；问题需与 question/intent 有关。
 私有 internal_context 不得原文泄漏或被升级成公开事实。answer_topics 仅为观察，不是事实证据。
 复杂不确定用 INSUFFICIENT_CONTEXT；不要自动通过，不输出替代策略或长篇报告。
@@ -70,7 +74,9 @@ INSTRUCTION 可以是可操作的建议，但不能夹带无依据的产品能�
 """
 
 
-def generation_input(frozen: dict) -> dict:
+def generation_input(frozen: dict, official_facts: dict | None = None, *, generation_version: str = GENERATION_VERSION) -> dict:
+    if generation_version not in {GENERATION_VERSION, LEGACY_GENERATION_VERSION}:
+        raise ValueError("UNKNOWN_DELIVERY_GENERATION_CONTRACT")
     evidence = []
     for item in frozen.get("selected_evidence") or []:
         if item.get("material_use") == "ATTRIBUTED_BRAND_PAGE_OBSERVATION_NOT_TRUTH":
@@ -101,9 +107,22 @@ def generation_input(frozen: dict) -> dict:
             'title': '目标品牌已确认事实', 'url': truth['source_reference'],
             'truth_id': truth['product_truth_id'], 'truth_snapshot_hash': truth['truth_snapshot_hash'],
             'verification_state': 'MANUAL_CONFIRMED_WITH_SOURCE', 'scope': 'TARGET_BRAND_ONLY'})
+    if official_facts is not None:
+        if generation_version != GENERATION_VERSION:
+            raise ValueError("OFFICIAL_FACTS_REQUIRE_CURRENT_CONTRACT")
+        from .delivery_facts import validate_attestations
+        verified = validate_attestations(frozen, official_facts)
+        for fact in verified['accepted']:
+            prefix = f"截至{fact['valid_as_of']}取得的{fact['subject']}官方资料记载："
+            evidence.append({'evidence_id': fact['fact_id'], 'kind': 'TARGET_VERIFIED',
+                'text': prefix + fact['statement'], 'title': fact['title'], 'url': fact['url'],
+                'snapshot_id': fact['snapshot_id'], 'source_span': fact['source_span'],
+                'attribution_prefix': prefix, 'verification_state': fact['verification_state'],
+                'scope': 'ATTRIBUTED_AS_OF_SOURCE_ONLY'})
     if len({row["evidence_id"] for row in evidence}) != len(evidence):
         raise ValueError("DUPLICATE_DELIVERY_EVIDENCE")
-    return {"contract_version": GENERATION_VERSION, "delivery_input_hash": digest(frozen),
+    return {"contract_version": generation_version, "delivery_input_hash": digest(frozen),
+        **({"official_fact_receipt": copy.deepcopy(official_facts)} if official_facts is not None else {}),
         "question": frozen["prompt_text"], "intent": (frozen.get("prompt_configuration") or {}).get("intent_type", "UNKNOWN"),
         "brand_name": frozen["brand"]["brand_name"], "public_evidence": evidence,
         "answer_topics": copy.deepcopy(frozen.get("question_topics") or []),
@@ -161,6 +180,9 @@ def deterministic_issues(segment: dict, inputs: dict) -> list[str]:
     issues = []
     text = segment["text"]
     if segment["kind"] in {"SOURCE_STATEMENT", "TARGET_STATEMENT"}:
+        if any(evidence[key].get('attribution_prefix') and evidence[key]['attribution_prefix'] not in text
+               for key in segment['evidence_ids']):
+            issues.append('OFFICIAL_AS_OF_ATTRIBUTION_REQUIRED')
         numbers = lambda s: set(re.findall(r"\d+(?:\.\d+)?(?:%|％|元|年|天|小时|倍)?", s))
         if numbers(text) - numbers(bound_text):
             issues.append("NUMBER_NOT_SUPPORTED")
@@ -231,10 +253,11 @@ def finish_draft(draft: dict, qa: dict, inputs: dict) -> dict:
             if row["evidence_ids"]:
                 body.extend(["", "来源：" + "；".join(evidence[key]["url"] for key in row["evidence_ids"])])
     text = "\n".join(body)
-    return {"contract_version": GENERATION_VERSION, "title": title, "body_markdown": text,
+    return {"contract_version": inputs['contract_version'], "title": title, "body_markdown": text,
+        **({"official_facts": copy.deepcopy(inputs['official_fact_receipt'])} if 'official_fact_receipt' in inputs else {}),
         "content_hash": text_digest(text), "delivery_input_hash": inputs["delivery_input_hash"],
         "segments": repaired, "original_draft": draft,
-        "qa": {"contract_version": QA_VERSION, "status": "READY" if useful else "NO_DELIVERABLE_CONTENT",
+        "qa": {"contract_version": LEGACY_QA_VERSION if inputs['contract_version'] == LEGACY_GENERATION_VERSION else QA_VERSION, "status": "READY" if useful else "NO_DELIVERABLE_CONTENT",
             "method": "MODEL_TEXT_CHECK_AND_DETERMINISTIC_BOUNDARIES", "checks": admitted["checks"],
             "findings": findings, "repairs": repairs, "checked_content_hash": text_digest(text),
             "limitations": ["机器 QA 不是独立事实认证", "归因来源不证明来源自身真实", "未授权目标品牌事实不会成为公开声明", "没有证明生成影响或发布效果"]}}
@@ -254,34 +277,43 @@ def _repair_matches(segment: dict, after: str, evidence: dict) -> bool:
 
 def revalidate_generated_draft(frozen: dict, saved: dict) -> dict:
     """Rebuild from the admitted original and QA record; never trust a stored READY flag."""
-    expected = finish_draft(saved["original_draft"], {"checks": saved["qa"]["checks"]}, generation_input(frozen))
+    expected = finish_draft(saved["original_draft"], {"checks": saved["qa"]["checks"]},
+        generation_input(frozen, saved.get('official_facts'), generation_version=saved['contract_version']))
     if saved != expected:
         raise ValueError("GENERATED_DRAFT_OR_QA_RECORD_MUTATED")
     return expected["qa"]
 
 
 def generate_and_check(frozen: dict, *, client, db=None, on_stage: Callable[[str], None] | None = None) -> dict:
-    """Exactly two logical requests, compatible cache allowed. Caller owns authorization/audit."""
-    inputs = generation_input(frozen)
+    """Bounded official checks plus draft/QA. Caller owns authorization and audit."""
+    from .delivery_facts import compute_attestations
+    official_facts = None
+    if frozen.get('official_source_materials'):
+        if on_stage:
+            on_stage('TRUTH')
+        official_facts = compute_attestations(frozen, client=client, db=db)
+    inputs = generation_input(frozen, official_facts)
     if on_stage:
         on_stage("DRAFT")
-    draft = client.structured_generate_sync(system_prompt=WRITER_PROMPT, user_payload=inputs,
+    draft = client.structured_generate_sync(system_prompt=WRITER_PROMPT,
+        user_payload={key: value for key, value in inputs.items() if key != 'official_fact_receipt'},
         response_schema=DraftResponse, prompt_version=GENERATION_VERSION, schema_version=GENERATION_VERSION,
         max_tokens=MAX_OUTPUT_TOKENS, strict_json=True, structured_output_mode="JSON_SCHEMA", db=db,
         response_validator=lambda value: admit_draft(value, inputs))
     draft = admit_draft(draft, inputs)
-    return check_submitted_draft(frozen, draft, client=client, db=db, on_stage=on_stage)
+    return check_submitted_draft(frozen, draft, client=client, db=db, on_stage=on_stage, official_facts=official_facts)
 
 
 def check_submitted_draft(frozen: dict, draft: dict, *, client, db=None,
-                          on_stage: Callable[[str], None] | None = None) -> dict:
+                          on_stage: Callable[[str], None] | None = None, official_facts: dict | None = None) -> dict:
     """One QA request for explicit edited text; never inherit the parent verdict."""
-    inputs = generation_input(frozen)
+    inputs = generation_input(frozen, official_facts)
     draft = admit_draft(draft, inputs)
     segments = segments_of(draft)
     if on_stage:
         on_stage("TEXT_QA")
-    qa = client.structured_generate_sync(system_prompt=QA_PROMPT, user_payload={**inputs, "segments": segments},
+    qa = client.structured_generate_sync(system_prompt=QA_PROMPT,
+        user_payload={**{key: value for key, value in inputs.items() if key != 'official_fact_receipt'}, "segments": segments},
         response_schema=TextQAResponse, prompt_version=QA_VERSION, schema_version=QA_VERSION,
         max_tokens=MAX_OUTPUT_TOKENS, strict_json=True, structured_output_mode="JSON_SCHEMA", db=db,
         response_validator=lambda value: admit_qa(value, segments))

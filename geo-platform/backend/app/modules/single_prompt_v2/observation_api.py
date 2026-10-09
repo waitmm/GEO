@@ -227,6 +227,8 @@ def scopes(project_id: int, prompt_id: int, db: Session = Depends(get_release_db
 def measurement(project_id: int, prompt_id: int, payload: MeasurementCreate, db: Session = Depends(get_release_db)):
     frozen = fixed_scope(db, project_id, prompt_id, payload.scope.model_dump())
     result = measure_scope(frozen, payload.identity.model_dump(), payload.target_url)
+    result['identity'] = payload.identity.model_dump()
+    result['target_url'] = payload.target_url
     intent = frozen['raw'].get('sampling_plan', {}).get('prompt_configuration', {}).get('intent_type', '')
     result['opportunity'] = opportunity_hint(intent, result['metrics'])
     return result

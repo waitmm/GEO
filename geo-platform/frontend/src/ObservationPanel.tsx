@@ -141,6 +141,8 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
   }
   const options = scopes.map(s => ({ value: s.context_id, label: `Runs ${(s.run_scope.run_ids || []).join("、")} · ${s.created_at}` }));
   const output = result?.output || result || (mode === "monitor" && pool?.runs?.length ? pool : undefined);
+  const measuredIdentity = result?.input?.identity || output?.identity;
+  const measuredTarget = result?.input?.target_url ?? output?.target_url;
   const rows = Object.entries(output?.metrics || {}).map(([key, value]) => ({ key, name: names[key] || key, data: value as any }));
   const choose = (label: string, value: string | undefined, change: (v: string) => void, answer: string | undefined, answerChange: (v: string | undefined) => void) => <Space direction="vertical" style={{ width: "100%" }}>
     <label>{label}</label><Select aria-label={label} style={{ width: "100%" }} placeholder="选择明确的样本范围" value={value} options={options} onChange={v => { change(v); answerChange(undefined); setResult(undefined); }} />
@@ -193,13 +195,19 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       {promptId && <Space direction="vertical" size={16} style={{ width: "100%" }}>
         {choose(mode === "monitor" ? "观察范围" : "基线范围", left, setLeft, leftAnswer, setLeftAnswer)}
         {mode === "compare" && choose("对照范围", right, setRight, rightAnswer, setRightAnswer)}
-        <label>目标页面 URL（可选，不要求已发布）<Input value={target} onChange={e => setTarget(e.target.value)} /></label>
+        <label>目标页面 URL（可选，不要求已发布）<Input value={target} onChange={e => { setTarget(e.target.value); setResult(undefined); }} /></label>
         <Button type="primary" icon={<BarChart3 size={16} />} loading={busy} disabled={!left || (mode === "compare" && (!right || right === left))} onClick={run}>{mode === "monitor" ? "查看指标" : "生成变化比较"}</Button>
         {mode === "compare" && <Select aria-label="历史比较" style={{ width: "100%" }} placeholder="查看已保存的比较" value={result?.result_version} onChange={id => {
           restoreComparison(history.find(x => x.result_version === id)); const params = new URLSearchParams(window.location.search); params.set("observation_result", id); window.history.replaceState(null, "", `?${params}`);
         }} options={history.map(r => ({ value: r.result_version, label: `${r.created_at} · ${r.result_version}` }))} />}
       </Space>}
       {output && <>
+        {measuredIdentity && <section aria-label="本结果测量身份" style={{ marginTop: 20, overflowWrap: "anywhere" }}>
+          <Typography.Text strong>本结果测量身份：{measuredIdentity.canonical_brand_name}</Typography.Text>
+          <Typography.Paragraph style={{ margin: "4px 0" }}>别名：{measuredIdentity.accepted_aliases?.join("、") || "未设置"}；官方域名：{measuredIdentity.official_domains?.join("、") || "未设置，官方引用不可计算"}</Typography.Paragraph>
+          {measuredTarget && <Typography.Paragraph>目标页面：{measuredTarget}</Typography.Paragraph>}
+          {mode === "compare" && <Typography.Paragraph type="secondary">当前展示的是保存时的测量身份；项目配置更新不会改写此结果。</Typography.Paragraph>}
+        </section>}
         {mode === "monitor" && output.opportunity && <Alert style={{ marginTop: 16 }} type="info" message={output.opportunity.label} description={output.opportunity.reason} />}
         <Table style={{ marginTop: 24 }} rowKey="key" pagination={false} scroll={{ x: 650 }} dataSource={rows} columns={[
           { title: "指标", dataIndex: "name" },

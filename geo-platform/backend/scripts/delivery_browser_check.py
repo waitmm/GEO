@@ -124,6 +124,19 @@ def observation_check(page, origin, fixture, out, report):
     assert negative['result_version'] != saved['result_version']
     page.reload()
     expect(page.get_by_role('row').filter(has_text='正文提及')).to_contain_text('-100')
+    identity = page.get_by_role('region', name='本结果测量身份')
+    expect(identity).to_contain_text('本结果测量身份：Target')
+    for brand in ['Target 改版', 'Target']:
+        page.get_by_role('button', name='编辑项目', exact=True).click()
+        editor = page.get_by_role('dialog', name='编辑项目')
+        editor.get_by_label('品牌名称', exact=True).fill(brand)
+        editor.get_by_role('button', name=re.compile('^保\\s*存$')).click()
+        expect(editor).not_to_be_visible()
+        page.reload()
+        expect(identity).to_contain_text('本结果测量身份：Target')
+        expect(identity).not_to_contain_text('Target 改版')
+        expect(page.get_by_role('row').filter(has_text='正文提及')).to_contain_text('-100')
+    assert page.request.get(f'{origin}/api/v2/projects/1/prompts/44/observation-comparisons/{negative["result_version"]}').json()['output_hash'] == negative['output_hash']
     page.screenshot(path=str(out / 'negative-comparison.png'), full_page=True)
     report['screenshots'].append('negative-comparison.png')
     page.get_by_role('menuitem', name='品牌资料', exact=True).click()
@@ -221,6 +234,7 @@ def observation_check(page, origin, fixture, out, report):
         verified=['WORKER_STOPPED_AND_HEALTH_READ_RECOVERY', 'MONITOR_INDEPENDENT_EXPECTED_COUNTS', 'UNKNOWN_NOT_ZERO', 'FORMAL_UI_COMPARISON',
             'COMPARISON_RELOAD_EXACT_VERSION', 'CONTEXT_TWO_VERSIONS', 'READ_FAILURE_RECOVERY',
             'NEGATIVE_COMPARISON_PERSISTED', 'MONITOR_EXACT_SCOPE_HANDOFF_WITHOUT_EXTERNAL_WORK',
+            'HISTORICAL_MEASUREMENT_IDENTITY_SURVIVES_PROJECT_EDIT',
             'PRIMARY_OPTIMIZE_ACTION_FIRST_VIEWPORT', 'NINE_RUN_ZERO_TO_ONE_INDEPENDENT_COUNTS',
             'PROJECT_SWITCH_CLEARS_PREVIOUS_DATA', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
         not_verified=['REAL_SAMPLING', 'REAL_MODEL_QUALITY'], synthetic_runs=20)
@@ -232,6 +246,8 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     from app.modules.single_prompt_v2.automatic_delivery import execute_task
     from test_automatic_delivery import simulated_delivery_transport
     analysis = fixture['analysis']
+    official = bool(fixture.get('official_snapshot_id'))
+    initial_requests = 6 if official else 4
     slow_reads = []
     def delayed_first_read(route):
         if route.request.method == 'GET' and not slow_reads:
@@ -257,7 +273,7 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     expect(panel.get_by_role('button', name='授权本任务模型调用')).to_be_visible(timeout=15000)
     panel.get_by_role('button', name='授权本任务模型调用').click()
     dialog = page.get_by_role('dialog', name='本任务独立调用授权')
-    for label, value in [('请求次数上限', '4'), ('总 token 上限', '400000'), ('人民币硬预算', '4'),
+    for label, value in [('请求次数上限', str(initial_requests)), ('总 token 上限', '400000'), ('人民币硬预算', '4'),
             ('输入 / 输出每百万 token 的较高保守单价（人民币）', '10'),
             ('已核实计费依据', '隔离工程模拟价格，不是真实调用授权'),
             ('计费核实日期', datetime.utcnow().date().isoformat())]:
@@ -284,16 +300,35 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
                 'rationale': '离线测试中两个原文片段一致，仅支持批量能力，不推导品牌推荐或生成因果。' if positive else '离线模拟未发现对应。'})
         assert selected, 'Offline fixture must contain the independently expected shared span'
         return {'evaluations': evaluations, 'no_binding_reason': None}
-    calls = simulated_delivery_transport(monkeypatch, qa_response=manuscript_qa, citation_response=citation_with_one_grounded_binding)
+    from test_delivery_official_facts import approved, BROWSER_CLAIM
+    def official_claim(payload):
+        claim = {'normalized_claim': BROWSER_CLAIM, 'subject_text': 'Target', 'predicate': '支持',
+            'object_text': '批量生成短链（仅限已创建项目）', 'claim_type': 'CAPABILITY',
+            'polarity': 'POSITIVE', 'source_span': BROWSER_CLAIM}
+        assert claim['source_span'] in payload['untrusted_source_passage']
+        return {'claims': [claim]}
+    def official_draft(payload):
+        fact = next(e for e in payload['public_evidence'] if e.get('attribution_prefix'))
+        return {'sections': [{'heading': '选用工具前的核对顺序', 'blocks': [
+            {'kind': 'INSTRUCTION', 'text': '先核对使用场景和设备范围，再按服务说明验证处理结果。', 'evidence_ids': []},
+            {'kind': 'TARGET_STATEMENT', 'text': fact['text'], 'evidence_ids': [fact['evidence_id']]}]}]}
+    calls = simulated_delivery_transport(monkeypatch, qa_response=manuscript_qa, citation_response=citation_with_one_grounded_binding,
+        source_response=official_claim if official else None,
+        fact_response=(lambda payload: {'checks': [approved(c['claim_id']) for c in payload['claims']]}) if official else None,
+        draft_response=official_draft if official else None)
     execute_task(task_id, session_factory=Session)
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
     expect(panel.get_by_text('选用工具前的核对顺序', exact=False)).to_be_visible()
-    assert len(calls) == 4
+    assert len(calls) == initial_requests
     page.reload()
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
     persisted = page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{task_id}/deliveries?project_id=1&prompt_id=44')
     assert persisted.ok
     expected_body = persisted.json()[0]['output']['publication_draft']['body_markdown']
+    article = panel.get_by_role('article', name='完整稿件正文')
+    for section in persisted.json()[0]['output']['publication_draft']['sections']:
+        expect(article.get_by_role('heading', name=section['title'], exact=True)).to_be_visible()
+        expect(article.get_by_text(section['draft_text'], exact=True)).to_be_visible()
     frozen = persisted.json()[0]['output']['delivery_input']
     assert len(frozen['selected_evidence']) == 1
     panel.get_by_role('button', name='查看分析依据', exact=True).click()
@@ -310,7 +345,21 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     evidence.get_by_role('button', name='定位完整回答', exact=True).click()
     expect(evidence.locator('mark')).to_have_text(frozen['selected_evidence'][0]['answer_unit']['raw_text'])
     evidence.get_by_role('tab', name='品牌资料', exact=True).click()
-    expect(evidence.get_by_text('本版没有采用已核实品牌事实；这不表示品牌没有相应能力', exact=True)).to_be_visible()
+    if official:
+        facts = persisted.json()[0]['output']['generation_receipt']['official_facts']
+        assert len(facts['accepted']) == 1
+        assert facts['accepted'][0]['snapshot_id'] == fixture['official_snapshot_id']
+        assert facts['accepted'][0]['statement'] in expected_body
+        assert facts['accepted'][0]['valid_as_of'] in expected_body
+        region = evidence.get_by_role('region', name='官方资料自动核实结果')
+        expect(region).to_contain_text('官方资料核实：1 项')
+        expect(region).to_contain_text(BROWSER_CLAIM)
+        expect(region).to_contain_text('不等于独立产品实测')
+        accessibility_check(page, out, report, 'official-facts-390')
+        page.screenshot(path=str(out / 'official-facts-390.png'), full_page=True)
+        report['screenshots'].append('official-facts-390.png')
+    else:
+        expect(evidence.get_by_text('本版没有采用已核实品牌事实；这不表示品牌没有相应能力', exact=True)).to_be_visible()
     evidence.press('Escape')
     expect(evidence).not_to_be_visible()
     page.set_viewport_size({'width': 1440, 'height': 1000})
@@ -322,16 +371,23 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     expect(page.get_by_text('正文已复制', exact=True)).to_be_visible()
     assert page.evaluate('navigator.clipboard.readText()') == expected_body
     expect(panel.get_by_text('已记录 token', exact=True)).to_be_visible()
-    expect(page.locator('.v2-advanced-details')).not_to_have_attribute('open', '')
+    details = page.locator('.v2-advanced-details')
+    expect(details).to_have_count(3)
+    for item in details.all():
+        expect(item).not_to_have_attribute('open', '')
     panel.get_by_text(re.compile(r'^质量问题与实际修复')).click()
     expect(panel.get_by_text('本次检查未发现问题，未进行修复', exact=True)).to_be_visible()
     page.get_by_text('原始资料、人工纠错与高级审计', exact=True).click()
-    expect(page.locator('.v2-advanced-details')).to_have_attribute('open', '')
+    audit = details.filter(has=page.locator('summary').filter(has_text='原始资料、人工纠错与高级审计'))
+    expect(audit).to_have_attribute('open', '')
+    expect(details.locator('summary')).to_have_count(3)
     page.get_by_text('原始资料、人工纠错与高级审计', exact=True).click()
+    expect(audit).not_to_have_attribute('open', '')
     panel.get_by_role('button', name='编辑正文并复检', exact=True).click()
     editor = page.get_by_role('dialog', name='编辑正文', exact=True)
+    prior_blocks = editor.get_by_role('textbox', name=re.compile(r'^正文 1\.')).count()
     editor.get_by_role('button', name='增加建议段落', exact=True).click()
-    editor.get_by_label('正文 1.2', exact=True).fill('目标产品价格为99元。')
+    editor.get_by_label(f'正文 1.{prior_blocks + 1}', exact=True).fill('目标产品价格为99元。')
     page.set_viewport_size({'width': 390, 'height': 1000})
     accessibility_check(page, out, report, 'manuscript-editor-390')
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
@@ -342,7 +398,7 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     revised_task = response.value.json()['task_id']
     expect(editor).not_to_be_visible()
     execute_task(revised_task, session_factory=Session)
-    assert len(calls) == 4
+    assert len(calls) == initial_requests
     page.reload()
     expect(panel.get_by_text('正文修改复检：沿用原始分析与证据，只检查本次修改稿', exact=True)).to_be_visible()
     panel.get_by_text('本次提交的修改原文（不继承旧稿资格）', exact=True).click()
@@ -359,10 +415,13 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     expect(auth).not_to_be_visible()
     execute_task(revised_task, session_factory=Session)
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
-    assert len(calls) == 5 and 'segments' in calls[-1]
+    assert len(calls) == initial_requests + 1 and 'segments' in calls[-1]
     new_delivery = page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{revised_task}/deliveries?project_id=1&prompt_id=44').json()[0]
     assert new_delivery['result_version'] != persisted.json()[0]['result_version']
     assert '99元' not in new_delivery['output']['publication_draft']['body_markdown']
+    if official:
+        assert BROWSER_CLAIM in new_delivery['output']['publication_draft']['body_markdown']
+        assert new_delivery['output']['generation_receipt']['official_facts'] == facts
     assert page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{task_id}/deliveries?project_id=1&prompt_id=44').json() == persisted.json()
     panel.get_by_text(re.compile(r'^质量问题与实际修复')).click()
     expect(panel.get_by_role('cell', name='已删除不成立陈述', exact=True)).to_be_visible()
@@ -411,6 +470,9 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         task_id=task_id, status='PASS_SCOPED_SIMULATED_INTEGRATION_NOT_REAL_MODEL')
     assert not report['errors'], report['errors']
 
+    if official:
+        report['verified'].append('SYNTHETIC_OFFICIAL_SOURCE_CLAIM_CHECK_RECEIPT_UI_NO_HUMAN_REVIEW')
+
 
 def main():
     from datetime import datetime, timezone
@@ -441,6 +503,9 @@ def main():
         with Session() as db:
             if '--optimize' in sys.argv:
                 fixture = _seed_citation_contribution_fixture(db, monkeypatch, out, reviewed=False)
+                if '--official-facts' in sys.argv:
+                    from test_delivery_official_facts import seed_isolated_official_source
+                    fixture['official_snapshot_id'] = seed_isolated_official_source(db)
             else:
                 from app.models import BrowserMonitorRun, Project, Prompt
                 from app.modules.single_prompt_v2.service import create_analysis, claim_analysis, finalize_analysis

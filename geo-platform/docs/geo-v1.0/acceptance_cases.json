@@ -543,6 +543,12 @@
     },
     {
       "id": "AC-TRU-01",
+      "automated_checks": [
+        "tests.test_delivery_official_facts::test_official_attestation_consumable_without_human_or_global_truth_mutation",
+        "tests.test_delivery_official_facts::test_domain_match_does_not_override_support_scope_or_conflict",
+        "tests.test_delivery_official_facts::test_existing_source_claim_kernel_then_fact_check_then_writer_and_qa",
+        "tests.test_delivery_official_facts::test_official_snapshot_adapter_detaches_configuration_and_content"
+      ],
       "module": "TRU",
       "name": "自动可用事实",
       "given": "当前官方资料明确支持原子能力且条件一致",
@@ -552,8 +558,8 @@
         "TRU-002",
         "TRU-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "tests/test_delivery_official_facts.py28项专项；browser-20261009T161951Z：官方事实进入保存稿件、页面及编辑QA。模型输出为隔离模拟；真实模型质量未验证。"
     },
     {
       "id": "AC-TRU-02",

@@ -86,6 +86,6 @@ API 也可直接提供构建后的首页。一个 worker 处理采样计划及�
 
 ## 验收命令
 
-在 backend 执行 `.venv/bin/python scripts/delivery_acceptance.py --checks-only`，会运行适用测试、启动配置测试、release构建和三条隔离浏览器路径。浏览器需已安装 Chrome；不会自动发起真实平台或付费模型调用。
+在 backend 执行 `.venv/bin/python scripts/delivery_acceptance.py --checks-only`，会运行适用测试、启动配置测试、release构建和四条隔离浏览器路径（配置、比较、空事实稿件、官方资料核实稿件）。浏览器需已安装 Chrome；不会自动发起真实平台或付费模型调用。
 
 报告保存在 `backend/artifacts/acceptance/<batch>/report.json`。源码在验收中变化会判失败；`--skip-browser`、`--coverage-only` 不能代表产品完成。真实集成、模拟传输和缓存必须分开记录，未跑用例继续保留未通过。

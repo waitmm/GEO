@@ -194,7 +194,8 @@ def test_budget_rejected_answer_is_pending_not_failed_and_has_no_external_call(s
     assert payload['answer_diagnosis']['answer_jobs'][0]['result_source'] == 'REQUEST_NOT_SENT'
 
 
-def simulated_delivery_transport(monkeypatch, on_request=None, qa_response=None, citation_response=None):
+def simulated_delivery_transport(monkeypatch, on_request=None, qa_response=None, citation_response=None,
+                                 source_response=None, fact_response=None, draft_response=None):
     """Test-only Responses/chat boundary for offline API and browser wiring checks."""
     from app.services.semantic_llm import deepseek
     calls = []
@@ -213,10 +214,14 @@ def simulated_delivery_transport(monkeypatch, on_request=None, qa_response=None,
             calls.append(payload)
             if on_request:
                 on_request(payload)
-            if 'segments' in payload:
+            if 'untrusted_source_passage' in payload and source_response:
+                response = source_response(payload)
+            elif payload.get('contract_version') == 'delivery_official_attestation.v1' and fact_response:
+                response = fact_response(payload)
+            elif 'segments' in payload:
                 response = qa_response(payload) if qa_response else {'checks': [{'segment_id': s['segment_id'], 'verdict': 'PASS', 'rationale': '仅给查证步骤，不增加事实。'} for s in payload['segments']]}
             elif 'public_evidence' in payload:
-                response = {'sections': [{'heading': '选用工具前的核对顺序', 'blocks': [{'kind': 'INSTRUCTION',
+                response = draft_response(payload) if draft_response else {'sections': [{'heading': '选用工具前的核对顺序', 'blocks': [{'kind': 'INSTRUCTION',
                     'text': '先列出需要处理的链接数量和使用场景，再向服务方核对当前限制；以实际说明为准，不把答案中的工具名称当成能力保证。', 'evidence_ids': []}]}]}
             elif 'frozen_candidate_pairs' in payload:
                 response = citation_response(payload) if citation_response else {'evaluations': [{**pair, 'answer_span': None, 'source_span': None,

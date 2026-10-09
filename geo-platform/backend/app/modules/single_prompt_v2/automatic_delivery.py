@@ -21,7 +21,7 @@ from .delivery_text import digest
 
 
 CONTRACT_VERSION = "single_prompt_automatic_delivery.v1"
-STAGES = ("SOURCES", "ANSWER", "CITATION", "STRATEGY", "DRAFT", "TEXT_QA")
+STAGES = ("SOURCES", "ANSWER", "CITATION", "STRATEGY", "TRUTH", "DRAFT", "TEXT_QA")
 TERMINAL = {"COMPLETED", "COMPLETED_WITH_LIMITATIONS", "CANCELLED"}
 
 
@@ -30,11 +30,15 @@ def computation_contracts() -> dict:
     from .citation_contribution import CITATION_CONTRIBUTION_CONTRACT_VERSION, CITATION_CONTRIBUTION_PROMPT_VERSION, CITATION_CONTRIBUTION_SCHEMA_VERSION
     from .delivery_generation import GENERATION_VERSION, QA_VERSION
     from .qualification import QUALIFICATION_CONTRACT_VERSION
+    from .delivery_facts import CONTRACT as FACT_CONTRACT
+    from .llm_safety import V2_SOURCE_CLAIM_PROMPT_VERSION, V2_SOURCE_CLAIM_SCHEMA_VERSION
     return {"answer": _contract_config(diagnosis_mode="ANSWER_ONLY", source_snapshot_policy="SOURCE_PREPARATION_ONLY",
         answer_llm_policy="CACHE_ONLY", evidence_llm_policy="CACHE_ONLY"),
         "citation_contract": CITATION_CONTRIBUTION_CONTRACT_VERSION, "citation_prompt": CITATION_CONTRIBUTION_PROMPT_VERSION,
         "citation_schema": CITATION_CONTRIBUTION_SCHEMA_VERSION, "generation": GENERATION_VERSION,
-        "text_qa": QA_VERSION, "qualification": QUALIFICATION_CONTRACT_VERSION}
+        "text_qa": QA_VERSION, "qualification": QUALIFICATION_CONTRACT_VERSION,
+        "official_fact": FACT_CONTRACT, "official_claim_prompt": V2_SOURCE_CLAIM_PROMPT_VERSION,
+        "official_claim_schema": V2_SOURCE_CLAIM_SCHEMA_VERSION}
 
 
 def configuration_snapshot(db: Session, project_id: int, prompt_text: str, context_version_id: str | None) -> dict:
@@ -366,7 +370,9 @@ def execute_task(task_id: str, *, session_factory) -> None:
         row = db.query(SinglePromptOptimizationTask).filter_by(task_id=task_id).one()
         require_task(db, task_id, row.project_id, row.prompt_id)
         fixed = loads(row.input_json, {})
-        if fixed.get("computation_contracts") != computation_contracts():
+        from .delivery_revision import revision_computation_contracts
+        expected_contracts = revision_computation_contracts() if fixed.get('delivery_revision') else computation_contracts()
+        if fixed.get("computation_contracts") != expected_contracts:
             raise HTTPException(409, "模型或计算契约已变化，需要针对新身份显式建立任务；旧任务不会偷偷换规则")
         context = db.query(SinglePromptAnalysisContext).filter_by(context_id=row.context_id).one()
         raw = loads(context.raw_output_json, {})

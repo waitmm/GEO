@@ -16,13 +16,28 @@ type FrozenInput = {
 };
 const paragraphStyle = { whiteSpace: "pre-wrap" as const, overflowWrap: "anywhere" as const };
 
+export type OfficialFactReceipt = {
+  status: string;
+  accepted: { fact_id: string; statement: string; source_span: string; url: string; valid_as_of: string; limitations: string[] }[];
+  rejected: { reason: string; check?: { rationale: string } }[];
+  limitations: { reason: string; unassessed_claims?: number }[];
+};
+const factLimitations: Record<string, string> = {
+  OFFICIAL_PROVENANCE_OR_COVERAGE_UNPROVEN: "不能证明实际官方出处或完整正文，未作公开事实使用",
+  OFFICIAL_MATERIAL_TRANSPORT_BOUNDARY: "资料超过本次核实输入上限，未选择性截取或核实",
+  OFFICIAL_FACT_CHECK_TRANSPORT_BOUNDARY: "原子陈述超过本次核实上限，尚未完成核实",
+  OFFICIAL_MATERIAL_UNTRUSTED_INSTRUCTION: "来源含干扰模型职责的指令，未进入事实核实",
+  TARGET_SUBJECT_OR_GROUNDED_POSITIVE_UNPROVEN: "未证明是目标品牌自身且有原文支持的肯定陈述",
+  OFFICIAL_FACT_NOT_QUALIFIED: "具体支持、主体、条件、时效或冲突检查未全部通过",
+};
+
 function SourceLink({ value }: { value: string }) {
   const href = evidenceLink(value);
   return href ? <Typography.Link href={href} target="_blank" rel="noopener noreferrer" style={{ overflowWrap: "anywhere", color: "#0759a3", textDecoration: "underline" }}>{value}</Typography.Link>
     : <Typography.Text style={{ overflowWrap: "anywhere" }}>{value || "未记录出处"}</Typography.Text>;
 }
 
-export function DeliveryEvidence({ frozen, resultVersion }: { frozen: FrozenInput; resultVersion: string }) {
+export function DeliveryEvidence({ frozen, resultVersion, officialFacts }: { frozen: FrozenInput; resultVersion: string; officialFacts?: OfficialFactReceipt }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState("answers");
   const [runId, setRunId] = useState(frozen.answers[0]?.run_id);
@@ -75,12 +90,29 @@ export function DeliveryEvidence({ frozen, resultVersion }: { frozen: FrozenInpu
         </> },
         { key: "brand", label: "品牌资料", children: <>
           <Typography.Title level={5}>本版采用的品牌事实</Typography.Title>
-          {!frozen.truths.length && <Empty description="本版没有采用已核实品牌事实；这不表示品牌没有相应能力" />}
+          {!frozen.truths.length && !officialFacts?.accepted.length && <Empty description="本版没有采用已核实品牌事实；这不表示品牌没有相应能力" />}
           {frozen.truths.map(truth => <section key={truth.product_truth_id} style={{ marginBottom: 16 }}>
             <Typography.Paragraph>{truth.capability_label}</Typography.Paragraph>
             <Tag>{truth.public_use_eligibility === "CONSUMABLE" ? "本版可用于公开草稿" : "不能据此作公开能力声明"}</Tag>
             <SourceLink value={truth.source_reference} />
           </section>)}
+          {officialFacts && <section aria-label="官方资料自动核实结果">
+            <Typography.Paragraph>官方资料核实：{officialFacts.accepted.length} 项可作注明出处及时间的表述，{officialFacts.rejected.length} 项未准入。</Typography.Paragraph>
+            <Alert type="info" message="仅在冻结资料及获取时间范围内核对，不等于独立产品实测，也不自动更新项目全局事实。" />
+            {officialFacts.accepted.map(fact => <section key={fact.fact_id} style={{ margin: "16px 0" }}>
+              <Typography.Paragraph strong>{fact.statement}</Typography.Paragraph>
+              <Typography.Paragraph type="secondary">资料取得时间：{fact.valid_as_of}；公开稿需保留出处、时间及适用条件。</Typography.Paragraph>
+              <SourceLink value={fact.url} />
+              <Typography.Paragraph style={paragraphStyle}>{fact.source_span}</Typography.Paragraph>
+              {fact.limitations.map(item => <Typography.Paragraph key={item} type="secondary">{item}</Typography.Paragraph>)}
+            </section>)}
+            {officialFacts.rejected.map((item, i) => <Typography.Paragraph key={`rejected-${i}`}>
+              {item.check?.rationale || factLimitations[item.reason] || "原文片段校验未通过，不作公开事实使用"}
+            </Typography.Paragraph>)}
+            {officialFacts.limitations.map((item, i) => <Typography.Paragraph key={`limitation-${i}`}>
+              {factLimitations[item.reason] || "本次未完成核实"}{item.unassessed_claims ? `（${item.unassessed_claims} 项）` : ""}
+            </Typography.Paragraph>)}
+          </section>}
           <Typography.Title level={5}>补充上下文</Typography.Title>
           {!context?.passages?.length ? <Typography.Paragraph>未选择相关补充资料。</Typography.Paragraph> : <>
             <Alert type="warning" message="用户提供的内部资料，未独立核实，不自动成为公开事实" />

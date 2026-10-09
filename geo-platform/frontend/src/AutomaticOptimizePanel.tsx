@@ -5,6 +5,7 @@ import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { ManuscriptEditor } from "./ManuscriptEditor";
 import { DeliveryEvidence } from "./DeliveryEvidence";
+import { ManuscriptPreview } from "./ManuscriptPreview";
 
 type Task = {
   task_kind: string; pending_draft?: { sections: { heading: string; blocks: { text: string }[] }[] };
@@ -15,7 +16,7 @@ type Task = {
   usage: { external_requests: number; cache_hits: number; reserved_tokens: number; reserved_cost_cny: number; actual_tokens: number; unsettled_requests: number };
 };
 const statuses: Record<string, string> = { QUEUED: "等待执行", RUNNING: "正在执行", WAITING_AUTHORIZATION: "等待调用授权", BLOCKED: "需要处理", INTERRUPTED: "执行中断", CANCELLED: "已取消", COMPLETED: "稿件已交付", COMPLETED_WITH_LIMITATIONS: "稿件已交付，有范围限制" };
-const stages = [{ key: "SOURCES", title: "正文准备" }, { key: "ANSWER", title: "回答分析" }, { key: "CITATION", title: "引用分析" }, { key: "STRATEGY", title: "优化建议" }, { key: "DRAFT", title: "具体稿件" }, { key: "TEXT_QA", title: "文本检查" }];
+const stages = [{ key: "SOURCES", title: "正文准备" }, { key: "ANSWER", title: "回答分析" }, { key: "CITATION", title: "引用分析" }, { key: "STRATEGY", title: "优化建议" }, { key: "TRUTH", title: "品牌资料核实" }, { key: "DRAFT", title: "具体稿件" }, { key: "TEXT_QA", title: "文本检查" }];
 const assetNames: Record<string, string> = { HELP_DOC: "帮助文档", FEATURE_PAGE: "功能说明页", PRODUCT_PAGE: "产品页", ARTICLE: "文章", VIDEO: "视频稿" };
 
 export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHash, completion }: { projectId: number; promptId: number; analysisId: string; rawHash: string; completion?: { manifest_id: string; payload_hash: string; version_number: number } | null }) {
@@ -143,11 +144,12 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           <Descriptions.Item label="文本检查">{delivery.output.automatic_qa.status === "READY" ? "通过当前文本检查" : "需要修正"}</Descriptions.Item>
         </Descriptions>
         <Space wrap><Button icon={<Copy size={16} />} onClick={() => navigator.clipboard.writeText(delivery.output.publication_draft.body_markdown).then(() => message.success("正文已复制")).catch(() => message.error("复制失败，请检查浏览器权限"))}>复制完整正文</Button>
-          <DeliveryEvidence key={`evidence:${delivery.result_version}`} frozen={delivery.output.delivery_input} resultVersion={delivery.result_version} />
+          <DeliveryEvidence key={`evidence:${delivery.result_version}`} frozen={delivery.output.delivery_input} resultVersion={delivery.result_version}
+            officialFacts={delivery.output.generation_receipt?.official_facts} />
           <ManuscriptEditor key={delivery.result_version} delivery={delivery} taskId={task!.task_id} projectId={projectId} promptId={promptId}
             onQueued={saved => { ++sequence.current; setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />
           <Button href={href(delivery)}>方案详情与可选发布记录</Button></Space>
-        <Typography.Paragraph style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginTop: 16 }}>{delivery.output.publication_draft.body_markdown}</Typography.Paragraph>
+        <ManuscriptPreview output={delivery.output} />
         <Collapse items={[{ key: "qa", label: `质量问题与实际修复（${delivery.output.automatic_qa.findings.length}）`, children: <>
           <Table size="small" pagination={false} rowKey="segment_id" scroll={{ x: 780 }} dataSource={delivery.output.automatic_qa.findings.map((finding: any) => ({ ...finding,
             repair: delivery.output.automatic_qa.repairs.find((r: any) => r.segment_id === finding.segment_id) }))} columns={[
@@ -161,6 +163,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
     </>}
     <Modal title="本任务独立调用授权" open={authOpen} onCancel={() => setAuthOpen(false)} footer={null} destroyOnHidden>
       <Alert type="warning" showIcon message="失败请求计入预算；自动重试为 0。刷新、恢复和新结果不重置额度。" />
+      {task?.task_kind !== "TEXT_REVISION" && <Typography.Paragraph>范围包括本任务的回答、引用分析、合格官方资料的主张提取与核实、正文生成及文本检查；不包含其他项目或重新采样。</Typography.Paragraph>}
       <Form form={form} layout="vertical" onFinish={v => void mutate("authorization", v)} style={{ marginTop: 16 }}>
         <Form.Item label="请求次数上限" name="max_requests" rules={[{ required: true }]}><InputNumber min={1} max={task?.task_kind === "TEXT_REVISION" ? 1 : 1000} precision={0} /></Form.Item>
         <Form.Item label="总 token 上限" name="max_tokens" rules={[{ required: true }]}><InputNumber min={1} max={10000000} precision={0} /></Form.Item>

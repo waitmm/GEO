@@ -586,6 +586,9 @@
         "backend/app/modules/single_prompt_v2/qualification.py",
         "backend/app/modules/single_prompt_v2/source_preparation.py",
         "backend/app/modules/single_prompt_v2/context_provider.py",
+        "backend/app/modules/single_prompt_v2/delivery_facts.py",
+        "backend/app/modules/single_prompt_v2/delivery_generation.py",
+        "frontend/src/DeliveryEvidence.tsx",
         "frontend/src/BrandContextSelect.tsx"
       ],
       "acceptance_evidence": [
@@ -596,7 +599,7 @@
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "获取记录与人工合格事实消费已实现；AC-TRU-01自动官方原子事实的语义支持、时效与冲突核实尚未实现，不能仅靠域名匹配或人工事实消费替代。",
+      "blocker": "已实现任务内官方原子事实核实、注明出处/时间的稿件与独立编辑QA；28项事实专项、浏览器161951Z通过（全为隔离模拟）。全量同源回归待复检，真实模型质量待明确外调授权；不以域名匹配或模拟替代真实事实验证。",
       "commit": "",
       "audit_classification": "需修复",
       "current_checkpoint": "delivery_checkpoint_20261009"

@@ -368,6 +368,24 @@ def _reason_adapter(row: dict[str, Any], truth_ids: list[int]) -> dict[str, Any]
     }
 
 
+def _official_materials(sources: list, brand: dict) -> list[dict]:
+    host = (urlparse(brand.get('website_url') or '').hostname or '').casefold()
+    if not host:
+        return []
+    result = []
+    for source in sources:
+        receipt = loads(source.acquisition_receipt_json, {})
+        hosts = [(urlparse(url).hostname or '').casefold() for url in
+                 [source.canonical_url, receipt.get('final_url') or '']]
+        if not any(value == host or value.endswith('.' + host) for value in hosts):
+            continue
+        result.append({'snapshot_id': source.snapshot_id, 'url': source.canonical_url, 'title': source.title,
+            'text': source.clean_text, 'content_hash': source.content_hash,
+            'acquired_at': source.acquired_at.isoformat(), 'acquisition_method': source.acquisition_method,
+            'coverage_scope': source.coverage_scope, 'acquisition_receipt': receipt})
+    return sorted(result, key=lambda item: item['snapshot_id'])
+
+
 def _freeze_delivery_input(
     db: Session, snapshot: dict[str, Any], prior_result: SinglePromptExecutionProposalResult | None = None,
 ) -> dict[str, Any]:
@@ -391,6 +409,7 @@ def _freeze_delivery_input(
         combined.update(contribution_result_version="contribution-set:" + _hash(refs)[:20],
             contribution_result_hash=_hash(refs), contribution_results=refs,
             source_manifests=[p["source_manifest"] for p in parts],
+            official_source_materials=list({s['snapshot_id']: s for p in parts for s in p['official_source_materials']}.values()),
             selected_evidence=[s for p in parts for s in p["selected_evidence"]],
             historical_failures=[s for p in parts for s in p["historical_failures"]],
             strategy_direction=copy.deepcopy(snapshot["direction"]))
@@ -541,6 +560,7 @@ def _freeze_delivery_input(
         "source_manifest": {key: inputs[key] for key in (
             "citation_manifest_id", "citation_manifest_hash", "completion_manifest_id", "completion_manifest_hash")},
         "selected_evidence": selected, "asset_observations": asset_observations,
+        "official_source_materials": _official_materials(list(source_map.values()), brand),
         "subjects": sorted({brand["brand_name"], *(str(row.get("entity_text") or "") for row in events)} - {""}),
         "strategy_direction": copy.deepcopy(snapshot["direction"]),
         "truths": copy.deepcopy(snapshot.get("truths") or []),
@@ -1335,7 +1355,8 @@ def generate_complete_execution_deliverable(
     output = copy.deepcopy(base_output) if submitted_draft is not None else _compile_machine_delivery(proposal_id, snapshot)
     initial_calls = int(getattr(generation_client, "external_call_count", 0))
     if generation_client is not None:
-        receipt = (check_submitted_draft(frozen, submitted_draft, client=generation_client, db=db, on_stage=generation_progress)
+        receipt = (check_submitted_draft(frozen, submitted_draft, client=generation_client, db=db, on_stage=generation_progress,
+                       official_facts=(base_output.get('generation_receipt') or {}).get('official_facts'))
             if submitted_draft is not None else generate_and_check(frozen, client=generation_client, db=db, on_stage=generation_progress))
         output = _attach_generated_delivery(output, receipt, snapshot)
     if submitted_draft is not None:

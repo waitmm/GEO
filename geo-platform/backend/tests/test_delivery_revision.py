@@ -109,3 +109,19 @@ def test_revision_rejects_wrong_scope_hash_and_unbound_new_target_facts(delivere
     with pytest.raises(HTTPException, match='幂等键'):
         create_revision_task(db, **{**args, 'draft': changed})
     assert task_view(row)['usage']['external_requests'] == 0
+
+
+def test_new_revision_uses_only_current_text_contracts_not_parent_analysis_contracts(delivered, monkeypatch):
+    from app.modules.single_prompt_v2 import automatic_delivery
+    from app.modules.single_prompt_v2.delivery_revision import revision_computation_contracts
+    db, parent, base, calls, factory, args = delivered
+    historical_input = parent.input_json
+    monkeypatch.setattr(automatic_delivery, 'computation_contracts', lambda: {'answer': 'isolated-new-answer-contract'})
+    row, created = create_revision_task(db, **args)
+    assert created
+    assert json.loads(row.input_json)['computation_contracts'] == revision_computation_contracts()
+    execute_task(row.task_id, session_factory=factory)
+    db.refresh(row); db.refresh(parent)
+    assert row.status == 'WAITING_AUTHORIZATION', row.blocker_detail
+    assert parent.input_json == historical_input and len(calls) == 4
+    assert json.loads(row.input_json)['delivery_revision']['base_result_hash'] == base.output_hash

@@ -552,6 +552,7 @@ _ATTRIBUTION_PATTERNS = (
     re.compile(r"据.{0,12}(?:称|介绍|推荐|认为)"),
 )
 _INJECTION_PATTERNS = (
+    re.compile(r"\b(?:ignore|disregard)\s+(?:all\s+)?(?:previous|prior|above|system)\s+(?:instructions?|rules?|prompts?)\b", re.IGNORECASE),
     re.compile(r"忽略.{0,12}(?:前文|规则|指令|系统)"),
     re.compile(r"(?:全部|所有).{0,8}(?:标为|判为|返回).{0,8}(?:推荐|supports|true)", re.IGNORECASE),
     re.compile(r"(?:改变|切换).{0,8}(?:身份|角色|system)", re.IGNORECASE),

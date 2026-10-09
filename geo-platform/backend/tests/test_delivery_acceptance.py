@@ -73,3 +73,14 @@ def test_delivery_mapping_rejects_escape_and_keeps_superseded_cases_out(tmp_path
     report = delivery_gaps(tasks, cases, {'AC-old': {'status': 'INCOMPLETE'}}, tmp_path)
     assert report['missing_implementation'][0]['reason'] == 'IMPLEMENTATION_FILE_MISSING'
     assert not report['required_checks_not_passed']
+
+
+def test_task_reading_view_has_same_identity_dependencies_and_status_as_ledger():
+    import json
+    from pathlib import Path
+    docs = Path(__file__).resolve().parents[2] / 'docs/geo-v1.0'
+    tasks = json.loads((docs / 'tasks.json').read_text())['tasks']
+    text = (docs / '18_项目管理与任务.md').read_text()
+    rows = [line for line in text.splitlines() if line.startswith('| T')]
+    expected = [f"| {t['id']} | {t['milestone']} | {t['title']} | {t['owner_role']} | {','.join(t['depends_on']) or '无'} | {t['status']} |" for t in tasks]
+    assert rows == expected

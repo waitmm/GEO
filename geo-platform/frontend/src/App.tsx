@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "react";
 import {
-  Alert, Button, Card, Checkbox, Col, Collapse, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
-  Layout, Menu, Modal, Popconfirm, Progress, Radio, Row, Segmented, Select, Space, Statistic, Steps, Table, Tag, Timeline, Tooltip, Typography, message
+  Alert, App as AntApp, Button, Card, Checkbox, Col, Collapse, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
+  Layout, Menu, Modal, Popconfirm, Progress, Radio, Row, Segmented, Select, Space, Statistic, Steps, Table, Tag, Timeline, Tooltip, Typography
 } from "antd";
 import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
 import { api } from "./api/client";
@@ -1478,6 +1478,7 @@ function PromptScopeAlert({ prompt, description }: { prompt: Prompt; description
 }
 
 export default function App() {
+  const { message } = AntApp.useApp();
   const [page, setPage] = useState<PageKey>(() => {
     if (!RELEASE_FIRST_SLICE) return "validation";
     const params = new URLSearchParams(window.location.search);

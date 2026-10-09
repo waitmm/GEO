@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Table, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, App as AntApp, Button, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Table, Tag, Tooltip, Typography } from "antd";
 import { Copy, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
@@ -16,6 +16,7 @@ const stages = [{ key: "SOURCES", title: "正文准备" }, { key: "ANSWER", titl
 const assetNames: Record<string, string> = { HELP_DOC: "帮助文档", FEATURE_PAGE: "功能说明页", PRODUCT_PAGE: "产品页", ARTICLE: "文章", VIDEO: "视频稿" };
 
 export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHash, completion }: { projectId: number; promptId: number; analysisId: string; rawHash: string; completion?: { manifest_id: string; payload_hash: string; version_number: number } | null }) {
+  const { message } = AntApp.useApp();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selected, setSelected] = useState<string>();
   const [contextVersion, setContextVersion] = useState<string>();

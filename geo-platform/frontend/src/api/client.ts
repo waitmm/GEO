@@ -20,45 +20,58 @@ type ValidationDashboardWire = {
   };
 };
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    ...init
-  });
-  if (!response.ok) {
-    if (response.status === 401 && !path.startsWith("/api/access/")) window.dispatchEvent(new Event("geo-session-expired"));
-    const detail = await response.text();
-    let message = detail || response.statusText;
-    try {
-      const parsed = JSON.parse(detail);
-      const parsedDetail = parsed.detail || parsed.message;
-      if (typeof parsedDetail === "string") {
-        message = parsedDetail;
-      } else if (Array.isArray(parsedDetail)) {
-        message = parsedDetail.map((item) => {
-          const location = Array.isArray(item?.loc) ? item.loc.filter((part: unknown) => part !== "body").join(".") : "请求内容";
-          return `${location || "请求内容"}：${item?.msg || "格式不正确"}`;
-        }).join("；");
-      } else {
-        message = parsedDetail?.detail || parsedDetail?.code || JSON.stringify(parsedDetail) || message;
+export async function request<T>(path: string, init?: RequestInit, timeoutMs = 60000): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(init?.signal?.reason);
+  if (init?.signal?.aborted) abort();
+  else init?.signal?.addEventListener("abort", abort, { once: true });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  try {
+    const headers = new Headers(init?.headers);
+    if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    const response = await fetch(`${API_BASE}${path}`, { ...init, headers, signal: controller.signal });
+    if (!response.ok) {
+      if (response.status === 401 && !path.startsWith("/api/access/")) window.dispatchEvent(new Event("geo-session-expired"));
+      const detail = await response.text();
+      let message = detail || response.statusText;
+      try {
+        const parsed = JSON.parse(detail);
+        const parsedDetail = parsed.detail || parsed.message;
+        if (typeof parsedDetail === "string") {
+          message = parsedDetail;
+        } else if (Array.isArray(parsedDetail)) {
+          message = parsedDetail.map((item) => {
+            const location = Array.isArray(item?.loc) ? item.loc.filter((part: unknown) => part !== "body").join(".") : "请求内容";
+            return `${location || "请求内容"}：${item?.msg || "格式不正确"}`;
+          }).join("；");
+        } else {
+          message = parsedDetail?.detail || parsedDetail?.code || JSON.stringify(parsedDetail) || message;
+        }
+      } catch {
+        // Non-JSON error bodies are surfaced as-is.
       }
-    } catch {
-      // Non-JSON error bodies are surfaced as-is.
+      if (response.status === 405) {
+        message = "接口方法不匹配，请确认后端已重启到最新版本";
+      }
+      throw new Error(message);
     }
-    if (response.status === 405) {
-      message = "接口方法不匹配，请确认后端已重启到最新版本";
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      const detail = await response.text();
+      const looksLikeFrontend = detail.includes("<!doctype html") || detail.includes("<div id=\"root\"");
+      throw new Error(looksLikeFrontend
+        ? "后端接口没有返回 JSON，可能服务未重启到最新版本或请求被前端兜底页面接管。请重启本地服务后重试。"
+        : "后端接口返回格式不是 JSON，请检查服务状态。");
     }
-    throw new Error(message);
+    return await response.json() as T;
+  } catch (error) {
+    if (timedOut) throw new Error("请求超时，请刷新核对任务状态；请求可能已被服务器接收，系统不会自动重复提交。");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    init?.signal?.removeEventListener("abort", abort);
   }
-  const contentType = response.headers.get("content-type") || "";
-  if (!contentType.includes("application/json")) {
-    const detail = await response.text();
-    const looksLikeFrontend = detail.includes("<!doctype html") || detail.includes("<div id=\"root\"");
-    throw new Error(looksLikeFrontend
-      ? "后端接口没有返回 JSON，可能服务未重启到最新版本或请求被前端兜底页面接管。请重启本地服务后重试。"
-      : "后端接口返回格式不是 JSON，请检查服务状态。");
-  }
-  return response.json() as Promise<T>;
 }
 
 export const api = {

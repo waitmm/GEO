@@ -133,6 +133,16 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     assert len(calls) == 4
     page.reload()
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
+    persisted = page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{task_id}/deliveries?project_id=1&prompt_id=44')
+    assert persisted.ok
+    expected_body = persisted.json()[0]['output']['publication_draft']['body_markdown']
+    page.context.grant_permissions(['clipboard-read', 'clipboard-write'], origin=origin)
+    copy_button = panel.get_by_role('button', name='复制完整正文', exact=True)
+    copy_button.focus()
+    expect(copy_button).to_be_focused()
+    copy_button.press('Enter')
+    expect(page.get_by_text('正文已复制', exact=True)).to_be_visible()
+    assert page.evaluate('navigator.clipboard.readText()') == expected_body
     expect(panel.get_by_text('已记录 token', exact=True)).to_be_visible()
     expect(page.locator('.v2-advanced-details')).not_to_have_attribute('open', '')
     panel.get_by_text(re.compile(r'^质量问题与实际修复')).click()
@@ -171,6 +181,7 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     report.update(verified=['UI_OPTIMIZE_CREATE', 'STABLE_QUEUED_ACTION', 'CACHE_MISS_NOT_FAILURE',
         'EXPLICIT_BUDGET_AUTHORIZATION', 'WORKER_EXISTING_STAGE_CHAIN', 'ACTUAL_DRAFT_AND_QA_READ',
         'REFRESH_PRESERVES_EXACT_RESULT', 'SLOW_POLL_DOES_NOT_STARVE', 'ACTUAL_QA_EMPTY_REPAIRS', 'ADVANCED_AUDIT_OPT_IN',
+        'KEYBOARD_COPY_EXACT_SAVED_BODY_NO_AUDIT_METADATA',
         'LATE_ANALYSIS_RESPONSE_CANNOT_RESTORE_OLD_PROJECT', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
         simulated_provider_requests=len(calls), not_verified=['REAL_MODEL_QUALITY', 'REAL_SAMPLING', 'REAL_SOURCE_FETCH'],
         task_id=task_id, status='PASS_SCOPED_SIMULATED_INTEGRATION_NOT_REAL_MODEL')
@@ -256,8 +267,16 @@ def main():
                 else:
                     automatic_check(page, f'http://127.0.0.1:{port}', fixture, Session, monkeypatch, out, report)
                 return
-            page.get_by_role('button', name='新建项目', exact=True).click()
+            create_button = page.get_by_role('button', name='新建项目', exact=True)
+            create_button.focus()
+            create_button.press('Enter')
             dialog = page.get_by_role('dialog')
+            expect(dialog).to_be_visible()
+            page.keyboard.press('Escape')
+            expect(dialog).not_to_be_visible()
+            expect(create_button).to_be_focused()
+            create_button.press('Enter')
+            expect(dialog).to_be_visible()
             dialog.get_by_label('项目名称', exact=True).fill('隔离验收项目')
             dialog.get_by_label('品牌名称', exact=True).fill('测试过滤器')
             dialog.get_by_role('button', name=re.compile('创.*建')).click()
@@ -322,6 +341,7 @@ def main():
                 report['screenshots'].append(path)
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'page overflow: {width}'
             report['verified'] = ['UI_PROJECT_CREATE', 'MULTILINE_PROMPT_PRESERVED', 'PROMPT_EDIT_SEARCH_PRIORITY',
+                'KEYBOARD_DIALOG_OPEN_ESCAPE_FOCUS_RESTORED',
                 'DISABLED_PROMPT_PERSISTS_AND_BLOCKS_NEW_SAMPLING', 'PROMPT_REENABLE', 'CONTEXT_SAVE_RELOAD',
                 'SCHEDULE_CREATE_PAUSE', 'FINITE_OPTIONAL_OPTIMIZE_AUTHORITY', 'RESPONSIVE_NO_PAGE_OVERFLOW']
             report['not_verified'] = ['REAL_SAMPLING', 'AUTOMATIC_OPTIMIZE', 'COMPARISON_WITH_REAL_NEW_RUN']

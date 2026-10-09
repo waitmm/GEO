@@ -83,6 +83,7 @@ def main() -> int:
         ('backend', [sys.executable, '-m', 'pytest', *applicable_test_paths(), '-q', '--disable-warnings', '--tb=short',
                      f'--junitxml={out / "backend.xml"}', '-p', 'scripts.delivery_offline_guard']),
         ('frontend', ['npm', 'run', 'test:startup']),
+        ('frontend', ['npm', 'run', 'test:client']),
         ('frontend', ['npm', 'run', 'build:release']),
     ]
     if not args.coverage_only and not args.skip_browser:

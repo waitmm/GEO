@@ -446,6 +446,7 @@ class SinglePromptStrategyReviewCreate(BaseModel):
 
 
 class SinglePromptExecutionProposalCreate(BaseModel):
+    brand_context_version_id: str | None = Field(default=None, max_length=80)
     project_id: int
     prompt_id: int
     direction_id: str = Field(min_length=1, max_length=96)

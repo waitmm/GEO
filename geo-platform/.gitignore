@@ -1,1 +1,6 @@
 geo_v0.db.backup-*
+backend/backups/
+backend/*.worker.lock
+backend/*.worker.json
+backend/release-access*.json
+backend/release-invite*.key

@@ -41,6 +41,7 @@ def main() -> int:
                      'tests/test_single_prompt_v2_delivery_navigation.py', 'tests/test_single_prompt_v2_strategy.py',
                      'tests/test_delivery_acceptance.py', '-q', '--disable-warnings', '--tb=short',
                      'tests/test_observation_delivery.py', 'tests/test_release_scheduling.py',
+                     'tests/test_release_access.py', 'tests/test_release_worker_lifecycle.py',
                      f'--junitxml={out / "backend.xml"}', '-p', 'scripts.delivery_offline_guard']),
         ('frontend', ['npm', 'run', 'test:startup']),
         ('frontend', ['npm', 'run', 'build:release']),

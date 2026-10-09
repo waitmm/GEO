@@ -41,9 +41,9 @@ from app.services.serialization import loads
 
 
 EXECUTION_CONTRACT_VERSION = "single_prompt_execution.optimize_delivery.v2"
-EXECUTION_INPUT_VALIDATION_VERSION = "single_prompt_execution_input.v2"
+EXECUTION_INPUT_VALIDATION_VERSION = "single_prompt_execution_input.v3"
 EXECUTION_DELIVERABLE_VERSION = "single_prompt_execution_deliverable.v3"
-EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v6"
+EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v7"
 PUBLICATION_CONFORMANCE_VERSION = "single_prompt_publication_conformance.v1"
 
 VALID_RUN_STATUSES = {"success", "partial_success"}
@@ -586,6 +586,10 @@ def _compile_machine_delivery(proposal_id: str, input_snapshot: dict[str, Any]) 
             "completed_count_excludes_failures": True,
         },
         "internal_checklist": [
+            *[{"code": "SUPPLEMENTAL_CONTEXT_NOT_VERIFIED", "detail": p["text"],
+               "context_version_id": (frozen.get("brand_context") or {}).get("context_version_id"),
+               "source_reference": p["source_reference"], "public_claim_eligible": False}
+              for p in (frozen.get("brand_context") or {}).get("passages", [])],
             {"code": "VERIFY_EXISTING_ASSET", "detail": "确认已观察的一方页面是否为当前可编辑资产，以及更适合追加模块还是另建帮助文章。"},
             {"code": "VERIFY_PUBLICATION_AUTHORITY", "detail": "确认实际账号、栏目和页面编辑权限；系统不会把已知域名等同于账号控制。"},
             {"code": "VERIFY_CURRENT_PLATFORM_RULES", "detail": "发布前核对所选平台当前规则和账号权限。"},
@@ -855,6 +859,7 @@ def create_execution_proposal(
     input_authority_type: str = "HUMAN_REVIEW",
     input_authority_id: str = "",
     input_authority_hash: str = "",
+    brand_context_version_id: str | None = None,
 ) -> tuple[SinglePromptExecutionProposal, SinglePromptExecutionProposalResult, bool]:
     snapshot = _strategy_input_for_execution(
         db, strategy_id=strategy_id, strategy_result_version=strategy_result_version,
@@ -883,6 +888,11 @@ def create_execution_proposal(
         raise HTTPException(status_code=409, detail="策略结果或审核快照已变化，请重新加载")
     if snapshot.get("automatic_draft"):
         snapshot["delivery_input"] = _freeze_delivery_input(db, snapshot)
+        from .context_provider import select_context
+        snapshot["delivery_input"]["brand_context"] = select_context(
+            db, project_id=project_id, context_version_id=brand_context_version_id,
+            query=snapshot["delivery_input"]["prompt_text"],
+        )
         snapshot["delivery_input_hash"] = digest(snapshot["delivery_input"])
     snapshot["input_snapshot_hash"] = _hash(snapshot)
     fingerprint = _hash({

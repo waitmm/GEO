@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.adapters.registry import list_platforms
@@ -76,8 +76,12 @@ def db_competitors(project: Project) -> list[Competitor]:
 
 
 @router.get("/projects", response_model=list[ProjectRead])
-def list_projects(db: Session = Depends(get_db)) -> list[ProjectRead]:
-    projects = db.query(Project).order_by(Project.id.desc()).all()
+def list_projects(request: Request, db: Session = Depends(get_db)) -> list[ProjectRead]:
+    user = request.state.principal
+    query = db.query(Project)
+    if not user.get('admin'):
+        query = query.filter(Project.id.in_(user.get('project_ids', [])))
+    projects = query.order_by(Project.id.desc()).all()
     return [
         _project_read(row, db.query(Competitor).filter_by(project_id=row.id).order_by(Competitor.id).all())
         for row in projects
@@ -154,6 +158,12 @@ def list_prompts(project_id: int, db: Session = Depends(get_db)) -> list[Prompt]
 def create_prompt(project_id: int, payload: PromptCreate, db: Session = Depends(get_db)) -> Prompt:
     if not db.get(Project, project_id):
         raise HTTPException(status_code=404, detail="Project 不存在")
+    if not payload.prompt_text.strip() or len(payload.prompt_text) > 10000:
+        raise HTTPException(422, "问题原文须为1到10000字符")
+    if db.query(Prompt).filter_by(project_id=project_id, prompt_text=payload.prompt_text.strip()).first():
+        raise HTTPException(409, "该项目已有相同问题，请继续使用已有问题")
+    if payload.daily_tracking_enabled:
+        raise HTTPException(422, "请通过正式采样计划入口明确时区与授权次数")
     if payload.topic_id is not None:
         topic = db.get(Topic, payload.topic_id)
         if not topic or topic.project_id != project_id:
@@ -175,6 +185,15 @@ def update_prompt(project_id: int, prompt_id: int, payload: PromptUpdate, db: Se
     if not prompt or prompt.project_id != project_id:
         raise HTTPException(status_code=404, detail="Prompt 不存在")
     values = payload.model_dump(exclude_unset=True)
+    if values.get("daily_tracking_enabled"):
+        raise HTTPException(422, "请通过正式采样计划入口明确时区与授权次数")
+    if "prompt_text" in values:
+        value = str(values["prompt_text"] or "").strip()
+        if not value or len(value) > 10000:
+            raise HTTPException(422, "问题原文须为1到10000字符")
+        if db.query(Prompt).filter(Prompt.project_id == project_id, Prompt.prompt_text == value, Prompt.id != prompt_id).first():
+            raise HTTPException(409, "该项目已有相同问题")
+        values["prompt_text"] = value
     if values.get("topic_id") is not None:
         topic = db.get(Topic, values["topic_id"])
         if not topic or topic.project_id != project_id:

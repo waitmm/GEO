@@ -73,6 +73,15 @@ def test_no_problem_has_no_repair_record(frozen):
     assert findings == [] and repairs == []
 
 
+def test_brand_context_informs_execution_without_public_fact_promotion(frozen):
+    frozen['brand_context'] = {'context_version_id': 'context:1', 'passages': [
+        {'text': '乙厂希望说明过滤器维护；效率提升99%的说法待核实。', 'source_reference': '用户内部资料'}]}
+    output = execution._compile_machine_delivery('proposal', snapshot(frozen))
+    item = next(x for x in output['internal_checklist'] if x['code'] == 'SUPPLEMENTAL_CONTEXT_NOT_VERIFIED')
+    assert item['context_version_id'] == 'context:1' and item['public_claim_eligible'] is False
+    assert '效率提升99%' not in output['publication_draft']['body_markdown']
+
+
 def test_reader_guide_and_brand_lookup_do_not_promote_marketing_to_claim(frozen):
     frozen["asset_observations"] = [{"candidate_id": "observed:fixture", "url": "https://example.com/product", "title": "乙厂产品说明"}]
     frozen["selected_evidence"].append({

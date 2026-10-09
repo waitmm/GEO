@@ -9,9 +9,30 @@ body {
   color: #1f2937;
 }
 
+.access-panel {
+  width: min(440px, 100%);
+  padding: 24px;
+  margin: 64px auto;
+}
+
+.access-account {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
+  padding: 8px 24px;
+  background: #fff;
+}
+
 .app-shell {
   min-height: 100vh;
   background: #f3f5f8;
+}
+
+.app-shell > .ant-layout,
+.workspace,
+.observation-panel {
+  min-width: 0;
 }
 
 .side-nav {
@@ -57,6 +78,23 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
+  line-height: 1.5;
+}
+
+.topbar > div:first-child {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.topbar > .ant-space {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.topbar > .ant-space > .ant-space-item {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .topbar h3,
@@ -65,7 +103,13 @@ body {
 }
 
 .project-select {
-  min-width: 240px;
+  width: 240px;
+  max-width: 100%;
+}
+
+.prompt-select {
+  width: 320px;
+  max-width: 100%;
 }
 
 .workspace {
@@ -636,13 +680,22 @@ body {
     padding: 12px 12px 12px 56px;
   }
 
+  .topbar > div:first-child {
+    flex: none;
+  }
+
   .side-nav .ant-layout-sider-zero-width-trigger {
     top: 12px;
     right: -44px;
   }
 
   .project-select {
-    min-width: 100%;
+    width: 240px;
+  }
+
+  .prompt-select {
+    width: 100%;
+    min-width: 0;
   }
 
   .topbar > .ant-space {

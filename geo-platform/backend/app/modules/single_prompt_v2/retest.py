@@ -45,7 +45,7 @@ from app.services.url_identity import CANONICALIZATION_VERSION, canonicalize_url
 RETEST_CONTRACT_VERSION = "single_prompt_retest.v2_fifth_slice.v1"
 RETEST_PLAN_VERSION = "single_prompt_retest_plan.v1"
 MEASUREMENT_IDENTITY_VERSION = "single_prompt_measurement_identity.v1"
-MEASUREMENT_CONTRACT_VERSION = "single_prompt_measurement.v1"
+MEASUREMENT_CONTRACT_VERSION = "single_prompt_measurement.v2"
 COMPARISON_CONTRACT_VERSION = "single_prompt_comparison.v1"
 BRAND_IDENTITY_RULE_VERSION = "single_prompt_brand_identity.casefold_boundary.v1"
 ACTIVE_RETEST_STATUSES = {"SAMPLING", "SEMANTIC_MEASURING"}
@@ -254,6 +254,7 @@ def _measurement_contract() -> dict[str, Any]:
         "contract_version": MEASUREMENT_CONTRACT_VERSION,
         "metrics": {
             "brand_mention_rate": "brand_mention.run_level.explicit_identity.v1",
+            "brand_option_rate": f"brand_option.run_level.{V2_ANSWER_SCHEMA_VERSION}",
             "brand_recommendation_rate": f"brand_recommendation.run_level.{V2_ANSWER_SCHEMA_VERSION}",
             "target_brand_official_reference_rate": f"target_official_reference.run_level.{CANONICALIZATION_VERSION}",
             "published_url_reference_rate": f"published_url_reference.run_level.{CANONICALIZATION_VERSION}",
@@ -665,6 +666,9 @@ def measure_frozen_runs(
     recommendation_eval: list[int] = []
     recommendation_hits: list[int] = []
     recommendation_unknown: list[dict[str, Any]] = []
+    option_eval: list[int] = []
+    option_hits: list[int] = []
+    option_unknown: list[dict[str, Any]] = []
     for run in runs:
         run_id = int(run["run_id"])
         answer_hash = hashlib.sha256(str(run.get("answer_text") or "").encode("utf-8")).hexdigest()
@@ -673,15 +677,24 @@ def measure_frozen_runs(
             event for event in events_by_run.get(run_id, [])
             if event.get("fact_consumption_eligible") is True and _contains_identity(str(event.get("entity_text") or ""), terms)
         ]
+        uncertain = any(event.get("fact_consumption_eligible") is not True
+                        and _contains_identity(str(event.get("entity_text") or ""), terms)
+                        for event in events_by_run.get(run_id, []))
+        if any(event.get("effective_speech_act") in {"INCLUDE_AS_OPTION", "RECOMMEND"} for event in eligible_events):
+            option_eval.append(run_id); option_hits.append(run_id)
+        elif job and job.get("status") in {"DONE", "DONE_ZERO_EVENTS"} and not uncertain:
+            option_eval.append(run_id)
+        else:
+            option_unknown.append({"run_id": run_id, "reason": "ANSWER_SEMANTIC_UNCERTAIN" if uncertain else "ANSWER_SEMANTIC_NOT_EVALUATED"})
         if any(event.get("effective_speech_act") == "RECOMMEND" for event in eligible_events):
             recommendation_eval.append(run_id)
             recommendation_hits.append(run_id)
-        elif job and job.get("status") in {"DONE", "DONE_ZERO_EVENTS"}:
+        elif job and job.get("status") in {"DONE", "DONE_ZERO_EVENTS"} and not uncertain:
             recommendation_eval.append(run_id)
         else:
             recommendation_unknown.append({
                 "run_id": run_id,
-                "reason": "ANSWER_SEMANTIC_NOT_EVALUATED" if not job else str(job.get("status") or "ANSWER_SEMANTIC_UNCERTAIN"),
+                "reason": "ANSWER_SEMANTIC_UNCERTAIN" if uncertain else "ANSWER_SEMANTIC_NOT_EVALUATED" if not job else str(job.get("status") or "ANSWER_SEMANTIC_UNCERTAIN"),
             })
 
     official_domains = set(identity.get("official_domains") or [])
@@ -729,6 +742,7 @@ def measure_frozen_runs(
         "measurement_identity_hash": identity.get("identity_snapshot_hash"),
         "metrics": {
             "brand_mention_rate": _metric_row("brand_mention_rate", raw, mention_eval, mention_hits, []),
+            "brand_option_rate": _metric_row("brand_option_rate", raw, option_eval, option_hits, option_unknown),
             "brand_recommendation_rate": _metric_row("brand_recommendation_rate", raw, recommendation_eval, recommendation_hits, recommendation_unknown),
             "target_brand_official_reference_rate": _metric_row("target_brand_official_reference_rate", raw, official_eval, official_hits, official_unknown),
             "published_url_reference_rate": _metric_row("published_url_reference_rate", raw, published_eval, published_hits, published_unknown),

@@ -10,6 +10,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.release_database import ReleaseSessionLocal, release_engine
+from app.core.release_worker_lifecycle import worker_ownership
 from app.models import (
     BrowserMonitorTask,
     SinglePromptAnalysis,
@@ -26,11 +27,29 @@ from app.modules.single_prompt_v2.qualification_critic import execute_qualificat
 from app.modules.single_prompt_v2.service import execute_analysis
 from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_STATUS, execute_auto_fetch
 from app.release_schema import validate_release_database
+from app.modules.single_prompt_v2.scheduling import tick, allow_scheduled_start
+
+
+def recover_owned_tasks():
+    from app.modules.single_prompt_v2.service import recover_interrupted_analyses
+    from app.modules.single_prompt_v2.diagnosis import recover_interrupted_diagnoses
+    from app.modules.single_prompt_v2.citation_contribution import recover_interrupted_citation_contributions
+    from app.modules.single_prompt_v2.qualification_critic import recover_interrupted_qualification_critics
+    from app.modules.single_prompt_v2.source_preparation import recover_interrupted_source_preparations
+    db = ReleaseSessionLocal()
+    try:
+        for recover in (recover_interrupted_analyses, recover_interrupted_diagnoses,
+                        recover_interrupted_citation_contributions, recover_interrupted_qualification_critics,
+                        recover_interrupted_source_preparations):
+            recover(db)
+    finally:
+        db.close()
 
 
 def run_once() -> str | None:
     db = ReleaseSessionLocal()
     try:
+        tick(db)
         retry_task = (
             db.query(BrowserMonitorTask)
             .filter_by(schedule_type="single_prompt_v2_run_retry", status="queued")
@@ -47,8 +66,12 @@ def run_once() -> str | None:
             identity = retry_task.id
             work_type = "run_retry"
         elif analysis:
+            if not allow_scheduled_start(db, analysis):
+                return f"schedule_cancelled:{analysis.analysis_id}"
             identity = analysis.analysis_id
             work_type = "analysis"
+            task = db.get(BrowserMonitorTask, analysis.task_id)
+            scheduled = bool(task and task.schedule_type == "single_prompt_v2_schedule")
         else:
             preparation = (
                 db.query(SinglePromptSourcePreparation)
@@ -113,7 +136,7 @@ def run_once() -> str | None:
         # the operator explicitly retry failures before freezing the Context.
         execute_analysis(
             identity,
-            freeze_with_failures=False,
+            freeze_with_failures=scheduled,
             session_factory=ReleaseSessionLocal,
         )
         return f"analysis:{identity}"
@@ -140,16 +163,18 @@ def main() -> None:
     parser.add_argument("--max-idle-passes", type=int, default=0)
     args = parser.parse_args()
     print({"release_database": validate_release_database(release_engine), "worker_concurrency": 1})
-    idle_passes = 0
-    while True:
-        completed = run_once()
-        print({"completed": completed or "IDLE"})
-        if args.once:
-            return
-        idle_passes = 0 if completed else idle_passes + 1
-        if args.max_idle_passes and idle_passes >= args.max_idle_passes:
-            return
-        time.sleep(args.interval)
+    with worker_ownership(release_engine):
+        recover_owned_tasks()
+        idle_passes = 0
+        while True:
+            completed = run_once()
+            print({"completed": completed or "IDLE"})
+            if args.once:
+                return
+            idle_passes = 0 if completed else idle_passes + 1
+            if args.max_idle_passes and idle_passes >= args.max_idle_passes:
+                return
+            time.sleep(args.interval)
 
 
 if __name__ == "__main__":

@@ -421,8 +421,10 @@ def read_analysis_source_preparation(analysis_id: str, project_id: int, prompt_i
 
 
 @router.get("/source-preparations/{preparation_id}")
-def read_source_preparation(preparation_id: str, db: Session = Depends(get_db)) -> dict:
-    return get_source_preparation_status(db, preparation_id=preparation_id)
+def read_source_preparation(preparation_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> dict:
+    status = get_source_preparation_status(db, preparation_id=preparation_id)
+    _require_preparation_scope(status, project_id, prompt_id)
+    return status
 
 
 def _require_preparation_scope(status: dict, project_id: int, prompt_id: int) -> None:
@@ -941,6 +943,7 @@ def generate_execution_proposal(
         strategy_result_hash=payload.strategy_result_hash,
         strategy_review_id=payload.strategy_review_id,
         strategy_review_snapshot_hash=payload.strategy_review_snapshot_hash,
+        brand_context_version_id=payload.brand_context_version_id,
         input_authority_type=payload.input_authority_type,
         input_authority_id=payload.input_authority_id,
         input_authority_hash=payload.input_authority_hash,

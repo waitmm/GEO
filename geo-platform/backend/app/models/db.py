@@ -983,6 +983,57 @@ class SinglePromptRetestExecution(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class SinglePromptSamplingSchedule(Base):
+    __tablename__ = "single_prompt_sampling_schedules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    schedule_id: Mapped[str] = mapped_column(String(80), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    plan_json: Mapped[str] = mapped_column(Text)
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    timezone: Mapped[str] = mapped_column(String(80))
+    local_time: Mapped[str] = mapped_column(String(5))
+    next_due_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="PAUSED")
+    remaining_attempts: Mapped[int] = mapped_column(Integer)
+    authorization_note: Mapped[str] = mapped_column(Text)
+    last_analysis_id: Mapped[str] = mapped_column(String(80), default="")
+    pause_reason: Mapped[str] = mapped_column(Text, default="")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BrandContextVersion(Base):
+    __tablename__ = "brand_context_versions"
+    __table_args__ = (UniqueConstraint("project_id", "version_number", name="uq_brand_context_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    context_version_id: Mapped[str] = mapped_column(String(80), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(240))
+    content: Mapped[str] = mapped_column(Text)
+    source_reference: Mapped[str] = mapped_column(String(1000), default="")
+    content_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SinglePromptObservationComparison(Base):
+    __tablename__ = "single_prompt_observation_comparisons"
+    __table_args__ = (UniqueConstraint("project_id", "prompt_id", "input_hash", name="uq_observation_comparison_input"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    result_version: Mapped[str] = mapped_column(String(96), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    input_hash: Mapped[str] = mapped_column(String(64))
+    input_snapshot_json: Mapped[str] = mapped_column(Text)
+    output_json: Mapped[str] = mapped_column(Text)
+    output_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SinglePromptComparisonResult(Base):
     __tablename__ = "single_prompt_comparison_results"
     __table_args__ = (

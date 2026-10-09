@@ -171,7 +171,8 @@
       "actual_end": "",
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
-      "audit_classification": "需修复"
+      "audit_classification": "需修复",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T03",
@@ -179,7 +180,7 @@
       "milestone": "M1",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T01"
       ],
@@ -206,7 +207,8 @@
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "需修复"
+      "audit_classification": "需修复",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T04",
@@ -214,7 +216,7 @@
       "milestone": "M1",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T03"
       ],
@@ -241,7 +243,8 @@
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "需修复"
+      "audit_classification": "需修复",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T05",
@@ -282,7 +285,8 @@
       "actual_end": "",
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
-      "audit_classification": "需修复"
+      "audit_classification": "需修复",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T06",
@@ -318,7 +322,8 @@
       "actual_end": "",
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
-      "audit_classification": "需接入"
+      "audit_classification": "需接入",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T07",
@@ -352,7 +357,8 @@
       "actual_end": "",
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
-      "audit_classification": "需接入"
+      "audit_classification": "需接入",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T08",
@@ -567,7 +573,8 @@
       "actual_end": "",
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
-      "audit_classification": "需修复"
+      "audit_classification": "需修复",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T14",
@@ -758,7 +765,8 @@
         "status": "PARTIALLY_VERIFIED",
         "scope": "单 Prompt / Run 1；首页进入v7、刷新保留、桌面/移动端只读验证；发布未发生",
         "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#10-2026-10-08-业务交付验收与发布准备"
-      }
+      },
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T19",
@@ -866,7 +874,8 @@
       "actual_end": "",
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
-      "audit_classification": "需接入 release 且需修复"
+      "audit_classification": "需接入 release 且需修复",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T22",
@@ -903,7 +912,8 @@
       "actual_end": "",
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
-      "audit_classification": "需接入 release 且需修复"
+      "audit_classification": "需接入 release 且需修复",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T23",
@@ -1012,10 +1022,37 @@
       "actual_end": "",
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
-      "audit_classification": "需修复"
+      "audit_classification": "需修复",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     }
   ],
   "implementation_verification_date": "2026-09-30",
   "implementation_map": "docs/geo-v1.0/implementation-map.md",
-  "delivery_baseline": "2026-10-09 / SC-DELIVERY-001@1.0.0"
+  "delivery_baseline": "2026-10-09 / SC-DELIVERY-001@1.0.0",
+  "delivery_checkpoint_20261009": {
+    "status": "IN_PROGRESS",
+    "contract": "SC-DELIVERY-001@1.0.0",
+    "engineering_evidence": [
+      "backend/artifacts/acceptance/20261009T082615Z/report.json",
+      "backend/artifacts/acceptance/browser-20261009T082622Z/report.json"
+    ],
+    "implemented": [
+      "Explicit Monitor/Validate range API sharing existing metric calculator",
+      "Optional versioned brand context and execution-input binding",
+      "Bounded daily sampling via existing V2 executor",
+      "Single-worker ownership, heartbeat and recovery",
+      "Controlled invitation and project scope",
+      "Release new-project and Prompt/context/schedule UI"
+    ],
+    "remaining": [
+      "Automatic Optimize normal new-project end-to-end",
+      "Complete Monitor aggregation and independently expected metric UI validation",
+      "Context consumption beyond internal execution notes",
+      "Full artifact restore and real release migration",
+      "Required real integration authorization and evidence",
+      "All mandatory acceptance, SEO/GEO and handoff"
+    ],
+    "real_business_writes": 0,
+    "external_calls": 0
+  }
 }

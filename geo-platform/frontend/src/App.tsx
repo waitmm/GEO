@@ -6,6 +6,9 @@ import {
 } from "antd";
 import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
 import { api } from "./api/client";
+import { ObservationPanel } from "./ObservationPanel";
+import { BrandContextSelect } from "./BrandContextSelect";
+import { ReleasePromptPanel } from "./ReleasePromptPanel";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
   SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
@@ -15,7 +18,7 @@ import type {
 const { Header, Sider, Content } = Layout;
 const { Title, Text, Link } = Typography;
 const MAX_MANUAL_HTML_CHARACTERS = 25_000_000;
-type PageKey = "coreV2" | "validation" | "recommendation" | "optimization" | "config" | "runs" | "ranking" | "golden";
+type PageKey = "coreV2" | "validation" | "recommendation" | "optimization" | "config" | "runs" | "ranking" | "golden" | "releaseMonitor" | "releaseCompare" | "brandContext";
 type V2AnswerReviewDecision = "CONFIRM_INCLUDE_AS_OPTION" | "CORRECT_TO_MENTION" | "KEEP_UNRESOLVED" | "EXCLUDE_EXTRACTION";
 type V2SourceDraft = {
   title: string;
@@ -177,6 +180,9 @@ function CitationHumanGoldEditor({
 const RELEASE_FIRST_SLICE = import.meta.env.VITE_GEO_RELEASE_FIRST_SLICE === "1";
 
 const PAGE_META: Record<PageKey, { title: string; subtitle: string }> = {
+  releaseMonitor: { title: "Monitor · 品牌监测", subtitle: "回答表现、可评估范围与引用观察" },
+  releaseCompare: { title: "Validate · 变化比较", subtitle: "明确的两个样本范围，不以发布记录为前提" },
+  brandContext: { title: "品牌资料", subtitle: "可选上下文，保留版本与出处" },
   coreV2: { title: "单问题分析 V2", subtitle: "一次分析、固定采样、可信状态" },
   validation: { title: "监测总览", subtitle: "看品牌当前表现，不在这里下最终策略" },
   recommendation: { title: "决策诊断", subtitle: "解释单个问题为什么没进入候选/推荐，并送入最终策略" },
@@ -1471,7 +1477,12 @@ function PromptScopeAlert({ prompt, description }: { prompt: Prompt; description
 }
 
 export default function App() {
-  const [page, setPage] = useState<PageKey>(RELEASE_FIRST_SLICE ? "coreV2" : "validation");
+  const [page, setPage] = useState<PageKey>(() => {
+    if (!RELEASE_FIRST_SLICE) return "validation";
+    const params = new URLSearchParams(window.location.search);
+    const view = params.get("release_view");
+    return ["releaseMonitor", "releaseCompare", "brandContext", "coreV2", "config"].includes(view || "") ? view as PageKey : params.has("v2_analysis") ? "coreV2" : "releaseMonitor";
+  });
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<number>();
   const [prompts, setPrompts] = useState<Prompt[]>([]);
@@ -1581,6 +1592,10 @@ export default function App() {
   const [v2Execution, setV2Execution] = useState<SinglePromptV2ExecutionStatus | null>(null);
   const [v2ExecutionLoading, setV2ExecutionLoading] = useState(false);
   const [v2ExecutionDirectionId, setV2ExecutionDirectionId] = useState("");
+  const [brandContextChoice, setBrandContextChoice] = useState<{ projectId: number; id?: string }>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return { projectId: Number(params.get("v2_project")), id: params.get("brand_context_id") || undefined };
+  });
   const [v2ExecutionEditor, setV2ExecutionEditor] = useState("本地执行人");
   const [v2ExecutionEdit, setV2ExecutionEdit] = useState<Record<string, any>>({});
   const [v2ExecutionNote, setV2ExecutionNote] = useState("");
@@ -1780,8 +1795,8 @@ export default function App() {
     setProjects(next);
     const params = new URLSearchParams(window.location.search);
     const requestedProjectId = Number(params.get("v2_project"));
-    if (params.get("v2_analysis") && next.some((item) => item.id === requestedProjectId)) {
-      setPage("coreV2");
+    if (next.some((item) => item.id === requestedProjectId)) {
+      if (params.get("v2_analysis") && !params.get("release_view")) setPage("coreV2");
       setProjectId(requestedProjectId);
     } else if (!projectId && next.length) {
       setProjectId(next[0].id);
@@ -3289,6 +3304,7 @@ export default function App() {
           input_authority_type: v2Strategy.strategy.input_authority_type,
           input_authority_id: v2Strategy.strategy.input_authority_id,
           input_authority_hash: v2Strategy.strategy.input_authority_hash,
+          brand_context_version_id: brandContextChoice.projectId === projectId ? brandContextChoice.id : undefined,
         },
       );
       v2PendingExecutionKey.current = null;
@@ -3728,7 +3744,9 @@ export default function App() {
     }
   }
 
+  const projectRequestSeq = useRef(0);
   async function loadProject(id: number, opts?: { keepPromptContext?: boolean }) {
+    const seq = ++projectRequestSeq.current;
     const keep = opts?.keepPromptContext ?? true;
     const promptFilter = keep && typeof promptContext === "number" ? promptContext : null;
     if (!keep) setPromptContext(null);
@@ -3743,6 +3761,7 @@ export default function App() {
           api.listPrompts(id), api.listBrowserAuditRuns(id), api.getBrowserQueueSummary(id),
           api.listTopics(id), api.listPromptClusters(id),
         ]);
+      if (seq !== projectRequestSeq.current) return;
       setPrompts(nextPrompts);
       setRuns(nextRuns);
       setQueue(nextQueue);
@@ -3751,7 +3770,7 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       const requestedProjectId = Number(params.get("v2_project"));
       const requestedPromptId = Number(params.get("v2_prompt"));
-      if (params.get("v2_analysis") && requestedProjectId === id && nextPrompts.some((item) => item.id === requestedPromptId)) {
+      if (requestedProjectId === id && nextPrompts.some((item) => item.id === requestedPromptId)) {
         setPromptContext(requestedPromptId);
       } else if (
         RELEASE_FIRST_SLICE
@@ -3761,12 +3780,12 @@ export default function App() {
         setPromptContext(nextPrompts[0].id);
       }
       // V2 has its own explicit analysis identity and authoritative status.
-      if (page !== "coreV2") {
+      if (!RELEASE_FIRST_SLICE && page !== "coreV2") {
         await loadWorkflowForPrompt(promptFilter, id);
         await loadDashboard(id, promptFilter, nextRuns, nextPrompts);
       }
     } finally {
-      setLoading(false);
+      if (seq === projectRequestSeq.current) setLoading(false);
     }
   }
 
@@ -3783,7 +3802,7 @@ export default function App() {
   useEffect(() => {
     if (!projectId || promptContext === null) return;
     const promptFilter = typeof promptContext === "number" ? promptContext : null;
-    if (page !== "coreV2") {
+    if (!RELEASE_FIRST_SLICE && page !== "coreV2") {
       loadDashboard(projectId, promptFilter).catch(() => {});
       loadWorkflowForPrompt(promptFilter, projectId).catch(() => {});
     }
@@ -5582,9 +5601,21 @@ export default function App() {
   return <Layout className="app-shell">
     <Sider width={228} className="side-nav" breakpoint="md" collapsedWidth={0} collapsible>
       <div className="brand-block"><Title level={4}>生成式搜索决策平台</Title><Text type="secondary">监测 · 诊断 · 策略 · 复测</Text></div>
-        <Menu mode="inline" selectedKeys={[page]} onClick={({ key }) => setPage(key as PageKey)} items={RELEASE_FIRST_SLICE ? [
-          { type: "group", label: "GEO 1.0 首批交付", children: [
-            { key: "coreV2", icon: <Play size={18} />, label: "来源与证据主链" },
+        <Menu mode="inline" selectedKeys={[page]} onClick={({ key }) => {
+          setPage(key as PageKey);
+          if (RELEASE_FIRST_SLICE) {
+            const params = new URLSearchParams(window.location.search); params.set("release_view", key);
+            if (projectId) params.set("v2_project", String(projectId));
+            if (activePromptId) params.set("v2_prompt", String(activePromptId));
+            window.history.replaceState(null, "", `?${params}`);
+          }
+        }} items={RELEASE_FIRST_SLICE ? [
+          { type: "group", label: "GEO 1.0", children: [
+            { key: "releaseMonitor", icon: <BarChart3 size={18} />, label: "Monitor · 监测" },
+            { key: "coreV2", icon: <Play size={18} />, label: "Optimize · 分析与稿件" },
+            { key: "releaseCompare", icon: <ArrowRight size={18} />, label: "Validate · 变化比较" },
+            { key: "brandContext", icon: <FileText size={18} />, label: "品牌资料" },
+            { key: "config", icon: <ListChecks size={18} />, label: "问题与采样配置" },
           ] },
         ] : [
         { type: "group", label: "业务闭环", children: [
@@ -5607,8 +5638,8 @@ export default function App() {
       <Header className="topbar">
         <div><Title level={3}>{PAGE_META[page].title}</Title><Text type="secondary">{PAGE_META[page].subtitle}</Text></div>
         <Space>
-          <Select className="project-select" value={projectId} placeholder="选择项目" onChange={setProjectId} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
-          {projectId && prompts.length>0 && <Select size="small" style={{minWidth:240}} placeholder="选择 Prompt"
+          <Select aria-label="当前项目" className="project-select" value={projectId} placeholder="选择项目" onChange={setProjectId} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
+          {projectId && prompts.length>0 && <Select aria-label="当前问题" className="prompt-select" size="small" placeholder="选择 Prompt"
             value={promptContext ?? "ALL"}
             options={[{label:"全部 Prompt（项目视图）",value:"ALL"},...prompts.map((p:any)=>({label:`#${p.id} ${p.prompt_text}`,value:p.id}))]}
             onChange={(v)=>{
@@ -5621,7 +5652,7 @@ export default function App() {
         </Space>
       </Header>
       <Content className="workspace">
-        {!project ? <Card loading={loading}><Empty description="请选择项目" /></Card> : page === "coreV2" ? <Space direction="vertical" size={16} className="page-stack">
+        {!project ? <Card loading={loading}><Empty description="请选择项目" /></Card> : ["releaseMonitor", "releaseCompare", "brandContext"].includes(page) ? <ObservationPanel key={`${project.id}:${activePromptId}:${page}`} project={project} promptId={activePromptId} mode={page === "brandContext" ? "context" : page === "releaseCompare" ? "compare" : "monitor"} /> : page === "coreV2" ? <Space direction="vertical" size={16} className="page-stack">
           {!activePromptId ? <Card><Empty description="请在顶部选择一个 Prompt" /></Card> : <>
             <Card size="small" title={<Space><Play size={18} />Single-Prompt Core V2 · Prompt #{activePromptId}</Space>} extra={<Space wrap>
               <Text type="secondary">采样次数</Text>
@@ -7110,6 +7141,13 @@ export default function App() {
                             : `${row.channel_label} · ${row.channel_role}`,
                       }))}
                     />
+                    <BrandContextSelect key={projectId} projectId={projectId!} value={brandContextChoice.projectId === projectId ? brandContextChoice.id : undefined} onChange={value => {
+                      const params = new URLSearchParams(window.location.search);
+                      if (value) params.set("brand_context_id", value); else params.delete("brand_context_id");
+                      window.history.replaceState(null, "", `?${params}`);
+                      v2PendingExecutionKey.current = null;
+                      setBrandContextChoice({ projectId: projectId!, id: value });
+                    }} />
                     <Button type="primary" icon={<FileText size={15} />} disabled={!v2ExecutionDirectionId} loading={v2ExecutionLoading} onClick={createV2ExecutionProposal}>生成完整执行方案与稿件</Button>
                   </Space> : v2ExecutionOutput ? <Space direction="vertical" size={14} style={{ width: "100%" }}>
                     <Descriptions size="small" column={{ xs: 1, md: 3 }}>
@@ -7377,7 +7415,7 @@ export default function App() {
               </>}
             </>}
           </>}
-        </Space> : !dashboard ? <Card loading={loading}><Empty description="正在加载项目数据" /></Card> : page === "validation" ? <Space direction="vertical" size={16} className="page-stack">
+        </Space> : page === "config" && RELEASE_FIRST_SLICE ? <ReleasePromptPanel key={projectId} projectId={projectId!} prompts={prompts} onSaved={() => loadProject(projectId!)} /> : !dashboard ? <Card loading={loading}><Empty description="正在加载项目数据" /></Card> : page === "validation" ? <Space direction="vertical" size={16} className="page-stack">
           {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下指标仅统计该 Prompt 的采集记录；切回「全部 Prompt」查看项目整体。" />}
           <Card size="small" className="audit-hero">
             <Row align="middle" justify="space-between" gutter={[16, 16]}>

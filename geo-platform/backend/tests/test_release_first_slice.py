@@ -9,7 +9,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
-from fastapi.testclient import TestClient
+from release_test_client import TestClient
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker
 
@@ -456,7 +456,7 @@ def test_release_routes_include_delivery_loop_but_exclude_legacy_workflows():
     assert any("retest" in path for path in paths)
     assert not any(path.startswith("/api/optimization") for path in paths)
 
-    response = TestClient(app).get("/api/optimization/workflow/1/prompt-overview")
+    response = TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000)).get("/api/optimization/workflow/1/prompt-overview")
     assert response.status_code == 404
     assert response.json() == {"detail": "Release API route not found"}
 
@@ -497,7 +497,7 @@ def test_release_lists_explicit_prompt_analyses_without_latest_substitution(tmp_
             idempotency_key="analysis-list-other",
         )
 
-        response = TestClient(app).get(
+        response = TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000)).get(
             "/api/v2/single-prompt/analyses?project_id=1&prompt_id=44"
         )
 
@@ -512,7 +512,7 @@ def test_release_lists_explicit_prompt_analyses_without_latest_substitution(tmp_
         assert other_prompt.analysis_id not in {
             row["analysis"]["analysis_id"] for row in rows
         }
-        assert TestClient(app).get(
+        assert TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000)).get(
             "/api/v2/single-prompt/analyses?project_id=1&prompt_id=44&limit=0"
         ).status_code == 422
     finally:

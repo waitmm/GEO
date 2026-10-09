@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 
 
-CANONICALIZATION_VERSION = "url_identity.v1"
+CANONICALIZATION_VERSION = "url_identity.v2"
 
 _TRACKING_QUERY_KEYS = {
     "fbclid",
@@ -17,8 +17,9 @@ _TRACKING_QUERY_KEYS = {
     "share_plat",
     "share_session_id",
     "share_source",
+    "spm",
 }
-_TRACKING_QUERY_PREFIXES = ("utm_", "spm", "from")
+_TRACKING_QUERY_PREFIXES = ("utm_",)
 
 
 @dataclass(frozen=True)

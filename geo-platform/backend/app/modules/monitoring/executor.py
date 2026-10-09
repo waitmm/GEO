@@ -13,6 +13,7 @@ from app.modules.monitoring.artifacts import ArtifactService
 from app.modules.monitoring.collectors.base import CollectorResult
 from app.modules.monitoring.collectors.registry import get_collector
 from app.modules.monitoring.collectors.wenxin.exceptions import WenxinCollectorError
+from app.modules.monitoring.enums import NON_RETRYABLE_ERRORS
 from app.services.serialization import dumps
 from app.services.url_identity import url_identity_fields
 
@@ -53,7 +54,25 @@ class MonitoringTaskExecutor:
         completed = 0
         for sequence, group_runs in groups.items():
             completed += self._execute_run_group(db, group_runs)
+            blocker = next((run for run in group_runs if self._requires_user_recovery(run)), None)
+            if blocker:
+                self._block_remaining(db, runs, blocker)
+                break
         return completed
+
+    @staticmethod
+    def _requires_user_recovery(run: BrowserMonitorRun) -> bool:
+        return run.error_type in NON_RETRYABLE_ERRORS | {"session_reset_failed", "session_verification_failed"}
+
+    @staticmethod
+    def _block_remaining(db: Session, runs: list[BrowserMonitorRun], blocker: BrowserMonitorRun) -> None:
+        for pending in runs:
+            if pending.status in {"queued", "pending"}:
+                pending.status, pending.stage = "blocked", "blocked"
+                pending.error_type = "prior_run_requires_user_recovery"
+                pending.error_message = f"未执行：Run {blocker.id} 出现 {blocker.error_type}，需人工恢复后重新授权。"
+                pending.finished_at = datetime.utcnow()
+        db.commit()
 
     def _execute_run_group(self, db: Session, runs: list[BrowserMonitorRun]) -> int:
         if not runs:
@@ -113,6 +132,9 @@ class MonitoringTaskExecutor:
                     run.duration_ms = int((time.perf_counter() - started) * 1000)
                     self.artifacts.save_text(db, run.id, "collector_log", "collector.log", "\n".join(logs) + "\n")
                     db.commit()
+                if self._requires_user_recovery(run):
+                    self._block_remaining(db, runs, run)
+                    break
             return completed
         finally:
             if collector and hasattr(collector, "end_session") and callable(getattr(collector, "end_session")):

@@ -20,12 +20,13 @@ type ValidationDashboardWire = {
   };
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init
   });
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/api/access/")) window.dispatchEvent(new Event("geo-session-expired"));
     const detail = await response.text();
     let message = detail || response.statusText;
     try {
@@ -188,6 +189,7 @@ export const api = {
     decision: "ACCEPTED" | "REJECTED"; reviewer: string; note: string;
   }) => request<SinglePromptV2StrategyStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/strategies/${encodeURIComponent(strategyId)}/results/${encodeURIComponent(resultVersion)}/reviews`, { method: "POST", body: JSON.stringify(payload) }),
   createSinglePromptV2ExecutionProposal: (analysisId: string, diagnosisId: string, strategyId: string, resultVersion: string, payload: {
+    brand_context_version_id?: string | null;
     project_id: number; prompt_id: number; direction_id: string; idempotency_key: string;
     strategy_result_hash: string; strategy_review_id?: string | null; strategy_review_snapshot_hash: string;
     input_authority_type: "HUMAN_REVIEW" | "MACHINE_QUALIFICATION"; input_authority_id: string; input_authority_hash: string;

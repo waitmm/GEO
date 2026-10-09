@@ -4,6 +4,18 @@
 
 Approved SEMANTIC_CHANGE: SC-DELIVERY-001 removes publication/global-review prerequisites from continuous monitoring, automatic Optimize and observation comparison. Scope, permissions, unknown semantics, immutable inputs and call authorization remain enforced. Existing T01..T25 and acceptance IDs are reused. This entry is implementation start, not completion evidence; v7 remains a regression asset.
 
+### Checkpoint: Monitor, Context, Scheduling And Access
+
+- Added explicit `20261009_01` migration for versioned optional brand context, immutable observation comparisons and bounded daily sampling plans. Production DB remains at its previous revision until protected migration; no startup create_all.
+- Monitor/Validate reuse `measure_frozen_runs`, now separating options from recommendations. Failed/unknown semantic samples stay outside eligible denominators; incompatible or unverified critical conditions suppress deltas. Citation absence is not inferred from incomplete collection. Comparisons do not require publication or Review.
+- Brand context uses an explicit version and relevant paragraph selection; the execution input freezes it. Currently consumed as unverified internal context, not public Truth; full automatic optimization integration remains incomplete.
+- Daily plans reuse frozen V2 analysis and the existing Wenxin executor, reserve finite attempt slots atomically, avoid overlap, and stop on login/captcha/session isolation blocks. Worker ownership and heartbeat are single-host; only the owner recovers interrupted stages.
+- Release configuration no longer waits for the retired dashboard. UI supports whole multiline Prompt, optional context save/reload, and schedule create/pause. Project request sequence protection and responsive header corrections added; generic Ant dialogs localized.
+- Controlled invitation API with project scope, revocation, short-lived HttpOnly session, HTTPS for remote access; no credentials in Git. Default access is restricted to genuine loopback. GET remains read-only.
+- Evidence: isolated browser `artifacts/acceptance/browser-20261009T081942Z/report.json` passed scoped creation/context/schedule and 1440/1024/390 no-overflow checks; no JS errors. Later access UI changes still require browser recheck. Scoped backend groups: 46 passed (scheduling/worker/observation/release), then 42 passed (access/observation/release); overlapping suites are not added together.
+- Protective database/source backup contains109 Snapshot file bindings. Full artifact archive/restore and production migration remain pending. No paid call, browser sampling, source fetch, human Review, Truth, publication or real business-result mutation in this checkpoint.
+- NOT COMPLETE: new-project automatic Optimize to specific manuscript, complete Monitor product views, full contextual consumption, all acceptance cases, deployment/restore and necessary separately authorized real integration.
+
 ## 2026-10-08 Single-Run Business Delivery Acceptance
 
 - IMPLEMENTATION_CHANGE, existing T01/T16/T17/T18 only. Inspected the full v6 body; it lacked useful selection structure and used a marketing source paragraph for brand association.

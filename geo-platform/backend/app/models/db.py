@@ -466,6 +466,7 @@ class SinglePromptPreparedSourceSnapshot(Base):
     passages_hash: Mapped[str] = mapped_column(String(64))
     parser_version: Mapped[str] = mapped_column(String(80))
     acquisition_method: Mapped[str] = mapped_column(String(40), default="MANUAL")
+    acquisition_receipt_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
     coverage_scope: Mapped[str] = mapped_column(String(40))
     acquired_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     submitted_by: Mapped[str] = mapped_column(String(120))

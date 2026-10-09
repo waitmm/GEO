@@ -139,6 +139,7 @@ def _launch_browser_context_for_fetch(playwright):
     executable_path = _find_browser_executable_for_fetch()
     launch_options = {
         "headless": True,
+        "chromium_sandbox": True,
         "args": ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
     }
     if executable_path:
@@ -204,10 +205,14 @@ def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int
                             clean = _clean_text_from_html(html)
                         result["raw_html"] = html[:500000]
                         result["canonical_url"] = _canonicalize_acquired_url(final_url)
+                        result["final_url"] = final_url
                         result["domain"] = domain_from_url(final_url)
                         result["title"] = title
                         result["clean_text"] = clean
                         result["fetch_status"] = "SUCCESS" if len(clean) > 200 and not network["blocked"] else "PARTIAL"
+                        if len(clean) >= 200000:
+                            result["fetch_status"] = "PARTIAL"
+                            result["failure_reason"] = "正文达到保存上限，不能声明完整页面"
                         if network["blocked"]:
                             result["failure_reason"] = "页面资源受限：" + ",".join(sorted(set(network["blocked"])))
                         break
@@ -218,6 +223,7 @@ def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int
                             break
                 result["network_policy"] = "PUBLIC_DNS_PINNED_TLS_VERIFIED_V1"
                 result["network_requests"] = network["requests"]
+                result["acquisition_receipt"] = _acquisition_receipt(result, network['documents'])
                 context.close()
                 results.append(result)
                 if progress_callback:
@@ -251,16 +257,39 @@ def fetch_page(url: str) -> dict:
             html = resp.body.decode('gb18030', errors='replace')
         result["raw_html"] = html[:500000]
         result["canonical_url"] = _canonicalize_acquired_url(resp.url)
+        result["final_url"] = resp.url
         result["domain"] = domain_from_url(resp.url)
         tm = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
         if tm:
             result["title"] = _html.unescape(tm.group(1).strip())
         result["clean_text"] = _clean_text_from_html(html)
         result["fetch_status"] = "SUCCESS" if len(result["clean_text"]) > 100 else "PARTIAL"
+        if len(result["clean_text"]) >= 200000:
+            result["fetch_status"] = "PARTIAL"
+            result["failure_reason"] = "正文达到保存上限，不能声明完整页面"
+        result["acquisition_receipt"] = _acquisition_receipt(result, list(resp.receipts))
     except Exception as e:
         result["fetch_status"] = "FETCH_FAILED"
         result["failure_reason"] = str(e) if isinstance(e, PublicWebError) else type(e).__name__
     return result
+
+
+def _acquisition_receipt(result: dict, documents: list[dict]) -> dict:
+    """Transport provenance, not a statement that the page's claims are true."""
+    if not documents or result.get('fetch_status') != 'SUCCESS':
+        return {}
+    final_url = result.get('final_url', '')
+    final = next((d for d in reversed(documents) if d['url'] == final_url), None)
+    if not final or not 200 <= final['status'] < 300:
+        return {}
+    return {
+        'contract_version': 'source-acquisition.v1',
+        'requested_url': result['url'], 'final_url': final_url,
+        'acquired_at': result['fetch_time'].isoformat(),
+        'method': result['fetch_method'], 'network_policy': result['network_policy'],
+        'documents': documents, 'content_hash': hashlib.sha256(result['clean_text'].strip().encode()).hexdigest(),
+        'scope': 'TRANSPORT_AND_EXTRACTED_CONTENT_ONLY',
+    }
 
 
 def acquire_cited_sources(db: Session, run_ids: list[int]) -> dict:

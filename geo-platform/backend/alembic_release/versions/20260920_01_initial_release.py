@@ -13,6 +13,7 @@ revision rather than editing this file.
 from __future__ import annotations
 
 from alembic import op
+import sqlalchemy as sa
 
 from app.models import Base
 
@@ -62,10 +63,46 @@ _IMMUTABLE_TABLES = (
 )
 
 
+def _create_original_source_snapshots() -> None:
+    # Freeze the original schema; a later ORM column must not appear at this revision.
+    name = "single_prompt_prepared_source_snapshots"
+    op.create_table(name,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("snapshot_id", sa.String(80), nullable=False),
+        sa.Column("preparation_id", sa.String(80), sa.ForeignKey("single_prompt_source_preparations.preparation_id"), nullable=False),
+        sa.Column("context_id", sa.String(80), sa.ForeignKey("single_prompt_analysis_contexts.context_id"), nullable=False),
+        sa.Column("citation_manifest_id", sa.String(80), sa.ForeignKey("single_prompt_citation_manifests.manifest_id"), nullable=False),
+        sa.Column("source_key", sa.String(64), nullable=False),
+        sa.Column("canonical_url", sa.String(1200), nullable=False),
+        sa.Column("original_urls_json", sa.Text(), nullable=False),
+        sa.Column("reference_observations_json", sa.Text(), nullable=False),
+        sa.Column("occurrence_count", sa.Integer(), nullable=False),
+        sa.Column("title", sa.String(500), nullable=False),
+        sa.Column("content_hash", sa.String(64), nullable=False),
+        sa.Column("clean_text", sa.Text(), nullable=False),
+        sa.Column("artifact_path", sa.String(1000), nullable=False),
+        sa.Column("artifact_hash", sa.String(64), nullable=False),
+        sa.Column("passages_json", sa.Text(), nullable=False),
+        sa.Column("passages_hash", sa.String(64), nullable=False),
+        sa.Column("parser_version", sa.String(80), nullable=False),
+        sa.Column("acquisition_method", sa.String(40), nullable=False),
+        sa.Column("coverage_scope", sa.String(40), nullable=False),
+        sa.Column("acquired_at", sa.DateTime(), nullable=False),
+        sa.Column("submitted_by", sa.String(120), nullable=False),
+        sa.Column("reused_from_snapshot_id", sa.String(80), nullable=True),
+        sa.Column("created_at", sa.DateTime(), nullable=False))
+    for column in ("id", "snapshot_id", "preparation_id", "context_id", "citation_manifest_id", "source_key", "content_hash", "reused_from_snapshot_id"):
+        op.create_index(f"ix_{name}_{column}", name, [column], unique=column == "snapshot_id")
+    op.create_index("ix_single_prompt_prepared_snapshot_source", name, ["preparation_id", "source_key", "created_at"])
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     for table_name in _INITIAL_TABLE_ORDER:
-        Base.metadata.tables[table_name].create(bind=bind, checkfirst=False)
+        if table_name == "single_prompt_prepared_source_snapshots":
+            _create_original_source_snapshots()
+        else:
+            Base.metadata.tables[table_name].create(bind=bind, checkfirst=False)
     for table_name in _IMMUTABLE_TABLES:
         op.execute(
             f"""

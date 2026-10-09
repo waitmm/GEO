@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import http.client
+import hashlib
 import ipaddress
 import io
 import socket
@@ -38,6 +39,7 @@ class PublicResponse:
     status: int
     headers: dict[str, str]
     body: bytes
+    receipts: tuple[dict, ...] = ()
 
 
 def public_target(url: str) -> PublicTarget:
@@ -139,6 +141,7 @@ def public_get(url: str, *, follow_redirects: bool = True, timeout: float = 8,
                max_bytes: int = MAX_RESPONSE_BYTES) -> PublicResponse:
     current = url
     seen = set()
+    receipts = []
     deadline = time.monotonic() + timeout
     for _ in range(MAX_REDIRECTS + 1):
         target = public_target(current)
@@ -175,6 +178,13 @@ def public_get(url: str, *, follow_redirects: bool = True, timeout: float = 8,
             headers.pop('content-length', None)
             # No cookies or credential challenges survive this anonymous transport.
             headers.pop('set-cookie', None)
+            receipts.append({
+                'url': target.url, 'status': response.status,
+                'tls_verified': target.tls, 'public_address_pinned': True,
+                'response_body_hash': hashlib.sha256(body).hexdigest(),
+                'content_type': headers.get('content-type', ''),
+                'last_modified': headers.get('last-modified', ''),
+            })
             if response.status in {301, 302, 303, 307, 308}:
                 location = headers.get('location')
                 if not location:
@@ -184,7 +194,7 @@ def public_get(url: str, *, follow_redirects: bool = True, timeout: float = 8,
                 headers['location'] = current
                 if follow_redirects:
                     continue
-            return PublicResponse(target.url, response.status, headers, body)
+            return PublicResponse(target.url, response.status, headers, body, tuple(receipts))
         finally:
             if response is not None:
                 response.close()
@@ -194,7 +204,7 @@ def public_get(url: str, *, follow_redirects: bool = True, timeout: float = 8,
 
 def guard_browser_context(context):
     """Fulfil HTTP(S) reads through the pinned transport; block browser sockets."""
-    state = {'requests': 0, 'bytes': 0, 'blocked': [], 'main_failure': None}
+    state = {'requests': 0, 'bytes': 0, 'blocked': [], 'main_failure': None, 'documents': []}
     deadline = time.monotonic() + 35
 
     def handle(route):
@@ -213,6 +223,8 @@ def guard_browser_context(context):
                 raise PublicWebError('PAGE_RESOURCE_BUDGET_EXHAUSTED')
             if kind == 'document' and result.status >= 400:
                 raise PublicWebError(f'PUBLIC_HTTP_{result.status}')
+            if kind == 'document':
+                state['documents'].extend(result.receipts)
             route.fulfill(status=result.status, headers=result.headers, body=result.body)
         except Exception as exc:
             code = str(exc) if isinstance(exc, PublicWebError) else type(exc).__name__

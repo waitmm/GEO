@@ -6084,7 +6084,9 @@ export default function App() {
                           <Descriptions.Item label="Snapshot"><Text code>{source.snapshot.snapshot_id}</Text></Descriptions.Item>
                           <Descriptions.Item label="正文 / passages">{source.snapshot.content_hash.slice(0, 12)} / {source.snapshot.passage_count}</Descriptions.Item>
                           <Descriptions.Item label="覆盖范围">{source.snapshot.coverage_scope}</Descriptions.Item>
-                          <Descriptions.Item label="获取方式">{source.snapshot.acquisition_method === "AUTO_FETCH" ? "自动获取" : source.snapshot.acquisition_method === "MANUAL_HTML_SOURCE" ? "人工源码提取" : "人工正文补录"}</Descriptions.Item>
+                          <Descriptions.Item label="获取方式">{source.snapshot.acquisition_method === "AUTO_FETCH" ? "自动获取" : source.snapshot.acquisition_method === "MANUAL_HTML_SOURCE" ? "人工源码提取" : source.snapshot.acquisition_method === "EXACT_SNAPSHOT_REUSE" ? "复用指定历史快照" : "人工正文补录"}</Descriptions.Item>
+                          <Descriptions.Item label="原始获取时间">{source.snapshot.acquired_at}</Descriptions.Item>
+                          <Descriptions.Item label="实际落地页面" span={3}><Text style={{ overflowWrap: "anywhere" }}>{source.snapshot.acquisition_receipt?.final_url || "未保存可核验的获取记录，不能据此证明官方出处"}</Text></Descriptions.Item>
                         </Descriptions>}
                         {source.waiver && <Alert type="warning" showIcon message={`已由 ${source.waiver.waived_by} 明确放弃`} description={`${source.waiver.reason}；影响：${source.waiver.impact}`} />}
                         {(source.state === "MANUAL_REQUIRED" || source.state === "READY") && <>

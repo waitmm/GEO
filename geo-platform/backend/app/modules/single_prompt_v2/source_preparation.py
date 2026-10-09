@@ -14,10 +14,12 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from typing import Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -42,6 +44,51 @@ URL_IDENTITY_VERSION = "single_prompt_source_identity.v1"
 SOURCE_PREPARATION_CONTRACT_VERSION = "single_prompt_source_preparation.v2_explicit_partial"
 SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v3_auto_then_manual"
 PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
+
+
+class _TransportDocument(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    url: str = Field(min_length=1, max_length=8192)
+    status: int = Field(ge=100, le=599)
+    tls_verified: bool
+    public_address_pinned: Literal[True]
+    response_body_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    content_type: str = Field(max_length=1000)
+    last_modified: str = Field(max_length=1000)
+
+
+class _AcquisitionReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    contract_version: Literal["source-acquisition.v1"]
+    requested_url: str = Field(min_length=1, max_length=8192)
+    final_url: str = Field(min_length=1, max_length=8192)
+    acquired_at: str
+    method: str = Field(min_length=1, max_length=120)
+    network_policy: Literal["PUBLIC_DNS_PINNED_TLS_VERIFIED_V1"]
+    documents: list[_TransportDocument] = Field(min_length=1, max_length=64)
+    content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    scope: Literal["TRANSPORT_AND_EXTRACTED_CONTENT_ONLY"]
+
+
+def _validate_acquisition_receipt(receipt: dict, *, text_hash: str, source_url: str,
+                                  acquired_at: datetime, method: str) -> None:
+    if receipt == {}:
+        return
+    try:
+        parsed = _AcquisitionReceipt.model_validate(receipt)
+        final = next((d for d in reversed(parsed.documents) if d.url == parsed.final_url), None)
+        urls = [parsed.requested_url, parsed.final_url, *(d.url for d in parsed.documents)]
+        valid = (method in {"AUTO_FETCH", "EXACT_SNAPSHOT_REUSE"}
+                 and parsed.content_hash == text_hash
+                 and canonicalize_url(parsed.requested_url) == canonicalize_url(source_url)
+                 and datetime.fromisoformat(parsed.acquired_at) == acquired_at
+                 and final is not None and 200 <= final.status < 300
+                 and all(_is_fetchable_public_url(url) for url in urls)
+                 and all(d.tls_verified == (urlparse(d.url).scheme == 'https') for d in parsed.documents))
+        if not valid:
+            raise ValueError("binding")
+    except (ValueError, TypeError, ValidationError) as exc:
+        raise ValueError("SOURCE_ACQUISITION_RECEIPT_INVALID") from exc
 
 READY_STATE = "READY"
 WAIVED_STATE = "WAIVED_WITH_LIMITATION"
@@ -321,8 +368,13 @@ def _snapshot_from_content(
     acquisition_method: str,
     submitted_by: str,
     acquired_at: datetime | None = None,
+    acquisition_receipt: dict | None = None,
 ) -> SinglePromptPreparedSourceSnapshot:
     text = clean_text.strip()
+    acquired_at = acquired_at or datetime.utcnow()
+    receipt = acquisition_receipt if acquisition_receipt is not None else {}
+    _validate_acquisition_receipt(receipt, text_hash=_text_hash(text), source_url=disposition.canonical_url,
+                                  acquired_at=acquired_at, method=acquisition_method)
     block_reason = _content_block_reason(title, text)
     if block_reason:
         raise ValueError(block_reason)
@@ -357,8 +409,9 @@ def _snapshot_from_content(
         passages_hash=_hash(passages),
         parser_version=PASSAGE_SPLIT_VERSION,
         acquisition_method=acquisition_method,
+        acquisition_receipt_json=_canonical_json(receipt),
         coverage_scope=coverage_scope,
-        acquired_at=acquired_at or datetime.utcnow(),
+        acquired_at=acquired_at,
         submitted_by=submitted_by,
     )
     db.add(snapshot)
@@ -531,6 +584,7 @@ def execute_auto_fetch(
                                 acquisition_method="AUTO_FETCH",
                                 submitted_by=f"AUTO:{preparation.created_by}",
                                 acquired_at=result.get("fetch_time") if isinstance(result.get("fetch_time"), datetime) else None,
+                                acquisition_receipt=result.get("acquisition_receipt"),
                             )
                             ready += 1
                             continue
@@ -702,6 +756,7 @@ def reuse_completed_sources(
             or prior.content_hash != source_row.get("content_hash")
             or prior.artifact_hash != source_row.get("artifact_hash")
             or prior.passages_hash != source_row.get("passages_hash")
+            or _receipt_binding(prior) != {k: source_row[k] for k in ("acquisition_receipt_hash",) if k in source_row}
             or [row["passage_id"] for row in prior_passages] != list(source_row.get("passage_ids") or [])
         ):
             raise HTTPException(status_code=409, detail=f"复用来源身份或正文版本不一致：{disposition.source_key}")
@@ -715,6 +770,7 @@ def reuse_completed_sources(
             acquisition_method="EXACT_SNAPSHOT_REUSE",
             submitted_by=reused_by.strip(),
             acquired_at=prior.acquired_at,
+            acquisition_receipt=loads(prior.acquisition_receipt_json, {}),
         )
         snapshot.reused_from_snapshot_id = prior.snapshot_id
         if (
@@ -824,10 +880,21 @@ def _verify_snapshot(snapshot: SinglePromptPreparedSourceSnapshot) -> list[dict[
         raise HTTPException(status_code=409, detail=f"正文文件 hash 不匹配：{snapshot.snapshot_id}")
     if artifact != snapshot.clean_text:
         raise HTTPException(status_code=409, detail=f"正文文件与快照内容不一致：{snapshot.snapshot_id}")
+    try:
+        receipt = json.loads(snapshot.acquisition_receipt_json or '{}')
+        _validate_acquisition_receipt(receipt, text_hash=snapshot.content_hash, source_url=snapshot.canonical_url,
+                                      acquired_at=snapshot.acquired_at, method=snapshot.acquisition_method)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(409, detail=f"获取来源记录与快照不一致：{snapshot.snapshot_id}") from exc
     passages = loads(snapshot.passages_json, [])
     if not passages or _hash(passages) != snapshot.passages_hash:
         raise HTTPException(status_code=409, detail=f"passage hash 不匹配：{snapshot.snapshot_id}")
     return passages
+
+
+def _receipt_binding(snapshot: SinglePromptPreparedSourceSnapshot) -> dict:
+    receipt = loads(snapshot.acquisition_receipt_json, {})
+    return {"acquisition_receipt_hash": _hash(receipt)} if receipt else {}
 
 
 def freeze_completion_manifest(
@@ -883,6 +950,7 @@ def freeze_completion_manifest(
                 "passages_hash": snapshot.passages_hash,
                 "passage_ids": [row["passage_id"] for row in passages],
                 "coverage_scope": snapshot.coverage_scope,
+                **_receipt_binding(snapshot),
             })
             ready_count += 1
         elif disposition.state == WAIVED_STATE:
@@ -986,6 +1054,7 @@ def get_source_preparation_status(db: Session, *, preparation_id: str) -> dict[s
                     "passage_count": len(loads(snapshot_row.passages_json, [])),
                     "coverage_scope": snapshot_row.coverage_scope,
                     "acquisition_method": snapshot_row.acquisition_method,
+                    "acquisition_receipt": loads(snapshot_row.acquisition_receipt_json, {}),
                     "acquired_at": snapshot_row.acquired_at.isoformat(),
                     "submitted_by": snapshot_row.submitted_by,
                     "created_at": snapshot_row.created_at.isoformat(),
@@ -1152,6 +1221,7 @@ def validate_completion_for_evidence(
                 or snapshot.content_hash != row.get("content_hash")
                 or snapshot.artifact_hash != row.get("artifact_hash")
                 or snapshot.passages_hash != row.get("passages_hash")
+                or _receipt_binding(snapshot) != {k: row[k] for k in ("acquisition_receipt_hash",) if k in row}
             ):
                 raise HTTPException(status_code=409, detail={"code": "SOURCE_SNAPSHOT_BINDING_MISMATCH", "snapshot_id": snapshot.snapshot_id})
             _verify_snapshot(snapshot)

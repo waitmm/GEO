@@ -97,6 +97,20 @@ def test_connection_close_body_is_consumed_and_file_closed(monkeypatch, protocol
     assert result.body == b'hello'
     assert 'set-cookie' not in result.headers
     assert sockets[0].closed and sockets[0].wire.closed
+    assert result.receipts[0]['url'] == 'https://example.com/'
+    assert result.receipts[0]['tls_verified'] is True
+    assert result.receipts[0]['response_body_hash'] == web.hashlib.sha256(b'hello').hexdigest()
+
+
+def test_transport_receipt_preserves_redirect_and_final_host(monkeypatch):
+    install_wire(monkeypatch, [
+        b'HTTP/1.1 302 Found\r\nLocation: https://other.example/docs\r\nContent-Length: 0\r\n\r\n',
+        b'HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\nhello',
+    ])
+    result = web.public_get('https://example.com/')
+    assert [r['url'] for r in result.receipts] == ['https://example.com/', 'https://other.example/docs']
+    assert result.url == 'https://other.example/docs'
+    assert [r['status'] for r in result.receipts] == [302, 200]
 
 
 def test_private_redirect_rejected_before_next_connection(monkeypatch, public_dns):
@@ -205,6 +219,7 @@ def test_source_browser_is_ephemeral_and_closes_failed_initialization(monkeypatc
     assert browser.new_context.call_args.kwargs['service_workers'] == 'block'
     playwright.chromium.launch_persistent_context.assert_not_called()
     assert '--no-sandbox' not in playwright.chromium.launch.call_args.kwargs['args']
+    assert playwright.chromium.launch.call_args.kwargs['chromium_sandbox'] is True
     browser.new_context.side_effect = RuntimeError('failed')
     with pytest.raises(RuntimeError):
         passages._launch_browser_context_for_fetch(playwright)
@@ -225,7 +240,10 @@ def test_browser_renders_guarded_content_and_rejects_private_subrequest(monkeypa
         body = '<html><title>Controlled source</title><body><p>' + text + '</p>'
         if url.endswith('/blocked'):
             body += '<script>fetch("https://private.test/secret").catch(()=>{});</script>'
-        return web.PublicResponse(url, 200, {'content-type': 'text/html'}, (body + '</body></html>').encode())
+        raw = (body + '</body></html>').encode()
+        record = {'url': url, 'status': 200, 'tls_verified': True, 'public_address_pinned': True,
+                  'response_body_hash': web.hashlib.sha256(raw).hexdigest(), 'content_type': 'text/html', 'last_modified': ''}
+        return web.PublicResponse(url, 200, {'content-type': 'text/html'}, raw, (record,))
 
     monkeypatch.setattr(web, 'public_get', fetch)
     fallback = Mock(side_effect=AssertionError('Browser must render, not bypass to fallback'))
@@ -235,4 +253,17 @@ def test_browser_renders_guarded_content_and_rejects_private_subrequest(monkeypa
     assert text.strip() in results[0]['clean_text']
     assert 'NON_PUBLIC_NETWORK_TARGET' in results[1]['failure_reason']
     assert calls == ['https://example.com/complete', 'https://example.com/blocked', 'https://private.test/secret']
+    assert results[0]['acquisition_receipt']['final_url'] == 'https://example.com/complete'
+    assert results[1]['acquisition_receipt'] == {}
     fallback.assert_not_called()
+
+
+def test_http_truncation_cannot_claim_full_body_or_acquisition_receipt(monkeypatch):
+    from app.modules.optimization import passage_service as passages
+    raw = ('<p>' + '正文' * 110000 + '</p>').encode()
+    response = web.PublicResponse('https://example.com', 200, {'content-type': 'text/html; charset=utf-8'}, raw)
+    monkeypatch.setattr(passages, 'public_get', lambda *args, **kwargs: response)
+    result = passages.fetch_page('https://example.com')
+    assert result['fetch_status'] == 'PARTIAL'
+    assert '保存上限' in result['failure_reason']
+    assert result['acquisition_receipt'] == {}

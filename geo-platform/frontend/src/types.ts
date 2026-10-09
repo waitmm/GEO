@@ -346,6 +346,7 @@ export type SinglePromptV2SourcePreparation = {
       passage_count: number;
       coverage_scope: "FULL_PAGE" | "EXCERPT" | string;
       acquisition_method: "AUTO_FETCH" | "MANUAL" | string;
+      acquisition_receipt: { final_url?: string; requested_url?: string; acquired_at?: string; contract_version?: string };
       acquired_at: string;
       submitted_by: string;
       created_at: string;

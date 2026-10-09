@@ -56,6 +56,7 @@ def main() -> int:
                      'tests/test_automatic_contribution.py', 'tests/test_single_prompt_v2_qualification.py',
                      'tests/test_delivery_generation.py', 'tests/test_deepseek_generation_contract.py',
                      'tests/test_automatic_delivery.py',
+                     'tests/test_scheduled_optimization.py',
                      'tests/test_private_site_contract.py',
                      f'--junitxml={out / "backend.xml"}', '-p', 'scripts.delivery_offline_guard']),
         ('frontend', ['npm', 'run', 'test:startup']),

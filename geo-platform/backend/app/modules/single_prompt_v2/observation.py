@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from uuid import uuid4
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -14,7 +15,7 @@ from app.services.url_identity import canonicalize_url, CANONICALIZATION_VERSION
 from .retest import _hash, _canonical_json, measure_frozen_runs, _measurement_contract
 
 
-CONTRACT = "single_prompt_observation.v1"
+CONTRACT = "single_prompt_observation.v2_admitted_metrics"
 
 
 def fixed_scope(db: Session, project_id: int, prompt_id: int, ref: dict) -> dict:
@@ -53,7 +54,60 @@ def measure_scope(scope: dict, identity: dict, target_url: str = '') -> dict:
     output['failed_run_ids'] = [r['run_id'] for r in scope['raw'].get('runs', []) if r.get('status') not in {'success', 'partial_success'} or not str(r.get('answer_text') or '').strip()]
     output['runs'] = scope['raw'].get('runs', [])
     output['limitations'] = ['语义未计算/未准入不等于没有推荐', '引用不证明生成因果；仅报告观测']
+    days = {}
+    unknown_dates = []
+    for run in scope['raw'].get('runs') or []:
+        try:
+            value = run.get('finished_at') or run.get('started_at')
+            captured = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            day = captured.replace(tzinfo=timezone.utc).date().isoformat() if captured.tzinfo is None else captured.astimezone(timezone.utc).date().isoformat()
+        except (ValueError, TypeError):
+            unknown_dates.append(run['run_id'])
+            continue
+        days.setdefault(day, []).append(run)
+    output['trend'] = {'timezone': 'UTC', 'unknown_date_run_ids': unknown_dates, 'points': [
+        {'date': day, 'run_ids': [r['run_id'] for r in rows],
+         'metrics': measure_frozen_runs(raw={**scope['raw'], 'runs': rows}, identity=frozen_identity,
+             answer_diagnosis=scope['semantics'], published_url=target_url)['metrics']}
+        for day, rows in sorted(days.items())]}
     return output
+
+
+def aggregate_prompt_metrics(measurements: list[dict]) -> dict:
+    keys = sorted({key for row in measurements for key in row['metrics']})
+    result = {}
+    for key in keys:
+        admitted = [(row['prompt']['id'], row['metrics'][key]) for row in measurements
+            if row['metrics'].get(key, {}).get('value') is not None]
+        numerator = sum(m['hit_count'] for _, m in admitted)
+        denominator = sum(m['evaluable_count'] for _, m in admitted)
+        result[key] = {'prompt_macro_average': round(sum(m['hit_count'] / m['evaluable_count'] for _, m in admitted) / len(admitted), 6) if admitted else None,
+            'run_weighted_average': round(numerator / denominator, 6) if denominator else None,
+            'participating_prompt_ids': [p for p, _ in admitted], 'participating_prompt_count': len(admitted),
+            'total_prompt_count': len(measurements), 'hit_count': numerator, 'evaluable_count': denominator,
+            'planned_count': sum(row['metrics'].get(key, {}).get('planned_count', 0) for row in measurements)}
+    return result
+
+
+def opportunity_hint(intent: str, metrics: dict) -> dict:
+    """A navigation hint, not a Strategy verdict or a calibrated opportunity score."""
+    mention = metrics['brand_mention_rate']
+    option = metrics['brand_option_rate']
+    if not mention['evaluable_count']:
+        state, label, reason = 'NEEDS_DATA', '先积累样本', '当前没有有效回答，不能判断品牌缺席。'
+    elif intent not in {'supplier_recommendation', 'category_awareness', 'usage_instruction'}:
+        state, label, reason = 'UNKNOWN_INTENT', '保留问题目标未知', '本范围没有明确的问题意图，不能按当前配置补写旧范围的优化目标。'
+    elif intent != 'supplier_recommendation':
+        state, label, reason = 'OBSERVE', '观察内容需求', '概念或操作类问题不以推荐品牌为默认目标；可分析解释、步骤和条件是否充分。'
+    elif not option['evaluable_count']:
+        state, label, reason = 'NEEDS_ANALYSIS', '先分析候选行为', '已有有效回答，但候选判断尚未计算；不能把正文提及当作推荐。'
+    elif option['hit_count'] == 0:
+        state, label, reason = 'INVESTIGATE', '建议分析选择缺口', '已评估范围未将品牌列为选项；需要结合理由与来源判断具体行动，不能直接归因。'
+    else:
+        state, label, reason = 'OBSERVE', '继续观察', '已评估范围中品牌出现为选项，继续检查覆盖和变化，不自动判定优化成功。'
+    return {'state': state, 'label': label, 'reason': reason, 'intent_type': intent,
+        'evaluated_run_ids': option['evaluable_run_ids'] if intent == 'supplier_recommendation' else mention['evaluable_run_ids'],
+        'limitation': '仅针对当前选定范围的导航建议，不是策略结论；主动分析入口始终保留。'}
 
 
 def _urls(raw: dict) -> tuple[dict, bool]:

@@ -31,9 +31,9 @@ export function ReleasePromptPanel({ projectId, prompts, onSaved }: { projectId:
   return <section>
     {error && <Alert type="error" message={error} />}
     <Typography.Title level={4}>{editing ? "编辑问题" : "新增问题"}</Typography.Title>
-    <Form form={form} layout="vertical" onFinish={save} initialValues={{ intent_type: "category_awareness", prompt_group: "" }}>
+    <Form form={form} layout="vertical" onFinish={save} initialValues={{ prompt_group: "" }}>
       <Form.Item label="问题原文" name="prompt_text" rules={[{ required: true, whitespace: true, message: "请输入完整问题" }]}><Input.TextArea rows={4} maxLength={10000} /></Form.Item>
-      <Form.Item label="意图" name="intent_type" rules={[{ required: true }]}><Select options={intents} /></Form.Item>
+      <Form.Item label="意图" name="intent_type" rules={[{ required: true, message: "请选择这个问题的实际意图" }]}><Select placeholder="请选择问题意图" options={intents} /></Form.Item>
       <Form.Item label="问题组（可选）" name="prompt_group"><Input maxLength={160} /></Form.Item>
       <Space><Button htmlType="submit" type="primary" loading={busy} icon={editing ? <Pencil size={16} /> : <Plus size={16} />}>{editing ? "保存问题" : "创建问题"}</Button>
         {editing && <Button onClick={() => { setEditing(undefined); form.resetFields(); }}>取消编辑</Button>}</Space>

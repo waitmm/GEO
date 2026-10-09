@@ -265,11 +265,15 @@ class DeepSeekClient(SemanticLLMClient):
             if self.request_guard is not None:
                 # Admission/cache recovery precede authorization. Reserve the complete
                 # request before network I/O; headers and credentials never enter audit.
-                self.request_guard({**request_identity,
-                    "provider_payload_hash": hashlib.sha256(json.dumps(body, ensure_ascii=False,
-                        sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-                    "input_token_upper_bound": len(json.dumps(body, ensure_ascii=False).encode("utf-8")) + 4096,
-                    "max_output_tokens": effective_max_tokens, "attempt": attempt + 1})
+                try:
+                    self.request_guard({**request_identity,
+                        "provider_payload_hash": hashlib.sha256(json.dumps(body, ensure_ascii=False,
+                            sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                        "input_token_upper_bound": len(json.dumps(body, ensure_ascii=False).encode("utf-8")) + 4096,
+                        "max_output_tokens": effective_max_tokens, "attempt": attempt + 1})
+                except SemanticLLMError as exc:
+                    exc.request_sent = False
+                    raise
             response_data: dict[str, Any] | None = None
             response_text = ""
             content = ""

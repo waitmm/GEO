@@ -9,13 +9,28 @@ from app.core.release_database import get_release_db
 from app.models import BrandContextVersion, Project, Prompt, BrowserMonitorRun, SinglePromptAnalysisContext, SinglePromptObservationComparison, SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
 from app.services.serialization import loads
 from .context_provider import context_view, load_context, save_context
-from .observation import fixed_scope, measure_scope, create_observation_comparison
+from .observation import fixed_scope, measure_scope, create_observation_comparison, aggregate_prompt_metrics, opportunity_hint
 from . import scheduling
 from app.models import SinglePromptSamplingSchedule
 from .service import _snapshot_run_rows, _hash
 from urllib.parse import urlsplit
 
 router = APIRouter(prefix='/api/v2', tags=['monitor-validate'])
+
+
+@router.get('/projects/{project_id}/monitor')
+def project_monitor(project_id: int, db: Session = Depends(get_release_db)):
+    if not db.get(Project, project_id):
+        raise HTTPException(404, '项目不存在')
+    prompts = db.query(Prompt).filter_by(project_id=project_id, enabled=True).order_by(Prompt.id).all()
+    values = [current_monitor(project_id, prompt.id, db) for prompt in prompts]
+    return {'project_id': project_id, 'aggregation': 'PROMPT_MACRO_WITH_SEPARATE_RUN_WEIGHTED',
+        'metrics': aggregate_prompt_metrics(values),
+        'prompts': [{'prompt': row['prompt'], 'metrics': row['metrics'], 'run_ids': [r['run_id'] for r in row['runs']],
+            'pool_count': row['pool_count'], 'identity_hash': row['input']['identity_hash'],
+            'raw_output_hash': row['input']['raw_output_hash'], 'opportunity': row['opportunity']} for row in values],
+        'limitations': ['项目概览仅使用当前问题原文；未明确选择语义版本时，候选和推荐保持未知。',
+            '按问题平均与按Run加权分别显示；无有效分母的问题不按零计入。']}
 
 
 @router.get('/projects/{project_id}/prompts/{prompt_id}/monitor')
@@ -38,7 +53,15 @@ def current_monitor(project_id: int, prompt_id: int, db: Session = Depends(get_r
     result['scope_label'] = '当前问题原文的采样尝试，历史问题版本另列；失败不计为品牌缺席'
     result['semantic_selection_required'] = True
     result['prompt'] = {'id': prompt.id, 'text': prompt.prompt_text, 'intent_type': prompt.intent_type, 'group': prompt.prompt_group}
+    result['opportunity'] = opportunity_hint(prompt.intent_type, result['metrics'])
     result['identity'] = identity
+    result['competitor_observations'] = [{
+        'competitor_id': competitor.id, 'name': competitor.name,
+        'measurement': measure_scope({'raw': raw, 'semantics': None, 'ref': result['input']},
+            {'canonical_brand_name': competitor.name, 'accepted_aliases': loads(competitor.aliases_json, []),
+             'official_domains': [], 'official_urls': []})['metrics']['brand_mention_rate'],
+        'scope': 'CONFIGURED_COMPETITOR_TEXT_MENTION_ONLY',
+    } for competitor in project.competitors]
     return result
 
 
@@ -53,12 +76,31 @@ class ContextCreate(StrictInput):
     source_reference: str = Field(default='', max_length=1000)
 
 
+class ScheduledAuthority(StrictInput):
+    max_requests: int = Field(ge=1, le=1000)
+    max_tokens: int = Field(ge=1, le=10000000)
+    max_cost_cny: float = Field(gt=0, le=1000)
+    conservative_cny_per_million_tokens: float = Field(gt=0, le=1000)
+    pricing_source: str = Field(min_length=8, max_length=2000)
+    pricing_checked_at: str = Field(max_length=40)
+    authorized_by: str = Field(min_length=1, max_length=240)
+
+
+class ScheduledOptimization(StrictInput):
+    every_batches: int = Field(ge=1, le=30)
+    max_tasks: int = Field(ge=1, le=30)
+    brand_context_version_id: str | None = Field(default=None, max_length=80)
+    source_fetch_authorized: bool = False
+    authorization: ScheduledAuthority
+
+
 class ScheduleCreate(StrictInput):
     timezone_name: str = Field(default='Asia/Shanghai', max_length=80)
     local_time: str = Field(pattern=r'^\d{2}:\d{2}$')
     sample_count: int = Field(ge=1, le=10)
     max_attempts: int = Field(ge=1, le=300)
     authorization_note: str = Field(min_length=1, max_length=1000)
+    optimization: ScheduledOptimization | None = None
 
 
 class SchedulePause(StrictInput):
@@ -145,7 +187,11 @@ def scopes(project_id: int, prompt_id: int, db: Session = Depends(get_release_db
 
 @router.post('/projects/{project_id}/prompts/{prompt_id}/measurements')
 def measurement(project_id: int, prompt_id: int, payload: MeasurementCreate, db: Session = Depends(get_release_db)):
-    return measure_scope(fixed_scope(db, project_id, prompt_id, payload.scope.model_dump()), payload.identity.model_dump(), payload.target_url)
+    frozen = fixed_scope(db, project_id, prompt_id, payload.scope.model_dump())
+    result = measure_scope(frozen, payload.identity.model_dump(), payload.target_url)
+    intent = frozen['raw'].get('sampling_plan', {}).get('prompt_configuration', {}).get('intent_type', '')
+    result['opportunity'] = opportunity_hint(intent, result['metrics'])
+    return result
 
 
 def comparison_view(row):

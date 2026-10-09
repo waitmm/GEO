@@ -58,7 +58,7 @@ def test_disabled_thinking_is_sent_and_failed_http_attempts_are_counted(monkeypa
     monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
     client = deepseek.DeepSeekClient(thinking_mode="disabled")
-    client.settings.deepseek_api_key = "test-key"
+    monkeypatch.setattr(client.settings, 'deepseek_api_key', 'test-key')
 
     with pytest.raises(SemanticLLMError, match="finish_reason=length"):
         client.structured_generate_sync(
@@ -81,7 +81,7 @@ def test_cache_only_miss_never_reads_api_key_or_starts_http(monkeypatch):
 
     monkeypatch.setattr(deepseek.httpx, "Client", fail_http)
     client = deepseek.DeepSeekClient(thinking_mode="disabled", max_attempts=1, cache_only=True)
-    client.settings.deepseek_api_key = ""
+    monkeypatch.setattr(client.settings, 'deepseek_api_key', '')
 
     with pytest.raises(SemanticLLMError) as rejected:
         client.structured_generate_sync(

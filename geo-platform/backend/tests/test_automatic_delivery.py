@@ -171,6 +171,29 @@ def test_interruption_requires_explicit_recovery_and_keeps_budget(scene):
         resume_task(db, row, row.revision)
 
 
+def test_budget_rejected_answer_is_pending_not_failed_and_has_no_external_call(scene, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+    from app.services.semantic_llm import deepseek
+    from app.models import SinglePromptDiagnosisResult
+    db, row, _, _ = scene
+    authorize(db, row)  # Its 1,000-token ceiling is below this request's input.
+    monkeypatch.setattr(deepseek.get_settings(), 'deepseek_api_key', 'isolated-never-real')
+    def no_network(*args, **kwargs):
+        raise AssertionError('Budget denial must precede network')
+    monkeypatch.setattr(deepseek.httpx, 'Client', no_network)
+    execute_task(row.task_id, session_factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
+    db.refresh(row)
+    view = task_view(row)
+    assert row.status == 'BLOCKED' and row.blocker_code == 'ANSWER_AUTHORIZATION_INSUFFICIENT'
+    assert view['usage']['external_requests'] == 0
+    assert view['objects']['answer_coverage']['actual_failure_run_ids'] == []
+    assert view['objects']['answer_coverage']['pending_external_authorization_run_ids'] == view['scope']
+    result = db.query(SinglePromptDiagnosisResult).filter_by(result_version=view['objects']['answer_result_version']).one()
+    payload = json.loads(result.output_json)
+    assert payload['answer_diagnosis']['failures'] == []
+    assert payload['answer_diagnosis']['answer_jobs'][0]['result_source'] == 'REQUEST_NOT_SENT'
+
+
 def simulated_delivery_transport(monkeypatch):
     """Test-only Responses/chat boundary for offline API and browser wiring checks."""
     from app.services.semantic_llm import deepseek

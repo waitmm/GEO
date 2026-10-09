@@ -1018,6 +1018,7 @@ class SinglePromptSamplingSchedule(Base):
     prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
     plan_json: Mapped[str] = mapped_column(Text)
     plan_hash: Mapped[str] = mapped_column(String(64))
+    optimization_progress_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
     timezone: Mapped[str] = mapped_column(String(80))
     local_time: Mapped[str] = mapped_column(String(5))
     next_due_at: Mapped[datetime] = mapped_column(DateTime, index=True)

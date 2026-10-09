@@ -45,7 +45,7 @@ from app.services.url_identity import CANONICALIZATION_VERSION, canonicalize_url
 RETEST_CONTRACT_VERSION = "single_prompt_retest.v2_fifth_slice.v1"
 RETEST_PLAN_VERSION = "single_prompt_retest_plan.v1"
 MEASUREMENT_IDENTITY_VERSION = "single_prompt_measurement_identity.v1"
-MEASUREMENT_CONTRACT_VERSION = "single_prompt_measurement.v2"
+MEASUREMENT_CONTRACT_VERSION = "single_prompt_measurement.v3_admitted_run"
 COMPARISON_CONTRACT_VERSION = "single_prompt_comparison.v1"
 BRAND_IDENTITY_RULE_VERSION = "single_prompt_brand_identity.casefold_boundary.v1"
 ACTIVE_RETEST_STATUSES = {"SAMPLING", "SEMANTIC_MEASURING"}
@@ -673,23 +673,25 @@ def measure_frozen_runs(
         run_id = int(run["run_id"])
         answer_hash = hashlib.sha256(str(run.get("answer_text") or "").encode("utf-8")).hexdigest()
         job = jobs.get(answer_hash)
+        admitted = bool(job and job.get("status") in {"DONE", "DONE_ZERO_EVENTS"}
+            and (not job.get("run_ids") or run_id in job["run_ids"]))
         eligible_events = [
             event for event in events_by_run.get(run_id, [])
-            if event.get("fact_consumption_eligible") is True and _contains_identity(str(event.get("entity_text") or ""), terms)
+            if admitted and event.get("fact_consumption_eligible") is True and _contains_identity(str(event.get("entity_text") or ""), terms)
         ]
         uncertain = any(event.get("fact_consumption_eligible") is not True
                         and _contains_identity(str(event.get("entity_text") or ""), terms)
                         for event in events_by_run.get(run_id, []))
         if any(event.get("effective_speech_act") in {"INCLUDE_AS_OPTION", "RECOMMEND"} for event in eligible_events):
             option_eval.append(run_id); option_hits.append(run_id)
-        elif job and job.get("status") in {"DONE", "DONE_ZERO_EVENTS"} and not uncertain:
+        elif admitted and not uncertain:
             option_eval.append(run_id)
         else:
             option_unknown.append({"run_id": run_id, "reason": "ANSWER_SEMANTIC_UNCERTAIN" if uncertain else "ANSWER_SEMANTIC_NOT_EVALUATED"})
         if any(event.get("effective_speech_act") == "RECOMMEND" for event in eligible_events):
             recommendation_eval.append(run_id)
             recommendation_hits.append(run_id)
-        elif job and job.get("status") in {"DONE", "DONE_ZERO_EVENTS"} and not uncertain:
+        elif admitted and not uncertain:
             recommendation_eval.append(run_id)
         else:
             recommendation_unknown.append({
@@ -697,8 +699,8 @@ def measure_frozen_runs(
                 "reason": "ANSWER_SEMANTIC_UNCERTAIN" if uncertain else "ANSWER_SEMANTIC_NOT_EVALUATED" if not job else str(job.get("status") or "ANSWER_SEMANTIC_UNCERTAIN"),
             })
 
-    official_domains = set(identity.get("official_domains") or [])
-    official_urls = set(identity.get("official_urls") or [])
+    official_domains = {_normalize_domain(value) for value in identity.get("official_domains") or []}
+    official_urls = {canonicalize_url(value) for value in identity.get("official_urls") or []}
     published_canonical = canonicalize_url(published_url)
     official_eval: list[int] = []
     official_hits: list[int] = []

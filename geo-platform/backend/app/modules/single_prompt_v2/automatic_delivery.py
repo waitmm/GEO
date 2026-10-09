@@ -37,6 +37,22 @@ def computation_contracts() -> dict:
         "text_qa": QA_VERSION, "qualification": QUALIFICATION_CONTRACT_VERSION}
 
 
+def configuration_snapshot(db: Session, project_id: int, prompt_text: str, context_version_id: str | None) -> dict:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    from .diagnosis import _snapshot_truth
+    model = get_settings().deepseek_model
+    return {"computation_contracts": computation_contracts(),
+        "brand": {"project_id": project_id, "brand_name": project.brand_name,
+            "brand_aliases": loads(project.brand_aliases_json, []), "website_url": project.website_url,
+            "project_updated_at": project.updated_at.isoformat() if project.updated_at else None},
+        "truth_snapshot": [_snapshot_truth(t) for t in db.query(TargetBrandCapabilityTruth).filter_by(project_id=project_id).order_by(TargetBrandCapabilityTruth.id)],
+        "brand_context": select_context(db, project_id=project_id, context_version_id=context_version_id, query=prompt_text),
+        "provider": "deepseek", "requested_model": model,
+        "effective_request_model": resolve_deepseek_request_model(model, "JSON_SCHEMA")}
+
+
 def checkpoint(db: Session, row: SinglePromptOptimizationTask, *, stage: str | None = None,
                objects: dict | None = None, limitations: list | None = None,
                status: str = "RUNNING", code: str = "", detail: str = "") -> None:
@@ -144,22 +160,11 @@ def create_task(db: Session, *, analysis_id: str, project_id: int, prompt_id: in
             "citation_manifest_id": completion.citation_manifest_id, "citation_manifest_hash": completion.citation_manifest_hash}
         validate_completion_for_evidence(db, analysis_id=analysis_id, context_id=context.context_id,
             **source_input, allow_partial=True)
-    project = db.get(Project, project_id)
-    from .diagnosis import _snapshot_truth
-    truths = [_snapshot_truth(t) for t in db.query(TargetBrandCapabilityTruth).filter_by(project_id=project_id).order_by(TargetBrandCapabilityTruth.id)]
-    model = get_settings().deepseek_model
     inputs = {"contract_version": CONTRACT_VERSION, "analysis_id": analysis_id, "context_id": context.context_id,
-        "computation_contracts": computation_contracts(),
+        **configuration_snapshot(db, project_id, raw["prompt_text"], brand_context_version_id),
         "raw_result_version": context.result_version, "raw_output_hash": raw_output_hash,
         "run_ids": [row["run_id"] for row in raw["runs"]], "prompt_text": raw["prompt_text"],
-        "brand": {"project_id": project_id, "brand_name": project.brand_name,
-            "brand_aliases": loads(project.brand_aliases_json, []), "website_url": project.website_url,
-            "project_updated_at": project.updated_at.isoformat() if project.updated_at else None},
-        "truth_snapshot": truths,
         "source_input": source_input,
-        "brand_context": select_context(db, project_id=project_id, context_version_id=brand_context_version_id, query=raw["prompt_text"]),
-        "provider": "deepseek", "requested_model": model,
-        "effective_request_model": resolve_deepseek_request_model(model, "JSON_SCHEMA"),
         "source_fetch_authorized": source_fetch_authorized, "source_attempts_per_url": 2, "automatic_retry": 0}
     fingerprint = digest(inputs)
     existing = db.query(SinglePromptOptimizationTask).filter_by(project_id=project_id, idempotency_key=idempotency_key).one_or_none()
@@ -200,12 +205,9 @@ def cancel_task(db: Session, row: SinglePromptOptimizationTask, expected_revisio
     return row
 
 
-def authorize_task(db: Session, row: SinglePromptOptimizationTask, *, expected_revision: int, input_hash: str,
-                   max_requests: int, max_tokens: int, max_cost_cny: float,
-                   conservative_cny_per_million_tokens: float, pricing_source: str, pricing_checked_at: str,
-                   authorized_by: str) -> SinglePromptOptimizationTask:
-    if row.status in TERMINAL or row.status == "RUNNING" or row.input_hash != input_hash:
-        raise HTTPException(409, "任务不可授权或输入已变化")
+def validate_authorization(*, max_requests: int, max_tokens: int, max_cost_cny: float,
+                           conservative_cny_per_million_tokens: float, pricing_source: str,
+                           pricing_checked_at: str, authorized_by: str) -> None:
     if not (0 < max_requests <= 1000 and 0 < max_tokens <= 10000000 and 0 < max_cost_cny <= 1000
             and 0 < conservative_cny_per_million_tokens <= 1000 and pricing_source.strip() and authorized_by.strip()):
         raise HTTPException(422, "必须给出有限的调用、token、费用上限及可核对的保守单价依据")
@@ -215,6 +217,17 @@ def authorize_task(db: Session, row: SinglePromptOptimizationTask, *, expected_r
         raise HTTPException(422, "计费核对日期无效")
     if not 0 <= (datetime.utcnow().date() - checked).days <= 7:
         raise HTTPException(409, "计费依据超出本次核对有效期，不能自动沿用")
+
+
+def authorize_task(db: Session, row: SinglePromptOptimizationTask, *, expected_revision: int, input_hash: str,
+                   max_requests: int, max_tokens: int, max_cost_cny: float,
+                   conservative_cny_per_million_tokens: float, pricing_source: str, pricing_checked_at: str,
+                   authorized_by: str) -> SinglePromptOptimizationTask:
+    if row.status in TERMINAL or row.status == "RUNNING" or row.input_hash != input_hash:
+        raise HTTPException(409, "任务不可授权或输入已变化")
+    validate_authorization(max_requests=max_requests, max_tokens=max_tokens, max_cost_cny=max_cost_cny,
+        conservative_cny_per_million_tokens=conservative_cny_per_million_tokens, pricing_source=pricing_source,
+        pricing_checked_at=pricing_checked_at, authorized_by=authorized_by)
     previous = loads(row.authorization_json, {})
     if previous.get("policy") == "ALLOW_EXTERNAL":
         raise HTTPException(409, "本任务已有独立累计授权，重启或重试不能重置额度")
@@ -411,8 +424,10 @@ def execute_task(task_id: str, *, session_factory) -> None:
         checkpoint(db, row, objects={"answer_result_version": result.result_version,
             "answer_result_hash": result.output_hash, "answer_coverage": coverage})
         if not coverage["valid_compute_run_ids"]:
+            pending_authority = bool(coverage["pending_external_authorization_run_ids"])
             checkpoint(db, row, status="WAITING_AUTHORIZATION" if policy == "CACHE_ONLY" else "BLOCKED",
-                code="NO_CONSUMABLE_ANSWER", detail="没有合格回答；待授权、失败与合法零事件保持分别记录。")
+                code="ANSWER_AUTHORIZATION_INSUFFICIENT" if pending_authority else "NO_CONSUMABLE_ANSWER",
+                detail="回答请求未发出：需要核实授权或剩余预算，不会自动扩大额度。" if pending_authority else "没有合格回答；待授权、失败与合法零事件保持分别记录。")
             return
 
         checkpoint(db, row, stage="CITATION")

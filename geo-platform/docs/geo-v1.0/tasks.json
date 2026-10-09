@@ -1053,7 +1053,13 @@
     "engineering_evidence": [
       "backend/artifacts/acceptance/20261009T082615Z/report.json",
       "backend/artifacts/acceptance/browser-20261009T082622Z/report.json",
-      "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
+      "backend/artifacts/acceptance/browser-20261009T095830Z/report.json",
+      "backend/artifacts/acceptance/20261009T100529Z/report.json",
+      "backend/artifacts/acceptance/browser-20261009T110234Z/report.json",
+      "backend/backups/delivery-20261009-optimize-restore02/upgrade-report.json",
+      "backend/artifacts/acceptance/20261009T111737Z/report.json",
+      "backend/artifacts/acceptance/browser-20261009T111411Z/report.json",
+      "backend/backups/delivery-20261009-schedule-restore03/upgrade-report.json"
     ],
     "implemented": [
       "Explicit Monitor/Validate range API sharing existing metric calculator",
@@ -1064,13 +1070,18 @@
       "Release new-project and Prompt/context/schedule UI",
       "Finite V2 automatic task with explicit authority, immutable inputs and stage handoffs",
       "Frozen-input generation and actual-text QA with auditable local repairs",
-      "Formal UI create/authorize/read/refresh checked using simulated provider transport"
+      "Formal UI create/authorize/read/refresh checked using simulated provider transport",
+      "Prompt macro and Run weighted Monitor summaries with UTC trends and configured competitor mentions",
+      "Protected migration02 and isolated full artifact restore; 44 historical tables unchanged",
+      "Optional every-N-sampling-batches Optimize with fixed configuration and finite cumulative authority; focused tests passed",
+      "Pause-during-child-authorization cancellation and protected migration03 deployed",
+      "Intent-aware opportunity navigation without interpreting unknown semantics as a negative"
     ],
     "remaining": [
       "Full new-project and recovery E2E acceptance, real model quality authorization",
-      "Monitor aggregation, trends and independently expected metric UI validation",
+      "Monitor configuration trend boundaries and remaining metric UI validation",
       "Qualified brand evidence consumption and complete asset/channel behavior",
-      "Migration02 protected deployment and final restore check",
+      "Complete new-project and continued-sampling browser E2Es with independent expected outcomes",
       "All mandatory acceptance, SEO/GEO and handoff"
     ],
     "real_business_writes": 0,

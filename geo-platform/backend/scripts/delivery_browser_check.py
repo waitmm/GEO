@@ -15,6 +15,80 @@ from playwright.sync_api import sync_playwright, expect
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def observation_check(page, origin, fixture, out, report):
+    page.goto(f'{origin}/?release_view=releaseMonitor&v2_project=1&v2_prompt=44')
+    overview = page.get_by_role('region', name='项目监控概览')
+    mention_row = overview.get_by_role('row').filter(has=page.get_by_role('cell', name='正文提及', exact=True))
+    expect(mention_row).to_contain_text('50.0%')
+    expect(overview.get_by_role('row').filter(has_text='列为选项')).to_contain_text('不可计算')
+    expect(page.get_by_text('累计采样尝试 2 条', exact=False)).to_be_visible()
+    page.get_by_role('combobox', name='当前问题', exact=True).press('ArrowDown')
+    page.get_by_text('全部 Prompt（项目视图）', exact=True).filter(visible=True).click()
+    page.reload()
+    expect(mention_row).to_contain_text('50.0%')
+    expect(page.get_by_text('选择问题查看原文、采样计划和详细指标', exact=True)).to_be_visible()
+    page.goto(f'{origin}/?release_view=releaseMonitor&v2_project=1&v2_prompt=44')
+    expect(mention_row).to_contain_text('50.0%')
+    page.get_by_role('menuitem', name='Validate · 变化比较', exact=True).click()
+    for label, run_id in [('基线范围', fixture['baseline_run_id']), ('对照范围', fixture['comparison_run_id'])]:
+        page.get_by_role('combobox', name=label, exact=True).click()
+        page.get_by_text(re.compile(rf'^Runs {run_id} ·')).filter(visible=True).click()
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/observation-comparisons')) as response:
+        page.get_by_role('button', name='生成变化比较', exact=True).click()
+    saved = response.value.json()
+    measured = saved['output']['metrics']['brand_mention_rate']
+    assert measured['baseline']['hit_count'] == 0 and measured['baseline']['evaluable_count'] == 1
+    assert measured['comparison']['hit_count'] == 1 and measured['comparison']['evaluable_count'] == 1
+    assert measured['delta_percentage_points'] == 100
+    expect(page.get_by_role('row').filter(has_text='正文提及')).to_contain_text('1/1 (100.0%)')
+    expect(page.get_by_text('仅报告观察变化，不证明优化效果或生成因果', exact=True)).to_be_visible()
+    page.reload()
+    expect(page.get_by_role('row').filter(has_text='正文提及')).to_contain_text('0/1 (0.0%)')
+    for run_id in [fixture['baseline_run_id'], fixture['comparison_run_id']]:
+        expect(page.get_by_text(re.compile(rf'^Runs {run_id} ·')).filter(visible=True)).to_be_visible()
+    for width in [1440, 1024, 390]:
+        page.set_viewport_size({'width': width, 'height': 1000})
+        name = f'comparison-{width}.png'
+        page.screenshot(path=str(out / name), full_page=True)
+        report['screenshots'].append(name)
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+    page.set_viewport_size({'width': 1440, 'height': 1000})
+    page.get_by_role('menuitem', name='品牌资料', exact=True).click()
+    for version in [1, 2]:
+        page.get_by_label('资料标题', exact=True).fill(f'隔离资料 {version}')
+        page.get_by_label('品牌资料正文', exact=True).fill(f'工程测试的维护资料版本 {version}，不可当作真实品牌事实。')
+        page.get_by_role('button', name='保存新资料版本', exact=True).click()
+        expect(page.get_by_text(f'版本 {version} · 隔离资料 {version}', exact=True)).to_be_visible()
+    page.reload()
+    for version in [1, 2]:
+        expect(page.get_by_text(f'版本 {version} · 隔离资料 {version}', exact=True)).to_be_visible()
+    # A failed read must remain visible and recover without mutating business data.
+    uri = f'{origin}/api/v2/projects/1/monitor'
+    page.route(uri, lambda route: route.fulfill(status=503, content_type='application/json', body='{"detail":"隔离验收：监测服务暂不可用"}'))
+    page.get_by_role('menuitem', name='Monitor · 监测', exact=True).click()
+    expect(page.get_by_text('隔离验收：监测服务暂不可用', exact=False)).to_be_visible()
+    page.unroute(uri)
+    page.get_by_role('button', name='刷新当前页面', exact=True).click()
+    expect(mention_row).to_contain_text('50.0%')
+    page.get_by_role('button', name='新建项目', exact=True).click()
+    dialog = page.get_by_role('dialog')
+    dialog.get_by_label('项目名称', exact=True).fill('空项目隔离验收')
+    dialog.get_by_label('品牌名称', exact=True).fill('另一品牌')
+    dialog.get_by_role('button', name=re.compile('创.*建')).click()
+    expect(dialog).not_to_be_visible()
+    expect(page.get_by_text('尚无可用问题，请先在问题配置中创建', exact=True)).to_be_visible()
+    expect(mention_row).to_have_count(0)
+    page.get_by_role('combobox', name='当前项目', exact=True).press('ArrowDown')
+    page.get_by_text('Release', exact=True).filter(visible=True).click()
+    expect(mention_row).to_contain_text('50.0%')
+    report.update(status='PASS_SCOPED_SYNTHETIC_OBSERVATION_NOT_REAL_SAMPLING', comparison_version=saved['result_version'],
+        verified=['MONITOR_INDEPENDENT_EXPECTED_COUNTS', 'UNKNOWN_NOT_ZERO', 'FORMAL_UI_COMPARISON',
+            'COMPARISON_RELOAD_EXACT_VERSION', 'CONTEXT_TWO_VERSIONS', 'READ_FAILURE_RECOVERY',
+            'PROJECT_SWITCH_CLEARS_PREVIOUS_DATA', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
+        not_verified=['REAL_SAMPLING', 'REAL_MODEL_QUALITY'], synthetic_runs=2)
+    assert not report['errors'], report['errors']
+
+
 def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     from datetime import datetime
     from app.modules.single_prompt_v2.automatic_delivery import execute_task
@@ -74,7 +148,7 @@ def main():
     (out / 'migration.log').write_text(migration.stdout + migration.stderr)
     migration.check_returncode()
     fixture = None
-    if '--optimize' in sys.argv:
+    if '--optimize' in sys.argv or '--observe' in sys.argv:
         sys.path.insert(0, str(ROOT / 'backend'))
         sys.path.insert(0, str(ROOT / 'backend/tests'))
         from pytest import MonkeyPatch
@@ -82,13 +156,27 @@ def main():
         from sqlalchemy.orm import sessionmaker
         from app.core.release_sqlite import get_release_sqlite_dbapi
         from app.core.release_database import _set_sqlite_pragma
-        from test_release_first_slice import _seed_citation_contribution_fixture
+        from test_release_first_slice import _seed_citation_contribution_fixture, _seed_frozen_analysis
         monkeypatch = MonkeyPatch()
         engine = create_engine(env['GEO_RELEASE_DATABASE_URL'], module=get_release_sqlite_dbapi())
         event.listen(engine, 'connect', _set_sqlite_pragma)
         Session = sessionmaker(bind=engine, expire_on_commit=False)
         with Session() as db:
-            fixture = _seed_citation_contribution_fixture(db, monkeypatch, out, reviewed=False)
+            if '--optimize' in sys.argv:
+                fixture = _seed_citation_contribution_fixture(db, monkeypatch, out, reviewed=False)
+            else:
+                from app.models import BrowserMonitorRun
+                from app.modules.single_prompt_v2.service import create_analysis, claim_analysis, finalize_analysis
+                baseline = _seed_frozen_analysis(db, reference_urls=[])
+                first = db.query(BrowserMonitorRun).filter_by(task_id=baseline.task_id).one()
+                second, _ = create_analysis(db, project_id=1, prompt_id=44, sample_count=1, idempotency_key='browser-second-synthetic-run')
+                token = claim_analysis(db, second.analysis_id)
+                run = db.query(BrowserMonitorRun).filter_by(task_id=second.task_id).one()
+                run.status = 'success'; run.stage = 'success'; run.answer_text = 'Target 提供资料核对入口。'
+                run.answer_char_count = len(run.answer_text); run.reference_complete = True
+                db.commit()
+                assert finalize_analysis(db, second.analysis_id, token)
+                fixture = {'baseline_run_id': first.id, 'comparison_run_id': run.id}
     report = {'scope': 'OFFLINE_ISOLATED_UI', 'external_calls': 0, 'screenshots': [], 'errors': [], 'status': 'FAIL'}
     log = (out / 'api.log').open('w')
     server = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'app.release_main:app', '--host', '127.0.0.1', '--port', str(port)],
@@ -121,7 +209,10 @@ def main():
             page.on('pageerror', lambda error: report['errors'].append(str(error)))
             page.goto(f'http://127.0.0.1:{port}/')
             if fixture:
-                automatic_check(page, f'http://127.0.0.1:{port}', fixture, Session, monkeypatch, out, report)
+                if '--observe' in sys.argv:
+                    observation_check(page, f'http://127.0.0.1:{port}', fixture, out, report)
+                else:
+                    automatic_check(page, f'http://127.0.0.1:{port}', fixture, Session, monkeypatch, out, report)
                 return
             page.get_by_role('button', name='新建项目', exact=True).click()
             dialog = page.get_by_role('dialog')
@@ -133,6 +224,8 @@ def main():
             page.screenshot(path=str(out / 'prompt-entry.png'), full_page=True)
             (out / 'prompt-entry.txt').write_text(page.locator('body').inner_text())
             page.get_by_label('问题原文', exact=True).fill('空气过滤器如何清洗？\n有哪些前提条件？')
+            page.get_by_label('意图', exact=True).click()
+            page.get_by_text('使用与操作', exact=True).filter(visible=True).click()
             page.get_by_role('button', name='创建问题', exact=True).click()
             expect(page.get_by_role('cell', name='空气过滤器如何清洗？ 有哪些前提条件？', exact=True)).to_be_visible()
             page.get_by_role('menuitem', name='品牌资料', exact=True).click()
@@ -146,7 +239,17 @@ def main():
             page.get_by_role('menuitem', name='Monitor · 监测', exact=True).click()
             page.get_by_text('持续采样计划', exact=True).click()
             page.get_by_label('采样授权说明', exact=True).fill('仅离线工程验证，worker不启动，不允许外部请求')
-            page.get_by_role('button', name='授权并开启每日采样', exact=True).click()
+            page.get_by_role('checkbox', name='采样完成后自动生成优化建议与稿件', exact=True).check()
+            for label, value in [('每任务模型请求上限', '4'), ('每任务 token 上限', '300000'),
+                    ('每任务费用上限（元）', '3'), ('输入/输出较高单价（元/百万token）', '10'),
+                    ('已核实计费依据', '隔离价格仅用于工程验收，不能用于真实计费'),
+                    ('计费核实日期', datetime.now(timezone.utc).date().isoformat()), ('授权人', 'isolated-ui-test')]:
+                page.get_by_label(label, exact=True).fill(value)
+            with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/sampling-schedules')) as response:
+                page.get_by_role('button', name='授权并开启每日采样', exact=True).click()
+            plan = response.value.json()['plan']['optimization']
+            assert plan['total_authorization'] == {'max_requests': 4, 'max_tokens': 300000, 'max_cost_cny': 3}
+            assert plan['configuration']['brand_context']['mode'] == 'EMPTY'
             expect(page.get_by_role('cell', name='已开启', exact=True)).to_be_visible()
             page.get_by_role('button', name='暂停', exact=True).click()
             page.get_by_role('button', name=re.compile('确.*定')).click()
@@ -157,7 +260,7 @@ def main():
                 page.screenshot(path=str(out / path), full_page=True)
                 report['screenshots'].append(path)
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'page overflow: {width}'
-            report['verified'] = ['UI_PROJECT_CREATE', 'MULTILINE_PROMPT_PRESERVED', 'CONTEXT_SAVE_RELOAD', 'SCHEDULE_CREATE_PAUSE', 'RESPONSIVE_NO_PAGE_OVERFLOW']
+            report['verified'] = ['UI_PROJECT_CREATE', 'MULTILINE_PROMPT_PRESERVED', 'CONTEXT_SAVE_RELOAD', 'SCHEDULE_CREATE_PAUSE', 'FINITE_OPTIONAL_OPTIMIZE_AUTHORITY', 'RESPONSIVE_NO_PAGE_OVERFLOW']
             report['not_verified'] = ['REAL_SAMPLING', 'AUTOMATIC_OPTIMIZE', 'COMPARISON_WITH_REAL_NEW_RUN']
             assert not report['errors'], report['errors']
             report['status'] = 'PASS_SCOPED_CHECKS_NOT_FULL_DELIVERY'

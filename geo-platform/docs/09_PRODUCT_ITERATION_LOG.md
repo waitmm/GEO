@@ -4,6 +4,10 @@
 
 Product Owner approved continuous Monitor, automatic Optimize and independent Validate. Publication is optional and cannot block analysis, complete draft access or comparison. Basic scheduling and a versioned lightweight brand-context entry are required; optional human correction is not a staged approval workflow. This supersedes the earlier publication-first next step, not permission, data or evidence protections. Implementation and applicable acceptance are in progress.
 
+Implementation of the approved automation setting now reuses daily sampling plans: optional every-N-batches Optimize with fixed configuration, finite task count and explicit per-task/aggregate budgets. Empty context is allowed; a changed brand/Truth/model contract or expired pricing blocks only new paid handoffs. Pause cancels queued handoffs, while already-started tasks retain their own stop control and audit. This is not a new Runtime or automatic Review policy. Formal UI and isolated regression are being verified; no real schedule has been enabled by the agent.
+
+Monitor exposes Prompt-macro and Run-weighted measures separately. A browser regression found that creating a project from a deep link restored the old project; project selection now updates URL ownership and clears old result identities. Independent comparison refresh restores its saved scope selectors. No historical result is rewritten by these UI fixes.
+
 ## 2026-10-08 V6 Business Inspection and V7 Reader Guide
 
 V6 was inspected as content, not accepted based on implementation status. The narrow improvement adds selection utility and a concrete frozen brand lookup while removing a marketing paragraph from public content. V7 remains attributed source interpretation, not a product capability proof or a promise of citation gains.

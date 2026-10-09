@@ -861,7 +861,12 @@ def _call_with_usage(
         usage["llm_cache_hits"] += 1
     else:
         usage["external_llm_calls"] += 1
-    result = call()
+    try:
+        result = call()
+    except SemanticLLMError as exc:
+        if not before and (getattr(exc, "request_sent", None) is False or getattr(exc, "code", "") == "CACHE_MISS"):
+            usage["external_llm_calls"] -= 1
+        raise
     if not before:
         after = _cache_row(db, input_hash, prompt_version, schema_version)
         if after:
@@ -981,6 +986,19 @@ def _diagnose_answers(
                     "result_source": result_source,
                 }
             except SemanticLLMError as exc:
+                if getattr(exc, "code", "") in {"EXTERNAL_BUDGET_EXHAUSTED", "CACHE_MISS"}:
+                    answer_jobs[answer_hash] = {
+                        "answer_hash": answer_hash,
+                        "run_ids": [int(run.get("run_id") or 0)],
+                        "semantic_input_hash": input_hash,
+                        "status": "PENDING_EXTERNAL_AUTHORIZATION",
+                        "result_source": "REQUEST_NOT_SENT",
+                        "blocker_code": exc.code,
+                        "error": "请求未发出：当前授权或预算不足，回答尚未评估，不是模型失败或零事件",
+                    }
+                    continue
+                if getattr(exc, "request_sent", None) is False:
+                    raise
                 failure = _llm_failure(exc)
                 answer_jobs[answer_hash] = {
                     "answer_hash": answer_hash,

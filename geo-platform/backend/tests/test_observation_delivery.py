@@ -10,7 +10,7 @@ from sqlalchemy import text
 from app.core.release_database import get_release_db
 from app.models import BrowserMonitorRun, Prompt, SinglePromptAnalysisContext, SinglePromptObservationComparison, SinglePromptPublicationRecord
 from app.modules.single_prompt_v2.context_provider import load_context, save_context, select_context
-from app.modules.single_prompt_v2.observation import compare_scopes, create_observation_comparison, measure_scope
+from app.modules.single_prompt_v2.observation import aggregate_prompt_metrics, compare_scopes, create_observation_comparison, measure_scope, opportunity_hint
 from app.modules.single_prompt_v2.service import create_analysis, claim_analysis, finalize_analysis
 from app.release_main import create_release_app
 from test_release_first_slice import _migrated_session, _seed_frozen_analysis
@@ -18,6 +18,20 @@ from app.services.url_identity import canonicalize_url
 
 
 IDENTITY = {'canonical_brand_name': 'Target', 'accepted_aliases': [], 'official_domains': [], 'official_urls': []}
+
+
+def test_opportunity_uses_intent_and_does_not_turn_unknown_into_brand_gap():
+    sample = scope(1, answer='General explanation with no brand')
+    metrics = measure_scope(sample, IDENTITY)['metrics']
+    assert opportunity_hint('supplier_recommendation', metrics)['state'] == 'NEEDS_ANALYSIS'
+    assert opportunity_hint('category_awareness', metrics)['state'] == 'OBSERVE'
+    sample['semantics'] = {'answer_jobs': [{'answer_hash': hashlib.sha256(sample['raw']['runs'][0]['answer_text'].encode()).hexdigest(),
+        'status': 'DONE_ZERO_EVENTS'}], 'events': []}
+    metrics = measure_scope(sample, IDENTITY)['metrics']
+    assert opportunity_hint('supplier_recommendation', metrics)['state'] == 'INVESTIGATE'
+    assert opportunity_hint('usage_instruction', metrics)['state'] == 'OBSERVE'
+    failed = measure_scope(scope(1, failed=True), IDENTITY)['metrics']
+    assert opportunity_hint('supplier_recommendation', failed)['state'] == 'NEEDS_DATA'
 
 
 def test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option():
@@ -40,6 +54,49 @@ def test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_o
         for r in current['raw']['runs']], 'events': []}
     zero = measure_scope(current, IDENTITY)['metrics']['brand_recommendation_rate']
     assert (zero['hit_count'], zero['evaluable_count'], zero['value']) == (0, 9, 0)
+
+
+def test_failed_answer_cannot_confer_positive_metric_from_stale_event():
+    current = scope(1)
+    current['semantics'] = {'answer_jobs': [{'answer_hash': hashlib.sha256(current['raw']['runs'][0]['answer_text'].encode()).hexdigest(),
+        'status': 'FAILED_SCHEMA', 'run_ids': [1]}], 'events': [
+        {'run_id': 1, 'entity_text': 'Target', 'fact_consumption_eligible': True, 'effective_speech_act': 'RECOMMEND'}]}
+    result = measure_scope(current, IDENTITY)
+    for name in ['brand_option_rate', 'brand_recommendation_rate']:
+        assert result['metrics'][name]['value'] is None
+        assert result['metrics'][name]['hit_count'] == 0
+    assert result['metrics']['brand_mention_rate']['value'] == 1
+
+
+def test_macro_and_weighted_average_use_independent_expected_counts_and_unknown_is_not_zero():
+    rows = []
+    for prompt_id, count, hits in [(1, 2, 1), (2, 10, 9), (3, 0, 0)]:
+        item = scope(prompt_id)
+        item['raw']['runs'] = [scope(100 * prompt_id + i, answer='Target' if i < hits else 'Another tool')['raw']['runs'][0] for i in range(count)]
+        measured = measure_scope(item, IDENTITY)
+        measured['prompt'] = {'id': prompt_id}
+        rows.append(measured)
+    result = aggregate_prompt_metrics(rows)
+    mention = result['brand_mention_rate']
+    assert mention['prompt_macro_average'] == .7
+    assert mention['run_weighted_average'] == .833333
+    assert mention['participating_prompt_ids'] == [1, 2]
+    assert mention['total_prompt_count'] == 3 and mention['evaluable_count'] == 12
+    assert result['brand_option_rate']['prompt_macro_average'] is None
+
+
+def test_daily_trend_retains_unknown_time_and_uses_same_metric_definition():
+    first, second, third = [scope(i)['raw']['runs'][0] for i in range(1, 4)]
+    first['finished_at'] = '2026-10-09T02:00:00+08:00'
+    second['finished_at'] = '2026-10-09T02:00:00'
+    third['finished_at'] = 'not-a-date'
+    current = scope(1)
+    current['raw']['runs'] = [first, second, third]
+    result = measure_scope(current, IDENTITY)
+    assert [p['date'] for p in result['trend']['points']] == ['2026-10-08', '2026-10-09']
+    assert result['trend']['unknown_date_run_ids'] == [3]
+    assert result['metrics']['brand_mention_rate']['evaluable_count'] == 3
+    assert [p['metrics']['brand_mention_rate']['evaluable_count'] for p in result['trend']['points']] == [1, 1]
 
 
 def test_url_query_identity_does_not_remove_business_parameters():
@@ -119,6 +176,11 @@ def test_formal_api_context_and_comparison_persist_without_reviews(tmp_path, mon
         assert monitor.status_code == 200, monitor.text
         assert len(monitor.json()['runs']) == 2
         assert monitor.json()['metrics']['brand_option_rate']['value'] is None
+        overview = client.get('/api/v2/projects/1/monitor')
+        assert overview.status_code == 200
+        assert overview.json()['metrics']['brand_mention_rate']['prompt_macro_average'] == .5
+        assert overview.json()['metrics']['brand_option_rate']['prompt_macro_average'] is None
+        assert client.get('/api/v2/projects/999/monitor').status_code == 404
         prompt = db.get(Prompt, 44)
         original = prompt.prompt_text
         prompt.prompt_text = 'Changed question, different sampling scope'

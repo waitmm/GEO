@@ -1784,7 +1784,7 @@ export default function App() {
     } else {
       const created = await api.createProject(payload);
       message.success("项目已创建");
-      setProjectId(created.id);
+      selectReleaseProject(created.id);
     }
     setProjectModalOpen(false);
     setEditingProjectId(null);
@@ -1802,6 +1802,43 @@ export default function App() {
     } else if (!projectId && next.length) {
       setProjectId(next[0].id);
     }
+  }
+
+  function selectReleaseProject(id: number) {
+    if (RELEASE_FIRST_SLICE) {
+      const params = new URLSearchParams({ release_view: page, v2_project: String(id) });
+      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+      ++projectRequestSeq.current;
+      setPromptContext(null);
+      setPrompts([]);
+      setV2Analysis(null);
+      setV2SourcePreparation(null);
+      setV2Diagnosis(null);
+      setV2CitationContribution(null);
+      setV2StrategyReadiness(null);
+      setV2QualificationProjection(null);
+      setV2QualificationCritic(null);
+      setV2Strategy(null);
+      setV2Execution(null);
+      setV2RetestReadiness(null);
+      setV2Retest(null);
+      setV2SelectedRunIds([]);
+      setV2SelectedRunFingerprints({});
+    }
+    setProjectId(id);
+  }
+
+  function selectReleasePrompt(id: number | "ALL") {
+    if (RELEASE_FIRST_SLICE && projectId) {
+      const params = new URLSearchParams({ release_view: page, v2_project: String(projectId), v2_prompt: String(id) });
+      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+      setV2Analysis(null); setV2AnalysisHistory([]); setV2RunPool(null);
+      setV2SelectedRunIds([]); setV2SelectedRunFingerprints({});
+      setV2SourcePreparation(null); setV2Diagnosis(null); setV2CitationContribution(null);
+      setV2StrategyReadiness(null); setV2QualificationProjection(null); setV2QualificationCritic(null);
+      setV2Strategy(null); setV2Execution(null); setV2RetestReadiness(null); setV2Retest(null);
+    }
+    setPromptContext(id);
   }
 
   function persistV2Identity(status: SinglePromptV2Status) {
@@ -3771,7 +3808,9 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       const requestedProjectId = Number(params.get("v2_project"));
       const requestedPromptId = Number(params.get("v2_prompt"));
-      if (requestedProjectId === id && nextPrompts.some((item) => item.id === requestedPromptId)) {
+      if (requestedProjectId === id && params.get("v2_prompt") === "ALL") {
+        setPromptContext("ALL");
+      } else if (requestedProjectId === id && nextPrompts.some((item) => item.id === requestedPromptId)) {
         setPromptContext(requestedPromptId);
       } else if (
         RELEASE_FIRST_SLICE
@@ -5639,13 +5678,11 @@ export default function App() {
       <Header className="topbar">
         <div><Title level={3}>{PAGE_META[page].title}</Title><Text type="secondary">{PAGE_META[page].subtitle}</Text></div>
         <Space>
-          <Select aria-label="当前项目" className="project-select" value={projectId} placeholder="选择项目" onChange={setProjectId} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
+          <Select aria-label="当前项目" className="project-select" value={projectId} placeholder="选择项目" onChange={selectReleaseProject} options={projects.map((item) => ({ label: item.name, value: item.id }))} />
           {projectId && prompts.length>0 && <Select aria-label="当前问题" className="prompt-select" size="small" placeholder="选择 Prompt"
             value={promptContext ?? "ALL"}
             options={[{label:"全部 Prompt（项目视图）",value:"ALL"},...prompts.map((p:any)=>({label:`#${p.id} ${p.prompt_text}`,value:p.id}))]}
-            onChange={(v)=>{
-              setPromptContext(v);
-            }}
+            onChange={selectReleasePrompt}
           />}
           <Button icon={<Plus size={16} />} onClick={() => openProjectModal()}>新建项目</Button>
           <Button icon={<Settings size={16} />} onClick={() => projectId && openProjectModal(projectId)} disabled={!projectId}>编辑项目</Button>

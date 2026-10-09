@@ -39,10 +39,11 @@ def view(row):
             "timezone": row.timezone, "local_time": row.local_time, "next_due_at": row.next_due_at.isoformat() + "Z",
             "remaining_attempts": row.remaining_attempts, "plan": loads(row.plan_json, {}), "plan_hash": row.plan_hash,
             "pause_reason": row.pause_reason, "last_analysis_id": row.last_analysis_id,
+            "optimization": loads(row.optimization_progress_json, {}),
             "authorization_note": row.authorization_note}
 
 
-def create_schedule(db, *, project_id, prompt_id, timezone_name, local_time, sample_count, max_attempts, authorization_note, now=None):
+def create_schedule(db, *, project_id, prompt_id, timezone_name, local_time, sample_count, max_attempts, authorization_note, optimization=None, now=None):
     now = now or datetime.utcnow()
     prompt = db.get(Prompt, prompt_id)
     if not prompt or prompt.project_id != project_id:
@@ -58,6 +59,9 @@ def create_schedule(db, *, project_id, prompt_id, timezone_name, local_time, sam
             "prompt_configuration": {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group},
             "platform": WENXIN_PLATFORM, "source_type": BROWSER_AUDIT_ENTRY_TYPE, "adapter": WENXIN_WEB_ADAPTER,
             "collection_mode": "single_independent", "automatic_retry": 0}
+    if optimization:
+        from .scheduled_optimization import freeze_settings
+        plan['optimization'] = freeze_settings(db, project_id, prompt.prompt_text, optimization)
     row = SinglePromptSamplingSchedule(schedule_id=f"schedule-{uuid4()}", project_id=project_id, prompt_id=prompt_id,
         plan_json=dumps(plan), plan_hash=_hash(plan), timezone=timezone_name, local_time=local_time,
         next_due_at=next_daily(now, timezone_name, local_time), status="ACTIVE", remaining_attempts=max_attempts,
@@ -81,6 +85,8 @@ def pause_schedule(db, row, expected_revision):
     # Do not interrupt a browser operation mid-flight or pretend it was cancelled.
     db.commit()
     db.refresh(row)
+    from .scheduled_optimization import cancel_pending_handoffs
+    cancel_pending_handoffs(db, row)
     return row
 
 
@@ -96,21 +102,31 @@ def tick(db, now=None):
             failure = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == previous.task_id,
                 BrowserMonitorRun.error_type.in_(NON_RETRYABLE_ERRORS | {"session_reset_failed", "session_verification_failed"})).first()
         reason = ("登录、验证码或会话隔离受阻，需人工恢复" if failure else
-                  "问题配置已变化，请重新授权计划" if not prompt or not prompt.enabled or _hash(prompt.prompt_text) != plan.get("prompt_text_hash") else
+                  "问题配置已变化，请重新授权计划" if not prompt or not prompt.enabled or _hash(prompt.prompt_text) != plan.get("prompt_text_hash")
+                    or {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group} != plan.get("prompt_configuration") else
                   "冻结计划校验失败" if _hash(plan) != row.plan_hash else "")
         if reason:
-            row.status, row.pause_reason = "BLOCKED", reason
-            row.revision += 1
+            db.execute(update(SinglePromptSamplingSchedule).where(
+                SinglePromptSamplingSchedule.id == row.id, SinglePromptSamplingSchedule.status == 'ACTIVE',
+                SinglePromptSamplingSchedule.revision == row.revision,
+            ).values(status='BLOCKED', pause_reason=reason, revision=row.revision + 1))
             db.commit()
             continue
         if previous and previous.status in {"PLANNED", "QUEUED", "COLLECTING"}:
+            continue
+        from .scheduled_optimization import handoff
+        handoff(db, row, previous)
+        db.refresh(row)
+        if row.status != 'ACTIVE':
             continue
         if row.next_due_at > now:
             continue
         count = int(plan["sample_count"])
         if row.remaining_attempts < count:
-            row.status, row.pause_reason = "EXHAUSTED", "授权尝试次数已用完"
-            row.revision += 1
+            db.execute(update(SinglePromptSamplingSchedule).where(
+                SinglePromptSamplingSchedule.id == row.id, SinglePromptSamplingSchedule.status == 'ACTIVE',
+                SinglePromptSamplingSchedule.revision == row.revision,
+            ).values(status='EXHAUSTED', pause_reason='授权尝试次数已用完', revision=row.revision + 1))
             db.commit()
             continue
         slot = row.next_due_at.isoformat()
@@ -144,7 +160,8 @@ def allow_scheduled_start(db, analysis):
         return True
     row = db.query(SinglePromptSamplingSchedule).filter_by(last_analysis_id=analysis.analysis_id).one_or_none()
     prompt = db.get(Prompt, analysis.prompt_id)
-    valid = row and row.status == "ACTIVE" and prompt and prompt.enabled and _hash(prompt.prompt_text) == loads(row.plan_json, {}).get("prompt_text_hash")
+    plan = loads(row.plan_json, {}) if row else {}
+    valid = row and row.status == "ACTIVE" and prompt and prompt.enabled and _hash(prompt.prompt_text) == plan.get("prompt_text_hash") and {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group} == plan.get("prompt_configuration")
     if valid:
         return True
     analysis.status, task.status = "CANCELLED", "cancelled"

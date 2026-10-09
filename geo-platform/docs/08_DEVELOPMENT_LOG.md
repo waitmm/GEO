@@ -1,5 +1,9 @@
 # 08 Development Log
 
+## 2026-10-09 Final Delivery Implementation In Progress
+
+Approved SEMANTIC_CHANGE: SC-DELIVERY-001 removes publication/global-review prerequisites from continuous monitoring, automatic Optimize and observation comparison. Scope, permissions, unknown semantics, immutable inputs and call authorization remain enforced. Existing T01..T25 and acceptance IDs are reused. This entry is implementation start, not completion evidence; v7 remains a regression asset.
+
 ## 2026-10-08 Single-Run Business Delivery Acceptance
 
 - IMPLEMENTATION_CHANGE, existing T01/T16/T17/T18 only. Inspected the full v6 body; it lacked useful selection structure and used a marketing source paragraph for brand association.

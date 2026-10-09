@@ -61,6 +61,21 @@ SEMANTIC_RISK
 
 ## Current Product Focus
 
+### Approved 2026-10-09 Delivery Boundary
+
+The Product Owner explicitly approved implementation of the 2026-10-09 final
+delivery instruction. SC-DELIVERY-001 is the controlling release boundary:
+continuous Monitor -> automatic Optimize -> independent batch comparison.
+Publication, ExecutionConfirmation and global semantic Review are not
+prerequisites for sampling, analysis, content delivery or observation comparison.
+Existing publication records remain immutable, optional historical evidence.
+This specific owner-approved replacement does not authorize changing unrelated
+frozen semantics, weakening access control, widening external-call budgets,
+changing raw data, inventing facts, or claiming unexecuted acceptance passed.
+For this approved replacement, update the existing contracts and decision log;
+do not demand another RFC for the already approved product decision.
+The older P0 descriptions below are historical where they require publication.
+
 The highest priority is the P0 optimization loop:
 
 ```text
@@ -119,8 +134,9 @@ in recent local run notes.
 - Keep `run#` and `Sample` labels visible in user-facing run detail.
 - `partial_success` is not a successful full parse; do not redefine success to
   hide missing reference data.
-- Real business experiment success must not be claimed until release, cooling,
-  retest, comparison, and human conclusion are all recorded.
+- Software delivery and observation comparison do not require publication.
+  Never infer causal business success from observation changes, with or without
+  a publication record. No universal cooling-period rule is introduced.
 - Target users are Chinese-language operators who should not need to understand
   English. User-facing navigation, labels, empty states, warnings, and workflow
   actions must use Chinese. Stable English enum values may remain in storage or

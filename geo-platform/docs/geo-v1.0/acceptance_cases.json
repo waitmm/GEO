@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "cases": [
     {
       "id": "AC-BRD-01",
@@ -684,8 +684,9 @@
       "requirements": [
         "PUB-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "OUT_OF_SCOPE",
+      "evidence": "",
+      "scope_decision": "SC-DELIVERY-001@1.0.0"
     },
     {
       "id": "AC-PUB-02",
@@ -697,8 +698,9 @@
       "requirements": [
         "PUB-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "OUT_OF_SCOPE",
+      "evidence": "",
+      "scope_decision": "SC-DELIVERY-001@1.0.0"
     },
     {
       "id": "AC-PUB-03",
@@ -710,8 +712,9 @@
       "requirements": [
         "PUB-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "OUT_OF_SCOPE",
+      "evidence": "",
+      "scope_decision": "SC-DELIVERY-001@1.0.0"
     },
     {
       "id": "AC-PUB-04",
@@ -723,8 +726,9 @@
       "requirements": [
         "PUB-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "OUT_OF_SCOPE",
+      "evidence": "",
+      "scope_decision": "SC-DELIVERY-001@1.0.0"
     },
     {
       "id": "AC-VAL-01",
@@ -756,9 +760,9 @@
       "id": "AC-VAL-03",
       "module": "VAL",
       "name": "新引用",
-      "given": "复测引用了新发布 URL",
-      "when": "评价",
-      "then": "记录来源采用，不能直接宣布推荐变化由该页导致。",
+      "given": "两个明确批次，没有发布记录，对照样本观察到新URL",
+      "when": "按固定URL规则比较",
+      "then": "保留新增/持续/未再观察到的URL和原始引用；不宣称首次收录或生成因果",
       "requirements": [
         "VAL-004"
       ],
@@ -940,12 +944,19 @@
     },
     {
       "id": "E2E-04",
-      "name": "真实发布与复测闭环",
-      "given": "选取真实执行稿，在用户授权范围内实际发布/更新；保留实际内容与时间。",
-      "when": "登记 URL→抓取快照/差异→固定复测→Monitor 同口径比较。",
-      "then": "从输入到发布和复测全程可追溯；正向、负向或无变化均如实；真实发布尚未发生时状态为未验收。",
+      "name": "持续采样与独立变化比较",
+      "given": "已存在明确基线范围，无发布记录",
+      "when": "定时/手动新采样→Monitor→选两个批次比较",
+      "then": "采样及比较可用，指标和引用变化可追溯；失败不当负例；不要求上涨",
       "status": "NOT_RUN",
-      "evidence": ""
+      "evidence": "",
+      "replaced_definition": {
+        "name": "真实发布与复测闭环",
+        "given": "选取真实执行稿，在用户授权范围内实际发布/更新；保留实际内容与时间。",
+        "when": "登记 URL→抓取快照/差异→固定复测→Monitor 同口径比较。",
+        "then": "从输入到发布和复测全程可追溯；正向、负向或无变化均如实；真实发布尚未发生时状态为未验收。",
+        "decision": "SC-DELIVERY-001@1.0.0"
+      }
     },
     {
       "id": "E2E-05",

@@ -9,6 +9,15 @@ Conflict 不允许通过“代码已经如此运行”或“最后一条聊天�
 
 ## 2. Open Conflicts
 
+### SEM-CONFLICT-005 Publication prerequisite versus continuous monitoring
+
+- Status: RESOLVED_DEFINITION_IMPLEMENTATION_PENDING, 2026-10-09.
+- Source A: PRD-VAL / original T20 dependencies require an execution confirmation and publication.
+- Source B: explicit Product Owner final-delivery approval removes those prerequisites.
+- Winning contract: SC-DELIVERY-001@1.0.0; sampling and comparison do not require publication.
+- Preserve scope, unknown semantics, ownership, authorization, old immutable results and optional publication history.
+- Implementation and tests must change together. This is an approved SEMANTIC_CHANGE, not a weakening of unrelated Gates.
+
 ### SEM-CONFLICT-001 Foundation Requirement 与 Citation Intervention
 
 ```yaml

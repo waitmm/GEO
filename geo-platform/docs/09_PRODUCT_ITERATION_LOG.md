@@ -1,5 +1,9 @@
 # 09 Product Iteration Log
 
+## 2026-10-09 Continuous Product Delivery Boundary
+
+Product Owner approved continuous Monitor, automatic Optimize and independent Validate. Publication is optional and cannot block analysis, complete draft access or comparison. Basic scheduling and a versioned lightweight brand-context entry are required; optional human correction is not a staged approval workflow. This supersedes the earlier publication-first next step, not permission, data or evidence protections. Implementation and applicable acceptance are in progress.
+
 ## 2026-10-08 V6 Business Inspection and V7 Reader Guide
 
 V6 was inspected as content, not accepted based on implementation status. The narrow improvement adds selection utility and a concrete frozen brand lookup while removing a marketing paragraph from public content. V7 remains attributed source interpretation, not a product capability proof or a promise of citation gains.

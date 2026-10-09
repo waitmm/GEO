@@ -1,8 +1,8 @@
 # GEO 1.0 首批发布表白名单
 
 Status: `APPROVED_FOR_FIRST_SLICE`
-Revision: `20260922_01`
-Date: 2026-09-20
+Revision: `20261009_01`（当前代码目标；实际库须显式迁移后才可使用）
+Date: 2026-10-09
 
 正式 release 数据库只允许本文件列出的业务表及 Alembic 自有的
 `alembic_version`。后续切片必须通过新 migration 增量加入。
@@ -44,6 +44,21 @@ Date: 2026-09-20
 | `single_prompt_strategy_executions` | 精确 Diagnosis Review 输入下的策略生成执行身份 |
 | `single_prompt_strategy_results` | 不可变 Strategy Candidate 结果版本 |
 | `single_prompt_strategy_reviews` | 精确 Strategy Result 的追加式人工确认 |
+| `single_prompt_citation_contribution_executions` | V2 冻结贡献计划执行身份 |
+| `single_prompt_citation_contribution_results` | 不可变贡献结果 |
+| `single_prompt_citation_contribution_reviews` | 贡献校准/审核记录，不作为所有计算前置 |
+| `single_prompt_qualification_critic_executions` | 显式授权 Shadow 任务 |
+| `single_prompt_qualification_critic_results` | 独立 Critic 结果 |
+| `single_prompt_qualification_critic_gold_reviews` | Human Gold，不改机器结果 |
+| `single_prompt_execution_proposals` | V2 执行稿身份 |
+| `single_prompt_execution_proposal_results` | 不可变稿件、冻结输入与 QA |
+| `single_prompt_execution_confirmations` | 可选历史执行确认，不阻断主链 |
+| `single_prompt_publication_records` | 可选真实发布历史，不作为比较前置 |
+| `single_prompt_retest_executions` | 保留已有显式发布实验，不充当独立比较入口 |
+| `single_prompt_comparison_results` | 保留历史实验比较 |
+| `brand_context_versions` | V2 项目所属、不可变用户资料；非 Product Truth |
+| `single_prompt_observation_comparisons` | V2 独立范围比较，与 Monitor 共用指标 |
+| `single_prompt_sampling_schedules` | V2 有界每日采样授权及计划游标 |
 
 ## 计算/物化表
 
@@ -63,14 +78,11 @@ SourceClaim/Alignment 业务状态表均不进入首批 release schema。纯计�
 旧 `single_prompt_source_snapshots` 也被排除：它由 Diagnosis 持有，与 R3 的
 Analysis/Context/Citation Manifest 所有权冲突。
 
-## 排除的 Runtime 与后续切片表
+## 排除的 Runtime
 
-- 全部 Runtime persistence/projection 表；
-- `single_prompt_execution_*`、`single_prompt_publication_records`；
-- `single_prompt_retest_*`、`single_prompt_comparison_results`。
+- 全部 Runtime persistence/projection 表。
 
-正式 app 只注册 Strategy Candidate 的生成、修订和确认路由；执行方案、发布和
-复测对象仍不注册业务路由或后台恢复任务。
+2026-09-30 已接入的执行/发布/复测历史表保留。2026-10-09 新增三表由显式迁移创建，启动只校验；不恢复任何旧 Runner 或隐式 latest 工作流。
 
 ## 正式运行形态
 

@@ -14,6 +14,32 @@
 
 ## 2. 首批 Contract
 
+### SC-DELIVERY-001 Continuous Monitor And Independent Validate
+
+```yaml
+contract_id: SC-DELIVERY-001
+version: 1.0.0
+maturity: FROZEN
+implementation_status: PARTIAL
+approval: Product Owner 2026-10-09 explicit final-delivery implementation instruction
+definition: Monitor and Validate consume the same versioned measurements of explicit Run scopes. Automatic Optimize produces qualified outputs without mandatory human semantic approvals or publication prerequisites.
+supersedes: release publication/ExecutionConfirmation prerequisites in PRD-VAL, T20 -> T21/T22 dependencies and E2E-04; not historical publication facts
+allowed_inferences:
+  - Compare explicitly selected compatible scopes without PublicationRecord.
+  - Continue with qualified partial inputs while reporting excluded/unknown members.
+  - Use versioned user-supplied context with its provenance, not as independently verified Truth.
+forbidden_inferences:
+  - Failed/unevaluated semantic results imply no recommendation.
+  - Missing or failed references imply a source disappeared.
+  - Citation correspondence proves generation causality.
+  - A model, review or lack of inventory proves brand facts or publishing permissions.
+  - Automatic operation grants unlimited external calls or retries.
+identity: project + prompt + explicit run IDs/raw hashes + measurement identity/version + optional exact semantic result versions
+unknown_behavior: Report per-metric evaluable members and limitations; zero denominator is null.
+history: Preserve raw Runs, valid historical results, v7 and publication facts; new inputs create new versions.
+acceptance: AC-VAL-01..05, E2E-01..05, release acceptance harness
+```
+
 ### SC-PT-001 Target Brand Product Truth Isolation
 
 ```yaml

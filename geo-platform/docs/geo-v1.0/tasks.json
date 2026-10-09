@@ -4,7 +4,7 @@
   "implementation_verified": true,
   "active_delivery_slice": {
     "name": "one_prompt_one_run_formal_delivery",
-    "status": "WAITING_EDITORIAL_AND_PUBLICATION_INPUT",
+    "status": "REGRESSION_ASSET_PRESERVED",
     "analysis_id": "925ef2dc-605f-467d-a025-52033a574d92",
     "context_id": "ctx-5407fb2f-acd5-41ac-8ac7-41713a08a5aa",
     "selected_run_ids": [
@@ -31,7 +31,7 @@
       "POST_PUBLICATION_RETEST",
       "VALIDATE_COMPARISON"
     ],
-    "current_blocker": "v6 业务核查发现资料排列和品牌关联偏弱，已生成 v7 选择检查稿并展示全文；待用户编辑验收及实际位置/权限确认。没有真实发布，旧授权不覆盖本次发布后复测。UPDATE 正式确认仍未启用，不以 CREATE_NEW 冒充更新。",
+    "current_blocker": "v7保留；发布不再是开发前置。当前推进自动主链、持续监测、独立比较和完整交付验收。",
     "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md",
     "code_commits": [
       "4d6724d",
@@ -141,7 +141,7 @@
       "milestone": "M0",
       "owner_role": "后端",
       "owner_name": "Codex（后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T01"
       ],
@@ -158,7 +158,8 @@
         "backend/app/release_main.py",
         "backend/app/core/release_database.py",
         "backend/app/modules/single_prompt_v2/release_api.py",
-        "backend/scripts/release_worker.py"
+        "backend/scripts/release_worker.py",
+        "backend/app/modules/single_prompt_v2/scheduling.py"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
@@ -166,9 +167,9 @@
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需修复"
     },
@@ -248,7 +249,7 @@
       "milestone": "M1",
       "owner_role": "后端/前端",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T02",
         "T04"
@@ -266,7 +267,10 @@
         "backend/app/modules/monitoring/executor.py",
         "backend/app/modules/monitoring/services.py",
         "backend/app/modules/single_prompt_v2/release_api.py",
-        "frontend/src/App.tsx"
+        "frontend/src/App.tsx",
+        "backend/app/modules/single_prompt_v2/scheduling.py",
+        "frontend/src/SamplingSchedulePanel.tsx",
+        "backend/tests/test_release_scheduling.py"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
@@ -274,9 +278,9 @@
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需修复"
     },
@@ -286,7 +290,7 @@
       "milestone": "M1",
       "owner_role": "分析/后端",
       "owner_name": "Codex（分析/后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T05"
       ],
@@ -300,7 +304,9 @@
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/diagnosis.py",
         "backend/app/modules/single_prompt_v2/coverage.py",
-        "backend/app/modules/monitoring/services.py"
+        "backend/app/modules/monitoring/services.py",
+        "backend/app/modules/single_prompt_v2/retest.py",
+        "backend/app/modules/single_prompt_v2/observation.py"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
@@ -308,9 +314,9 @@
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需接入"
     },
@@ -320,7 +326,7 @@
       "milestone": "M1",
       "owner_role": "前端/后端",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T06"
       ],
@@ -333,7 +339,8 @@
       "implementation_files": [
         "frontend/src/App.tsx",
         "backend/app/modules/analytics",
-        "backend/app/modules/single_prompt_v2/release_api.py"
+        "backend/app/modules/single_prompt_v2/release_api.py",
+        "frontend/src/ObservationPanel.tsx"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
@@ -341,9 +348,9 @@
       "estimate": "5人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需接入"
     },
@@ -530,7 +537,7 @@
       "milestone": "M2",
       "owner_role": "分析/后端",
       "owner_name": "Codex（分析/后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T11",
         "T09"
@@ -546,7 +553,9 @@
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/diagnosis.py",
         "backend/app/modules/single_prompt_v2/qualification.py",
-        "backend/app/modules/single_prompt_v2/source_preparation.py"
+        "backend/app/modules/single_prompt_v2/source_preparation.py",
+        "backend/app/modules/single_prompt_v2/context_provider.py",
+        "frontend/src/BrandContextSelect.tsx"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
@@ -554,9 +563,9 @@
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需修复"
     },
@@ -794,7 +803,7 @@
       "milestone": "M3",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "OUT_OF_SCOPE",
       "depends_on": [
         "T18"
       ],
@@ -820,31 +829,32 @@
       "planned_end": "",
       "actual_start": "",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "2026-10-09明确移出必需范围；历史发布记录保留",
       "commit": "",
       "audit_classification": "需接入 release 且需修复"
     },
     {
       "id": "T21",
-      "title": "复测计划与采样接入",
+      "title": "独立采样范围与变化比较",
       "milestone": "M3",
       "owner_role": "后端/前端",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
-        "T20",
         "T05"
       ],
       "requirements": [
         "VAL-001",
         "VAL-002"
       ],
-      "deliverable": "固定基线、窗口、配置和复测范围",
+      "deliverable": "无发布前置的明确双范围比较，复用Monitor计量",
       "definition_of_done": "前后版本与入口可比较或显式标差异，不静默换样本。",
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/retest.py",
         "backend/app/modules/monitoring/executor.py",
-        "backend/app/modules/single_prompt_v2/api.py"
+        "backend/app/modules/single_prompt_v2/api.py",
+        "backend/app/modules/single_prompt_v2/observation.py",
+        "backend/app/modules/single_prompt_v2/observation_api.py"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
@@ -852,9 +862,9 @@
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需接入 release 且需修复"
     },
@@ -864,7 +874,7 @@
       "milestone": "M3",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T21",
         "T07"
@@ -879,7 +889,9 @@
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/retest.py",
         "frontend/src/App.tsx",
-        "backend/app/modules/analytics"
+        "backend/app/modules/analytics",
+        "frontend/src/ObservationPanel.tsx",
+        "backend/tests/test_observation_delivery.py"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
@@ -887,9 +899,9 @@
       "estimate": "5人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需接入 release 且需修复"
     },
@@ -931,7 +943,7 @@
     },
     {
       "id": "T24",
-      "title": "真实发布复测闭环验收",
+      "title": "持续监测与变化比较端到端验收",
       "milestone": "M4",
       "owner_role": "产品/验收",
       "owner_name": "产品负责人（业务操作）/Codex（支持）",
@@ -942,7 +954,7 @@
       "requirements": [
         "E2E-04"
       ],
-      "deliverable": "实际发布记录、快照、复测样本和结果",
+      "deliverable": "新采样、来源变化、同口径比较；不要求真实发布",
       "definition_of_done": "完整链路可回溯，结果如实，不以必须提升作为通过条件。",
       "implementation_files": [
         "docs/geo-v1.0/17_验收矩阵.md",
@@ -967,7 +979,7 @@
       "milestone": "M4",
       "owner_role": "开发/验收",
       "owner_name": "Codex（开发/验收）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T24",
         "T02"
@@ -986,7 +998,9 @@
         "backend/app/release_schema.py",
         "backend/app/core/release_database.py",
         "backend/scripts/release_worker.py",
-        "backend/alembic_release"
+        "backend/alembic_release",
+        "backend/scripts/delivery_acceptance.py",
+        "backend/scripts/delivery_browser_check.py"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md"
@@ -994,13 +1008,14 @@
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需修复"
     }
   ],
   "implementation_verification_date": "2026-09-30",
-  "implementation_map": "docs/geo-v1.0/implementation-map.md"
+  "implementation_map": "docs/geo-v1.0/implementation-map.md",
+  "delivery_baseline": "2026-10-09 / SC-DELIVERY-001@1.0.0"
 }

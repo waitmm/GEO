@@ -184,7 +184,7 @@ def _submit(db, preparation_id: str, source: dict, text: str, *, title: str = "ç
     )
 
 
-def _seed_citation_contribution_fixture(db, monkeypatch, tmp_path: Path):
+def _seed_citation_contribution_fixture(db, monkeypatch, tmp_path: Path, *, reviewed=True):
     _configure_artifacts(monkeypatch, tmp_path)
     analysis = _seed_frozen_analysis(
         db,
@@ -226,6 +226,7 @@ def _seed_citation_contribution_fixture(db, monkeypatch, tmp_path: Path):
     raw_end = len(run.answer_text)
     answer_output = {
         "answer_diagnosis": {
+            "answer_jobs": [{"status": "DONE", "run_ids": [run.id], "answer_hash": hashlib.sha256(run.answer_text.encode()).hexdigest()}],
             "events": [{
                 "event_id": "evt-fixture",
                 "run_id": run.id,
@@ -245,7 +246,7 @@ def _seed_citation_contribution_fixture(db, monkeypatch, tmp_path: Path):
             "no_consumable_answer_semantic_result": False,
         },
     }
-    answer_output_json = json.dumps(answer_output, ensure_ascii=False, sort_keys=True)
+    answer_output_json = json.dumps(answer_output, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     answer_hash = hashlib.sha256(answer_output_json.encode()).hexdigest()
     diagnosis = SinglePromptDiagnosisExecution(
         diagnosis_id="diagnosis-contribution-fixture",
@@ -281,7 +282,7 @@ def _seed_citation_contribution_fixture(db, monkeypatch, tmp_path: Path):
         reviewable_set_hash=result.reviewable_set_hash,
         reviewer="qa",
     )
-    db.add_all([diagnosis, result, review])
+    db.add_all([diagnosis, result] + ([review] if reviewed else []))
     db.commit()
     return {
         "analysis": analysis,
@@ -294,7 +295,7 @@ def _seed_citation_contribution_fixture(db, monkeypatch, tmp_path: Path):
     }
 
 
-def _create_contribution_fixture_plan(db, fixture, *, idempotency_key="citation-contribution-fixture-plan"):
+def _create_contribution_fixture_plan(db, fixture, *, idempotency_key="citation-contribution-fixture-plan", machine=False):
     return create_citation_contribution_plan(
         db,
         analysis_id=fixture["analysis"].analysis_id,
@@ -302,7 +303,9 @@ def _create_contribution_fixture_plan(db, fixture, *, idempotency_key="citation-
         prompt_id=fixture["analysis"].prompt_id,
         answer_result_version=fixture["result"].result_version,
         answer_result_hash=fixture["result"].output_hash,
-        answer_review_id=fixture["review"].review_id,
+        answer_review_id=None if machine else fixture["review"].review_id,
+        input_authority="MACHINE_ADMISSION" if machine else "HUMAN_REVIEW",
+        selected_run_id=fixture['run'].id if machine else None,
         citation_manifest_id=fixture["manifest"].manifest_id,
         citation_manifest_hash=fixture["manifest"].payload_hash,
         completion_manifest_id=fixture["completion"].manifest_id,
@@ -1737,7 +1740,7 @@ def test_single_run_reuses_exact_sources_and_materializes_compatible_contributio
         manifest = db.query(SinglePromptCitationManifest).filter_by(analysis_id=analysis.analysis_id).one()
 
         answer_output = json.loads(fixture["result"].output_json)
-        answer_output_json = json.dumps(answer_output, ensure_ascii=False, sort_keys=True)
+        answer_output_json = json.dumps(answer_output, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         answer_hash = hashlib.sha256(answer_output_json.encode()).hexdigest()
         diagnosis = SinglePromptDiagnosisExecution(
             diagnosis_id="diagnosis-exact-compatible-single-run",
@@ -1992,12 +1995,13 @@ def test_citation_contribution_calibration_freezes_unbiased_and_diagnostic_sampl
     assert len(first) <= 60
 
 
-def test_citation_contribution_execution_separates_evaluations_bindings_and_waiver(monkeypatch, tmp_path):
+@pytest.mark.parametrize('machine', [False, True])
+def test_citation_contribution_execution_separates_evaluations_bindings_and_waiver(monkeypatch, tmp_path, machine):
     db, engine = _session(tmp_path)
     Session = sessionmaker(bind=engine, expire_on_commit=False)
     try:
-        fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
-        execution, _ = _create_contribution_fixture_plan(db, fixture)
+        fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path, reviewed=not machine)
+        execution, _ = _create_contribution_fixture_plan(db, fixture, machine=machine)
         plan = json.loads(execution.plan_json)
         authorize_citation_contribution(
             db,

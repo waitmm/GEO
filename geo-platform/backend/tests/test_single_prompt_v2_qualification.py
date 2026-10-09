@@ -111,7 +111,7 @@ def test_partial_truth_coverage_creates_only_non_claim_discovery_direction():
     assert len(result["directions"]) == 1
     direction = result["directions"][0]
     assert direction["direction_type"] == "DISCOVERY"
-    assert direction["mechanism_gap"] == "TARGET_BRAND_NOT_PRESENT_IN_OBSERVED_ANSWER"
+    assert direction["mechanism_gap"] == "QUESTION_CONTENT_COVERAGE_HYPOTHESIS"
     assert direction["truth_ids"] == []
     assert direction["public_claim_eligibility"] == "NOT_CONSUMABLE"
     assert len(result["execution_drafts"]) == 1
@@ -143,3 +143,22 @@ def test_projection_is_deterministic_and_read_only_by_contract():
     assert first["boundary"]["read_only"] is True
     assert first["boundary"]["database_writes"] == 0
     assert first["boundary"]["external_llm_calls"] == 0
+
+
+def test_concept_intent_without_brand_recommendation_is_not_recommendation_gap():
+    projection = _projection(full_coverage=False)
+    projection['prompt_snapshot'] = {'text': '什么是雨水花园', 'configuration': {'intent_type': 'category_awareness'}}
+    result = evaluate_qualification_projection(projection, _contribution_scope(), '什么是雨水花园')
+    direction = result['directions'][0]
+    assert direction['mechanism_gap'] == 'EXPLANATION_CONTENT_OPPORTUNITY'
+    assert '不以是否推荐品牌' in direction['intervention_goal']
+    assert direction['observed_or_hypothesis'] == 'CONTENT_OPPORTUNITY_HYPOTHESIS'
+    assert all(row['result'] != 'TARGET_BRAND_NOT_OBSERVED' for row in direction['reasoning_trace'])
+
+
+def test_all_failed_answers_do_not_create_successful_exploration_plan():
+    projection = _projection()
+    projection['answer_semantic_eligibility'] = {'no_consumable_answer_semantic_result': True}
+    result = evaluate_qualification_projection(projection, _contribution_scope())
+    assert result['directions'] == [] and result['execution_drafts'] == []
+    assert result['final_plan']['analysis_completed'] is False

@@ -46,7 +46,7 @@ from app.services.serialization import loads
 
 
 STRATEGY_CONTRACT_VERSION = "single_prompt_strategy.v2_third_slice"
-STRATEGY_INPUT_VALIDATION_VERSION = "single_prompt_strategy_input.v5_fixed_scope_dependencies"
+STRATEGY_INPUT_VALIDATION_VERSION = "single_prompt_strategy_input.v6_frozen_prompt"
 CHANNEL_EVIDENCE_ADAPTER_VERSION = "single_prompt_channel_evidence.v1"
 FOUNDATION_RESOLUTION_VERSION = "single_prompt_foundation.v1"
 CHANNEL_RESOLUTION_VERSION = "single_prompt_channel_resolution.v1"
@@ -281,6 +281,8 @@ def build_strategy_input_projection(
         source_rows.append(source)
     review_payload = _review_snapshot(review) if review else None
     raw_output = loads(context.raw_output_json, {})
+    if _hash(raw_output) != context.raw_output_hash:
+        raise HTTPException(status_code=409, detail="冻结回答输入内容 hash 不匹配")
     coverage_projections = diagnosis_coverage_projections(raw_output, output, review_payload)
     reasons = _reason_rows(output, context, review_payload)
     truth_relation_eligibility = current_truth_relation_eligibility(output)
@@ -306,6 +308,11 @@ def build_strategy_input_projection(
         "diagnosis_review": review_payload,
         "brand_snapshot": loads(execution.brand_snapshot_json, {}),
         "brand_snapshot_hash": execution.brand_snapshot_hash,
+        "prompt_snapshot": {
+            "text": raw_output.get("prompt_text") or "",
+            "configuration": copy.deepcopy((raw_output.get("sampling_plan") or {}).get("prompt_configuration") or {}),
+            "provenance": {"context_id": context.context_id, "raw_output_hash": context.raw_output_hash},
+        },
         "answer_semantic_eligibility": answer_eligibility,
         "coverage_projections": coverage_projections,
         "review_snapshot_hash": _hash(review_payload) if review_payload else None,

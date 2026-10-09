@@ -36,6 +36,9 @@ from app.services.semantic_llm.deepseek import (
     resolve_deepseek_request_model,
 )
 from app.services.serialization import dumps, loads
+from .diagnosis import answer_semantic_eligibility
+from .source_preparation import validate_completion_for_evidence
+from .coverage import compute_coverage
 
 
 CITATION_CONTRIBUTION_CONTRACT_VERSION = "single_prompt_v2.citation_contribution.v2"
@@ -826,6 +829,7 @@ def _load_machine_admitted_inputs(
     completion_manifest_id: str,
     completion_manifest_hash: str,
     fixed_run_ids: list[int],
+    require_single_run: bool = True,
 ) -> dict[str, Any]:
     analysis = db.query(SinglePromptAnalysis).filter_by(analysis_id=analysis_id).one_or_none()
     _require(bool(analysis), "ANALYSIS_NOT_FOUND", "Analysis 不存在")
@@ -843,7 +847,8 @@ def _load_machine_admitted_inputs(
         "FIXED_RUN_SCOPE_MISMATCH",
         "固定 Run 集与 Context 不一致",
     )
-    _require(len(normalized_run_ids) == 1, "SINGLE_RUN_SCOPE_REQUIRED", "兼容物化只接受明确的 1/1 Run 范围")
+    if require_single_run:
+        _require(len(normalized_run_ids) == 1, "SINGLE_RUN_SCOPE_REQUIRED", "兼容物化只接受明确的 1/1 Run 范围")
 
     answer_result = db.query(SinglePromptDiagnosisResult).filter_by(result_version=answer_result_version).one_or_none()
     _require(
@@ -863,13 +868,16 @@ def _load_machine_admitted_inputs(
         "Answer Result 不是当前 Analysis/Context 的活动精确版本",
     )
     answer_output = loads(answer_result.output_json, {})
-    eligibility = answer_output.get("answer_semantic_eligibility") or {}
+    eligibility = answer_semantic_eligibility(answer_output)
+    coverage = compute_coverage(loads(context.raw_output_json, {}), answer_output.get("answer_diagnosis") or {})
     _require(
         eligibility.get("status") == "ADMITTED"
-        and int(eligibility.get("total_answer_count") or 0) == 1
+        and coverage.get("all_runs_validly_understood") is True
+        and int(eligibility.get("total_answer_count") or 0) == len(normalized_run_ids)
+        and int(eligibility.get("admitted_answer_count") or 0) == len(normalized_run_ids)
         and int(eligibility.get("failed_answer_count") or 0) == 0,
         "ANSWER_MACHINE_ADMISSION_REQUIRED",
-        "Answer Result 未形成完整 1/1 机器准入，不能复用 Citation 计算",
+        "Answer Result 未形成完整固定范围机器准入，不能执行 Citation 计算",
     )
 
     citation_manifest = db.query(SinglePromptCitationManifest).filter_by(
@@ -910,6 +918,16 @@ def _load_machine_admitted_inputs(
         if snapshot_ids
         else []
     )
+    _require(_hash(answer_output) == answer_result.output_hash, "ANSWER_CONTENT_HASH_MISMATCH", "Answer 内容 hash 不匹配")
+    _require(_hash(loads(context.raw_output_json, {})) == context.raw_output_hash,
+             "RAW_CONTENT_HASH_MISMATCH", "冻结原始输入内容 hash 不匹配")
+    _require(_hash(loads(citation_manifest.payload_json, {})) == citation_manifest_hash,
+             "CITATION_CONTENT_HASH_MISMATCH", "引用清单内容 hash 不匹配")
+    _require(_hash(completion_payload) == completion_manifest_hash,
+             "COMPLETION_CONTENT_HASH_MISMATCH", "正文清单内容 hash 不匹配")
+    _, snapshots, _ = validate_completion_for_evidence(db, analysis_id=analysis_id, context_id=context.context_id,
+        citation_manifest_id=citation_manifest_id, citation_manifest_hash=citation_manifest_hash,
+        completion_manifest_id=completion_manifest_id, completion_manifest_hash=completion_manifest_hash)
     return {
         "analysis": analysis,
         "context": context,
@@ -1177,14 +1195,20 @@ def create_citation_contribution_plan(
     prompt_id: int,
     answer_result_version: str,
     answer_result_hash: str,
-    answer_review_id: str,
+    answer_review_id: str | None,
     citation_manifest_id: str,
     citation_manifest_hash: str,
     completion_manifest_id: str,
     completion_manifest_hash: str,
     fixed_run_ids: list[int],
     idempotency_key: str,
+    input_authority: str = "HUMAN_REVIEW",
+    selected_run_id: int | None = None,
 ) -> tuple[SinglePromptCitationContributionExecution, bool]:
+    _require(input_authority in {"HUMAN_REVIEW", "MACHINE_ADMISSION"}, "INVALID_INPUT_AUTHORITY", "输入资格类型无效")
+    machine = input_authority == "MACHINE_ADMISSION"
+    _require(not machine or (answer_review_id is None and selected_run_id in fixed_run_ids),
+             "MACHINE_INPUT_IDENTITY_REQUIRED", "机器准入须指定范围内 Run，不得填入伪造 Review")
     stale_rows = db.query(SinglePromptCitationContributionExecution).filter_by(
         analysis_id=analysis_id,
         status="AWAITING_EXTERNAL_AUTHORIZATION",
@@ -1204,15 +1228,25 @@ def create_citation_contribution_plan(
         idempotency_key=idempotency_key,
     ).one_or_none()
     if existing:
+        saved = loads(existing.input_snapshot_json, {})
+        expected = {"answer_result_version": answer_result_version, "answer_result_hash": answer_result_hash,
+                    "citation_manifest_id": citation_manifest_id, "citation_manifest_hash": citation_manifest_hash,
+                    "completion_manifest_id": completion_manifest_id, "completion_manifest_hash": completion_manifest_hash,
+                    "fixed_run_ids": sorted(set(fixed_run_ids)), "answer_review_id": answer_review_id}
+        _require(existing.project_id == project_id and existing.prompt_id == prompt_id
+                 and all(saved.get(k) == v for k, v in expected.items())
+                 and saved.get("input_authority", "HUMAN_REVIEW") == input_authority
+                 and (not machine or saved.get("selected_run_id") == selected_run_id),
+                 "CONTRIBUTION_IDEMPOTENCY_CONFLICT", "幂等键已用于不同的固定输入")
         return existing, False
-    fixed = _load_fixed_inputs(
+    fixed = (_load_machine_admitted_inputs if machine else _load_fixed_inputs)(
         db,
         analysis_id=analysis_id,
         project_id=project_id,
         prompt_id=prompt_id,
         answer_result_version=answer_result_version,
         answer_result_hash=answer_result_hash,
-        answer_review_id=answer_review_id,
+        **({"require_single_run": False} if machine else {"answer_review_id": answer_review_id}),
         citation_manifest_id=citation_manifest_id,
         citation_manifest_hash=citation_manifest_hash,
         completion_manifest_id=completion_manifest_id,
@@ -1225,7 +1259,7 @@ def create_citation_contribution_plan(
         manifest_payload=fixed["manifest_payload"],
         completion_payload=fixed["completion_payload"],
         snapshots=fixed["snapshots"],
-        fixed_run_ids=fixed_run_ids,
+        fixed_run_ids=[selected_run_id] if machine else fixed_run_ids,
     )
     input_snapshot = {
         "analysis_id": analysis_id,
@@ -1249,6 +1283,8 @@ def create_citation_contribution_plan(
         "semantic_llm_transport_version": SEMANTIC_LLM_TRANSPORT_VERSION,
         "implementation_version": CITATION_CONTRIBUTION_IMPLEMENTATION_VERSION,
     }
+    if machine:
+        input_snapshot.update(input_authority="MACHINE_ADMISSION", input_admission_contract="citation_input.machine.v1")
     execution = SinglePromptCitationContributionExecution(
         contribution_id=f"citation-contribution-{uuid4()}",
         analysis_id=analysis_id,
@@ -2088,14 +2124,19 @@ def execute_citation_contribution(
         db.commit()
 
         inputs = loads(execution.input_snapshot_json, {})
-        fixed = _load_fixed_inputs(
+        _require(_hash(inputs) == execution.input_snapshot_hash, "CONTRIBUTION_INPUT_HASH_MISMATCH", "执行输入内容 hash 不匹配")
+        machine = inputs.get("input_authority") == "MACHINE_ADMISSION"
+        _require(not machine or (inputs.get("input_admission_contract") == "citation_input.machine.v1"
+                 and inputs.get("answer_review_id") is None and execution.selected_run_id in inputs["fixed_run_ids"]),
+                 "MACHINE_INPUT_IDENTITY_REQUIRED", "机器输入契约或范围不匹配")
+        fixed = (_load_machine_admitted_inputs if machine else _load_fixed_inputs)(
             db,
             analysis_id=execution.analysis_id,
             project_id=execution.project_id,
             prompt_id=execution.prompt_id,
             answer_result_version=inputs["answer_result_version"],
             answer_result_hash=inputs["answer_result_hash"],
-            answer_review_id=inputs["answer_review_id"],
+            **({"require_single_run": False} if machine else {"answer_review_id": inputs["answer_review_id"]}),
             citation_manifest_id=inputs["citation_manifest_id"],
             citation_manifest_hash=inputs["citation_manifest_hash"],
             completion_manifest_id=inputs["completion_manifest_id"],
@@ -2108,7 +2149,7 @@ def execute_citation_contribution(
             manifest_payload=fixed["manifest_payload"],
             completion_payload=fixed["completion_payload"],
             snapshots=fixed["snapshots"],
-            fixed_run_ids=inputs["fixed_run_ids"],
+            fixed_run_ids=[execution.selected_run_id] if machine else inputs["fixed_run_ids"],
         )
         _require(recomputed["plan_hash"] == execution.plan_hash, "CONTRIBUTION_PLAN_DRIFT", "worker 执行前重算的 plan 已变化")
         machine_output_artifacts: list[dict[str, Any]] = []

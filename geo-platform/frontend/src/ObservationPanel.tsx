@@ -14,7 +14,7 @@ function AnswerDetails({ measurement }: { measurement: any }) {
     key: run.run_id,
     label: `Run ${run.run_id} · ${runStates[run.status] || "未完成"} · ${(run.references || []).length} 条引用`,
     children: <>
-      {run.error_message && <Alert type="warning" message={run.error_message} />}
+      {(run.error?.message || run.error_message) && <Alert type="warning" message={run.error?.message || run.error_message} />}
       <Typography.Paragraph style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{run.answer_text || "没有可消费的回答正文，不计为品牌缺席。"}</Typography.Paragraph>
       {!run.reference_complete && <Typography.Paragraph type="warning">引用范围不完整，不能据此判断来源消失。</Typography.Paragraph>}
       {(run.references || []).map((source: any, i: number) => <Typography.Paragraph key={i} style={{ overflowWrap: "anywhere" }}>
@@ -35,29 +35,33 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
   const [rightAnswer, setRightAnswer] = useState<string>();
   const [target, setTarget] = useState("");
   const [result, setResult] = useState<any>();
+  const [pool, setPool] = useState<any>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [form] = Form.useForm();
-  const alive = useRef(true);
+  const generation = useRef(0);
   const base = `/api/v2/projects/${project.id}/prompts/${promptId}`;
   useEffect(() => {
-    alive.current = true;
+    const epoch = ++generation.current;
     const controller = new AbortController();
+    setResult(undefined); setPool(undefined); setScopes([]); setHistory([]); setContexts([]);
+    setLeft(undefined); setRight(undefined); setLeftAnswer(undefined); setRightAnswer(undefined);
     setBusy(true); setError("");
     const queries = mode === "context"
       ? [request<any[]>(`/api/v2/projects/${project.id}/brand-contexts`, { signal: controller.signal })]
-      : promptId ? [request<any[]>(`${base}/observation-scopes`, { signal: controller.signal }), request<any[]>(`${base}/observation-comparisons`, { signal: controller.signal })] : [];
-    Promise.all(queries).then(([first, second]) => {
+      : promptId ? [request<any[]>(`${base}/observation-scopes`, { signal: controller.signal }), request<any[]>(`${base}/observation-comparisons`, { signal: controller.signal }),
+        ...(mode === "monitor" ? [request<any>(`${base}/monitor`, { signal: controller.signal })] : [])] : [];
+    Promise.all(queries).then(([first, second, current]) => {
       if (controller.signal.aborted) return;
       if (mode === "context") setContexts(first || []);
       else {
-        setScopes(first || []); setHistory(second || []);
+        setScopes(first || []); setHistory(second || []); setPool(current);
         const selected = new URLSearchParams(window.location.search).get("observation_result");
-        if (selected) setResult((second || []).find((r: any) => r.result_version === selected));
+        if (selected && mode === "compare") setResult((second || []).find((r: any) => r.result_version === selected));
       }
     }).catch(e => { if (!controller.signal.aborted) setError(e.message); }).finally(() => { if (!controller.signal.aborted) setBusy(false); });
-    return () => { alive.current = false; controller.abort(); };
+    return () => { if (generation.current === epoch) generation.current++; controller.abort(); };
   }, [base, mode, reload, project.id, promptId]);
   const ref = (id: string | undefined, answer: string | undefined) => {
     const s = scopes.find(x => x.context_id === id);
@@ -65,6 +69,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     return { context_id: s.context_id, raw_output_hash: s.raw_output_hash, ...(a ? { answer_result_version: a.result_version, answer_result_hash: a.output_hash } : {}) };
   };
   async function run() {
+    const epoch = generation.current;
     setBusy(true); setError("");
     try {
       let domain = "";
@@ -72,26 +77,27 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       const identity = { canonical_brand_name: project.brand_name, accepted_aliases: project.brand_aliases || [], official_domains: domain ? [domain] : [], official_urls: project.website_url ? [project.website_url] : [] };
       const payload = mode === "monitor" ? { scope: ref(left, leftAnswer), identity, target_url: target } : { baseline: ref(left, leftAnswer), comparison: ref(right, rightAnswer), identity, target_url: target };
       const next = await request<any>(`${base}/${mode === "monitor" ? "measurements" : "observation-comparisons"}`, { method: "POST", body: JSON.stringify(payload) });
-      if (!alive.current) return;
+      if (generation.current !== epoch) return;
       setResult(next);
       if (mode === "compare") {
         setHistory(current => [next, ...current.filter(x => x.result_version !== next.result_version)]);
         const params = new URLSearchParams(window.location.search); params.set("observation_result", next.result_version);
         window.history.replaceState(null, "", `?${params}`);
       }
-    } catch (e) { if (alive.current) setError((e as Error).message); }
-    finally { if (alive.current) setBusy(false); }
+    } catch (e) { if (generation.current === epoch) setError((e as Error).message); }
+    finally { if (generation.current === epoch) setBusy(false); }
   }
   async function save(values: any) {
+    const epoch = generation.current;
     setBusy(true); setError("");
     try {
       await request(`/api/v2/projects/${project.id}/brand-contexts`, { method: "POST", body: JSON.stringify({ ...values, expected_version: contexts[0]?.version_number || 0 }) });
-      if (alive.current) { form.resetFields(); setReload(n => n + 1); }
-    } catch (e) { if (alive.current) setError((e as Error).message); }
-    finally { if (alive.current) setBusy(false); }
+      if (generation.current === epoch) { form.resetFields(); setReload(n => n + 1); }
+    } catch (e) { if (generation.current === epoch) setError((e as Error).message); }
+    finally { if (generation.current === epoch) setBusy(false); }
   }
   const options = scopes.map(s => ({ value: s.context_id, label: `Runs ${(s.run_scope.run_ids || []).join("、")} · ${s.created_at}` }));
-  const output = result?.output || result;
+  const output = result?.output || result || (mode === "monitor" && pool?.runs?.length ? pool : undefined);
   const rows = Object.entries(output?.metrics || {}).map(([key, value]) => ({ key, name: names[key] || key, data: value as any }));
   const choose = (label: string, value: string | undefined, change: (v: string) => void, answer: string | undefined, answerChange: (v: string | undefined) => void) => <Space direction="vertical" style={{ width: "100%" }}>
     <label>{label}</label><Select aria-label={label} style={{ width: "100%" }} placeholder="选择明确的样本范围" value={value} options={options} onChange={v => { change(v); answerChange(undefined); setResult(undefined); }} />
@@ -112,7 +118,9 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       <Collapse style={{ marginTop: 24 }} items={contexts.map(c => ({ key: c.context_version_id, label: `版本 ${c.version_number} · ${c.title}`, children: <><Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>{c.content}</Typography.Paragraph><Typography.Text type="secondary">{c.source_reference || "未填写出处"}</Typography.Text></> }))} />
     </> : !promptId ? <Empty description="请先选择一个问题" /> : <>
       {mode === "monitor" && <Collapse style={{ marginBottom: 24 }} items={[{ key: "schedule", label: "持续采样计划", children: <SamplingSchedulePanel key={`${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> }]} />}
-      {!busy && !scopes.length && <Empty description="尚无分析范围，可从采样记录池选择已有 Run" />}
+      {!busy && !scopes.length && !pool?.runs?.length && <Empty description="尚无采样记录，请开启采样计划或进入分析与稿件开始首次采样" />}
+      {mode === "monitor" && !result && pool?.pool_count > 0 && <Typography.Paragraph>累计采样尝试 {pool.pool_count} 条，当前问题原文 {pool.runs.length} 条；候选与推荐指标需选择已计算的准确回答版本。</Typography.Paragraph>}
+      {mode === "monitor" && pool?.historical_query_runs?.length > 0 && <Collapse items={[{ key: "old-query", label: `历史问题版本的回答（${pool.historical_query_runs.length}），不混入当前问题指标`, children: <AnswerDetails measurement={{ runs: pool.historical_query_runs }} /> }]} />}
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
         {choose(mode === "monitor" ? "观察范围" : "基线范围", left, setLeft, leftAnswer, setLeftAnswer)}
         {mode === "compare" && choose("对照范围", right, setRight, rightAnswer, setRightAnswer)}

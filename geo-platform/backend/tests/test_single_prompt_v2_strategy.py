@@ -367,6 +367,33 @@ def test_evidence_projection_consumes_exact_prior_answer_review_without_duplicat
     assert rows[0]["effective_speech_act"] == "INCLUDE_AS_OPTION"
 
 
+def test_qualification_uses_frozen_prompt_after_current_configuration_changes(tmp_path):
+    from app.models import Project, Prompt
+    from app.modules.single_prompt_v2.qualification import build_qualification_projection
+    db, engine = _session(tmp_path)
+    try:
+        _seed_strategy_input(db, reviewed=False, include_truth=False)
+        db.add(Project(id=1, organization_id=1, name='Original', brand_name='Original'))
+        db.add(Prompt(id=44, project_id=1, title='Current', prompt_text='另一个问题', intent_type='category_awareness'))
+        db.commit()
+        scope = dict(analysis_id='analysis-1', diagnosis_id='diagnosis-1', result_version='diag-v1:fixture', project_id=1, prompt_id=44)
+        before = build_qualification_projection(db, **scope)
+        db.get(Prompt, 44).prompt_text = '再修改当前问题'
+        db.get(Prompt, 44).intent_type = 'usage_instruction'
+        db.get(Project, 1).brand_name = 'Changed'
+        db.commit()
+        assert build_qualification_projection(db, **scope) == before
+        assert '推荐一个工具' in before['directions'][0]['intervention_goal']
+        assert before['directions'][0]['prompt_intent'] == 'supplier_recommendation'
+        context = db.query(SinglePromptAnalysisContext).one()
+        context.raw_output_json = '{}'
+        db.commit()
+        with pytest.raises(HTTPException, match='hash'):
+            build_qualification_projection(db, **scope)
+    finally:
+        db.close(); engine.dispose()
+
+
 def _seed_strategy_input(db, *, reviewed=True, include_truth=True, anchor="UNPROVEN", foundation=None, prepared=False):
     answer = "竞品甲值得推荐，因为支持批量生成二维码。"
     output = {
@@ -418,15 +445,17 @@ def _seed_strategy_input(db, *, reviewed=True, include_truth=True, anchor="UNPRO
         output["result_scope"] = "ANSWER_AND_EVIDENCE"
         output["input"] = {"source_snapshot_ids": ["source-1"]}
     result_hash = _hash(output)
+    raw = {"prompt_text": "推荐一个工具", "sampling_plan": {"prompt_configuration": {"intent_type": "supplier_recommendation"}},
+           "runs": [{"run_id": 101, "answer_text": answer}]}
     context = SinglePromptAnalysisContext(
         context_id="context-1", analysis_id="analysis-1", project_id=1, prompt_id=44, task_id=52,
         result_version="raw-v1:fixture", run_scope_json="[101]", run_scope_hash="r" * 64,
-        raw_output_json=json.dumps({"runs": [{"run_id": 101, "answer_text": answer}]}),
-        raw_output_hash="c" * 64, valid_run_count=1, failed_run_count=0,
+        raw_output_json=json.dumps(raw),
+        raw_output_hash=_hash(raw), valid_run_count=1, failed_run_count=0,
     )
     execution = SinglePromptDiagnosisExecution(
         diagnosis_id="diagnosis-1", analysis_id="analysis-1", context_id="context-1", project_id=1, prompt_id=44,
-        idempotency_key="diagnosis-fixture", input_fingerprint="i" * 64, raw_output_hash="c" * 64,
+        idempotency_key="diagnosis-fixture", input_fingerprint="i" * 64, raw_output_hash=_hash(raw),
         brand_snapshot_json="{}", brand_snapshot_hash="b" * 64, truth_snapshot_json="[]", truth_set_hash="t" * 64,
         contract_config_json="{}", contract_config_hash="d" * 64, status="READY_FOR_REVIEW",
         progress_json="{}", active_result_version="diag-v1:fixture",
@@ -480,6 +509,8 @@ def test_strategy_projection_reads_exact_prepared_snapshots_from_evidence_input(
             project_id=1,
             prompt_id=44,
         )
+        assert projection['prompt_snapshot']['text'] == '推荐一个工具'
+        assert projection['prompt_snapshot']['configuration']['intent_type'] == 'supplier_recommendation'
 
         assert projection["consumed_object_ids"]["source_snapshot_ids"] == ["source-1"]
         assert projection["source_snapshots"][0]["fetch_status"] == "SUCCESS"

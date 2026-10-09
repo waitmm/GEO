@@ -55,6 +55,7 @@ def create_schedule(db, *, project_id, prompt_id, timezone_name, local_time, sam
         raise HTTPException(409, "该问题已有运行计划，请先暂停")
     plan = {"contract_version": "sampling-schedule-v1", "project_id": project_id, "prompt_id": prompt_id,
             "prompt_text": prompt.prompt_text, "prompt_text_hash": _hash(prompt.prompt_text), "sample_count": sample_count,
+            "prompt_configuration": {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group},
             "platform": WENXIN_PLATFORM, "source_type": BROWSER_AUDIT_ENTRY_TYPE, "adapter": WENXIN_WEB_ADAPTER,
             "collection_mode": "single_independent", "automatic_retry": 0}
     row = SinglePromptSamplingSchedule(schedule_id=f"schedule-{uuid4()}", project_id=project_id, prompt_id=prompt_id,

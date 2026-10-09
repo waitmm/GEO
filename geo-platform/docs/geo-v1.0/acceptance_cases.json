@@ -11,8 +11,8 @@
       "requirements": [
         "BRD-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "PARTIAL: browser-20261009T085411Z proves UI project creation/persistence; official-domain and complete onboarding acceptance pending."
     },
     {
       "id": "AC-BRD-02",
@@ -24,8 +24,8 @@
       "requirements": [
         "BRD-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "PARTIAL: isolated browser created project and Prompt without domain; complete official-reference limitation UI pending."
     },
     {
       "id": "AC-BRD-03",
@@ -89,8 +89,8 @@
       "requirements": [
         "PRM-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "PARTIAL: test_observation_delivery separates changed Prompt query from current Monitor; actual new sampling/version history pending."
     },
     {
       "id": "AC-PRM-04",
@@ -102,8 +102,8 @@
       "requirements": [
         "PRM-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "PARTIAL: test_concept_intent_without_brand_recommendation_is_not_recommendation_gap passes; complete opportunity UI pending."
     },
     {
       "id": "AC-SAM-01",
@@ -871,8 +871,8 @@
       "requirements": [
         "OPS-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "PARTIAL: invitation/revocation/cross-project negative tests pass; complete object route attack surface pending."
     },
     {
       "id": "AC-OPS-03",
@@ -884,8 +884,8 @@
       "requirements": [
         "OPS-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "PARTIAL: worker ownership/recovery and pause/captcha tests pass; full interrupted Optimize recovery pending."
     },
     {
       "id": "AC-OPS-04",
@@ -897,8 +897,8 @@
       "requirements": [
         "OPS-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "PASS: backend/backups/delivery-20261009-isolated-restore-verified/upgrade-report.json; 109 Snapshot file bindings and 1460 artifacts verified in restored copy, 41 historical tables including Review/result identities unchanged after migration. Credentials/profiles and relocation excluded."
     },
     {
       "id": "AC-OPS-05",
@@ -910,8 +910,8 @@
       "requirements": [
         "OPS-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "PASS: isolated restore upgrade report plus protected real geo_release.db upgrade; revision20261009_01, loaded SQLite3.51.3,WAL,foreign_keys=1; API healthy,worker NOT_RUNNING."
     }
   ],
   "end_to_end": [
@@ -967,5 +967,13 @@
       "status": "NOT_RUN",
       "evidence": ""
     }
-  ]
+  ],
+  "engineering_checkpoint_20261009": {
+    "report": "backend/artifacts/acceptance/20261009T085353Z/report.json",
+    "tests": 126,
+    "failures": 0,
+    "scope": "OFFLINE_SCOPED_NOT_FULL_PRODUCT",
+    "browser_report": "backend/artifacts/acceptance/browser-20261009T085411Z/report.json",
+    "private_site_contract": "test_private_site_contract.py: 1 passed separately after scoped harness"
+  }
 }

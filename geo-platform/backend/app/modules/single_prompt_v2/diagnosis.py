@@ -646,6 +646,8 @@ def create_diagnosis(
     brand_snapshot = {
         "project_id": project.id,
         "brand_name": project.brand_name,
+        "brand_aliases": loads(project.brand_aliases_json, []),
+        "website_url": project.website_url,
         "project_updated_at": _iso(project.updated_at),
     }
     truth_snapshot = [_snapshot_truth(row) for row in truths]

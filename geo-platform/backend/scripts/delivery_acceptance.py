@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def coverage_report(tasks: dict, cases: dict) -> dict:
     requirements = {r for t in tasks['tasks'] if t.get('status') not in {'SUPERSEDED', 'OUT_OF_SCOPE'} for r in t.get('requirements', [])}
     active = [c for c in cases['cases'] + cases['end_to_end'] if c['status'] not in {'SUPERSEDED', 'OUT_OF_SCOPE'}]
-    covered = {r for c in active for r in c.get('requirements', [])}
+    covered = {r for c in active for r in c.get('requirements', [])} | {c['id'] for c in active}
     return {
         'requirements_without_cases': sorted(requirements - covered),
         'not_passed': [{'id': c['id'], 'status': c['status']} for c in active if c['status'] != 'PASS'],
@@ -42,6 +42,8 @@ def main() -> int:
                      'tests/test_delivery_acceptance.py', '-q', '--disable-warnings', '--tb=short',
                      'tests/test_observation_delivery.py', 'tests/test_release_scheduling.py',
                      'tests/test_release_access.py', 'tests/test_release_worker_lifecycle.py',
+                     'tests/test_automatic_contribution.py', 'tests/test_single_prompt_v2_qualification.py',
+                     'tests/test_private_site_contract.py',
                      f'--junitxml={out / "backend.xml"}', '-p', 'scripts.delivery_offline_guard']),
         ('frontend', ['npm', 'run', 'test:startup']),
         ('frontend', ['npm', 'run', 'build:release']),

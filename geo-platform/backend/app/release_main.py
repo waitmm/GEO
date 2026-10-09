@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.release_catalog import router as catalog_router
@@ -45,6 +45,10 @@ def create_release_app(*, validate_on_startup: bool = True) -> FastAPI:
     def release_status() -> dict:
         return app.state.release_database_status or validate_release_database(release_engine)
 
+    @app.get("/robots.txt", response_class=PlainTextResponse)
+    def private_robots():
+        return "User-agent: *\nDisallow: /\n"
+
     for router in (catalog_router, single_prompt_router, observation_router):
         app.include_router(router, dependencies=[Depends(require_project_access)])
 
@@ -54,8 +58,8 @@ def create_release_app(*, validate_on_startup: bool = True) -> FastAPI:
 
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str, request: Request):
-            if full_path == "api" or full_path.startswith("api/"):
-                raise HTTPException(status_code=404, detail="Release API route not found")
+            if full_path not in {"", "index.html"}:
+                raise HTTPException(status_code=404, detail="Release route not found")
             index_path = frontend_dist / "index.html"
             return FileResponse(str(index_path)) if index_path.exists() else {"detail": "Frontend not found"}
 

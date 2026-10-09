@@ -8,7 +8,7 @@ from release_test_client import TestClient
 from sqlalchemy import text
 
 from app.core.release_database import get_release_db
-from app.models import BrowserMonitorRun, SinglePromptAnalysisContext, SinglePromptObservationComparison, SinglePromptPublicationRecord
+from app.models import BrowserMonitorRun, Prompt, SinglePromptAnalysisContext, SinglePromptObservationComparison, SinglePromptPublicationRecord
 from app.modules.single_prompt_v2.context_provider import load_context, save_context, select_context
 from app.modules.single_prompt_v2.observation import compare_scopes, create_observation_comparison, measure_scope
 from app.modules.single_prompt_v2.service import create_analysis, claim_analysis, finalize_analysis
@@ -114,6 +114,22 @@ def test_formal_api_context_and_comparison_persist_without_reviews(tmp_path, mon
         app = create_release_app(validate_on_startup=False)
         app.dependency_overrides[get_release_db] = lambda: db
         client = TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000))
+        monitor_uri = '/api/v2/projects/1/prompts/44/monitor'
+        monitor = client.get(monitor_uri)
+        assert monitor.status_code == 200, monitor.text
+        assert len(monitor.json()['runs']) == 2
+        assert monitor.json()['metrics']['brand_option_rate']['value'] is None
+        prompt = db.get(Prompt, 44)
+        original = prompt.prompt_text
+        prompt.prompt_text = 'Changed question, different sampling scope'
+        db.commit()
+        changed_pool = client.get(monitor_uri).json()
+        assert changed_pool['runs'] == []
+        assert len(changed_pool['historical_query_runs']) == 2
+        assert changed_pool['metrics']['brand_mention_rate']['value'] is None
+        assert client.get(monitor_uri.replace('/1/', '/2/')).status_code == 404
+        prompt.prompt_text = original
+        db.commit()
         uri = '/api/v2/projects/1/prompts/44/observation-comparisons'
         payload = {'baseline': refs[0], 'comparison': refs[1], 'identity': IDENTITY}
         response = client.post(uri, json=payload)

@@ -138,6 +138,8 @@ def plan_citation_contribution(
         answer_result_version=payload.answer_result_version,
         answer_result_hash=payload.answer_result_hash,
         answer_review_id=payload.answer_review_id,
+        input_authority=payload.input_authority,
+        selected_run_id=payload.selected_run_id,
         citation_manifest_id=payload.citation_manifest_id,
         citation_manifest_hash=payload.citation_manifest_hash,
         completion_manifest_id=payload.completion_manifest_id,

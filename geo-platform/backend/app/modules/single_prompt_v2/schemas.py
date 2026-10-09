@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SinglePromptAnalysisCreate(BaseModel):
@@ -148,17 +148,29 @@ class SinglePromptEvidenceContinuationCreate(BaseModel):
 
 
 class SinglePromptCitationContributionPlanCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     project_id: int
     prompt_id: int
     answer_result_version: str = Field(min_length=1, max_length=96)
     answer_result_hash: str = Field(min_length=64, max_length=64)
-    answer_review_id: str = Field(min_length=1, max_length=80)
+    answer_review_id: str | None = Field(default=None, min_length=1, max_length=80)
+    input_authority: Literal["HUMAN_REVIEW", "MACHINE_ADMISSION"] = "HUMAN_REVIEW"
+    selected_run_id: int | None = Field(default=None, ge=1)
     citation_manifest_id: str = Field(min_length=1, max_length=80)
     citation_manifest_hash: str = Field(min_length=64, max_length=64)
     completion_manifest_id: str = Field(min_length=1, max_length=80)
     completion_manifest_hash: str = Field(min_length=64, max_length=64)
     fixed_run_ids: list[int] = Field(min_length=1, max_length=500)
     idempotency_key: str = Field(min_length=8, max_length=120)
+
+    @model_validator(mode="after")
+    def exact_authority(self):
+        if self.input_authority == "MACHINE_ADMISSION":
+            if self.answer_review_id is not None or self.selected_run_id not in self.fixed_run_ids:
+                raise ValueError("机器准入必须指定范围内 Run，不得携带人工 Review")
+        elif not self.answer_review_id or self.selected_run_id is not None:
+            raise ValueError("人工审核入口需要准确 Review，并沿用冻结选样规则")
+        return self
 
 
 class SinglePromptCitationContributionReuseCreate(BaseModel):

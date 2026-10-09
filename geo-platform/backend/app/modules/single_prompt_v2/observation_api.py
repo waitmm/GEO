@@ -6,14 +6,40 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.core.release_database import get_release_db
-from app.models import BrandContextVersion, Project, SinglePromptAnalysisContext, SinglePromptObservationComparison, SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
+from app.models import BrandContextVersion, Project, Prompt, BrowserMonitorRun, SinglePromptAnalysisContext, SinglePromptObservationComparison, SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
 from app.services.serialization import loads
 from .context_provider import context_view, load_context, save_context
 from .observation import fixed_scope, measure_scope, create_observation_comparison
 from . import scheduling
 from app.models import SinglePromptSamplingSchedule
+from .service import _snapshot_run_rows, _hash
+from urllib.parse import urlsplit
 
 router = APIRouter(prefix='/api/v2', tags=['monitor-validate'])
+
+
+@router.get('/projects/{project_id}/prompts/{prompt_id}/monitor')
+def current_monitor(project_id: int, prompt_id: int, db: Session = Depends(get_release_db)):
+    project, prompt = db.get(Project, project_id), db.get(Prompt, prompt_id)
+    if not project or not prompt or prompt.project_id != project_id:
+        raise HTTPException(404, '问题不存在或不属于当前项目')
+    runs = db.query(BrowserMonitorRun).filter_by(project_id=project_id, prompt_id=prompt_id).order_by(BrowserMonitorRun.id).all()
+    website = project.website_url or ''
+    domain = urlsplit(website).hostname
+    identity = {'canonical_brand_name': project.brand_name, 'accepted_aliases': loads(project.brand_aliases_json, []),
+                'official_domains': [domain] if domain else [], 'official_urls': [website] if website else []}
+    matching = [r for r in runs if r.original_query == prompt.prompt_text]
+    historical = [r for r in runs if r.original_query != prompt.prompt_text]
+    raw = {'runs': _snapshot_run_rows(db, matching), 'prompt_text': prompt.prompt_text}
+    result = measure_scope({'raw': raw, 'semantics': None, 'ref': {'scope_type': 'CURRENT_RUN_POOL',
+        'run_ids': [r.id for r in matching], 'identity_hash': _hash(identity), 'raw_output_hash': _hash(raw)}}, identity)
+    result['historical_query_runs'] = _snapshot_run_rows(db, historical)
+    result['pool_count'] = len(runs)
+    result['scope_label'] = '当前问题原文的采样尝试，历史问题版本另列；失败不计为品牌缺席'
+    result['semantic_selection_required'] = True
+    result['prompt'] = {'id': prompt.id, 'text': prompt.prompt_text, 'intent_type': prompt.intent_type, 'group': prompt.prompt_group}
+    result['identity'] = identity
+    return result
 
 
 class StrictInput(BaseModel):

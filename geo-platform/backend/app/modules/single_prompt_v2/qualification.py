@@ -9,7 +9,6 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Prompt,
     SinglePromptCitationContributionExecution,
     SinglePromptCitationContributionResult,
 )
@@ -17,8 +16,8 @@ from app.modules.single_prompt_v2.strategy import build_strategy_input_projectio
 from app.services.serialization import loads
 
 
-QUALIFICATION_CONTRACT_VERSION = "single_prompt_v2.qualification_projection.v1"
-AUTOMATIC_STRATEGY_VERSION = "single_prompt_v2.automatic_strategy_direction.v1"
+QUALIFICATION_CONTRACT_VERSION = "single_prompt_v2.qualification_projection.v2_frozen_intent"
+AUTOMATIC_STRATEGY_VERSION = "single_prompt_v2.automatic_strategy_direction.v2_intent"
 AUTOMATIC_EXECUTION_DRAFT_VERSION = "single_prompt_v2.automatic_execution_draft.v1"
 
 _POSITIVE_TRUTH_STATUSES = {"SUPPORTED", "TRUE"}
@@ -126,7 +125,7 @@ def _load_current_contribution_scope(
     return {
         "status": "PARTIAL_SCOPE",
         "run_ids": [int(execution.selected_run_id)],
-        "scope_limitations": ["CITATION_CONTRIBUTION_RUN_1_ONLY"],
+        "scope_limitations": [f"CITATION_CONTRIBUTION_RUN_{execution.selected_run_id}_ONLY"],
         "result": {
             "contribution_id": execution.contribution_id,
             "result_version": result.result_version,
@@ -347,6 +346,13 @@ def _build_exploratory_direction_and_draft(
         if len(supported) >= 5:
             break
     direction_id = f"strategy-machine-{_hash({'prompt': prompt_text, 'runs': run_ids, 'mode': 'exploratory'})[:20]}"
+    intent = ((projection.get("prompt_snapshot") or {}).get("configuration") or {}).get("intent_type")
+    goals = {
+        "category_awareness": ("EXPLANATION_CONTENT_OPPORTUNITY", f"围绕“{prompt_text}”解释概念、适用范围与容易混淆的边界；不以是否推荐品牌评价概念解答。"),
+        "usage_instruction": ("USAGE_GUIDANCE_OPPORTUNITY", f"围绕“{prompt_text}”整理前置条件、可验证步骤与失败处理；不把通用操作能力写成目标品牌已具备。"),
+        "supplier_recommendation": ("OPTION_COMPARISON_HYPOTHESIS", f"围绕“{prompt_text}”整理选择标准与条件对照，让用户有依据地比较方案；品牌是否适用仍取决于其真实能力。"),
+    }
+    gap, goal = goals.get(intent, ("QUESTION_CONTENT_COVERAGE_HYPOTHESIS", f"围绕“{prompt_text}”整理可核验的问题解答与适用边界；当前输入未冻结意图，不预设必须推荐品牌。"))
     contribution_exact = bool(run_ids and run_ids == sorted(int(value) for value in contribution_scope.get("run_ids") or []))
     dependency_state = "SATISFIED" if supported and contribution_exact else "LIMITED"
     dependency = {
@@ -366,8 +372,10 @@ def _build_exploratory_direction_and_draft(
         "strategy_id": direction_id,
         "direction_type": "DISCOVERY",
         "level": "ACTIONABLE",
-        "mechanism_gap": "TARGET_BRAND_NOT_PRESENT_IN_OBSERVED_ANSWER",
-        "intervention_goal": f"围绕“{prompt_text}”形成一份可核验的问题解答资产，让目标品牌有机会进入后续答案候选。",
+        "mechanism_gap": gap,
+        "intervention_goal": goal,
+        "observed_or_hypothesis": "CONTENT_OPPORTUNITY_HYPOTHESIS",
+        "prompt_intent": intent or "UNKNOWN",
         "reason_id": None,
         "reason_ids": [],
         "reason_text": "",
@@ -387,12 +395,12 @@ def _build_exploratory_direction_and_draft(
         "public_claim_eligibility": "NOT_CONSUMABLE",
         "limiting_dependencies": [dependency["dependency_id"]] if dependency_state != "SATISFIED" else [],
         "scope_limitations": [
-            "OBSERVED_ABSENCE_IS_NOT_CAPABILITY_ABSENCE",
+            "CONTENT_OPPORTUNITY_IS_NOT_PROVEN_BRAND_RECOMMENDATION_GAP",
             "NO_TARGET_BRAND_PUBLIC_CLAIM_AUTHORIZED",
             "GENERATION_INFLUENCE_UNAVAILABLE",
         ],
         "reasoning_trace": [
-            {"step": "ANSWER_SCOPE", "run_ids": run_ids, "result": "TARGET_BRAND_NOT_OBSERVED"},
+            {"step": "ANSWER_SCOPE", "run_ids": run_ids, "result": "FIXED_ANSWER_SCOPE", "prompt_intent": intent or "UNKNOWN"},
             {"step": "CITATION_SCOPE", "run_ids": contribution_scope.get("run_ids") or [], "result": dependency_state},
             {"step": "PUBLIC_CLAIM", "result": "NOT_CONSUMABLE_WITHOUT_PRODUCT_TRUTH"},
         ],
@@ -474,6 +482,9 @@ def evaluate_qualification_projection(
 ) -> dict[str, Any]:
     run_ids = sorted(int(value) for value in projection.get("analyzable_run_ids") or [])
     candidates = _direction_candidates(projection)
+    no_answer = bool((projection.get("answer_semantic_eligibility") or {}).get("no_consumable_answer_semantic_result"))
+    if no_answer:
+        candidates = []
     object_qualifications: list[dict[str, Any]] = []
     directions: list[dict[str, Any]] = []
     drafts: list[dict[str, Any]] = []
@@ -589,7 +600,7 @@ def evaluate_qualification_projection(
                 "scope_limitation": [] if public_ready else copy.deepcopy(statement.get("issues") or []),
                 "reason_codes": copy.deepcopy(statement.get("issues") or []),
             })
-    elif run_ids:
+    elif run_ids and not no_answer:
         direction, draft = _build_exploratory_direction_and_draft(
             projection=projection,
             contribution_scope=contribution_scope,
@@ -604,7 +615,7 @@ def evaluate_qualification_projection(
         "input_projection_hash": projection["input_snapshot_hash"],
         "analysis_scope": {
             "run_ids": run_ids,
-            "label": f"Answer analysis: Runs {min(run_ids)}-{max(run_ids)}" if run_ids else "Answer analysis: unavailable",
+            "label": f"Answer analysis: Runs {','.join(map(str, run_ids))}" if run_ids else "Answer analysis: unavailable",
         },
         "evidence_scope": {
             "run_ids": copy.deepcopy(contribution_scope.get("run_ids") or []),
@@ -621,7 +632,8 @@ def evaluate_qualification_projection(
         "directions": directions,
         "execution_drafts": drafts,
         "final_plan": {
-            "analysis_completed": bool(run_ids),
+            "analysis_completed": bool(run_ids) and not no_answer and (
+                ((projection.get("coverage_projections") or {}).get("compute_coverage") or {}).get("all_runs_validly_understood", True)),
             "machine_direction_count": len(directions),
             "execution_draft_count": len(drafts),
             "execution_ready_count": sum(
@@ -669,9 +681,8 @@ def build_qualification_projection(
         analysis_id=analysis_id,
         context_id=str(projection["identity"]["context_id"]),
     )
-    prompt = db.get(Prompt, prompt_id)
     return evaluate_qualification_projection(
         projection,
         contribution_scope,
-        str(prompt.prompt_text if prompt else "当前问题"),
+        str(projection["prompt_snapshot"]["text"]),
     )

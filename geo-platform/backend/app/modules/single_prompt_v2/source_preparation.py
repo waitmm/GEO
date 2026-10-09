@@ -39,7 +39,7 @@ from app.modules.optimization.primary_content import extract_from_html
 
 CITATION_MANIFEST_CONTRACT_VERSION = "single_prompt_citation_manifest.v1"
 URL_IDENTITY_VERSION = "single_prompt_source_identity.v1"
-SOURCE_PREPARATION_CONTRACT_VERSION = "single_prompt_source_preparation.v1"
+SOURCE_PREPARATION_CONTRACT_VERSION = "single_prompt_source_preparation.v2_explicit_partial"
 SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v3_auto_then_manual"
 PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
 
@@ -835,6 +835,7 @@ def freeze_completion_manifest(
     *,
     preparation_id: str,
     created_by: str,
+    allow_partial: bool = False,
 ) -> SinglePromptSourceCompletionManifest:
     preparation = db.query(SinglePromptSourcePreparation).filter_by(preparation_id=preparation_id).one_or_none()
     if not preparation:
@@ -849,7 +850,7 @@ def freeze_completion_manifest(
         .all()
     )
     nonterminal = [row.source_key for row in dispositions if row.state not in TERMINAL_STATES]
-    if nonterminal:
+    if nonterminal and not allow_partial:
         raise HTTPException(status_code=409, detail={
             "code": "SOURCE_SCOPE_INCOMPLETE",
             "detail": "仍有引用来源未完成处置",
@@ -884,7 +885,7 @@ def freeze_completion_manifest(
                 "coverage_scope": snapshot.coverage_scope,
             })
             ready_count += 1
-        else:
+        elif disposition.state == WAIVED_STATE:
             if not disposition.waiver_reason or not disposition.waiver_impact or not disposition.waived_by:
                 raise HTTPException(status_code=409, detail=f"WAIVED 来源缺少完整人工处置：{disposition.source_key}")
             rows.append({
@@ -896,15 +897,19 @@ def freeze_completion_manifest(
                 "waived_at": disposition.waived_at.isoformat() if disposition.waived_at else None,
             })
             waived_count += 1
+        else:
+            if disposition.state not in {"PENDING", MANUAL_REQUIRED_STATE, AUTO_FETCH_PENDING_STATUS}:
+                raise HTTPException(409, detail="正文正在获取或状态非法，不能冻结来源输入")
+            rows.append({
+                "source_key": disposition.source_key,
+                "disposition": disposition.state,
+                "limitation": "SOURCE_NOT_CONSUMABLE_NOT_NEGATIVE_EVIDENCE",
+            })
     if len(rows) != citation.source_count:
         raise HTTPException(status_code=409, detail="来源处置数量不守恒")
-    version = (
-        db.query(SinglePromptSourceCompletionManifest)
-        .filter_by(preparation_id=preparation_id)
-        .count()
-        + 1
-    )
-    status = "FROZEN" if ready_count else "NO_USABLE_SOURCE"
+    prior = db.query(SinglePromptSourceCompletionManifest).filter_by(preparation_id=preparation_id).all()
+    version = max((row.version_number for row in prior), default=0) + 1
+    status = "PARTIAL" if nonterminal else ("FROZEN" if ready_count else "NO_USABLE_SOURCE")
     payload = {
         "contract_version": SOURCE_PREPARATION_CONTRACT_VERSION,
         "analysis_id": preparation.analysis_id,
@@ -919,12 +924,14 @@ def freeze_completion_manifest(
         "waived_source_count": waived_count,
     }
     payload_hash = _hash(payload)
-    existing = db.query(SinglePromptSourceCompletionManifest).filter_by(
-        preparation_id=preparation_id,
-        payload_hash=payload_hash,
-    ).one_or_none()
-    if existing:
-        return existing
+    # Version numbers must not make an otherwise identical freeze non-idempotent.
+    comparable = {key: value for key, value in payload.items() if key != "version_number"}
+    for existing in prior:
+        previous = loads(existing.payload_json, {})
+        if _hash(previous) != existing.payload_hash:
+            raise HTTPException(409, detail="历史正文清单 hash 不匹配")
+        if {key: value for key, value in previous.items() if key != "version_number"} == comparable:
+            return existing
     manifest = SinglePromptSourceCompletionManifest(
         manifest_id=f"source-completion-{uuid4()}",
         preparation_id=preparation_id,
@@ -944,7 +951,7 @@ def freeze_completion_manifest(
     db.add(manifest)
     db.flush()
     preparation.current_completion_manifest_id = manifest.manifest_id
-    preparation.status = status
+    preparation.status = MANUAL_REQUIRED_STATUS if nonterminal else status
     db.commit()
     db.refresh(manifest)
     return manifest
@@ -1087,6 +1094,7 @@ def validate_completion_for_evidence(
     citation_manifest_hash: str,
     completion_manifest_id: str,
     completion_manifest_hash: str,
+    allow_partial: bool = False,
 ) -> tuple[SinglePromptSourceCompletionManifest, list[SinglePromptPreparedSourceSnapshot], list[dict[str, Any]]]:
     citation = db.query(SinglePromptCitationManifest).filter_by(manifest_id=citation_manifest_id).one_or_none()
     if not citation:
@@ -1111,8 +1119,20 @@ def validate_completion_for_evidence(
     ):
         raise HTTPException(status_code=409, detail={"code": "SOURCE_COMPLETION_INPUT_MISMATCH"})
     payload = loads(completion.payload_json, {})
+    citation_payload = loads(citation.payload_json, {})
+    if _hash(payload) != completion.payload_hash or _hash(citation_payload) != citation.payload_hash:
+        raise HTTPException(409, detail={"code": "SOURCE_MANIFEST_CONTENT_HASH_MISMATCH"})
+    if payload.get("status") != completion.status:
+        raise HTTPException(409, detail={"code": "SOURCE_COMPLETION_STATUS_MISMATCH"})
     rows = payload.get("sources") or []
-    if len(rows) != citation.source_count or completion.required_source_count != citation.source_count:
+    if (completion.status not in {"FROZEN", "PARTIAL", "NO_USABLE_SOURCE"}
+            or (completion.status == "PARTIAL" and not allow_partial)
+            or sum(row.get("disposition") == READY_STATE for row in rows) != completion.ready_source_count
+            or sum(row.get("disposition") == WAIVED_STATE for row in rows) != completion.waived_source_count):
+        raise HTTPException(409, detail={"code": "SOURCE_COMPLETION_STATE_MISMATCH"})
+    expected_keys = {row['source_key'] for row in citation_payload.get('sources') or []}
+    if (len(rows) != citation.source_count or completion.required_source_count != citation.source_count
+            or {row.get('source_key') for row in rows} != expected_keys or len(expected_keys) != len(rows)):
         raise HTTPException(status_code=409, detail={"code": "SOURCE_COMPLETION_SCOPE_MISMATCH"})
     snapshots: list[SinglePromptPreparedSourceSnapshot] = []
     limitations: list[dict[str, Any]] = []
@@ -1126,6 +1146,7 @@ def validate_completion_for_evidence(
                 raise HTTPException(status_code=409, detail={"code": "SOURCE_SNAPSHOT_NOT_FOUND", "source_key": row.get("source_key")})
             if (
                 snapshot.context_id != context_id
+                or snapshot.preparation_id != completion.preparation_id
                 or snapshot.citation_manifest_id != citation_manifest_id
                 or snapshot.source_key != row.get("source_key")
                 or snapshot.content_hash != row.get("content_hash")
@@ -1136,15 +1157,20 @@ def validate_completion_for_evidence(
             _verify_snapshot(snapshot)
             snapshots.append(snapshot)
         elif disposition == WAIVED_STATE:
+            if not row.get("waiver_reason") or not row.get("waiver_impact") or not row.get("waived_by"):
+                raise HTTPException(409, detail={"code": "SOURCE_WAIVER_INCOMPLETE"})
             limitations.append({
                 "code": "SOURCE_WAIVED_WITH_LIMITATION",
                 "source_key": row.get("source_key"),
                 "reason": row.get("waiver_reason"),
                 "impact": row.get("waiver_impact"),
             })
+        elif allow_partial and completion.status == "PARTIAL" and disposition in {"PENDING", MANUAL_REQUIRED_STATE, AUTO_FETCH_PENDING_STATUS}:
+            limitations.append({"code": "SOURCE_NOT_CONSUMABLE", "source_key": row.get("source_key"),
+                "disposition": disposition, "negative_evidence": False})
         else:
             raise HTTPException(status_code=409, detail={"code": "SOURCE_COMPLETION_NONTERMINAL_ENTRY", "source_key": row.get("source_key")})
-    if completion.status == "NO_USABLE_SOURCE" or not snapshots:
+    if not allow_partial and (completion.status == "NO_USABLE_SOURCE" or not snapshots):
         raise HTTPException(status_code=409, detail={
             "code": "NO_USABLE_SOURCE",
             "detail": "来源处置已关闭，但没有可供 Evidence 消费的正文快照",

@@ -18,6 +18,7 @@ from app.models import (
     SinglePromptDiagnosisExecution,
     SinglePromptQualificationCriticExecution,
     SinglePromptSourcePreparation,
+    SinglePromptOptimizationTask,
 )
 from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.services import update_task_status_from_runs
@@ -28,6 +29,7 @@ from app.modules.single_prompt_v2.service import execute_analysis
 from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_STATUS, execute_auto_fetch
 from app.release_schema import validate_release_database
 from app.modules.single_prompt_v2.scheduling import tick, allow_scheduled_start
+from app.modules.single_prompt_v2.automatic_delivery import execute_task, recover_interrupted_tasks
 
 
 def recover_owned_tasks():
@@ -38,7 +40,7 @@ def recover_owned_tasks():
     from app.modules.single_prompt_v2.source_preparation import recover_interrupted_source_preparations
     db = ReleaseSessionLocal()
     try:
-        for recover in (recover_interrupted_analyses, recover_interrupted_diagnoses,
+        for recover in (recover_interrupted_tasks, recover_interrupted_analyses, recover_interrupted_diagnoses,
                         recover_interrupted_citation_contributions, recover_interrupted_qualification_critics,
                         recover_interrupted_source_preparations):
             recover(db)
@@ -62,6 +64,7 @@ def run_once() -> str | None:
             .order_by(SinglePromptAnalysis.id.asc())
             .first()
         )
+        optimization = db.query(SinglePromptOptimizationTask).filter_by(status="QUEUED").order_by(SinglePromptOptimizationTask.id).first()
         if retry_task:
             identity = retry_task.id
             work_type = "run_retry"
@@ -72,6 +75,9 @@ def run_once() -> str | None:
             work_type = "analysis"
             task = db.get(BrowserMonitorTask, analysis.task_id)
             scheduled = bool(task and task.schedule_type == "single_prompt_v2_schedule")
+        elif optimization:
+            identity = optimization.task_id
+            work_type = "automatic_optimize"
         else:
             preparation = (
                 db.query(SinglePromptSourcePreparation)
@@ -116,6 +122,9 @@ def run_once() -> str | None:
     finally:
         db.close()
 
+    if work_type == "automatic_optimize":
+        execute_task(identity, session_factory=ReleaseSessionLocal)
+        return f"automatic_optimize:{identity}"
     if work_type == "run_retry":
         db = ReleaseSessionLocal()
         executor = MonitoringTaskExecutor()

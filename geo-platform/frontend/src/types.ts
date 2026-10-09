@@ -229,6 +229,7 @@ export type SinglePromptV2Run = {
 };
 
 export type SinglePromptV2Status = {
+  raw_output_hash?: string | null;
   analysis: {
     analysis_id: string;
     project_id: number;

@@ -1,6 +1,6 @@
 # Optimize 自动编排与结果版本
 
-文档编号：PRD-OPT。里程碑：M2。版本：2026-09-30。实现状态：未核查。
+文档编号：PRD-OPT。里程碑：M2。版本：2026-10-09。实现状态：正式 API/worker/页面已接线，隔离模拟链路通过；真实模型质量和完整产品验收未完成。
 
 业务依赖：PRM、SRC、MON。共用规则见 [数据与状态契约](16_共用契约与状态.md)。
 
@@ -47,8 +47,23 @@ Optimize 顶部展示分析范围、版本、当前阶段、覆盖及耗时。�
 
 ## 状态和异常
 
-任务主状态：QUEUED、RUNNING、WAITING_EXTERNAL、SUCCEEDED、PARTIAL、FAILED、CANCELLED。
-SUCCEEDED 表示约定范围完成且交付通过检查；PARTIAL 表示已知范围未完整完成，显示覆盖和现有交付，不能冒充全集结论。低来源支撑是结果限制，不自动使任务失败。
+任务实际状态：QUEUED、RUNNING、WAITING_AUTHORIZATION、BLOCKED、INTERRUPTED、COMPLETED、COMPLETED_WITH_LIMITATIONS、CANCELLED。
+COMPLETED 表示约定范围完成且交付通过当前文本检查；COMPLETED_WITH_LIMITATIONS 显示未评估范围和现有交付，不能冒充全集结论。低来源支撑是结果限制，不自动使任务失败。BLOCKED 保留具体程序或准入问题；WAITING_AUTHORIZATION 不等于失败或零事件。
+
+## 正式入口和恢复
+
+实现：`automatic_delivery.py` 复用 `diagnosis.py`、`citation_contribution.py`、`qualification.py`、`strategy.py`、`execution.py`；正文和实际文本检查使用 `delivery_generation.py`。页面 `AutomaticOptimizePanel.tsx`，持久表 `single_prompt_optimization_tasks`，迁移 `20261009_02`。
+
+1. Optimize 选择已有明确 Analysis，或从 Run 池创建范围。页面“自动优化交付”选择可选品牌资料、正文版本或正文获取权限。
+2. “开始自动优化”默认只消费合格缓存。缓存不足显示待授权，不自动扣费。API 为 `POST /api/v2/single-prompt/analyses/{analysis_id}/optimization-tasks`。
+3. 对准确任务一次授权请求数、token、金额硬上限和核实计费依据；后续各计算阶段由同一 worker 连续交接，不逐层要求 Review。价格记录为操作者核实估算，不冒充账单实扣。
+4. 页面稳定轮询真实阶段，已存在稿件可直接读取、复制；发布信息不阻止交付。停止只阻止后续请求，已外发请求仍记录用量。
+5. 中断不自动重试。可核实的已完成对象/缓存继续复用；未结算请求或已失败的相同付费载荷不能通过恢复按钮重复收费。
+6. 补录后显式选择新的正文 Completion ID/hash 创建新输入任务；旧任务和稿件继续使用原版本。不按 latest 换来源，不继承旧付费额度。
+
+任务创建冻结原回答、品牌配置、Truth、Context版本、Provider/Model和计算契约。API、worker及调用前分别检查。来源范围不完整时可形成显式 PARTIAL 清单，但不能把缺失当作不支持；严格完整证据入口仍保留原 Gate。
+
+隔离浏览器记录：`backend/artifacts/acceptance/browser-20261009T095830Z/report.json`。模拟4次 Provider 响应通过真实准入和阶段代码，实际外部调用为0；该证据不是模型生成质量验收。
 
 ## 验收场景
 

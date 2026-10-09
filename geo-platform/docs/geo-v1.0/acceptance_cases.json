@@ -299,8 +299,8 @@
         "OPT-001",
         "OPT-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-09: backend/tests/test_automatic_delivery.py / test_delivery_generation.py; browser-20261009T095830Z/report.json. Formal task/cache/authorization/stage/draft/QA wiring verified in migrated isolated DB with simulated HTTP transport; not real model quality or all recovery scenarios."
     },
     {
       "id": "AC-OPT-02",
@@ -312,8 +312,8 @@
       "requirements": [
         "OPT-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-09: backend/tests/test_automatic_delivery.py / test_delivery_generation.py; browser-20261009T095830Z/report.json. Formal task/cache/authorization/stage/draft/QA wiring verified in migrated isolated DB with simulated HTTP transport; not real model quality or all recovery scenarios."
     },
     {
       "id": "AC-OPT-03",
@@ -325,8 +325,8 @@
       "requirements": [
         "OPT-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-09: backend/tests/test_automatic_delivery.py / test_delivery_generation.py; browser-20261009T095830Z/report.json. Formal task/cache/authorization/stage/draft/QA wiring verified in migrated isolated DB with simulated HTTP transport; not real model quality or all recovery scenarios."
     },
     {
       "id": "AC-OPT-04",
@@ -339,8 +339,8 @@
         "OPT-003",
         "OPT-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-09: backend/tests/test_automatic_delivery.py / test_delivery_generation.py; browser-20261009T095830Z/report.json. Formal task/cache/authorization/stage/draft/QA wiring verified in migrated isolated DB with simulated HTTP transport; not real model quality or all recovery scenarios."
     },
     {
       "id": "AC-OPT-05",
@@ -352,8 +352,8 @@
       "requirements": [
         "OPT-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-09: backend/tests/test_automatic_delivery.py / test_delivery_generation.py; browser-20261009T095830Z/report.json. Formal task/cache/authorization/stage/draft/QA wiring verified in migrated isolated DB with simulated HTTP transport; not real model quality or all recovery scenarios."
     },
     {
       "id": "AC-ANS-01",
@@ -671,8 +671,8 @@
       "requirements": [
         "EXE-005"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-09: backend/tests/test_automatic_delivery.py / test_delivery_generation.py; browser-20261009T095830Z/report.json. Formal task/cache/authorization/stage/draft/QA wiring verified in migrated isolated DB with simulated HTTP transport; not real model quality or all recovery scenarios."
     },
     {
       "id": "AC-PUB-01",

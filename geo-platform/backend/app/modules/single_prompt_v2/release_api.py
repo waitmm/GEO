@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, Request
 from sqlalchemy.orm import Session
 
 from app.core.release_database import ReleaseSessionLocal, get_release_db
@@ -45,6 +45,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     revise_diagnosis_result,
 )
 from app.modules.single_prompt_v2.schemas import (
+    AutomaticOptimizationCreate, AutomaticOptimizationAction, AutomaticOptimizationAuthorization,
     SinglePromptAnalysisCreate,
     SinglePromptAutomaticStrategyCreate,
     SinglePromptRunRetryCreate,
@@ -121,6 +122,76 @@ from app.modules.single_prompt_v2.source_preparation import (
 
 router = APIRouter(prefix="/api/v2/single-prompt", tags=["single-prompt-v2-release"])
 get_db = get_release_db
+
+
+@router.post("/analyses/{analysis_id}/optimization-tasks", status_code=201)
+def queue_automatic_optimization(analysis_id: str, payload: AutomaticOptimizationCreate,
+                                 response: Response, db: Session = Depends(get_db)) -> dict:
+    from .automatic_delivery import create_task, task_view
+    row, created = create_task(db, analysis_id=analysis_id, **payload.model_dump())
+    if not created:
+        response.status_code = 200
+    return task_view(row)
+
+
+@router.get("/analyses/{analysis_id}/optimization-tasks")
+def list_automatic_optimization(analysis_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    from app.models import SinglePromptAnalysis, SinglePromptOptimizationTask
+    from .automatic_delivery import task_view
+    if not db.query(SinglePromptAnalysis).filter_by(analysis_id=analysis_id, project_id=project_id, prompt_id=prompt_id).one_or_none():
+        raise HTTPException(404, "分析不存在或不属于当前项目/问题")
+    return [task_view(row) for row in db.query(SinglePromptOptimizationTask).filter_by(
+        analysis_id=analysis_id, project_id=project_id, prompt_id=prompt_id).order_by(SinglePromptOptimizationTask.id.desc())]
+
+
+@router.get("/optimization-tasks/{task_id}")
+def read_automatic_optimization(task_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> dict:
+    from .automatic_delivery import require_task, task_view
+    return task_view(require_task(db, task_id, project_id, prompt_id))
+
+
+@router.get("/optimization-tasks/{task_id}/deliveries")
+def read_automatic_deliveries(task_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    from .automatic_delivery import require_task
+    from app.models import SinglePromptExecutionProposal, SinglePromptExecutionProposalResult
+    from app.services.serialization import loads
+    from .delivery_text import digest
+    task = require_task(db, task_id, project_id, prompt_id)
+    objects = loads(task.progress_json, {}).get("objects") or {}
+    result = []
+    for binding in objects.get("deliveries") or []:
+        proposal = db.query(SinglePromptExecutionProposal).filter_by(proposal_id=binding["proposal_id"],
+            project_id=project_id, prompt_id=prompt_id, analysis_id=task.analysis_id, context_id=task.context_id).one_or_none()
+        if not proposal:
+            raise HTTPException(409, "自动任务稿件归属不一致")
+        value = db.query(SinglePromptExecutionProposalResult).filter_by(proposal_id=proposal.proposal_id,
+            result_version=binding["result_version"], output_hash=binding["result_hash"]).one_or_none()
+        if not value or digest(loads(value.output_json, {})) != value.output_hash:
+            raise HTTPException(409, "自动任务稿件版本或 hash 不一致")
+        result.append({**binding, "output": loads(value.output_json, {})})
+    return result
+
+
+@router.post("/optimization-tasks/{task_id}/authorization")
+def authorize_automatic_optimization(task_id: str, payload: AutomaticOptimizationAuthorization,
+                                     request: Request, db: Session = Depends(get_db)) -> dict:
+    from .automatic_delivery import require_task, authorize_task, task_view
+    from app.core.release_access import principal
+    row = require_task(db, task_id, payload.project_id, payload.prompt_id)
+    return task_view(authorize_task(db, row, **payload.model_dump(exclude={"project_id", "prompt_id"}),
+        authorized_by=principal(request)["name"]))
+
+
+@router.post("/optimization-tasks/{task_id}/cancel")
+def cancel_automatic_optimization(task_id: str, payload: AutomaticOptimizationAction, db: Session = Depends(get_db)) -> dict:
+    from .automatic_delivery import require_task, cancel_task, task_view
+    return task_view(cancel_task(db, require_task(db, task_id, payload.project_id, payload.prompt_id), payload.expected_revision))
+
+
+@router.post("/optimization-tasks/{task_id}/resume")
+def resume_automatic_optimization(task_id: str, payload: AutomaticOptimizationAction, db: Session = Depends(get_db)) -> dict:
+    from .automatic_delivery import require_task, resume_task, task_view
+    return task_view(resume_task(db, require_task(db, task_id, payload.project_id, payload.prompt_id), payload.expected_revision))
 
 
 @router.post("/analyses/{analysis_id}/citation-contributions", status_code=201)
@@ -592,6 +663,7 @@ def read_qualification_projection(
     result_version: str,
     project_id: int,
     prompt_id: int,
+    brand_context_version_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
     return build_qualification_projection(
@@ -601,6 +673,7 @@ def read_qualification_projection(
         result_version=result_version,
         project_id=project_id,
         prompt_id=prompt_id,
+        brand_context_version_id=brand_context_version_id,
     )
 
 
@@ -800,6 +873,7 @@ def generate_automatic_strategy(
         prompt_id=payload.prompt_id,
         idempotency_key=payload.idempotency_key,
         expected_projection_hash=payload.expected_projection_hash,
+        brand_context_version_id=payload.brand_context_version_id,
     )
     if not created:
         response.status_code = 200

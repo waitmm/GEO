@@ -95,3 +95,22 @@ def test_cache_only_miss_never_reads_api_key_or_starts_http(monkeypatch):
     assert getattr(rejected.value, "code", "") == "CACHE_MISS"
     assert client.external_call_count == 0
     assert client.external_token_count == 0
+
+
+def test_request_guard_denial_precedes_network_and_retry(monkeypatch):
+    reservations = []
+    def guard(identity):
+        reservations.append(identity)
+        raise ValueError('AUTHORIZED_BUDGET_EXHAUSTED')
+    def fail_http(*args, **kwargs):
+        raise AssertionError('Denied request must not start HTTP')
+    monkeypatch.setattr(deepseek.httpx, 'Client', fail_http)
+    client = deepseek.DeepSeekClient(max_attempts=3, request_guard=guard)
+    monkeypatch.setattr(client.settings, 'deepseek_api_key', 'isolated-secret')
+    with pytest.raises(ValueError, match='AUTHORIZED_BUDGET_EXHAUSTED'):
+        client.structured_generate_sync(system_prompt='Return JSON.', user_payload={'value': 'x'},
+            response_schema=dict, prompt_version='guard:1', schema_version='guard:1')
+    assert len(reservations) == 1 and client.external_call_count == 0
+    assert reservations[0]['input_token_upper_bound'] > len('Return JSON.')
+    assert reservations[0]['max_output_tokens'] == 4096
+    assert 'isolated-secret' not in json.dumps(reservations)

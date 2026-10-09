@@ -27,6 +27,8 @@ supersedes: release publication/ExecutionConfirmation prerequisites in PRD-VAL, 
 allowed_inferences:
   - Compare explicitly selected compatible scopes without PublicationRecord.
   - Continue with qualified partial inputs while reporting excluded/unknown members.
+  - Freeze an explicit PARTIAL source-input manifest retaining every unavailable occurrence; consume only its READY snapshots. PARTIAL is not completion, WAIVE, NO_SUPPORT or global evidence sufficiency.
+  - Restrict a machine contribution to an explicitly admitted Run while retaining the entire fixed Context identity; failed Runs do not inherit its qualification.
   - Use versioned user-supplied context with its provenance, not as independently verified Truth.
 forbidden_inferences:
   - Failed/unevaluated semantic results imply no recommendation.

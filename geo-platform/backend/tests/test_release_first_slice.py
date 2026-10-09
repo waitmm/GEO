@@ -461,7 +461,7 @@ def test_release_routes_include_delivery_loop_but_exclude_legacy_workflows():
 
     response = TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000)).get("/api/optimization/workflow/1/prompt-overview")
     assert response.status_code == 404
-    assert response.json() == {"detail": "Release API route not found"}
+    assert response.json() == {"detail": "Release route not found"}
 
 
 def test_release_lists_explicit_prompt_analyses_without_latest_substitution(tmp_path):
@@ -2263,10 +2263,11 @@ def test_citation_contribution_recovery_preserves_exact_plan(monkeypatch, tmp_pa
         db.commit()
         assert recover_interrupted_citation_contributions(db) == 1
         db.refresh(execution)
-        assert execution.status == "QUEUED"
+        assert execution.status == "FAILED"
         assert execution.active_attempt_token == ""
         assert execution.plan_hash == original_plan_hash
-        assert execution.blocker_code == "RECOVERED_AFTER_PROCESS_RESTART"
+        assert execution.blocker_code == "INTERRUPTED_EXTERNAL_USAGE_UNCERTAIN"
+        assert recover_interrupted_citation_contributions(db) == 0
     finally:
         db.close()
         engine.dispose()

@@ -8,6 +8,7 @@ import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, File
 import { api } from "./api/client";
 import { ObservationPanel } from "./ObservationPanel";
 import { BrandContextSelect } from "./BrandContextSelect";
+import { AutomaticOptimizePanel } from "./AutomaticOptimizePanel";
 import { ReleasePromptPanel } from "./ReleasePromptPanel";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
@@ -5782,6 +5783,11 @@ export default function App() {
                 {v2Analysis.warnings.map((warning) => <Alert key={warning.code} style={{ marginTop: 10 }} type="warning" showIcon message={warning.code === "RETRIEVAL_OBSERVATION_UNAVAILABLE" ? "检索观测不可用" : "独立会话证明不可用"} description={warning.detail} />)}
               </Card>
 
+              {v2Analysis.context_id && v2Analysis.raw_output_hash && projectId && activePromptId && <AutomaticOptimizePanel
+                key={`${projectId}:${activePromptId}:${v2Analysis.analysis.analysis_id}`}
+                projectId={projectId} promptId={activePromptId} analysisId={v2Analysis.analysis.analysis_id} rawHash={v2Analysis.raw_output_hash}
+                completion={v2SourcePreparation?.completion_manifest}
+              />}
               {(v2CitationContributionHistoryLoading || v2PendingCitationCalibrations.length > 0) && <Card
                 id="v2-calibration-entry"
                 size="small"

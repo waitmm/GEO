@@ -830,6 +830,7 @@ def _load_machine_admitted_inputs(
     completion_manifest_hash: str,
     fixed_run_ids: list[int],
     require_single_run: bool = True,
+    admitted_run_id: int | None = None,
 ) -> dict[str, Any]:
     analysis = db.query(SinglePromptAnalysis).filter_by(analysis_id=analysis_id).one_or_none()
     _require(bool(analysis), "ANALYSIS_NOT_FOUND", "Analysis 不存在")
@@ -870,14 +871,21 @@ def _load_machine_admitted_inputs(
     answer_output = loads(answer_result.output_json, {})
     eligibility = answer_semantic_eligibility(answer_output)
     coverage = compute_coverage(loads(context.raw_output_json, {}), answer_output.get("answer_diagnosis") or {})
-    _require(
+    full_admission = (
         eligibility.get("status") == "ADMITTED"
         and coverage.get("all_runs_validly_understood") is True
         and int(eligibility.get("total_answer_count") or 0) == len(normalized_run_ids)
         and int(eligibility.get("admitted_answer_count") or 0) == len(normalized_run_ids)
-        and int(eligibility.get("failed_answer_count") or 0) == 0,
+        and int(eligibility.get("failed_answer_count") or 0) == 0
+    )
+    selected_admission = (
+        not require_single_run and admitted_run_id in normalized_run_ids
+        and admitted_run_id in coverage.get("valid_compute_run_ids", [])
+    )
+    _require(
+        full_admission if admitted_run_id is None else selected_admission,
         "ANSWER_MACHINE_ADMISSION_REQUIRED",
-        "Answer Result 未形成完整固定范围机器准入，不能执行 Citation 计算",
+        "所选 Run 未通过机器准入，或请求没有保留完整冻结范围",
     )
 
     citation_manifest = db.query(SinglePromptCitationManifest).filter_by(
@@ -901,7 +909,7 @@ def _load_machine_admitted_inputs(
         and completion.citation_manifest_id == citation_manifest_id
         and completion.citation_manifest_hash == citation_manifest_hash
         and completion.payload_hash == completion_manifest_hash
-        and completion.status == "FROZEN",
+        and completion.status in ({"FROZEN", "PARTIAL", "NO_USABLE_SOURCE"} if admitted_run_id is not None else {"FROZEN"}),
         "SOURCE_COMPLETION_MISMATCH",
         "Source Completion Manifest 身份/hash 或状态不匹配",
     )
@@ -927,7 +935,8 @@ def _load_machine_admitted_inputs(
              "COMPLETION_CONTENT_HASH_MISMATCH", "正文清单内容 hash 不匹配")
     _, snapshots, _ = validate_completion_for_evidence(db, analysis_id=analysis_id, context_id=context.context_id,
         citation_manifest_id=citation_manifest_id, citation_manifest_hash=citation_manifest_hash,
-        completion_manifest_id=completion_manifest_id, completion_manifest_hash=completion_manifest_hash)
+        completion_manifest_id=completion_manifest_id, completion_manifest_hash=completion_manifest_hash,
+        allow_partial=admitted_run_id is not None)
     return {
         "analysis": analysis,
         "context": context,
@@ -1246,7 +1255,7 @@ def create_citation_contribution_plan(
         prompt_id=prompt_id,
         answer_result_version=answer_result_version,
         answer_result_hash=answer_result_hash,
-        **({"require_single_run": False} if machine else {"answer_review_id": answer_review_id}),
+        **({"require_single_run": False, "admitted_run_id": selected_run_id} if machine else {"answer_review_id": answer_review_id}),
         citation_manifest_id=citation_manifest_id,
         citation_manifest_hash=citation_manifest_hash,
         completion_manifest_id=completion_manifest_id,
@@ -1284,7 +1293,7 @@ def create_citation_contribution_plan(
         "implementation_version": CITATION_CONTRIBUTION_IMPLEMENTATION_VERSION,
     }
     if machine:
-        input_snapshot.update(input_authority="MACHINE_ADMISSION", input_admission_contract="citation_input.machine.v1")
+        input_snapshot.update(input_authority="MACHINE_ADMISSION", input_admission_contract="citation_input.machine.v2_selected_scope")
     execution = SinglePromptCitationContributionExecution(
         contribution_id=f"citation-contribution-{uuid4()}",
         analysis_id=analysis_id,
@@ -2104,6 +2113,7 @@ def execute_citation_contribution(
     *,
     session_factory=None,
     judge: CitationContributionJudge | Any | None = None,
+    automatic_task_id: str | None = None,
 ) -> None:
     if session_factory is None:
         from app.core.database import SessionLocal
@@ -2112,10 +2122,26 @@ def execute_citation_contribution(
     db: Session = session_factory()
     try:
         execution = db.query(SinglePromptCitationContributionExecution).filter_by(contribution_id=contribution_id).one_or_none()
-        if not execution or execution.status != "QUEUED":
+        if not execution or execution.status != ("AWAITING_EXTERNAL_AUTHORIZATION" if automatic_task_id else "QUEUED"):
             return
         authorization = loads(execution.authorization_json, {})
         plan = loads(execution.plan_json, {})
+        if automatic_task_id:
+            from .automatic_delivery import require_task, scoped_client
+            parent = require_task(db, automatic_task_id, execution.project_id, execution.prompt_id)
+            binding = (loads(parent.progress_json, {}).get("objects") or {}).get("contributions", {}).get(str(execution.selected_run_id), {})
+            _require(parent.status == "RUNNING" and parent.analysis_id == execution.analysis_id
+                     and binding == {"contribution_id": contribution_id, "plan_hash": execution.plan_hash},
+                     "OPTIMIZATION_CONTRIBUTION_BINDING_MISMATCH", "自动任务没有绑定此准确计划")
+            _require(judge is None, "OPTIMIZATION_JUDGE_OVERRIDE_FORBIDDEN", "自动任务必须使用受预算保护的正式模型入口")
+            limits = loads(parent.authorization_json, {})
+            authorization = {"automatic_task_id": automatic_task_id, "plan_hash": execution.plan_hash,
+                "max_external_requests": int(limits.get("max_requests") or 0),
+                "max_total_tokens": int(limits.get("max_tokens") or 0),
+                "requested_model_alias": loads(parent.input_json, {})["requested_model"],
+                "effective_request_model": loads(parent.input_json, {})["effective_request_model"]}
+            execution.authorization_json = dumps(authorization)
+            judge = CitationContributionJudge(scoped_client(db, parent))
         _require(authorization.get("plan_hash") == execution.plan_hash, "CONTRIBUTION_AUTHORIZATION_MISSING", "缺少精确 plan 授权")
         execution.status = "RUNNING"
         execution.active_attempt_token = uuid4().hex
@@ -2126,7 +2152,7 @@ def execute_citation_contribution(
         inputs = loads(execution.input_snapshot_json, {})
         _require(_hash(inputs) == execution.input_snapshot_hash, "CONTRIBUTION_INPUT_HASH_MISMATCH", "执行输入内容 hash 不匹配")
         machine = inputs.get("input_authority") == "MACHINE_ADMISSION"
-        _require(not machine or (inputs.get("input_admission_contract") == "citation_input.machine.v1"
+        _require(not machine or (inputs.get("input_admission_contract") == "citation_input.machine.v2_selected_scope"
                  and inputs.get("answer_review_id") is None and execution.selected_run_id in inputs["fixed_run_ids"]),
                  "MACHINE_INPUT_IDENTITY_REQUIRED", "机器输入契约或范围不匹配")
         fixed = (_load_machine_admitted_inputs if machine else _load_fixed_inputs)(
@@ -2136,7 +2162,7 @@ def execute_citation_contribution(
             prompt_id=execution.prompt_id,
             answer_result_version=inputs["answer_result_version"],
             answer_result_hash=inputs["answer_result_hash"],
-            **({"require_single_run": False} if machine else {"answer_review_id": inputs["answer_review_id"]}),
+            **({"require_single_run": False, "admitted_run_id": execution.selected_run_id} if machine else {"answer_review_id": inputs["answer_review_id"]}),
             citation_manifest_id=inputs["citation_manifest_id"],
             citation_manifest_hash=inputs["citation_manifest_hash"],
             completion_manifest_id=inputs["completion_manifest_id"],
@@ -2182,6 +2208,12 @@ def execute_citation_contribution(
                 response_audit_sink=response_audit_sink,
             )
         )
+        if automatic_task_id:
+            parent_sink = active_judge.client.response_audit_sink
+            def owned_audit(payload):
+                parent_sink(payload)
+                response_audit_sink(payload)
+            active_judge.client.response_audit_sink = owned_audit
         snapshot_by_id = {row.snapshot_id: row for row in fixed["snapshots"]}
         answer_units = plan["answer_units"]
         selected_run = next(
@@ -2199,6 +2231,16 @@ def execute_citation_contribution(
         initial_tokens = int(getattr(active_judge.client, "external_token_count", 0))
         initial_input_tokens = int(getattr(active_judge.client, "external_input_token_count", 0))
         initial_output_tokens = int(getattr(active_judge.client, "external_output_token_count", 0))
+        prior_usage = (execution.external_llm_calls, execution.llm_cache_hits, execution.external_token_usage)
+
+        def persist_usage() -> None:
+            external = max(0, int(getattr(active_judge.client, "external_call_count", 0)) - initial_external)
+            calls = max(0, int(getattr(active_judge.client, "call_count", 0)) - initial_calls)
+            tokens = max(0, int(getattr(active_judge.client, "external_token_count", 0)) - initial_tokens)
+            execution.external_llm_calls = prior_usage[0] + external
+            execution.llm_cache_hits = prior_usage[1] + max(calls - external, 0)
+            execution.external_token_usage = prior_usage[2] + tokens
+
         for index, citation_plan in enumerate(plan["citations"], start=1):
             row = {
                 key: value for key, value in citation_plan.items()
@@ -2242,6 +2284,12 @@ def execute_citation_contribution(
                     "candidate_pair_count": len(candidate_pairs),
                     "candidate_pair_hash": _hash(candidate_pairs),
                 })
+                execution.progress_json = dumps({
+                    "stage": "CITATION_CONTRIBUTION", "completed": index - 1,
+                    "total": len(plan["citations"]), "pending_citation_id": citation_plan["citation_id"],
+                    "machine_output_artifacts": machine_output_artifacts,
+                })
+                db.commit()
                 response = active_judge.judge(
                     answer_units,
                     passage_inputs,
@@ -2363,20 +2411,23 @@ def execute_citation_contribution(
                     ],
                 })
             except Exception as exc:
+                waiting = automatic_task_id and str(getattr(exc, "code", "")) in {"CACHE_MISS", "EXTERNAL_BUDGET_EXHAUSTED"}
                 row.update({
-                    "processing_status": "FAILED",
-                    "disposition": "ANALYSIS_FAILED",
+                    "processing_status": "NOT_EVALUATED" if waiting else "FAILED",
+                    "disposition": "NOT_EVALUATED" if waiting else "ANALYSIS_FAILED",
                     "binding_ids": [],
                     "failure_code": str(getattr(exc, "code", "CONTRIBUTION_ANALYSIS_FAILED")),
                     "failure_detail": str(exc)[:1000],
                 })
                 limitations.append({
-                    "code": "CITATION_CONTRIBUTION_ANALYSIS_FAILED",
+                    "code": "CITATION_CONTRIBUTION_AWAITS_AUTHORIZATION" if waiting else "CITATION_CONTRIBUTION_ANALYSIS_FAILED",
                     "reference_id": row["reference_id"],
                     "detail": str(exc)[:1000],
                 })
             citations.append(row)
-            execution.progress_json = dumps({"stage": "CITATION_CONTRIBUTION", "completed": index, "total": len(plan["citations"])})
+            persist_usage()
+            execution.progress_json = dumps({"stage": "CITATION_CONTRIBUTION", "completed": index,
+                "total": len(plan["citations"]), "machine_output_artifacts": machine_output_artifacts})
             db.commit()
             canary_ids = list((plan.get("call_plan") or {}).get("canary_citation_ids") or [])
             if _canary_gate_result(citations, canary_ids) is False:
@@ -2412,9 +2463,7 @@ def execute_citation_contribution(
         external_output_tokens = (
             int(getattr(active_judge.client, "external_output_token_count", 0)) - initial_output_tokens
         )
-        execution.external_llm_calls += max(external_calls, 0)
-        execution.llm_cache_hits += max(total_calls - external_calls, 0)
-        execution.external_token_usage += max(external_tokens, 0)
+        persist_usage()
         authorization_cap = int(authorization.get("max_external_requests") or 0)
         _require(execution.external_llm_calls <= authorization_cap, "CONTRIBUTION_REQUEST_CAP_EXCEEDED", "实际外部调用超过授权上限")
         _require(
@@ -2552,11 +2601,15 @@ def execute_citation_contribution(
 def recover_interrupted_citation_contributions(db: Session) -> int:
     rows = db.query(SinglePromptCitationContributionExecution).filter_by(status="RUNNING").all()
     for row in rows:
-        row.status = "QUEUED"
+        # A crash may occur after provider acceptance but before local accounting.
+        # A valid cache cannot prove that every interrupted request was free.
+        row.status = "FAILED"
         row.active_attempt_token = ""
-        row.blocker_code = "RECOVERED_AFTER_PROCESS_RESTART"
-        row.blocker_detail = "服务重启中断执行；将按同一冻结 plan 重新运行，已成功的兼容调用只能通过校验缓存恢复。"
-        row.progress_json = dumps({"stage": "RECOVERED_QUEUED"})
+        row.blocker_code = "INTERRUPTED_EXTERNAL_USAGE_UNCERTAIN"
+        row.blocker_detail = "计算被进程中断；未自动重复请求。已存审计及缓存保留，须核对未结算调用和剩余预算后显式恢复。失败不代表来源不支持。"
+        progress = loads(row.progress_json, {})
+        row.progress_json = dumps({**progress, "stage": "INTERRUPTED", "external_usage_reconciliation_required": True})
+        row.finished_at = datetime.utcnow()
     corrected = 0
     calibration_rows = db.query(SinglePromptCitationContributionExecution).filter_by(
         status="READY_FOR_CALIBRATION"

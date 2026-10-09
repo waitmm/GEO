@@ -12,6 +12,7 @@ from app.models.db import (
     BrandMention,
     BrandContextVersion,
     SinglePromptSamplingSchedule,
+    SinglePromptOptimizationTask,
     SinglePromptObservationComparison,
     BrowserMonitorRun,
     BrowserMonitorTask,

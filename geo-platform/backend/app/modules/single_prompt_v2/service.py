@@ -999,6 +999,7 @@ def get_analysis_status(db: Session, analysis_id: str) -> dict[str, Any]:
             "attempt_count": analysis.attempt_count,
         },
         "result_version": context.result_version if context else None,
+        "raw_output_hash": context.raw_output_hash if context else None,
         "context_id": context.context_id if context else None,
         "result_source": result_source,
         "blocker": blocker,

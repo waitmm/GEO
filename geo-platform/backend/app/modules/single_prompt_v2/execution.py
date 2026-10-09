@@ -37,13 +37,14 @@ from app.modules.single_prompt_v2.source_preparation import _content_block_reaso
 from app.modules.single_prompt_v2.delivery_text import (
     INPUT_VERSION, audit_draft, build_sections, digest, render_draft, text_digest,
 )
+from .delivery_generation import GENERATION_VERSION, generate_and_check, revalidate_generated_draft
 from app.services.serialization import loads
 
 
 EXECUTION_CONTRACT_VERSION = "single_prompt_execution.optimize_delivery.v2"
 EXECUTION_INPUT_VALIDATION_VERSION = "single_prompt_execution_input.v3"
 EXECUTION_DELIVERABLE_VERSION = "single_prompt_execution_deliverable.v3"
-EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v7"
+EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION = "single_prompt_execution_deliverable.impl.v8_scoped_input"
 PUBLICATION_CONFORMANCE_VERSION = "single_prompt_publication_conformance.v1"
 
 VALID_RUN_STATUSES = {"success", "partial_success"}
@@ -252,6 +253,8 @@ def _strategy_input_for_execution(
             "analysis_id": strategy.analysis_id,
             "context_id": strategy.context_id,
             "diagnosis_id": strategy.diagnosis_id,
+            "answer_result_version": strategy.diagnosis_result_version,
+            "answer_result_hash": strategy.diagnosis_result_hash,
             "project_id": strategy.project_id,
             "prompt_id": strategy.prompt_id,
             "strategy_id": strategy.strategy_id,
@@ -292,6 +295,7 @@ def _strategy_input_for_execution(
         "advisories": copy.deepcopy(output.get("advisories") or []),
         "brand_snapshot": loads(diagnosis.brand_snapshot_json, {}),
         "brand_snapshot_hash": diagnosis.brand_snapshot_hash,
+        "brand_context": copy.deepcopy(strategy_input.get("brand_context") or {}),
         "baseline": baseline,
         "boundary": {
             "asset_operation": "CONDITIONAL" if is_machine_authority else "CREATE_NEW",
@@ -334,6 +338,29 @@ def _freeze_delivery_input(
     db: Session, snapshot: dict[str, Any], prior_result: SinglePromptExecutionProposalResult | None = None,
 ) -> dict[str, Any]:
     """Load exact immutable records once; the text compiler receives no Session."""
+    dependencies = [row for row in snapshot["direction"].get("dependencies", [])
+        if row.get("object_type") == "CITATION_CONTRIBUTION_SCOPE"]
+    if len(dependencies) > 1:
+        parts = []
+        for dependency in dependencies:
+            contribution = db.query(SinglePromptCitationContributionResult).filter_by(result_version=dependency["object_id"]).one_or_none()
+            if not contribution:
+                raise HTTPException(409, "稿件指定的引用贡献版本不存在")
+            binding_ids = {b["binding_id"] for b in loads(contribution.output_json, {}).get("bindings") or []}
+            part = copy.deepcopy(snapshot)
+            part["direction"]["dependencies"] = [dependency]
+            part["automatic_draft"]["content_blocks"] = [b for b in part["automatic_draft"].get("content_blocks", [])
+                if b.get("binding_id") in binding_ids]
+            parts.append(_freeze_delivery_input(db, part))
+        combined = copy.deepcopy(parts[0])
+        refs = [{"result_version": p["contribution_result_version"], "result_hash": p["contribution_result_hash"]} for p in parts]
+        combined.update(contribution_result_version="contribution-set:" + _hash(refs)[:20],
+            contribution_result_hash=_hash(refs), contribution_results=refs,
+            source_manifests=[p["source_manifest"] for p in parts],
+            selected_evidence=[s for p in parts for s in p["selected_evidence"]],
+            historical_failures=[s for p in parts for s in p["historical_failures"]],
+            strategy_direction=copy.deepcopy(snapshot["direction"]))
+        return combined
     identity = snapshot["identity"]
     context = db.query(SinglePromptAnalysisContext).filter_by(
         context_id=identity["context_id"], analysis_id=identity["analysis_id"],
@@ -348,7 +375,9 @@ def _freeze_delivery_input(
                     if row.get("object_type") == "CITATION_CONTRIBUTION_SCOPE"), None)
     result = db.query(SinglePromptCitationContributionResult).filter_by(result_version=version).one_or_none()
     if not result:
-        raise HTTPException(409, detail="稿件必须绑定明确的引用贡献版本")
+        if version not in {None, "UNAVAILABLE"}:
+            raise HTTPException(409, detail="稿件指定的引用贡献版本不存在")
+        return _freeze_question_delivery(db, snapshot, context, raw)
     contribution = loads(result.output_json, {})
     if _hash(contribution) != result.output_hash:
         raise HTTPException(409, detail="引用贡献内容 hash 不匹配")
@@ -360,13 +389,15 @@ def _freeze_delivery_input(
     ).one_or_none()
     if not answer or answer.output_hash != inputs["answer_result_hash"] or _hash(loads(answer.output_json, {})) != answer.output_hash:
         raise HTTPException(409, detail="Answer 版本或内容 hash 不匹配")
+    if answer.result_version != identity["answer_result_version"] or answer.output_hash != identity["answer_result_hash"]:
+        raise HTTPException(409, detail="引用贡献不能替换策略所用的 Answer 版本")
     strategy = db.query(SinglePromptStrategyResult).filter_by(
         strategy_id=identity["strategy_id"], result_version=identity["strategy_result_version"],
     ).one_or_none()
     if not strategy or strategy.output_hash != identity["strategy_result_hash"] or _hash(loads(strategy.output_json, {})) != strategy.output_hash:
         raise HTTPException(409, detail="Strategy 版本或内容 hash 不匹配")
     _, sources, _ = validate_completion_for_evidence(
-        db, **{key: inputs[key] for key in (
+        db, allow_partial=inputs.get("input_authority") == "MACHINE_ADMISSION", **{key: inputs[key] for key in (
             "analysis_id", "context_id", "citation_manifest_id", "citation_manifest_hash",
             "completion_manifest_id", "completion_manifest_hash",
         )},
@@ -380,6 +411,8 @@ def _freeze_delivery_input(
         raise HTTPException(409, detail="引用贡献的完整 Run 范围与稿件不一致")
     selected = []
     for block in snapshot["automatic_draft"].get("content_blocks", []):
+        if block.get("content_role") == "GROUNDING_REQUIRED_BRIEF" and not block.get("binding_id"):
+            continue
         binding = bindings.get(block.get("binding_id"))
         if not binding or binding["processing_status"] != "DONE" or binding["evidence_relation"] not in {"SUPPORTS_FULL", "SUPPORTS_PARTIAL"}:
             raise HTTPException(409, detail="稿件依据不是合格的精确关系")
@@ -457,6 +490,7 @@ def _freeze_delivery_input(
         "contract_version": INPUT_VERSION, "identity": copy.deepcopy(identity),
         "brand": brand, "brand_hash": snapshot["brand_snapshot_hash"],
         "prompt_text": raw["prompt_text"], "prompt_hash": text_digest(raw["prompt_text"]),
+        "prompt_configuration": copy.deepcopy((raw.get("sampling_plan") or {}).get("prompt_configuration") or {}),
         "raw_result_version": context.result_version, "raw_output_hash": context.raw_output_hash,
         "answers": [{"run_id": key, "text": text, "text_hash": text_digest(text)} for key, text in answers.items()],
         "answer_result_version": answer.result_version, "answer_result_hash": answer.output_hash,
@@ -469,6 +503,64 @@ def _freeze_delivery_input(
         "strategy_direction": copy.deepcopy(snapshot["direction"]),
         "truths": copy.deepcopy(snapshot.get("truths") or []),
         "historical_failures": _evidence_failure_audit(contribution),
+        "question_topics": _question_topics(raw, snapshot["direction"].get("reason_run_ids") or []),
+    }
+
+
+def _question_topics(raw: dict, run_ids: list[int]) -> list[dict]:
+    from .citation_contribution import build_answer_units
+    topics, seen = [], set()
+    for run in raw.get("runs") or []:
+        if run.get("run_id") not in run_ids:
+            continue
+        for unit in build_answer_units(run["answer_text"], run["run_id"], []):
+            text = unit["raw_text"]
+            if text in seen or unit["primary_type"] == "HEADING":
+                continue
+            seen.add(text)
+            topics.append(unit)
+            if len(topics) == 8:
+                return topics
+    return topics
+
+
+def _freeze_question_delivery(db: Session, snapshot: dict, context: SinglePromptAnalysisContext, raw: dict) -> dict:
+    """A scoped research guide is not a substitute for unperformed evidence assessment."""
+    from .coverage import compute_coverage
+    identity = snapshot["identity"]
+    answer = db.query(SinglePromptDiagnosisResult).filter_by(diagnosis_id=identity["diagnosis_id"],
+        result_version=identity["answer_result_version"]).one_or_none()
+    strategy = db.query(SinglePromptStrategyResult).filter_by(strategy_id=identity["strategy_id"],
+        result_version=identity["strategy_result_version"]).one_or_none()
+    if (not answer or answer.output_hash != identity["answer_result_hash"]
+            or _hash(loads(answer.output_json, {})) != answer.output_hash
+            or not strategy or strategy.output_hash != identity["strategy_result_hash"]
+            or _hash(loads(strategy.output_json, {})) != strategy.output_hash):
+        raise HTTPException(409, detail="问题解读稿的 Answer/Strategy 精确版本或 hash 不匹配")
+    coverage = compute_coverage(raw, loads(answer.output_json, {}).get("answer_diagnosis") or {})
+    run_ids = snapshot["direction"].get("reason_run_ids") or []
+    if not run_ids or not set(run_ids).issubset(coverage["valid_compute_run_ids"]):
+        raise HTTPException(409, detail="问题解读稿缺少已通过准入的回答范围")
+    brand = copy.deepcopy(snapshot["brand_snapshot"])
+    if _hash(brand) != snapshot["brand_snapshot_hash"]:
+        raise HTTPException(409, detail="冻结品牌输入 hash 不匹配")
+    topics = _question_topics(raw, run_ids)
+    if not topics:
+        raise HTTPException(409, detail="没有可定位的问题解读素材，不能创建空稿件")
+    return {
+        "contract_version": INPUT_VERSION, "identity": copy.deepcopy(identity),
+        "brand": brand, "brand_hash": snapshot["brand_snapshot_hash"],
+        "prompt_text": raw["prompt_text"], "prompt_hash": text_digest(raw["prompt_text"]),
+        "prompt_configuration": copy.deepcopy((raw.get("sampling_plan") or {}).get("prompt_configuration") or {}),
+        "raw_result_version": context.result_version, "raw_output_hash": context.raw_output_hash,
+        "answers": [{"run_id": row["run_id"], "text": row["answer_text"], "text_hash": text_digest(row["answer_text"])}
+                    for row in raw["runs"] if row["run_id"] in run_ids],
+        "answer_result_version": answer.result_version, "answer_result_hash": answer.output_hash,
+        "answer_events": [], "contribution_result_version": None, "contribution_result_hash": None,
+        "source_manifest": {}, "selected_evidence": [], "asset_observations": [], "subjects": [brand["brand_name"]],
+        "strategy_direction": copy.deepcopy(snapshot["direction"]), "truths": [], "historical_failures": [],
+        "question_topics": topics, "content_mode": "RESEARCH_GUIDE_NOT_FACTUAL_ANSWER",
+        "limitations": ["CITATION_NOT_CONSUMED", "ANSWER_TOPICS_ARE_NOT_VERIFIED_FACTS"],
     }
 
 
@@ -732,8 +824,56 @@ def _title_validation(title: str, brand: str, truths: list[dict[str, Any]]) -> l
     return errors
 
 
+def _generated_sections(receipt: dict) -> list[dict]:
+    sections = []
+    current = None
+    for segment in receipt["segments"]:
+        if segment["kind"] == "HEADING":
+            current = {"section_id": segment["segment_id"], "title": segment["text"],
+                "content_class": "PUBLIC_CONTENT", "purpose": "QUESTION_RESPONSE",
+                "draft_text": "", "evidence_ids": [], "truth_ids": []}
+            sections.append(current)
+        elif segment["text"] and current is not None:
+            current["draft_text"] += ("\n\n" if current["draft_text"] else "") + segment["text"]
+            current["evidence_ids"] = sorted(set(current["evidence_ids"] + segment["evidence_ids"]))
+    return [row for row in sections if row["draft_text"]]
+
+
+def _generated_qa(output: dict, frozen: dict) -> dict:
+    receipt = output["generation_receipt"]
+    qa = revalidate_generated_draft(frozen, receipt)
+    draft = output["publication_draft"]
+    sections = _generated_sections(receipt)
+    if (draft.get("body_markdown") != receipt["body_markdown"] or draft.get("content_hash") != receipt["content_hash"]
+            or draft.get("title") != receipt["title"] or draft.get("sections") != sections
+            or output.get("selected_public_content") != sections or output.get("public_content_candidates") != sections
+            or output["selection"].get("title") != receipt["title"]
+            or output["selection"].get("section_order") != [row["section_id"] for row in sections]
+            or output.get("automatic_qa") != qa):
+        raise ValueError("GENERATED_DELIVERY_PROJECTION_MUTATED")
+    return qa
+
+
+def _attach_generated_delivery(output: dict, receipt: dict, snapshot: dict) -> dict:
+    revalidate_generated_draft(output["delivery_input"], receipt)
+    output = copy.deepcopy(output)
+    output["generation_receipt"] = copy.deepcopy(receipt)
+    sections = _generated_sections(receipt)
+    output["publication_draft"] = {"deliverable_type": "GROUNDED_GENERATED_ARTICLE", "title": receipt["title"],
+        "body_markdown": receipt["body_markdown"], "content_hash": receipt["content_hash"], "sections": sections}
+    output["public_content_candidates"] = sections
+    output["selected_public_content"] = copy.deepcopy(sections)
+    output["title_candidates"] = [{"title_id": "GENERATED_TITLE", "title": receipt["title"], "truth_ids": []}]
+    output["selection"].update(title=receipt["title"], section_order=[row["section_id"] for row in sections])
+    output["automatic_qa"] = copy.deepcopy(receipt["qa"])
+    output["repair_history"] = copy.deepcopy(receipt["qa"]["repairs"])
+    output["validation"] = validate_execution_output(output, snapshot)
+    return output
+
+
 def validate_execution_output(output: dict[str, Any], input_snapshot: dict[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
+    qa = output.get("automatic_qa") or {}
     selection = output.get("selection") or {}
     direction = input_snapshot["direction"]
     complete_delivery = output.get("deliverable_contract_version") == EXECUTION_DELIVERABLE_VERSION
@@ -795,7 +935,13 @@ def validate_execution_output(output: dict[str, Any], input_snapshot: dict[str, 
             ):
                 errors.append("DELIVERY_INPUT_MISMATCH")
             else:
-                qa = audit_draft(frozen, output.get("publication_draft") or {})
+                if output.get("generation_receipt"):
+                    try:
+                        qa = _generated_qa(output, frozen)
+                    except (ValueError, KeyError, TypeError):
+                        qa = {"status": "NEEDS_REPAIR"}
+                else:
+                    qa = audit_draft(frozen, output.get("publication_draft") or {})
                 if (output.get("publication_draft") or {}).get("sections") != output.get("selected_public_content"):
                     errors.append("PUBLIC_TEXT_SELECTION_MISMATCH")
         accepted_qa_statuses = {"READY", "READY_INTERNAL"} if complete_delivery else {"READY_INTERNAL"}
@@ -827,7 +973,7 @@ def validate_execution_output(output: dict[str, Any], input_snapshot: dict[str, 
             else "READY_FOR_BUSINESS_INPUT" if complete_delivery and only_business_inputs
             else "NEEDS_HUMAN_SELECTION"
         ),
-        "content_delivery_status": "READY" if complete_delivery and (output.get("automatic_qa") or {}).get("status") == "READY" else "INCOMPLETE",
+        "content_delivery_status": "READY" if complete_delivery and qa.get("status") == "READY" and "DELIVERY_INPUT_MISMATCH" not in errors else "INCOMPLETE",
         "publication_status": "READY" if not errors else "NEEDS_BUSINESS_CONFIRMATION",
         "errors": errors,
         "validators": {
@@ -889,6 +1035,9 @@ def create_execution_proposal(
     if snapshot.get("automatic_draft"):
         snapshot["delivery_input"] = _freeze_delivery_input(db, snapshot)
         from .context_provider import select_context
+        frozen_context = snapshot.get("brand_context") or {}
+        if frozen_context.get("context_version_id") != brand_context_version_id:
+            raise HTTPException(409, detail="稿件品牌资料必须与策略选定版本一致；更换资料请先形成新策略版本")
         snapshot["delivery_input"]["brand_context"] = select_context(
             db, project_id=project_id, context_version_id=brand_context_version_id,
             query=snapshot["delivery_input"]["prompt_text"],
@@ -1023,7 +1172,14 @@ def revise_execution_proposal(
     sections = {row["section_id"]: row for row in output["public_content_candidates"]}
     output["selected_public_content"] = [sections[value] for value in selection.get("section_order") or [] if value in sections]
     snapshot = loads(proposal.input_snapshot_json, {})
-    if complete_delivery:
+    if complete_delivery and output.get("generation_receipt"):
+        if selection.get("title") != output["publication_draft"]["title"] or selection.get("section_order") != [
+            row["section_id"] for row in output["publication_draft"]["sections"]
+        ]:
+            raise HTTPException(422, "已检查的生成稿不能未经文本复检修改标题或章节；业务信息可独立保存")
+        _generated_qa(output, output["delivery_input"])
+        output["repair_history"] = []
+    elif complete_delivery:
         frozen = output["delivery_input"]
         output["publication_draft"] = render_draft(frozen, output["selected_public_content"], title=selection.get("title"))
         output["automatic_qa"] = audit_draft(frozen, output["publication_draft"])
@@ -1073,6 +1229,7 @@ def generate_complete_execution_deliverable(
     base_result_version: str,
     base_result_hash: str,
     reviewable_set_hash: str,
+    generation_client: Any | None = None,
 ) -> tuple[SinglePromptExecutionProposalResult, bool]:
     proposal = db.query(SinglePromptExecutionProposal).filter_by(proposal_id=proposal_id).one_or_none()
     if not proposal or proposal.active_result_version != base_result_version:
@@ -1088,6 +1245,7 @@ def generate_complete_execution_deliverable(
     if (
         base_output.get("deliverable_contract_version") == EXECUTION_DELIVERABLE_VERSION
         and base_output.get("deliverable_implementation_version") == EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION
+        and (generation_client is None or (base_output.get("generation_receipt") or {}).get("contract_version") == GENERATION_VERSION)
     ):
         return base, False
     snapshot = loads(proposal.input_snapshot_json, {})
@@ -1100,10 +1258,14 @@ def generate_complete_execution_deliverable(
     snapshot["delivery_input"] = copy.deepcopy(frozen)
     snapshot["delivery_input_hash"] = digest(frozen)
     output = _compile_machine_delivery(proposal_id, snapshot)
+    initial_calls = int(getattr(generation_client, "external_call_count", 0))
+    if generation_client is not None:
+        receipt = generate_and_check(frozen, client=generation_client, db=db)
+        output = _attach_generated_delivery(output, receipt, snapshot)
     output["system_revision"] = {
         "reason": "FROZEN_INPUT_GROUNDED_DELIVERY_AND_TEXT_QA",
         "base_result_version": base_result_version,
-        "external_calls": 0,
+        "external_calls": max(0, int(getattr(generation_client, "external_call_count", 0)) - initial_calls),
         "source_refetches": 0,
     }
     output_hash = _hash(output)

@@ -58,6 +58,7 @@ class DeepSeekClient(SemanticLLMClient):
         max_attempts: int = 3,
         cache_only: bool = False,
         response_audit_sink: Callable[[dict[str, Any]], None] | None = None,
+        request_guard: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if thinking_mode not in {None, "enabled", "disabled"}:
             raise ValueError("thinking_mode 必须是 enabled、disabled 或 None")
@@ -68,6 +69,7 @@ class DeepSeekClient(SemanticLLMClient):
         self.max_attempts = max_attempts
         self.cache_only = cache_only
         self.response_audit_sink = response_audit_sink
+        self.request_guard = request_guard
         self._calls = 0
         self._tokens = 0
         self._external_calls = 0
@@ -260,6 +262,14 @@ class DeepSeekClient(SemanticLLMClient):
         # 有限重试（最多 3 次，指数退避）——覆盖网络断连与推理模型偶发的非 JSON 输出；不无限 retry
         last_error: Exception | None = None
         for attempt in range(self.max_attempts):
+            if self.request_guard is not None:
+                # Admission/cache recovery precede authorization. Reserve the complete
+                # request before network I/O; headers and credentials never enter audit.
+                self.request_guard({**request_identity,
+                    "provider_payload_hash": hashlib.sha256(json.dumps(body, ensure_ascii=False,
+                        sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                    "input_token_upper_bound": len(json.dumps(body, ensure_ascii=False).encode("utf-8")) + 4096,
+                    "max_output_tokens": effective_max_tokens, "attempt": attempt + 1})
             response_data: dict[str, Any] | None = None
             response_text = ""
             content = ""

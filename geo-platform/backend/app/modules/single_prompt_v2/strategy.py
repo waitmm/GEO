@@ -1077,6 +1077,8 @@ def create_automatic_strategy_candidate(
     prompt_id: int,
     idempotency_key: str,
     expected_projection_hash: str,
+    brand_context_version_id: str | None = None,
+    contribution_result_versions: list[str] | None = None,
 ) -> tuple[SinglePromptStrategyExecution, SinglePromptStrategyResult, bool]:
     from app.modules.single_prompt_v2.qualification import build_qualification_projection
 
@@ -1087,6 +1089,8 @@ def create_automatic_strategy_candidate(
         result_version=result_version,
         project_id=project_id,
         prompt_id=prompt_id,
+        brand_context_version_id=brand_context_version_id,
+        contribution_result_versions=contribution_result_versions,
     )
     projection_hash = str(qualification.get("projection_hash") or "")
     if projection_hash != expected_projection_hash:
@@ -1204,6 +1208,8 @@ def _strategy_applicability(db: Session, execution: SinglePromptStrategyExecutio
             result_version=execution.diagnosis_result_version,
             project_id=execution.project_id,
             prompt_id=execution.prompt_id,
+            brand_context_version_id=(loads(execution.input_snapshot_json, {}).get("brand_context") or {}).get("context_version_id"),
+            contribution_result_versions=loads(execution.input_snapshot_json, {}).get("selected_contribution_result_versions"),
         )
         checks = {
             "diagnosis_result_hash_matches": (

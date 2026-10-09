@@ -624,6 +624,7 @@ def create_diagnosis(
     answer_llm_policy: str = "ALLOW_EXTERNAL",
     citation_manifest_id: str = "",
     citation_manifest_hash: str = "",
+    automatic_task_id: str | None = None,
 ) -> tuple[SinglePromptDiagnosisExecution, bool]:
     analysis = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.analysis_id == analysis_id).one_or_none()
     if not analysis:
@@ -651,6 +652,16 @@ def create_diagnosis(
         "project_updated_at": _iso(project.updated_at),
     }
     truth_snapshot = [_snapshot_truth(row) for row in truths]
+    if automatic_task_id:
+        from .automatic_delivery import require_task
+        parent = require_task(db, automatic_task_id, project_id, prompt_id)
+        fixed = loads(parent.input_json, {})
+        if parent.status != "RUNNING" or parent.analysis_id != analysis_id or fixed["raw_output_hash"] != context.raw_output_hash:
+            raise HTTPException(409, "自动任务与 Answer 输入不一致")
+        if diagnosis_mode != "ANSWER_ONLY":
+            raise HTTPException(409, "自动任务只允许独立 Answer 计算")
+        brand_snapshot = fixed["brand"]
+        truth_snapshot = fixed["truth_snapshot"]
     config = _contract_config(
         source_snapshot_policy=source_snapshot_policy,
         evidence_llm_policy=evidence_llm_policy,
@@ -659,6 +670,8 @@ def create_diagnosis(
         citation_manifest_id=citation_manifest_id,
         citation_manifest_hash=citation_manifest_hash,
     )
+    if automatic_task_id:
+        config["automatic_task_id"] = automatic_task_id
     identity = {
         "analysis_id": analysis_id,
         "context_id": context.context_id,
@@ -696,7 +709,7 @@ def create_diagnosis(
         truth_set_hash=identity["truth_set_hash"],
         contract_config_json=_canonical_json(config),
         contract_config_hash=identity["contract_config_hash"],
-        status="QUEUED",
+        status="OPTIMIZE_OWNED" if automatic_task_id else "QUEUED",
         progress_json=_canonical_json({"stage": "QUEUED", "completed": 0, "total": 1}),
     )
     db.add(execution)
@@ -729,6 +742,7 @@ def create_answer_diagnosis(
     citation_manifest_hash: str,
     answer_llm_policy: str,
     idempotency_key: str,
+    automatic_task_id: str | None = None,
 ) -> tuple[SinglePromptDiagnosisExecution, bool]:
     if answer_llm_policy not in {"ALLOW_EXTERNAL", "CACHE_ONLY"}:
         raise HTTPException(status_code=422, detail="Answer Semantic 授权策略非法")
@@ -754,16 +768,25 @@ def create_answer_diagnosis(
         answer_llm_policy=answer_llm_policy,
         citation_manifest_id=citation_manifest_id,
         citation_manifest_hash=citation_manifest_hash,
+        automatic_task_id=automatic_task_id,
     )
 
 
-def claim_diagnosis(db: Session, diagnosis_id: str) -> str | None:
+def claim_diagnosis(db: Session, diagnosis_id: str, *, automatic_task_id: str | None = None) -> str | None:
+    if automatic_task_id:
+        from .automatic_delivery import require_task
+        target = db.query(SinglePromptDiagnosisExecution).filter_by(diagnosis_id=diagnosis_id).one_or_none()
+        if not target or loads(target.contract_config_json, {}).get("automatic_task_id") != automatic_task_id:
+            raise HTTPException(409, "Answer 不属于当前自动优化任务")
+        parent = require_task(db, automatic_task_id, target.project_id, target.prompt_id)
+        if parent.status != "RUNNING":
+            raise HTTPException(409, "自动任务已停止")
     token = uuid4().hex
     claimed = db.execute(
         update(SinglePromptDiagnosisExecution)
         .where(
             SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id,
-            SinglePromptDiagnosisExecution.status == "QUEUED",
+            SinglePromptDiagnosisExecution.status == ("OPTIMIZE_OWNED" if automatic_task_id else "QUEUED"),
         )
         .values(
             status="RUNNING",
@@ -3457,6 +3480,8 @@ def retry_diagnosis(db: Session, diagnosis_id: str) -> SinglePromptDiagnosisExec
     ).one_or_none()
     if not execution:
         raise HTTPException(status_code=404, detail="诊断执行不存在")
+    if loads(execution.contract_config_json, {}).get("automatic_task_id"):
+        raise HTTPException(409, "该 Answer 属于自动优化任务，须沿所属任务恢复，不能绕过累计调用预算")
     if execution.status == "EVIDENCE_FAILED":
         progress = loads(execution.progress_json, {})
         if not progress.get("request"):

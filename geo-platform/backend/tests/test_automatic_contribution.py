@@ -13,6 +13,37 @@ from app.modules.single_prompt_v2.citation_contribution import authorize_citatio
 from app.release_main import create_release_app
 
 
+def test_partial_source_freeze_is_explicit_immutable_and_not_negative_evidence(tmp_path, monkeypatch):
+    from app.models import SinglePromptSourceDisposition, SinglePromptSourceCompletionManifest
+    from app.modules.single_prompt_v2.source_preparation import freeze_completion_manifest, validate_completion_for_evidence
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    try:
+        fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path, reviewed=False)
+        source = db.query(SinglePromptSourceDisposition).filter_by(state='READY').one()
+        source.state = 'MANUAL_REQUIRED'
+        source.active_snapshot_id = None
+        db.commit()
+        with pytest.raises(HTTPException):
+            freeze_completion_manifest(db, preparation_id=source.preparation_id, created_by='test')
+        partial = freeze_completion_manifest(db, preparation_id=source.preparation_id, created_by='test', allow_partial=True)
+        assert partial.status == 'PARTIAL' and partial.ready_source_count == 0 and partial.waived_source_count == 1
+        assert fixture['completion'].status == 'FROZEN'
+        assert freeze_completion_manifest(db, preparation_id=source.preparation_id, created_by='test', allow_partial=True).manifest_id == partial.manifest_id
+        assert db.query(SinglePromptSourceCompletionManifest).count() == 2
+        binding = dict(analysis_id=partial.analysis_id, context_id=partial.context_id,
+            citation_manifest_id=partial.citation_manifest_id, citation_manifest_hash=partial.citation_manifest_hash,
+            completion_manifest_id=partial.manifest_id, completion_manifest_hash=partial.payload_hash)
+        with pytest.raises(HTTPException):
+            validate_completion_for_evidence(db, **binding)
+        _, snapshots, limits = validate_completion_for_evidence(db, **binding, allow_partial=True)
+        assert snapshots == []
+        assert {'code': 'SOURCE_NOT_CONSUMABLE', 'source_key': source.source_key,
+            'disposition': 'MANUAL_REQUIRED', 'negative_evidence': False} in limits
+        assert source.state == 'MANUAL_REQUIRED' and not source.waived_by
+    finally:
+        db.close(); engine.dispose()
+
+
 def payload(fixture):
     return dict(project_id=1, prompt_id=44, input_authority='MACHINE_ADMISSION',
         selected_run_id=fixture['run'].id, answer_result_version=fixture['result'].result_version,

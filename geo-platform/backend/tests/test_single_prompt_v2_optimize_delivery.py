@@ -73,6 +73,23 @@ def test_no_problem_has_no_repair_record(frozen):
     assert findings == [] and repairs == []
 
 
+def test_no_source_has_scoped_research_material_not_factual_ready(frozen):
+    from app.modules.single_prompt_v2.citation_contribution import build_answer_units
+    frozen['selected_evidence'] = []
+    frozen['contribution_result_version'] = None
+    frozen['question_topics'] = build_answer_units(frozen['answers'][0]['text'], 1, [])
+    output = execution._compile_machine_delivery('proposal', snapshot(frozen))
+    assert output['publication_draft']['deliverable_type'] == 'SCOPED_RESEARCH_GUIDE'
+    assert '甲厂过滤器可以清洗' in output['publication_draft']['body_markdown']
+    assert '不直接把它当作事实' in output['publication_draft']['body_markdown']
+    assert output['automatic_qa']['status'] == 'READY_INTERNAL'
+    assert output['automatic_qa']['repairs'] == []
+    assert output['validation']['content_delivery_status'] == 'INCOMPLETE'
+    changed = output['publication_draft']
+    changed['sections'][0]['draft_text'] += '乙厂支持带电清洗。'
+    assert audit_draft(frozen, changed)['status'] == 'NEEDS_REPAIR'
+
+
 def test_brand_context_informs_execution_without_public_fact_promotion(frozen):
     frozen['brand_context'] = {'context_version_id': 'context:1', 'passages': [
         {'text': '乙厂希望说明过滤器维护；效率提升99%的说法待核实。', 'source_reference': '用户内部资料'}]}
@@ -152,6 +169,26 @@ def test_confirmation_validator_does_not_trust_forged_ready(frozen):
     output["publication_draft"]["body_markdown"] += "乙厂永久支持100万人。"
     output["automatic_qa"]["status"] = "READY"
     assert "AUTOMATIC_QA_NOT_READY" in execution.validate_execution_output(output, data)["errors"]
+
+
+def test_generated_actual_text_and_qa_project_into_formal_result(frozen):
+    from app.modules.single_prompt_v2.delivery_generation import finish_draft, generation_input, segments_of
+    data = snapshot(frozen)
+    generated = {"sections": [{"heading": "先识别型号与维护条件", "blocks": [{"kind": "INSTRUCTION",
+        "text": "先记录过滤器铭牌型号，再与维护手册的适用型号逐项核对；找不到对应说明时先联系供应方。",
+        "evidence_ids": []}]}]}
+    qa = {"checks": [{"segment_id": r["segment_id"], "verdict": "PASS", "rationale": "限定为查证步骤。"}
+        for r in segments_of(generated)]}
+    receipt = finish_draft(generated, qa, generation_input(frozen))
+    output = execution._attach_generated_delivery(execution._compile_machine_delivery('proposal', data), receipt, data)
+    assert output['validation']['content_delivery_status'] == 'READY'
+    assert output['validation']['status'] == 'READY_FOR_BUSINESS_INPUT'
+    assert output['publication_draft']['body_markdown'] == receipt['body_markdown']
+    assert output['repair_history'] == []
+    output['publication_draft']['body_markdown'] += '\n乙厂适用全部过滤器。'
+    result = execution.validate_execution_output(output, data)
+    assert 'AUTOMATIC_QA_NOT_READY' in result['errors']
+    assert result['content_delivery_status'] == 'INCOMPLETE'
 
 
 def test_regeneration_preserves_prior_version_and_is_idempotent(tmp_path, frozen, monkeypatch):

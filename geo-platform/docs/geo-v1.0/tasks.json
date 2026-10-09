@@ -89,7 +89,7 @@
       "milestone": "M0",
       "owner_role": "后端",
       "owner_name": "Codex（后端）",
-      "status": "READY",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T00"
       ],
@@ -108,12 +108,13 @@
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补",
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
       ],
       "estimate": "2人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
       "blocker": "",
       "commit": "",
@@ -133,7 +134,8 @@
         "status": "PARTIALLY_VERIFIED",
         "scope": "单 Prompt / Run 1；归因式正文；不是全模块 DONE",
         "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
-      }
+      },
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T02",
@@ -162,7 +164,8 @@
         "backend/app/modules/single_prompt_v2/scheduling.py"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
       ],
       "estimate": "3人日",
       "planned_start": "",
@@ -366,7 +369,7 @@
       "milestone": "M1",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T07"
       ],
@@ -382,16 +385,18 @@
         "frontend/src/App.tsx"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
       ],
       "estimate": "2人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "需修复"
+      "audit_classification": "需修复",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T09",
@@ -399,7 +404,7 @@
       "milestone": "M1",
       "owner_role": "后端",
       "owner_name": "Codex（后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T05"
       ],
@@ -417,16 +422,18 @@
         "backend/app/modules/single_prompt_v2/release_api.py"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
       ],
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "可直接复用核心，需补范围"
+      "audit_classification": "可直接复用核心，需补范围",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T10",
@@ -434,7 +441,7 @@
       "milestone": "M2",
       "owner_role": "后端",
       "owner_name": "Codex（后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T02",
         "T08",
@@ -452,19 +459,23 @@
         "backend/app/modules/single_prompt_v2/release_api.py",
         "backend/scripts/release_worker.py",
         "backend/app/modules/single_prompt_v2/diagnosis.py",
-        "backend/app/modules/single_prompt_v2/strategy.py"
+        "backend/app/modules/single_prompt_v2/strategy.py",
+        "backend/app/modules/single_prompt_v2/automatic_delivery.py",
+        "frontend/src/AutomaticOptimizePanel.tsx"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
       ],
       "estimate": "5人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
       "blocker": "",
       "commit": "",
-      "audit_classification": "确实缺失编排层"
+      "audit_classification": "正式自动交接已实现；隔离模拟浏览器通过，真实集成与完整恢复验收待完成",
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T11",
@@ -663,11 +674,13 @@
         "backend/app/modules/single_prompt_v2/execution.py",
         "backend/app/modules/single_prompt_v2/api.py",
         "frontend/src/App.tsx",
-        "backend/app/modules/single_prompt_v2/delivery_text.py"
+        "backend/app/modules/single_prompt_v2/delivery_text.py",
+        "backend/app/modules/single_prompt_v2/delivery_generation.py"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补",
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
       ],
       "estimate": "7人日",
       "planned_start": "",
@@ -682,7 +695,8 @@
         "status": "PARTIALLY_VERIFIED",
         "scope": "单 Prompt / Run 1；v7增加场景对照、选择检查及具体品牌入口，不是全模块 DONE",
         "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#10-2026-10-08-业务交付验收与发布准备"
-      }
+      },
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T17",
@@ -702,11 +716,13 @@
       "definition_of_done": "范围扩大可拦截并改写；预算异常可恢复，不能假成功。",
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/execution.py",
-        "backend/app/modules/single_prompt_v2/llm_safety.py"
+        "backend/app/modules/single_prompt_v2/llm_safety.py",
+        "backend/app/modules/single_prompt_v2/delivery_generation.py"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补",
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
       ],
       "estimate": "5人日",
       "planned_start": "",
@@ -721,7 +737,8 @@
         "status": "PARTIALLY_VERIFIED",
         "scope": "单 Prompt / Run 1；v7三处归因投影复检，不证明来源事实；不同主题营销段落隔离回归通过",
         "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#10-2026-10-08-业务交付验收与发布准备"
-      }
+      },
+      "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
       "id": "T18",
@@ -750,7 +767,8 @@
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+        "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补",
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
       ],
       "estimate": "5人日",
       "planned_start": "",
@@ -1034,7 +1052,8 @@
     "contract": "SC-DELIVERY-001@1.0.0",
     "engineering_evidence": [
       "backend/artifacts/acceptance/20261009T082615Z/report.json",
-      "backend/artifacts/acceptance/browser-20261009T082622Z/report.json"
+      "backend/artifacts/acceptance/browser-20261009T082622Z/report.json",
+      "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
     ],
     "implemented": [
       "Explicit Monitor/Validate range API sharing existing metric calculator",
@@ -1042,14 +1061,16 @@
       "Bounded daily sampling via existing V2 executor",
       "Single-worker ownership, heartbeat and recovery",
       "Controlled invitation and project scope",
-      "Release new-project and Prompt/context/schedule UI"
+      "Release new-project and Prompt/context/schedule UI",
+      "Finite V2 automatic task with explicit authority, immutable inputs and stage handoffs",
+      "Frozen-input generation and actual-text QA with auditable local repairs",
+      "Formal UI create/authorize/read/refresh checked using simulated provider transport"
     ],
     "remaining": [
-      "Automatic Optimize normal new-project end-to-end",
-      "Complete Monitor aggregation and independently expected metric UI validation",
-      "Context consumption beyond internal execution notes",
-      "Full artifact restore and real release migration",
-      "Required real integration authorization and evidence",
+      "Full new-project and recovery E2E acceptance, real model quality authorization",
+      "Monitor aggregation, trends and independently expected metric UI validation",
+      "Qualified brand evidence consumption and complete asset/channel behavior",
+      "Migration02 protected deployment and final restore check",
       "All mandatory acceptance, SEO/GEO and handoff"
     ],
     "real_business_writes": 0,

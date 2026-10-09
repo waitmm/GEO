@@ -74,6 +74,31 @@ def test_machine_direction_and_draft_do_not_require_diagnosis_review():
     assert direction["public_claim_eligibility"] == "VERIFY_FIRST"
 
 
+def test_capability_direction_uses_question_and_does_not_invent_measured_gap():
+    projection = _projection()
+    projection['reasons'][0]['grounded_text'] = '支持离线备份'
+    projection['truth_snapshot'][0]['capability_label'] = '支持离线备份'
+    result = evaluate_qualification_projection(projection, _contribution_scope(), '如何选择备份软件')
+    import json
+    rendered = json.dumps(result, ensure_ascii=False)
+    assert '抖音' not in rendered and '微信' not in rendered
+    assert '如何选择备份软件' in result['execution_drafts'][0]['title']
+    assert result['directions'][0]['observed_or_hypothesis'] == 'CONTENT_OPPORTUNITY_HYPOTHESIS'
+
+
+def test_partial_compute_cannot_qualify_failed_run_reason_or_expand_direction_scope():
+    projection = _projection()
+    projection['coverage_projections'] = {'compute_coverage': {
+        'valid_compute_run_ids': [1], 'all_runs_validly_understood': False}}
+    result = evaluate_qualification_projection(projection, _contribution_scope(), '如何选择备份软件')
+    assert result['analysis_scope']['fixed_run_ids'] == list(range(1, 10))
+    assert result['analysis_scope']['run_ids'] == [1]
+    assert result['directions'][0]['direction_type'] == 'DISCOVERY'
+    assert result['directions'][0]['reason_run_ids'] == [1]
+    assert result['directions'][0]['truth_ids'] == []
+    assert result['final_plan']['analysis_completed'] is False
+
+
 def test_first_party_assertion_supports_direction_but_not_public_claim():
     result = evaluate_qualification_projection(_projection(), _contribution_scope())
 

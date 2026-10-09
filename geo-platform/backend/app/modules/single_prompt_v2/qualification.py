@@ -16,15 +16,16 @@ from app.modules.single_prompt_v2.strategy import build_strategy_input_projectio
 from app.services.serialization import loads
 
 
-QUALIFICATION_CONTRACT_VERSION = "single_prompt_v2.qualification_projection.v2_frozen_intent"
-AUTOMATIC_STRATEGY_VERSION = "single_prompt_v2.automatic_strategy_direction.v2_intent"
-AUTOMATIC_EXECUTION_DRAFT_VERSION = "single_prompt_v2.automatic_execution_draft.v1"
+QUALIFICATION_CONTRACT_VERSION = "single_prompt_v2.qualification_projection.v3_scoped_context"
+AUTOMATIC_STRATEGY_VERSION = "single_prompt_v2.automatic_strategy_direction.v3_scope"
+AUTOMATIC_EXECUTION_DRAFT_VERSION = "single_prompt_v2.automatic_execution_draft.v2_prompt"
 
 _POSITIVE_TRUTH_STATUSES = {"SUPPORTED", "TRUE"}
 _CURRENT_CONTRIBUTION_STATUSES = {
     "READY_FOR_CALIBRATION",
     "CALIBRATION_COMPLETED",
     "REVIEW_COMPLETED",
+    "CALIBRATION_BLOCKED_NO_VALID_EVALUATIONS",
 }
 
 
@@ -68,7 +69,29 @@ def _load_current_contribution_scope(
     *,
     analysis_id: str,
     context_id: str,
+    answer_result_version: str,
+    answer_result_hash: str,
+    result_versions: list[str] | None = None,
 ) -> dict[str, Any]:
+    if result_versions is not None and len(result_versions) != len(set(result_versions)):
+        raise HTTPException(409, "引用贡献版本集合重复")
+    if result_versions is not None and len(result_versions) > 1:
+        scopes = [_load_current_contribution_scope(db, analysis_id=analysis_id, context_id=context_id,
+            answer_result_version=answer_result_version, answer_result_hash=answer_result_hash,
+            result_versions=[version]) for version in sorted(result_versions)]
+        runs = [run for scope in scopes for run in scope["run_ids"]]
+        if len(runs) != len(set(runs)):
+            raise HTTPException(409, "同一 Run 不能同时消费两个引用贡献结果")
+        results = [scope["result"] for scope in scopes]
+        return {"status": "EXPLICIT_MULTI_RUN_SCOPE", "run_ids": sorted(runs),
+            "scope_limitations": ["CITATION_CORRESPONDENCE_NOT_GENERATION_CAUSALITY"],
+            "result": {"result_version": "contribution-set:" + _hash(sorted(result_versions))[:20],
+                "result_versions": sorted(result_versions),
+                "results": [{"result_version": r["result_version"], "result_hash": r["result_hash"]} for r in results],
+                "answer_units": [u for r in results for u in r["answer_units"]],
+                "bindings": [b for r in results for b in r["bindings"]],
+                "processing": {k: sum(r["processing"][k] for r in results) for k in ("done", "failed", "binding_count", "evaluation_count")},
+                "answer_anchor": "UNPROVEN", "generation_influence": "UNAVAILABLE"}}
     rows = (
         db.query(SinglePromptCitationContributionExecution)
         .filter(
@@ -80,6 +103,13 @@ def _load_current_contribution_scope(
         .order_by(SinglePromptCitationContributionExecution.contribution_id.asc())
         .all()
     )
+    if result_versions is not None:
+        selected_results = db.query(SinglePromptCitationContributionResult).filter(
+            SinglePromptCitationContributionResult.result_version.in_(result_versions)).all()
+        owners = {r.contribution_id for r in selected_results}
+        rows = [row for row in rows if row.contribution_id in owners]
+        if len(rows) != len(result_versions):
+            raise HTTPException(409, "指定引用贡献结果缺失或不具备当前消费资格")
     if not rows:
         return {
             "status": "UNAVAILABLE",
@@ -99,11 +129,14 @@ def _load_current_contribution_scope(
         db.query(SinglePromptCitationContributionResult)
         .filter(
             SinglePromptCitationContributionResult.contribution_id == execution.contribution_id,
-            SinglePromptCitationContributionResult.result_version == execution.active_result_version,
+            SinglePromptCitationContributionResult.result_version == (
+                result_versions[0] if result_versions is not None else execution.active_result_version),
         )
         .one_or_none()
     )
     if not result:
+        if result_versions is not None:
+            raise HTTPException(409, "指定引用贡献版本缺少完整保存结果")
         return {
             "status": "INVALID_BINDING",
             "run_ids": [int(execution.selected_run_id)],
@@ -112,10 +145,16 @@ def _load_current_contribution_scope(
         }
     output = loads(result.output_json, {})
     if (
+        _hash(output) != result.output_hash
+        or str((output.get("input") or {}).get("answer_result_version") or "") != answer_result_version
+        or str((output.get("input") or {}).get("answer_result_hash") or "") != answer_result_hash
+        or
         str((output.get("input") or {}).get("analysis_id") or "") != analysis_id
         or str((output.get("input") or {}).get("context_id") or "") != context_id
         or int(output.get("selected_run_id") or 0) != int(execution.selected_run_id)
     ):
+        if result_versions is not None:
+            raise HTTPException(409, "指定引用贡献与 Answer 精确版本或内容 hash 不匹配")
         return {
             "status": "INVALID_BINDING",
             "run_ids": [int(execution.selected_run_id)],
@@ -129,6 +168,7 @@ def _load_current_contribution_scope(
         "result": {
             "contribution_id": execution.contribution_id,
             "result_version": result.result_version,
+            "result_versions": [result.result_version],
             "result_hash": result.output_hash,
             "contract_version": execution.contract_version,
             "processing": {
@@ -219,6 +259,7 @@ def _build_execution_draft(
     direction: dict[str, Any],
     brand_name: str,
     truths: list[dict[str, Any]],
+    prompt_text: str,
 ) -> dict[str, Any]:
     direction_id = direction["strategy_id"]
     claims = []
@@ -243,7 +284,7 @@ def _build_execution_draft(
         {
             "section_id": f"section:{direction_id}:scenario",
             "title": "场景与用户问题",
-            "purpose": "说明抖音跳转微信场景及当前回答中的选择依据",
+            "purpose": f"说明“{prompt_text}”的用户问题及当前回答中的选择依据",
             "section_eligibility": "DRAFT_ALLOWED",
             "public_claim_eligibility": "NOT_CONSUMABLE",
             "claim_ids": [],
@@ -268,7 +309,7 @@ def _build_execution_draft(
             "limiting_dependencies": [],
         },
     ]
-    title = f"{brand_name}抖音跳转微信能力说明"
+    title = f"{brand_name}与“{prompt_text}”：能力范围与适用条件"
     if not public_ready_claims:
         title = f"{title}（内部草案，待补公开依据）"
     return {
@@ -285,7 +326,7 @@ def _build_execution_draft(
             "channel_key": None,
             "channel_role": None,
             "eligibility": "OBSERVE_ONLY",
-            "reason": "当前方向由目标品牌场景理由和第一方能力确认成立；现有 Run 1 Citation 范围不足以选择 9-Run 发布渠道。",
+            "reason": "当前方向来自明确范围的回答理由和目标品牌能力；这不证明某渠道最佳，也不证明可编辑权限。",
         },
         "sections": sections,
         "claims": claims,
@@ -296,7 +337,7 @@ def _build_execution_draft(
         "internal_checklist": [
             "为拟公开的每项目标品牌能力补充官方页面或其他可核对来源",
             "用户选择实际资产类型和发布位置后再进入外部行动批准",
-            "不得把 Run 1 Citation Contribution 表述为 9-Run 引用机制结论",
+            "不得把局部引用贡献外推成未评估回答的引用机制结论",
         ],
         "boundary": {
             "internal_draft_only": True,
@@ -480,7 +521,12 @@ def evaluate_qualification_projection(
     contribution_scope: dict[str, Any],
     prompt_text: str = "",
 ) -> dict[str, Any]:
-    run_ids = sorted(int(value) for value in projection.get("analyzable_run_ids") or [])
+    projection = copy.deepcopy(projection)
+    fixed_run_ids = sorted(int(value) for value in projection.get("analyzable_run_ids") or [])
+    compute = (projection.get("coverage_projections") or {}).get("compute_coverage") or {}
+    run_ids = sorted(set(fixed_run_ids) & set(compute["valid_compute_run_ids"])) if compute else fixed_run_ids
+    projection["analyzable_run_ids"] = run_ids
+    projection["reasons"] = [row for row in projection.get("reasons") or [] if row.get("run_id") in run_ids]
     candidates = _direction_candidates(projection)
     no_answer = bool((projection.get("answer_semantic_eligibility") or {}).get("no_consumable_answer_semantic_result"))
     if no_answer:
@@ -530,8 +576,9 @@ def evaluate_qualification_projection(
             "strategy_id": direction_id,
             "direction_type": "MECHANISM",
             "level": "ACTIONABLE",
-            "mechanism_gap": "TARGET_CAPABILITY_ASSOCIATION_UNDERREPRESENTED",
-            "intervention_goal": "将已确认的抖音跳转微信能力整理为可核验、可引用的场景化事实表达。",
+            "mechanism_gap": "TARGET_CAPABILITY_ASSOCIATION_HYPOTHESIS",
+            "observed_or_hypothesis": "CONTENT_OPPORTUNITY_HYPOTHESIS",
+            "intervention_goal": f"围绕“{prompt_text or '当前问题'}”，将目标品牌已确认且与当前理由相关的能力整理为有出处、保留条件的说明；是否改善答案表现仍需观察。",
             "reason_id": reason["reason_id"],
             "reason_ids": [reason["reason_id"]],
             "reason_text": reason.get("grounded_text") or "",
@@ -564,7 +611,7 @@ def evaluate_qualification_projection(
         }
         directions.append(direction)
         brand_name = str((projection.get("brand_snapshot") or {}).get("brand_name") or "目标品牌")
-        drafts.append(_build_execution_draft(direction=direction, brand_name=brand_name, truths=truths))
+        drafts.append(_build_execution_draft(direction=direction, brand_name=brand_name, truths=truths, prompt_text=prompt_text or "当前问题"))
 
         object_qualifications.append({
             "object_id": reason["reason_id"],
@@ -615,6 +662,7 @@ def evaluate_qualification_projection(
         "input_projection_hash": projection["input_snapshot_hash"],
         "analysis_scope": {
             "run_ids": run_ids,
+            "fixed_run_ids": fixed_run_ids,
             "label": f"Answer analysis: Runs {','.join(map(str, run_ids))}" if run_ids else "Answer analysis: unavailable",
         },
         "evidence_scope": {
@@ -622,6 +670,8 @@ def evaluate_qualification_projection(
             "label": (
                 f"Citation Contribution: Run {contribution_scope['run_ids'][0]} only"
                 if len(contribution_scope.get("run_ids") or []) == 1
+                else f"Citation Contribution: Runs {','.join(map(str, contribution_scope['run_ids']))}"
+                if contribution_scope.get("status") == "EXPLICIT_MULTI_RUN_SCOPE"
                 else "Citation Contribution: unavailable or ambiguous"
             ),
             "status": contribution_scope.get("status"),
@@ -665,6 +715,8 @@ def build_qualification_projection(
     result_version: str,
     project_id: int,
     prompt_id: int,
+    brand_context_version_id: str | None = None,
+    contribution_result_versions: list[str] | None = None,
 ) -> dict[str, Any]:
     projection = build_strategy_input_projection(
         db,
@@ -680,9 +732,41 @@ def build_qualification_projection(
         db,
         analysis_id=analysis_id,
         context_id=str(projection["identity"]["context_id"]),
+        answer_result_version=result_version,
+        answer_result_hash=projection["identity"]["diagnosis_result_hash"],
+        result_versions=contribution_result_versions,
     )
-    return evaluate_qualification_projection(
+    result = evaluate_qualification_projection(
         projection,
         contribution_scope,
         str(projection["prompt_snapshot"]["text"]),
     )
+    from .context_provider import select_context
+    context = select_context(db, project_id=project_id, context_version_id=brand_context_version_id,
+                             query=projection["prompt_snapshot"]["text"])
+    result["brand_context"] = context
+    if contribution_result_versions is not None:
+        result["selected_contribution_result_versions"] = sorted(contribution_result_versions)
+    versions = (contribution_scope.get("result") or {}).get("result_versions") or []
+    if len(versions) > 1:
+        for direction in result["directions"]:
+            dependencies = []
+            for dependency in direction["dependencies"]:
+                if dependency["object_type"] == "CITATION_CONTRIBUTION_SCOPE":
+                    dependencies.extend({**dependency, "object_id": version,
+                        "dependency_id": dependency["dependency_id"] + ":" + version} for version in versions)
+                else:
+                    dependencies.append(dependency)
+            direction["dependencies"] = dependencies
+    for direction in result["directions"]:
+        direction["context_considerations"] = [{"passage_id": p["passage_id"], "text": p["text"],
+            "source_reference": p["source_reference"], "use": "INTERNAL_SCOPE_CHECK_NOT_PUBLIC_CLAIM"}
+            for p in context["passages"]]
+        if context["passages"]:
+            direction["reasoning_trace"].append({"step": "SUPPLEMENTAL_CONTEXT",
+                "version_id": context["context_version_id"], "content_hash": context["content_hash"],
+                "passage_ids": [p["passage_id"] for p in context["passages"]],
+                "result": "INTERNAL_SCOPE_CHECK_NOT_VERIFIED_TRUTH"})
+    result.pop("projection_hash")
+    result["projection_hash"] = _hash(result)
+    return result

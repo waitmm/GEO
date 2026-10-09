@@ -9,8 +9,8 @@ import re
 from typing import Any
 
 
-INPUT_VERSION = "single_prompt_delivery_input.v1"
-TEXT_QA_VERSION = "single_prompt_execution_text_qa.v3"
+INPUT_VERSION = "single_prompt_delivery_input.v2_scoped_questions"
+TEXT_QA_VERSION = "single_prompt_execution_text_qa.v4_scoped_questions"
 
 
 def digest(value: Any) -> str:
@@ -91,10 +91,54 @@ def build_sections(frozen: dict) -> tuple[list[dict], list[dict], list[dict]]:
                 "recheck": "PASS" if not check_statement(after, item, frozen["subjects"]) else "FAIL",
                 "detail": "仅替换当前内容块，不改变回答、来源和机器关系；保留来源完整段落和明确出处。",
             })
+    if not sections:
+        sections = inquiry_sections(frozen)
     return sections, findings, repairs
 
 
+def inquiry_sections(frozen: dict) -> list[dict]:
+    sections = []
+    for topic in frozen.get("question_topics") or []:
+        text = topic["raw_text"]
+        quoted = "\n".join(f"> {line}" for line in text.splitlines())
+        body = ("阅读相关答案时，遇到下面这种说法，可以先向资料作者或服务方逐项核对，而不直接把它当作事实：\n\n"
+                + quoted + "\n\n核对对象是谁、适用什么条件、是否有例外，以及依据的原文和更新时间。"
+                "如涉及操作，再确认前提、预期结果与失败时的退出方式；如涉及数值，请一并询问测量口径。"
+                "拿不到这些信息时，保留疑问，不将该说法写成对任何产品的能力承诺。")
+        sections.append({"section_id": f"question:{topic['answer_unit_id']}", "content_class": "PUBLIC_CONTENT",
+            "purpose": "QUESTION_FOR_VERIFICATION", "title": topic.get("context_heading") or f"核对问题 {len(sections) + 1}",
+            "draft_text": body, "answer_unit_id": topic["answer_unit_id"], "topic": copy.deepcopy(topic),
+            "binding_ids": [], "citation_ids": [], "source_snapshot_ids": [], "truth_ids": [],
+            "reason_ids": [], "theme_ids": [], "allowed_claim_ids": []})
+    return sections
+
+
+def render_inquiry(frozen: dict, sections: list[dict]) -> dict:
+    prompt = frozen["prompt_text"]
+    intent = (frozen.get("prompt_configuration") or {}).get("intent_type")
+    angles = {"category_awareness": ("概念辨析与查证", "先区分概念定义、适用范围与举例，避免把某个例子当成普遍定义。"),
+              "usage_instruction": ("操作前的条件核对", "先明确操作目标与使用环境，再检查步骤的前提、失败处理及退出方式。"),
+              "supplier_recommendation": ("比较方案前的核对清单", "先写清必须满足的条件，再向各方案提供方核对相同的问题，避免只比较宣传语。")}
+    angle, lead = angles.get(intent, ("问题拆解与核对清单", "先写清希望解决的问题，再区分已有说法、适用条件与仍需查证的部分。"))
+    title = f"{prompt}：{angle}"
+    body = [f"# {title}", "", f"面对“{prompt}”，{lead}", "", "## 把问题问具体", "",
+            "下面的说法用于明确核对对象，不作为产品能力、平台规则或普遍结论的证明。逐项得到可回查的回答后，再决定是否采用。"]
+    for section in sections:
+        body.extend(["", f"## {section['title']}", "", section["draft_text"]])
+    body.extend(["", "## 留下可以比较的记录", "",
+        "将每项回复记录为：问题、回答者、适用对象、前提条件、原文地址或说明文件、确认日期。"
+        "同一个问题使用同样的记录方式；没有答案的项目保留为空，不把空白填成“不支持”。",
+        "", "## 如何使用核对结果", "",
+        f"了解{frozen['brand']['brand_name']}或其他方案时，也用上述问题核对具体支持范围。"
+        "对关键条件有明确依据后再小范围尝试，记录实际结果与异常；不以一次成功代替全部场景验证。"])
+    text = "\n".join(body)
+    return {"deliverable_type": "SCOPED_RESEARCH_GUIDE", "title": title, "body_markdown": text,
+            "content_hash": text_digest(text), "sections": copy.deepcopy(sections)}
+
+
 def render_draft(frozen: dict, sections: list[dict], title: str | None = None) -> dict:
+    if sections and all(row.get("purpose") == "QUESTION_FOR_VERIFICATION" for row in sections):
+        return render_inquiry(frozen, sections)
     prompt = frozen["prompt_text"]
     brand = frozen["brand"]["brand_name"]
     title = title or f"{prompt}：场景对照与选择检查"
@@ -147,11 +191,20 @@ def audit_draft(frozen: dict, draft: dict, *, findings: list | None = None, repa
     errors, checks = [], []
     seen = set()
     sections = draft.get("sections") or []
+    inquiry = {row["section_id"]: row for row in inquiry_sections(frozen)}
     for section in sections:
         key = section.get("section_id")
         item = evidence.get(key)
         issues = []
-        if not item or key in seen:
+        if section.get("purpose") == "QUESTION_FOR_VERIFICATION":
+            if section != inquiry.get(key) or key in seen:
+                issues = [{"code": "UNBOUND_RESEARCH_QUESTION", "detail": "核对问题或其引用不属于冻结输入"}]
+            else:
+                topic = section["topic"]
+                answer = next((row["text"] for row in frozen["answers"] if row["run_id"] == topic["run_id"]), "")
+                if answer[topic["raw_start"]:topic["raw_end"]] != topic["raw_text"]:
+                    issues = [{"code": "ANSWER_TOPIC_SPAN_INVALID", "detail": "待核对说法不能回指固定回答"}]
+        elif not item or key in seen:
             issues = [{"code": "UNKNOWN_OR_DUPLICATE_SECTION", "detail": "没有唯一的冻结依据"}]
         else:
             issues = check_statement(str(section.get("draft_text") or ""), item, frozen["subjects"])
@@ -162,7 +215,7 @@ def audit_draft(frozen: dict, draft: dict, *, findings: list | None = None, repa
         seen.add(key)
         errors.extend({**issue, "section_id": key} for issue in issues)
         checks.append({"section_id": key, "status": "FAIL" if issues else "PASS",
-                       "rule": "FULL_ATTRIBUTED_PASSAGE", "scope": "仅证明引用原文及主体/限定未被改写，不证明来源事实为真",
+                       "rule": "SCOPED_QUESTION_NOT_FACT" if key in inquiry else "FULL_ATTRIBUTED_PASSAGE", "scope": "仅证明引用原文及主体/限定未被改写，不证明来源事实为真",
                        "issues": issues})
     expected = render_draft(frozen, sections)
     if draft.get("body_markdown") != expected["body_markdown"] or draft.get("title") != expected["title"]:
@@ -171,11 +224,12 @@ def audit_draft(frozen: dict, draft: dict, *, findings: list | None = None, repa
         errors.append({"code": "CONTENT_HASH_MISMATCH", "detail": "QA 目标正文 hash 不一致"})
     if not sections:
         errors.append({"code": "NO_SUPPORTED_CONTENT", "detail": "当前没有可交付的有据内容块"})
+    research_only = bool(sections) and all(row.get("purpose") == "QUESTION_FOR_VERIFICATION" for row in sections)
     return {
-        "contract_version": TEXT_QA_VERSION, "status": "READY" if not errors else "NEEDS_REPAIR",
-        "publication_eligibility": "NEEDS_BUSINESS_CONFIRMATION" if not errors else "NOT_ELIGIBLE",
+        "contract_version": TEXT_QA_VERSION, "status": "NEEDS_REPAIR" if errors else "READY_INTERNAL" if research_only else "READY",
+        "publication_eligibility": "NEEDS_BUSINESS_CONFIRMATION" if not errors and not research_only else "NOT_ELIGIBLE",
         "checked_content_hash": draft.get("content_hash"), "delivery_input_hash": digest(frozen),
-        "method": "DETERMINISTIC_ATTRIBUTED_EXTRACTION",
+        "method": "SCOPED_RESEARCH_QUESTIONS" if research_only else "DETERMINISTIC_ATTRIBUTED_EXTRACTION",
         "checks": {"statement_grounding": "PASS" if not errors else "FAIL",
                    "complete_text_binding": "PASS" if not any(r["code"] == "UNBOUND_PUBLIC_TEXT" for r in errors) else "FAIL"},
         "statement_checks": checks, "findings": copy.deepcopy(findings or []), "issues": errors,

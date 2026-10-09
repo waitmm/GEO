@@ -317,6 +317,32 @@ class SinglePromptAnalysis(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class SinglePromptOptimizationTask(Base, TimestampMixin):
+    __tablename__ = "single_prompt_optimization_tasks"
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "input_hash", name="uq_optimization_exact_input"),
+        UniqueConstraint("project_id", "idempotency_key", name="uq_optimization_request"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    input_json: Mapped[str] = mapped_column(Text)
+    input_hash: Mapped[str] = mapped_column(String(64))
+    authorization_json: Mapped[str] = mapped_column(Text, default="{}")
+    progress_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(48), default="QUEUED", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    blocker_code: Mapped[str] = mapped_column(String(80), default="")
+    blocker_detail: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class SinglePromptAnalysisContext(Base):
     __tablename__ = "single_prompt_analysis_contexts"
 

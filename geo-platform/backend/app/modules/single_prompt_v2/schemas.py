@@ -5,6 +5,35 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class AutomaticOptimizationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: int = Field(gt=0)
+    prompt_id: int = Field(gt=0)
+    raw_output_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    brand_context_version_id: str | None = Field(default=None, max_length=100)
+    source_fetch_authorized: bool = False
+    completion_manifest_id: str | None = Field(default=None, max_length=100)
+    completion_manifest_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class AutomaticOptimizationAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: int = Field(gt=0)
+    prompt_id: int = Field(gt=0)
+    expected_revision: int = Field(gt=0)
+
+
+class AutomaticOptimizationAuthorization(AutomaticOptimizationAction):
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    max_requests: int = Field(gt=0, le=1000)
+    max_tokens: int = Field(gt=0, le=10000000)
+    max_cost_cny: float = Field(gt=0, le=1000)
+    conservative_cny_per_million_tokens: float = Field(gt=0, le=1000)
+    pricing_source: str = Field(min_length=8, max_length=2000)
+    pricing_checked_at: str = Field(min_length=10, max_length=32)
+
+
 class SinglePromptAnalysisCreate(BaseModel):
     project_id: int
     prompt_id: int
@@ -55,6 +84,7 @@ class SinglePromptAnalysisStatusRead(BaseModel):
     analysis: AnalysisIdentityRead
     sampling: SamplingStateRead
     result_version: str | None = None
+    raw_output_hash: str | None = None
     context_id: str | None = None
     result_source: str
     blocker: dict[str, str] | None = None
@@ -434,6 +464,7 @@ class SinglePromptAutomaticStrategyCreate(BaseModel):
     prompt_id: int
     idempotency_key: str = Field(min_length=8, max_length=120)
     expected_projection_hash: str = Field(min_length=64, max_length=64)
+    brand_context_version_id: str | None = Field(default=None, max_length=80)
 
 
 class SinglePromptStrategyPriorityRevisionCreate(BaseModel):

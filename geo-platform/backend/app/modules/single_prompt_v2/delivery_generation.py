@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .delivery_text import digest, text_digest
 
 
-GENERATION_VERSION = "single_prompt_delivery_generation.v1"
+GENERATION_VERSION = "single_prompt_delivery_generation.v2_qualified_truth"
 QA_VERSION = "single_prompt_delivery_judgment.v1"
 MAX_OUTPUT_TOKENS = 6000
 
@@ -81,10 +81,27 @@ def generation_input(frozen: dict) -> dict:
             "text": item["passage_text"], "title": item["title"], "url": item["url"],
             "snapshot_id": item["snapshot_id"], "passage_id": item["passage_id"],
             "binding_id": item["binding_id"], "evidence_relation": item["evidence_relation"]})
+    for truth in frozen.get('truths') or []:
+        if truth.get('public_use_eligibility') != 'CONSUMABLE':
+            continue
+        original = truth.get('truth_snapshot') or {}
+        from .diagnosis import _truth_statement_eligibility
+        if (digest(original) != truth.get('truth_snapshot_hash')
+                or original.get('truth_source') != 'MANUAL_CONFIRMED'
+                or original.get('truth_id') != truth.get('product_truth_id')
+                or original.get('capability_label') != truth.get('capability_label')
+                or original.get('source_reference') != truth.get('source_reference')
+                or _truth_statement_eligibility(capability_label=original.get('capability_label') or '',
+                    product_truth_status=original.get('product_truth_status') or '',
+                    source_reference=original.get('source_reference') or '')['status'] != 'ELIGIBLE'):
+            raise ValueError('TARGET_TRUTH_PROVENANCE_INVALID')
+        evidence.append({'evidence_id': f"truth:{truth['product_truth_id']}", 'kind': 'TARGET_VERIFIED',
+            'text': frozen['brand']['brand_name'] + '：' + truth['capability_label'],
+            'title': '目标品牌已确认事实', 'url': truth['source_reference'],
+            'truth_id': truth['product_truth_id'], 'truth_snapshot_hash': truth['truth_snapshot_hash'],
+            'verification_state': 'MANUAL_CONFIRMED_WITH_SOURCE', 'scope': 'TARGET_BRAND_ONLY'})
     if len({row["evidence_id"] for row in evidence}) != len(evidence):
         raise ValueError("DUPLICATE_DELIVERY_EVIDENCE")
-    # A truth ID or a first-party assertion alone does not confer public-use eligibility.
-    # Qualified target statements will only be included by an explicit provenance adapter.
     return {"contract_version": GENERATION_VERSION, "delivery_input_hash": digest(frozen),
         "question": frozen["prompt_text"], "intent": (frozen.get("prompt_configuration") or {}).get("intent_type", "UNKNOWN"),
         "brand_name": frozen["brand"]["brand_name"], "public_evidence": evidence,

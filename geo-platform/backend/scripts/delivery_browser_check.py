@@ -94,9 +94,23 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     from app.modules.single_prompt_v2.automatic_delivery import execute_task
     from test_automatic_delivery import simulated_delivery_transport
     analysis = fixture['analysis']
+    slow_reads = []
+    def delayed_first_read(route):
+        if route.request.method == 'GET' and not slow_reads:
+            slow_reads.append(route.request.url)
+            response = route.fetch()
+            # Longer than the polling interval: a new poll must not starve this response.
+            time.sleep(3.5)
+            route.fulfill(response=response)
+        else:
+            route.continue_()
+    task_route = '**/optimization-tasks?*'
+    page.route(task_route, delayed_first_read)
     page.goto(f'{origin}/?v2_project=1&v2_prompt=44&v2_analysis={analysis.analysis_id}')
     panel = page.get_by_role('region', name='自动优化交付')
-    expect(panel.get_by_role('button', name='开始自动优化', exact=True)).to_be_enabled()
+    expect(panel.get_by_role('button', name='开始自动优化', exact=True)).to_be_enabled(timeout=15000)
+    assert len(slow_reads) == 1
+    page.unroute(task_route, delayed_first_read)
     with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/optimization-tasks')) as response:
         panel.get_by_role('button', name='开始自动优化', exact=True).click()
     task_id = response.value.json()['task_id']
@@ -120,6 +134,12 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     page.reload()
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
     expect(panel.get_by_text('已记录 token', exact=True)).to_be_visible()
+    expect(page.locator('.v2-advanced-details')).not_to_have_attribute('open', '')
+    panel.get_by_text(re.compile(r'^质量问题与实际修复')).click()
+    expect(panel.get_by_text('本次检查未发现问题，未进行修复', exact=True)).to_be_visible()
+    page.get_by_text('原始资料、人工纠错与高级审计', exact=True).click()
+    expect(page.locator('.v2-advanced-details')).to_have_attribute('open', '')
+    page.get_by_text('原始资料、人工纠错与高级审计', exact=True).click()
     for width in [1440, 1024, 390]:
         page.set_viewport_size({'width': width, 'height': 1000})
         panel.scroll_into_view_if_needed()
@@ -127,9 +147,31 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         page.screenshot(path=str(out / path), full_page=False)
         report['screenshots'].append(path)
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'page overflow: {width}'
+    page.set_viewport_size({'width': 1440, 'height': 1000})
+    held = []
+    def hold_analysis(route):
+        held.append((route, route.fetch()))
+    analysis_route = f'**/analyses/{analysis.analysis_id}?*'
+    page.route(analysis_route, hold_analysis)
+    page.get_by_role('button', name='刷新分析状态', exact=True).click()
+    page.get_by_role('button', name='新建项目', exact=True).click()
+    dialog = page.get_by_role('dialog')
+    dialog.get_by_label('项目名称', exact=True).fill('延迟请求隔离项目')
+    dialog.get_by_label('品牌名称', exact=True).fill('新品牌')
+    dialog.get_by_role('button', name=re.compile('创.*建')).click()
+    expect(dialog).not_to_be_visible()
+    expect(panel).to_have_count(0)
+    assert held, 'Delayed real analysis response was not captured'
+    for route, response in held:
+        route.fulfill(response=response)
+    page.unroute(analysis_route, hold_analysis)
+    page.wait_for_timeout(250)
+    expect(panel).to_have_count(0)
+    assert analysis.analysis_id not in page.url and 'v2_project=1&' not in page.url
     report.update(verified=['UI_OPTIMIZE_CREATE', 'STABLE_QUEUED_ACTION', 'CACHE_MISS_NOT_FAILURE',
         'EXPLICIT_BUDGET_AUTHORIZATION', 'WORKER_EXISTING_STAGE_CHAIN', 'ACTUAL_DRAFT_AND_QA_READ',
-        'REFRESH_PRESERVES_EXACT_RESULT', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
+        'REFRESH_PRESERVES_EXACT_RESULT', 'SLOW_POLL_DOES_NOT_STARVE', 'ACTUAL_QA_EMPTY_REPAIRS', 'ADVANCED_AUDIT_OPT_IN',
+        'LATE_ANALYSIS_RESPONSE_CANNOT_RESTORE_OLD_PROJECT', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
         simulated_provider_requests=len(calls), not_verified=['REAL_MODEL_QUALITY', 'REAL_SAMPLING', 'REAL_SOURCE_FETCH'],
         task_id=task_id, status='PASS_SCOPED_SIMULATED_INTEGRATION_NOT_REAL_MODEL')
     assert not report['errors'], report['errors']

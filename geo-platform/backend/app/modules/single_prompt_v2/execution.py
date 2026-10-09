@@ -237,6 +237,14 @@ def _strategy_input_for_execution(
     review_snapshot = strategy_review_snapshot(review) if review else {}
     baseline = _baseline_snapshot(analysis, context)
     truths = _confirmed_truths(strategy_input, direction) if not is_machine_authority else []
+    if is_machine_authority:
+        answer_result = db.query(SinglePromptDiagnosisResult).filter_by(
+            diagnosis_id=strategy.diagnosis_id, result_version=strategy.diagnosis_result_version,
+            output_hash=strategy.diagnosis_result_hash).one_or_none()
+        answer_output = loads(answer_result.output_json, {}) if answer_result else {}
+        if not answer_result or _hash(answer_output) != strategy.diagnosis_result_hash:
+            raise HTTPException(409, '公开事实缺少准确的回答与事实快照版本')
+        truths = _machine_public_truths(strategy_input, direction, answer_output)
     if not is_machine_authority and (
         not truths
         or {row["product_truth_id"] for row in truths} != {int(value) for value in direction.get("truth_ids") or []}
@@ -306,6 +314,32 @@ def _strategy_input_for_execution(
             "retest_computation": False,
         },
     }
+
+
+def _machine_public_truths(qualification: dict, direction: dict, answer_output: dict) -> list[dict]:
+    from .diagnosis import _truth_statement_eligibility
+    qualified_ids = {str(row['object_id']) for row in qualification.get('object_qualifications') or []
+        if row.get('object_type') == 'PRODUCT_TRUTH'
+        and (row.get('eligibility_by_use') or {}).get('public_claim') == 'CONSUMABLE'}
+    direction_ids = {str(value) for value in direction.get('truth_ids') or []}
+    admitted = []
+    for truth in (answer_output.get('truth_diagnosis') or {}).get('truth_snapshot') or []:
+        if str(truth.get('truth_id')) not in qualified_ids & direction_ids:
+            continue
+        eligibility = _truth_statement_eligibility(capability_label=truth.get('capability_label') or '',
+            product_truth_status=truth.get('product_truth_status') or '', source_reference=truth.get('source_reference') or '')
+        if (not str(truth.get('capability_label') or '').strip()
+                or truth.get('truth_source') != 'MANUAL_CONFIRMED' or eligibility['status'] != 'ELIGIBLE'):
+            raise HTTPException(409, '公开事实资格与精确事实快照不一致')
+        admitted.append({'product_truth_id': int(truth['truth_id']),
+            'capability_key': truth.get('capability_key'), 'capability_label': truth['capability_label'],
+            'product_truth_status': truth['product_truth_status'], 'truth_source': truth['truth_source'],
+            'source_reference': truth['source_reference'], 'approved_aliases': [],
+            'public_use_eligibility': 'CONSUMABLE', 'truth_snapshot': copy.deepcopy(truth),
+            'truth_snapshot_hash': _hash(truth)})
+    if {str(row['product_truth_id']) for row in admitted} != qualified_ids & direction_ids:
+        raise HTTPException(409, '公开事实资格引用了快照中不存在的对象')
+    return admitted
 
 
 def _asset_options(direction: dict[str, Any]) -> tuple[list[dict], list[dict]]:
@@ -449,9 +483,16 @@ def _freeze_delivery_input(
     brand = copy.deepcopy(snapshot["brand_snapshot"])
     if _hash(brand) != snapshot["brand_snapshot_hash"]:
         raise HTTPException(409, detail="冻结品牌输入 hash 不匹配")
-    # Older proposals did not freeze a domain. Carry only the exact prior result's
-    # observed page, explicitly attributed to that result; never consult Project.
+    # Domain matches are observations, not ownership or editing permissions.
     asset_observations = []
+    configured_host = urlparse(str(brand.get('website_url') or '')).hostname
+    for source in source_map.values():
+        source_host = urlparse(source.canonical_url).hostname
+        if configured_host and source_host and (source_host == configured_host or source_host.endswith('.' + configured_host)):
+            asset_observations.append({'candidate_id': f'observed:{source.snapshot_id}',
+                'url': source.canonical_url, 'title': source.title, 'snapshot_id': source.snapshot_id,
+                'content_hash': source.content_hash, 'can_authorize_update': False,
+                'editable_permission': 'UNVERIFIED', 'brand_ownership': 'CONFIGURED_DOMAIN_OBSERVATION'})
     if prior_result:
         prior = loads(prior_result.output_json, {})
         if _hash(prior) != prior_result.output_hash:
@@ -460,6 +501,7 @@ def _freeze_delivery_input(
             source = source_map.get(candidate.get("snapshot_id"))
             if not source or source.content_hash != candidate.get("content_hash") or source.canonical_url != candidate.get("url"):
                 raise HTTPException(409, detail="已有页面观察与冻结来源不匹配")
+            asset_observations = [item for item in asset_observations if item['snapshot_id'] != source.snapshot_id]
             asset_observations.append({
                 **copy.deepcopy(candidate), "provenance_result_version": prior_result.result_version,
                 "provenance_result_hash": prior_result.output_hash,
@@ -558,7 +600,8 @@ def _freeze_question_delivery(db: Session, snapshot: dict, context: SinglePrompt
         "answer_result_version": answer.result_version, "answer_result_hash": answer.output_hash,
         "answer_events": [], "contribution_result_version": None, "contribution_result_hash": None,
         "source_manifest": {}, "selected_evidence": [], "asset_observations": [], "subjects": [brand["brand_name"]],
-        "strategy_direction": copy.deepcopy(snapshot["direction"]), "truths": [], "historical_failures": [],
+        "strategy_direction": copy.deepcopy(snapshot["direction"]),
+        "truths": copy.deepcopy(snapshot.get("truths") or []), "historical_failures": [],
         "question_topics": topics, "content_mode": "RESEARCH_GUIDE_NOT_FACTUAL_ANSWER",
         "limitations": ["CITATION_NOT_CONSUMED", "ANSWER_TOPICS_ARE_NOT_VERIFIED_FACTS"],
     }
@@ -599,7 +642,13 @@ def _compile_machine_delivery(proposal_id: str, input_snapshot: dict[str, Any]) 
     failures = frozen["historical_failures"]
     contribution_version = frozen["contribution_result_version"]
     asset_types, surfaces = _asset_options(direction)
-    recommended_asset_type = "HELP_DOC" if any(row["asset_type"] == "HELP_DOC" for row in asset_types) else (asset_types[0]["asset_type"] if asset_types else None)
+    intent = (frozen.get('prompt_configuration') or {}).get('intent_type')
+    public_truths = [row for row in frozen.get('truths') or [] if row.get('public_use_eligibility') == 'CONSUMABLE']
+    preferred = 'FEATURE_PAGE' if public_truths and intent == 'supplier_recommendation' else 'HELP_DOC'
+    recommended_asset_type = preferred if any(row['asset_type'] == preferred for row in asset_types) else (asset_types[0]['asset_type'] if asset_types else None)
+    content_purpose = ('已确认能力的适用条件与选择依据' if preferred == 'FEATURE_PAGE' else
+        '操作前提、步骤与异常处理' if intent == 'usage_instruction' else
+        '概念解释与适用边界' if intent == 'category_awareness' else '选择标准与核对方法')
     recommended_surface = next((row["surface_key"] for row in surfaces if row["asset_type"] == recommended_asset_type), None)
     existing_asset_checks = copy.deepcopy(frozen["asset_observations"])
     output = {
@@ -628,6 +677,7 @@ def _compile_machine_delivery(proposal_id: str, input_snapshot: dict[str, Any]) 
             "inventory_state": "UNKNOWN",
             "existing_asset_checks": existing_asset_checks,
             "recommended_asset_type": recommended_asset_type,
+            "selection_reason": f'当前问题“{prompt_text}”需要{content_purpose}；选择对应内容形式，不依据单次引用推定渠道效果。',
             "recommended_operation": "VERIFY_EXISTING_THEN_UPDATE_OR_CREATE",
             "conditions": [
                 {"when": "候选页面经用户确认归属、编辑权限和内容适配均成立", "operation": "UPDATE_EXISTING", "target_candidate_id": existing_asset_checks[0]["candidate_id"] if existing_asset_checks else None},
@@ -639,16 +689,17 @@ def _compile_machine_delivery(proposal_id: str, input_snapshot: dict[str, Any]) 
             "publication_channel_key": direction.get("channel_key") or "OWNED_SURFACE_UNRESOLVED",
             "publication_channel_label": direction.get("channel_label") or f"{brand_name}自有帮助/资讯入口（待确认）",
             "recommended_surface": recommended_surface,
-            "known_website": "",
+            "known_website": str(frozen['brand'].get('website_url') or ''),
             "reason": (
-                f"冻结资料中已有相关页面：{existing_asset_checks[0]['url']}。本稿承接的是选型说明、来源对照和操作前检查，"
-                "适合该站帮助/资讯栏目；已有页先核对是否能容纳完整说明，若是产品落地页则保留它作为资料入口，另设帮助页。"
+                f"冻结资料中已有页面：{existing_asset_checks[0]['url']}。"
+                f"本次内容重点是{content_purpose}；可核查该页是否适合承接，不能证明用户拥有编辑权限。"
                 "这是内容承载的条件建议，不是引用效果排名，也不声称官网优于第三方渠道。"
                 if existing_asset_checks else
-                "固定输入没有可核对的已有承载页，发布位置仍待确定；帮助文档仅为内容形式建议，不推定目标品牌控制官网。"
+                f"本稿针对{content_purpose}，优先考虑能维护完整说明和出处的内容位置。固定输入没有可核对的已有承载页，位置建议有条件，不推定官网最佳或用户拥有编辑权限。"
             ),
             "strategy_channel_role_changed": False,
-            "upstream_channel_resolver_reused": True,
+            "upstream_channel_resolver_reused": False,
+            "selection_basis": "FROZEN_STRATEGY_AND_CONTENT_PURPOSE",
             "upstream_strategy_channel": {
                 "channel_key": direction.get("channel_key"),
                 "channel_role": direction.get("channel_role"),

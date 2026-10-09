@@ -1714,6 +1714,27 @@ export default function App() {
   const project = projects.find((item) => item.id === projectId);
   // promptContext：null=未显式选择（等同项目视图），"ALL"=全部 Prompt（项目视图），number=单 Prompt 视图
   const activePromptId = typeof promptContext === "number" ? promptContext : null;
+  const v2ReadScope = useRef({ projectId, promptId: activePromptId, analysisId: v2Analysis?.analysis.analysis_id });
+  v2ReadScope.current = { projectId, promptId: activePromptId, analysisId: v2Analysis?.analysis.analysis_id };
+  const v2ReadSerial = useRef(0);
+  const v2ReadRequests = useRef<Record<string, number>>({});
+  function beginV2Read(key: string, analysisScoped = true) {
+    const owner = { projectId, promptId: activePromptId, analysisId: v2Analysis?.analysis.analysis_id };
+    const serial = ++v2ReadSerial.current;
+    v2ReadRequests.current[key] = serial;
+    return () => v2ReadRequests.current[key] === serial
+      && owner.projectId === v2ReadScope.current.projectId
+      && owner.promptId === v2ReadScope.current.promptId
+      && (!analysisScoped || owner.analysisId === v2ReadScope.current.analysisId);
+  }
+  function invalidateV2Reads() {
+    v2ReadRequests.current = {};
+    setV2Loading(false); setV2AnalysisHistoryLoading(false); setV2RunPoolLoading(false);
+    setV2SourceRefreshing(false); setV2DiagnosisLoading(false);
+    setV2CitationContributionHistoryLoading(false); setV2CitationContributionLoading(false);
+    setV2StrategyLoading(false); setV2ExecutionLoading(false); setV2RetestLoading(false);
+    setV2QualificationCriticLoading(false); setV2CriticGoldLoading(false);
+  }
   const scopedPrompt = activePromptId ? prompts.find((item) => item.id === activePromptId) : undefined;
   const visibleRuns = activePromptId ? runs.filter((item) => item.prompt_id === activePromptId) : runs;
 
@@ -1806,11 +1827,13 @@ export default function App() {
 
   function selectReleaseProject(id: number) {
     if (RELEASE_FIRST_SLICE) {
+      invalidateV2Reads();
       const params = new URLSearchParams({ release_view: page, v2_project: String(id) });
       window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
       ++projectRequestSeq.current;
       setPromptContext(null);
       setPrompts([]);
+      setV2AnalysisHistory([]); setV2RunPool(null);
       setV2Analysis(null);
       setV2SourcePreparation(null);
       setV2Diagnosis(null);
@@ -1830,6 +1853,7 @@ export default function App() {
 
   function selectReleasePrompt(id: number | "ALL") {
     if (RELEASE_FIRST_SLICE && projectId) {
+      invalidateV2Reads();
       const params = new URLSearchParams({ release_view: page, v2_project: String(projectId), v2_prompt: String(id) });
       window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
       setV2Analysis(null); setV2AnalysisHistory([]); setV2RunPool(null);
@@ -1931,42 +1955,51 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const analysisId = v2Analysis?.analysis.analysis_id || params.get("v2_analysis");
     if (!analysisId || !projectId || !activePromptId) return;
+    const current = beginV2Read('analysis', false);
     setV2Loading(true);
     try {
       const status = await api.getSinglePromptV2Analysis(analysisId, projectId, activePromptId);
+      if (!current()) return;
       setV2Analysis(status);
       setV2SampleCount(status.sampling.planned_run_count);
       persistV2Identity(status);
     } catch (error: any) {
+      if (!current()) return;
       setV2Analysis(null);
       message.error(error.message || "读取 V2 分析状态失败");
     } finally {
-      setV2Loading(false);
+      if (current()) setV2Loading(false);
     }
   }
 
   async function refreshV2AnalysisHistory() {
     if (!projectId || !activePromptId) return;
+    const current = beginV2Read('history', false);
     setV2AnalysisHistoryLoading(true);
     try {
-      setV2AnalysisHistory(await api.listSinglePromptV2Analyses(projectId, activePromptId));
+      const rows = await api.listSinglePromptV2Analyses(projectId, activePromptId);
+      if (current()) setV2AnalysisHistory(rows);
     } catch (error: any) {
+      if (!current()) return;
       setV2AnalysisHistory([]);
       message.error(error.message || "读取已有分析失败");
     } finally {
-      setV2AnalysisHistoryLoading(false);
+      if (current()) setV2AnalysisHistoryLoading(false);
     }
   }
 
   async function refreshV2RunPool(page = v2RunPool?.page || 1) {
     if (!projectId || !activePromptId) return;
+    const current = beginV2Read('pool', false);
     setV2RunPoolLoading(true);
     try {
-      setV2RunPool(await api.listSinglePromptV2RunPool(projectId, activePromptId, page, 20));
+      const rows = await api.listSinglePromptV2RunPool(projectId, activePromptId, page, 20);
+      if (current()) setV2RunPool(rows);
     } catch (error: any) {
+      if (!current()) return;
       message.error(error.message || "读取采样记录池失败");
     } finally {
-      setV2RunPoolLoading(false);
+      if (current()) setV2RunPoolLoading(false);
     }
   }
 
@@ -2055,9 +2088,12 @@ export default function App() {
 
   async function openV2Analysis(summary: SinglePromptV2AnalysisListItem) {
     if (!projectId || !activePromptId) return;
+    invalidateV2Reads();
+    const current = beginV2Read('analysis', false);
     setV2Loading(true);
     try {
       const status = await api.getSinglePromptV2Analysis(summary.analysis.analysis_id, projectId, activePromptId);
+      if (!current()) return;
       const params = new URLSearchParams(window.location.search);
       params.set("v2_project", String(status.analysis.project_id));
       params.set("v2_prompt", String(status.analysis.prompt_id));
@@ -2087,13 +2123,15 @@ export default function App() {
       setV2Retest(null);
       persistV2Identity(status);
     } catch (error: any) {
+      if (!current()) return;
       message.error(error.message || "打开 V2 分析失败");
     } finally {
-      setV2Loading(false);
+      if (current()) setV2Loading(false);
     }
   }
 
   function showV2AnalysisHistory() {
+    invalidateV2Reads();
     const params = new URLSearchParams(window.location.search);
     ["v2_analysis", "v2_diagnosis", "v2_diagnosis_result", "v2_contribution", "v2_strategy", "v2_strategy_result", "v2_execution", "v2_execution_proposal", "v2_execution_result", "v2_retest"].forEach((key) => params.delete(key));
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
@@ -2176,6 +2214,7 @@ export default function App() {
 
   async function refreshV2SourcePreparation(silent = false) {
     if (!v2Analysis?.context_id || !projectId || !activePromptId) return;
+    const current = beginV2Read('sources');
     if (!silent) setV2SourceRefreshing(true);
     try {
       const status = await api.getSinglePromptV2SourcePreparation(
@@ -2183,11 +2222,12 @@ export default function App() {
         projectId,
         activePromptId,
       );
-      setV2SourcePreparation(status);
+      if (current()) setV2SourcePreparation(status);
     } catch (error: any) {
+      if (!current()) return;
       message.error(error.message || "读取来源准备状态失败");
     } finally {
-      if (!silent) setV2SourceRefreshing(false);
+      if (!silent && current()) setV2SourceRefreshing(false);
     }
   }
 
@@ -2354,16 +2394,19 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const diagnosisId = v2Diagnosis?.diagnosis.diagnosis_id || params.get("v2_diagnosis");
     if (!diagnosisId) return;
+    const current = beginV2Read('diagnosis');
     if (!silent) setV2DiagnosisLoading(true);
     try {
       const status = await api.getSinglePromptV2Diagnosis(v2Analysis.analysis.analysis_id, diagnosisId, projectId, activePromptId);
+      if (!current()) return;
       setV2Diagnosis(status);
       persistV2DiagnosisIdentity(status);
     } catch (error: any) {
+      if (!current()) return;
       setV2Diagnosis(null);
       message.error(error.message || "读取诊断状态失败");
     } finally {
-      if (!silent) setV2DiagnosisLoading(false);
+      if (!silent && current()) setV2DiagnosisLoading(false);
     }
   }
 
@@ -2445,6 +2488,7 @@ export default function App() {
 
   async function refreshV2CitationContributionHistory() {
     if (!v2Analysis || !projectId || !activePromptId) return;
+    const current = beginV2Read('contribution-history');
     setV2CitationContributionHistoryLoading(true);
     try {
       const items = await api.listSinglePromptV2CitationContributions(
@@ -2452,16 +2496,18 @@ export default function App() {
         projectId,
         activePromptId,
       );
-      setV2CitationContributionHistory(items);
+      if (current()) setV2CitationContributionHistory(items);
     } catch (error: any) {
+      if (!current()) return;
       message.error(error.message || "读取当前 Analysis 的 P1 执行失败");
     } finally {
-      setV2CitationContributionHistoryLoading(false);
+      if (current()) setV2CitationContributionHistoryLoading(false);
     }
   }
 
   async function openV2CitationContribution(contributionId: string) {
     if (!v2Analysis || !projectId || !activePromptId) return;
+    const current = beginV2Read('contribution');
     setV2CitationContributionLoading(true);
     try {
       const status = await api.getSinglePromptV2CitationContribution(
@@ -2470,15 +2516,16 @@ export default function App() {
         projectId,
         activePromptId,
       );
+      if (!current()) return;
       setV2CitationContribution(status);
       persistV2CitationContributionIdentity(status);
       window.setTimeout(() => {
         document.getElementById("v2-citation-contribution-p1")?.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 0);
     } catch (error: any) {
-      message.error(error.message || "打开精确 P1 执行失败");
+      if (current()) message.error(error.message || "打开精确 P1 执行失败");
     } finally {
-      setV2CitationContributionLoading(false);
+      if (current()) setV2CitationContributionLoading(false);
     }
   }
 
@@ -2487,6 +2534,7 @@ export default function App() {
     const contributionId = v2CitationContribution?.execution.contribution_id
       || new URLSearchParams(window.location.search).get("v2_contribution");
     if (!contributionId) return;
+    const current = beginV2Read('contribution');
     if (!silent) setV2CitationContributionLoading(true);
     try {
       const status = await api.getSinglePromptV2CitationContribution(
@@ -2495,12 +2543,13 @@ export default function App() {
         projectId,
         activePromptId,
       );
+      if (!current()) return;
       setV2CitationContribution(status);
       persistV2CitationContributionIdentity(status);
     } catch (error: any) {
-      if (!silent) message.error(error.message || "读取 Citation Contribution 状态失败");
+      if (!silent && current()) message.error(error.message || "读取 Citation Contribution 状态失败");
     } finally {
-      if (!silent) setV2CitationContributionLoading(false);
+      if (!silent && current()) setV2CitationContributionLoading(false);
     }
   }
 
@@ -2925,6 +2974,7 @@ export default function App() {
 
   async function refreshV2StrategyContext(diagnosisStatus: SinglePromptV2DiagnosisStatus | null = v2Diagnosis) {
     if (!v2Analysis || !diagnosisStatus?.result || !projectId || !activePromptId) return;
+    const current = beginV2Read('strategy');
     setV2StrategyLoading(true);
     try {
       const [readiness, qualification] = await Promise.all([
@@ -2943,6 +2993,7 @@ export default function App() {
           activePromptId,
         ),
       ]);
+      if (!current()) return;
       setV2StrategyReadiness(readiness);
       setV2QualificationProjection(qualification);
       const params = new URLSearchParams(window.location.search);
@@ -2959,6 +3010,7 @@ export default function App() {
         projectId,
         activePromptId,
       );
+      if (!current()) return;
       setV2Strategy(status);
       persistV2StrategyIdentity(status);
       setV2StrategyDirectionOrder(
@@ -2968,9 +3020,9 @@ export default function App() {
       );
       if ((status.result?.output.directions || []).length === 1) setV2ExecutionDirectionId(status.result!.output.directions[0].direction_id);
     } catch (error: any) {
-      message.error(error.message || "读取 V2 策略状态失败");
+      if (current()) message.error(error.message || "读取 V2 策略状态失败");
     } finally {
-      setV2StrategyLoading(false);
+      if (current()) setV2StrategyLoading(false);
     }
   }
 
@@ -2978,6 +3030,7 @@ export default function App() {
     if (!v2Analysis || !projectId || !activePromptId) return;
     const criticId = new URLSearchParams(window.location.search).get("v2_critic");
     if (!criticId) return;
+    const current = beginV2Read('critic');
     if (!quiet) setV2QualificationCriticLoading(true);
     try {
       const status = await api.getSinglePromptV2QualificationCritic(
@@ -2986,17 +3039,18 @@ export default function App() {
         projectId,
         activePromptId,
       );
-      setV2QualificationCritic(status);
+      if (current()) setV2QualificationCritic(status);
     } catch (error: any) {
-      if (!quiet) message.error(error.message || "读取千问影子复核失败");
+      if (!quiet && current()) message.error(error.message || "读取千问影子复核失败");
     } finally {
-      if (!quiet) setV2QualificationCriticLoading(false);
+      if (!quiet && current()) setV2QualificationCriticLoading(false);
     }
   }
 
   async function refreshV2CriticGold(statusOverride?: SinglePromptV2QualificationCriticStatus, quiet = false) {
     const critic = statusOverride || v2QualificationCritic;
     if (!v2Analysis || !critic?.result || !projectId || !activePromptId) return;
+    const current = beginV2Read('gold');
     if (!quiet) setV2CriticGoldLoading(true);
     try {
       const gold = await api.getSinglePromptV2QualificationCriticGold(
@@ -3006,6 +3060,7 @@ export default function App() {
         projectId,
         activePromptId,
       );
+      if (!current()) return;
       setV2CriticGold(gold);
       const latest = gold.reviews[gold.reviews.length - 1];
       if (latest) {
@@ -3018,9 +3073,9 @@ export default function App() {
         }])));
       }
     } catch (error: any) {
-      if (!quiet) message.error(error.message || "读取 Phase B1 人工 Gold 失败");
+      if (!quiet && current()) message.error(error.message || "读取 Phase B1 人工 Gold 失败");
     } finally {
-      if (!quiet) setV2CriticGoldLoading(false);
+      if (!quiet && current()) setV2CriticGoldLoading(false);
     }
   }
 
@@ -3299,19 +3354,22 @@ export default function App() {
     if (!v2Strategy || !projectId || !activePromptId) return;
     const proposalId = v2Execution?.proposal.proposal_id || new URLSearchParams(window.location.search).get("v2_execution_proposal");
     if (!proposalId) return;
+    const current = beginV2Read('execution');
     setV2ExecutionLoading(true);
     try {
       const status = await api.getSinglePromptV2ExecutionProposal(
         v2Strategy.strategy.strategy_id, proposalId, projectId, activePromptId,
       );
+      if (!current()) return;
       setV2Execution(status);
       persistV2ExecutionIdentity(status);
       hydrateV2ExecutionEdit(status);
     } catch (error: any) {
+      if (!current()) return;
       setV2Execution(null);
       message.error(error.message || "读取 V2 执行方案失败");
     } finally {
-      setV2ExecutionLoading(false);
+      if (current()) setV2ExecutionLoading(false);
     }
   }
 
@@ -3519,12 +3577,14 @@ export default function App() {
 
   async function refreshV2RetestReadiness(publicationId: string = v2RetestPublicationId) {
     if (!projectId || !activePromptId) return;
+    const current = beginV2Read('retest-readiness');
     const publication = v2Execution?.publications.find((row) => row.publication_id === publicationId);
     setV2RetestLoading(true);
     try {
       const readiness = await api.getSinglePromptV2RetestReadiness(
         projectId, activePromptId, publication?.confirmation_id, publication?.publication_id,
       );
+      if (!current()) return;
       setV2RetestReadiness(readiness);
       if (readiness.identity_default) {
         setV2MeasurementIdentity({
@@ -3538,10 +3598,11 @@ export default function App() {
       const planned = Number(readiness.baseline?.sampling_configuration?.sample_count || readiness.baseline?.run_manifest?.planned_count || 3);
       setV2RetestSampleCount(Math.min(10, Math.max(1, planned)));
     } catch (error: any) {
+      if (!current()) return;
       setV2RetestReadiness(null);
       message.error(error.message || "读取复测资格失败");
     } finally {
-      setV2RetestLoading(false);
+      if (current()) setV2RetestLoading(false);
     }
   }
 
@@ -3589,17 +3650,20 @@ export default function App() {
     if (!projectId || !activePromptId) return;
     const retestId = v2Retest?.retest.retest_id || new URLSearchParams(window.location.search).get("v2_retest");
     if (!retestId) return;
+    const current = beginV2Read('retest');
     setV2RetestLoading(true);
     try {
       const status = await api.getSinglePromptV2Retest(retestId, projectId, activePromptId);
+      if (!current()) return;
       setV2Retest(status);
       setV2RetestPublicationId(status.retest.publication_id);
       persistV2RetestIdentity(status);
     } catch (error: any) {
+      if (!current()) return;
       setV2Retest(null);
       message.error(error.message || "读取复测状态失败");
     } finally {
-      setV2RetestLoading(false);
+      if (current()) setV2RetestLoading(false);
     }
   }
 
@@ -5825,6 +5889,8 @@ export default function App() {
                 projectId={projectId} promptId={activePromptId} analysisId={v2Analysis.analysis.analysis_id} rawHash={v2Analysis.raw_output_hash}
                 completion={v2SourcePreparation?.completion_manifest}
               />}
+              <details className="v2-advanced-details" open={!!new URLSearchParams(window.location.search).get('v2_diagnosis')}>
+                <summary>原始资料、人工纠错与高级审计</summary>
               {(v2CitationContributionHistoryLoading || v2PendingCitationCalibrations.length > 0) && <Card
                 id="v2-calibration-entry"
                 size="small"
@@ -7456,6 +7522,7 @@ export default function App() {
                   </Space>}
                 </Card>
               </>}
+              </details>
             </>}
           </>}
         </Space> : page === "config" && RELEASE_FIRST_SLICE ? <ReleasePromptPanel key={projectId} projectId={projectId!} prompts={prompts} onSaved={() => loadProject(projectId!)} /> : !dashboard ? <Card loading={loading}><Empty description="正在加载项目数据" /></Card> : page === "validation" ? <Space direction="vertical" size={16} className="page-stack">

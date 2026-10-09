@@ -13,6 +13,7 @@ type Task = {
 };
 const statuses: Record<string, string> = { QUEUED: "等待执行", RUNNING: "正在执行", WAITING_AUTHORIZATION: "等待调用授权", BLOCKED: "需要处理", INTERRUPTED: "执行中断", CANCELLED: "已取消", COMPLETED: "稿件已交付", COMPLETED_WITH_LIMITATIONS: "稿件已交付，有范围限制" };
 const stages = [{ key: "SOURCES", title: "正文准备" }, { key: "ANSWER", title: "回答分析" }, { key: "CITATION", title: "引用分析" }, { key: "STRATEGY", title: "优化建议" }, { key: "DRAFT", title: "具体稿件" }, { key: "TEXT_QA", title: "文本检查" }];
+const assetNames: Record<string, string> = { HELP_DOC: "帮助文档", FEATURE_PAGE: "功能说明页", PRODUCT_PAGE: "产品页", ARTICLE: "文章", VIDEO: "视频稿" };
 
 export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHash, completion }: { projectId: number; promptId: number; analysisId: string; rawHash: string; completion?: { manifest_id: string; payload_hash: string; version_number: number } | null }) {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -29,16 +30,22 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
   const [form] = Form.useForm();
   const alive = useRef(true);
   const sequence = useRef(0);
+  const readInFlight = useRef(false);
   const task = tasks.find(t => t.task_id === selected) || tasks[0];
   const query = `project_id=${projectId}&prompt_id=${promptId}`;
   const base = "/api/v2/single-prompt";
   const refresh = useCallback(async () => {
+    if (readInFlight.current) return;
+    readInFlight.current = true;
     const seq = ++sequence.current;
     try {
       const rows = await request<Task[]>(`${base}/analyses/${encodeURIComponent(analysisId)}/optimization-tasks?project_id=${projectId}&prompt_id=${promptId}`);
       if (alive.current && seq === sequence.current) { setTasks(rows); setReadError(""); }
     } catch (e) { if (alive.current && seq === sequence.current) setReadError((e as Error).message); }
-    finally { if (alive.current && seq === sequence.current) setInitial(false); }
+    finally {
+      readInFlight.current = false;
+      if (alive.current && seq === sequence.current) setInitial(false);
+    }
   }, [analysisId, projectId, promptId]);
   useEffect(() => {
     alive.current = true; void refresh();
@@ -68,7 +75,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
       const uri = action === "create" ? `${base}/analyses/${encodeURIComponent(analysisId)}/optimization-tasks`
         : `${base}/optimization-tasks/${encodeURIComponent(task!.task_id)}/${action}`;
       const saved = await request<Task>(uri, { method: "POST", body: JSON.stringify(value) });
-      if (alive.current) { setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); setAuthOpen(false); }
+      if (alive.current) { ++sequence.current; setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); setAuthOpen(false); }
       await refresh();
     } catch (e) { if (alive.current) setError((e as Error).message); }
     finally { if (alive.current) setBusy(false); }
@@ -121,17 +128,24 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
         <Typography.Title level={4}>{delivery.output.publication_draft.title}</Typography.Title>
         <Typography.Paragraph>{delivery.output.direction.intervention_goal}</Typography.Paragraph>
         <Descriptions size="small" column={1}>
+          <Descriptions.Item label="内容形式">{assetNames[delivery.output.asset_resolution.recommended_asset_type] || "按当前方案确定"}</Descriptions.Item>
+          <Descriptions.Item label="选择理由">{delivery.output.asset_resolution.selection_reason}</Descriptions.Item>
           <Descriptions.Item label="建议承载位置">{delivery.output.channel_resolution.reason}</Descriptions.Item>
           <Descriptions.Item label="新建 / 更新判断">{delivery.output.asset_resolution.reason}</Descriptions.Item>
           <Descriptions.Item label="文本检查">{delivery.output.automatic_qa.status === "READY" ? "通过当前文本检查" : "需要修正"}</Descriptions.Item>
         </Descriptions>
         <Space wrap><Button icon={<Copy size={16} />} onClick={() => navigator.clipboard.writeText(delivery.output.publication_draft.body_markdown).then(() => message.success("正文已复制")).catch(() => message.error("复制失败，请检查浏览器权限"))}>复制完整正文</Button>
-          <Button href={href(delivery)}>查看方案并补充发布信息</Button></Space>
+          <Button href={href(delivery)}>方案详情与可选发布记录</Button></Space>
         <Typography.Paragraph style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginTop: 16 }}>{delivery.output.publication_draft.body_markdown}</Typography.Paragraph>
-        <Collapse items={[{ key: "qa", label: `质量问题与实际修复（${delivery.output.automatic_qa.findings.length}）`, children: <Table size="small" pagination={false} rowKey="segment_id" scroll={{ x: 650 }} dataSource={delivery.output.automatic_qa.repairs} columns={[
-          { title: "原文", dataIndex: "before" }, { title: "修复后", dataIndex: "after", render: text => text || "已删除不成立陈述" },
-          { title: "复检", dataIndex: "recheck", render: x => x === "PASS" ? "通过" : "未通过" },
-        ]} /> }]} />
+        <Collapse items={[{ key: "qa", label: `质量问题与实际修复（${delivery.output.automatic_qa.findings.length}）`, children: <>
+          <Table size="small" pagination={false} rowKey="segment_id" scroll={{ x: 780 }} dataSource={delivery.output.automatic_qa.findings.map((finding: any) => ({ ...finding,
+            repair: delivery.output.automatic_qa.repairs.find((r: any) => r.segment_id === finding.segment_id) }))} columns={[
+            { title: "发现的问题", dataIndex: "rationale" }, { title: "原文", dataIndex: "original_text" },
+            { title: "实际修改", render: (_, r: any) => r.repair ? r.repair.after || "已删除不成立陈述" : "没有修改记录" },
+            { title: "复检", render: (_, r: any) => r.repair?.recheck === "PASS" ? "通过" : r.repair ? "未通过" : "未发生修复" },
+          ]} locale={{ emptyText: "本次检查未发现问题，未进行修复" }} />
+          {(delivery.output.automatic_qa.limitations || []).map((item: string) => <Typography.Paragraph key={item} type="secondary">{item}</Typography.Paragraph>)}
+        </> }]} />
       </section>)}
     </>}
     <Modal title="本任务独立调用授权" open={authOpen} onCancel={() => setAuthOpen(false)} footer={null} destroyOnHidden>

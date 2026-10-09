@@ -8,6 +8,7 @@ from app.modules.single_prompt_v2.delivery_generation import (
     generation_input, segments_of, revalidate_generated_draft,
 )
 from app.modules.single_prompt_v2.delivery_text import text_digest
+from app.modules.single_prompt_v2.execution import _machine_public_truths
 
 
 @pytest.fixture
@@ -68,6 +69,49 @@ def test_missing_fake_and_cross_brand_evidence_are_rejected(frozen):
                   draft('过滤器可清洗', 'SOURCE_STATEMENT', ['invented'])]:
         with pytest.raises(ValueError):
             admit_draft(value, inputs)
+
+
+def public_truth():
+    return {'truth_id': 7, 'capability_label': '支持离线备份（仅限本地设备）',
+        'product_truth_status': 'SUPPORTED', 'truth_source': 'MANUAL_CONFIRMED',
+        'source_reference': 'https://example.com/target-manual',
+        'statement_eligibility': {'status': 'ELIGIBLE', 'issues': []}}
+
+
+def qualified_truths(truth):
+    return _machine_public_truths({'object_qualifications': [{'object_id': '7',
+        'object_type': 'PRODUCT_TRUTH', 'eligibility_by_use': {'public_claim': 'CONSUMABLE'}}]},
+        {'truth_ids': [7]}, {'truth_diagnosis': {'truth_snapshot': [truth]}})
+
+
+def test_qualified_target_fact_is_consumed_with_exact_provenance_and_conditions(frozen):
+    frozen['truths'] = qualified_truths(public_truth())
+    inputs = generation_input(frozen)
+    fact = next(row for row in inputs['public_evidence'] if row['kind'] == 'TARGET_VERIFIED')
+    assert fact['truth_id'] == 7 and fact['url'] == public_truth()['source_reference']
+    assert fact['text'] == '乙厂：支持离线备份（仅限本地设备）'
+    value = draft(fact['text'], 'TARGET_STATEMENT', ['truth:7'])
+    assert finish_draft(value, all_pass(value), inputs)['qa']['repairs'] == []
+    inflated = draft('乙厂支持离线备份', 'TARGET_STATEMENT', ['truth:7'])
+    repaired = finish_draft(inflated, all_pass(inflated), inputs)
+    assert repaired['qa']['repairs'][0]['after'] == ''
+    assert 'QUALIFIER_NOT_PRESERVED' in repaired['qa']['findings'][0]['issue_codes']
+
+
+def test_internal_truth_missing_source_or_tampered_snapshot_cannot_become_public(frozen):
+    from fastapi import HTTPException
+    truth = public_truth()
+    truth['source_reference'] = ''
+    with pytest.raises(HTTPException):
+        qualified_truths(truth)
+    frozen['truths'] = qualified_truths(public_truth())
+    frozen['truths'][0]['capability_label'] = '支持云端备份'
+    with pytest.raises(ValueError, match='TARGET_TRUTH_PROVENANCE_INVALID'):
+        generation_input(frozen)
+    unqualified = {'object_qualifications': [{'object_id': '7', 'object_type': 'PRODUCT_TRUTH',
+        'eligibility_by_use': {'public_claim': 'VERIFY_FIRST'}}]}
+    assert _machine_public_truths(unqualified, {'truth_ids': [7]},
+        {'truth_diagnosis': {'truth_snapshot': [public_truth()]}}) == []
 
 
 def test_qa_cannot_skip_or_duplicate_segments_or_return_only_self_summary():

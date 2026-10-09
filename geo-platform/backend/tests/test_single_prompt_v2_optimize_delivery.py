@@ -66,6 +66,22 @@ def test_wrong_subject_number_and_condition_are_reported_then_locally_repaired(f
     assert sections[0]["truth_ids"] == [] and sections[0]["answer_anchor"] == "UNPROVEN"
 
 
+@pytest.mark.parametrize('intent,qualified,expected', [
+    ('supplier_recommendation', True, 'FEATURE_PAGE'),
+    ('supplier_recommendation', False, 'HELP_DOC'),
+    ('usage_instruction', True, 'HELP_DOC'),
+])
+def test_asset_choice_uses_intent_and_fact_eligibility_not_empty_inventory(frozen, intent, qualified, expected):
+    frozen['prompt_configuration'] = {'intent_type': intent}
+    frozen['truths'] = [{'public_use_eligibility': 'CONSUMABLE' if qualified else 'VERIFY_FIRST'}]
+    result = execution._compile_machine_delivery('proposal', snapshot(frozen))
+    assert result['asset_resolution']['recommended_asset_type'] == expected
+    assert frozen['prompt_text'] in result['asset_resolution']['selection_reason']
+    assert result['asset_operation'] == 'CONDITIONAL'
+    assert result['asset_resolution']['inventory_state'] == 'UNKNOWN'
+    assert not result['channel_resolution']['upstream_channel_resolver_reused']
+
+
 def test_no_problem_has_no_repair_record(frozen):
     item = frozen["selected_evidence"][0]
     item["proposed_text"] = quote_text(item)

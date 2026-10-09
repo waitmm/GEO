@@ -16,12 +16,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def accessibility_check(page, out, report, name):
-    page.evaluate("""async () => {
-        await document.fonts.ready;
-        await Promise.all(document.getAnimations().filter(a =>
-            Number.isFinite(a.effect.getComputedTiming().endTime)
-        ).map(a => a.finished.catch(() => {})));
-    }""")
+    page.wait_for_function("""() => document.fonts.status === 'loaded' &&
+        document.getAnimations().every(a => a.playState !== 'running' ||
+            a.playbackRate === 0 || !Number.isFinite(a.effect.getComputedTiming().endTime))
+    """, timeout=10000)
     page.add_script_tag(path=str(ROOT / 'frontend/node_modules/axe-core/axe.min.js'))
     result = page.evaluate("""async () => await axe.run(document, {
         runOnly: {type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']}
@@ -33,7 +31,9 @@ def accessibility_check(page, out, report, name):
         'incomplete_rules': [r['id'] for r in result['incomplete']],
         'passed_rule_count': len(result['passes']), 'engine': result['testEngine']})
     assert not result['violations'], [(v['id'], [n['target'] for n in v['nodes']]) for v in result['violations']]
-    scrollers = page.locator('.ant-table-content[tabindex="0"], .ant-table-body[tabindex="0"]')
+    dialogs = page.get_by_role('dialog')
+    focus_scope = dialogs if dialogs.count() else page
+    scrollers = focus_scope.locator('.ant-table-content[tabindex="0"], .ant-table-body[tabindex="0"]')
     horizontal = 0
     for node in scrollers.all():
         if node.is_visible() and node.evaluate('(el) => el.scrollWidth > el.clientWidth'):
@@ -180,7 +180,11 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         dialog.get_by_label(label, exact=True).fill(value)
     dialog.get_by_role('button', name='确认授权并继续', exact=True).click()
     expect(dialog).not_to_be_visible()
-    calls = simulated_delivery_transport(monkeypatch)
+    def manuscript_qa(payload):
+        return {'checks': [{'segment_id': s['segment_id'],
+            'verdict': 'UNSUPPORTED' if '99元' in s['text'] else 'PASS',
+            'rationale': '该价格没有来源支持。' if '99元' in s['text'] else '该段是核对建议。'} for s in payload['segments']]}
+    calls = simulated_delivery_transport(monkeypatch, qa_response=manuscript_qa)
     execute_task(task_id, session_factory=Session)
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
     expect(panel.get_by_text('选用工具前的核对顺序', exact=False)).to_be_visible()
@@ -204,6 +208,49 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     page.get_by_text('原始资料、人工纠错与高级审计', exact=True).click()
     expect(page.locator('.v2-advanced-details')).to_have_attribute('open', '')
     page.get_by_text('原始资料、人工纠错与高级审计', exact=True).click()
+    panel.get_by_role('button', name='编辑正文并复检', exact=True).click()
+    editor = page.get_by_role('dialog', name='编辑正文', exact=True)
+    editor.get_by_role('button', name='增加建议段落', exact=True).click()
+    editor.get_by_label('正文 1.2', exact=True).fill('目标产品价格为99元。')
+    page.set_viewport_size({'width': 390, 'height': 1000})
+    accessibility_check(page, out, report, 'manuscript-editor-390')
+    assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+    page.screenshot(path=str(out / 'manuscript-editor-390.png'), full_page=True)
+    report['screenshots'].append('manuscript-editor-390.png')
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/draft-revisions')) as response:
+        editor.get_by_role('button', name='保存修改并排队复检', exact=True).click()
+    revised_task = response.value.json()['task_id']
+    expect(editor).not_to_be_visible()
+    execute_task(revised_task, session_factory=Session)
+    assert len(calls) == 4
+    page.reload()
+    expect(panel.get_by_text('正文修改复检：沿用原始分析与证据，只检查本次修改稿', exact=True)).to_be_visible()
+    panel.get_by_text('本次提交的修改原文（不继承旧稿资格）', exact=True).click()
+    expect(panel.get_by_text('目标产品价格为99元。', exact=True)).to_be_visible()
+    expect(panel.get_by_role('button', name='复制完整正文')).to_have_count(0)
+    panel.get_by_role('button', name='授权本任务模型调用').click()
+    auth = page.get_by_role('dialog', name='本任务独立调用授权')
+    for label, value in [('请求次数上限', '1'), ('总 token 上限', '100000'), ('人民币硬预算', '1'),
+            ('输入 / 输出每百万 token 的较高保守单价（人民币）', '10'),
+            ('已核实计费依据', '隔离工程模拟价格，不是真实调用授权'),
+            ('计费核实日期', datetime.utcnow().date().isoformat())]:
+        auth.get_by_label(label, exact=True).fill(value)
+    auth.get_by_role('button', name='确认授权并继续', exact=True).click()
+    expect(auth).not_to_be_visible()
+    execute_task(revised_task, session_factory=Session)
+    expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
+    assert len(calls) == 5 and 'segments' in calls[-1]
+    new_delivery = page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{revised_task}/deliveries?project_id=1&prompt_id=44').json()[0]
+    assert new_delivery['result_version'] != persisted.json()[0]['result_version']
+    assert '99元' not in new_delivery['output']['publication_draft']['body_markdown']
+    assert page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{task_id}/deliveries?project_id=1&prompt_id=44').json() == persisted.json()
+    panel.get_by_text(re.compile(r'^质量问题与实际修复')).click()
+    expect(panel.get_by_role('cell', name='已删除不成立陈述', exact=True)).to_be_visible()
+    expect(panel.get_by_role('cell', name='该价格没有来源支持。', exact=True)).to_be_visible()
+    page.reload()
+    expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
+    panel.get_by_text(re.compile(r'^质量问题与实际修复')).click()
+    expect(panel.get_by_role('cell', name='已删除不成立陈述', exact=True)).to_be_visible()
     for width in [1440, 1024, 390]:
         page.set_viewport_size({'width': width, 'height': 1000})
         panel.scroll_into_view_if_needed()
@@ -237,6 +284,8 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         'EXPLICIT_BUDGET_AUTHORIZATION', 'WORKER_EXISTING_STAGE_CHAIN', 'ACTUAL_DRAFT_AND_QA_READ',
         'REFRESH_PRESERVES_EXACT_RESULT', 'SLOW_POLL_DOES_NOT_STARVE', 'ACTUAL_QA_EMPTY_REPAIRS', 'ADVANCED_AUDIT_OPT_IN',
         'KEYBOARD_COPY_EXACT_SAVED_BODY_NO_AUDIT_METADATA',
+        'EDIT_SAVED_PENDING_WITHOUT_OLD_QUALIFICATION', 'ONE_QA_ONLY_NO_ANSWER_OR_CITATION_RECOMPUTE',
+        'EDIT_REPAIR_NEW_VERSION_AND_OLD_RESULT_IMMUTABLE',
         'LATE_ANALYSIS_RESPONSE_CANNOT_RESTORE_OLD_PROJECT', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
         simulated_provider_requests=len(calls), not_verified=['REAL_MODEL_QUALITY', 'REAL_SAMPLING', 'REAL_SOURCE_FETCH'],
         task_id=task_id, status='PASS_SCOPED_SIMULATED_INTEGRATION_NOT_REAL_MODEL')
@@ -396,7 +445,12 @@ def main():
             assert plan['configuration']['brand_context']['mode'] == 'EMPTY'
             expect(page.get_by_role('cell', name='已开启', exact=True)).to_be_visible()
             page.get_by_role('button', name='暂停', exact=True).click()
-            page.get_by_role('button', name=re.compile('确.*定')).click()
+            confirm_pause = page.get_by_role('button', name='确认暂停', exact=True)
+            expect(confirm_pause).to_be_visible()
+            confirm_pause.focus()
+            with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/pause')) as response:
+                confirm_pause.press('Enter')
+            assert response.value.ok
             expect(page.get_by_role('cell', name='已暂停', exact=True)).to_be_visible()
             for width in [1440, 1024, 390]:
                 page.set_viewport_size({'width': width, 'height': 1000})
@@ -405,7 +459,45 @@ def main():
                 report['screenshots'].append(path)
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'page overflow: {width}'
                 accessibility_check(page, out, report, f'monitor-schedule-{width}')
+            navigation = page.get_by_role('button', name='展开主导航', exact=True)
+            navigation.focus()
+            navigation.press('Enter')
+            expect(page.get_by_role('menuitem', name='问题与采样配置', exact=True)).to_be_visible()
+            page.get_by_role('button', name='收起主导航', exact=True).press('Escape')
+            expect(navigation).to_be_focused()
+            navigation.press('Enter')
+            page.get_by_role('menuitem', name='问题与采样配置', exact=True).click()
+            expect(navigation).to_have_attribute('aria-expanded', 'false')
+            page.get_by_role('button', name='批量添加问题', exact=True).click()
+            batch = page.get_by_role('dialog', name='批量添加问题', exact=True)
+            batch.get_by_label('问题 1', exact=True).fill('空气过滤器如何清洗？\n有哪些前提条件？')
+            batch.get_by_role('button', name=re.compile('增加问题')).click()
+            batch.get_by_label('问题 2', exact=True).fill('过滤器如何存放？\n潮湿环境有哪些限制？')
+            batch.get_by_role('button', name=re.compile('增加问题')).click()
+            with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/prompts/batch')) as response:
+                batch.get_by_role('button', name='提交待处理问题（3）', exact=True).click()
+            items = response.value.json()['items']
+            assert [item['status'] for item in items] == ['EXISTING', 'CREATED', 'REJECTED']
+            expect(batch.get_by_text('未创建', exact=True)).to_be_visible()
+            accessibility_check(page, out, report, 'batch-prompts-error-390')
+            batch.get_by_label('问题 3', exact=True).fill('过滤器寿命由什么因素决定？')
+            with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/prompts/batch')) as response:
+                batch.get_by_role('button', name='提交待处理问题（1）', exact=True).click()
+            assert [item['status'] for item in response.value.json()['items']] == ['CREATED']
+            expect(batch.get_by_role('button', name='提交待处理问题（0）', exact=True)).to_be_disabled()
+            accessibility_check(page, out, report, 'batch-prompts-390')
+            page.screenshot(path=str(out / 'batch-prompts-390.png'), full_page=True)
+            report['screenshots'].append('batch-prompts-390.png')
+            assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+            batch.get_by_role('button', name='关闭批量添加', exact=True).click()
+            page.reload()
+            expect(page.get_by_role('cell', name='过滤器如何存放？ 潮湿环境有哪些限制？', exact=True)).to_be_visible()
+            prompts = page.request.get(f'{origin}/api/projects/1/prompts').json()
+            assert len(prompts) == 3
+            assert next(item for item in prompts if item['id'] == items[1]['prompt_id'])['prompt_text'] == '过滤器如何存放？\n潮湿环境有哪些限制？'
             report['verified'] = ['UI_PROJECT_CREATE', 'MULTILINE_PROMPT_PRESERVED', 'PROMPT_EDIT_SEARCH_PRIORITY',
+                'BATCH_PROMPT_PARTIAL_FAILURE_CORRECTION_DUPLICATE_REUSE_RELOAD',
+                'NARROW_NAV_KEYBOARD_OPEN_ESCAPE_AND_SELECTION_CLOSE',
                 'DELETE_UNUSED_PROMPT',
                 'KEYBOARD_DIALOG_OPEN_ESCAPE_FOCUS_RESTORED',
                 'DISABLED_PROMPT_PERSISTS_AND_BLOCKS_NEW_SAMPLING', 'PROMPT_REENABLE', 'CONTEXT_SAVE_RELOAD',

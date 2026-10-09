@@ -792,7 +792,7 @@
       "milestone": "M2",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T13",
         "T18"
@@ -809,17 +809,21 @@
         "backend/app/modules/single_prompt_v2/diagnosis.py",
         "backend/app/modules/single_prompt_v2/strategy.py",
         "backend/app/modules/single_prompt_v2/execution.py",
-        "backend/app/modules/single_prompt_v2/retest.py"
+        "backend/app/modules/single_prompt_v2/retest.py",
+        "backend/app/modules/single_prompt_v2/delivery_revision.py",
+        "frontend/src/ManuscriptEditor.tsx"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T135350Z/report.json",
+        "backend/tests/test_delivery_revision.py"
       ],
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "已验证正文编辑只复检一次QA、精确版本与旧稿保留；其他纠错类型和真实模型质量尚未完成整体验收。",
       "commit": "",
       "audit_classification": "需修复"
     },

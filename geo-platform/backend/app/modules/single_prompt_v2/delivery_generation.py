@@ -136,6 +136,17 @@ def segments_of(draft: dict) -> list[dict]:
     return segments
 
 
+def editable_draft(receipt: dict) -> dict:
+    """Project the repaired text, never reintroduce rejected pre-repair paragraphs."""
+    sections = []
+    for segment in receipt["segments"]:
+        if segment["kind"] == "HEADING":
+            sections.append({"heading": segment["text"], "blocks": []})
+        elif segment["text"].strip():
+            sections[-1]["blocks"].append({key: copy.deepcopy(segment[key]) for key in ("kind", "text", "evidence_ids")})
+    return {"sections": [section for section in sections if section["blocks"]]}
+
+
 def admit_qa(value, segments: list[dict]) -> dict:
     parsed = TextQAResponse.model_validate(value).model_dump()
     actual = [row["segment_id"] for row in parsed["checks"]]
@@ -258,6 +269,14 @@ def generate_and_check(frozen: dict, *, client, db=None, on_stage: Callable[[str
         response_schema=DraftResponse, prompt_version=GENERATION_VERSION, schema_version=GENERATION_VERSION,
         max_tokens=MAX_OUTPUT_TOKENS, strict_json=True, structured_output_mode="JSON_SCHEMA", db=db,
         response_validator=lambda value: admit_draft(value, inputs))
+    draft = admit_draft(draft, inputs)
+    return check_submitted_draft(frozen, draft, client=client, db=db, on_stage=on_stage)
+
+
+def check_submitted_draft(frozen: dict, draft: dict, *, client, db=None,
+                          on_stage: Callable[[str], None] | None = None) -> dict:
+    """One QA request for explicit edited text; never inherit the parent verdict."""
+    inputs = generation_input(frozen)
     draft = admit_draft(draft, inputs)
     segments = segments_of(draft)
     if on_stage:

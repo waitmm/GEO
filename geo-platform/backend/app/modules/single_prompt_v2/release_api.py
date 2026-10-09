@@ -45,7 +45,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     revise_diagnosis_result,
 )
 from app.modules.single_prompt_v2.schemas import (
-    AutomaticOptimizationCreate, AutomaticOptimizationAction, AutomaticOptimizationAuthorization,
+    AutomaticOptimizationCreate, AutomaticOptimizationAction, AutomaticOptimizationAuthorization, AutomaticDraftRevisionCreate,
     SinglePromptAnalysisCreate,
     SinglePromptAutomaticStrategyCreate,
     SinglePromptRunRetryCreate,
@@ -168,7 +168,10 @@ def read_automatic_deliveries(task_id: str, project_id: int, prompt_id: int, db:
             result_version=binding["result_version"], output_hash=binding["result_hash"]).one_or_none()
         if not value or digest(loads(value.output_json, {})) != value.output_hash:
             raise HTTPException(409, "自动任务稿件版本或 hash 不一致")
-        result.append({**binding, "output": loads(value.output_json, {})})
+        output = loads(value.output_json, {})
+        from .delivery_generation import editable_draft
+        result.append({**binding, "output": output,
+            "editable_draft": editable_draft(output["generation_receipt"]) if output.get("generation_receipt") else None})
     return result
 
 
@@ -180,6 +183,18 @@ def authorize_automatic_optimization(task_id: str, payload: AutomaticOptimizatio
     row = require_task(db, task_id, payload.project_id, payload.prompt_id)
     return task_view(authorize_task(db, row, **payload.model_dump(exclude={"project_id", "prompt_id"}),
         authorized_by=principal(request)["name"]))
+
+
+@router.post("/optimization-tasks/{task_id}/draft-revisions", status_code=201)
+def queue_draft_revision(task_id: str, payload: AutomaticDraftRevisionCreate,
+                         request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
+    from .delivery_revision import create_revision_task
+    from .automatic_delivery import task_view
+    from app.core.release_access import principal
+    row, created = create_revision_task(db, parent_task_id=task_id, **payload.model_dump(), editor=principal(request)["name"])
+    if not created:
+        response.status_code = 200
+    return task_view(row)
 
 
 @router.post("/optimization-tasks/{task_id}/cancel")

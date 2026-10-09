@@ -3,8 +3,10 @@ import { Alert, App as AntApp, Button, Checkbox, Collapse, Descriptions, Form, I
 import { Copy, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
+import { ManuscriptEditor } from "./ManuscriptEditor";
 
 type Task = {
+  task_kind: string; pending_draft?: { sections: { heading: string; blocks: { text: string }[] }[] };
   task_id: string; revision: number; status: string; stage: string; input_hash: string;
   scope: number[]; provider: string; requested_model: string; effective_request_model: string;
   blocker_detail: string; authorization: { policy: string; max_cost_cny: number };
@@ -108,6 +110,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
       </Space>
       {tasks.length > 1 && <Select aria-label="优化任务版本" value={task?.task_id} onChange={setSelected} style={{ width: "100%", marginTop: 12 }} options={tasks.map((t, i) => ({ value: t.task_id, label: `任务 ${tasks.length - i} · ${statuses[t.status] || t.status} · Run ${t.scope.join("、")}` }))} />}
       {task && <>
+        {task.task_kind === "TEXT_REVISION" && <Alert type="info" message="正文修改复检：沿用原始分析与证据，只检查本次修改稿" />}
         <Steps size="small" responsive current={task.stage === "COMPLETE" ? stages.length : Math.max(0, stages.findIndex(s => s.key === task.stage))} items={stages.map(s => ({ title: s.title }))} style={{ margin: "20px 0" }} />
         {task.blocker_detail && <Alert type="warning" showIcon message={statuses[task.status]} description={task.blocker_detail} />}
         <Descriptions size="small" column={{ xs: 1, md: 3 }}>
@@ -124,6 +127,9 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           {!task.status.startsWith("COMPLETED") && task.status !== "CANCELLED" && <Button danger icon={<Square size={16} />} loading={busy} onClick={() => void mutate("cancel")}>停止后续步骤</Button>}
         </Space>
         {!!task.limitations.length && <Collapse style={{ marginTop: 12 }} items={[{ key: "limits", label: `分析限制（${task.limitations.length}）`, children: <ul>{task.limitations.map((l, i) => <li key={i}>Run #{l.run_id}：{l.code === "CITATION_PARTIAL_EVALUATION" ? "部分引用未完成判断，不能当作不支持" : "当前引用资料未完成有效评估"}</li>)}</ul> }]} />}
+        {task.pending_draft && <Collapse items={[{ key: "submitted", label: "本次提交的修改原文（不继承旧稿资格）", children: task.pending_draft.sections.map((s, i) => <section key={i}>
+          <Typography.Title level={5}>{s.heading}</Typography.Title>{s.blocks.map((b, j) => <Typography.Paragraph key={j} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{b.text}</Typography.Paragraph>)}
+        </section>) }]} />}
       </>}
       {deliveries.map(delivery => <section key={delivery.result_version} style={{ marginTop: 24 }}>
         <Typography.Title level={4}>{delivery.output.publication_draft.title}</Typography.Title>
@@ -136,6 +142,8 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           <Descriptions.Item label="文本检查">{delivery.output.automatic_qa.status === "READY" ? "通过当前文本检查" : "需要修正"}</Descriptions.Item>
         </Descriptions>
         <Space wrap><Button icon={<Copy size={16} />} onClick={() => navigator.clipboard.writeText(delivery.output.publication_draft.body_markdown).then(() => message.success("正文已复制")).catch(() => message.error("复制失败，请检查浏览器权限"))}>复制完整正文</Button>
+          <ManuscriptEditor key={delivery.result_version} delivery={delivery} taskId={task!.task_id} projectId={projectId} promptId={promptId}
+            onQueued={saved => { ++sequence.current; setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />
           <Button href={href(delivery)}>方案详情与可选发布记录</Button></Space>
         <Typography.Paragraph style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginTop: 16 }}>{delivery.output.publication_draft.body_markdown}</Typography.Paragraph>
         <Collapse items={[{ key: "qa", label: `质量问题与实际修复（${delivery.output.automatic_qa.findings.length}）`, children: <>
@@ -152,7 +160,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
     <Modal title="本任务独立调用授权" open={authOpen} onCancel={() => setAuthOpen(false)} footer={null} destroyOnHidden>
       <Alert type="warning" showIcon message="失败请求计入预算；自动重试为 0。刷新、恢复和新结果不重置额度。" />
       <Form form={form} layout="vertical" onFinish={v => void mutate("authorization", v)} style={{ marginTop: 16 }}>
-        <Form.Item label="请求次数上限" name="max_requests" rules={[{ required: true }]}><InputNumber min={1} max={1000} precision={0} /></Form.Item>
+        <Form.Item label="请求次数上限" name="max_requests" rules={[{ required: true }]}><InputNumber min={1} max={task?.task_kind === "TEXT_REVISION" ? 1 : 1000} precision={0} /></Form.Item>
         <Form.Item label="总 token 上限" name="max_tokens" rules={[{ required: true }]}><InputNumber min={1} max={10000000} precision={0} /></Form.Item>
         <Form.Item label="人民币硬预算" name="max_cost_cny" rules={[{ required: true }]}><InputNumber min={0.01} max={1000} precision={2} /></Form.Item>
         <Form.Item label="输入 / 输出每百万 token 的较高保守单价（人民币）" name="conservative_cny_per_million_tokens" rules={[{ required: true }]}><InputNumber min={0.01} max={1000} /></Form.Item>

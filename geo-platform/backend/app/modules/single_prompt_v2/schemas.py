@@ -3,6 +3,18 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from .delivery_generation import DraftResponse
+
+
+class AutomaticDraftRevisionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: int = Field(gt=0)
+    prompt_id: int = Field(gt=0)
+    proposal_id: str = Field(min_length=1, max_length=100)
+    result_version: str = Field(min_length=1, max_length=100)
+    result_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    draft: DraftResponse
+    idempotency_key: str = Field(min_length=8, max_length=120)
 
 
 class AutomaticOptimizationCreate(BaseModel):

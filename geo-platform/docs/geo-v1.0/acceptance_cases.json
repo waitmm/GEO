@@ -709,6 +709,10 @@
     },
     {
       "id": "AC-EXE-04",
+      "automated_checks": [
+        "tests.test_delivery_revision::test_revision_is_pending_without_authority_then_one_qa_repairs_actual_text",
+        "tests.test_delivery_revision::test_revision_rejects_wrong_scope_hash_and_unbound_new_target_facts"
+      ],
       "module": "EXE",
       "name": "版本资格",
       "given": "已合格草稿被改入新价格",
@@ -718,7 +722,7 @@
         "EXE-003"
       ],
       "status": "PARTIAL",
-      "evidence": "2026-10-08：单 Run execution-v6:851eeab2713cd944 正式 UI/API 归因式稿件与逐段 QA；隔离错误主体/数字/条件测试，见单 Run 验收记录第9节。不代表自由生成、所有页面修改类型、真实发布或预算恢复完成。"
+      "evidence": "2026-10-09：browser-20261009T135350Z/report.json；正式UI/API在隔离库修改稿件加入99元价格，保存为无旧资格的待检查任务；显式授权后仅一次模拟QA删除该陈述，新结果刷新保持，旧结果不变。test_delivery_revision验证错身份、无依据目标事实、重复提交及提交后恢复；相关27项通过。真实模型对价格/主体的判断质量未在本轮外调验证。"
     },
     {
       "id": "AC-EXE-05",

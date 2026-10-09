@@ -41,7 +41,7 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
         <div>{r.optimization.status === "BLOCKED" ? r.optimization.last_error : r.optimization.status === "EXHAUSTED" ? "优化任务额度用完" : "按固定配置交接"}</div>
         {(r.optimization.batches || []).filter((b: any) => b.task_id).map((b: any) => <div key={b.analysis_id}><a href={`/?release_view=coreV2&v2_project=${projectId}&v2_prompt=${promptId}&v2_analysis=${b.analysis_id}`}>查看本批优化任务</a></div>)}
       </> },
-      { title: "操作", render: (_, r) => r.status === "ACTIVE" && <Popconfirm title="暂停新采样和排队的自动优化；已开始的任务保留结果，可在任务页单独停止。" onConfirm={() => post(`/${r.schedule_id}/pause`, { expected_revision: r.revision })}><Button icon={<Pause size={14} />}>暂停</Button></Popconfirm> },
+      { title: "操作", render: (_, r) => r.status === "ACTIVE" && <Popconfirm title="暂停新采样和排队的自动优化；已开始的任务保留结果，可在任务页单独停止。" okText="确认暂停" cancelText="保留计划" onConfirm={() => post(`/${r.schedule_id}/pause`, { expected_revision: r.revision })}><Button disabled={busy} icon={<Pause size={14} />}>暂停</Button></Popconfirm> },
     ]} />
     <Form form={form} layout="vertical" initialValues={{ timezone_name: "Asia/Shanghai", local_time: "09:00", sample_count: 1, max_attempts: 7,
       optimize_enabled: false, optimization: { every_batches: 1, max_tasks: 1 } }} onFinish={({ optimize_enabled, optimization, ...v }) => post("", { ...v, optimization: optimize_enabled ? optimization : null })} style={{ marginTop: 16 }}>

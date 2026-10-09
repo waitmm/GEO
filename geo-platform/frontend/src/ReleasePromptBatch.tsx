@@ -28,7 +28,7 @@ export function ReleasePromptBatch({ projectId, onSaved }: { projectId: number; 
   return <>
     <Button icon={<ListPlus size={16} />} onClick={() => setOpen(true)}>批量添加问题</Button>
     <Modal rootClassName="release-prompt-batch" title="批量添加问题" open={open} onCancel={() => !busy && setOpen(false)} closable={!busy} maskClosable={!busy}
-      footer={<Space><Button aria-label="关闭批量添加" disabled={busy} onClick={() => setOpen(false)}>关闭</Button>
+      footer={<Space><Button disabled={busy} onClick={() => setOpen(false)}>关闭批量添加</Button>
         <Button type="primary" loading={busy} disabled={!pending.length} onClick={save}>提交待处理问题（{pending.length}）</Button></Space>}>
       {error && <Alert type="error" message={error} />}
       {rows.map((row, index) => {

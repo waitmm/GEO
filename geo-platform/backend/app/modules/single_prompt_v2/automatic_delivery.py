@@ -111,6 +111,8 @@ def task_view(row: SinglePromptOptimizationTask) -> dict:
     progress = loads(row.progress_json, {})
     requests = progress.get("requests") or []
     return {"task_id": row.task_id, "project_id": row.project_id, "prompt_id": row.prompt_id,
+        "task_kind": "TEXT_REVISION" if inputs.get("delivery_revision") else "AUTOMATIC_OPTIMIZE",
+        "pending_draft": (inputs.get("delivery_revision") or {}).get("draft"),
         "analysis_id": row.analysis_id, "context_id": row.context_id, "input_hash": row.input_hash,
         "status": row.status, "revision": row.revision, "stage": progress.get("stage"),
         "objects": progress.get("objects") or {}, "limitations": progress.get("limitations") or [],
@@ -225,6 +227,8 @@ def authorize_task(db: Session, row: SinglePromptOptimizationTask, *, expected_r
                    authorized_by: str) -> SinglePromptOptimizationTask:
     if row.status in TERMINAL or row.status == "RUNNING" or row.input_hash != input_hash:
         raise HTTPException(409, "任务不可授权或输入已变化")
+    if loads(row.input_json, {}).get("delivery_revision") and max_requests != 1:
+        raise HTTPException(422, "正文修改只允许一次文本复检请求，不重新生成或重试")
     validate_authorization(max_requests=max_requests, max_tokens=max_tokens, max_cost_cny=max_cost_cny,
         conservative_cny_per_million_tokens=conservative_cny_per_million_tokens, pricing_source=pricing_source,
         pricing_checked_at=pricing_checked_at, authorized_by=authorized_by)
@@ -264,6 +268,10 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
         authorization = loads(active.authorization_json, {})
         progress = loads(active.progress_json, {})
         requests = progress.setdefault("requests", [])
+        if inputs.get("delivery_revision"):
+            from .delivery_generation import QA_VERSION
+            if requests or identity.get("prompt_version") != QA_VERSION or progress.get("stage") != "TEXT_QA":
+                raise SemanticLLMError("TEXT_REVISION_QA_ONLY_ONE_REQUEST")
         if any(r.get("provider_payload_hash") == identity.get("provider_payload_hash") for r in requests):
             raise SemanticLLMError("OPTIMIZATION_INPUT_ALREADY_REQUESTED_NO_AUTOMATIC_RETRY")
         if (identity["provider"] != inputs["provider"] or identity["requested_model_alias"] != inputs["requested_model"]
@@ -365,6 +373,10 @@ def execute_task(task_id: str, *, session_factory) -> None:
         if digest(raw) != fixed["raw_output_hash"] or context.analysis_id != row.analysis_id:
             raise HTTPException(409, "自动任务冻结原文发生变化")
         scope = {"analysis_id": row.analysis_id, "project_id": row.project_id, "prompt_id": row.prompt_id}
+        if fixed.get("delivery_revision"):
+            from .delivery_revision import execute_revision
+            execute_revision(db, row, fixed)
+            return
         policy = loads(row.authorization_json, {}).get("policy", "CACHE_ONLY")
         key = f"{task_id}:{policy}"
         objects = loads(row.progress_json, {}).get("objects") or {}

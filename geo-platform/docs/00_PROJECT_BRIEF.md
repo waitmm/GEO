@@ -1,6 +1,8 @@
 # 00 Project Brief
 
 ## 2026-10-09 Active Delivery Implementation
+Current checkpoint145111Z:397 backend checks,5 startup/8 client checks,release build and all three isolated browser paths passed with unchanged source fingerprint. Commit409bd82 adds frozen source acquisition receipts. Formal database is now20261009_04;45 tables' original columns/rows and v7 remain unchanged,109 historical source receipts stay unknown. Backup/isolated restore verified109 bindings and2840 artifacts. API restored with worker NOT_RUNNING. Required product cases and real integration remain open: overall INCOMPLETE. Earlier counts below are historical.
+
 Current engineering checkpoint141833Z:376 backend checks passed,5 startup/5 client checks and all three isolated browser paths passed with an unchanged source fingerprint. Edited manuscripts now receive separate exact-version QA tasks; source reads enforce DNS-pinned public access and verified TLS. Real integration and remaining mandatory product coverage are open, so overall delivery is INCOMPLETE. Earlier checkpoint counts below are retained history.
 
 Latest checkpoint: release DB `20261009_03`, SQLite 3.51.3/WAL/FK, 45 existing business-table fingerprints unchanged. Isolated restore verified109 source bindings and1704 artifacts. Harness `20261009T111737Z`:170 passed,0 failed,0 skipped; startup/build pass, unchanged source fingerprint. Optional finite sampling-to-Optimize handoff, pause-race cancellation, explicit Monitor scope and intent hints are implemented. This is still INCOMPLETE: final browser/semantic/real-integration and remaining mandatory coverage are not implied by the test count. The paragraph below preserves the previous checkpoint.

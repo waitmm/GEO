@@ -267,8 +267,8 @@
       "requirements": [
         "MON-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "2026-10-09 isolated deterministic measurement acceptance: 49 focused tests passed; independent expected numerator/denominator and unknown assertions in test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option. Browser152756Z separately verifies formal measurement/comparison display and 0/9 vs1/9. No real platform/model quality assertion."
     },
     {
       "id": "AC-MON-02",
@@ -283,8 +283,8 @@
       "requirements": [
         "MON-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "2026-10-09 isolated deterministic measurement acceptance: 49 focused tests passed; independent expected numerator/denominator and unknown assertions in test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option. Browser152756Z separately verifies formal measurement/comparison display and 0/9 vs1/9. No real platform/model quality assertion."
     },
     {
       "id": "AC-MON-03",
@@ -299,11 +299,14 @@
       "requirements": [
         "MON-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "2026-10-09 isolated deterministic measurement acceptance: 49 focused tests passed; independent expected numerator/denominator and unknown assertions in test_macro_and_weighted_average_use_independent_expected_counts_and_unknown_is_not_zero. Browser152756Z separately verifies formal measurement/comparison display and 0/9 vs1/9. No real platform/model quality assertion."
     },
     {
       "id": "AC-MON-04",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_monitor_handoff_freezes_scope_rejects_stale_and_replays_without_new_runs"
+      ],
       "module": "MON",
       "name": "机会跳转",
       "given": "用户点某机会",
@@ -312,11 +315,14 @@
       "requirements": [
         "MON-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "Isolated formal UI browser-20261009T151229Z/report.json: exact Monitor scope -> new immutable Analysis -> Optimize entry, refresh same ID/hash, no external work. API tests reject stale identity/config and preserve exclusions/idempotency. This is software handoff acceptance, not real model quality."
     },
     {
       "id": "AC-MON-05",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_mention_option_and_recommendation_are_three_distinct_counts"
+      ],
       "module": "MON",
       "name": "行为口径",
       "given": "三条答案分别为无关提及、有效候选和明确推荐",
@@ -325,8 +331,8 @@
       "requirements": [
         "MON-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "2026-10-09 isolated deterministic measurement acceptance: 49 focused tests passed; independent expected numerator/denominator and unknown assertions in test_mention_option_and_recommendation_are_three_distinct_counts. Browser152756Z separately verifies formal measurement/comparison display and 0/9 vs1/9. No real platform/model quality assertion."
     },
     {
       "id": "AC-OPT-01",
@@ -803,6 +809,9 @@
     },
     {
       "id": "AC-VAL-01",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_zero_to_one_of_nine_is_11_points_not_100_percent_or_full_recommendation"
+      ],
       "module": "VAL",
       "name": "小样本增加",
       "given": "基线 0/9，复测 1/9",
@@ -811,8 +820,8 @@
       "requirements": [
         "VAL-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "browser-20261009T152756Z/report.json: formal UI 0/9->1/9=11.1111pp, exact saved result and no causal claim,1440/1024/390; isolated synthetic inputs only. Independent backend test_zero_to_one_of_nine_is_11_points_not_100_percent_or_full_recommendation passed."
     },
     {
       "id": "AC-VAL-02",
@@ -850,7 +859,8 @@
     {
       "id": "AC-VAL-04",
       "automated_checks": [
-        "tests.test_observation_delivery::test_compare_without_publication_uses_independent_denominators_and_url_sets"
+        "tests.test_observation_delivery::test_compare_without_publication_uses_independent_denominators_and_url_sets",
+        "tests.test_observation_delivery::test_formal_api_context_and_comparison_persist_without_reviews"
       ],
       "module": "VAL",
       "name": "负向记录",
@@ -860,11 +870,14 @@
       "requirements": [
         "VAL-005"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "browser-20261009T151229Z/report.json and negative-comparison.png: independent isolated scopes yield -100pp, saved as another immutable comparison, same after refresh; formal API retains both positive and negative versions. Synthetic software acceptance, not a real chronological campaign effect."
     },
     {
       "id": "AC-VAL-05",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_formal_api_context_and_comparison_persist_without_reviews"
+      ],
       "module": "VAL",
       "name": "指标实现复用",
       "given": "相同范围与相同指标版本",
@@ -873,8 +886,8 @@
       "requirements": [
         "VAL-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "2026-10-09 test_observation_delivery.py: formal measurements API vs persisted comparison API, every metric on both exact scopes is equal including denominator and unknowns; 16 targeted tests pass. Isolated inputs, zero external calls."
     },
     {
       "id": "AC-COR-01",

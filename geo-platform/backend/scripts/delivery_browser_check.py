@@ -101,11 +101,31 @@ def observation_check(page, origin, fixture, out, report):
     for width in [1440, 1024, 390]:
         page.set_viewport_size({'width': width, 'height': 1000})
         name = f'comparison-{width}.png'
+        accessibility_check(page, out, report, f'comparison-{width}')
         page.screenshot(path=str(out / name), full_page=True)
         report['screenshots'].append(name)
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
-        accessibility_check(page, out, report, f'comparison-{width}')
     page.set_viewport_size({'width': 1440, 'height': 1000})
+    # Reverse two explicit isolated scopes to verify a negative observation is persisted.
+    for label, run_id in [('基线范围', fixture['comparison_run_id']), ('对照范围', fixture['baseline_run_id'])]:
+        control = page.get_by_role('combobox', name=label, exact=True)
+        control.press('ArrowDown')
+        active = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-active')
+        for _ in range(2):
+            if re.match(rf'^Runs {run_id} ·', active.inner_text()):
+                break
+            control.press('ArrowDown')
+        expect(active).to_contain_text(f'Runs {run_id} ·')
+        control.press('Enter')
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/observation-comparisons')) as response:
+        page.get_by_role('button', name='生成变化比较', exact=True).click()
+    negative = response.value.json()
+    assert negative['output']['metrics']['brand_mention_rate']['delta_percentage_points'] == -100
+    assert negative['result_version'] != saved['result_version']
+    page.reload()
+    expect(page.get_by_role('row').filter(has_text='正文提及')).to_contain_text('-100')
+    page.screenshot(path=str(out / 'negative-comparison.png'), full_page=True)
+    report['screenshots'].append('negative-comparison.png')
     page.get_by_role('menuitem', name='品牌资料', exact=True).click()
     for version in [1, 2]:
         page.get_by_label('资料标题', exact=True).fill(f'隔离资料 {version}')
@@ -135,11 +155,75 @@ def observation_check(page, origin, fixture, out, report):
     page.get_by_role('combobox', name='当前项目', exact=True).press('ArrowDown')
     page.get_by_text('Release', exact=True).filter(visible=True).click()
     expect(mention_row).to_contain_text('50.0%')
+    handoffs = []
+    def capture_handoff(route):
+        response = route.fetch()
+        assert response.status == 201
+        handoffs.append(response.json())
+        route.fulfill(response=response)
+    page.route('**/monitor-analysis', capture_handoff)
+    page.get_by_role('button', name='分析这 2 条回答', exact=True).click()
+    page.wait_for_url('**/?release_view=coreV2&**', wait_until='domcontentloaded')
+    expect(page.get_by_text('来自监测的固定范围：', exact=False)).to_be_visible(timeout=15000)
+    handoff = handoffs[0]
+    assert handoff['origin_monitor_scope']['selected_run_ids'] == [fixture['baseline_run_id'], fixture['comparison_run_id']]
+    assert [r['run_id'] for r in handoff['runs']] == handoff['origin_monitor_scope']['selected_run_ids']
+    expect(page.get_by_text('来自监测的固定范围：', exact=False)).to_be_visible()
+    expect(page.get_by_role('region', name='自动优化交付').get_by_role('button', name='开始自动优化', exact=True)).to_be_enabled()
+    page.reload()
+    expect(page.get_by_text('来自监测的固定范围：', exact=False)).to_be_visible()
+    assert f"v2_analysis={handoff['analysis']['analysis_id']}" in page.url
+    for width in [1440, 390]:
+        page.set_viewport_size({'width': width, 'height': 1000})
+        name = f'monitor-handoff-{width}.png'
+        accessibility_check(page, out, report, f'monitor-handoff-{width}')
+        page.screenshot(path=str(out / name), full_page=True)
+        report['screenshots'].append(name)
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+        primary = page.get_by_role('region', name='自动优化交付').get_by_role('button', name='开始自动优化', exact=True)
+        page.evaluate('window.scrollTo(0, 0)')
+        bounds = primary.bounding_box()
+        assert bounds and 0 <= bounds['y'] and bounds['y'] + bounds['height'] <= 1000
+    page.set_viewport_size({'width': 1440, 'height': 1000})
+    page.goto(f'{origin}/?release_view=releaseCompare&v2_project={fixture["metric_project_id"]}&v2_prompt={fixture["metric_prompt_id"]}')
+    for label, ids in [('基线范围', fixture['metric_baseline']), ('对照范围', fixture['metric_comparison'])]:
+        control = page.get_by_role('combobox', name=label, exact=True)
+        control.press('ArrowDown')
+        active = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-active')
+        for _ in range(2):
+            if active.inner_text().startswith('Runs ' + '、'.join(map(str, ids)) + ' ·'):
+                break
+            control.press('ArrowDown')
+        expect(active).to_contain_text('Runs ' + '、'.join(map(str, ids)))
+        control.press('Enter')
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/observation-comparisons')) as response:
+        page.get_by_role('button', name='生成变化比较', exact=True).click()
+    nine = response.value.json()
+    nine_metric = nine['output']['metrics']['brand_mention_rate']
+    assert nine_metric['baseline']['hit_count'] == 0 and nine_metric['baseline']['evaluable_count'] == 9
+    assert nine_metric['comparison']['hit_count'] == 1 and nine_metric['comparison']['evaluable_count'] == 9
+    assert abs(nine_metric['delta_percentage_points'] - 11.1111) < .0001
+    expect(page.get_by_role('columnheader', name='基线覆盖（可评估 / 有效 / 固定范围）', exact=True)).to_be_visible()
+    expect(page.get_by_role('columnheader', name='对照覆盖（可评估 / 有效 / 固定范围）', exact=True)).to_be_visible()
+    for width in [1440, 1024, 390]:
+        page.set_viewport_size({'width': width, 'height': 1000})
+        row = page.get_by_role('row').filter(has_text='正文提及')
+        expect(row).to_contain_text('0/9 (0.0%)')
+        expect(row).to_contain_text('1/9 (11.1%)')
+        expect(row).to_contain_text('11.1111')
+        name = f'nine-run-comparison-{width}.png'
+        accessibility_check(page, out, report, f'nine-run-comparison-{width}')
+        page.screenshot(path=str(out / name), full_page=True)
+        report['screenshots'].append(name)
     report.update(status='PASS_SCOPED_SYNTHETIC_OBSERVATION_NOT_REAL_SAMPLING', comparison_version=saved['result_version'],
+        nine_run_comparison_version=nine['result_version'],
+        negative_comparison_version=negative['result_version'], monitor_analysis=handoff['analysis']['analysis_id'],
         verified=['WORKER_STOPPED_AND_HEALTH_READ_RECOVERY', 'MONITOR_INDEPENDENT_EXPECTED_COUNTS', 'UNKNOWN_NOT_ZERO', 'FORMAL_UI_COMPARISON',
             'COMPARISON_RELOAD_EXACT_VERSION', 'CONTEXT_TWO_VERSIONS', 'READ_FAILURE_RECOVERY',
+            'NEGATIVE_COMPARISON_PERSISTED', 'MONITOR_EXACT_SCOPE_HANDOFF_WITHOUT_EXTERNAL_WORK',
+            'PRIMARY_OPTIMIZE_ACTION_FIRST_VIEWPORT', 'NINE_RUN_ZERO_TO_ONE_INDEPENDENT_COUNTS',
             'PROJECT_SWITCH_CLEARS_PREVIOUS_DATA', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
-        not_verified=['REAL_SAMPLING', 'REAL_MODEL_QUALITY'], synthetic_runs=2)
+        not_verified=['REAL_SAMPLING', 'REAL_MODEL_QUALITY'], synthetic_runs=20)
     assert not report['errors'], report['errors']
 
 
@@ -358,7 +442,7 @@ def main():
             if '--optimize' in sys.argv:
                 fixture = _seed_citation_contribution_fixture(db, monkeypatch, out, reviewed=False)
             else:
-                from app.models import BrowserMonitorRun
+                from app.models import BrowserMonitorRun, Project, Prompt
                 from app.modules.single_prompt_v2.service import create_analysis, claim_analysis, finalize_analysis
                 baseline = _seed_frozen_analysis(db, reference_urls=[])
                 first = db.query(BrowserMonitorRun).filter_by(task_id=baseline.task_id).one()
@@ -370,6 +454,23 @@ def main():
                 db.commit()
                 assert finalize_analysis(db, second.analysis_id, token)
                 fixture = {'baseline_run_id': first.id, 'comparison_run_id': run.id}
+                metric_project = Project(organization_id=1, name='独立指标工程验收', brand_name='MetricTarget')
+                db.add(metric_project); db.flush()
+                metric_prompt = Prompt(project_id=metric_project.id, title='隔离指标', prompt_text='过滤器如何保养？')
+                db.add(metric_prompt); db.commit()
+                fixture.update(metric_project_id=metric_project.id, metric_prompt_id=metric_prompt.id)
+                for part in ['baseline', 'comparison']:
+                    batch, _ = create_analysis(db, project_id=metric_project.id, prompt_id=metric_prompt.id,
+                        sample_count=9, idempotency_key=f'isolated-nine-{part}')
+                    token = claim_analysis(db, batch.analysis_id)
+                    runs = db.query(BrowserMonitorRun).filter_by(task_id=batch.task_id).order_by(BrowserMonitorRun.id).all()
+                    for index, run in enumerate(runs):
+                        run.status = 'success'; run.stage = 'success'
+                        run.answer_text = 'MetricTarget 是一个名称。' if part == 'comparison' and index == 0 else f'维护前核对设备说明，第{index + 1}份隔离回答。'
+                        run.answer_char_count = len(run.answer_text); run.reference_complete = True
+                    db.commit()
+                    assert finalize_analysis(db, batch.analysis_id, token)
+                    fixture[f'metric_{part}'] = [r.id for r in runs]
     report = {'scope': 'OFFLINE_ISOLATED_UI', 'external_calls': 0, 'screenshots': [], 'errors': [], 'status': 'FAIL'}
     log = (out / 'api.log').open('w')
     server = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'app.release_main:app', '--host', '127.0.0.1', '--port', str(port)],

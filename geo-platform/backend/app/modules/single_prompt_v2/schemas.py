@@ -93,6 +93,7 @@ class ActiveTaskRead(BaseModel):
 
 
 class SinglePromptAnalysisStatusRead(BaseModel):
+    origin_monitor_scope: dict[str, Any] | None = None
     analysis: AnalysisIdentityRead
     sampling: SamplingStateRead
     result_version: str | None = None

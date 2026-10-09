@@ -6,13 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.core.release_database import get_release_db
-from app.models import BrandContextVersion, Project, Prompt, BrowserMonitorRun, SinglePromptAnalysisContext, SinglePromptObservationComparison, SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
+from app.models import BrandContextVersion, Project, Prompt, BrowserMonitorRun, SinglePromptAnalysis, SinglePromptAnalysisContext, SinglePromptObservationComparison, SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
 from app.services.serialization import loads
 from .context_provider import context_view, load_context, save_context
 from .observation import fixed_scope, measure_scope, create_observation_comparison, aggregate_prompt_metrics, opportunity_hint
 from . import scheduling
 from app.models import SinglePromptSamplingSchedule
-from .service import _snapshot_run_rows, _hash
+from .service import _snapshot_run_rows, _hash, _run_input_fingerprint, create_analysis_from_runs, get_analysis_status, VALID_RUN_STATUSES
 from urllib.parse import urlsplit
 
 router = APIRouter(prefix='/api/v2', tags=['monitor-validate'])
@@ -28,7 +28,8 @@ def project_monitor(project_id: int, db: Session = Depends(get_release_db)):
         'metrics': aggregate_prompt_metrics(values),
         'prompts': [{'prompt': row['prompt'], 'metrics': row['metrics'], 'run_ids': [r['run_id'] for r in row['runs']],
             'pool_count': row['pool_count'], 'identity_hash': row['input']['identity_hash'],
-            'raw_output_hash': row['input']['raw_output_hash'], 'opportunity': row['opportunity']} for row in values],
+            'raw_output_hash': row['input']['raw_output_hash'], 'opportunity': row['opportunity'],
+            'analysis_selection': row['analysis_selection']} for row in values],
         'limitations': ['项目概览仅使用当前问题原文；未明确选择语义版本时，候选和推荐保持未知。',
             '按问题平均与按Run加权分别显示；无有效分母的问题不按零计入。']}
 
@@ -55,6 +56,15 @@ def current_monitor(project_id: int, prompt_id: int, db: Session = Depends(get_r
     result['prompt'] = {'id': prompt.id, 'text': prompt.prompt_text, 'intent_type': prompt.intent_type, 'group': prompt.prompt_group}
     result['opportunity'] = opportunity_hint(prompt.intent_type, result['metrics'])
     result['identity'] = identity
+    selection = {'project_id': project_id, 'prompt_id': prompt_id,
+        'observed_run_ids': [r.id for r in matching],
+        'raw_output_hash': result['input']['raw_output_hash'], 'identity_hash': _hash(identity),
+        'prompt_configuration': {'text': prompt.prompt_text, 'intent_type': prompt.intent_type, 'group': prompt.prompt_group},
+        'run_fingerprints': {str(r['run_id']): _run_input_fingerprint(r) for r in raw['runs']
+            if r['status'] in VALID_RUN_STATUSES and str(r.get('answer_text') or '').strip()}}
+    selection['selected_run_ids'] = sorted(int(key) for key in selection['run_fingerprints'])
+    selection['excluded_run_ids'] = [r.id for r in matching if r.id not in selection['selected_run_ids']]
+    result['analysis_selection'] = {**selection, 'scope_hash': _hash(selection)}
     result['competitor_observations'] = [{
         'competitor_id': competitor.id, 'name': competitor.name,
         'measurement': measure_scope({'raw': raw, 'semantics': None, 'ref': result['input']},
@@ -67,6 +77,34 @@ def current_monitor(project_id: int, prompt_id: int, db: Session = Depends(get_r
 
 class StrictInput(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+
+
+class MonitorAnalysisCreate(StrictInput):
+    scope_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+@router.post('/projects/{project_id}/prompts/{prompt_id}/monitor-analysis', status_code=201)
+def analyze_monitor_scope(project_id: int, prompt_id: int, payload: MonitorAnalysisCreate,
+                          response: Response, db: Session = Depends(get_release_db)):
+    request_key = f'monitor:{payload.scope_hash}'
+    existing = db.query(SinglePromptAnalysis).filter_by(project_id=project_id, idempotency_key=request_key).one_or_none()
+    if existing:
+        origin = loads(existing.sampling_plan_json, {}).get('origin_monitor_scope', {})
+        if existing.prompt_id != prompt_id or origin.get('scope_hash') != payload.scope_hash:
+            raise HTTPException(409, '该请求身份已用于其他观察范围')
+        response.status_code = 200
+        return get_analysis_status(db, existing.analysis_id)
+    selected = current_monitor(project_id, prompt_id, db)['analysis_selection']
+    if selected['scope_hash'] != payload.scope_hash:
+        raise HTTPException(409, '监测范围或配置已变化，请刷新监测后重新确认；没有替换为新样本')
+    if not selected['selected_run_ids'] or len(selected['selected_run_ids']) > 500:
+        raise HTTPException(422, '本次可分析回答需为1至500条；请到采样记录池明确选择范围')
+    analysis, created = create_analysis_from_runs(db, project_id=project_id, prompt_id=prompt_id,
+        run_ids=selected['selected_run_ids'], run_fingerprints=selected['run_fingerprints'],
+        base_context_id=None, idempotency_key=request_key, origin_monitor_scope=selected)
+    if not created:
+        response.status_code = 200
+    return get_analysis_status(db, analysis.analysis_id)
 
 
 class ContextCreate(StrictInput):

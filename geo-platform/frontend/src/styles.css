@@ -104,7 +104,8 @@ body {
     z-index: 100;
     height: 100dvh;
   }
-  .side-nav .ant-layout-sider-children { overflow-y: auto; }
+  .side-nav .ant-layout-sider-children { width: 228px; overflow-y: auto; overflow-x: hidden; }
+  .side-nav.ant-layout-sider-collapsed .ant-layout-sider-children { visibility: hidden; pointer-events: none; }
   .side-nav .ant-layout-sider-zero-width-trigger {
     top: 12px;
     right: -44px;

@@ -583,6 +583,7 @@ def create_analysis_from_runs(
     run_fingerprints: dict[int, str],
     base_context_id: str | None,
     idempotency_key: str,
+    origin_monitor_scope: dict[str, Any] | None = None,
 ) -> tuple[SinglePromptAnalysis, bool]:
     project = db.get(Project, project_id)
     prompt = db.get(Prompt, prompt_id)
@@ -626,6 +627,8 @@ def create_analysis_from_runs(
         "run_fingerprints": actual_fingerprints,
         "base_context_id": base_context_id,
     }
+    if origin_monitor_scope is not None:
+        plan['origin_monitor_scope'] = origin_monitor_scope
     plan_hash = _hash(plan)
     existing = (
         db.query(SinglePromptAnalysis)
@@ -1015,6 +1018,7 @@ def get_analysis_status(db: Session, analysis_id: str) -> dict[str, Any]:
         "raw_output_hash": context.raw_output_hash if context else None,
         "context_id": context.context_id if context else None,
         "result_source": result_source,
+        "origin_monitor_scope": plan.get('origin_monitor_scope'),
         "blocker": blocker,
         "allowed_operations": operations,
         "active_task": {

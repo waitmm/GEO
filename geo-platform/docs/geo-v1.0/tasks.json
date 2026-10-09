@@ -316,7 +316,9 @@
         "backend/app/modules/single_prompt_v2/observation.py"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
+        "backend/tests/test_observation_delivery.py"
       ],
       "estimate": "4人日",
       "planned_start": "",
@@ -326,7 +328,7 @@
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需接入",
-      "current_checkpoint": "delivery_checkpoint_20261009"
+      "current_checkpoint": "monitor_exact_scope_20261009"
     },
     {
       "id": "T07",
@@ -351,7 +353,9 @@
         "frontend/src/ObservationPanel.tsx"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
+        "backend/tests/test_observation_delivery.py"
       ],
       "estimate": "5人日",
       "planned_start": "",
@@ -361,7 +365,7 @@
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需接入",
-      "current_checkpoint": "delivery_checkpoint_20261009"
+      "current_checkpoint": "monitor_exact_scope_20261009"
     },
     {
       "id": "T08",
@@ -382,21 +386,25 @@
       "implementation_files": [
         "backend/app/modules/single_prompt_v2/qualification.py",
         "backend/app/modules/single_prompt_v2/strategy.py",
-        "frontend/src/App.tsx"
+        "frontend/src/App.tsx",
+        "backend/app/modules/single_prompt_v2/observation_api.py",
+        "frontend/src/ObservationPanel.tsx"
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json",
+        "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
+        "backend/tests/test_observation_delivery.py"
       ],
       "estimate": "2人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "精确范围交接、配置变化拒绝、幂等和首屏入口已通过隔离API/浏览器；整个产品真实外部集成仍待授权，未据此标记整体完成。",
       "commit": "",
       "audit_classification": "需修复",
-      "current_checkpoint": "delivery_checkpoint_20261009"
+      "current_checkpoint": "monitor_exact_scope_20261009"
     },
     {
       "id": "T09",
@@ -588,7 +596,7 @@
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
+      "blocker": "获取记录与人工合格事实消费已实现；AC-TRU-01自动官方原子事实的语义支持、时效与冲突核实尚未实现，不能仅靠域名匹配或人工事实消费替代。",
       "commit": "",
       "audit_classification": "需修复",
       "current_checkpoint": "delivery_checkpoint_20261009"
@@ -893,7 +901,9 @@
         "backend/app/modules/single_prompt_v2/observation_api.py"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
+        "backend/tests/test_observation_delivery.py"
       ],
       "estimate": "4人日",
       "planned_start": "",
@@ -903,7 +913,7 @@
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需接入 release 且需修复",
-      "current_checkpoint": "delivery_checkpoint_20261009"
+      "current_checkpoint": "monitor_exact_scope_20261009"
     },
     {
       "id": "T22",
@@ -931,7 +941,9 @@
         "backend/tests/test_observation_delivery.py"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
+        "backend/tests/test_observation_delivery.py"
       ],
       "estimate": "5人日",
       "planned_start": "",
@@ -941,7 +953,7 @@
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需接入 release 且需修复",
-      "current_checkpoint": "delivery_checkpoint_20261009"
+      "current_checkpoint": "monitor_exact_scope_20261009"
     },
     {
       "id": "T23",
@@ -1044,7 +1056,9 @@
         "backend/scripts/delivery_browser_check.py"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/artifacts/acceptance/20261009T145111Z/report.json",
+        "backend/backups/source-provenance-20261009-restored/upgrade-report.json"
       ],
       "estimate": "3人日",
       "planned_start": "",

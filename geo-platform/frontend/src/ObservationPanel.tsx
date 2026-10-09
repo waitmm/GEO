@@ -7,6 +7,7 @@ import { SamplingSchedulePanel } from "./SamplingSchedulePanel";
 
 const names: Record<string, string> = { brand_mention_rate: "正文提及", brand_option_rate: "列为选项", brand_recommendation_rate: "明确推荐", target_brand_official_reference_rate: "官方来源引用", published_url_reference_rate: "目标 URL 引用" };
 const ratio = (m: any) => m?.value == null ? "不可计算" : `${m.hit_count}/${m.evaluable_count} (${(m.value * 100).toFixed(1)}%)`;
+const coverage = (m: any) => `${m.evaluable_count} / ${m.valid_raw_count} / ${m.planned_count}`;
 const runStates: Record<string, string> = { success: "采样成功", partial_success: "部分成功", failed: "采样失败", blocked: "采样受阻", cancelled: "未执行" };
 const unknownReasons: Record<string, string> = {
   BRAND_ALIAS_AMBIGUOUS: "只出现别名，尚不能确定是否指向目标品牌",
@@ -55,6 +56,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
   const [intent, setIntent] = useState<string>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [openingPrompt, setOpeningPrompt] = useState<number>();
   const [reload, setReload] = useState(0);
   const [form] = Form.useForm();
   const generation = useRef(0);
@@ -72,7 +74,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     const controller = new AbortController();
     setResult(undefined); setPool(undefined); setOverview(undefined); setScopes([]); setHistory([]); setContexts([]);
     setLeft(undefined); setRight(undefined); setLeftAnswer(undefined); setRightAnswer(undefined);
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setOpeningPrompt(undefined);
     const queries = mode === "context"
       ? [request<any[]>(`/api/v2/projects/${project.id}/brand-contexts`, { signal: controller.signal })]
       : promptId ? [request<any[]>(`${base}/observation-scopes`, { signal: controller.signal }), request<any[]>(`${base}/observation-comparisons`, { signal: controller.signal }),
@@ -122,6 +124,21 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     } catch (e) { if (generation.current === epoch) setError((e as Error).message); }
     finally { if (generation.current === epoch) setBusy(false); }
   }
+  async function openAnalysis(row: any) {
+    const epoch = generation.current;
+    const selection = row.analysis_selection;
+    setOpeningPrompt(row.prompt.id); setError("");
+    try {
+      const next = await request<any>(`/api/v2/projects/${project.id}/prompts/${row.prompt.id}/monitor-analysis`, {
+        method: "POST", body: JSON.stringify({ scope_hash: selection.scope_hash }),
+      });
+      if (epoch !== generation.current) return;
+      const params = new URLSearchParams({ release_view: "coreV2", v2_project: String(project.id),
+        v2_prompt: String(row.prompt.id), v2_analysis: next.analysis.analysis_id });
+      window.location.assign(`/?${params}`);
+    } catch (e) { if (epoch === generation.current) setError((e as Error).message); }
+    finally { if (epoch === generation.current) setOpeningPrompt(undefined); }
+  }
   const options = scopes.map(s => ({ value: s.context_id, label: `Runs ${(s.run_scope.run_ids || []).join("、")} · ${s.created_at}` }));
   const output = result?.output || result || (mode === "monitor" && pool?.runs?.length ? pool : undefined);
   const rows = Object.entries(output?.metrics || {}).map(([key, value]) => ({ key, name: names[key] || key, data: value as any }));
@@ -159,7 +176,13 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
           { title: "正文提及", render: (_, row: any) => ratio(row.metrics.brand_mention_rate) },
           { title: "下一步", render: (_, row: any) => <><Typography.Text>{row.opportunity.label}</Typography.Text><br /><Typography.Text type="secondary">{row.opportunity.reason}</Typography.Text></> },
           { title: "采样范围", render: (_, row: any) => `${row.run_ids.length} 条当前问题回答 / ${row.pool_count} 条历史尝试` },
-          { title: "操作", render: (_, row: any) => <Button href={`/?release_view=coreV2&v2_project=${project.id}&v2_prompt=${row.prompt.id}`}>分析此问题</Button> },
+          { title: "操作", render: (_, row: any) => <>
+            <Button loading={openingPrompt === row.prompt.id} disabled={openingPrompt !== undefined || !row.analysis_selection.selected_run_ids.length}
+              onClick={() => openAnalysis(row)}>分析这 {row.analysis_selection.selected_run_ids.length} 条回答</Button>
+            {row.analysis_selection.excluded_run_ids.length > 0 && <Typography.Paragraph type="warning">
+              Run {row.analysis_selection.excluded_run_ids.join("、")} 没有可分析正文，不进入该分析；监测统计仍保留这些尝试。
+            </Typography.Paragraph>}
+          </> },
         ]} />
       </section>}
       {!promptId && !busy && <Empty description={overview?.prompts.length ? "选择问题查看原文、采样计划和详细指标" : "尚无可用问题，请先在问题配置中创建"} />}
@@ -182,7 +205,8 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
           { title: "指标", dataIndex: "name" },
           { title: mode === "monitor" ? "命中 / 可评估" : "基线", render: (_, r) => ratio(mode === "monitor" ? r.data : r.data.baseline) },
           ...(mode === "compare" ? [{ title: "对照", render: (_: any, r: any) => ratio(r.data.comparison) }, { title: "差值（百分点）", render: (_: any, r: any) => r.data.delta_percentage_points ?? "不可比/不可计算" }] : []),
-          { title: "可评估 / 有效原始 / 计划", render: (_, r) => { const m = mode === "monitor" ? r.data : r.data.baseline; return `${m.evaluable_count} / ${m.valid_raw_count} / ${m.planned_count}`; } },
+          { title: mode === "monitor" ? "可评估 / 有效原始 / 计划" : "基线覆盖（可评估 / 有效 / 固定范围）", render: (_, r) => coverage(mode === "monitor" ? r.data : r.data.baseline) },
+          ...(mode === "compare" ? [{ title: "对照覆盖（可评估 / 有效 / 固定范围）", render: (_: any, r: any) => coverage(r.data.comparison) }] : []),
         ]} />
         <Collapse style={{ marginTop: 12 }} items={[{ key: "unknown", label: "哪些样本未计入，为什么", children:
           <Table size="small" rowKey="key" pagination={false} dataSource={rows} scroll={{ x: 520 }} columns={[
@@ -190,7 +214,11 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
             { title: mode === "monitor" ? "未评估原因" : "基线未评估原因", render: (_, r) => <UnknownMembers metric={mode === "monitor" ? r.data : r.data.baseline} /> },
             ...(mode === "compare" ? [{ title: "对照未评估原因", render: (_: any, r: any) => <UnknownMembers metric={r.data.comparison} /> }] : []),
           ]} /> }]} />
-        <Alert style={{ marginTop: 16 }} type="warning" message="仅报告观察变化，不证明优化效果或生成因果" description={output.conflicts?.length ? `条件冲突：${output.conflicts.join("、")}` : "未知条件及未计算语义不按零结果处理。"} />
+        <Alert style={{ marginTop: 16 }} type="warning" message="仅报告观察变化，不证明优化效果或生成因果" description={output.conflicts?.length ? `条件不可比：${output.conflicts.map((code: string) => {
+          const [field, state] = code.split(":");
+          const label = ({ platform: "采样平台", source_type: "采样来源类型", adapter: "采集器", original_query: "问题原文", collection_mode: "采样模式" } as Record<string, string>)[field] || "采样条件";
+          return `${label}${state === "CONFLICT" ? "不一致" : "未知或不完整"}`;
+        }).join("、")}` : "未知条件及未计算语义不按零结果处理。"} />
         {mode === "monitor" && <>
           <Typography.Title level={5}>按日期观察（UTC）</Typography.Title>
           <Table size="small" rowKey="date" scroll={{ x: 650 }} pagination={false} dataSource={output.trend?.points || []} columns={[

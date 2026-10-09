@@ -2,6 +2,8 @@
 
 ## 2026-10-09 Continuous Product Delivery Boundary
 
+Monitor opportunity now transfers its exact observed scope through an explicit POST, retaining selected and excluded Run IDs, input fingerprints and frozen configuration. Same scope reuses the analysis; changed scope is rejected rather than silently refreshed. This does not start sampling or model calls. Optimize moves its existing task/results ahead of the collapsed Run pool and technical audit, preserving the same state authority and historical deep links. The change implements the approved primary-action-first UI, not a new workflow.
+
 Product Owner approved continuous Monitor, automatic Optimize and independent Validate. Publication is optional and cannot block analysis, complete draft access or comparison. Basic scheduling and a versioned lightweight brand-context entry are required; optional human correction is not a staged approval workflow. This supersedes the earlier publication-first next step, not permission, data or evidence protections. Implementation and applicable acceptance are in progress.
 
 Default Optimize presentation follows this approved boundary: automatic task/results stay visible; raw material, optional human correction and audit expand on demand. Explicit diagnosis deep links keep the advanced area open. The section is not removed and no existing Review or authority is altered. Actual QA findings are shown alongside real edits/rechecks; empty findings do not invent a repair. Publication remains an optional detail link, not the next mandatory gate.

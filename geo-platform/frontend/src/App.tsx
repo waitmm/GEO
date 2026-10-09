@@ -186,7 +186,7 @@ const PAGE_META: Record<PageKey, { title: string; subtitle: string }> = {
   releaseMonitor: { title: "Monitor · 品牌监测", subtitle: "回答表现、可评估范围与引用观察" },
   releaseCompare: { title: "Validate · 变化比较", subtitle: "明确的两个样本范围，不以发布记录为前提" },
   brandContext: { title: "品牌资料", subtitle: "可选上下文，保留版本与出处" },
-  coreV2: { title: "单问题分析 V2", subtitle: "一次分析、固定采样、可信状态" },
+  coreV2: { title: "分析与稿件", subtitle: "优化建议、具体内容与质量检查" },
   validation: { title: "监测总览", subtitle: "看品牌当前表现，不在这里下最终策略" },
   recommendation: { title: "决策诊断", subtitle: "解释单个问题为什么没进入候选/推荐，并送入最终策略" },
   optimization: { title: "执行策略", subtitle: "知道为什么以后，具体怎么干" },
@@ -5786,7 +5786,7 @@ export default function App() {
         {RELEASE_FIRST_SLICE && <ReleaseWorkerStatus />}
         {!project ? <Card loading={loading}><Empty description="请选择项目" /></Card> : ["releaseMonitor", "releaseCompare", "brandContext"].includes(page) ? <ObservationPanel key={`${project.id}:${activePromptId}:${page}`} project={project} promptId={activePromptId} mode={page === "brandContext" ? "context" : page === "releaseCompare" ? "compare" : "monitor"} /> : page === "coreV2" ? <Space direction="vertical" size={16} className="page-stack">
           {!activePromptId ? <Card><Empty description="请在顶部选择一个 Prompt" /></Card> : <>
-            <Card size="small" title={<Space><Play size={18} />Single-Prompt Core V2 · Prompt #{activePromptId}</Space>} extra={<Space wrap>
+            <Card size="small" title={<Space><Play size={18} />问题 #{activePromptId}</Space>} extra={<Space wrap>
               <Text type="secondary">采样次数</Text>
               <InputNumber aria-label="本次采样次数" min={1} max={10} value={v2SampleCount} onChange={(value) => setV2SampleCount(Number(value || 1))} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")} />
               <Popconfirm
@@ -5810,6 +5810,22 @@ export default function App() {
               {scopedPrompt?.enabled === false && <Alert type="info" message="问题已停用：不再发起新采样，历史样本和已有分析仍可使用" />}
             </Card>
 
+            {v2Analysis?.context_id && v2Analysis.raw_output_hash && projectId && activePromptId && <>
+              <Space wrap style={{ justifyContent: "space-between", width: "100%" }}>
+                <Text>当前分析：{v2Analysis.sampling.valid_run_count}/{v2Analysis.sampling.planned_run_count} 条有效回答</Text>
+                <Button size="small" onClick={showV2AnalysisHistory}>切换已有分析</Button>
+              </Space>
+              {v2Analysis.origin_monitor_scope && <Alert type="info"
+                message={`来自监测的固定范围：Run ${v2Analysis.origin_monitor_scope.selected_run_ids.join("、")}`}
+                description={v2Analysis.origin_monitor_scope.excluded_run_ids.length
+                  ? `Run ${v2Analysis.origin_monitor_scope.excluded_run_ids.join("、")} 无可分析正文，未进入分析，也未被当作零结果。`
+                  : undefined} />}
+              <AutomaticOptimizePanel key={`${projectId}:${activePromptId}:${v2Analysis.analysis.analysis_id}`}
+                projectId={projectId} promptId={activePromptId} analysisId={v2Analysis.analysis.analysis_id} rawHash={v2Analysis.raw_output_hash}
+                completion={v2SourcePreparation?.completion_manifest} />
+            </>}
+            <details className="v2-advanced-details" key={`run-pool:${v2Analysis?.analysis.analysis_id || 'unselected'}`} open={!v2Analysis}>
+            <summary>采样记录与新分析范围（{v2RunPool?.total || 0} 条）</summary>
             <Card size="small" title={<Space><Monitor size={18} />采样记录池<Tag>{v2RunPool?.total || 0} Runs</Tag></Space>} extra={<Space>
               <Text type="secondary">新增采样不会改变已有分析</Text>
               <Button icon={<RefreshCw size={15} />} loading={v2RunPoolLoading} onClick={() => refreshV2RunPool()}>刷新</Button>
@@ -5865,6 +5881,7 @@ export default function App() {
                 <Col><Button type="primary" icon={<ListChecks size={15} />} disabled={!v2SelectedRunIds.length} loading={v2Loading} onClick={createV2AnalysisFromSelectedRuns}>用所选 Run 建立分析版本</Button></Col>
               </Row>
             </Card>
+            </details>
 
             {!v2Analysis ? <Card title="已有分析" loading={v2AnalysisHistoryLoading} extra={<Button icon={<RefreshCw size={15} />} onClick={refreshV2AnalysisHistory}>刷新</Button>}>
               {v2AnalysisHistory.length === 0 ? <Empty description="当前 Prompt 还没有分析，可从上方开始一次新分析" /> : <Table<SinglePromptV2AnalysisListItem>
@@ -5899,7 +5916,9 @@ export default function App() {
                   action={<Button icon={<FileText size={14} />} href={savedV2DeliveryHref(row, delivery)}>查看方案与稿件</Button>}
                 />)
               )}
-              <Card size="small" title={<Space>{v2AnalysisStatusTag(v2Analysis.sampling.status)}<Text code>{v2Analysis.analysis.analysis_id}</Text></Space>} extra={<Space><Tag color={v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "green" : "blue"}>{v2Analysis.result_source === "FROZEN_ANALYSIS_CONTEXT" ? "固定分析输入" : "实时采样状态"}</Tag><Button size="small" onClick={showV2AnalysisHistory}>切换已有分析</Button></Space>}>
+              <details className="v2-advanced-details" open={!v2Analysis.context_id}>
+              <summary>采样状态与版本记录</summary>
+              <Card size="small" title={v2AnalysisStatusTag(v2Analysis.sampling.status)}>
                 <div className="v2-status-grid">
                   <Statistic title="计划采样" value={v2Analysis.sampling.planned_run_count} suffix="次" />
                   <Statistic title="已进入终态" value={v2Analysis.sampling.terminal_run_count} suffix="次" />
@@ -5912,16 +5931,12 @@ export default function App() {
                   <Descriptions.Item label="结果版本">{v2Analysis.result_version || "采集完成后生成"}</Descriptions.Item>
                   <Descriptions.Item label="AnalysisContext">{v2Analysis.context_id || "尚未冻结"}</Descriptions.Item>
                   <Descriptions.Item label="开始时间">{formatDateTime(v2Analysis.started_at)}</Descriptions.Item>
+                  <Descriptions.Item label="分析 ID"><Text style={{ overflowWrap: "anywhere" }}>{v2Analysis.analysis.analysis_id}</Text></Descriptions.Item>
                 </Descriptions>
                 {v2Analysis.blocker && v2Analysis.blocker.code !== "NEXT_STAGE_NOT_IMPLEMENTED" && <Alert style={{ marginTop: 14 }} type={v2Analysis.context_id ? "info" : "error"} showIcon message={v2BlockerLabel(v2Analysis.blocker.code)} description={v2Analysis.blocker.detail} action={v2Analysis.allowed_operations.includes("RETRY_COLLECTION") ? <Button size="small" danger loading={v2Loading} onClick={retryV2Analysis}>明确重试</Button> : undefined} />}
                 {v2Analysis.warnings.map((warning) => <Alert key={warning.code} style={{ marginTop: 10 }} type="warning" showIcon message={warning.code === "RETRIEVAL_OBSERVATION_UNAVAILABLE" ? "检索观测不可用" : "独立会话证明不可用"} description={warning.detail} />)}
               </Card>
-
-              {v2Analysis.context_id && v2Analysis.raw_output_hash && projectId && activePromptId && <AutomaticOptimizePanel
-                key={`${projectId}:${activePromptId}:${v2Analysis.analysis.analysis_id}`}
-                projectId={projectId} promptId={activePromptId} analysisId={v2Analysis.analysis.analysis_id} rawHash={v2Analysis.raw_output_hash}
-                completion={v2SourcePreparation?.completion_manifest}
-              />}
+              </details>
               <details className="v2-advanced-details" open={!!new URLSearchParams(window.location.search).get('v2_diagnosis')}>
                 <summary>原始资料、人工纠错与高级审计</summary>
               {(v2CitationContributionHistoryLoading || v2PendingCitationCalibrations.length > 0) && <Card

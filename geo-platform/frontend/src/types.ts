@@ -229,6 +229,7 @@ export type SinglePromptV2Run = {
 };
 
 export type SinglePromptV2Status = {
+  origin_monitor_scope?: { scope_hash: string; observed_run_ids: number[]; selected_run_ids: number[]; excluded_run_ids: number[] } | null;
   raw_output_hash?: string | null;
   analysis: {
     analysis_id: string;

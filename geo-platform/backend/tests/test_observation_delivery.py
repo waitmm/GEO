@@ -171,6 +171,88 @@ def test_condition_conflict_blocks_delta_not_raw_values():
     assert 'platform:CONFLICT' in output['conflicts']
 
 
+def test_zero_to_one_of_nine_is_11_points_not_100_percent_or_full_recommendation():
+    before, after = scope(1), scope(10)
+    before['raw']['runs'] = [scope(i, answer=f'General advice {i}')['raw']['runs'][0] for i in range(1, 10)]
+    after['raw']['runs'] = [scope(i, answer=f'Target is listed {i}' if i == 10 else f'General advice {i}')['raw']['runs'][0] for i in range(10, 19)]
+    for sample in [before, after]:
+        sample['semantics'] = {'answer_jobs': [{'answer_hash': hashlib.sha256(r['answer_text'].encode()).hexdigest(),
+            'status': 'DONE_ZERO_EVENTS' if r['run_id'] != 10 else 'DONE'} for r in sample['raw']['runs']], 'events': []}
+    after['semantics']['events'] = [{'run_id': 10, 'entity_text': 'Target', 'fact_consumption_eligible': True,
+        'effective_speech_act': 'INCLUDE_AS_OPTION'}]
+    compared = compare_scopes(before, after, IDENTITY)
+    for key in ['brand_mention_rate', 'brand_option_rate']:
+        metric = compared['metrics'][key]
+        assert (metric['baseline']['hit_count'], metric['baseline']['evaluable_count']) == (0, 9)
+        assert (metric['comparison']['hit_count'], metric['comparison']['evaluable_count']) == (1, 9)
+        assert metric['delta_percentage_points'] == pytest.approx(11.1111)
+        assert metric['comparison'] == measure_scope(after, IDENTITY)['metrics'][key]
+    assert compared['metrics']['brand_recommendation_rate']['delta_percentage_points'] == 0
+    assert compared['causal_conclusion'] is False
+
+
+def test_mention_option_and_recommendation_are_three_distinct_counts():
+    current = scope(1)
+    current['raw']['runs'] = [scope(i, answer=f'Target text {i}')['raw']['runs'][0] for i in range(1, 4)]
+    current['semantics'] = {'answer_jobs': [{'status': 'DONE',
+        'answer_hash': hashlib.sha256(r['answer_text'].encode()).hexdigest()} for r in current['raw']['runs']],
+        'events': [{'run_id': i, 'entity_text': 'Target', 'fact_consumption_eligible': True, 'effective_speech_act': act}
+                   for i, act in enumerate(['MENTION', 'INCLUDE_AS_OPTION', 'RECOMMEND'], 1)]}
+    metrics = measure_scope(current, IDENTITY)['metrics']
+    for name, ids in [('brand_mention_rate', [1, 2, 3]), ('brand_option_rate', [2, 3]), ('brand_recommendation_rate', [3])]:
+        assert metrics[name]['hit_run_ids'] == ids
+        assert metrics[name]['evaluable_count'] == 3
+
+
+def test_monitor_handoff_freezes_scope_rejects_stale_and_replays_without_new_runs(tmp_path, monkeypatch):
+    from app.models import Project, SinglePromptAnalysis
+    from app.services.serialization import loads
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    try:
+        original = _seed_frozen_analysis(db, reference_urls=[])
+        app = create_release_app(validate_on_startup=False)
+        app.dependency_overrides[get_release_db] = lambda: db
+        client = TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000))
+        base = '/api/v2/projects/1/prompts/44'
+        selected = client.get(base + '/monitor').json()['analysis_selection']
+        before_count = db.query(BrowserMonitorRun).count()
+        payload = {'scope_hash': selected['scope_hash']}
+        project = db.get(Project, 1); project.brand_name = 'Changed identity'; db.commit()
+        assert client.post(base + '/monitor-analysis', json=payload).status_code == 409
+        project.brand_name = 'Target'; db.commit()
+        response = client.post(base + '/monitor-analysis', json=payload)
+        assert response.status_code == 201, response.text
+        saved = response.json()
+        analysis = db.query(SinglePromptAnalysis).filter_by(analysis_id=saved['analysis']['analysis_id']).one()
+        plan = loads(analysis.sampling_plan_json, {})
+        assert plan['run_ids'] == selected['selected_run_ids']
+        assert plan['run_fingerprints'] == selected['run_fingerprints']
+        assert plan['origin_monitor_scope'] == selected
+        assert analysis.task_id is None and analysis.analysis_id != original.analysis_id
+        assert db.query(BrowserMonitorRun).count() == before_count
+        refreshed_click = client.post(base + '/monitor-analysis', json=payload)
+        assert refreshed_click.status_code == 200
+        assert refreshed_click.json()['analysis']['analysis_id'] == analysis.analysis_id
+        project = db.get(Project, 1); project.brand_name = 'Changed identity'; db.commit()
+        assert client.post(base + '/monitor-analysis', json=payload).status_code == 200
+        assert client.post(base + '/monitor-analysis', json=payload).json()['analysis']['analysis_id'] == analysis.analysis_id
+        current = client.get(base + '/monitor').json()['analysis_selection']
+        prompt = db.get(Prompt, 44); prompt.prompt_group = 'changed group'; db.commit()
+        assert client.post(base + '/monitor-analysis', json={'scope_hash': current['scope_hash']}).status_code == 409
+        assert client.post(base.replace('/1/', '/2/') + '/monitor-analysis', json=payload).status_code == 404
+        pending, _ = create_analysis(db, project_id=1, prompt_id=44, sample_count=1, idempotency_key='later-pending')
+        current = client.get(base + '/monitor').json()['analysis_selection']
+        waiting = db.query(BrowserMonitorRun).filter_by(task_id=pending.task_id).one()
+        assert current['excluded_run_ids'] == [waiting.id]
+        assert current['selected_run_ids'] == selected['selected_run_ids']
+        accepted = client.post(base + '/monitor-analysis', json={'scope_hash': current['scope_hash']})
+        assert accepted.status_code == 201
+        record = db.query(SinglePromptAnalysis).filter_by(analysis_id=accepted.json()['analysis']['analysis_id']).one()
+        assert loads(record.sampling_plan_json, {})['origin_monitor_scope']['excluded_run_ids'] == [waiting.id]
+    finally:
+        db.close(); engine.dispose()
+
+
 def test_semantic_uncertainty_is_not_negative_and_options_are_separate():
     s = scope(1)
     s['semantics'] = {'answer_jobs': [{'answer_hash': hashlib.sha256(s['raw']['runs'][0]['answer_text'].encode()).hexdigest(), 'status': 'DONE'}],
@@ -228,6 +310,17 @@ def test_formal_api_context_and_comparison_persist_without_reviews(tmp_path, mon
         assert client.post(uri, json=payload).json()['result_version'] == saved['result_version']
         assert db.query(SinglePromptObservationComparison).count() == 1
         assert db.query(SinglePromptPublicationRecord).count() == 0
+        for side, ref in [('baseline', refs[0]), ('comparison', refs[1])]:
+            measurement = client.post('/api/v2/projects/1/prompts/44/measurements', json={'scope': ref, 'identity': IDENTITY})
+            assert measurement.status_code == 200
+            for name, metric in measurement.json()['metrics'].items():
+                assert saved['output']['metrics'][name][side] == metric
+        negative = client.post(uri, json={'baseline': refs[1], 'comparison': refs[0], 'identity': IDENTITY})
+        assert negative.status_code == 201
+        assert negative.json()['output']['metrics']['brand_mention_rate']['delta_percentage_points'] == -100
+        history = client.get(uri).json()
+        assert {r['result_version'] for r in history} == {saved['result_version'], negative.json()['result_version']}
+        assert client.get(uri + '/' + negative.json()['result_version']).json()['output'] == negative.json()['output']
         assert client.get(uri + '/' + saved['result_version']).json()['output_hash'] == saved['output_hash']
         assert client.get(uri.replace('/1/', '/2/') + '/' + saved['result_version']).status_code == 404
         altered = copy.deepcopy(payload); altered['baseline']['raw_output_hash'] = '0' * 64

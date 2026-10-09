@@ -3,6 +3,7 @@ import { Alert, Button, Form, Input, InputNumber, Popconfirm, Select, Space, Tab
 import { Pencil, Plus, Power, Trash2 } from "lucide-react";
 import { request } from "./api/client";
 import type { Prompt } from "./types";
+import { ReleasePromptBatch } from "./ReleasePromptBatch";
 
 const intents = [{ value: "unknown", label: "暂未分类" }, { value: "category_awareness", label: "概念与知识" }, { value: "supplier_recommendation", label: "方案与工具选择" }, { value: "usage_instruction", label: "使用与操作" }];
 
@@ -44,6 +45,7 @@ export function ReleasePromptPanel({ projectId, prompts, onSaved }: { projectId:
   return <section>
     {error && <Alert type="error" message={error} />}
     <Typography.Title level={4}>{editing ? "编辑问题" : "新增问题"}</Typography.Title>
+    <ReleasePromptBatch key={projectId} projectId={projectId} onSaved={onSaved} />
     <Form form={form} layout="vertical" onFinish={save} initialValues={{ prompt_group: "", intent_type: "unknown", importance: 3 }}>
       <Form.Item label="问题原文" name="prompt_text" rules={[{ required: true, whitespace: true, message: "请输入完整问题" }]}><Input.TextArea rows={4} maxLength={10000} /></Form.Item>
       <Form.Item label="意图" name="intent_type" rules={[{ required: true, message: "请选择这个问题的实际意图" }]}><select className="release-intent-select">{intents.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></Form.Item>

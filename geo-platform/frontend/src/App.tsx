@@ -4,7 +4,7 @@ import {
   Alert, App as AntApp, Button, Card, Checkbox, Col, Collapse, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber,
   Layout, Menu, Modal, Popconfirm, Progress, Radio, Row, Segmented, Select, Space, Statistic, Steps, Table, Tag, Timeline, Tooltip, Typography
 } from "antd";
-import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, FileText, ListChecks, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, FileText, ListChecks, Menu as MenuIcon, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck, X } from "lucide-react";
 import { api } from "./api/client";
 import { ObservationPanel } from "./ObservationPanel";
 import { BrandContextSelect } from "./BrandContextSelect";
@@ -1480,6 +1480,8 @@ function PromptScopeAlert({ prompt, description }: { prompt: Prompt; description
 }
 
 export default function App() {
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const [narrowNav, setNarrowNav] = useState(false);
   useTableKeyboardScroll();
   const { message } = AntApp.useApp();
   const [page, setPage] = useState<PageKey>(() => {
@@ -5725,10 +5727,15 @@ export default function App() {
     v2DiagnosisEdits[`${targetType}:${targetId}`]?.value ?? fallbackValue ?? "";
 
   return <Layout className="app-shell">
-    <Sider width={228} className="side-nav" breakpoint="md" collapsedWidth={0} collapsible>
+    <Sider width={228} className="side-nav" breakpoint="md" collapsedWidth={0} collapsible
+      collapsed={navCollapsed} onCollapse={setNavCollapsed} onBreakpoint={setNarrowNav}
+      trigger={<Button type="text" aria-label={navCollapsed ? "展开主导航" : "收起主导航"} aria-expanded={!navCollapsed}
+        aria-controls="main-navigation" icon={navCollapsed ? <MenuIcon size={20} /> : <X size={20} />} />}
+      onKeyDown={event => { if (event.key === "Escape" && narrowNav) { setNavCollapsed(true); event.currentTarget.querySelector<HTMLButtonElement>('.ant-layout-sider-zero-width-trigger button')?.focus(); } }}>
       <div className="brand-block"><Title level={4}>生成式搜索决策平台</Title><Text type="secondary">监测 · 诊断 · 策略 · 复测</Text></div>
-        <Menu mode="inline" selectedKeys={[page]} onClick={({ key }) => {
+        <Menu id="main-navigation" mode="inline" selectedKeys={[page]} onClick={({ key }) => {
           setPage(key as PageKey);
+          if (narrowNav) setNavCollapsed(true);
           if (RELEASE_FIRST_SLICE) {
             const params = new URLSearchParams(window.location.search); params.set("release_view", key);
             if (projectId) params.set("v2_project", String(projectId));

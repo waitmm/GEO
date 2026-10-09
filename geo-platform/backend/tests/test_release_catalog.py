@@ -44,6 +44,54 @@ def test_catalog_normalizes_and_rejects_duplicates_without_partial_mutation(cata
     assert db.query(Competitor).one().name == 'Other'
 
 
+def test_batch_prompts_preserve_multiline_and_report_each_item_without_sampling(catalog):
+    client, db = catalog
+    project = client.post('/api/projects', json={'name': 'Project', 'brand_name': 'Brand'}).json()
+    route = f'/api/projects/{project["id"]}/prompts'
+    payload = {'items': [
+        {'prompt_text': '  How to clean?\nUnder which conditions?  ', 'intent_type': 'usage_instruction'},
+        {'prompt_text': 'How to clean?\nUnder which conditions?', 'importance': 5},
+        {'prompt_text': ' '}, {'prompt_text': 'Other', 'importance': 6},
+        {'prompt_text': 'Other', 'topic_id': 999}, {'prompt_text': 'Other', 'daily_tracking_enabled': True},
+        {'prompt_text': 'Other', 'unexpected': 'reject'}, {'prompt_text': 'Other'},
+    ]}
+    response = client.post(f'{route}/batch', json=payload)
+    assert response.status_code == 200
+    results = response.json()['items']
+    assert [item['status'] for item in results] == ['CREATED', 'EXISTING', *['REJECTED'] * 5, 'CREATED']
+    assert results[0]['prompt_id'] == results[1]['prompt_id']
+    assert [item['index'] for item in results] == list(range(8))
+    first = db.get(Prompt, results[0]['prompt_id'])
+    assert first.prompt_text == 'How to clean?\nUnder which conditions?' and first.importance == 3
+    repeated = client.post(f'{route}/batch', json=payload).json()['items']
+    assert [item['status'] for item in repeated] == ['EXISTING', 'EXISTING', *['REJECTED'] * 5, 'EXISTING']
+    assert db.query(Prompt).count() == 2
+    assert db.query(BrowserMonitorRun).count() == db.query(BrowserMonitorTask).count() == 0
+
+
+@pytest.mark.parametrize('items', [[], [{'prompt_text': 'Q'}] * 21])
+def test_batch_bounds_are_enforced_before_writes(catalog, items):
+    client, db = catalog
+    project = client.post('/api/projects', json={'name': 'Project', 'brand_name': 'Brand'}).json()
+    assert client.post(f'/api/projects/{project["id"]}/prompts/batch', json={'items': items}).status_code == 422
+    assert db.query(Prompt).count() == 0
+
+
+def test_batch_duplicate_does_not_hide_invalid_scope_or_tracking(catalog):
+    client, db = catalog
+    one = client.post('/api/projects', json={'name': 'One', 'brand_name': 'Brand'}).json()['id']
+    two = client.post('/api/projects', json={'name': 'Two', 'brand_name': 'Brand'}).json()['id']
+    topic = client.post(f'/api/projects/{two}/topics', json={'name': 'Other topic'}).json()['id']
+    client.post(f'/api/projects/{one}/prompts', json={'prompt_text': 'Q'})
+    result = client.post(f'/api/projects/{one}/prompts/batch', json={'items': [
+        {'prompt_text': 'Q', 'topic_id': topic}, {'prompt_text': 'Q', 'daily_tracking_enabled': True},
+    ]}).json()['items']
+    assert [item['status'] for item in result] == ['REJECTED', 'REJECTED']
+    other = client.post(f'/api/projects/{two}/prompts/batch', json={'items': [{'prompt_text': 'Q'}]})
+    assert other.json()['items'][0]['status'] == 'CREATED'
+    assert client.post('/api/projects/999/prompts/batch', json={'items': [{'prompt_text': 'Q'}]}).status_code == 404
+
+
 @pytest.mark.parametrize('payload', [
     {'name': ' '}, {'brand_name': None}, {'website_url': 'javascript:alert(1)'},
     {'website_url': 'https://user:password@example.com'}, {'website_url': 'https://example.com:wrong'},

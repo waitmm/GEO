@@ -6,6 +6,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import delete, exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -32,6 +33,15 @@ from app.services.serialization import dumps, loads
 
 router = APIRouter(prefix="/api", tags=["release-catalog"])
 get_db = get_release_db
+
+
+class PromptBatchCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[dict] = Field(min_length=1, max_length=20)
+
+
+class BatchPromptItem(PromptCreate):
+    model_config = ConfigDict(extra="forbid")
 
 
 def _text(value: object, label: str, limit: int, *, required: bool = False) -> str:
@@ -212,8 +222,6 @@ def create_prompt(project_id: int, payload: PromptCreate, db: Session = Depends(
     if not db.get(Project, project_id):
         raise HTTPException(status_code=404, detail="Project 不存在")
     values = _prompt_values(payload.model_dump())
-    if db.query(Prompt).filter_by(project_id=project_id, prompt_text=values["prompt_text"]).first():
-        raise HTTPException(409, "该项目已有相同问题，请继续使用已有问题")
     if payload.daily_tracking_enabled:
         raise HTTPException(422, "请通过正式采样计划入口明确时区与授权次数")
     if payload.topic_id is not None:
@@ -224,11 +232,40 @@ def create_prompt(project_id: int, payload: PromptCreate, db: Session = Depends(
         cluster = db.get(PromptCluster, payload.cluster_id)
         if not cluster or cluster.project_id != project_id:
             raise HTTPException(status_code=422, detail="Prompt Cluster 不属于当前 Project")
+    if db.query(Prompt).filter_by(project_id=project_id, prompt_text=values["prompt_text"]).first():
+        raise HTTPException(409, "该项目已有相同问题，请继续使用已有问题")
     prompt = Prompt(project_id=project_id, **values)
     db.add(prompt)
     db.commit()
     db.refresh(prompt)
     return prompt
+
+
+@router.post("/projects/{project_id}/prompts/batch")
+def create_prompt_batch(project_id: int, payload: PromptBatchCreate, db: Session = Depends(get_db)) -> dict:
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "Project 不存在")
+    results = []
+    for index, raw in enumerate(payload.items):
+        try:
+            item = BatchPromptItem.model_validate(raw)
+            prompt = create_prompt(project_id, item, db)
+            results.append({"index": index, "status": "CREATED", "prompt_id": prompt.id, "detail": "已创建"})
+        except ValidationError as error:
+            fields = {"prompt_text": "问题原文", "importance": "优先级", "sample_count": "采样次数",
+                "intent_type": "意图", "topic_id": "主题", "cluster_id": "问题组"}
+            labels = list(dict.fromkeys(fields.get(str(issue["loc"][0]), "问题配置") for issue in error.errors()))
+            results.append({"index": index, "status": "REJECTED", "prompt_id": None,
+                "detail": "、".join(labels) + "格式不正确，请检查必填项、范围和字段"})
+        except HTTPException as error:
+            if error.status_code == 409:
+                existing = db.query(Prompt).filter_by(project_id=project_id, prompt_text=item.prompt_text.strip()).first()
+                if existing:
+                    results.append({"index": index, "status": "EXISTING", "prompt_id": existing.id,
+                        "detail": "已有相同问题，保留原配置"})
+                    continue
+            results.append({"index": index, "status": "REJECTED", "prompt_id": None, "detail": str(error.detail)})
+    return {"project_id": project_id, "items": results}
 
 
 @router.patch("/projects/{project_id}/prompts/{prompt_id}", response_model=PromptRead)

@@ -7,6 +7,7 @@ P0.1 Content Acquisition → P0.2 Answer Claims → P0.3 Passage Segmentation
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from contextlib import ExitStack
 from datetime import datetime
 import hashlib
 import html as _html
@@ -14,7 +15,6 @@ import json
 import os
 import platform
 import re
-import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Callable
@@ -33,6 +33,7 @@ from app.modules.monitoring.collectors.wenxin.url_normalizer import canonicalize
 from app.modules.optimization.service import _infer_platform_from_domain, DOMAIN_PLATFORM_MAP
 from app.services.serialization import dumps, loads
 from app.services.url_identity import url_identity_fields
+from app.services.public_web import PublicWebError, guard_browser_context, public_get
 
 
 # ---------------------------------------------------------------------------
@@ -123,58 +124,32 @@ def _with_browser_fallback_reason(browser_reason: str, fallback_result: dict) ->
     return fallback_result
 
 
+_SOURCE_BROWSER_OPTIONS = {
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "locale": "zh-CN",
+    "viewport": {"width": 1440, "height": 900},
+    "ignore_https_errors": False,
+    "service_workers": "block",
+    "accept_downloads": False,
+    "extra_http_headers": {"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5"},
+}
+
+
 def _launch_browser_context_for_fetch(playwright):
     executable_path = _find_browser_executable_for_fetch()
-    base_context_options = {
-        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "locale": "zh-CN",
-        "viewport": {"width": 1440, "height": 900},
-        "ignore_https_errors": True,
-        "extra_http_headers": {
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
-        },
-    }
     launch_options = {
         "headless": True,
-        "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        "args": ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
     }
     if executable_path:
         launch_options["executable_path"] = executable_path
+    browser = playwright.chromium.launch(**launch_options)
     try:
-        browser = playwright.chromium.launch(**launch_options)
-        return browser, browser.new_context(**base_context_options), "后台浏览器抓取"
-    except Exception as headless_exc:
-        from app.core.config import get_settings
-
-        profile_dir = Path(get_settings().wenxin_profile_dir).parent / "source-fetch-profile"
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        persistent_options = {
-            **base_context_options,
-            "user_data_dir": str(profile_dir),
-            "headless": False,
-            "timezone_id": "Asia/Shanghai",
-            "args": ["--no-first-run", "--disable-dev-shm-usage"],
-        }
-        if executable_path:
-            persistent_options["executable_path"] = executable_path
-        try:
-            context = playwright.chromium.launch_persistent_context(**persistent_options)
-            return None, context, "可见浏览器抓取"
-        except Exception as persistent_exc:
-            raise RuntimeError(f"headless启动失败: {headless_exc}; 持久浏览器启动失败: {persistent_exc}") from persistent_exc
-
-
-def _extract_baidu_redirect_target(html: str) -> str | None:
-    """Extract target URL from Baidu redirect wrapper pages."""
-    # mbd.baidu.com landing pages often contain a redirect/meta refresh
-    m = re.search(r'content=["\']?\d+;\s*url=([^"\']+)["\']?', html, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    # Also check for direct links in baidu content wrappers
-    m = re.search(r'<a[^>]+href=["\'](https?://[^"\']+)[^>]*>.*?原文', html, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    return None
+        context = browser.new_context(**_SOURCE_BROWSER_OPTIONS)
+    except BaseException:
+        browser.close()
+        raise
+    return browser, context, "后台浏览器抓取"
 
 
 def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int], None] | None = None) -> list[dict]:
@@ -182,7 +157,7 @@ def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int
     results = []
     try:
         from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
+        with sync_playwright() as p, ExitStack() as resources:
             try:
                 browser, context, fetch_method = _launch_browser_context_for_fetch(p)
             except Exception as exc:
@@ -192,8 +167,12 @@ def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int
                     if progress_callback:
                         progress_callback(index, len(urls))
                 return fallback_results
-            page = context.new_page()
-            for url in urls:
+            resources.callback(browser.close)
+            for index, url in enumerate(urls):
+                if index:
+                    context = browser.new_context(**_SOURCE_BROWSER_OPTIONS)
+                network = guard_browser_context(context)
+                page = context.new_page()
                 normalized = _normalize_url_for_fetch(url)
                 result = {
                     "url": url,
@@ -228,18 +207,21 @@ def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int
                         result["domain"] = domain_from_url(final_url)
                         result["title"] = title
                         result["clean_text"] = clean
-                        result["fetch_status"] = "SUCCESS" if len(clean) > 200 else "PARTIAL"
+                        result["fetch_status"] = "SUCCESS" if len(clean) > 200 and not network["blocked"] else "PARTIAL"
+                        if network["blocked"]:
+                            result["failure_reason"] = "页面资源受限：" + ",".join(sorted(set(network["blocked"])))
                         break
                     except Exception as e:
-                        if attempt == 1:
+                        if network["main_failure"] or attempt == 1:
                             result["fetch_status"] = "FETCH_FAILED"
-                            result["failure_reason"] = str(e)[:200]
+                            result["failure_reason"] = network["main_failure"] or type(e).__name__
+                            break
+                result["network_policy"] = "PUBLIC_DNS_PINNED_TLS_VERIFIED_V1"
+                result["network_requests"] = network["requests"]
+                context.close()
                 results.append(result)
                 if progress_callback:
                     progress_callback(len(results), len(urls))
-            context.close()
-            if browser is not None:
-                browser.close()
     except ImportError:
         for index, url in enumerate(urls, start=1):
             results.append(_with_browser_fallback_reason("未安装 Playwright", fetch_page(url)))
@@ -248,7 +230,7 @@ def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int
     return results
 
 
-def fetch_page(url: str, follow_baidu_redirect: bool = True) -> dict:
+def fetch_page(url: str) -> dict:
     """Fetch a URL and extract clean text."""
     normalized = _normalize_url_for_fetch(url)
     domain = domain_from_url(normalized)
@@ -258,50 +240,26 @@ def fetch_page(url: str, follow_baidu_redirect: bool = True) -> dict:
         "raw_html": "", "clean_text": "", "fetch_time": datetime.utcnow(), "fetch_method": "HTTP兜底抓取",
     }
     try:
-        req = urllib.request.Request(normalized, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
-            "Referer": "https://www.google.com/",
-        })
-        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
-            raw = resp.read()
-            final_url = resp.geturl()
-            try:
-                html = raw.decode("utf-8", errors="replace")
-            except Exception:
-                try:
-                    html = raw.decode("gbk", errors="replace")
-                except Exception:
-                    html = raw.decode("latin-1", errors="replace")
-
-            result["raw_html"] = html[:500000]
-            result["canonical_url"] = _canonicalize_acquired_url(final_url)
-            result["domain"] = domain_from_url(final_url)
-
-            # Try Baidu redirect extraction
-            if follow_baidu_redirect and ("baidu.com" in domain or "mbd.baidu" in domain):
-                target = _extract_baidu_redirect_target(html)
-                if target:
-                    result["fetch_status"] = "SUCCESS"
-                    result["title"] = f"[Baidu redirect → {target[:80]}]"
-                    result["clean_text"] = html  # Store the wrapper page for later analysis
-                    return result
-
-            tm = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
-            if tm:
-                result["title"] = _html.unescape(tm.group(1).strip())
-            result["clean_text"] = _clean_text_from_html(html)
-            result["fetch_status"] = "SUCCESS" if len(result["clean_text"]) > 100 else "PARTIAL"
-    except urllib.error.HTTPError as e:
-        result["fetch_status"] = "FETCH_FAILED"
-        result["failure_reason"] = f"HTTP {e.code}"
-    except urllib.error.URLError as e:
-        result["fetch_status"] = "FETCH_FAILED"
-        result["failure_reason"] = str(e.reason)[:200]
+        resp = public_get(normalized, timeout=FETCH_TIMEOUT)
+        result["network_policy"] = "PUBLIC_DNS_PINNED_TLS_VERIFIED_V1"
+        if resp.status >= 400:
+            raise PublicWebError(f"PUBLIC_HTTP_{resp.status}")
+        charset = re.search(r'charset=["\']?([\w-]+)', resp.headers.get('content-type', ''), re.I)
+        try:
+            html = resp.body.decode(charset.group(1) if charset else 'utf-8')
+        except (UnicodeDecodeError, LookupError):
+            html = resp.body.decode('gb18030', errors='replace')
+        result["raw_html"] = html[:500000]
+        result["canonical_url"] = _canonicalize_acquired_url(resp.url)
+        result["domain"] = domain_from_url(resp.url)
+        tm = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        if tm:
+            result["title"] = _html.unescape(tm.group(1).strip())
+        result["clean_text"] = _clean_text_from_html(html)
+        result["fetch_status"] = "SUCCESS" if len(result["clean_text"]) > 100 else "PARTIAL"
     except Exception as e:
         result["fetch_status"] = "FETCH_FAILED"
-        result["failure_reason"] = str(e)[:200]
+        result["failure_reason"] = str(e) if isinstance(e, PublicWebError) else type(e).__name__
     return result
 
 

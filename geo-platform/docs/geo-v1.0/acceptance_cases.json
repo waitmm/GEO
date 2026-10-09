@@ -208,6 +208,11 @@
     },
     {
       "id": "AC-SRC-02",
+      "automated_checks": [
+        "tests.test_release_public_web::test_private_redirect_rejected_before_next_connection",
+        "tests.test_release_public_web::test_browser_renders_guarded_content_and_rejects_private_subrequest",
+        "tests.test_release_public_web::test_http_fallback_uses_same_guard_and_decodes_existing_content"
+      ],
       "module": "SRC",
       "name": "抓取失败",
       "given": "答案有引用 URL 但正文不可取",
@@ -217,8 +222,8 @@
         "SRC-001",
         "SRC-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "2026-10-09：test_release_public_web 的31项离线检查验证实际浏览器访问受限时不误报正文成功，HTTP兜底使用相同公网安全约束。工程使用模拟内容，无真实抓取；此用例的缺失来源下完整策略质量仍需验收，不能据此标PASS。"
     },
     {
       "id": "AC-SRC-03",

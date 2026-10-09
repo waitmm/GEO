@@ -364,7 +364,8 @@ def main():
                     (out / 'failure.txt').write_text(page.locator('body').inner_text())
             cleanup.callback(capture_failure)
             page.on('pageerror', lambda error: report['errors'].append(str(error)))
-            page.goto(f'http://127.0.0.1:{port}/')
+            origin = f'http://127.0.0.1:{port}'
+            page.goto(origin + '/')
             if fixture:
                 if '--observe' in sys.argv:
                     observation_check(page, f'http://127.0.0.1:{port}', fixture, out, report)

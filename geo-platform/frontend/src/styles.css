@@ -9,6 +9,32 @@ body {
   color: #1f2937;
 }
 
+:where(button, a, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid #2764d8;
+  outline-offset: 2px;
+}
+
+.release-intent-select {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 11px;
+  font: inherit;
+  color: #1f2937;
+  background: #fff;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+}
+
+.app-shell .ant-tag.ant-tag-green,
+.app-shell .ant-tag.ant-tag-success { color: #237804; }
+.app-shell .ant-tag.ant-tag-orange,
+.app-shell .ant-tag.ant-tag-gold,
+.app-shell .ant-tag.ant-tag-warning,
+.app-shell .ant-typography.ant-typography-warning { color: #805500; }
+.app-shell .ant-table-placeholder .ant-table-expanded-row-fixed { color: #595959; }
+/* Layout measurement retains its width but never exposes cloned controls to focus. */
+.ant-table-measure-row { visibility: hidden; }
+
 .access-panel {
   width: min(440px, 100%);
   padding: 24px;
@@ -770,3 +796,4 @@ body {
 .v2-advanced-details > .ant-card {
   margin-bottom: 16px;
 }
+.release-worker-status { margin-bottom: 16px; }

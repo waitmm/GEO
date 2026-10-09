@@ -280,9 +280,6 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
             raise error
         requests.append({**identity, "request_id": f"{task_id}:{len(requests) + 1}", "stage": progress["stage"],
             "token_ceiling": tokens, "reserved_cost_cny": cost, "status": "RESERVED"})
-        from .delivery_generation import QA_VERSION
-        if identity.get("prompt_version") == QA_VERSION:
-            progress["stage"] = "TEXT_QA"
         changed = db.execute(update(SinglePromptOptimizationTask).where(SinglePromptOptimizationTask.id == active.id,
             SinglePromptOptimizationTask.revision == active.revision, SinglePromptOptimizationTask.status == "RUNNING"
         ).values(progress_json=encode(progress), revision=active.revision + 1))
@@ -496,7 +493,8 @@ def execute_task(task_id: str, *, session_factory) -> None:
                 "result_version": base.result_version, "result_hash": base.output_hash}})
             delivered, _ = generate_complete_execution_deliverable(db, proposal_id=proposal.proposal_id,
                 base_result_version=base.result_version, base_result_hash=base.output_hash,
-                reviewable_set_hash=base.reviewable_set_hash, generation_client=scoped_client(db, row))
+                reviewable_set_hash=base.reviewable_set_hash, generation_client=scoped_client(db, row),
+                generation_progress=lambda stage: checkpoint(db, row, stage=stage))
             payload = loads(delivered.output_json, {})
             drafts.append({"proposal_id": proposal.proposal_id, "result_version": delivered.result_version,
                 "result_hash": delivered.output_hash, "content_delivery_status": payload["validation"]["content_delivery_status"]})

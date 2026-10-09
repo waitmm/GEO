@@ -119,3 +119,46 @@ def test_disabled_prompt_cannot_queue_or_create_a_frozen_sampling_plan(catalog):
     row, created = create_frozen_analysis(db, project_id=1, prompt_id=44, prompt_text=query,
         sampling_plan=plan, idempotency_key='planned-before-disable', created_by='offline-test')
     assert row.analysis_id == planned.analysis_id and not created
+
+
+def test_delete_only_unused_prompt_and_never_cross_project(catalog):
+    client, db = catalog
+    project = client.post('/api/projects', json={'name': 'Project', 'brand_name': 'Brand'}).json()
+    route = f'/api/projects/{project["id"]}/prompts'
+    prompt = client.post(route, json={'prompt_text': 'Unused question'}).json()
+    assert client.delete(f'/api/projects/999/prompts/{prompt["id"]}').status_code == 404
+    assert db.get(Prompt, prompt['id']) is not None
+    result = client.delete(f'{route}/{prompt["id"]}')
+    assert result.status_code == 200 and result.json() == {'deleted': True, 'prompt_id': prompt['id']}
+    db.expire_all()
+    assert db.get(Prompt, prompt['id']) is None
+    assert client.get(route).json() == []
+
+
+def test_delete_rejects_used_prompt_without_modifying_history(catalog):
+    client, db = catalog
+    analysis = _seed_frozen_analysis(db, reference_urls=[])
+    original = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).one()
+    before = (original.answer_text, original.status, original.task_id, analysis.analysis_id)
+    response = client.delete('/api/projects/1/prompts/44')
+    assert response.status_code == 409 and '停用' in response.json()['detail']
+    db.expire_all()
+    assert db.get(Prompt, 44) is not None
+    assert (original.answer_text, original.status, original.task_id, analysis.analysis_id) == before
+
+
+def test_delete_rejects_schedule_even_without_any_run(catalog):
+    from app.models import SinglePromptSamplingSchedule
+    from datetime import datetime
+    client, db = catalog
+    project = client.post('/api/projects', json={'name': 'Project', 'brand_name': 'Brand'}).json()
+    route = f'/api/projects/{project["id"]}/prompts'
+    prompt = client.post(route, json={'prompt_text': 'Scheduled question'}).json()
+    schedule = SinglePromptSamplingSchedule(schedule_id='delete-guard', project_id=project['id'],
+        prompt_id=prompt['id'], plan_json='{}', plan_hash='fixed', next_due_at=datetime.utcnow(),
+        timezone='Asia/Shanghai', local_time='09:00', remaining_attempts=1, authorization_note='offline test')
+    db.add(schedule); db.commit()
+    assert db.query(BrowserMonitorRun).count() == 0
+    assert client.delete(f'{route}/{prompt["id"]}').status_code == 409
+    assert db.get(Prompt, prompt['id']) is not None
+    assert db.query(SinglePromptSamplingSchedule).filter_by(schedule_id='delete-guard').one()

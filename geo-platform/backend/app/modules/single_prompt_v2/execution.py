@@ -1281,6 +1281,7 @@ def generate_complete_execution_deliverable(
     base_result_hash: str,
     reviewable_set_hash: str,
     generation_client: Any | None = None,
+    generation_progress: Any | None = None,
 ) -> tuple[SinglePromptExecutionProposalResult, bool]:
     proposal = db.query(SinglePromptExecutionProposal).filter_by(proposal_id=proposal_id).one_or_none()
     if not proposal or proposal.active_result_version != base_result_version:
@@ -1311,7 +1312,7 @@ def generate_complete_execution_deliverable(
     output = _compile_machine_delivery(proposal_id, snapshot)
     initial_calls = int(getattr(generation_client, "external_call_count", 0))
     if generation_client is not None:
-        receipt = generate_and_check(frozen, client=generation_client, db=db)
+        receipt = generate_and_check(frozen, client=generation_client, db=db, on_stage=generation_progress)
         output = _attach_generated_delivery(output, receipt, snapshot)
     output["system_revision"] = {
         "reason": "FROZEN_INPUT_GROUNDED_DELIVERY_AND_TEXT_QA",

@@ -194,7 +194,7 @@ def test_budget_rejected_answer_is_pending_not_failed_and_has_no_external_call(s
     assert payload['answer_diagnosis']['answer_jobs'][0]['result_source'] == 'REQUEST_NOT_SENT'
 
 
-def simulated_delivery_transport(monkeypatch):
+def simulated_delivery_transport(monkeypatch, on_request=None):
     """Test-only Responses/chat boundary for offline API and browser wiring checks."""
     from app.services.semantic_llm import deepseek
     calls = []
@@ -211,6 +211,8 @@ def simulated_delivery_transport(monkeypatch):
             import json as codec
             payload = codec.loads(json.get('input') or json['messages'][-1]['content'])
             calls.append(payload)
+            if on_request:
+                on_request(payload)
             if 'segments' in payload:
                 response = {'checks': [{'segment_id': s['segment_id'], 'verdict': 'PASS', 'rationale': '仅给查证步骤，不增加事实。'} for s in payload['segments']]}
             elif 'public_evidence' in payload:
@@ -245,12 +247,22 @@ def test_worker_real_stage_wiring_with_simulated_transport_not_real_llm(scene, m
         pricing_checked_at=datetime.utcnow().date().isoformat(), authorized_by='isolated-test')
     db.get(Project, 1).brand_name = '创建任务之后修改的品牌'
     db.commit()
-    calls = simulated_delivery_transport(monkeypatch)
+    stages = []
+    def capture_stage(payload):
+        db.refresh(row)
+        stage = task_view(row)['stage']
+        stages.append(stage)
+        if 'segments' in payload:
+            assert stage == 'TEXT_QA'
+        elif 'public_evidence' in payload:
+            assert stage == 'DRAFT'
+    calls = simulated_delivery_transport(monkeypatch, on_request=capture_stage)
     execute_task(row.task_id, session_factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
     db.refresh(row)
     assert row.status in {'COMPLETED', 'COMPLETED_WITH_LIMITATIONS'}, (row.blocker_code, row.blocker_detail, task_view(row))
     view = task_view(row)
     assert len(calls) == 4 and view['usage']['external_requests'] == 4
+    assert stages == ['ANSWER', 'CITATION', 'DRAFT', 'TEXT_QA']
     assert view['usage']['actual_tokens'] == 600 and view['usage']['unsettled_requests'] == 0
     assert '创建任务之后修改的品牌' not in json.dumps(calls, ensure_ascii=False)
     from app.models import SinglePromptCitationContributionResult

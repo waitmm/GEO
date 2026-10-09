@@ -6,11 +6,14 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import delete, exists, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.adapters.registry import list_platforms
 from app.core.release_database import get_release_db
-from app.models import Competitor, Organization, Project, Prompt, PromptCluster, Topic
+from app.models import Base, Competitor, Organization, Project, Prompt, PromptCluster, Topic
+from app.release_schema import RELEASE_TABLE_ALLOWLIST
 from app.schemas.v0 import (
     CompetitorRead,
     ProjectCreate,
@@ -256,6 +259,28 @@ def update_prompt(project_id: int, prompt_id: int, payload: PromptUpdate, db: Se
     db.commit()
     db.refresh(prompt)
     return prompt
+
+
+@router.delete("/projects/{project_id}/prompts/{prompt_id}")
+def delete_unused_prompt(project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> dict:
+    prompt = db.get(Prompt, prompt_id)
+    if not prompt or prompt.project_id != project_id:
+        raise HTTPException(404, "问题不存在")
+    # Guard in the DELETE itself: a history/plan created concurrently must not be cascaded away.
+    references = [table for table in Base.metadata.sorted_tables
+                  if table.name in RELEASE_TABLE_ALLOWLIST and "prompt_id" in table.c]
+    statement = delete(Prompt).where(Prompt.id == prompt_id, Prompt.project_id == project_id,
+        *(~exists(select(1).select_from(table).where(table.c.prompt_id == prompt_id)) for table in references))
+    try:
+        affected = db.execute(statement.execution_options(synchronize_session=False)).rowcount
+        if affected != 1:
+            db.rollback()
+            raise HTTPException(409, "此问题已有采样、计划或分析记录，不能删除；可停用并保留历史")
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "此问题已被其他记录使用，不能删除；请刷新后停用") from None
+    return {"deleted": True, "prompt_id": prompt_id}
 
 
 @router.get("/projects/{project_id}/topics", response_model=list[TopicRead])

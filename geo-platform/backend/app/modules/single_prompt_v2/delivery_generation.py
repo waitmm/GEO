@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Callable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -248,15 +249,19 @@ def revalidate_generated_draft(frozen: dict, saved: dict) -> dict:
     return expected["qa"]
 
 
-def generate_and_check(frozen: dict, *, client, db=None) -> dict:
+def generate_and_check(frozen: dict, *, client, db=None, on_stage: Callable[[str], None] | None = None) -> dict:
     """Exactly two logical requests, compatible cache allowed. Caller owns authorization/audit."""
     inputs = generation_input(frozen)
+    if on_stage:
+        on_stage("DRAFT")
     draft = client.structured_generate_sync(system_prompt=WRITER_PROMPT, user_payload=inputs,
         response_schema=DraftResponse, prompt_version=GENERATION_VERSION, schema_version=GENERATION_VERSION,
         max_tokens=MAX_OUTPUT_TOKENS, strict_json=True, structured_output_mode="JSON_SCHEMA", db=db,
         response_validator=lambda value: admit_draft(value, inputs))
     draft = admit_draft(draft, inputs)
     segments = segments_of(draft)
+    if on_stage:
+        on_stage("TEXT_QA")
     qa = client.structured_generate_sync(system_prompt=QA_PROMPT, user_payload={**inputs, "segments": segments},
         response_schema=TextQAResponse, prompt_version=QA_VERSION, schema_version=QA_VERSION,
         max_tokens=MAX_OUTPUT_TOKENS, strict_json=True, structured_output_mode="JSON_SCHEMA", db=db,

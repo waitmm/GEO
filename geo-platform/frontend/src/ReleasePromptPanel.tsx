@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Alert, Button, Form, Input, InputNumber, Select, Space, Table, Tooltip, Typography } from "antd";
-import { Pencil, Plus, Power } from "lucide-react";
+import { Alert, Button, Form, Input, InputNumber, Popconfirm, Select, Space, Table, Tooltip, Typography } from "antd";
+import { Pencil, Plus, Power, Trash2 } from "lucide-react";
 import { request } from "./api/client";
 import type { Prompt } from "./types";
 
@@ -32,12 +32,21 @@ export function ReleasePromptPanel({ projectId, prompts, onSaved }: { projectId:
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
+  async function remove(row: Prompt) {
+    setBusy(true); setError("");
+    try {
+      await request(`/api/projects/${projectId}/prompts/${row.id}`, { method: "DELETE" });
+      if (editing === row.id) { setEditing(undefined); form.resetFields(); }
+      await onSaved();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
   return <section>
     {error && <Alert type="error" message={error} />}
     <Typography.Title level={4}>{editing ? "编辑问题" : "新增问题"}</Typography.Title>
     <Form form={form} layout="vertical" onFinish={save} initialValues={{ prompt_group: "", intent_type: "unknown", importance: 3 }}>
       <Form.Item label="问题原文" name="prompt_text" rules={[{ required: true, whitespace: true, message: "请输入完整问题" }]}><Input.TextArea rows={4} maxLength={10000} /></Form.Item>
-      <Form.Item label="意图" name="intent_type" rules={[{ required: true, message: "请选择这个问题的实际意图" }]}><Select placeholder="请选择问题意图" options={intents} /></Form.Item>
+      <Form.Item label="意图" name="intent_type" rules={[{ required: true, message: "请选择这个问题的实际意图" }]}><select className="release-intent-select">{intents.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></Form.Item>
       <Form.Item label="问题组（可选）" name="prompt_group"><Input maxLength={160} /></Form.Item>
       <Form.Item label="业务优先级（1最低，5最高）" name="importance"><InputNumber min={1} max={5} precision={0} /></Form.Item>
       <Space><Button htmlType="submit" type="primary" loading={busy} icon={editing ? <Pencil size={16} /> : <Plus size={16} />}>{editing ? "保存问题" : "创建问题"}</Button>
@@ -54,7 +63,10 @@ export function ReleasePromptPanel({ projectId, prompts, onSaved }: { projectId:
       { title: "优先级", dataIndex: "importance", sorter: (a, b) => a.importance - b.importance },
       { title: "状态", render: (_, r) => r.enabled ? "可用" : "已停用" },
       { title: "操作", render: (_, r) => <Space><Tooltip title="编辑问题"><Button disabled={busy} aria-label={`编辑问题${r.id}`} icon={<Pencil size={14} />} onClick={() => { setEditing(r.id); form.setFieldsValue(r); }} /></Tooltip>
-        <Button loading={busy} icon={<Power size={14} />} onClick={() => toggle(r)}>{r.enabled ? "停用" : "启用"}</Button></Space> },
+        <Button loading={busy} icon={<Power size={14} />} onClick={() => toggle(r)}>{r.enabled ? "停用" : "启用"}</Button>
+        <Popconfirm title="删除未使用的问题？" description="已有采样、计划或分析的问题不可删除，请改用停用。" onConfirm={() => remove(r)} okText="确认删除" cancelText="取消" disabled={busy}>
+          <Tooltip title="删除未使用的问题"><Button danger disabled={busy} aria-label={`删除问题${r.id}`} icon={<Trash2 size={14} />} /></Tooltip>
+        </Popconfirm></Space> },
     ]} />
   </section>;
 }

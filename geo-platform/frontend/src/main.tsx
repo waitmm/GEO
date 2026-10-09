@@ -13,6 +13,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       theme={{
         token: {
           colorPrimary: "#2764d8",
+          colorPrimaryHover: "#245bbf",
+          colorTextSecondary: "#595959",
+          colorTextTertiary: "#666666",
+          colorTextPlaceholder: "#6b6b6b",
           borderRadius: 6,
           fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
         }

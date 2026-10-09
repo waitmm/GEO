@@ -593,7 +593,7 @@
       "milestone": "M2",
       "owner_role": "分析/后端",
       "owner_name": "Codex（分析/后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T12",
         "T13"
@@ -615,9 +615,9 @@
       "estimate": "6人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "自动策略已接线；三类场景的正式产品验收及新真实集成仍待完成，不能以非空结果代替业务价值验收。",
       "commit": "",
       "audit_classification": "需修复"
     },
@@ -627,7 +627,7 @@
       "milestone": "M2",
       "owner_role": "分析/后端",
       "owner_name": "Codex（分析/后端）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "T14"
       ],
@@ -647,9 +647,9 @@
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
+      "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "已按冻结意图给出内容形式、渠道理由和条件式新建/更新；通用渠道适用性及完整浏览器验收未收口。",
       "commit": "",
       "audit_classification": "需修复"
     },

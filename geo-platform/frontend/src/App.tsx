@@ -10,6 +10,8 @@ import { ObservationPanel } from "./ObservationPanel";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { AutomaticOptimizePanel } from "./AutomaticOptimizePanel";
 import { ReleasePromptPanel } from "./ReleasePromptPanel";
+import { useTableKeyboardScroll } from "./useTableKeyboardScroll";
+import { ReleaseWorkerStatus } from "./ReleaseWorkerStatus";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
   SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
@@ -1478,6 +1480,7 @@ function PromptScopeAlert({ prompt, description }: { prompt: Prompt; description
 }
 
 export default function App() {
+  useTableKeyboardScroll();
   const { message } = AntApp.useApp();
   const [page, setPage] = useState<PageKey>(() => {
     if (!RELEASE_FIRST_SLICE) return "validation";
@@ -5773,11 +5776,12 @@ export default function App() {
         </Space>
       </Header>
       <Content className="workspace">
+        {RELEASE_FIRST_SLICE && <ReleaseWorkerStatus />}
         {!project ? <Card loading={loading}><Empty description="请选择项目" /></Card> : ["releaseMonitor", "releaseCompare", "brandContext"].includes(page) ? <ObservationPanel key={`${project.id}:${activePromptId}:${page}`} project={project} promptId={activePromptId} mode={page === "brandContext" ? "context" : page === "releaseCompare" ? "compare" : "monitor"} /> : page === "coreV2" ? <Space direction="vertical" size={16} className="page-stack">
           {!activePromptId ? <Card><Empty description="请在顶部选择一个 Prompt" /></Card> : <>
             <Card size="small" title={<Space><Play size={18} />Single-Prompt Core V2 · Prompt #{activePromptId}</Space>} extra={<Space wrap>
               <Text type="secondary">采样次数</Text>
-              <InputNumber min={1} max={10} value={v2SampleCount} onChange={(value) => setV2SampleCount(Number(value || 1))} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")} />
+              <InputNumber aria-label="本次采样次数" min={1} max={10} value={v2SampleCount} onChange={(value) => setV2SampleCount(Number(value || 1))} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")} />
               <Popconfirm
                 title={v2AnalysisHistory.length ? "新增一批浏览器采样？" : "开始首次浏览器采样？"}
                 description={v2AnalysisHistory.length ? "这会新增 Run，不会修改或重算已有分析。采样完成后可在下方选择是否纳入新分析。" : "采样完成后会形成第一份不可变分析输入。"}
@@ -5817,6 +5821,8 @@ export default function App() {
                 dataSource={v2RunPool?.items || []}
                 rowSelection={{
                   selectedRowKeys: v2SelectedRunIds,
+                  getCheckboxProps: row => ({ name: `run-${row.run_id}`, "aria-label": `选择 Run ${row.run_id}` }),
+                  getTitleCheckboxProps: () => ({ name: "all-visible-runs", "aria-label": "选择当前页全部 Run" }),
                   preserveSelectedRowKeys: true,
                   onSelect: (row, selected) => selectV2Run(row, selected),
                   onSelectAll: (selected, rows) => rows.forEach((row) => selectV2Run(row, selected)),

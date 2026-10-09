@@ -34,14 +34,17 @@ def all_pass(value):
 
 def test_kernel_uses_frozen_input_and_both_production_admissions(frozen):
     calls = []
+    stages = []
     class Client:
         def structured_generate_sync(self, **kwargs):
             calls.append(kwargs)
+            assert stages[-1] == ("DRAFT" if len(calls) == 1 else "TEXT_QA")
             value = draft() if len(calls) == 1 else all_pass(draft())
             kwargs['response_schema'].model_validate(value)
             return kwargs['response_validator'](value)
     before = copy.deepcopy(frozen)
-    result = generate_and_check(frozen, client=Client())
+    result = generate_and_check(frozen, client=Client(), on_stage=stages.append)
+    assert stages == ["DRAFT", "TEXT_QA"]
     assert frozen == before and len(calls) == 2
     assert all(c['structured_output_mode'] == 'JSON_SCHEMA' and c['strict_json'] for c in calls)
     assert '过滤器' in result['body_markdown'] and '抖音' not in result['body_markdown']

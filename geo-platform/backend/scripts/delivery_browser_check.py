@@ -15,13 +15,54 @@ from playwright.sync_api import sync_playwright, expect
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def accessibility_check(page, out, report, name):
+    page.evaluate("""async () => {
+        await document.fonts.ready;
+        await Promise.all(document.getAnimations().filter(a =>
+            Number.isFinite(a.effect.getComputedTiming().endTime)
+        ).map(a => a.finished.catch(() => {})));
+    }""")
+    page.add_script_tag(path=str(ROOT / 'frontend/node_modules/axe-core/axe.min.js'))
+    result = page.evaluate("""async () => await axe.run(document, {
+        runOnly: {type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']}
+    })""")
+    artifact = f'accessibility-{name}.json'
+    (out / artifact).write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    report.setdefault('accessibility', []).append({'page': name, 'artifact': artifact,
+        'violations': [{key: v[key] for key in ('id', 'impact', 'help')} for v in result['violations']],
+        'incomplete_rules': [r['id'] for r in result['incomplete']],
+        'passed_rule_count': len(result['passes']), 'engine': result['testEngine']})
+    assert not result['violations'], [(v['id'], [n['target'] for n in v['nodes']]) for v in result['violations']]
+    scrollers = page.locator('.ant-table-content[tabindex="0"], .ant-table-body[tabindex="0"]')
+    horizontal = 0
+    for node in scrollers.all():
+        if node.is_visible() and node.evaluate('(el) => el.scrollWidth > el.clientWidth'):
+            node.evaluate('(el) => { el.scrollLeft = 0; }')
+            node.focus()
+            expect(node).to_be_focused()
+            node.press('ArrowRight')
+            page.wait_for_function('(el) => el.scrollLeft > 0', arg=node.element_handle())
+            node.evaluate('(el) => { el.scrollLeft = 0; }')
+            horizontal += 1
+    report['accessibility'][-1]['keyboard_horizontal_tables_checked'] = horizontal
+
+
 def observation_check(page, origin, fixture, out, report):
     page.goto(f'{origin}/?release_view=releaseMonitor&v2_project=1&v2_prompt=44')
+    expect(page.get_by_text(re.compile('^后台执行服务未启动：'))).to_be_visible()
+    health_url = f'{origin}/api/health'
+    page.route(health_url, lambda route: route.fulfill(status=503, content_type='application/json', body='{}'))
+    page.get_by_role('button', name='核对后台执行服务', exact=True).click()
+    expect(page.get_by_text(re.compile('^暂时无法读取后台运行状态'))).to_be_visible()
+    page.unroute(health_url)
+    page.get_by_role('button', name='核对后台执行服务', exact=True).click()
+    expect(page.get_by_text(re.compile('^后台执行服务未启动：'))).to_be_visible()
     overview = page.get_by_role('region', name='项目监控概览')
     mention_row = overview.get_by_role('row').filter(has=page.get_by_role('cell', name='正文提及', exact=True))
     expect(mention_row).to_contain_text('50.0%')
     expect(overview.get_by_role('row').filter(has_text='列为选项')).to_contain_text('不可计算')
     expect(page.get_by_text('累计采样尝试 2 条', exact=False)).to_be_visible()
+    accessibility_check(page, out, report, 'monitor-populated')
     page.get_by_role('combobox', name='当前问题', exact=True).press('ArrowDown')
     page.get_by_text('全部 Prompt（项目视图）', exact=True).filter(visible=True).click()
     page.reload()
@@ -31,8 +72,19 @@ def observation_check(page, origin, fixture, out, report):
     expect(mention_row).to_contain_text('50.0%')
     page.get_by_role('menuitem', name='Validate · 变化比较', exact=True).click()
     for label, run_id in [('基线范围', fixture['baseline_run_id']), ('对照范围', fixture['comparison_run_id'])]:
-        page.get_by_role('combobox', name=label, exact=True).click()
-        page.get_by_text(re.compile(rf'^Runs {run_id} ·')).filter(visible=True).click()
+        control = page.get_by_role('combobox', name=label, exact=True)
+        control.press('ArrowDown')
+        expect(control).to_have_attribute('aria-expanded', 'true')
+        active = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-active')
+        expect(active).to_have_count(1)
+        for _ in range(2):
+            if re.match(rf'^Runs {run_id} ·', active.inner_text()):
+                break
+            control.press('ArrowDown')
+        expect(active).to_contain_text(f'Runs {run_id} ·')
+        control.press('Enter')
+        expect(control).to_have_attribute('aria-expanded', 'false')
+        expect(page.locator('.ant-select-dropdown').filter(visible=True)).to_have_count(0)
     with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/observation-comparisons')) as response:
         page.get_by_role('button', name='生成变化比较', exact=True).click()
     saved = response.value.json()
@@ -52,6 +104,7 @@ def observation_check(page, origin, fixture, out, report):
         page.screenshot(path=str(out / name), full_page=True)
         report['screenshots'].append(name)
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+        accessibility_check(page, out, report, f'comparison-{width}')
     page.set_viewport_size({'width': 1440, 'height': 1000})
     page.get_by_role('menuitem', name='品牌资料', exact=True).click()
     for version in [1, 2]:
@@ -62,6 +115,7 @@ def observation_check(page, origin, fixture, out, report):
     page.reload()
     for version in [1, 2]:
         expect(page.get_by_text(f'版本 {version} · 隔离资料 {version}', exact=True)).to_be_visible()
+    accessibility_check(page, out, report, 'context-versions')
     # A failed read must remain visible and recover without mutating business data.
     uri = f'{origin}/api/v2/projects/1/monitor'
     page.route(uri, lambda route: route.fulfill(status=503, content_type='application/json', body='{"detail":"隔离验收：监测服务暂不可用"}'))
@@ -82,7 +136,7 @@ def observation_check(page, origin, fixture, out, report):
     page.get_by_text('Release', exact=True).filter(visible=True).click()
     expect(mention_row).to_contain_text('50.0%')
     report.update(status='PASS_SCOPED_SYNTHETIC_OBSERVATION_NOT_REAL_SAMPLING', comparison_version=saved['result_version'],
-        verified=['MONITOR_INDEPENDENT_EXPECTED_COUNTS', 'UNKNOWN_NOT_ZERO', 'FORMAL_UI_COMPARISON',
+        verified=['WORKER_STOPPED_AND_HEALTH_READ_RECOVERY', 'MONITOR_INDEPENDENT_EXPECTED_COUNTS', 'UNKNOWN_NOT_ZERO', 'FORMAL_UI_COMPARISON',
             'COMPARISON_RELOAD_EXACT_VERSION', 'CONTEXT_TWO_VERSIONS', 'READ_FAILURE_RECOVERY',
             'PROJECT_SWITCH_CLEARS_PREVIOUS_DATA', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
         not_verified=['REAL_SAMPLING', 'REAL_MODEL_QUALITY'], synthetic_runs=2)
@@ -156,6 +210,7 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         path = f'optimize-{width}.png'
         page.screenshot(path=str(out / path), full_page=False)
         report['screenshots'].append(path)
+        accessibility_check(page, out, report, f'optimize-{width}')
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'page overflow: {width}'
     page.set_viewport_size({'width': 1440, 'height': 1000})
     held = []
@@ -272,6 +327,7 @@ def main():
             create_button.press('Enter')
             dialog = page.get_by_role('dialog')
             expect(dialog).to_be_visible()
+            accessibility_check(page, out, report, 'create-project-dialog')
             page.keyboard.press('Escape')
             expect(dialog).not_to_be_visible()
             expect(create_button).to_be_focused()
@@ -285,8 +341,7 @@ def main():
             page.screenshot(path=str(out / 'prompt-entry.png'), full_page=True)
             (out / 'prompt-entry.txt').write_text(page.locator('body').inner_text())
             page.get_by_label('问题原文', exact=True).fill('空气过滤器如何清洗？\n有哪些前提条件？')
-            page.get_by_label('意图', exact=True).press('ArrowDown')
-            page.get_by_text('使用与操作', exact=True).filter(visible=True).click()
+            page.get_by_label('意图', exact=True).select_option('usage_instruction')
             page.get_by_role('button', name='创建问题', exact=True).click()
             expect(page.get_by_role('cell', name='空气过滤器如何清洗？ 有哪些前提条件？', exact=True)).to_be_visible()
             page.get_by_role('button', name='编辑问题1', exact=True).click()
@@ -294,6 +349,7 @@ def main():
             page.get_by_label('业务优先级（1最低，5最高）', exact=True).fill('5')
             page.get_by_role('button', name='保存问题', exact=True).click()
             expect(page.get_by_role('cell', name='维护', exact=True)).to_be_visible()
+            accessibility_check(page, out, report, 'prompt-editor')
             page.get_by_label('搜索问题或问题组', exact=True).fill('不存在的问题')
             expect(page.get_by_role('cell', name='维护', exact=True)).to_have_count(0)
             page.get_by_label('搜索问题或问题组', exact=True).fill('维护')
@@ -308,6 +364,14 @@ def main():
             page.get_by_role('menuitem', name='问题与采样配置', exact=True).click()
             page.get_by_role('button', name='启用', exact=True).click()
             expect(page.get_by_role('cell', name='可用', exact=True)).to_be_visible()
+            page.get_by_label('问题原文', exact=True).fill('误建且未使用的问题')
+            with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/prompts')) as response:
+                page.get_by_role('button', name='创建问题', exact=True).click()
+            unused = response.value.json()['id']
+            expect(page.get_by_role('cell', name='误建且未使用的问题', exact=True)).to_be_visible()
+            page.get_by_role('button', name=f'删除问题{unused}', exact=True).click()
+            page.get_by_role('button', name='确认删除', exact=True).click()
+            expect(page.get_by_role('cell', name='误建且未使用的问题', exact=True)).to_have_count(0)
             page.get_by_role('menuitem', name='品牌资料', exact=True).click()
             page.get_by_label('资料标题', exact=True).fill('隔离品牌说明')
             page.get_by_label('品牌资料正文', exact=True).fill('测试过滤器提供过滤器维护资料，具体清洗条件应按型号确认。')
@@ -340,7 +404,9 @@ def main():
                 page.screenshot(path=str(out / path), full_page=True)
                 report['screenshots'].append(path)
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'page overflow: {width}'
+                accessibility_check(page, out, report, f'monitor-schedule-{width}')
             report['verified'] = ['UI_PROJECT_CREATE', 'MULTILINE_PROMPT_PRESERVED', 'PROMPT_EDIT_SEARCH_PRIORITY',
+                'DELETE_UNUSED_PROMPT',
                 'KEYBOARD_DIALOG_OPEN_ESCAPE_FOCUS_RESTORED',
                 'DISABLED_PROMPT_PERSISTS_AND_BLOCKS_NEW_SAMPLING', 'PROMPT_REENABLE', 'CONTEXT_SAVE_RELOAD',
                 'SCHEDULE_CREATE_PAUSE', 'FINITE_OPTIONAL_OPTIMIZE_AUTHORITY', 'RESPONSIVE_NO_PAGE_OVERFLOW']

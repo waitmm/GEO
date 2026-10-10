@@ -49,9 +49,6 @@
     },
     {
       "id": "AC-BRD-04",
-      "automated_checks": [
-        "tests.test_delivery_context::test_context_update_preserves_frozen_delivery_and_reuses_unaffected_computation"
-      ],
       "module": "BRD",
       "name": "历史配置",
       "given": "已有分析绑定配置 V1",
@@ -247,6 +244,10 @@
     },
     {
       "id": "AC-SRC-04",
+      "automated_checks": [
+        "tests.test_delivery_supplemental_sources::test_supplemental_source_is_frozen_scoped_idempotent_and_not_a_citation",
+        "tests.test_delivery_supplemental_sources::test_extra_official_source_reaches_draft_without_entering_citation_scope"
+      ],
       "module": "SRC",
       "name": "补充资料",
       "given": "系统获取品牌官网页面",
@@ -255,8 +256,8 @@
       "requirements": [
         "SRC-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "supplemental-regression-20261010/pytest.xml：87项组合通过；browser-20261010T032308Z：UI授权获取/选版/稿件/归因/编辑QA通过。获取与模型均模拟，真实集成待授权，未改原Citation Manifest或计数。"
     },
     {
       "id": "AC-MON-01",
@@ -1081,6 +1082,10 @@
     },
     {
       "id": "E2E-05",
+      "automated_checks": [
+        "tests.test_delivery_context::test_context_update_preserves_frozen_delivery_and_reuses_unaffected_computation",
+        "tests.test_delivery_supplemental_sources::test_existing_worker_routes_supplemental_and_contract_change_stops_before_fetch"
+      ],
       "name": "运行和数据语义恢复",
       "given": "已有多项目或可验证归属样本、运行任务、结果和发布复测关联。",
       "when": "重复提交、查询、重启、恢复备份及边界访问。",

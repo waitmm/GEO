@@ -142,6 +142,7 @@ def finish_attestations(inputs: dict, extractions: list[dict], checks: dict) -> 
             "subject": inputs["brand_name"], "snapshot_id": source["snapshot_id"],
             "source_content_hash": source["content_hash"], "url": source["acquisition_receipt"]["final_url"],
             "title": source["title"], "valid_as_of": source["acquired_at"],
+            **({'source_role': source['source_role']} if source.get('source_role') else {}),
             "provenance": "OFFICIAL_SOURCE_ATTESTED", "verification_state": "MACHINE_SOURCE_CHECKED_NOT_PRODUCT_TESTED",
             "eligibility_by_use": {"attributed_public_draft": "CONSUMABLE", "unqualified_current_claim": "NOT_CONSUMABLE"},
             "limitations": ["仅在已给资料及获取时间范围内核对", "官方资料陈述不等于独立产品实测", "不修改项目全局Product Truth"]})

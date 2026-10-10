@@ -4,6 +4,7 @@ import { BarChart3, RefreshCw, Save } from "lucide-react";
 import { request } from "./api/client";
 import type { Project } from "./types";
 import { SamplingSchedulePanel } from "./SamplingSchedulePanel";
+import { SupplementalSources } from "./SupplementalSources";
 
 const names: Record<string, string> = { brand_mention_rate: "正文提及", brand_option_rate: "列为选项", brand_recommendation_rate: "明确推荐", target_brand_official_reference_rate: "官方来源引用", published_url_reference_rate: "目标 URL 引用" };
 const ratio = (m: any) => m?.value == null ? "不可计算" : `${m.hit_count}/${m.evaluable_count} (${(m.value * 100).toFixed(1)}%)`;
@@ -153,6 +154,8 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     <Space style={{ marginBottom: 16 }}><Button aria-label="刷新当前页面" icon={<RefreshCw size={16} />} loading={busy} onClick={() => setReload(n => n + 1)} /></Space>
     {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
     {mode === "context" ? <>
+      <SupplementalSources key={project.id} projectId={project.id} />
+      <Typography.Title level={4}>内部补充上下文</Typography.Title>
       <Alert type="info" message="资料可选，不自动成为已核实品牌事实" />
       <Form form={form} layout="vertical" onFinish={save} style={{ marginTop: 16 }}>
         <Form.Item label="资料标题" name="title" rules={[{ required: true, whitespace: true }]}><Input maxLength={240} /></Form.Item>

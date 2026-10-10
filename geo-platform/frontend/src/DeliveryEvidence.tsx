@@ -13,12 +13,13 @@ type FrozenInput = {
   raw_result_version: string; answer_result_version: string; contribution_result_version?: string;
   brand: { brand_name: string }; truths: { product_truth_id: number; capability_label: string; public_use_eligibility: string; source_reference: string }[];
   brand_context?: { context_version_id?: string; version_number?: number; title?: string; passages?: { passage_id: string; text: string; source_reference: string }[] };
+  supplemental_sources?: { snapshot_id: string; title: string; url: string; acquired_at: string; coverage_scope: string; text: string }[];
 };
 const paragraphStyle = { whiteSpace: "pre-wrap" as const, overflowWrap: "anywhere" as const };
 
 export type OfficialFactReceipt = {
   status: string;
-  accepted: { fact_id: string; statement: string; source_span: string; url: string; valid_as_of: string; limitations: string[] }[];
+  accepted: { fact_id: string; statement: string; source_span: string; url: string; valid_as_of: string; limitations: string[]; source_role?: string }[];
   rejected: { reason: string; check?: { rationale: string } }[];
   limitations: { reason: string; unassessed_claims?: number }[];
 };
@@ -101,6 +102,7 @@ export function DeliveryEvidence({ frozen, resultVersion, officialFacts }: { fro
             <Alert type="info" message="仅在冻结资料及获取时间范围内核对，不等于独立产品实测，也不自动更新项目全局事实。" />
             {officialFacts.accepted.map(fact => <section key={fact.fact_id} style={{ margin: "16px 0" }}>
               <Typography.Paragraph strong>{fact.statement}</Typography.Paragraph>
+              {fact.source_role === "SUPPLEMENTAL_PUBLIC_SOURCE" && <Tag>补充公开资料，不是原答案引用</Tag>}
               <Typography.Paragraph type="secondary">资料取得时间：{fact.valid_as_of}；公开稿需保留出处、时间及适用条件。</Typography.Paragraph>
               <SourceLink value={fact.url} />
               <Typography.Paragraph style={paragraphStyle}>{fact.source_span}</Typography.Paragraph>
@@ -114,6 +116,13 @@ export function DeliveryEvidence({ frozen, resultVersion, officialFacts }: { fro
             </Typography.Paragraph>)}
           </section>}
           <Typography.Title level={5}>补充上下文</Typography.Title>
+          {!!frozen.supplemental_sources?.length && <section aria-label="本版额外公开资料">
+            <Typography.Paragraph>本版额外公开资料：{frozen.supplemental_sources.length} 份，不计入原答案引用数。</Typography.Paragraph>
+            <Collapse items={frozen.supplemental_sources.map(s => ({ key: s.snapshot_id, label: s.title || s.url, children: <>
+              <SourceLink value={s.url} /><Typography.Paragraph>取得时间：{s.acquired_at} · {s.coverage_scope === "FULL_PAGE" ? "完整正文" : "正文不完整"}</Typography.Paragraph>
+              <Typography.Paragraph style={paragraphStyle}>{s.text}</Typography.Paragraph>
+            </> }))} />
+          </section>}
           {!context?.passages?.length ? <Typography.Paragraph>未选择相关补充资料。</Typography.Paragraph> : <>
             <Alert type="warning" message="用户提供的内部资料，未独立核实，不自动成为公开事实" />
             <Typography.Paragraph>{context.title}{context.version_number ? ` · 资料版本 ${context.version_number}` : ""}</Typography.Paragraph>

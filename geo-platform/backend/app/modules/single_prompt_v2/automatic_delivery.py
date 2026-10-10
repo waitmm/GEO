@@ -122,6 +122,9 @@ def task_view(row: SinglePromptOptimizationTask) -> dict:
         "objects": progress.get("objects") or {}, "limitations": progress.get("limitations") or [],
         "blocker_code": row.blocker_code, "blocker_detail": row.blocker_detail,
         "scope": inputs.get("run_ids"), "brand_context_version_id": (inputs.get("brand_context") or {}).get("context_version_id"),
+        "brand_context_label": ((inputs.get('brand_context') or {}).get('title') or '未选择') +
+            (f" · 版本 {(inputs.get('brand_context') or {})['version_number']}" if (inputs.get('brand_context') or {}).get('version_number') else ''),
+        "supplemental_source_count": len(inputs.get('supplemental_sources') or []),
         "source_input": inputs.get("source_input"),
         "provider": inputs.get("provider"), "requested_model": inputs.get("requested_model"),
         "effective_request_model": inputs.get("effective_request_model"),
@@ -146,7 +149,8 @@ def require_task(db: Session, task_id: str, project_id: int, prompt_id: int) -> 
 def create_task(db: Session, *, analysis_id: str, project_id: int, prompt_id: int,
                 raw_output_hash: str, idempotency_key: str, brand_context_version_id: str | None = None,
                 source_fetch_authorized: bool = False, completion_manifest_id: str | None = None,
-                completion_manifest_hash: str | None = None) -> tuple[SinglePromptOptimizationTask, bool]:
+                completion_manifest_hash: str | None = None,
+                supplemental_source_ids: list[str] | None = None) -> tuple[SinglePromptOptimizationTask, bool]:
     context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis_id, project_id=project_id, prompt_id=prompt_id).one_or_none()
     if not context or context.raw_output_hash != raw_output_hash:
         raise HTTPException(409, "自动优化必须选择已冻结的准确分析范围与原始版本")
@@ -172,6 +176,9 @@ def create_task(db: Session, *, analysis_id: str, project_id: int, prompt_id: in
         "run_ids": [row["run_id"] for row in raw["runs"]], "prompt_text": raw["prompt_text"],
         "source_input": source_input,
         "source_fetch_authorized": source_fetch_authorized, "source_attempts_per_url": 2, "automatic_retry": 0}
+    if supplemental_source_ids:
+        from .supplemental_sources import frozen_sources
+        inputs['supplemental_sources'] = frozen_sources(db, project_id=project_id, source_ids=supplemental_source_ids)
     fingerprint = digest(inputs)
     existing = db.query(SinglePromptOptimizationTask).filter_by(project_id=project_id, idempotency_key=idempotency_key).one_or_none()
     if existing:
@@ -506,7 +513,9 @@ def execute_task(task_id: str, *, session_factory) -> None:
                 project_id=row.project_id, prompt_id=row.prompt_id, direction_id=direction["strategy_id"],
                 idempotency_key=f"{key}:{direction['strategy_id']}", strategy_review_id=None, strategy_review_snapshot_hash="",
                 input_authority_type="MACHINE_QUALIFICATION", input_authority_id=strategy.input_authority_id,
-                input_authority_hash=strategy.input_authority_hash, brand_context_version_id=context_version)
+                input_authority_hash=strategy.input_authority_hash, brand_context_version_id=context_version,
+                supplemental_source_refs=[{'source_id': s['snapshot_id'], 'snapshot_hash': digest(s)}
+                    for s in fixed.get('supplemental_sources') or []])
             checkpoint(db, row, objects={"draft_in_progress": {"proposal_id": proposal.proposal_id,
                 "result_version": base.result_version, "result_hash": base.output_hash}})
             delivered, _ = generate_complete_execution_deliverable(db, proposal_id=proposal.proposal_id,

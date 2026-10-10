@@ -176,7 +176,10 @@ def test_upgrade_preserves_legacy_columns_and_does_not_invent_receipts(tmp_path,
     db.close()
     engine.dispose()
     command.upgrade(config, 'head')
-    assert business_fingerprint(path, columns) == before
+    after = business_fingerprint(path, columns)
+    assert {name: after[name] for name in before} == before
+    assert set(after) - set(before) == {'supplemental_source_acquisitions'}
+    assert after['supplemental_source_acquisitions']['count'] == 0
     engine = create_engine(f'sqlite:///{path}')
     with engine.connect() as connection:
         assert connection.execute(text(f'SELECT acquisition_receipt_json FROM {name}')).scalar_one() == '{}'

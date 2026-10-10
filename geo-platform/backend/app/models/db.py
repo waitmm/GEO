@@ -1032,6 +1032,26 @@ class SinglePromptSamplingSchedule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class SupplementalSourceAcquisition(Base):
+    __tablename__ = "supplemental_source_acquisitions"
+    __table_args__ = (UniqueConstraint("project_id", "idempotency_key", name="uq_supplemental_source_request"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    requested_url: Mapped[str] = mapped_column(String(1200))
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    request_json: Mapped[str] = mapped_column(Text)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    snapshot_hash: Mapped[str] = mapped_column(String(64), default="")
+    failure_detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class BrandContextVersion(Base):
     __tablename__ = "brand_context_versions"
     __table_args__ = (UniqueConstraint("project_id", "version_number", name="uq_brand_context_version"),)

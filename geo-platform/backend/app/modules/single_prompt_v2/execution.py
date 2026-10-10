@@ -1077,6 +1077,7 @@ def create_execution_proposal(
     input_authority_id: str = "",
     input_authority_hash: str = "",
     brand_context_version_id: str | None = None,
+    supplemental_source_refs: list[dict] | None = None,
 ) -> tuple[SinglePromptExecutionProposal, SinglePromptExecutionProposalResult, bool]:
     snapshot = _strategy_input_for_execution(
         db, strategy_id=strategy_id, strategy_result_version=strategy_result_version,
@@ -1113,6 +1114,15 @@ def create_execution_proposal(
             db, project_id=project_id, context_version_id=brand_context_version_id,
             query=snapshot["delivery_input"]["prompt_text"],
         )
+        if supplemental_source_refs:
+            from .supplemental_sources import frozen_sources
+            extra = frozen_sources(db, project_id=project_id,
+                source_ids=[r['source_id'] for r in supplemental_source_refs])
+            expected = {r['source_id']: r['snapshot_hash'] for r in supplemental_source_refs}
+            if any(digest(item) != expected[item['snapshot_id']] for item in extra):
+                raise HTTPException(409, '补充公开资料版本已变化，不能替换冻结输入')
+            snapshot['delivery_input']['supplemental_sources'] = extra
+            snapshot['delivery_input'].setdefault('official_source_materials', []).extend(extra)
         snapshot["delivery_input_hash"] = digest(snapshot["delivery_input"])
     snapshot["input_snapshot_hash"] = _hash(snapshot)
     fingerprint = _hash({

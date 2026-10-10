@@ -24,6 +24,7 @@ def verify(directory):
     if file_hash(db_path) != manifest['database_hash']:
         raise ValueError('BACKUP_DATABASE_HASH_MISMATCH')
     sqlite = get_release_sqlite_dbapi()
+    supplemental_count = 0
     with sqlite.connect(f'file:{db_path}?mode=ro', uri=True) as db:
         if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise ValueError('BACKUP_DATABASE_INTEGRITY_FAILED')
@@ -36,11 +37,21 @@ def verify(directory):
             record = db.execute('SELECT clean_text, artifact_hash FROM single_prompt_prepared_source_snapshots WHERE snapshot_id=?', (row['snapshot_id'],)).fetchone()
             if not record or hashlib.sha256(record[0].encode()).hexdigest() != row['artifact_hash'] or record[1] != row['artifact_hash']:
                 raise ValueError(f"BACKUP_SOURCE_BINDING_FAILED:{row['snapshot_id']}")
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='supplemental_source_acquisitions'").fetchone():
+            from app.modules.single_prompt_v2.delivery_text import digest, text_digest
+            for identity, project, raw, expected in db.execute("SELECT source_id, project_id, snapshot_json, snapshot_hash FROM supplemental_source_acquisitions WHERE status IN ('READY','PARTIAL')"):
+                snapshot = json.loads(raw)
+                if (digest(snapshot) != expected or snapshot.get('snapshot_id') != identity
+                        or snapshot.get('project_id') != project
+                        or text_digest(snapshot.get('text', '')) != snapshot.get('content_hash')):
+                    raise ValueError('BACKUP_SUPPLEMENTAL_SOURCE_BINDING_FAILED')
+                supplemental_count += 1
     for row in manifest.get('artifacts', []):
         path = (directory / row['backup_path']).resolve()
         if not path.is_relative_to(directory) or file_hash(path) != row['hash']:
             raise ValueError('BACKUP_RUNTIME_ARTIFACT_HASH_FAILED')
     return {'database': 'PASS', 'source_bindings': len(manifest['sources']), 'revision': manifest['revision'],
+            'supplemental_source_bindings': supplemental_count,
             'archived_artifact_files': len(manifest.get('artifacts', [])),
             'archived_roots': manifest.get('artifact_roots', []), 'full_runtime_artifact_archive': bool(manifest.get('artifact_roots'))}
 

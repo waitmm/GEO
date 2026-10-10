@@ -246,7 +246,8 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     from app.modules.single_prompt_v2.automatic_delivery import execute_task
     from test_automatic_delivery import simulated_delivery_transport
     analysis = fixture['analysis']
-    official = bool(fixture.get('official_snapshot_id'))
+    supplemental = '--supplemental-source' in sys.argv
+    official = bool(fixture.get('official_snapshot_id')) or supplemental
     with_context = '--brand-context' in sys.argv
     context_versions = []
     context_texts = ['短链工具选题背景：优先解释团队交接时需要核对的问题。',
@@ -257,6 +258,10 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         page.get_by_role('menuitem', name='品牌资料', exact=True).click()
         page.get_by_label('资料标题', exact=True).fill(f'内部选题资料 {index + 1}')
         page.get_by_label('品牌资料正文', exact=True).fill(context_texts[index] + '\n\n' + unrelated_context)
+        page.get_by_role('combobox', name='当前问题', exact=True).press('ArrowDown')
+        page.get_by_text('全部 Prompt（项目视图）', exact=True).filter(visible=True).click()
+        expect(page.get_by_label('资料标题', exact=True)).to_have_value(f'内部选题资料 {index + 1}')
+        expect(page.get_by_label('品牌资料正文', exact=True)).to_have_value(context_texts[index] + '\n\n' + unrelated_context)
         with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/brand-contexts')) as saved:
             page.get_by_role('button', name='保存新资料版本', exact=True).click()
         assert saved.value.ok
@@ -265,6 +270,29 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     if with_context:
         page.goto(analysis_url)
         save_context_in_browser(0)
+    if supplemental:
+        from app.modules.single_prompt_v2.supplemental_sources import execute_source
+        from test_delivery_supplemental_sources import fetched, URL
+        page.goto(analysis_url)
+        page.get_by_role('button', name='编辑项目', exact=True).click()
+        editor = page.get_by_role('dialog', name='编辑项目')
+        editor.get_by_label('品牌官网', exact=True).fill('https://example.com')
+        editor.get_by_role('button', name=re.compile('^保\\s*存$')).click()
+        expect(editor).not_to_be_visible()
+        page.get_by_role('menuitem', name='品牌资料', exact=True).click()
+        region = page.get_by_role('region', name='补充公开资料', exact=True)
+        region.get_by_label('公开页面 URL', exact=True).fill(URL)
+        region.get_by_role('checkbox').check()
+        with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/supplemental-sources')) as queued:
+            region.get_by_role('button', name='获取公开资料', exact=True).click()
+        assert queued.value.ok and queued.value.json()['status'] == 'QUEUED'
+        extra_id = queued.value.json()['source_id']
+        execute_source(extra_id, session_factory=Session, fetcher=lambda urls: [fetched()])
+        region.get_by_role('button', name='刷新补充公开资料', exact=True).click()
+        expect(region.get_by_text('已获取完整正文', exact=True)).to_be_visible(timeout=15000)
+        page.reload()
+        expect(region.get_by_text('已获取完整正文', exact=True)).to_be_visible()
+        fixture['official_snapshot_id'] = extra_id
     initial_requests = 6 if official else 4
     slow_reads = []
     def delayed_first_read(route):
@@ -292,6 +320,12 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     panel.get_by_role('button', name='刷新品牌资料版本', exact=True).click()
     expect(panel.get_by_role('combobox', name='补充品牌资料版本', exact=True)).to_be_enabled()
     expect(panel.get_by_text('品牌资料读取失败', exact=True)).to_have_count(0)
+    if supplemental:
+        control = panel.get_by_role('combobox', name='本次补充公开资料版本', exact=True)
+        expect(control).to_be_enabled()
+        control.click()
+        page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').get_by_text(re.compile('^隔离补充官网资料')).click()
+        control.press('Escape')
     if with_context:
         panel.get_by_role('combobox', name='补充品牌资料版本', exact=True).click()
         page.get_by_text('资料版本 1 · 内部选题资料 1', exact=True).click()
@@ -405,6 +439,12 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         expect(region).to_contain_text('官方资料核实：1 项')
         expect(region).to_contain_text(BROWSER_CLAIM)
         expect(region).to_contain_text('不等于独立产品实测')
+        if supplemental:
+            expect(region.get_by_text('补充公开资料，不是原答案引用', exact=True)).to_be_visible()
+            expect(evidence.get_by_role('region', name='本版额外公开资料')).to_contain_text('1 份，不计入原答案引用数')
+            assert facts['accepted'][0]['source_role'] == 'SUPPLEMENTAL_PUBLIC_SOURCE'
+            citation_call = next(c for c in calls if 'frozen_candidate_pairs' in c)
+            assert URL not in json.dumps(citation_call)
         accessibility_check(page, out, report, 'official-facts-390')
         page.screenshot(path=str(out / 'official-facts-390.png'), full_page=True)
         report['screenshots'].append('official-facts-390.png')
@@ -524,8 +564,13 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         report['verified'].append('SYNTHETIC_OFFICIAL_SOURCE_CLAIM_CHECK_RECEIPT_UI_NO_HUMAN_REVIEW')
     if with_context:
         report['verified'].extend(['UI_BASIC_CONTEXT_VERSION_SAVE_AND_SELECT',
+            'PROJECT_CONTEXT_DRAFT_SURVIVES_PROMPT_SWITCH',
             'NEW_CONTEXT_DOES_NOT_REPLACE_QUEUED_TASK_INPUT', 'ONLY_RELEVANT_CONTEXT_IN_WRITER',
             'FROZEN_CONTEXT_VISIBLE_AFTER_REFRESH_NOT_PUBLIC_FACT'])
+    if supplemental:
+        report['verified'].extend(['EXPLICIT_UI_SUPPLEMENTAL_FETCH_AUTHORITY', 'SUPPLEMENTAL_FROZEN_SNAPSHOT_SELECTED',
+            'EXTRA_SOURCE_NOT_ORIGINAL_CITATION', 'SUPPLEMENTAL_FACT_SOURCE_ROLE_VISIBLE'])
+        report['simulated_source_acquisitions'] = 1
 
 
 def main():

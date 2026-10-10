@@ -5784,7 +5784,7 @@ export default function App() {
       </Header>
       <Content className="workspace">
         {RELEASE_FIRST_SLICE && <ReleaseWorkerStatus />}
-        {!project ? <Card loading={loading}><Empty description="请选择项目" /></Card> : ["releaseMonitor", "releaseCompare", "brandContext"].includes(page) ? <ObservationPanel key={`${project.id}:${activePromptId}:${page}`} project={project} promptId={activePromptId} mode={page === "brandContext" ? "context" : page === "releaseCompare" ? "compare" : "monitor"} /> : page === "coreV2" ? <Space direction="vertical" size={16} className="page-stack">
+        {!project ? <Card loading={loading}><Empty description="请选择项目" /></Card> : ["releaseMonitor", "releaseCompare", "brandContext"].includes(page) ? <ObservationPanel key={`${project.id}:${page === "brandContext" ? "project" : activePromptId}:${page}`} project={project} promptId={page === "brandContext" ? null : activePromptId} mode={page === "brandContext" ? "context" : page === "releaseCompare" ? "compare" : "monitor"} /> : page === "coreV2" ? <Space direction="vertical" size={16} className="page-stack">
           {!activePromptId ? <Card><Empty description="请在顶部选择一个 Prompt" /></Card> : <>
             <Card size="small" title={<Space><Play size={18} />问题 #{activePromptId}</Space>} extra={<Space wrap>
               <Text type="secondary">采样次数</Text>

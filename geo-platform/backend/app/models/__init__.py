@@ -11,6 +11,7 @@ from app.models.db import (
     ClaimExtractionRun,
     BrandMention,
     BrandContextVersion,
+    SupplementalSourceAcquisition,
     SinglePromptSamplingSchedule,
     SinglePromptOptimizationTask,
     SinglePromptObservationComparison,

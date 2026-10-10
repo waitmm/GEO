@@ -203,6 +203,32 @@ def contexts(project_id: int, db: Session = Depends(get_release_db)):
     return [context_view(row) for row in db.query(BrandContextVersion).filter_by(project_id=project_id).order_by(BrandContextVersion.version_number.desc()).all()]
 
 
+class SupplementalSourceCreate(StrictInput):
+    url: str = Field(min_length=8, max_length=1200)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    fetch_authorized: bool
+
+
+@router.get('/projects/{project_id}/supplemental-sources')
+def supplemental_sources(project_id: int, db: Session = Depends(get_release_db)):
+    from app.models import SupplementalSourceAcquisition
+    from .supplemental_sources import source_view
+    if not db.get(Project, project_id):
+        raise HTTPException(404, '项目不存在')
+    return [source_view(row) for row in db.query(SupplementalSourceAcquisition).filter_by(project_id=project_id)
+        .order_by(SupplementalSourceAcquisition.id.desc()).all()]
+
+
+@router.post('/projects/{project_id}/supplemental-sources', status_code=201)
+def new_supplemental_source(project_id: int, payload: SupplementalSourceCreate,
+                           response: Response, db: Session = Depends(get_release_db)):
+    from .supplemental_sources import queue_source, source_view
+    row, created = queue_source(db, project_id=project_id, **payload.model_dump())
+    if not created:
+        response.status_code = 200
+    return source_view(row)
+
+
 @router.post('/projects/{project_id}/brand-contexts', status_code=201)
 def new_context(project_id: int, payload: ContextCreate, db: Session = Depends(get_release_db)):
     return context_view(save_context(db, project_id=project_id, **payload.model_dump()))

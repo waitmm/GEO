@@ -3,6 +3,7 @@ import { Alert, App as AntApp, Button, Checkbox, Collapse, Descriptions, Form, I
 import { Copy, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
+import { SupplementalSources } from "./SupplementalSources";
 import { ManuscriptEditor } from "./ManuscriptEditor";
 import { DeliveryEvidence } from "./DeliveryEvidence";
 import { ManuscriptPreview } from "./ManuscriptPreview";
@@ -10,6 +11,7 @@ import { ManuscriptPreview } from "./ManuscriptPreview";
 type Task = {
   task_kind: string; pending_draft?: { sections: { heading: string; blocks: { text: string }[] }[] };
   task_id: string; revision: number; status: string; stage: string; input_hash: string;
+  brand_context_label: string; supplemental_source_count: number;
   scope: number[]; provider: string; requested_model: string; effective_request_model: string;
   blocker_detail: string; authorization: { policy: string; max_cost_cny: number };
   objects: Record<string, any>; limitations: any[];
@@ -24,6 +26,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selected, setSelected] = useState<string>();
   const [contextVersion, setContextVersion] = useState<string>();
+  const [supplementalSourceIds, setSupplementalSourceIds] = useState<string[]>([]);
   const [fetchAllowed, setFetchAllowed] = useState(false);
   const [sourceVersion, setSourceVersion] = useState<string>();
   const [initial, setInitial] = useState(true);
@@ -75,6 +78,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
       if (action === "create" && sourceVersion && sourceVersion !== completion?.manifest_id) throw new Error("正文版本已变化，请重新选择，不会自动替换输入");
       const value = action === "create" ? { ...identity, raw_output_hash: rawHash,
         idempotency_key: `optimize:${crypto.randomUUID()}`, brand_context_version_id: contextVersion || null,
+        supplemental_source_ids: supplementalSourceIds,
         source_fetch_authorized: !sourceVersion && fetchAllowed,
         ...(sourceVersion && completion?.manifest_id === sourceVersion ? { completion_manifest_id: sourceVersion, completion_manifest_hash: completion.payload_hash } : {}) }
         : { ...identity, expected_revision: task!.revision, ...(action === "authorization" ? { ...values, input_hash: task!.input_hash } : {}) };
@@ -100,7 +104,9 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
     {(error || readError) && <Alert type="error" showIcon message="自动优化操作未完成" description={error || readError} />}
     {initial ? <Spin tip="正在读取任务"><div style={{ minHeight: 80 }} /></Spin> : <>
       <Space direction="vertical" style={{ width: "100%", maxWidth: 620 }}>
+        <Typography.Text strong>新任务输入</Typography.Text>
         <BrandContextSelect projectId={projectId} value={contextVersion} onChange={setContextVersion} />
+        <SupplementalSources key={`sources:${projectId}`} projectId={projectId} selection={supplementalSourceIds} onChange={setSupplementalSourceIds} disabled={!!active} />
         {completion && <Select aria-label="本次优化正文版本" value={sourceVersion || "prepare"} disabled={!!active} style={{ width: "100%" }}
           onChange={v => setSourceVersion(v === "prepare" ? undefined : v)} options={[
             { value: "prepare", label: "准备正文后固定本次版本" },
@@ -118,6 +124,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
         {task.blocker_detail && <Alert type="warning" showIcon message={statuses[task.status]} description={task.blocker_detail} />}
         <Descriptions size="small" column={{ xs: 1, md: 3 }}>
           <Descriptions.Item label="固定样本">{task.scope.map(r => `Run #${r}`).join("、")}</Descriptions.Item>
+          {task.task_kind !== "TEXT_REVISION" && <Descriptions.Item label="本任务冻结资料">{task.brand_context_label}；额外公开资料 {task.supplemental_source_count} 份</Descriptions.Item>}
           <Descriptions.Item label="模型请求 / 缓存">{task.usage.external_requests} / {task.usage.cache_hits}</Descriptions.Item>
           <Descriptions.Item label="预算预占上界">¥{task.usage.reserved_cost_cny.toFixed(4)} / ¥{task.authorization.max_cost_cny}</Descriptions.Item>
           <Descriptions.Item label="已记录 token">{task.usage.actual_tokens}</Descriptions.Item>

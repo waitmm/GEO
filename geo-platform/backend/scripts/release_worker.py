@@ -19,6 +19,7 @@ from app.models import (
     SinglePromptQualificationCriticExecution,
     SinglePromptSourcePreparation,
     SinglePromptOptimizationTask,
+    SupplementalSourceAcquisition,
 )
 from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.services import update_task_status_from_runs
@@ -30,6 +31,7 @@ from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_ST
 from app.release_schema import validate_release_database
 from app.modules.single_prompt_v2.scheduling import tick, allow_scheduled_start
 from app.modules.single_prompt_v2.automatic_delivery import execute_task, recover_interrupted_tasks
+from app.modules.single_prompt_v2.supplemental_sources import execute_source, recover_interrupted_sources
 
 
 def recover_owned_tasks():
@@ -42,7 +44,7 @@ def recover_owned_tasks():
     try:
         for recover in (recover_interrupted_tasks, recover_interrupted_analyses, recover_interrupted_diagnoses,
                         recover_interrupted_citation_contributions, recover_interrupted_qualification_critics,
-                        recover_interrupted_source_preparations):
+                        recover_interrupted_source_preparations, recover_interrupted_sources):
             recover(db)
     finally:
         db.close()
@@ -65,6 +67,7 @@ def run_once() -> str | None:
             .first()
         )
         optimization = db.query(SinglePromptOptimizationTask).filter_by(status="QUEUED").order_by(SinglePromptOptimizationTask.id).first()
+        supplemental = db.query(SupplementalSourceAcquisition).filter_by(status="QUEUED").order_by(SupplementalSourceAcquisition.id).first()
         if retry_task:
             identity = retry_task.id
             work_type = "run_retry"
@@ -78,6 +81,9 @@ def run_once() -> str | None:
         elif optimization:
             identity = optimization.task_id
             work_type = "automatic_optimize"
+        elif supplemental:
+            identity = supplemental.source_id
+            work_type = "supplemental_source"
         else:
             preparation = (
                 db.query(SinglePromptSourcePreparation)
@@ -122,6 +128,9 @@ def run_once() -> str | None:
     finally:
         db.close()
 
+    if work_type == "supplemental_source":
+        execute_source(identity, session_factory=ReleaseSessionLocal)
+        return f"supplemental_source:{identity}"
     if work_type == "automatic_optimize":
         execute_task(identity, session_factory=ReleaseSessionLocal)
         return f"automatic_optimize:{identity}"

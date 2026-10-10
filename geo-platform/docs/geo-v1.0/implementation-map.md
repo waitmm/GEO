@@ -1,5 +1,7 @@
 # GEO Platform 1.0 真实实现映射（T00）
 
+2026-10-10 当前增量（下列T00表保留核查时点）：BASIC资料已有正式worker与浏览器选版/更新复用验收（1cc9196）。补充公开来源新增 `supplemental_sources.py`、`SupplementalSourceAcquisition`、migration20261010_01、`SupplementalSources.tsx` 与既有worker/router接线；稿件复用原官方资料核实，不进入原引用候选。专项8、相关组合87及浏览器032308Z通过，都是隔离模拟，真实集成未验收。当前所有实现/证据以 tasks.json 和 acceptance_cases.json 为准，不再以本历史表的“未进release”判断缺少代码。
+
 检查日期：2026-09-30  
 检查范围：当前 `geo-platform` 仓库、`backend/geo_release.db`、release API/worker、前后端测试与构建入口。  
 结论口径：文件或测试存在不等于 release 已交付；正式能力必须同时满足 release 路由、release 表白名单、真实持久化和产品入口四项。

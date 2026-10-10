@@ -24,6 +24,7 @@ class AutomaticOptimizationCreate(BaseModel):
     raw_output_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     idempotency_key: str = Field(min_length=8, max_length=120)
     brand_context_version_id: str | None = Field(default=None, max_length=100)
+    supplemental_source_ids: list[str] = Field(default_factory=list, max_length=5)
     source_fetch_authorized: bool = False
     completion_manifest_id: str | None = Field(default=None, max_length=100)
     completion_manifest_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")

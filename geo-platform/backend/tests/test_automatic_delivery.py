@@ -285,6 +285,107 @@ def test_worker_real_stage_wiring_with_simulated_transport_not_real_llm(scene, m
     assert len(calls) == 4
 
 
+@pytest.mark.parametrize('interrupted_stage,completed_requests', [('CITATION', 1), ('DRAFT', 2), ('TEXT_QA', 3)])
+def test_stage_restart_preserves_exact_objects_budget_and_cached_draft(scene, monkeypatch, interrupted_stage, completed_requests):
+    from sqlalchemy.orm import sessionmaker
+    from app.models import Project, SinglePromptExecutionProposalResult
+    from app.modules.single_prompt_v2 import automatic_delivery
+    db, row, _, _ = scene
+    authorize_task(db, row, expected_revision=row.revision, input_hash=row.input_hash,
+        max_requests=4, max_tokens=400000, max_cost_cny=4,
+        conservative_cny_per_million_tokens=10, pricing_source='isolated-recovery-not-provider-pricing',
+        pricing_checked_at=datetime.utcnow().date().isoformat(), authorized_by='isolated-test')
+    fixed_input, authority = row.input_json, row.authorization_json
+    calls = simulated_delivery_transport(monkeypatch)
+    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+    checkpoint = automatic_delivery.checkpoint
+
+    class WorkerExit(BaseException):
+        pass
+
+    def interrupt_after_checkpoint(*args, **kwargs):
+        checkpoint(*args, **kwargs)
+        if kwargs.get('stage') == interrupted_stage:
+            raise WorkerExit()
+
+    with monkeypatch.context() as crash:
+        crash.setattr(automatic_delivery, 'checkpoint', interrupt_after_checkpoint)
+        with pytest.raises(WorkerExit):
+            execute_task(row.task_id, session_factory=factory)
+    db.refresh(row)
+    before = task_view(row)
+    assert row.status == 'RUNNING' and before['stage'] == interrupted_stage
+    assert len(calls) == completed_requests == before['usage']['external_requests']
+    assert before['usage']['unsettled_requests'] == 0
+    db.get(Project, 1).brand_name = '中断后修改，不属于原任务'
+    db.commit()
+    # A fresh DB session stands in for the restarted worker, not a patched status.
+    with factory() as restarted:
+        assert recover_interrupted_tasks(restarted) == 1
+        restored = automatic_delivery.require_task(restarted, row.task_id, 1, 44)
+        assert restored.status == 'INTERRUPTED'
+        assert task_view(restored)['usage'] == before['usage']
+        resume_task(restarted, restored, restored.revision)
+    execute_task(row.task_id, session_factory=factory)
+    db.refresh(row)
+    after = task_view(row)
+    assert row.status.startswith('COMPLETED'), (row.blocker_code, row.blocker_detail)
+    assert row.input_json == fixed_input and row.authorization_json == authority
+    for key in ['completion_manifest_id', 'completion_manifest_hash', 'diagnosis_id',
+                'answer_result_version', 'answer_result_hash', 'citation_results',
+                'strategy_id', 'strategy_result_version', 'strategy_result_hash']:
+        if key in before['objects']:
+            assert after['objects'][key] == before['objects'][key]
+    assert len(calls) == 4 == after['usage']['external_requests']
+    assert after['usage']['actual_tokens'] == 600 and after['usage']['unsettled_requests'] == 0
+    assert '中断后修改' not in json.dumps(calls, ensure_ascii=False)
+    if interrupted_stage == 'TEXT_QA':
+        assert after['usage']['cache_hits'] >= 1
+    versions = [(r.result_version, r.output_hash) for r in db.query(SinglePromptExecutionProposalResult).all()]
+    execute_task(row.task_id, session_factory=factory)
+    assert versions == [(r.result_version, r.output_hash) for r in db.query(SinglePromptExecutionProposalResult).all()]
+    assert len(calls) == 4 and db.query(SinglePromptDiagnosisReview).count() == 0
+
+
+def test_unavailable_source_keeps_citation_and_delivers_without_waive_or_fetch(scene, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+    from app.models import SinglePromptSourceDisposition, SinglePromptSourceCompletionManifest, SinglePromptExecutionProposalResult, SinglePromptCitationManifest
+    db, row, _, _ = scene
+    context = db.query(SinglePromptAnalysisContext).one()
+    citation = db.query(SinglePromptCitationManifest).one()
+    original_raw = context.raw_output_json
+    original_citation = citation.payload_json
+    source = db.query(SinglePromptSourceDisposition).filter_by(state='READY').one()
+    original_states = {s.id: s.state for s in db.query(SinglePromptSourceDisposition).all()}
+    source.state = 'MANUAL_REQUIRED'
+    source.active_snapshot_id = None
+    db.commit()
+    authorize_task(db, row, expected_revision=row.revision, input_hash=row.input_hash,
+        max_requests=3, max_tokens=400000, max_cost_cny=4,
+        conservative_cny_per_million_tokens=10, pricing_source='isolated-missing-source-not-provider-pricing',
+        pricing_checked_at=datetime.utcnow().date().isoformat(), authorized_by='isolated-test')
+    calls = simulated_delivery_transport(monkeypatch)
+    execute_task(row.task_id, session_factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
+    db.refresh(row); db.refresh(source)
+    view = task_view(row)
+    assert row.status == 'COMPLETED_WITH_LIMITATIONS', (row.blocker_code, row.blocker_detail)
+    assert source.state == 'MANUAL_REQUIRED' and source.active_snapshot_id is None
+    assert {s.id: s.state for s in db.query(SinglePromptSourceDisposition).all()} == {**original_states, source.id: 'MANUAL_REQUIRED'}
+    assert len(calls) == 3 and not any('frozen_candidate_pairs' in p for p in calls)
+    assert view['objects']['citation_results'] == []
+    assert any(limit['code'] == 'CITATION_NOT_EVALUATED' for limit in view['limitations'])
+    completion = db.query(SinglePromptSourceCompletionManifest).filter_by(manifest_id=view['objects']['completion_manifest_id']).one()
+    assert completion.status != 'FROZEN'
+    result = db.query(SinglePromptExecutionProposalResult).filter_by(result_version=view['objects']['deliveries'][0]['result_version']).one()
+    output = json.loads(result.output_json)
+    assert output['publication_draft']['body_markdown']
+    assert output['delivery_input']['selected_evidence'] == []
+    assert output['automatic_qa']['status'] == 'READY'
+    db.refresh(context); db.refresh(citation)
+    assert context.raw_output_json == original_raw and citation.payload_json == original_citation
+    assert db.query(SinglePromptDiagnosisReview).count() == 0
+
+
 def test_multi_run_task_preserves_each_contribution_version_and_never_reads_latest(scene, monkeypatch):
     from sqlalchemy.orm import sessionmaker
     from app.models import BrowserMonitorRun, ReferenceSource, SinglePromptCitationContributionResult, SinglePromptCitationContributionExecution

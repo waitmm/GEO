@@ -260,11 +260,20 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
             route.continue_()
     task_route = '**/optimization-tasks?*'
     page.route(task_route, delayed_first_read)
+    context_route = f'{origin}/api/v2/projects/1/brand-contexts'
+    page.route(context_route, lambda route: route.fulfill(status=503, content_type='application/json',
+        body='{"detail":"隔离验收：品牌资料暂不可读"}'))
     page.goto(f'{origin}/?v2_project=1&v2_prompt=44&v2_analysis={analysis.analysis_id}')
     panel = page.get_by_role('region', name='自动优化交付')
     expect(panel.get_by_role('button', name='开始自动优化', exact=True)).to_be_enabled(timeout=15000)
     assert len(slow_reads) == 1
     page.unroute(task_route, delayed_first_read)
+    expect(panel.get_by_text('品牌资料读取失败', exact=True)).to_be_visible()
+    expect(panel.get_by_role('combobox', name='补充品牌资料版本', exact=True)).to_be_disabled()
+    page.unroute(context_route)
+    panel.get_by_role('button', name='刷新品牌资料版本', exact=True).click()
+    expect(panel.get_by_role('combobox', name='补充品牌资料版本', exact=True)).to_be_enabled()
+    expect(panel.get_by_text('品牌资料读取失败', exact=True)).to_have_count(0)
     with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/optimization-tasks')) as response:
         panel.get_by_role('button', name='开始自动优化', exact=True).click()
     task_id = response.value.json()['task_id']

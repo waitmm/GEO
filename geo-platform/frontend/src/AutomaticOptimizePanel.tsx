@@ -32,6 +32,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
   const [readError, setReadError] = useState("");
   const [authOpen, setAuthOpen] = useState(false);
   const [deliveries, setDeliveries] = useState<any[]>([]);
+  const [copiedVersion, setCopiedVersion] = useState<string>();
   const [form] = Form.useForm();
   const alive = useRef(true);
   const sequence = useRef(0);
@@ -143,7 +144,12 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           <Descriptions.Item label="新建 / 更新判断">{delivery.output.asset_resolution.reason}</Descriptions.Item>
           <Descriptions.Item label="文本检查">{delivery.output.automatic_qa.status === "READY" ? "通过当前文本检查" : "需要修正"}</Descriptions.Item>
         </Descriptions>
-        <Space wrap><Button icon={<Copy size={16} />} onClick={() => navigator.clipboard.writeText(delivery.output.publication_draft.body_markdown).then(() => message.success("正文已复制")).catch(() => message.error("复制失败，请检查浏览器权限"))}>复制完整正文</Button>
+        <Space wrap><Button icon={<Copy size={16} />} onClick={() => {
+          setCopiedVersion(undefined);
+          void navigator.clipboard.writeText(delivery.output.publication_draft.body_markdown)
+            .then(() => setCopiedVersion(delivery.result_version)).catch(() => message.error("复制失败，请检查浏览器权限"));
+        }}>复制完整正文</Button>
+          {copiedVersion === delivery.result_version && <Typography.Text role="status">正文已复制</Typography.Text>}
           <DeliveryEvidence key={`evidence:${delivery.result_version}`} frozen={delivery.output.delivery_input} resultVersion={delivery.result_version}
             officialFacts={delivery.output.generation_receipt?.official_facts} />
           <ManuscriptEditor key={delivery.result_version} delivery={delivery} taskId={task!.task_id} projectId={projectId} promptId={promptId}

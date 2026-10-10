@@ -84,3 +84,14 @@ def test_task_reading_view_has_same_identity_dependencies_and_status_as_ledger()
     rows = [line for line in text.splitlines() if line.startswith('| T')]
     expected = [f"| {t['id']} | {t['milestone']} | {t['title']} | {t['owner_role']} | {','.join(t['depends_on']) or '无'} | {t['status']} |" for t in tasks]
     assert rows == expected
+
+
+def test_acceptance_reading_view_matches_canonical_case_statuses():
+    import json
+    from pathlib import Path
+    docs = Path(__file__).resolve().parents[2] / 'docs/geo-v1.0'
+    cases = json.loads((docs / 'acceptance_cases.json').read_text())['cases']
+    text = (docs / '17_验收矩阵.md').read_text()
+    actual = [line.split('|')[1:5] for line in text.splitlines() if line.startswith('| AC-')]
+    assert [[value.strip() for value in row] for row in actual] == [
+        [c['id'], c['name'], '、'.join(c['requirements']), c['status']] for c in cases]

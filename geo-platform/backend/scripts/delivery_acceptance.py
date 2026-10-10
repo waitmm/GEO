@@ -111,7 +111,8 @@ def main() -> int:
     ]
     if not args.coverage_only and not args.skip_browser:
         commands.extend(('backend', [sys.executable, 'scripts/delivery_browser_check.py', *mode])
-                        for mode in [[], ['--observe'], ['--optimize'], ['--optimize', '--official-facts']])
+                        for mode in [[], ['--observe'], ['--optimize'], ['--optimize', '--official-facts'],
+                                     ['--optimize', '--brand-context']])
     for directory, command in commands:
         log = out / f'command-{len(report["commands"])+1}.log'
         started = datetime.now(timezone.utc)

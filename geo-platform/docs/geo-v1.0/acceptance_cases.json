@@ -49,6 +49,9 @@
     },
     {
       "id": "AC-BRD-04",
+      "automated_checks": [
+        "tests.test_delivery_context::test_context_update_preserves_frozen_delivery_and_reuses_unaffected_computation"
+      ],
       "module": "BRD",
       "name": "历史配置",
       "given": "已有分析绑定配置 V1",

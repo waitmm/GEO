@@ -247,6 +247,24 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     from test_automatic_delivery import simulated_delivery_transport
     analysis = fixture['analysis']
     official = bool(fixture.get('official_snapshot_id'))
+    with_context = '--brand-context' in sys.argv
+    context_versions = []
+    context_texts = ['短链工具选题背景：优先解释团队交接时需要核对的问题。',
+                     '短链工具选题背景：优先解释采购前需要核对的问题。']
+    unrelated_context = '办公室搬迁安排由行政另行通知。'
+    analysis_url = f'{origin}/?v2_project=1&v2_prompt=44&v2_analysis={analysis.analysis_id}'
+    def save_context_in_browser(index):
+        page.get_by_role('menuitem', name='品牌资料', exact=True).click()
+        page.get_by_label('资料标题', exact=True).fill(f'内部选题资料 {index + 1}')
+        page.get_by_label('品牌资料正文', exact=True).fill(context_texts[index] + '\n\n' + unrelated_context)
+        with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/brand-contexts')) as saved:
+            page.get_by_role('button', name='保存新资料版本', exact=True).click()
+        assert saved.value.ok
+        context_versions.append(saved.value.json())
+        expect(page.get_by_text(f'版本 {index + 1} · 内部选题资料 {index + 1}', exact=True)).to_be_visible()
+    if with_context:
+        page.goto(analysis_url)
+        save_context_in_browser(0)
     initial_requests = 6 if official else 4
     slow_reads = []
     def delayed_first_read(route):
@@ -263,7 +281,7 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     context_route = f'{origin}/api/v2/projects/1/brand-contexts'
     page.route(context_route, lambda route: route.fulfill(status=503, content_type='application/json',
         body='{"detail":"隔离验收：品牌资料暂不可读"}'))
-    page.goto(f'{origin}/?v2_project=1&v2_prompt=44&v2_analysis={analysis.analysis_id}')
+    page.goto(analysis_url)
     panel = page.get_by_role('region', name='自动优化交付')
     expect(panel.get_by_role('button', name='开始自动优化', exact=True)).to_be_enabled(timeout=15000)
     assert len(slow_reads) == 1
@@ -274,9 +292,16 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     panel.get_by_role('button', name='刷新品牌资料版本', exact=True).click()
     expect(panel.get_by_role('combobox', name='补充品牌资料版本', exact=True)).to_be_enabled()
     expect(panel.get_by_text('品牌资料读取失败', exact=True)).to_have_count(0)
+    if with_context:
+        panel.get_by_role('combobox', name='补充品牌资料版本', exact=True).click()
+        page.get_by_text('资料版本 1 · 内部选题资料 1', exact=True).click()
     with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/optimization-tasks')) as response:
         panel.get_by_role('button', name='开始自动优化', exact=True).click()
     task_id = response.value.json()['task_id']
+    if with_context:
+        assert response.value.json()['brand_context_version_id'] == context_versions[0]['context_version_id']
+        save_context_in_browser(1)
+        page.goto(analysis_url)
     expect(panel.get_by_role('button', name='开始自动优化', exact=True)).to_be_disabled()
     execute_task(task_id, session_factory=Session)  # CACHE_ONLY, never external.
     expect(panel.get_by_role('button', name='授权本任务模型调用')).to_be_visible(timeout=15000)
@@ -329,6 +354,12 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
     expect(panel.get_by_text('选用工具前的核对顺序', exact=False)).to_be_visible()
     assert len(calls) == initial_requests
+    if with_context:
+        writer = next(c for c in calls if 'public_evidence' in c)
+        assert writer['internal_context']['context_version_id'] == context_versions[0]['context_version_id']
+        assert [p['text'] for p in writer['internal_context']['passages']] == [context_texts[0]]
+        assert context_texts[1] not in json.dumps(calls, ensure_ascii=False)
+        assert unrelated_context not in json.dumps(calls, ensure_ascii=False)
     page.reload()
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
     persisted = page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{task_id}/deliveries?project_id=1&prompt_id=44')
@@ -354,6 +385,16 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     evidence.get_by_role('button', name='定位完整回答', exact=True).click()
     expect(evidence.locator('mark')).to_have_text(frozen['selected_evidence'][0]['answer_unit']['raw_text'])
     evidence.get_by_role('tab', name='品牌资料', exact=True).click()
+    if with_context:
+        expect(evidence.get_by_text('内部选题资料 1 · 资料版本 1', exact=True)).to_be_visible()
+        expect(evidence.get_by_text(context_texts[0], exact=True)).to_be_visible()
+        expect(evidence.get_by_text(context_texts[1], exact=True)).to_have_count(0)
+        expect(evidence.get_by_text(unrelated_context, exact=True)).to_have_count(0)
+        expect(evidence.get_by_text('用户提供的内部资料，未独立核实，不自动成为公开事实', exact=True)).to_be_visible()
+        assert context_texts[0] not in expected_body
+        accessibility_check(page, out, report, 'basic-context-390')
+        page.screenshot(path=str(out / 'basic-context-390.png'), full_page=True)
+        report['screenshots'].append('basic-context-390.png')
     if official:
         facts = persisted.json()[0]['output']['generation_receipt']['official_facts']
         assert len(facts['accepted']) == 1
@@ -481,6 +522,10 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
 
     if official:
         report['verified'].append('SYNTHETIC_OFFICIAL_SOURCE_CLAIM_CHECK_RECEIPT_UI_NO_HUMAN_REVIEW')
+    if with_context:
+        report['verified'].extend(['UI_BASIC_CONTEXT_VERSION_SAVE_AND_SELECT',
+            'NEW_CONTEXT_DOES_NOT_REPLACE_QUEUED_TASK_INPUT', 'ONLY_RELEVANT_CONTEXT_IN_WRITER',
+            'FROZEN_CONTEXT_VISIBLE_AFTER_REFRESH_NOT_PUBLIC_FACT'])
 
 
 def main():

@@ -12,7 +12,7 @@ type FrozenInput = {
   prompt_text: string; answers: FrozenAnswer[]; selected_evidence: Evidence[];
   raw_result_version: string; answer_result_version: string; contribution_result_version?: string;
   brand: { brand_name: string }; truths: { product_truth_id: number; capability_label: string; public_use_eligibility: string; source_reference: string }[];
-  brand_context?: { context_version_id?: string; title?: string; passages?: { passage_id: string; text: string; source_reference: string }[] };
+  brand_context?: { context_version_id?: string; version_number?: number; title?: string; passages?: { passage_id: string; text: string; source_reference: string }[] };
 };
 const paragraphStyle = { whiteSpace: "pre-wrap" as const, overflowWrap: "anywhere" as const };
 
@@ -116,7 +116,8 @@ export function DeliveryEvidence({ frozen, resultVersion, officialFacts }: { fro
           <Typography.Title level={5}>补充上下文</Typography.Title>
           {!context?.passages?.length ? <Typography.Paragraph>未选择相关补充资料。</Typography.Paragraph> : <>
             <Alert type="warning" message="用户提供的内部资料，未独立核实，不自动成为公开事实" />
-            <Typography.Paragraph>{context.title} · {context.context_version_id}</Typography.Paragraph>
+            <Typography.Paragraph>{context.title}{context.version_number ? ` · 资料版本 ${context.version_number}` : ""}</Typography.Paragraph>
+            <Collapse size="small" items={[{ key: "context-version", label: "资料版本标识", children: context.context_version_id }]} />
             {context.passages.map(passage => <section key={passage.passage_id}>
               <Typography.Paragraph style={paragraphStyle}>{passage.text}</Typography.Paragraph>
               <SourceLink value={passage.source_reference} />

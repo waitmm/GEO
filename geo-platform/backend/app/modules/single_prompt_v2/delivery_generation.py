@@ -284,19 +284,22 @@ def revalidate_generated_draft(frozen: dict, saved: dict) -> dict:
     return expected["qa"]
 
 
-def generate_and_check(frozen: dict, *, client, db=None, on_stage: Callable[[str], None] | None = None) -> dict:
+def generate_and_check(frozen: dict, *, client, db=None, on_stage: Callable[[str], None] | None = None,
+                       official_facts: dict | None = None, regeneration_identity: dict | None = None) -> dict:
     """Bounded official checks plus draft/QA. Caller owns authorization and audit."""
     from .delivery_facts import compute_attestations
-    official_facts = None
-    if frozen.get('official_source_materials'):
+    if frozen.get('official_source_materials') and regeneration_identity is None:
         if on_stage:
             on_stage('TRUTH')
         official_facts = compute_attestations(frozen, client=client, db=db)
     inputs = generation_input(frozen, official_facts)
+    payload = {key: value for key, value in inputs.items() if key != 'official_fact_receipt'}
+    if regeneration_identity is not None:
+        payload['explicit_regeneration'] = {key: regeneration_identity[key] for key in ('task_id', 'input_hash')}
     if on_stage:
         on_stage("DRAFT")
     draft = client.structured_generate_sync(system_prompt=WRITER_PROMPT,
-        user_payload={key: value for key, value in inputs.items() if key != 'official_fact_receipt'},
+        user_payload=payload,
         response_schema=DraftResponse, prompt_version=GENERATION_VERSION, schema_version=GENERATION_VERSION,
         max_tokens=MAX_OUTPUT_TOKENS, strict_json=True, structured_output_mode="JSON_SCHEMA", db=db,
         response_validator=lambda value: admit_draft(value, inputs))

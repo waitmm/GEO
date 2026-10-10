@@ -115,7 +115,8 @@ def task_view(row: SinglePromptOptimizationTask) -> dict:
     progress = loads(row.progress_json, {})
     requests = progress.get("requests") or []
     return {"task_id": row.task_id, "project_id": row.project_id, "prompt_id": row.prompt_id,
-        "task_kind": "TEXT_REVISION" if inputs.get("delivery_revision") else "AUTOMATIC_OPTIMIZE",
+        "task_kind": ("TEXT_REGENERATION" if (inputs.get("delivery_revision") or {}).get("contract_version") == "delivery_text_regeneration.v1"
+            else "TEXT_REVISION" if inputs.get("delivery_revision") else "AUTOMATIC_OPTIMIZE"),
         "pending_draft": (inputs.get("delivery_revision") or {}).get("draft"),
         "analysis_id": row.analysis_id, "context_id": row.context_id, "input_hash": row.input_hash,
         "status": row.status, "revision": row.revision, "stage": progress.get("stage"),
@@ -238,8 +239,11 @@ def authorize_task(db: Session, row: SinglePromptOptimizationTask, *, expected_r
                    authorized_by: str) -> SinglePromptOptimizationTask:
     if row.status in TERMINAL or row.status == "RUNNING" or row.input_hash != input_hash:
         raise HTTPException(409, "任务不可授权或输入已变化")
-    if loads(row.input_json, {}).get("delivery_revision") and max_requests != 1:
-        raise HTTPException(422, "正文修改只允许一次文本复检请求，不重新生成或重试")
+    revision = loads(row.input_json, {}).get("delivery_revision")
+    if revision:
+        regenerate = revision.get("contract_version") == "delivery_text_regeneration.v1"
+        if (regenerate and max_requests > 2) or (not regenerate and max_requests != 1):
+            raise HTTPException(422, "重新生成最多两次请求；正文修改只允许一次文本复检请求，不自动重试")
     validate_authorization(max_requests=max_requests, max_tokens=max_tokens, max_cost_cny=max_cost_cny,
         conservative_cny_per_million_tokens=conservative_cny_per_million_tokens, pricing_source=pricing_source,
         pricing_checked_at=pricing_checked_at, authorized_by=authorized_by)
@@ -280,9 +284,13 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
         progress = loads(active.progress_json, {})
         requests = progress.setdefault("requests", [])
         if inputs.get("delivery_revision"):
-            from .delivery_generation import QA_VERSION
-            if requests or identity.get("prompt_version") != QA_VERSION or progress.get("stage") != "TEXT_QA":
-                raise SemanticLLMError("TEXT_REVISION_QA_ONLY_ONE_REQUEST")
+            from .delivery_generation import GENERATION_VERSION, QA_VERSION
+            regenerate = inputs["delivery_revision"].get("contract_version") == "delivery_text_regeneration.v1"
+            allowed = {QA_VERSION: "TEXT_QA", **({GENERATION_VERSION: "DRAFT"} if regenerate else {})}
+            if (identity.get("prompt_version") not in allowed
+                    or progress.get("stage") != allowed[identity["prompt_version"]]
+                    or any(r.get("prompt_version") == identity.get("prompt_version") for r in requests)):
+                raise SemanticLLMError("TEXT_TASK_ONLY_ONE_REQUEST_PER_ALLOWED_STAGE")
         if any(r.get("provider_payload_hash") == identity.get("provider_payload_hash") for r in requests):
             raise SemanticLLMError("OPTIMIZATION_INPUT_ALREADY_REQUESTED_NO_AUTOMATIC_RETRY")
         if (identity["provider"] != inputs["provider"] or identity["requested_model_alias"] != inputs["requested_model"]
@@ -377,8 +385,9 @@ def execute_task(task_id: str, *, session_factory) -> None:
         row = db.query(SinglePromptOptimizationTask).filter_by(task_id=task_id).one()
         require_task(db, task_id, row.project_id, row.prompt_id)
         fixed = loads(row.input_json, {})
-        from .delivery_revision import revision_computation_contracts
-        expected_contracts = revision_computation_contracts() if fixed.get('delivery_revision') else computation_contracts()
+        from .delivery_revision import revision_computation_contracts, REGENERATION_CONTRACT
+        expected_contracts = (revision_computation_contracts(regenerate=fixed['delivery_revision']['contract_version'] == REGENERATION_CONTRACT)
+            if fixed.get('delivery_revision') else computation_contracts())
         if fixed.get("computation_contracts") != expected_contracts:
             raise HTTPException(409, "模型或计算契约已变化，需要针对新身份显式建立任务；旧任务不会偷偷换规则")
         context = db.query(SinglePromptAnalysisContext).filter_by(context_id=row.context_id).one()

@@ -45,7 +45,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     revise_diagnosis_result,
 )
 from app.modules.single_prompt_v2.schemas import (
-    AutomaticOptimizationCreate, AutomaticOptimizationAction, AutomaticOptimizationAuthorization, AutomaticDraftRevisionCreate,
+    AutomaticOptimizationCreate, AutomaticOptimizationAction, AutomaticOptimizationAuthorization, AutomaticDraftRevisionCreate, AutomaticDraftRegenerationCreate,
     SinglePromptAnalysisCreate,
     SinglePromptAutomaticStrategyCreate,
     SinglePromptRunRetryCreate,
@@ -192,6 +192,19 @@ def queue_draft_revision(task_id: str, payload: AutomaticDraftRevisionCreate,
     from .automatic_delivery import task_view
     from app.core.release_access import principal
     row, created = create_revision_task(db, parent_task_id=task_id, **payload.model_dump(), editor=principal(request)["name"])
+    if not created:
+        response.status_code = 200
+    return task_view(row)
+
+
+@router.post("/optimization-tasks/{task_id}/draft-regenerations", status_code=201)
+def queue_draft_regeneration(task_id: str, payload: AutomaticDraftRegenerationCreate,
+                             request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
+    from .delivery_revision import create_revision_task
+    from .automatic_delivery import task_view
+    from app.core.release_access import principal
+    row, created = create_revision_task(db, parent_task_id=task_id, **payload.model_dump(),
+        editor=principal(request)["name"], regenerate=True)
     if not created:
         response.status_code = 200
     return task_view(row)

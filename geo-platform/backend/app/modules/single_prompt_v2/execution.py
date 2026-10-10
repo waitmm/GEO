@@ -1314,10 +1314,18 @@ def generate_complete_execution_deliverable(
     generation_progress: Any | None = None,
     submitted_draft: dict | None = None,
     revision_identity: dict | None = None,
+    regeneration_identity: dict | None = None,
 ) -> tuple[SinglePromptExecutionProposalResult, bool]:
     proposal = db.query(SinglePromptExecutionProposal).filter_by(proposal_id=proposal_id).one_or_none()
-    if submitted_draft is not None:
-        if generation_client is None or not revision_identity or not revision_identity.get("task_id"):
+    text_task = submitted_draft is not None or regeneration_identity is not None
+    if submitted_draft is not None and regeneration_identity is not None:
+        raise HTTPException(422, "正文修改和重新生成不能混合执行")
+    identity = regeneration_identity if regeneration_identity is not None else revision_identity
+    marker_key = "text_regeneration" if regeneration_identity is not None else "text_revision"
+    marker = (regeneration_identity if regeneration_identity is not None else
+        {**(revision_identity or {}), "submitted_draft_hash": digest(submitted_draft)})
+    if text_task:
+        if generation_client is None or not identity or not identity.get("task_id"):
             raise HTTPException(422, "正文修改必须由明确的复检任务执行")
         bound_base = db.query(SinglePromptExecutionProposalResult).filter_by(
             proposal_id=proposal_id, result_version=base_result_version, output_hash=base_result_hash,
@@ -1330,7 +1338,7 @@ def generate_complete_execution_deliverable(
             proposal_id=proposal_id, parent_result_version=base_result_version,
         ):
             previous = loads(saved.output_json, {})
-            if previous.get("text_revision") == {**revision_identity, "submitted_draft_hash": digest(submitted_draft)}:
+            if previous.get(marker_key) == marker:
                 if digest(previous) != saved.output_hash:
                     raise HTTPException(409, "正文复检结果 hash 不匹配")
                 _generated_qa(previous, previous["delivery_input"])
@@ -1346,7 +1354,7 @@ def generate_complete_execution_deliverable(
         raise HTTPException(status_code=409, detail="执行方案交付目标已变化，请重新加载")
     base_output = loads(base.output_json, {})
     if (
-        submitted_draft is None
+        not text_task
         and
         base_output.get("deliverable_contract_version") == EXECUTION_DELIVERABLE_VERSION
         and base_output.get("deliverable_implementation_version") == EXECUTION_DELIVERABLE_IMPLEMENTATION_VERSION
@@ -1362,17 +1370,24 @@ def generate_complete_execution_deliverable(
         frozen = _freeze_delivery_input(db, snapshot, prior_result=base)
     snapshot["delivery_input"] = copy.deepcopy(frozen)
     snapshot["delivery_input_hash"] = digest(frozen)
-    output = copy.deepcopy(base_output) if submitted_draft is not None else _compile_machine_delivery(proposal_id, snapshot)
+    if text_task:
+        _generated_qa(base_output, frozen)
+    output = copy.deepcopy(base_output) if text_task else _compile_machine_delivery(proposal_id, snapshot)
     initial_calls = int(getattr(generation_client, "external_call_count", 0))
     if generation_client is not None:
         receipt = (check_submitted_draft(frozen, submitted_draft, client=generation_client, db=db, on_stage=generation_progress,
                        official_facts=(base_output.get('generation_receipt') or {}).get('official_facts'))
-            if submitted_draft is not None else generate_and_check(frozen, client=generation_client, db=db, on_stage=generation_progress))
+            if submitted_draft is not None else generate_and_check(frozen, client=generation_client, db=db, on_stage=generation_progress,
+                official_facts=(base_output.get('generation_receipt') or {}).get('official_facts') if regeneration_identity is not None else None,
+                regeneration_identity=regeneration_identity))
         output = _attach_generated_delivery(output, receipt, snapshot)
-    if submitted_draft is not None:
-        output["text_revision"] = {**revision_identity, "submitted_draft_hash": digest(submitted_draft)}
+    if text_task:
+        output.pop("text_revision", None)
+        output.pop("text_regeneration", None)
+        output[marker_key] = marker
     output["system_revision"] = {
-        "reason": "USER_TEXT_REVISION_AND_NEW_QA" if submitted_draft is not None else "FROZEN_INPUT_GROUNDED_DELIVERY_AND_TEXT_QA",
+        "reason": ("EXPLICIT_TEXT_REGENERATION_AND_QA" if regeneration_identity is not None else
+            "USER_TEXT_REVISION_AND_NEW_QA" if submitted_draft is not None else "FROZEN_INPUT_GROUNDED_DELIVERY_AND_TEXT_QA"),
         "base_result_version": base_result_version,
         "external_calls": max(0, int(getattr(generation_client, "external_call_count", 0)) - initial_calls),
         "source_refetches": 0,

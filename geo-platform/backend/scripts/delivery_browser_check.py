@@ -20,6 +20,17 @@ def accessibility_check(page, out, report, name):
         document.getAnimations().every(a => a.playState !== 'running' ||
             a.playbackRate === 0 || !Number.isFinite(a.effect.getComputedTiming().endTime))
     """, timeout=10000)
+    trigger = page.locator('.side-nav.ant-layout-sider-collapsed .ant-layout-sider-zero-width-trigger')
+    if page.viewport_size['width'] < 768 and trigger.count() and trigger.is_visible():
+        header_box = page.locator('.app-shell .topbar').bounding_box()
+        button_box = trigger.bounding_box()
+        assert header_box and button_box
+        assert header_box['y'] <= button_box['y'] and (
+            button_box['y'] + button_box['height'] <= header_box['y'] + header_box['height']
+        ), ('Mobile navigation overlays content outside header', header_box, button_box)
+        report.setdefault('navigation_geometry_checks', []).append({
+            'page': name, 'scroll_y': page.evaluate('window.scrollY'),
+            'header': header_box, 'trigger': button_box})
     page.add_script_tag(path=str(ROOT / 'frontend/node_modules/axe-core/axe.min.js'))
     result = page.evaluate("""async () => await axe.run(document, {
         runOnly: {type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']}
@@ -45,6 +56,56 @@ def accessibility_check(page, out, report, name):
             node.evaluate('(el) => { el.scrollLeft = 0; }')
             horizontal += 1
     report['accessibility'][-1]['keyboard_horizontal_tables_checked'] = horizontal
+
+
+def access_check(page, origin, fixture, out, report):
+    from scripts.release_upgrade_check import business_fingerprint
+    page.goto(origin + '/')
+    expect(page.get_by_role('heading', name='GEO 项目登录')).to_be_visible()
+    assert page.request.get(origin + '/api/projects').status == 401
+    expect(page.locator('body')).not_to_contain_text('FORBIDDEN_PROJECT_TITLE')
+    page.get_by_label('访问凭证', exact=True).fill('incorrect-credential-0123456789-0123456789')
+    page.get_by_role('button', name='登录', exact=True).press('Enter')
+    expect(page.get_by_text('访问凭证无效', exact=True)).to_be_visible()
+    for width in [1440, 390]:
+        page.set_viewport_size({'width': width, 'height': 1000})
+        accessibility_check(page, out, report, f'login-error-{width}')
+        name = f'login-error-{width}.png'
+        page.screenshot(path=str(out / name), full_page=True)
+        report['screenshots'].append(name)
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+    page.set_viewport_size({'width': 1440, 'height': 1000})
+    page.get_by_label('访问凭证', exact=True).fill(fixture['access_key'])
+    page.get_by_role('button', name='登录', exact=True).press('Enter')
+    expect(page.get_by_role('button', name='退出登录', exact=True)).to_be_visible()
+    expect(page.get_by_role('combobox', name='当前项目', exact=True)).to_be_visible()
+    assert [v['id'] for v in page.request.get(origin + '/api/projects').json()] == [1]
+    page.reload()
+    expect(page.get_by_role('button', name='退出登录', exact=True)).to_be_visible()
+    page.goto(origin + '/?release_view=brandContext&v2_project=2')
+    expect(page.get_by_role('button', name='退出登录', exact=True)).to_be_visible()
+    expect(page.locator('body')).not_to_contain_text('FORBIDDEN_PROJECT_TITLE')
+    assert page.request.get(origin + '/api/v2/projects/2/brand-contexts').status == 403
+    page.get_by_role('button', name='退出登录', exact=True).click()
+    expect(page.get_by_role('heading', name='GEO 项目登录')).to_be_visible()
+    expect(page.get_by_role('combobox', name='当前项目', exact=True)).to_have_count(0)
+    assert page.request.get(origin + '/api/projects').status == 401
+    page.get_by_label('访问凭证', exact=True).fill(fixture['access_key'])
+    page.get_by_role('button', name='登录', exact=True).press('Enter')
+    expect(page.get_by_role('button', name='退出登录', exact=True)).to_be_visible()
+    fixture['account']['enabled'] = False
+    fixture['access_path'].write_text(json.dumps({'accounts': [fixture['account']]}))
+    page.reload()
+    expect(page.get_by_role('heading', name='GEO 项目登录')).to_be_visible()
+    expect(page.get_by_role('combobox', name='当前项目', exact=True)).to_have_count(0)
+    assert page.request.get(origin + '/api/projects').status == 401
+    accessibility_check(page, out, report, 'revoked-session')
+    report['verified'] = ['UNAUTHENTICATED_NO_DATA', 'INVALID_KEY_VISIBLE', 'KEYBOARD_LOGIN',
+        'SCOPED_PROJECT_LIST', 'REFRESH_SESSION', 'FOREIGN_DEEP_LINK_NO_DATA',
+        'LOGOUT_REMOVES_OLD_APP', 'REVOKED_SESSION_REMOVES_OLD_APP', 'BUSINESS_TABLES_UNCHANGED']
+    assert business_fingerprint(out / 'isolated.db') == fixture['business_before']
+    assert not report['errors'], report['errors']
+    report['status'] = 'PASS_ISOLATED_INVITATION_NOT_REMOTE_TLS_DEPLOYMENT'
 
 
 def observation_check(page, origin, fixture, out, report):
@@ -75,7 +136,9 @@ def observation_check(page, origin, fixture, out, report):
         control = page.get_by_role('combobox', name=label, exact=True)
         control.press('ArrowDown')
         expect(control).to_have_attribute('aria-expanded', 'true')
-        active = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-active')
+        dropdown = page.locator('.ant-select-dropdown').filter(visible=True)
+        expect(dropdown).to_have_count(1)
+        active = dropdown.locator('.ant-select-item-option-active')
         expect(active).to_have_count(1)
         for _ in range(2):
             if re.match(rf'^Runs {run_id} ·', active.inner_text()):
@@ -110,13 +173,17 @@ def observation_check(page, origin, fixture, out, report):
     for label, run_id in [('基线范围', fixture['comparison_run_id']), ('对照范围', fixture['baseline_run_id'])]:
         control = page.get_by_role('combobox', name=label, exact=True)
         control.press('ArrowDown')
-        active = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-active')
+        dropdown = page.locator('.ant-select-dropdown').filter(visible=True)
+        expect(dropdown).to_have_count(1)
+        active = dropdown.locator('.ant-select-item-option-active')
         for _ in range(2):
             if re.match(rf'^Runs {run_id} ·', active.inner_text()):
                 break
             control.press('ArrowDown')
         expect(active).to_contain_text(f'Runs {run_id} ·')
         control.press('Enter')
+        expect(control).to_have_attribute('aria-expanded', 'false')
+        expect(page.locator('.ant-select-dropdown').filter(visible=True)).to_have_count(0)
     with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/observation-comparisons')) as response:
         page.get_by_role('button', name='生成变化比较', exact=True).click()
     negative = response.value.json()
@@ -376,14 +443,16 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         assert claim['source_span'] in payload['untrusted_source_passage']
         return {'claims': [claim]}
     def official_draft(payload):
-        fact = next(e for e in payload['public_evidence'] if e.get('attribution_prefix'))
-        return {'sections': [{'heading': '选用工具前的核对顺序', 'blocks': [
-            {'kind': 'INSTRUCTION', 'text': '先核对使用场景和设备范围，再按服务说明验证处理结果。', 'evidence_ids': []},
-            {'kind': 'TARGET_STATEMENT', 'text': fact['text'], 'evidence_ids': [fact['evidence_id']]}]}]}
+        blocks = [{'kind': 'INSTRUCTION', 'text': ('记录检查结果，再核对不同处理方式的适用条件。'
+            if payload.get('explicit_regeneration') else '先核对使用场景和设备范围，再按服务说明验证处理结果。'), 'evidence_ids': []}]
+        if official:
+            fact = next(e for e in payload['public_evidence'] if e.get('attribution_prefix'))
+            blocks.append({'kind': 'TARGET_STATEMENT', 'text': fact['text'], 'evidence_ids': [fact['evidence_id']]})
+        return {'sections': [{'heading': '选用工具前的核对顺序', 'blocks': blocks}]}
     calls = simulated_delivery_transport(monkeypatch, qa_response=manuscript_qa, citation_response=citation_with_one_grounded_binding,
         source_response=official_claim if official else None,
         fact_response=(lambda payload: {'checks': [approved(c['claim_id']) for c in payload['claims']]}) if official else None,
-        draft_response=official_draft if official else None)
+        draft_response=official_draft)
     execute_task(task_id, session_factory=Session)
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
     expect(panel.get_by_text('选用工具前的核对顺序', exact=False)).to_be_visible()
@@ -460,6 +529,19 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     copy_button.press('Enter')
     expect(page.get_by_text('正文已复制', exact=True)).to_be_visible()
     assert page.evaluate('navigator.clipboard.readText()') == expected_body
+    download_button = panel.get_by_role('button', name='导出 Markdown', exact=True)
+    download_button.focus()
+    with page.expect_download() as saved_download:
+        download_button.press('Enter')
+    download = saved_download.value
+    assert download.suggested_filename.endswith('.md')
+    exported = out / 'exported-manuscript.md'
+    download.save_as(exported)
+    assert exported.read_bytes() == expected_body.encode('utf-8')
+    expect(panel.get_by_text('正文下载已发起', exact=True)).to_be_visible()
+    from hashlib import sha256
+    report['manuscript_export'] = {'filename': download.suggested_filename,
+        'hash': sha256(exported.read_bytes()).hexdigest(), 'matches_saved_body': True}
     expect(panel.get_by_text('已记录 token', exact=True)).to_be_visible()
     details = page.locator('.v2-advanced-details')
     expect(details).to_have_count(3)
@@ -520,6 +602,39 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
     panel.get_by_text(re.compile(r'^质量问题与实际修复')).click()
     expect(panel.get_by_role('cell', name='已删除不成立陈述', exact=True)).to_be_visible()
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/draft-regenerations')) as response:
+        panel.get_by_role('button', name='重新生成正文', exact=True).click()
+    regenerated_task = response.value.json()['task_id']
+    assert response.value.status == 201
+    execute_task(regenerated_task, session_factory=Session)
+    assert len(calls) == initial_requests + 1
+    page.reload()
+    expect(panel.get_by_text('正文重新生成：保留原稿，沿用冻结分析与证据，仅生成和检查新正文', exact=True)).to_be_visible()
+    expect(panel.get_by_role('button', name='复制完整正文')).to_have_count(0)
+    panel.get_by_role('button', name='授权本任务模型调用').click()
+    auth = page.get_by_role('dialog', name='本任务独立调用授权')
+    for label, value in [('请求次数上限', '2'), ('总 token 上限', '200000'), ('人民币硬预算', '2'),
+            ('输入 / 输出每百万 token 的较高保守单价（人民币）', '10'),
+            ('已核实计费依据', '隔离工程模拟价格，不是真实调用授权'),
+            ('计费核实日期', datetime.utcnow().date().isoformat())]:
+        auth.get_by_label(label, exact=True).fill(value)
+    auth.get_by_role('button', name='确认授权并继续', exact=True).click()
+    expect(auth).not_to_be_visible()
+    execute_task(regenerated_task, session_factory=Session)
+    expect(panel.get_by_role('button', name='复制完整正文')).to_be_visible(timeout=15000)
+    assert len(calls) == initial_requests + 3
+    assert calls[-2]['explicit_regeneration']['task_id'] == regenerated_task and 'segments' in calls[-1]
+    regenerated = page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{regenerated_task}/deliveries?project_id=1&prompt_id=44').json()[0]
+    assert regenerated['result_version'] != new_delivery['result_version']
+    assert regenerated['output']['delivery_input'] == new_delivery['output']['delivery_input']
+    assert regenerated['output']['automatic_qa']['repairs'] == []
+    assert '记录检查结果' in regenerated['output']['publication_draft']['body_markdown']
+    if official:
+        assert regenerated['output']['generation_receipt']['official_facts'] == facts
+    assert page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{revised_task}/deliveries?project_id=1&prompt_id=44').json()[0] == new_delivery
+    page.reload()
+    expect(panel.get_by_role('article', name='完整稿件正文', exact=True)).to_contain_text(
+        '记录检查结果，再核对不同处理方式的适用条件。', timeout=15000)
     for width in [1440, 1024, 390]:
         page.set_viewport_size({'width': width, 'height': 1000})
         panel.scroll_into_view_if_needed()
@@ -553,8 +668,10 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         'EXPLICIT_BUDGET_AUTHORIZATION', 'WORKER_EXISTING_STAGE_CHAIN', 'ACTUAL_DRAFT_AND_QA_READ',
         'REFRESH_PRESERVES_EXACT_RESULT', 'SLOW_POLL_DOES_NOT_STARVE', 'ACTUAL_QA_EMPTY_REPAIRS', 'ADVANCED_AUDIT_OPT_IN',
         'KEYBOARD_COPY_EXACT_SAVED_BODY_NO_AUDIT_METADATA',
+        'KEYBOARD_DOWNLOAD_EXACT_SAVED_UTF8_BODY_NO_AUDIT_METADATA',
         'EDIT_SAVED_PENDING_WITHOUT_OLD_QUALIFICATION', 'ONE_QA_ONLY_NO_ANSWER_OR_CITATION_RECOMPUTE',
         'EDIT_REPAIR_NEW_VERSION_AND_OLD_RESULT_IMMUTABLE',
+        'EXPLICIT_REGENERATION_ONLY_WRITER_AND_QA_NEW_BUDGET_OLD_RESULTS_PRESERVED',
         'LATE_ANALYSIS_RESPONSE_CANNOT_RESTORE_OLD_PROJECT', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
         simulated_provider_requests=len(calls), not_verified=['REAL_MODEL_QUALITY', 'REAL_SAMPLING', 'REAL_SOURCE_FETCH'],
         task_id=task_id, status='PASS_SCOPED_SIMULATED_INTEGRATION_NOT_REAL_MODEL')
@@ -586,7 +703,7 @@ def main():
     (out / 'migration.log').write_text(migration.stdout + migration.stderr)
     migration.check_returncode()
     fixture = None
-    if '--optimize' in sys.argv or '--observe' in sys.argv:
+    if any(mode in sys.argv for mode in ['--optimize', '--observe', '--access']):
         sys.path.insert(0, str(ROOT / 'backend'))
         sys.path.insert(0, str(ROOT / 'backend/tests'))
         from pytest import MonkeyPatch
@@ -600,7 +717,22 @@ def main():
         event.listen(engine, 'connect', _set_sqlite_pragma)
         Session = sessionmaker(bind=engine, expire_on_commit=False)
         with Session() as db:
-            if '--optimize' in sys.argv:
+            if '--access' in sys.argv:
+                from hashlib import sha256
+                from app.models import Project
+                from scripts.release_upgrade_check import business_fingerprint
+                _seed_frozen_analysis(db, reference_urls=[])
+                db.add(Project(id=2, organization_id=1, name='FORBIDDEN_PROJECT_TITLE', brand_name='FORBIDDEN_BRAND'))
+                db.commit()
+                key = 'isolated-browser-invitation-not-a-real-key-0123456789'
+                account = {'name': '隔离审核员', 'key_sha256': sha256(key.encode()).hexdigest(), 'project_ids': [1]}
+                access = out / 'isolated-access.json'
+                access.write_text(json.dumps({'accounts': [account]}))
+                access.chmod(0o600)
+                env['GEO_RELEASE_ACCESS_CONFIG'] = str(access)
+                fixture = {'access_key': key, 'account': account, 'access_path': access,
+                    'business_before': business_fingerprint(out / 'isolated.db')}
+            elif '--optimize' in sys.argv:
                 fixture = _seed_citation_contribution_fixture(db, monkeypatch, out, reviewed=False)
                 if '--official-facts' in sys.argv:
                     from test_delivery_official_facts import seed_isolated_official_source
@@ -668,7 +800,9 @@ def main():
             origin = f'http://127.0.0.1:{port}'
             page.goto(origin + '/')
             if fixture:
-                if '--observe' in sys.argv:
+                if '--access' in sys.argv:
+                    access_check(page, origin, fixture, out, report)
+                elif '--observe' in sys.argv:
                     observation_check(page, f'http://127.0.0.1:{port}', fixture, out, report)
                 else:
                     automatic_check(page, f'http://127.0.0.1:{port}', fixture, Session, monkeypatch, out, report)
@@ -724,13 +858,27 @@ def main():
             page.get_by_role('button', name='确认删除', exact=True).click()
             expect(page.get_by_role('cell', name='误建且未使用的问题', exact=True)).to_have_count(0)
             page.get_by_role('menuitem', name='品牌资料', exact=True).click()
+            dialogs = []
+            page.on('dialog', lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
+            page.add_init_script('window.__geoUntrustedExecuted = 0;')
+            page.evaluate('window.__geoUntrustedExecuted = 0')
+            context_text = ('测试过滤器提供过滤器维护资料，具体清洗条件应按型号确认。'
+                '<img data-geo-injected="true" src=x onerror="window.__geoUntrustedExecuted=1">'
+                '<script data-geo-injected="true">window.__geoUntrustedExecuted=1</script>'
+                '[伪链接](javascript:alert(1))')
             page.get_by_label('资料标题', exact=True).fill('隔离品牌说明')
-            page.get_by_label('品牌资料正文', exact=True).fill('测试过滤器提供过滤器维护资料，具体清洗条件应按型号确认。')
-            page.get_by_label('资料出处或维护说明', exact=True).fill('本地工程测试，不是真实品牌证据')
+            page.get_by_label('品牌资料正文', exact=True).fill(context_text)
+            page.get_by_label('资料出处或维护说明', exact=True).fill('javascript:alert(1)')
             page.get_by_role('button', name='保存新资料版本', exact=True).click()
             expect(page.get_by_text('版本 1 · 隔离品牌说明', exact=True)).to_be_visible()
-            page.reload()
-            expect(page.get_by_text('版本 1 · 隔离品牌说明', exact=True)).to_be_visible()
+            for reload in [False, True]:
+                if reload:
+                    page.reload()
+                page.get_by_text('版本 1 · 隔离品牌说明', exact=True).click()
+                expect(page.get_by_text(context_text, exact=True)).to_be_visible()
+                expect(page.locator('[data-geo-injected], a[href^="javascript:"]')).to_have_count(0)
+                assert page.evaluate('window.__geoUntrustedExecuted') == 0 and not dialogs
+            report['untrusted_context_rendering'] = 'LITERAL_BEFORE_AND_AFTER_RELOAD_NO_SCRIPT_OR_JAVASCRIPT_LINK'
             page.get_by_role('menuitem', name='Monitor · 监测', exact=True).click()
             page.get_by_text('持续采样计划', exact=True).click()
             page.get_by_label('采样授权说明', exact=True).fill('仅离线工程验证，worker不启动，不允许外部请求')

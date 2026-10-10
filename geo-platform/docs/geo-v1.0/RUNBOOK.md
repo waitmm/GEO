@@ -69,6 +69,8 @@ API 也可直接提供构建后的首页。一个 worker 处理采样计划及�
 - worker 独占启动后恢复中断状态；API 重启不抢占任务。先看准确任务和错误阶段，再恢复未完成部分。
 - 预算、请求预留和完整响应 artifact 持久化。未知用量必须核实，不能按0计费、重启重置额度或自动重复请求。
 - 模型别名可能由供应商改指向新版本。授权和审计记录 requested/effective/response model、计费依据和日期；需要改变已授权模型范围时停止相应调用。
+- 2026-10-10 公开文档核对：[DeepSeek更新记录](https://api-docs.deepseek.com/updates/)说明旧`deepseek-v4-flash`已由V4.1-Flash提供服务，正式请求ID为`deepseek-flash`。这是供应商声明，不是本批实际响应身份；本批尚未调用，不能沿用旧结果的模型质量结论。已在待授权范围明确实际版本，未静默修改配置。
+- 同日[官方人民币价格表](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)所列Flash高峰价：缓存命中输入0.04、未命中输入2、输出8元/百万token。验收待授权方案使用10元/百万token保守预占、累计300万token/30元硬上限，不依赖低峰优惠，不冒充账单实扣；执行前仍需核对有效日期与供应商身份。
 - 验证码、登录失效及独立会话失败停止相关采样，不绕过访问限制。正文不可读保留引用观察，禁止自动WAIVE。
 - API/worker 日志不要公开；正文、模型完整响应、截图及 trace 作为受控 artifact 保存，不提交 Git。
 

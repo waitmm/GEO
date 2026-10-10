@@ -919,6 +919,9 @@
     },
     {
       "id": "AC-COR-02",
+      "automated_checks": [
+        "tests.test_delivery_truth_update::test_truth_update_keeps_old_delivery_and_reuses_answer_citation"
+      ],
       "module": "COR",
       "name": "局部事实修改",
       "given": "仅一条 Truth 发生改变",
@@ -929,7 +932,7 @@
         "COR-003"
       ],
       "status": "NOT_RUN",
-      "evidence": ""
+      "evidence": "Component only: recovery-access-20261010/pytest.xml verifies a new explicit synthetic Truth snapshot, unchanged old result and Answer/Citation cache reuse; legal-zero direction does not consume unrelated Truth. Related-action correction UI remains unverified, so NOT_RUN retained."
     },
     {
       "id": "AC-COR-03",
@@ -978,7 +981,9 @@
       "id": "AC-OPS-02",
       "automated_checks": [
         "tests.test_release_access::test_invitation_scope_revocation_and_logout",
-        "tests.test_release_first_slice::test_release_run_selection_combines_tasks_and_rejects_cross_project_runs"
+        "tests.test_release_first_slice::test_release_run_selection_combines_tasks_and_rejects_cross_project_runs",
+        "tests.test_release_object_access::test_every_release_business_route_requires_project_permission_before_database",
+        "tests.test_release_object_access::test_foreign_object_ids_cannot_be_disguised_as_authorized_project"
       ],
       "module": "OPS",
       "name": "跨项目访问",
@@ -989,13 +994,14 @@
         "OPS-002"
       ],
       "status": "PARTIAL",
-      "evidence": "PARTIAL: invitation/revocation/cross-project negative tests pass; complete object route attack surface pending."
+      "evidence": "PARTIAL: recovery-access-20261010/pytest.xml exercises every registered business route permission dependency and foreign-object GET/write paths; browser-20261010T043450Z verifies real isolated login, logout, revocation, deep-link denial and unchanged business tables. Not a remote TLS deployment or exhaustive security audit."
     },
     {
       "id": "AC-OPS-03",
       "automated_checks": [
         "tests.test_automatic_delivery::test_stage_restart_preserves_exact_objects_budget_and_cached_draft",
         "tests.test_release_worker_lifecycle::test_exclusive_worker_and_readonly_health",
+        "tests.test_release_worker_lifecycle::test_actual_process_crash_restart_and_explicit_resume_preserve_scope_and_budget",
         "tests.test_automatic_delivery::test_interruption_requires_explicit_recovery_and_keeps_budget"
       ],
       "module": "OPS",
@@ -1007,7 +1013,7 @@
         "OPS-001"
       ],
       "status": "PARTIAL",
-      "evidence": "PARTIAL: 2026-10-10 automatic task suite16 passed, including isolated interruptions at CITATION/DRAFT/TEXT_QA with fresh DB sessions, unchanged object identities/budget, writer cache recovery and no duplicate successful result. This is simulated transport and worker-exit injection, not a real remote-call interruption/reconciliation acceptance."
+      "evidence": "PARTIAL: prior16 stage-boundary regressions plus worker-process-fix-20261010/pytest.xml (2 passed) and actual OS child crash at persisted ANSWER, restart to INTERRUPTED, explicit resume to WAITING_AUTHORIZATION, idle replay with unchanged business tables/identities/budget. Network is denied in the child; no real remote-call interruption/reconciliation acceptance."
     },
     {
       "id": "AC-OPS-04",

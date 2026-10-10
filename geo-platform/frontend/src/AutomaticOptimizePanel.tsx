@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App as AntApp, Button, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Table, Tag, Tooltip, Typography } from "antd";
-import { Copy, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
+import { Copy, Download, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { SupplementalSources } from "./SupplementalSources";
 import { ManuscriptEditor } from "./ManuscriptEditor";
 import { DeliveryEvidence } from "./DeliveryEvidence";
 import { ManuscriptPreview } from "./ManuscriptPreview";
+import { downloadManuscript } from "./manuscriptExport";
 
 type Task = {
   task_kind: string; pending_draft?: { sections: { heading: string; blocks: { text: string }[] }[] };
@@ -36,6 +37,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
   const [authOpen, setAuthOpen] = useState(false);
   const [deliveries, setDeliveries] = useState<any[]>([]);
   const [copiedVersion, setCopiedVersion] = useState<string>();
+  const [exportedVersion, setExportedVersion] = useState<string>();
   const [form] = Form.useForm();
   const alive = useRef(true);
   const sequence = useRef(0);
@@ -90,6 +92,18 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
     } catch (e) { if (alive.current) setError((e as Error).message); }
     finally { if (alive.current) setBusy(false); }
   }
+  async function regenerate(delivery: any) {
+    setBusy(true); setError("");
+    try {
+      const saved = await request<Task>(`${base}/optimization-tasks/${encodeURIComponent(task!.task_id)}/draft-regenerations`, {
+        method: "POST", body: JSON.stringify({ project_id: projectId, prompt_id: promptId,
+          proposal_id: delivery.proposal_id, result_version: delivery.result_version, result_hash: delivery.result_hash,
+          idempotency_key: `regenerate:${crypto.randomUUID()}` }) });
+      if (alive.current) { ++sequence.current; setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); }
+      await refresh();
+    } catch (e) { if (alive.current) setError((e as Error).message); }
+    finally { if (alive.current) setBusy(false); }
+  }
   function href(delivery: any) {
     const o = task!.objects;
     const params = new URLSearchParams({ v2_project: String(projectId), v2_prompt: String(promptId), v2_analysis: analysisId,
@@ -120,11 +134,12 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
       {tasks.length > 1 && <Select aria-label="优化任务版本" value={task?.task_id} onChange={setSelected} style={{ width: "100%", marginTop: 12 }} options={tasks.map((t, i) => ({ value: t.task_id, label: `任务 ${tasks.length - i} · ${statuses[t.status] || t.status} · Run ${t.scope.join("、")}` }))} />}
       {task && <>
         {task.task_kind === "TEXT_REVISION" && <Alert type="info" message="正文修改复检：沿用原始分析与证据，只检查本次修改稿" />}
+        {task.task_kind === "TEXT_REGENERATION" && <Alert type="info" message="正文重新生成：保留原稿，沿用冻结分析与证据，仅生成和检查新正文" />}
         <Steps size="small" responsive current={task.stage === "COMPLETE" ? stages.length : Math.max(0, stages.findIndex(s => s.key === task.stage))} items={stages.map(s => ({ title: s.title }))} style={{ margin: "20px 0" }} />
         {task.blocker_detail && <Alert type="warning" showIcon message={statuses[task.status]} description={task.blocker_detail} />}
         <Descriptions size="small" column={{ xs: 1, md: 3 }}>
           <Descriptions.Item label="固定样本">{task.scope.map(r => `Run #${r}`).join("、")}</Descriptions.Item>
-          {task.task_kind !== "TEXT_REVISION" && <Descriptions.Item label="本任务冻结资料">{task.brand_context_label}；额外公开资料 {task.supplemental_source_count} 份</Descriptions.Item>}
+          <Descriptions.Item label="本任务冻结资料">{task.brand_context_label}；额外公开资料 {task.supplemental_source_count} 份</Descriptions.Item>
           <Descriptions.Item label="模型请求 / 缓存">{task.usage.external_requests} / {task.usage.cache_hits}</Descriptions.Item>
           <Descriptions.Item label="预算预占上界">¥{task.usage.reserved_cost_cny.toFixed(4)} / ¥{task.authorization.max_cost_cny}</Descriptions.Item>
           <Descriptions.Item label="已记录 token">{task.usage.actual_tokens}</Descriptions.Item>
@@ -157,10 +172,21 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
             .then(() => setCopiedVersion(delivery.result_version)).catch(() => message.error("复制失败，请检查浏览器权限"));
         }}>复制完整正文</Button>
           {copiedVersion === delivery.result_version && <Typography.Text role="status">正文已复制</Typography.Text>}
+          <Button icon={<Download size={16} />} onClick={() => {
+            setExportedVersion(undefined);
+            try {
+              downloadManuscript(delivery.output.publication_draft.title, delivery.result_version,
+                delivery.output.publication_draft.body_markdown);
+              setExportedVersion(delivery.result_version);
+            } catch { message.error("正文导出未完成，请检查当前稿件或浏览器下载权限"); }
+          }}>导出 Markdown</Button>
+          {exportedVersion === delivery.result_version && <Typography.Text role="status">正文下载已发起</Typography.Text>}
           <DeliveryEvidence key={`evidence:${delivery.result_version}`} frozen={delivery.output.delivery_input} resultVersion={delivery.result_version}
             officialFacts={delivery.output.generation_receipt?.official_facts} />
           <ManuscriptEditor key={delivery.result_version} delivery={delivery} taskId={task!.task_id} projectId={projectId} promptId={promptId}
             onQueued={saved => { ++sequence.current; setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />
+          <Button icon={<RefreshCw size={16} />} loading={busy} disabled={!!active}
+            onClick={() => void regenerate(delivery)}>重新生成正文</Button>
           <Button href={href(delivery)}>方案详情与可选发布记录</Button></Space>
         <ManuscriptPreview output={delivery.output} />
         <Collapse items={[{ key: "qa", label: `质量问题与实际修复（${delivery.output.automatic_qa.findings.length}）`, children: <>
@@ -176,9 +202,10 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
     </>}
     <Modal title="本任务独立调用授权" open={authOpen} onCancel={() => setAuthOpen(false)} footer={null} destroyOnHidden>
       <Alert type="warning" showIcon message="失败请求计入预算；自动重试为 0。刷新、恢复和新结果不重置额度。" />
-      {task?.task_kind !== "TEXT_REVISION" && <Typography.Paragraph>范围包括本任务的回答、引用分析、合格官方资料的主张提取与核实、正文生成及文本检查；不包含其他项目或重新采样。</Typography.Paragraph>}
+      {task?.task_kind === "TEXT_REGENERATION" ? <Typography.Paragraph>本次只允许正文生成和文本检查各最多一次；不重新计算回答、引用或品牌事实，不继承旧任务额度。</Typography.Paragraph>
+        : task?.task_kind !== "TEXT_REVISION" && <Typography.Paragraph>范围包括本任务的回答、引用分析、合格官方资料的主张提取与核实、正文生成及文本检查；不包含其他项目或重新采样。</Typography.Paragraph>}
       <Form form={form} layout="vertical" onFinish={v => void mutate("authorization", v)} style={{ marginTop: 16 }}>
-        <Form.Item label="请求次数上限" name="max_requests" rules={[{ required: true }]}><InputNumber min={1} max={task?.task_kind === "TEXT_REVISION" ? 1 : 1000} precision={0} /></Form.Item>
+        <Form.Item label="请求次数上限" name="max_requests" rules={[{ required: true }]}><InputNumber min={1} max={task?.task_kind === "TEXT_REVISION" ? 1 : task?.task_kind === "TEXT_REGENERATION" ? 2 : 1000} precision={0} /></Form.Item>
         <Form.Item label="总 token 上限" name="max_tokens" rules={[{ required: true }]}><InputNumber min={1} max={10000000} precision={0} /></Form.Item>
         <Form.Item label="人民币硬预算" name="max_cost_cny" rules={[{ required: true }]}><InputNumber min={0.01} max={1000} precision={2} /></Form.Item>
         <Form.Item label="输入 / 输出每百万 token 的较高保守单价（人民币）" name="conservative_cny_per_million_tokens" rules={[{ required: true }]}><InputNumber min={0.01} max={1000} /></Form.Item>

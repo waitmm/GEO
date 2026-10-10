@@ -9,6 +9,7 @@ import sys
 import time
 from contextlib import ExitStack
 from urllib.request import build_opener, ProxyHandler
+from urllib.parse import quote
 
 from playwright.sync_api import sync_playwright, expect
 
@@ -609,7 +610,7 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     execute_task(regenerated_task, session_factory=Session)
     assert len(calls) == initial_requests + 1
     page.reload()
-    expect(panel.get_by_text('正文重新生成：保留原稿，沿用冻结分析与证据，仅生成和检查新正文', exact=True)).to_be_visible()
+    expect(panel.get_by_text('正文重新生成：保留原稿，沿用冻结分析与证据，仅生成和检查新正文', exact=True)).to_be_visible(timeout=15000)
     expect(panel.get_by_role('button', name='复制完整正文')).to_have_count(0)
     panel.get_by_role('button', name='授权本任务模型调用').click()
     auth = page.get_by_role('dialog', name='本任务独立调用授权')
@@ -635,6 +636,24 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     page.reload()
     expect(panel.get_by_role('article', name='完整稿件正文', exact=True)).to_contain_text(
         '记录检查结果，再核对不同处理方式的适用条件。', timeout=15000)
+    # Historical selection must survive refresh; missing identities cannot fall back.
+    chooser = panel.get_by_role('combobox', name='优化任务版本', exact=True)
+    chooser.press('ArrowDown')
+    page.locator('.ant-select-dropdown').filter(visible=True).get_by_text(re.compile(r'^任务 1 ·')).click()
+    expect(page).to_have_url(re.compile(r'optimization_task=' + task_id))
+    exact_link = panel.get_by_role('link', name='方案详情与可选发布记录', exact=True)
+    expect(exact_link).to_have_attribute('href', re.compile(re.escape(quote(persisted.json()[0]['result_version'], safe=''))))
+    page.reload()
+    expect(exact_link).to_have_attribute('href', re.compile(re.escape(quote(persisted.json()[0]['result_version'], safe=''))), timeout=15000)
+    report['historical_version_refresh'] = {'task_id': task_id, 'result_version': persisted.json()[0]['result_version'], 'preserved': True}
+    page.goto(f'{origin}/?v2_project=1&v2_prompt=44&v2_analysis={analysis.analysis_id}&optimization_task=missing-task')
+    expect(panel.get_by_text('当前链接未匹配本分析的自动任务', exact=True)).to_be_visible(timeout=15000)
+    expect(panel.get_by_role('article', name='完整稿件正文', exact=True)).to_have_count(0)
+    expect(panel.get_by_role('button', name='复制完整正文', exact=True)).to_have_count(0)
+    chooser.press('ArrowDown')
+    page.locator('.ant-select-dropdown').filter(visible=True).get_by_text(re.compile(r'^任务 3 ·')).click()
+    expect(panel.get_by_role('article', name='完整稿件正文', exact=True)).to_contain_text('记录检查结果', timeout=15000)
+    expect(page).to_have_url(re.compile(r'optimization_task=' + regenerated_task))
     for width in [1440, 1024, 390]:
         page.set_viewport_size({'width': width, 'height': 1000})
         panel.scroll_into_view_if_needed()
@@ -672,6 +691,7 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         'EDIT_SAVED_PENDING_WITHOUT_OLD_QUALIFICATION', 'ONE_QA_ONLY_NO_ANSWER_OR_CITATION_RECOMPUTE',
         'EDIT_REPAIR_NEW_VERSION_AND_OLD_RESULT_IMMUTABLE',
         'EXPLICIT_REGENERATION_ONLY_WRITER_AND_QA_NEW_BUDGET_OLD_RESULTS_PRESERVED',
+        'EXACT_HISTORICAL_TASK_SURVIVES_REFRESH_NO_MISSING_ID_FALLBACK',
         'LATE_ANALYSIS_RESPONSE_CANNOT_RESTORE_OLD_PROJECT', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
         simulated_provider_requests=len(calls), not_verified=['REAL_MODEL_QUALITY', 'REAL_SAMPLING', 'REAL_SOURCE_FETCH'],
         task_id=task_id, status='PASS_SCOPED_SIMULATED_INTEGRATION_NOT_REAL_MODEL')

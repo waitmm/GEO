@@ -8,6 +8,8 @@ import { ManuscriptEditor } from "./ManuscriptEditor";
 import { DeliveryEvidence } from "./DeliveryEvidence";
 import { ManuscriptPreview } from "./ManuscriptPreview";
 import { downloadManuscript } from "./manuscriptExport";
+import { readOptimizationSelection, resolveOptimizationSelection } from "./optimizationSelection";
+import type { OptimizationSelection } from "./optimizationSelection";
 
 type Task = {
   task_kind: string; pending_draft?: { sections: { heading: string; blocks: { text: string }[] }[] };
@@ -25,7 +27,8 @@ const assetNames: Record<string, string> = { HELP_DOC: "帮助文档", FEATURE_P
 export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHash, completion }: { projectId: number; promptId: number; analysisId: string; rawHash: string; completion?: { manifest_id: string; payload_hash: string; version_number: number } | null }) {
   const { message } = AntApp.useApp();
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [selected, setSelected] = useState<string>();
+  const [selected, setSelected] = useState<OptimizationSelection>(() => readOptimizationSelection(window.location.search, analysisId));
+  const selectedRef = useRef(selected);
   const [contextVersion, setContextVersion] = useState<string>();
   const [supplementalSourceIds, setSupplementalSourceIds] = useState<string[]>([]);
   const [fetchAllowed, setFetchAllowed] = useState(false);
@@ -35,29 +38,42 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
   const [error, setError] = useState("");
   const [readError, setReadError] = useState("");
   const [authOpen, setAuthOpen] = useState(false);
-  const [deliveries, setDeliveries] = useState<any[]>([]);
+  const [loadedDeliveries, setLoadedDeliveries] = useState<{ taskId: string; rows: any[] }>();
   const [copiedVersion, setCopiedVersion] = useState<string>();
   const [exportedVersion, setExportedVersion] = useState<string>();
   const [form] = Form.useForm();
   const alive = useRef(true);
   const sequence = useRef(0);
   const readInFlight = useRef(false);
-  const task = tasks.find(t => t.task_id === selected) || tasks[0];
+  const task = resolveOptimizationSelection(tasks, selected);
+  const deliveries = loadedDeliveries?.taskId === task?.task_id ? loadedDeliveries?.rows || [] : [];
   const query = `project_id=${projectId}&prompt_id=${promptId}`;
   const base = "/api/v2/single-prompt";
+  const selectTask = useCallback((taskId: string) => {
+    const choice: OptimizationSelection = { kind: "TASK", taskId };
+    selectedRef.current = choice; setSelected(choice);
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("v2_analysis") === analysisId) {
+      params.set("optimization_task", taskId);
+      window.history.replaceState(null, "", `${window.location.pathname}?${params}${window.location.hash}`);
+    }
+  }, [analysisId]);
   const refresh = useCallback(async () => {
     if (readInFlight.current) return;
     readInFlight.current = true;
     const seq = ++sequence.current;
     try {
       const rows = await request<Task[]>(`${base}/analyses/${encodeURIComponent(analysisId)}/optimization-tasks?project_id=${projectId}&prompt_id=${promptId}`);
-      if (alive.current && seq === sequence.current) { setTasks(rows); setReadError(""); }
+      if (alive.current && seq === sequence.current) {
+        setTasks(rows); setReadError("");
+        if (!selectedRef.current && rows.length) selectTask(rows[0].task_id);
+      }
     } catch (e) { if (alive.current && seq === sequence.current) setReadError((e as Error).message); }
     finally {
       readInFlight.current = false;
       if (alive.current && seq === sequence.current) setInitial(false);
     }
-  }, [analysisId, projectId, promptId]);
+  }, [analysisId, projectId, promptId, selectTask]);
   useEffect(() => {
     alive.current = true; void refresh();
     const timer = window.setInterval(() => void refresh(), 3000);
@@ -65,11 +81,11 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
   }, [refresh]);
   const resultKey = JSON.stringify(task?.objects.deliveries || []);
   useEffect(() => {
-    setDeliveries([]);
+    setLoadedDeliveries(undefined);
     if (!task?.task_id || resultKey === "[]") return;
     const c = new AbortController();
     request<any[]>(`${base}/optimization-tasks/${encodeURIComponent(task.task_id)}/deliveries?${query}`, { signal: c.signal })
-      .then(rows => { if (!c.signal.aborted) setDeliveries(rows); })
+      .then(rows => { if (!c.signal.aborted) setLoadedDeliveries({ taskId: task.task_id, rows }); })
       .catch(e => { if (!c.signal.aborted) setError(e.message); });
     return () => c.abort();
   }, [task?.task_id, resultKey, query]);
@@ -87,7 +103,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
       const uri = action === "create" ? `${base}/analyses/${encodeURIComponent(analysisId)}/optimization-tasks`
         : `${base}/optimization-tasks/${encodeURIComponent(task!.task_id)}/${action}`;
       const saved = await request<Task>(uri, { method: "POST", body: JSON.stringify(value) });
-      if (alive.current) { ++sequence.current; setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); setAuthOpen(false); }
+      if (alive.current) { ++sequence.current; selectTask(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); setAuthOpen(false); }
       await refresh();
     } catch (e) { if (alive.current) setError((e as Error).message); }
     finally { if (alive.current) setBusy(false); }
@@ -99,14 +115,14 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
         method: "POST", body: JSON.stringify({ project_id: projectId, prompt_id: promptId,
           proposal_id: delivery.proposal_id, result_version: delivery.result_version, result_hash: delivery.result_hash,
           idempotency_key: `regenerate:${crypto.randomUUID()}` }) });
-      if (alive.current) { ++sequence.current; setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); }
+      if (alive.current) { ++sequence.current; selectTask(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); }
       await refresh();
     } catch (e) { if (alive.current) setError((e as Error).message); }
     finally { if (alive.current) setBusy(false); }
   }
   function href(delivery: any) {
     const o = task!.objects;
-    const params = new URLSearchParams({ v2_project: String(projectId), v2_prompt: String(promptId), v2_analysis: analysisId,
+    const params = new URLSearchParams({ v2_project: String(projectId), v2_prompt: String(promptId), v2_analysis: analysisId, optimization_task: task!.task_id,
       v2_diagnosis: o.diagnosis_id, v2_diagnosis_result: o.answer_result_version, v2_strategy: o.strategy_id,
       v2_strategy_result: o.strategy_result_version, v2_execution_proposal: delivery.proposal_id, v2_execution_result: delivery.result_version });
     return `${window.location.pathname}?${params}#v2-execution`;
@@ -131,7 +147,8 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           {task && <Tag color={active ? "processing" : task.status.startsWith("COMPLETED") ? "success" : "default"}>{statuses[task.status] || "状态待核对"}</Tag>}
         </Space>
       </Space>
-      {tasks.length > 1 && <Select aria-label="优化任务版本" value={task?.task_id} onChange={setSelected} style={{ width: "100%", marginTop: 12 }} options={tasks.map((t, i) => ({ value: t.task_id, label: `任务 ${tasks.length - i} · ${statuses[t.status] || t.status} · Run ${t.scope.join("、")}` }))} />}
+      {selected && !task && !readError && <Alert type="warning" showIcon message="当前链接未匹配本分析的自动任务" description="未替换为其他稿件。可重新选择任务；旧入口保存的稿件仍可在原方案详情中查看。" />}
+      {tasks.length > 0 && <Select aria-label="优化任务版本" value={task?.task_id} onChange={selectTask} placeholder="选择当前分析的任务" style={{ width: "100%", marginTop: 12 }} options={tasks.map((t, i) => ({ value: t.task_id, label: `任务 ${tasks.length - i} · ${statuses[t.status] || t.status} · Run ${t.scope.join("、")}` }))} />}
       {task && <>
         {task.task_kind === "TEXT_REVISION" && <Alert type="info" message="正文修改复检：沿用原始分析与证据，只检查本次修改稿" />}
         {task.task_kind === "TEXT_REGENERATION" && <Alert type="info" message="正文重新生成：保留原稿，沿用冻结分析与证据，仅生成和检查新正文" />}
@@ -184,7 +201,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           <DeliveryEvidence key={`evidence:${delivery.result_version}`} frozen={delivery.output.delivery_input} resultVersion={delivery.result_version}
             officialFacts={delivery.output.generation_receipt?.official_facts} />
           <ManuscriptEditor key={delivery.result_version} delivery={delivery} taskId={task!.task_id} projectId={projectId} promptId={promptId}
-            onQueued={saved => { ++sequence.current; setSelected(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />
+            onQueued={saved => { if (!alive.current) return; ++sequence.current; selectTask(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />
           <Button icon={<RefreshCw size={16} />} loading={busy} disabled={!!active}
             onClick={() => void regenerate(delivery)}>重新生成正文</Button>
           <Button href={href(delivery)}>方案详情与可选发布记录</Button></Space>

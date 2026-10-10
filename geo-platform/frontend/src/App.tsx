@@ -1880,6 +1880,7 @@ export default function App() {
 
   function persistV2Identity(status: SinglePromptV2Status) {
     const params = new URLSearchParams(window.location.search);
+    if (params.get("v2_analysis") !== status.analysis.analysis_id) params.delete("optimization_task");
     params.set("v2_analysis", status.analysis.analysis_id);
     params.set("v2_project", String(status.analysis.project_id));
     params.set("v2_prompt", String(status.analysis.prompt_id));
@@ -2115,6 +2116,7 @@ export default function App() {
       params.set("v2_project", String(status.analysis.project_id));
       params.set("v2_prompt", String(status.analysis.prompt_id));
       params.set("v2_analysis", status.analysis.analysis_id);
+      params.delete("optimization_task");
       params.delete("v2_diagnosis");
       params.delete("v2_diagnosis_result");
       params.delete("v2_contribution");
@@ -2150,7 +2152,7 @@ export default function App() {
   function showV2AnalysisHistory() {
     invalidateV2Reads();
     const params = new URLSearchParams(window.location.search);
-    ["v2_analysis", "v2_diagnosis", "v2_diagnosis_result", "v2_contribution", "v2_strategy", "v2_strategy_result", "v2_execution", "v2_execution_proposal", "v2_execution_result", "v2_retest"].forEach((key) => params.delete(key));
+    ["v2_analysis", "optimization_task", "v2_diagnosis", "v2_diagnosis_result", "v2_contribution", "v2_strategy", "v2_strategy_result", "v2_execution", "v2_execution_proposal", "v2_execution_result", "v2_retest"].forEach((key) => params.delete(key));
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
     setV2Analysis(null);
     setV2SourcePreparation(null);

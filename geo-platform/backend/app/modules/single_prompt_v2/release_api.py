@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.core.release_database import ReleaseSessionLocal, get_release_db
+from app.core.release_access import authenticated_actor
 from app.modules.single_prompt_v2.execution import (
     confirm_execution_proposal,
     create_execution_proposal,
@@ -366,6 +367,7 @@ def authorize_citation_contribution_execution(
     analysis_id: str,
     contribution_id: str,
     payload: SinglePromptCitationContributionAuthorizationCreate,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     get_citation_contribution_status(
@@ -388,7 +390,7 @@ def authorize_citation_contribution_execution(
         max_budget_cny=payload.max_budget_cny,
         cost_upper_bound_cny=payload.cost_upper_bound_cny,
         pricing_basis=payload.pricing_basis,
-        authorized_by=payload.authorized_by,
+        authorized_by=actor,
     )
     return get_citation_contribution_status(
         db,
@@ -405,6 +407,7 @@ def review_citation_contribution(
     contribution_id: str,
     result_version: str,
     payload: SinglePromptCitationContributionReviewCreate,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     get_citation_contribution_status(
@@ -425,7 +428,7 @@ def review_citation_contribution(
         calibration_sample_identity=payload.calibration_sample_identity,
         binding_census_hash=payload.binding_census_hash,
         human_review_set_hash=payload.human_review_set_hash,
-        reviewer=payload.reviewer,
+        reviewer=actor,
         decisions=[item.model_dump() for item in payload.decisions],
         missed_bindings=[item.model_dump() for item in payload.missed_bindings],
         note=payload.note,
@@ -553,14 +556,15 @@ def retry_collection(analysis_id: str, project_id: int, prompt_id: int, db: Sess
 
 
 @router.post("/analyses/{analysis_id}/source-preparation", status_code=201)
-def start_source_preparation(analysis_id: str, payload: SinglePromptSourcePreparationCreate, response: Response, db: Session = Depends(get_db)) -> dict:
+def start_source_preparation(analysis_id: str, payload: SinglePromptSourcePreparationCreate, response: Response,
+                             actor: str = Depends(authenticated_actor), db: Session = Depends(get_db)) -> dict:
     preparation, created = create_source_preparation(
         db,
         analysis_id=analysis_id,
         project_id=payload.project_id,
         prompt_id=payload.prompt_id,
         idempotency_key=payload.idempotency_key,
-        created_by=payload.created_by,
+        created_by=actor,
     )
     if not created:
         response.status_code = 200
@@ -600,6 +604,7 @@ def start_source_auto_fetch(preparation_id: str, payload: SinglePromptSourceAuto
 def reuse_source_completion(
     preparation_id: str,
     payload: SinglePromptSourceReuseCreate,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     reuse_completed_sources(
@@ -609,13 +614,14 @@ def reuse_source_completion(
         prompt_id=payload.prompt_id,
         source_completion_manifest_id=payload.source_completion_manifest_id,
         source_completion_manifest_hash=payload.source_completion_manifest_hash,
-        reused_by=payload.reused_by,
+        reused_by=actor,
     )
     return get_source_preparation_status(db, preparation_id=preparation_id)
 
 
 @router.post("/source-preparations/{preparation_id}/manual-content")
-def submit_source_manual_content(preparation_id: str, payload: SinglePromptManualSourceContentCreate, db: Session = Depends(get_db)) -> dict:
+def submit_source_manual_content(preparation_id: str, payload: SinglePromptManualSourceContentCreate,
+                                 actor: str = Depends(authenticated_actor), db: Session = Depends(get_db)) -> dict:
     _require_preparation_scope(get_source_preparation_status(db, preparation_id=preparation_id), payload.project_id, payload.prompt_id)
     submit_manual_content(
         db,
@@ -627,13 +633,14 @@ def submit_source_manual_content(preparation_id: str, payload: SinglePromptManua
         input_format=payload.input_format,
         raw_html=payload.raw_html,
         coverage_scope=payload.coverage_scope,
-        submitted_by=payload.submitted_by,
+        submitted_by=actor,
     )
     return get_source_preparation_status(db, preparation_id=preparation_id)
 
 
 @router.post("/source-preparations/{preparation_id}/waivers")
-def waive_prepared_source(preparation_id: str, payload: SinglePromptSourceWaiverCreate, db: Session = Depends(get_db)) -> dict:
+def waive_prepared_source(preparation_id: str, payload: SinglePromptSourceWaiverCreate,
+                          actor: str = Depends(authenticated_actor), db: Session = Depends(get_db)) -> dict:
     _require_preparation_scope(get_source_preparation_status(db, preparation_id=preparation_id), payload.project_id, payload.prompt_id)
     waive_source(
         db,
@@ -642,15 +649,16 @@ def waive_prepared_source(preparation_id: str, payload: SinglePromptSourceWaiver
         expected_row_version=payload.expected_row_version,
         reason=payload.reason,
         impact=payload.impact,
-        waived_by=payload.waived_by,
+        waived_by=actor,
     )
     return get_source_preparation_status(db, preparation_id=preparation_id)
 
 
 @router.post("/source-preparations/{preparation_id}/completion-manifests", status_code=201)
-def complete_source_preparation(preparation_id: str, payload: SinglePromptSourceCompletionCreate, db: Session = Depends(get_db)) -> dict:
+def complete_source_preparation(preparation_id: str, payload: SinglePromptSourceCompletionCreate,
+                                actor: str = Depends(authenticated_actor), db: Session = Depends(get_db)) -> dict:
     _require_preparation_scope(get_source_preparation_status(db, preparation_id=preparation_id), payload.project_id, payload.prompt_id)
-    freeze_completion_manifest(db, preparation_id=preparation_id, created_by=payload.created_by)
+    freeze_completion_manifest(db, preparation_id=preparation_id, created_by=actor)
     return get_source_preparation_status(db, preparation_id=preparation_id)
 
 
@@ -684,7 +692,8 @@ def retry_diagnosis_execution(analysis_id: str, diagnosis_id: str, project_id: i
 
 
 @router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/revisions")
-def revise_diagnosis(analysis_id: str, diagnosis_id: str, result_version: str, payload: SinglePromptDiagnosisRevisionCreate, db: Session = Depends(get_db)) -> dict:
+def revise_diagnosis(analysis_id: str, diagnosis_id: str, result_version: str, payload: SinglePromptDiagnosisRevisionCreate,
+                     actor: str = Depends(authenticated_actor), db: Session = Depends(get_db)) -> dict:
     if result_version != payload.base_result_version:
         raise HTTPException(status_code=409, detail="路径结果版本与提交版本不一致")
     read_diagnosis(analysis_id, diagnosis_id, payload.project_id, payload.prompt_id, db)
@@ -695,13 +704,14 @@ def revise_diagnosis(analysis_id: str, diagnosis_id: str, result_version: str, p
         base_result_hash=payload.base_result_hash,
         reviewable_set_hash=payload.reviewable_set_hash,
         edits=[row.model_dump() for row in payload.edits],
-        editor=payload.editor,
+        editor=actor,
     )
     return read_diagnosis(analysis_id, diagnosis_id, payload.project_id, payload.prompt_id, db)
 
 
 @router.post("/analyses/{analysis_id}/diagnoses/{diagnosis_id}/results/{result_version}/reviews")
-def review_diagnosis(analysis_id: str, diagnosis_id: str, result_version: str, payload: SinglePromptDiagnosisReviewCreate, db: Session = Depends(get_db)) -> dict:
+def review_diagnosis(analysis_id: str, diagnosis_id: str, result_version: str, payload: SinglePromptDiagnosisReviewCreate,
+                     actor: str = Depends(authenticated_actor), db: Session = Depends(get_db)) -> dict:
     read_diagnosis(analysis_id, diagnosis_id, payload.project_id, payload.prompt_id, db)
     complete_diagnosis_review(
         db,
@@ -709,7 +719,7 @@ def review_diagnosis(analysis_id: str, diagnosis_id: str, result_version: str, p
         result_version=result_version,
         result_hash=payload.result_hash,
         reviewable_set_hash=payload.reviewable_set_hash,
-        reviewer=payload.reviewer,
+        reviewer=actor,
         note=payload.note,
         decisions=payload.decisions,
     )
@@ -766,6 +776,7 @@ def create_qualification_critic(
     result_version: str,
     payload: SinglePromptQualificationCriticCreate,
     response: Response,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     execution, created = queue_qualification_critic(
@@ -779,7 +790,7 @@ def create_qualification_critic(
         idempotency_key=payload.idempotency_key,
         max_external_requests=payload.max_external_requests,
         max_total_tokens=payload.max_total_tokens,
-        authorized_by=payload.authorized_by,
+        authorized_by=actor,
     )
     if not created:
         response.status_code = 200
@@ -802,6 +813,7 @@ def create_qualification_critic_supplemental(
     result_version: str,
     payload: SinglePromptQualificationCriticSupplementalCreate,
     response: Response,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     execution, created = queue_qualification_critic_supplemental(
@@ -824,7 +836,7 @@ def create_qualification_critic_supplemental(
         max_external_requests=payload.max_external_requests,
         max_total_tokens=payload.max_total_tokens,
         max_budget_cny=payload.max_budget_cny,
-        authorized_by=payload.authorized_by,
+        authorized_by=actor,
     )
     if not created:
         response.status_code = 200
@@ -878,6 +890,7 @@ def create_qualification_critic_phase_b1_review(
     analysis_id: str,
     critic_id: str,
     payload: SinglePromptQualificationCriticGoldReviewCreate,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     return complete_critic_gold_review(
@@ -891,7 +904,7 @@ def create_qualification_critic_phase_b1_review(
         expected_reviewable_set_hash=payload.expected_reviewable_set_hash,
         expected_prior_review_id=payload.expected_prior_review_id,
         decisions=[decision.model_dump(mode="json") for decision in payload.decisions],
-        reviewer=payload.reviewer,
+        reviewer=actor,
         note=payload.note,
     )
 
@@ -992,6 +1005,7 @@ def revise_strategy(
     strategy_id: str,
     result_version: str,
     payload: SinglePromptStrategyPriorityRevisionCreate,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     get_strategy_status(
@@ -1011,7 +1025,7 @@ def revise_strategy(
         base_result_hash=payload.base_result_hash,
         reviewable_set_hash=payload.reviewable_set_hash,
         ordered_direction_ids=payload.ordered_direction_ids,
-        editor=payload.editor,
+        editor=actor,
         reason=payload.reason,
     )
     return get_strategy_status(
@@ -1031,6 +1045,7 @@ def review_strategy(
     strategy_id: str,
     result_version: str,
     payload: SinglePromptStrategyReviewCreate,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     get_strategy_status(
@@ -1048,7 +1063,7 @@ def review_strategy(
         result_hash=payload.result_hash,
         reviewable_set_hash=payload.reviewable_set_hash,
         decision=payload.decision,
-        reviewer=payload.reviewer,
+        reviewer=actor,
         note=payload.note,
     )
     return get_strategy_status(
@@ -1139,6 +1154,7 @@ def revise_execution(
     proposal_id: str,
     result_version: str,
     payload: SinglePromptExecutionProposalRevisionCreate,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     if result_version != payload.base_result_version:
@@ -1153,7 +1169,7 @@ def revise_execution(
         base_result_version=result_version,
         base_result_hash=payload.base_result_hash,
         reviewable_set_hash=payload.reviewable_set_hash,
-        editor=payload.editor,
+        editor=actor,
         edit=payload.edit,
     )
     return get_execution_proposal_status(
@@ -1205,6 +1221,7 @@ def confirm_execution(
     result_version: str,
     payload: SinglePromptExecutionConfirmationCreate,
     response: Response,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     get_execution_proposal_status(
@@ -1218,7 +1235,7 @@ def confirm_execution(
         result_hash=payload.result_hash,
         reviewable_set_hash=payload.reviewable_set_hash,
         idempotency_key=payload.idempotency_key,
-        confirmer=payload.confirmer,
+        confirmer=actor,
         note=payload.note,
     )
     if not created:
@@ -1242,6 +1259,7 @@ def record_execution_publication(
     confirmation_id: str,
     payload: SinglePromptPublicationCreate,
     response: Response,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     status = get_execution_proposal_status(
@@ -1257,7 +1275,7 @@ def record_execution_publication(
         proposal_id=proposal_id,
         idempotency_key=payload.idempotency_key,
         prior_publication_id=payload.prior_publication_id,
-        recorder=payload.recorder,
+        recorder=actor,
         report=report,
     )
     if not created:
@@ -1395,6 +1413,7 @@ def create_target_brand_truth(
     diagnosis_id: str,
     result_version: str,
     payload: SinglePromptTargetBrandTruthCreate,
+    actor: str = Depends(authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
     return record_target_brand_truth(
@@ -1412,7 +1431,7 @@ def create_target_brand_truth(
         product_truth_status=payload.product_truth_status,
         source_reference=payload.source_reference,
         note=payload.note,
-        reviewed_by=payload.reviewed_by,
+        reviewed_by=actor,
     )
 
 

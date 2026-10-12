@@ -1003,7 +1003,9 @@
         "tests.test_release_object_access::test_foreign_object_ids_cannot_be_disguised_as_authorized_project",
         "tests.test_release_execution_versions::test_execution_mutation_rejects_wrong_scope_before_any_commit",
         "tests.test_release_execution_versions::test_invited_project_cannot_mutate_foreign_proposal_by_forging_body_scope",
-        "tests.test_release_contribution_scope::test_wrong_analysis_rejected_before_authorization_or_review_commit"
+        "tests.test_release_contribution_scope::test_wrong_analysis_rejected_before_authorization_or_review_commit",
+        "tests.test_release_audit_identity::test_saved_operator_is_authenticated_identity",
+        "tests.test_release_audit_identity::test_release_audit_routes_bind_server_identity"
       ],
       "module": "OPS",
       "name": "跨项目访问",
@@ -1014,7 +1016,7 @@
         "OPS-002"
       ],
       "status": "PARTIAL",
-      "evidence": "PARTIAL: recovery-access-20261010/pytest.xml exercises every registered business route permission dependency and foreign-object GET/write paths; browser-20261010T043450Z verifies real isolated login, logout, revocation, deep-link denial and unchanged business tables. Not a remote TLS deployment or exhaustive security audit."
+      "evidence": "PARTIAL: audit-identity-regression-20261012/pytest.xml:59 checks including existing ownership tests and persisted LOCAL_ONLY/INVITATION audit actor; actor injection cannot override server identity. browser-20261012T130403Z verifies isolated login/logout/revocation/deep-link denial and unchanged business tables. browser-20261012T130841Z verifies read-only Chinese actor, actual saved revision and refresh. 0 real external calls. Not a remote TLS deployment or exhaustive security audit."
     },
     {
       "id": "AC-OPS-03",

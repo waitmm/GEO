@@ -1,5 +1,7 @@
 # GEO Platform 1.0 真实实现映射（T00）
 
+2026-10-12 审计身份增量：`release_access.authenticated_actor` 与 `single_prompt_v2/release_api.py` 的18个已有写入入口绑定实际访问主体；`AccessGate.tsx` 提供登录身份，`App.tsx` 显示只读操作人。`test_release_audit_identity.py` 验证本机/邀请账户修改及审核的真实持久化，另检查入口覆盖。复用现有访问控制与版本机制，无新主链、无历史回填。此项关闭客户端冒名审计缺陷，不代表答案归属/多维关系的完整纠错流程已实现。
+
 2026-10-10 当前增量（下列T00表保留核查时点）：BASIC资料已有正式worker与浏览器选版/更新复用验收（1cc9196）。补充公开来源新增 `supplemental_sources.py`、`SupplementalSourceAcquisition`、migration20261010_01、`SupplementalSources.tsx` 与既有worker/router接线；稿件复用原官方资料核实，不进入原引用候选。专项8、相关组合87及浏览器032308Z通过，都是隔离模拟，真实集成未验收。当前所有实现/证据以 tasks.json 和 acceptance_cases.json 为准，不再以本历史表的“未进release”判断缺少代码。
 
 检查日期：2026-09-30  

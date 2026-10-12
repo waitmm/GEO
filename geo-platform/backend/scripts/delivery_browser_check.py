@@ -715,6 +715,9 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         query['v2_execution_result'] = [regenerated['result_version']]
         page.goto(urlunsplit(parts._replace(query=urlencode(query, doseq=True))))
         expect(detail.get_by_role('button', name='保存并重新校验')).to_be_visible(timeout=15000)
+        operator = detail.get_by_role('textbox', name='执行操作者', exact=True)
+        expect(operator).to_have_value('本机操作者')
+        expect(operator).to_have_js_property('readOnly', True)
         detail.get_by_role('combobox', name='最终资产操作', exact=True).press('ArrowDown')
         page.locator('.ant-select-dropdown').filter(visible=True).get_by_text('更新已核实的页面', exact=True).click()
         for label, value in [
@@ -725,7 +728,10 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
             detail.get_by_role('textbox', name=label, exact=True).fill(value)
         detail.get_by_role('checkbox', name='确认具有该页面的编辑权限', exact=True).check()
         detail.get_by_role('checkbox', name='确认该页面适合承接当前稿件', exact=True).check()
-        detail.get_by_role('button', name='保存并重新校验').click()
+        with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/revisions')) as revision:
+            detail.get_by_role('button', name='保存并重新校验').click()
+        assert revision.value.status == 200
+        assert revision.value.json()['result']['output']['human_revision']['editor'] == 'local-owner'
         expect(page).not_to_have_url(re.compile(re.escape(quote(regenerated['result_version'], safe=''))))
         saved_asset_url = page.url
         expect(detail.get_by_role('article', name='方案详情完整正文')).to_contain_text(regenerated['output']['publication_draft']['body_markdown'])
@@ -734,6 +740,10 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         expect(detail.get_by_role('checkbox', name='确认具有该页面的编辑权限', exact=True)).to_be_checked()
         expect(detail.get_by_role('checkbox', name='确认该页面适合承接当前稿件', exact=True)).to_be_checked()
         expect(page).to_have_url(saved_asset_url)
+        expect(operator).to_have_value('本机操作者')
+        expect(operator).to_have_js_property('readOnly', True)
+        report['authenticated_operator'] = {'actor': 'local-owner', 'form_read_only': True,
+            'saved_revision_actor_matches': True, 'refresh_preserved': True}
         page.set_viewport_size({'width': 390, 'height': 1000})
         detail.get_by_role('textbox', name='已有页面 URL', exact=True).scroll_into_view_if_needed()
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')

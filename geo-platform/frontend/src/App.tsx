@@ -6,6 +6,7 @@ import {
 } from "antd";
 import { ArrowDown, ArrowRight, ArrowUp, BarChart3, Download, ExternalLink, FileText, ListChecks, Menu as MenuIcon, Monitor, Play, Plus, RefreshCw, Settings, ShieldCheck, X } from "lucide-react";
 import { api } from "./api/client";
+import { useAuthenticatedActor } from "./AccessGate";
 import { ObservationPanel } from "./ObservationPanel";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { AutomaticOptimizePanel } from "./AutomaticOptimizePanel";
@@ -1486,6 +1487,8 @@ function PromptScopeAlert({ prompt, description }: { prompt: Prompt; description
 }
 
 export default function App() {
+  const authenticatedActor = useAuthenticatedActor();
+  const authenticatedActorLabel = authenticatedActor === "local-owner" ? "本机操作者" : authenticatedActor ?? "";
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [narrowNav, setNarrowNav] = useState(false);
   useTableKeyboardScroll();
@@ -1560,7 +1563,8 @@ export default function App() {
   const [v2SourcePreparation, setV2SourcePreparation] = useState<SinglePromptV2SourcePreparation | null>(null);
   const [v2SourceRefreshing, setV2SourceRefreshing] = useState(false);
   const [v2SourceActionKey, setV2SourceActionKey] = useState<string | null>(null);
-  const [v2SourceActor, setV2SourceActor] = useState("本地审核人");
+  const [legacySourceActor, setV2SourceActor] = useState("本地审核人");
+  const v2SourceActor = RELEASE_FIRST_SLICE ? authenticatedActor ?? "" : legacySourceActor;
   const [v2SourceDrafts, setV2SourceDrafts] = useState<Record<string, V2SourceDraft>>({});
   const [v2SourceActionNotice, setV2SourceActionNotice] = useState<V2SourceActionNotice | null>(null);
   const [v2SourceFilter, setV2SourceFilter] = useState<"ACTION_REQUIRED" | "ALL" | "READY" | "WAIVED_WITH_LIMITATION">("ACTION_REQUIRED");
@@ -1569,7 +1573,8 @@ export default function App() {
   const [v2Diagnosis, setV2Diagnosis] = useState<SinglePromptV2DiagnosisStatus | null>(null);
   const [v2DiagnosisLoading, setV2DiagnosisLoading] = useState(false);
   const [v2DiagnosisEdits, setV2DiagnosisEdits] = useState<Record<string, Omit<SinglePromptV2DiagnosisEdit, "reason">>>({});
-  const [v2DiagnosisEditor, setV2DiagnosisEditor] = useState("本地审核人");
+  const [legacyDiagnosisEditor, setV2DiagnosisEditor] = useState("本地审核人");
+  const v2DiagnosisEditor = RELEASE_FIRST_SLICE ? authenticatedActor ?? "" : legacyDiagnosisEditor;
   const [v2DiagnosisEditReason, setV2DiagnosisEditReason] = useState("");
   const [v2DiagnosisRevisionError, setV2DiagnosisRevisionError] = useState<string | null>(null);
   const [v2DiagnosisReviewNote, setV2DiagnosisReviewNote] = useState("");
@@ -1577,7 +1582,8 @@ export default function App() {
   const [v2CitationContributionHistory, setV2CitationContributionHistory] = useState<SinglePromptV2CitationContributionListItem[]>([]);
   const [v2CitationContributionHistoryLoading, setV2CitationContributionHistoryLoading] = useState(false);
   const [v2CitationContributionLoading, setV2CitationContributionLoading] = useState(false);
-  const [v2CitationCalibrationReviewer, setV2CitationCalibrationReviewer] = useState("本地审核人");
+  const [legacyCalibrationReviewer, setV2CitationCalibrationReviewer] = useState("本地审核人");
+  const v2CitationCalibrationReviewer = RELEASE_FIRST_SLICE ? authenticatedActor ?? "" : legacyCalibrationReviewer;
   const [v2CitationHumanGold, setV2CitationHumanGold] = useState<Record<string, V2CitationHumanGoldDraft>>({});
   const [v2AnswerReviewDecisions, setV2AnswerReviewDecisions] = useState<Record<string, V2AnswerReviewDecision>>({});
   const [v2TruthDraft, setV2TruthDraft] = useState<V2TruthDraft>({
@@ -1592,14 +1598,16 @@ export default function App() {
   const [v2CriticGold, setV2CriticGold] = useState<SinglePromptV2QualificationCriticGoldStatus | null>(null);
   const [v2CriticGoldDrafts, setV2CriticGoldDrafts] = useState<Record<string, V2CriticGoldDraft>>({});
   const [v2CriticGoldLoading, setV2CriticGoldLoading] = useState(false);
-  const [v2CriticGoldReviewer, setV2CriticGoldReviewer] = useState("本地审核人");
+  const [legacyCriticReviewer, setV2CriticGoldReviewer] = useState("本地审核人");
+  const v2CriticGoldReviewer = RELEASE_FIRST_SLICE ? authenticatedActor ?? "" : legacyCriticReviewer;
   const [v2CriticGoldNote, setV2CriticGoldNote] = useState("");
   const [v2CriticGoldOpenKeys, setV2CriticGoldOpenKeys] = useState<string[]>([]);
   const [v2Strategy, setV2Strategy] = useState<SinglePromptV2StrategyStatus | null>(null);
   const [v2StrategyLoading, setV2StrategyLoading] = useState(false);
   const [v2StrategyContextError, setV2StrategyContextError] = useState<string | null>(null);
   const [v2StrategyReadError, setV2StrategyReadError] = useState<string | null>(null);
-  const [v2StrategyEditor, setV2StrategyEditor] = useState("本地审核人");
+  const [legacyStrategyEditor, setV2StrategyEditor] = useState("本地审核人");
+  const v2StrategyEditor = RELEASE_FIRST_SLICE ? authenticatedActor ?? "" : legacyStrategyEditor;
   const [v2StrategyNote, setV2StrategyNote] = useState("");
   const [v2StrategyPriorityReason, setV2StrategyPriorityReason] = useState("");
   const [v2StrategyDirectionOrder, setV2StrategyDirectionOrder] = useState<string[]>([]);
@@ -1612,7 +1620,8 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     return { projectId: Number(params.get("v2_project")), id: params.get("brand_context_id") || undefined };
   });
-  const [v2ExecutionEditor, setV2ExecutionEditor] = useState("本地执行人");
+  const [legacyExecutionEditor, setV2ExecutionEditor] = useState("本地执行人");
+  const v2ExecutionEditor = RELEASE_FIRST_SLICE ? authenticatedActor ?? "" : legacyExecutionEditor;
   const [v2ExecutionEdit, setV2ExecutionEdit] = useState<Record<string, any>>({});
   const [v2ExecutionNote, setV2ExecutionNote] = useState("");
   const [v2Publication, setV2Publication] = useState<Record<string, any>>({
@@ -6052,7 +6061,7 @@ export default function App() {
                 {!v2SourcePreparation ? <Space direction="vertical" size={12} style={{ width: "100%" }}>
                   <Alert type="info" showIcon message="先冻结本次分析的引用范围" description="Citation Manifest 只固定哪些引用属于本次 Context；不会抓取正文，也不会自动放弃任何来源。" />
                   <Row gutter={[12, 12]} align="middle">
-                    <Col xs={24} md={8}><Input value={v2SourceActor} onChange={(event) => setV2SourceActor(event.target.value)} placeholder="操作人" /></Col>
+                    <Col xs={24} md={8}><Input aria-label="来源操作人" addonBefore={RELEASE_FIRST_SLICE ? "操作人" : undefined} readOnly={RELEASE_FIRST_SLICE} value={RELEASE_FIRST_SLICE ? authenticatedActorLabel : v2SourceActor} onChange={(event) => setV2SourceActor(event.target.value)} placeholder="操作人" /></Col>
                     <Col><Button type="primary" icon={<ListChecks size={15} />} loading={v2SourceActionKey === "create-preparation"} disabled={Boolean(v2SourceActionKey)} onClick={startV2SourcePreparation}>冻结引用范围并开始准备</Button></Col>
                   </Row>
                 </Space> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
@@ -6095,7 +6104,7 @@ export default function App() {
                   />}
                   <Alert type="warning" showIcon message="来源处置完成不等于证据充分" description="人工放弃只记录限制，不产生 SUPPORTS 或 NO_SUPPORT。仍有 PENDING 时 Evidence 必须阻断；全部来源被放弃也不能取得证据资格。" />
                   <Row gutter={[12, 12]} align="middle">
-                    <Col xs={24} md={8}><Input value={v2SourceActor} onChange={(event) => setV2SourceActor(event.target.value)} placeholder="操作人" /></Col>
+                    <Col xs={24} md={8}><Input aria-label="来源操作人" addonBefore={RELEASE_FIRST_SLICE ? "操作人" : undefined} readOnly={RELEASE_FIRST_SLICE} value={RELEASE_FIRST_SLICE ? authenticatedActorLabel : v2SourceActor} onChange={(event) => setV2SourceActor(event.target.value)} placeholder="操作人" /></Col>
                     <Col><Text type="secondary">正文补录会创建新的不可变 Snapshot，不改写历史版本。</Text></Col>
                   </Row>
                   <Segmented
@@ -6436,7 +6445,7 @@ export default function App() {
                             />
 
                             <Space wrap>
-                              <Input style={{ width: 180 }} value={v2CriticGoldReviewer} onChange={(event) => setV2CriticGoldReviewer(event.target.value)} placeholder="审核人" />
+                              <Input aria-label="质疑校准操作者" addonBefore={RELEASE_FIRST_SLICE ? "操作人" : undefined} readOnly={RELEASE_FIRST_SLICE} style={{ width: 220 }} value={RELEASE_FIRST_SLICE ? authenticatedActorLabel : v2CriticGoldReviewer} onChange={(event) => setV2CriticGoldReviewer(event.target.value)} placeholder="审核人" />
                               <Input style={{ width: 360 }} value={v2CriticGoldNote} onChange={(event) => setV2CriticGoldNote(event.target.value)} placeholder="本轮总体备注（可选）" />
                               <Button type="primary" icon={<ShieldCheck size={15} />} loading={v2CriticGoldLoading} onClick={submitV2CriticGoldReview}>{latestGoldReview ? "保存为新的 Gold 版本" : "完成 7 条 Human Gold"}</Button>
                             </Space>
@@ -6934,7 +6943,7 @@ export default function App() {
                       description="直接点击下方“完成本版审核”即可。只有修改机器关系结论时，才需要先保存为新的 ResultVersion。"
                     />}
                     <Row gutter={[12, 12]}>
-                      <Col xs={24} md={8}><Input value={v2DiagnosisEditor} onChange={(event) => setV2DiagnosisEditor(event.target.value)} placeholder="审核人" /></Col>
+                      <Col xs={24} md={8}><Input aria-label="回答纠错操作者" addonBefore={RELEASE_FIRST_SLICE ? "操作人" : undefined} readOnly={RELEASE_FIRST_SLICE} value={RELEASE_FIRST_SLICE ? authenticatedActorLabel : v2DiagnosisEditor} onChange={(event) => setV2DiagnosisEditor(event.target.value)} placeholder="审核人" /></Col>
                       <Col xs={24} md={16}><Input
                         id="v2-diagnosis-edit-reason"
                         status={Object.keys(v2DiagnosisEdits).length > 0 && !v2DiagnosisEditReason.trim() ? "error" : undefined}
@@ -7091,7 +7100,7 @@ export default function App() {
                           <Descriptions.Item label="复用既有人工标准">{v2CitationContribution.human_calibration.reused_human_gold_count}</Descriptions.Item>
                           <Descriptions.Item label="人工标准冲突">{v2CitationContribution.human_calibration.human_gold_conflict_count}</Descriptions.Item>
                         </Descriptions>}
-                        <Input value={v2CitationCalibrationReviewer} onChange={(event) => setV2CitationCalibrationReviewer(event.target.value)} placeholder="审核人" />
+                        <Input aria-label="引用校准操作者" addonBefore={RELEASE_FIRST_SLICE ? "操作人" : undefined} readOnly={RELEASE_FIRST_SLICE} value={RELEASE_FIRST_SLICE ? authenticatedActorLabel : v2CitationCalibrationReviewer} onChange={(event) => setV2CitationCalibrationReviewer(event.target.value)} placeholder="审核人" />
                         <Table
                           size="small"
                           pagination={{ pageSize: 8, hideOnSinglePage: true, showSizeChanger: false }}
@@ -7269,7 +7278,7 @@ export default function App() {
 
                       {!v2Strategy.review && v2Strategy.allowed_operations.includes("REVIEW") ? <Space direction="vertical" size={10} style={{ width: "100%" }}>
                         <Row gutter={[12, 12]}>
-                          <Col xs={24} md={8}><Input value={v2StrategyEditor} onChange={(event) => setV2StrategyEditor(event.target.value)} placeholder="策略审核人" /></Col>
+                          <Col xs={24} md={8}><Input aria-label="策略操作者" addonBefore={RELEASE_FIRST_SLICE ? "操作人" : undefined} readOnly={RELEASE_FIRST_SLICE} value={RELEASE_FIRST_SLICE ? authenticatedActorLabel : v2StrategyEditor} onChange={(event) => setV2StrategyEditor(event.target.value)} placeholder="策略审核人" /></Col>
                           <Col xs={24} md={16}><Input value={v2StrategyPriorityReason} onChange={(event) => setV2StrategyPriorityReason(event.target.value)} placeholder="调整优先顺序时填写判断依据" /></Col>
                         </Row>
                         {v2Strategy.result.output.needs_human_prioritization && <Button icon={<ListChecks size={15} />} loading={v2StrategyLoading} onClick={saveV2StrategyPriority}>保存优先顺序为新版本</Button>}
@@ -7486,7 +7495,7 @@ export default function App() {
                     </Form>
                     {v2ExecutionOutput.validation.errors.length > 0 && <Alert type="warning" showIcon message={v2ExecutionOutput.validation.content_delivery_status === "READY" ? "稿件已完成，发布前还需要最少业务信息" : "方案尚不能确认"} description={v2ExecutionOutput.validation.errors.map(v2ExecutionValidationLabel).join("；")} />}
                     {v2Execution.allowed_operations.includes("REVISE") && <Row gutter={[12, 12]} align="middle">
-                      <Col xs={24} md={8}><Input value={v2ExecutionEditor} onChange={(event) => setV2ExecutionEditor(event.target.value)} placeholder="执行人/确认人" /></Col>
+                      <Col xs={24} md={8}><Input aria-label="执行操作者" addonBefore={RELEASE_FIRST_SLICE ? "操作人" : undefined} readOnly={RELEASE_FIRST_SLICE} value={RELEASE_FIRST_SLICE ? authenticatedActorLabel : v2ExecutionEditor} onChange={(event) => setV2ExecutionEditor(event.target.value)} placeholder="执行人/确认人" /></Col>
                       <Col xs={24} md={16}><Space wrap><Button icon={<ListChecks size={15} />} loading={v2ExecutionLoading} onClick={saveV2ExecutionRevision}>保存并重新校验</Button>{v2Execution.allowed_operations.includes("CONFIRM") && <Popconfirm title="确认当前执行方案？" description="确认后仍需人工发布并单独登记。" okText="确认" cancelText="取消" onConfirm={confirmV2ExecutionProposal}><Button type="primary" icon={<ShieldCheck size={15} />} loading={v2ExecutionLoading}>确认执行方案</Button></Popconfirm>}</Space></Col>
                     </Row>}
                     {v2ExecutionConfirmation && <Alert type="success" showIcon message="执行方案已确认，尚未报告发布" description={`Confirmation ${v2ExecutionConfirmation.confirmation_id} · ${formatDateTime(v2ExecutionConfirmation.created_at)}`} />}

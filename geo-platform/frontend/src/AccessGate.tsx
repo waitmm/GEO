@@ -1,7 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { Alert, Button, Form, Input, Spin, Typography } from "antd";
 import { KeyRound, LogOut } from "lucide-react";
 import { request } from "./api/client";
+
+const AccessActor = createContext<string | null>(null);
+export const useAuthenticatedActor = () => useContext(AccessActor);
 
 export function AccessGate({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<any>();
@@ -34,8 +37,8 @@ export function AccessGate({ children }: { children: ReactNode }) {
       <Button type="primary" htmlType="submit" loading={busy} icon={<KeyRound size={16} />}>登录</Button>
     </Form>
   </main>;
-  return <>{session.mode === "INVITATION" && <div className="access-account"><span>{session.name}</span><Button size="small" icon={<LogOut size={14} />} onClick={async () => {
+  return <AccessActor.Provider value={session.name}>{session.mode === "INVITATION" && <div className="access-account"><span>{session.name}</span><Button size="small" icon={<LogOut size={14} />} onClick={async () => {
     try { await request("/api/access/session", { method: "DELETE" }); setSession({ authenticated: false, mode: "INVITATION" }); }
     catch (e) { setError((e as Error).message); }
-  }}>退出登录</Button>{error && <Alert type="error" message={error} />}</div>}{children}</>;
+  }}>退出登录</Button>{error && <Alert type="error" message={error} />}</div>}{children}</AccessActor.Provider>;
 }

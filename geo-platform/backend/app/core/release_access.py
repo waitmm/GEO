@@ -66,6 +66,13 @@ def principal(request):
     return {**account, 'mode': 'INVITATION'}
 
 
+def authenticated_actor(request: Request) -> str:
+    user = principal(request)
+    if not user:
+        raise HTTPException(401, '当前访问身份已失效，请重新登录')
+    return user['name']
+
+
 async def require_project_access(request: Request):
     user = principal(request)
     if not user:

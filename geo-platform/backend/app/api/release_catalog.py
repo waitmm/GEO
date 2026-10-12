@@ -186,6 +186,17 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
     return _project_read(project, db.query(Competitor).filter_by(project_id=project.id).all())
 
 
+@router.post("/projects/configuration-preview")
+def preview_project_configuration(payload: ProjectCreate) -> dict:
+    values = _project_values(payload.model_dump())
+    return {
+        "values": values,
+        "configured_official_host": urlsplit(values["website_url"]).hostname or None,
+        "alias_duplicates_removed": len(payload.brand_aliases) - len(values["brand_aliases"]),
+        "domain_status": "CONFIGURED_NOT_VERIFIED" if values["website_url"] else "UNKNOWN",
+    }
+
+
 @router.patch("/projects/{project_id}", response_model=ProjectRead)
 def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depends(get_db)) -> ProjectRead:
     project = db.get(Project, project_id)

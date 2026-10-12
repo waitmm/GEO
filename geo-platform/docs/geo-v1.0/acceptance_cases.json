@@ -4,7 +4,8 @@
     {
       "id": "AC-BRD-01",
       "automated_checks": [
-        "tests.test_release_catalog::test_catalog_normalizes_and_rejects_duplicates_without_partial_mutation"
+        "tests.test_release_catalog::test_catalog_normalizes_and_rejects_duplicates_without_partial_mutation",
+        "tests.test_release_catalog::test_configuration_preview_matches_saved_normalization_without_business_writes"
       ],
       "module": "BRD",
       "name": "创建品牌",
@@ -15,7 +16,7 @@
         "BRD-001"
       ],
       "status": "PARTIAL",
-      "evidence": "PARTIAL: browser-20261009T085411Z proves UI project creation/persistence; official-domain and complete onboarding acceptance pending."
+      "evidence": "PARTIAL: browser-20261012T105120Z verifies create/edit/normalization preview, invalid-save recovery, exact saved domain and locale after reload. catalog-preview-stable-20261012:26 scoped checks pass. Empty Monitor onboarding assertion added for next complete run; not all BRD accepted."
     },
     {
       "id": "AC-BRD-02",

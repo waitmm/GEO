@@ -109,6 +109,30 @@ def access_check(page, origin, fixture, out, report):
     report['status'] = 'PASS_ISOLATED_INVITATION_NOT_REMOTE_TLS_DEPLOYMENT'
 
 
+def select_comparison_scope(page, label, run_ids):
+    control = page.get_by_role('combobox', name=label, exact=True)
+    control.press('ArrowDown')
+    expect(control).to_have_attribute('aria-expanded', 'true')
+    list_id = control.get_attribute('aria-controls')
+    assert list_id, f'{label} has no associated option list'
+    # Ant Select keeps the preceding popup mounted during its close animation.
+    dropdown = page.locator('.ant-select-dropdown').filter(
+        has=page.locator(f'[id={json.dumps(list_id)}]'))
+    expect(dropdown).to_have_count(1)
+    expect(dropdown).to_be_visible()
+    active = dropdown.locator('.ant-select-item-option-active')
+    expect(active).to_have_count(1)
+    prefix = 'Runs ' + '、'.join(map(str, run_ids)) + ' ·'
+    for _ in range(2):
+        if active.inner_text().startswith(prefix):
+            break
+        control.press('ArrowDown')
+    expect(active).to_contain_text(prefix)
+    control.press('Enter')
+    expect(control).to_have_attribute('aria-expanded', 'false')
+    expect(dropdown).not_to_be_visible()
+
+
 def observation_check(page, origin, fixture, out, report):
     page.goto(f'{origin}/?release_view=releaseMonitor&v2_project=1&v2_prompt=44')
     expect(page.get_by_text(re.compile('^后台执行服务未启动：'))).to_be_visible()
@@ -134,21 +158,7 @@ def observation_check(page, origin, fixture, out, report):
     expect(mention_row).to_contain_text('50.0%')
     page.get_by_role('menuitem', name='Validate · 变化比较', exact=True).click()
     for label, run_id in [('基线范围', fixture['baseline_run_id']), ('对照范围', fixture['comparison_run_id'])]:
-        control = page.get_by_role('combobox', name=label, exact=True)
-        control.press('ArrowDown')
-        expect(control).to_have_attribute('aria-expanded', 'true')
-        dropdown = page.locator('.ant-select-dropdown').filter(visible=True)
-        expect(dropdown).to_have_count(1)
-        active = dropdown.locator('.ant-select-item-option-active')
-        expect(active).to_have_count(1)
-        for _ in range(2):
-            if re.match(rf'^Runs {run_id} ·', active.inner_text()):
-                break
-            control.press('ArrowDown')
-        expect(active).to_contain_text(f'Runs {run_id} ·')
-        control.press('Enter')
-        expect(control).to_have_attribute('aria-expanded', 'false')
-        expect(page.locator('.ant-select-dropdown').filter(visible=True)).to_have_count(0)
+        select_comparison_scope(page, label, [run_id])
     with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/observation-comparisons')) as response:
         page.get_by_role('button', name='生成变化比较', exact=True).click()
     saved = response.value.json()
@@ -172,19 +182,7 @@ def observation_check(page, origin, fixture, out, report):
     page.set_viewport_size({'width': 1440, 'height': 1000})
     # Reverse two explicit isolated scopes to verify a negative observation is persisted.
     for label, run_id in [('基线范围', fixture['comparison_run_id']), ('对照范围', fixture['baseline_run_id'])]:
-        control = page.get_by_role('combobox', name=label, exact=True)
-        control.press('ArrowDown')
-        dropdown = page.locator('.ant-select-dropdown').filter(visible=True)
-        expect(dropdown).to_have_count(1)
-        active = dropdown.locator('.ant-select-item-option-active')
-        for _ in range(2):
-            if re.match(rf'^Runs {run_id} ·', active.inner_text()):
-                break
-            control.press('ArrowDown')
-        expect(active).to_contain_text(f'Runs {run_id} ·')
-        control.press('Enter')
-        expect(control).to_have_attribute('aria-expanded', 'false')
-        expect(page.locator('.ant-select-dropdown').filter(visible=True)).to_have_count(0)
+        select_comparison_scope(page, label, [run_id])
     with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/observation-comparisons')) as response:
         page.get_by_role('button', name='生成变化比较', exact=True).click()
     negative = response.value.json()
@@ -268,15 +266,7 @@ def observation_check(page, origin, fixture, out, report):
     page.set_viewport_size({'width': 1440, 'height': 1000})
     page.goto(f'{origin}/?release_view=releaseCompare&v2_project={fixture["metric_project_id"]}&v2_prompt={fixture["metric_prompt_id"]}')
     for label, ids in [('基线范围', fixture['metric_baseline']), ('对照范围', fixture['metric_comparison'])]:
-        control = page.get_by_role('combobox', name=label, exact=True)
-        control.press('ArrowDown')
-        active = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-active')
-        for _ in range(2):
-            if active.inner_text().startswith('Runs ' + '、'.join(map(str, ids)) + ' ·'):
-                break
-            control.press('ArrowDown')
-        expect(active).to_contain_text('Runs ' + '、'.join(map(str, ids)))
-        control.press('Enter')
+        select_comparison_scope(page, label, ids)
     with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/observation-comparisons')) as response:
         page.get_by_role('button', name='生成变化比较', exact=True).click()
     nine = response.value.json()
@@ -936,8 +926,47 @@ def main():
             expect(dialog).to_be_visible()
             dialog.get_by_label('项目名称', exact=True).fill('隔离验收项目')
             dialog.get_by_label('品牌名称', exact=True).fill('测试过滤器')
+            dialog.get_by_label('品牌别名（逗号分隔）', exact=True).fill('过滤器甲, 过滤器甲, Filter A')
+            dialog.get_by_label('地区', exact=True).fill('US')
+            dialog.get_by_label('语言', exact=True).fill('en-US')
+            preview = dialog.get_by_role('region', name='保存配置预览')
+            expect(preview).to_contain_text('未配置，官方来源归属未知')
+            dialog.get_by_label('品牌官网', exact=True).fill('javascript:alert(1)')
+            expect(preview).to_contain_text('配置尚未通过校验')
+            dialog.get_by_role('button', name=re.compile('创.*建')).click()
+            expect(dialog.get_by_text('项目保存未完成', exact=True)).to_be_visible()
+            assert page.request.get(origin + '/api/projects').json() == []
+            expect(dialog.get_by_label('品牌名称', exact=True)).to_have_value('测试过滤器')
+            dialog.get_by_label('品牌官网', exact=True).fill('https://EXAMPLE.com/help')
+            expect(preview).to_contain_text('example.com（用户配置，未核实所有权）')
+            expect(preview).to_contain_text('已合并 1 项重复')
+            page.set_viewport_size({'width': 390, 'height': 1000})
+            accessibility_check(page, out, report, 'project-preview-390')
+            page.screenshot(path=str(out / 'project-preview-390.png'), full_page=True)
+            report['screenshots'].append('project-preview-390.png')
+            preview.scroll_into_view_if_needed()
+            page.screenshot(path=str(out / 'project-preview-details-390.png'), full_page=True)
+            report['screenshots'].append('project-preview-details-390.png')
+            assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+            page.set_viewport_size({'width': 1440, 'height': 1000})
             dialog.get_by_role('button', name=re.compile('创.*建')).click()
             expect(dialog).not_to_be_visible()
+            created_project = page.request.get(origin + '/api/projects').json()[0]
+            assert created_project['brand_aliases'] == ['过滤器甲', 'Filter A']
+            assert (created_project['region'], created_project['language']) == ('US', 'en-US')
+            page.reload()
+            expect(page.get_by_text('尚无可用问题，请先在问题配置中创建', exact=True)).to_be_visible()
+            page.get_by_role('button', name='编辑项目', exact=True).click()
+            editor = page.get_by_role('dialog', name='编辑项目')
+            expect(editor.get_by_label('地区', exact=True)).to_have_value('US')
+            expect(editor.get_by_label('语言', exact=True)).to_have_value('en-US')
+            editor.get_by_label('品牌官网', exact=True).fill('')
+            expect(editor.get_by_role('region', name='保存配置预览')).to_contain_text('未配置，官方来源归属未知')
+            editor.get_by_role('button', name=re.compile('^保\\s*存$')).click()
+            expect(editor).not_to_be_visible()
+            edited_project = page.request.get(origin + '/api/projects').json()[0]
+            assert edited_project['website_url'] == ''
+            assert (edited_project['region'], edited_project['language']) == ('US', 'en-US')
             page.get_by_role('menuitem', name='问题与采样配置', exact=True).click()
             page.screenshot(path=str(out / 'prompt-entry.png'), full_page=True)
             (out / 'prompt-entry.txt').write_text(page.locator('body').inner_text())
@@ -1062,6 +1091,8 @@ def main():
             assert len(prompts) == 3
             assert next(item for item in prompts if item['id'] == items[1]['prompt_id'])['prompt_text'] == '过滤器如何存放？\n潮湿环境有哪些限制？'
             report['verified'] = ['UI_PROJECT_CREATE', 'MULTILINE_PROMPT_PRESERVED', 'PROMPT_EDIT_SEARCH_PRIORITY',
+                'PROJECT_PREVIEW_SHARED_VALIDATION_NO_WRITE', 'PROJECT_SAVE_ERROR_PRESERVES_INPUT',
+                'PROJECT_LOCALE_PRESERVED_ON_EDIT', 'NO_DOMAIN_PROJECT_CONTINUES_TO_PROMPT',
                 'BATCH_PROMPT_PARTIAL_FAILURE_CORRECTION_DUPLICATE_REUSE_RELOAD',
                 'NARROW_NAV_KEYBOARD_OPEN_ESCAPE_AND_SELECTION_CLOSE',
                 'DELETE_UNUSED_PROMPT',

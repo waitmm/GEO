@@ -44,6 +44,33 @@ def test_catalog_normalizes_and_rejects_duplicates_without_partial_mutation(cata
     assert db.query(Competitor).one().name == 'Other'
 
 
+def test_configuration_preview_matches_saved_normalization_without_business_writes(catalog):
+    from scripts.release_upgrade_check import business_fingerprint
+    client, db = catalog
+    before = business_fingerprint(db.get_bind().url.database)
+    payload = {'name': ' Preview ', 'brand_name': ' Brand ', 'brand_aliases': [' B ', 'B'],
+        'website_url': ' https://EXAMPLE.com/help ', 'region': ' US ', 'language': ' en-US ',
+        'competitors': [{'name': ' Other ', 'website_url': 'https://other.example:8443/help'}]}
+    response = client.post('/api/projects/configuration-preview', json=payload)
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview['values']['brand_aliases'] == ['B']
+    assert preview['configured_official_host'] == 'example.com'
+    assert preview['alias_duplicates_removed'] == 1
+    assert preview['domain_status'] == 'CONFIGURED_NOT_VERIFIED'
+    assert business_fingerprint(db.get_bind().url.database) == before
+    saved = client.post('/api/projects', json=payload).json()
+    for field in ['name', 'brand_name', 'brand_aliases', 'website_url', 'region', 'language']:
+        assert preview['values'][field] == saved[field]
+    assert client.get('/api/projects').json()[0] == saved
+    assert client.post('/api/projects/configuration-preview', json={
+        'name': 'No domain', 'brand_name': 'Brand'}).json()['domain_status'] == 'UNKNOWN'
+    before = business_fingerprint(db.get_bind().url.database)
+    assert client.post('/api/projects/configuration-preview', json={
+        **payload, 'website_url': 'https://user:password@example.com'}).status_code == 422
+    assert business_fingerprint(db.get_bind().url.database) == before
+
+
 def test_batch_prompts_preserve_multiline_and_report_each_item_without_sampling(catalog):
     client, db = catalog
     project = client.post('/api/projects', json={'name': 'Project', 'brand_name': 'Brand'}).json()

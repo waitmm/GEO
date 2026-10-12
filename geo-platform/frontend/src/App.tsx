@@ -9,6 +9,8 @@ import { api } from "./api/client";
 import { ObservationPanel } from "./ObservationPanel";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { AutomaticOptimizePanel } from "./AutomaticOptimizePanel";
+import { ProjectConfigurationPreview } from './ProjectConfigurationPreview';
+import { projectConfigurationPayload } from './projectConfiguration';
 import { ReleasePromptPanel } from "./ReleasePromptPanel";
 import { useTableKeyboardScroll } from "./useTableKeyboardScroll";
 import { ReleaseWorkerStatus } from "./ReleaseWorkerStatus";
@@ -1717,6 +1719,8 @@ export default function App() {
   const [citationTruthForm] = Form.useForm();
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<number | null>(null);
+  const [projectSaving, setProjectSaving] = useState(false);
+  const [projectSaveError, setProjectSaveError] = useState('');
   const project = projects.find((item) => item.id === projectId);
   // promptContext：null=未显式选择（等同项目视图），"ALL"=全部 Prompt（项目视图），number=单 Prompt 视图
   const activePromptId = typeof promptContext === "number" ? promptContext : null;
@@ -1768,6 +1772,7 @@ export default function App() {
   }
 
   function openProjectModal(id?: number) {
+    setProjectSaveError('');
     if (id) {
       const target = projects.find((item) => item.id === id);
       if (target) {
@@ -1777,6 +1782,8 @@ export default function App() {
           brand_aliases: target.brand_aliases.join(", "),
           website_url: target.website_url,
           industry: target.industry,
+          region: target.region,
+          language: target.language,
           competitors: target.competitors.map((item) => `${item.name}:${item.aliases?.join(";") || ""}:${item.website_url || ""}`).join("\n"),
         });
         setEditingProjectId(id);
@@ -1799,28 +1806,25 @@ export default function App() {
   }
 
   async function submitProject(values: Record<string, string>) {
-    const aliases = values.brand_aliases ? values.brand_aliases.split(",").map((item: string) => item.trim()).filter(Boolean) : [];
-    const compLines = values.competitors ? values.competitors.split("\n").filter((line: string) => line.trim()) : [];
-    const competitors = compLines.map((line: string) => {
-      const parts = line.split(":");
-      const name = (parts[0] || "").trim();
-      const aliasesStr = parts[1] || "";
-      const url = parts.slice(2).join(":").trim(); // URL 含 "://"，重新拼接
-      return { name, aliases: aliasesStr.split(";").map((item: string) => item.trim()).filter(Boolean), website_url: url };
-    });
-    const payload = { ...values, brand_aliases: aliases, competitors };
-    if (editingProjectId) {
-      const updated = await api.updateProject(editingProjectId, payload);
-      message.success("项目已更新");
-      if (projectId === editingProjectId) setProjectId(updated.id);
-    } else {
-      const created = await api.createProject(payload);
-      message.success("项目已创建");
-      selectReleaseProject(created.id);
-    }
-    setProjectModalOpen(false);
-    setEditingProjectId(null);
-    await loadProjects();
+    if (projectSaving) return;
+    setProjectSaving(true); setProjectSaveError('');
+    try {
+      const payload = projectConfigurationPayload(values);
+      if (editingProjectId) {
+        const updated = await api.updateProject(editingProjectId, payload);
+        message.success("项目已更新");
+        if (projectId === editingProjectId) setProjectId(updated.id);
+      } else {
+        const created = await api.createProject(payload);
+        message.success("项目已创建");
+        selectReleaseProject(created.id);
+      }
+      setProjectModalOpen(false);
+      setEditingProjectId(null);
+      await loadProjects().catch(error => message.error(`项目已保存，但列表刷新失败：${error.message}`));
+    } catch (error) {
+      setProjectSaveError((error as Error).message);
+    } finally { setProjectSaving(false); }
   }
 
   async function loadProjects() {
@@ -10601,12 +10605,15 @@ export default function App() {
     <Modal
       title={editingProjectId ? "编辑项目" : "新建项目"}
       open={projectModalOpen}
-      onCancel={() => { setProjectModalOpen(false); setEditingProjectId(null); }}
+      closable={!projectSaving}
+      maskClosable={!projectSaving}
+      onCancel={() => { if (!projectSaving) { setProjectModalOpen(false); setEditingProjectId(null); } }}
       footer={null}
       width={640}
       destroyOnClose
     >
-      <Form form={projectForm} layout="vertical" onFinish={submitProject} initialValues={{ region: "CN", language: "zh-CN" }}>
+      <Form form={projectForm} layout="vertical" disabled={projectSaving} onFinish={submitProject} initialValues={{ region: "CN", language: "zh-CN" }}>
+        {projectSaveError && <Alert type="error" showIcon message="项目保存未完成" description={projectSaveError} />}
         <Form.Item name="name" label="项目名称" rules={[{ required: true, message: "请输入项目名称" }]}>
           <Input placeholder="例如：八木屋二维码生成式搜索监测" />
         </Form.Item>
@@ -10633,14 +10640,15 @@ export default function App() {
         >
           <Input.TextArea rows={5} placeholder="草料二维码:草料;cli.im:https://cli.im&#10;二维斑马:二维斑马二维码:&#10;微微二维码::" />
         </Form.Item>
+        {RELEASE_FIRST_SLICE && <ProjectConfigurationPreview projectId={editingProjectId} />}
         <Space style={{ justifyContent: "flex-end", width: "100%" }}>
           {editingProjectId && (
             <Popconfirm title="确定删除该项目？所有数据将丢失" onConfirm={deleteCurrentProject} okText="确定删除" cancelText="取消">
-              <Button danger>删除项目</Button>
+              <Button danger disabled={projectSaving}>删除项目</Button>
             </Popconfirm>
           )}
-          <Button onClick={() => { setProjectModalOpen(false); setEditingProjectId(null); }}>取消</Button>
-          <Button type="primary" htmlType="submit">{editingProjectId ? "保存" : "创建"}</Button>
+          <Button disabled={projectSaving} onClick={() => { setProjectModalOpen(false); setEditingProjectId(null); }}>取消</Button>
+          <Button type="primary" htmlType="submit" loading={projectSaving}>{editingProjectId ? "保存" : "创建"}</Button>
         </Space>
       </Form>
     </Modal>

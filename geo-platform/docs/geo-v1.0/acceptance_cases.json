@@ -646,6 +646,11 @@
     },
     {
       "id": "AC-STR-02",
+      "automated_checks": [
+        "tests.test_delivery_asset_verification::test_empty_inventory_is_not_evidence_for_new_asset",
+        "tests.test_delivery_asset_verification::test_update_asset_never_infers_ownership_version_or_permission",
+        "tests.test_delivery_asset_verification::test_incomplete_asset_check_saves_draft_but_cannot_grant_publication"
+      ],
       "module": "STR",
       "name": "资产未知",
       "given": "未登记场景页",
@@ -654,8 +659,8 @@
       "requirements": [
         "STR-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "asset-verification-20261012/pytest.xml:38项相关回归；asset-verification-final-20261012/pytest.xml:21项资产及台账检查。browser-20261012T114624Z通过条件资产、显式更新核查/保存/刷新/390px/旧正文保持/无新增模型请求。完整资产发现与多类资产业务验证未完成，不是全项PASS；首次114303Z下拉内部节点点击失败保留。"
     },
     {
       "id": "AC-STR-03",
@@ -737,7 +742,8 @@
         "tests.test_delivery_revision::test_revision_is_pending_without_authority_then_one_qa_repairs_actual_text",
         "tests.test_delivery_revision::test_revision_rejects_wrong_scope_hash_and_unbound_new_target_facts",
         "tests.test_release_execution_versions::test_detail_reads_exact_old_or_current_version_without_writes",
-        "tests.test_release_execution_versions::test_detail_missing_empty_or_foreign_version_never_falls_back"
+        "tests.test_release_execution_versions::test_detail_missing_empty_or_foreign_version_never_falls_back",
+        "tests.test_delivery_asset_verification::test_asset_revision_preserves_text_qa_old_results_and_task_without_calls"
       ],
       "module": "EXE",
       "name": "版本资格",
@@ -996,7 +1002,8 @@
         "tests.test_release_object_access::test_every_release_business_route_requires_project_permission_before_database",
         "tests.test_release_object_access::test_foreign_object_ids_cannot_be_disguised_as_authorized_project",
         "tests.test_release_execution_versions::test_execution_mutation_rejects_wrong_scope_before_any_commit",
-        "tests.test_release_execution_versions::test_invited_project_cannot_mutate_foreign_proposal_by_forging_body_scope"
+        "tests.test_release_execution_versions::test_invited_project_cannot_mutate_foreign_proposal_by_forging_body_scope",
+        "tests.test_release_contribution_scope::test_wrong_analysis_rejected_before_authorization_or_review_commit"
       ],
       "module": "OPS",
       "name": "跨项目访问",

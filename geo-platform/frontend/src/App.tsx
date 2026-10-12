@@ -10,6 +10,7 @@ import { ObservationPanel } from "./ObservationPanel";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { AutomaticOptimizePanel } from "./AutomaticOptimizePanel";
 import { ProjectConfigurationPreview } from './ProjectConfigurationPreview';
+import { AssetVerificationFields } from './AssetVerificationFields';
 import { projectConfigurationPayload } from './projectConfiguration';
 import { ReleasePromptPanel } from "./ReleasePromptPanel";
 import { useTableKeyboardScroll } from "./useTableKeyboardScroll";
@@ -305,6 +306,9 @@ function v2ExecutionValidationLabel(code: string) {
     UPDATE_MANAGED_NOT_ENABLED: "当前仅支持新建资产",
     FINAL_ASSET_OPERATION_REQUIRED: "请确认是更新已核实的现有资产，还是在完整核查后新建",
     MANAGED_ASSET_REQUIRED_FOR_UPDATE: "更新前需确认现有资产的归属、版本和编辑权限",
+    ASSET_VERIFICATION_REQUIRED: "请填写资产核查范围及结论",
+    ASSET_VERIFICATION_SCOPE_MISMATCH: "资产类型或发布位置已变化，请重新核查",
+    ASSET_INVENTORY_INCOMPLETE: "新建前须完成明确范围的核查，确认没有适合更新的现有资产",
     ASSET_OPERATION_SELECTION_MISMATCH: "资产操作与当前选择不一致",
   };
   return labels[code] || code;
@@ -7462,15 +7466,16 @@ export default function App() {
                     <Row gutter={[12, 12]}>
                       <Col xs={24} md={8}><Text type="secondary">资产类型</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_type || undefined} options={v2ExecutionOutput.asset_type_candidates.map((row) => ({ label: row.label, value: row.asset_type }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_type: value, publication_surface: null }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">计划发布位置</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.publication_surface || undefined} options={v2ExecutionOutput.publication_surface_candidates.filter((row) => row.asset_type === v2ExecutionEdit.asset_type).map((row) => ({ label: row.label, value: row.surface_key }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, publication_surface: value }))} /></Col>
-                      <Col xs={24} md={8}><Text type="secondary">最终资产操作</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_operation || "CONDITIONAL"} options={[
+                      <Col xs={24} md={8}><Text type="secondary">最终资产操作</Text><Select aria-label="最终资产操作" style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_operation || "CONDITIONAL"} options={[
                         { value: "CONDITIONAL", label: "先核查已有资产" },
                         { value: "CREATE_NEW", label: "核查后确认新建" },
-                        { value: "UPDATE_EXISTING", label: "更新已有资产（需先确认纳管）", disabled: true },
-                      ]} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_operation: value }))} /></Col>
+                        { value: "UPDATE_EXISTING", label: "更新已核实的页面" },
+                      ]} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_operation: value, asset_verification: null }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">发布账号</Text><Input style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_account || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_account: event.target.value }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">栏目或拟建页面位置</Text><Input style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_location || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_location: event.target.value }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">账号可操作性</Text><div style={{ marginTop: 9 }}><Checkbox checked={v2ExecutionEdit.account_control_status === "USER_REPORTED_CONTROL"} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, account_control_status: event.target.checked ? "USER_REPORTED_CONTROL" : "UNVERIFIED" }))}>用户确认可操作</Checkbox></div></Col>
                     </Row>
+                    <AssetVerificationFields selection={v2ExecutionEdit} onChange={asset_verification => setV2ExecutionEdit(current => ({ ...current, asset_verification }))} />
                     </Form>
                     {v2ExecutionOutput.validation.errors.length > 0 && <Alert type="warning" showIcon message={v2ExecutionOutput.validation.content_delivery_status === "READY" ? "稿件已完成，发布前还需要最少业务信息" : "方案尚不能确认"} description={v2ExecutionOutput.validation.errors.map(v2ExecutionValidationLabel).join("；")} />}
                     {v2Execution.allowed_operations.includes("REVISE") && <Row gutter={[12, 12]} align="middle">

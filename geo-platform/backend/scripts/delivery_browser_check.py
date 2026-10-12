@@ -668,6 +668,39 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         report['historical_detail'] = {'version': persisted.json()[0]['result_version'],
             'refresh_preserved': True, 'missing_rejected': True, 'model_calls': 0}
         page.set_viewport_size({'width': 1440, 'height': 1000})
+        query['v2_execution_result'] = [regenerated['result_version']]
+        page.goto(urlunsplit(parts._replace(query=urlencode(query, doseq=True))))
+        expect(detail.get_by_role('button', name='保存并重新校验')).to_be_visible(timeout=15000)
+        detail.get_by_role('combobox', name='最终资产操作', exact=True).press('ArrowDown')
+        page.locator('.ant-select-dropdown').filter(visible=True).get_by_text('更新已核实的页面', exact=True).click()
+        for label, value in [
+            ('已核查的栏目或页面范围', '官网帮助栏目，人工核对现有说明页'),
+            ('已有页面 URL', 'https://example.com/help/guide'), ('已有页面标题', '现有帮助说明'),
+            ('页面当前版本或最后修改时间', 'cms-revision-12'), ('品牌归属及编辑权限依据', '品牌内容编辑账号已授予页面编辑权限'),
+        ]:
+            detail.get_by_role('textbox', name=label, exact=True).fill(value)
+        detail.get_by_role('checkbox', name='确认具有该页面的编辑权限', exact=True).check()
+        detail.get_by_role('checkbox', name='确认该页面适合承接当前稿件', exact=True).check()
+        detail.get_by_role('button', name='保存并重新校验').click()
+        expect(page).not_to_have_url(re.compile(re.escape(quote(regenerated['result_version'], safe=''))))
+        saved_asset_url = page.url
+        expect(detail.get_by_role('article', name='方案详情完整正文')).to_contain_text(regenerated['output']['publication_draft']['body_markdown'])
+        page.reload()
+        expect(detail.get_by_role('textbox', name='已有页面 URL', exact=True)).to_have_value('https://example.com/help/guide', timeout=15000)
+        expect(detail.get_by_role('checkbox', name='确认具有该页面的编辑权限', exact=True)).to_be_checked()
+        expect(detail.get_by_role('checkbox', name='确认该页面适合承接当前稿件', exact=True)).to_be_checked()
+        expect(page).to_have_url(saved_asset_url)
+        page.set_viewport_size({'width': 390, 'height': 1000})
+        detail.get_by_role('textbox', name='已有页面 URL', exact=True).scroll_into_view_if_needed()
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+        accessibility_check(page, out, report, 'asset-verification-390')
+        page.screenshot(path=str(out / 'asset-verification-390.png'), full_page=False)
+        report['screenshots'].append('asset-verification-390.png')
+        assert len(calls) == before_detail
+        assert page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{regenerated_task}/deliveries?project_id=1&prompt_id=44').json()[0] == regenerated
+        report['asset_verification'] = {'operation': 'UPDATE_EXISTING', 'refresh_preserved': True,
+            'original_delivery_unchanged': True, 'model_calls': 0, 'provenance': 'USER_REPORTED'}
+        page.set_viewport_size({'width': 1440, 'height': 1000})
     page.goto(f'{origin}/?v2_project=1&v2_prompt=44&v2_analysis={analysis.analysis_id}&optimization_task=missing-task')
     expect(panel.get_by_text('当前链接未匹配本分析的自动任务', exact=True)).to_be_visible(timeout=15000)
     expect(panel.get_by_role('article', name='完整稿件正文', exact=True)).to_have_count(0)

@@ -368,6 +368,13 @@ def authorize_citation_contribution_execution(
     payload: SinglePromptCitationContributionAuthorizationCreate,
     db: Session = Depends(get_db),
 ) -> dict:
+    get_citation_contribution_status(
+        db,
+        analysis_id=analysis_id,
+        contribution_id=contribution_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
     execution = authorize_citation_contribution(
         db,
         contribution_id=contribution_id,
@@ -400,6 +407,13 @@ def review_citation_contribution(
     payload: SinglePromptCitationContributionReviewCreate,
     db: Session = Depends(get_db),
 ) -> dict:
+    get_citation_contribution_status(
+        db,
+        analysis_id=analysis_id,
+        contribution_id=contribution_id,
+        project_id=payload.project_id,
+        prompt_id=payload.prompt_id,
+    )
     complete_citation_contribution_review(
         db,
         contribution_id=contribution_id,

@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -38,6 +39,7 @@ from app.modules.single_prompt_v2.delivery_text import (
     INPUT_VERSION, audit_draft, build_sections, digest, render_draft, text_digest,
 )
 from .delivery_generation import GENERATION_VERSION, generate_and_check, check_submitted_draft, revalidate_generated_draft
+from .asset_verification import AssetVerification, asset_check_errors
 from app.services.serialization import loads
 
 
@@ -951,10 +953,7 @@ def validate_execution_output(output: dict[str, Any], input_snapshot: dict[str, 
     if complete_delivery:
         if output.get("asset_operation") != selection.get("asset_operation"):
             errors.append("ASSET_OPERATION_SELECTION_MISMATCH")
-        if selection.get("asset_operation") == "CONDITIONAL":
-            errors.append("FINAL_ASSET_OPERATION_REQUIRED")
-        elif selection.get("asset_operation") != "CREATE_NEW":
-            errors.append("MANAGED_ASSET_REQUIRED_FOR_UPDATE")
+        errors.extend(asset_check_errors(selection))
     elif output.get("asset_operation") != "CREATE_NEW" or selection.get("asset_operation") != "CREATE_NEW":
         errors.append("ASSET_OPERATION_SELECTION_REQUIRED")
     if output.get("strategy_channel") != {
@@ -1037,6 +1036,8 @@ def validate_execution_output(output: dict[str, Any], input_snapshot: dict[str, 
     only_business_inputs = set(errors).issubset({
         "FINAL_ASSET_OPERATION_REQUIRED", "PUBLISHING_ACCOUNT_REQUIRED",
         "PUBLISHING_LOCATION_REQUIRED", "PUBLICATION_AUTHORITY_NOT_CONFIRMED",
+        "ASSET_VERIFICATION_REQUIRED", "ASSET_VERIFICATION_SCOPE_MISMATCH",
+        "ASSET_INVENTORY_INCOMPLETE", "MANAGED_ASSET_REQUIRED_FOR_UPDATE",
     })
     return {
         "status": (
@@ -1052,6 +1053,7 @@ def validate_execution_output(output: dict[str, Any], input_snapshot: dict[str, 
             "asset_operation_selected": "PASS" if not {
                 "ASSET_OPERATION_SELECTION_REQUIRED", "ASSET_OPERATION_SELECTION_MISMATCH",
                 "FINAL_ASSET_OPERATION_REQUIRED", "MANAGED_ASSET_REQUIRED_FOR_UPDATE",
+                "ASSET_VERIFICATION_REQUIRED", "ASSET_VERIFICATION_SCOPE_MISMATCH", "ASSET_INVENTORY_INCOMPLETE",
             } & set(errors) else "FAIL",
             "truth_grounding": "PASS" if "PARTIAL_OR_UNCONFIRMED_TRUTH_IN_PUBLIC_SCOPE" not in errors else "FAIL",
             "baseline_exact": "PASS" if not {"BASELINE_MUTATION", "BASELINE_NOT_COMPLETE_VALID_RUN_SET"} & set(errors) else "FAIL",
@@ -1234,8 +1236,8 @@ def revise_execution_proposal(
     output = copy.deepcopy(loads(base.output_json, {}))
     requested_operation = str(edit.get("asset_operation") or output.get("asset_operation") or "")
     complete_delivery = output.get("deliverable_contract_version") == EXECUTION_DELIVERABLE_VERSION
-    allowed_operations = {"CONDITIONAL", "CREATE_NEW"} if complete_delivery else {"CREATE_NEW"}
-    if requested_operation == "UPDATE_EXISTING":
+    allowed_operations = {"CONDITIONAL", "CREATE_NEW", "UPDATE_EXISTING"} if complete_delivery else {"CREATE_NEW"}
+    if requested_operation == "UPDATE_EXISTING" and not complete_delivery:
         raise HTTPException(status_code=422, detail="更新已有资产前必须先确认候选资产的归属、精确版本和编辑权限")
     if requested_operation not in allowed_operations:
         raise HTTPException(status_code=422, detail="当前资产操作不符合本方案的资产盘点边界")
@@ -1243,10 +1245,16 @@ def revise_execution_proposal(
     editable = {
         "asset_type", "package_key", "publication_surface", "publishing_account", "publishing_location",
         "account_control_status", "title", "section_order", "execution_note", "asset_operation",
+        "asset_verification",
     }
     unknown = set(edit) - editable
     if unknown:
         raise HTTPException(status_code=422, detail=f"包含不可编辑字段：{', '.join(sorted(unknown))}")
+    if edit.get("asset_verification") is not None:
+        try:
+            edit = {**edit, "asset_verification": AssetVerification.model_validate(edit["asset_verification"]).model_dump()}
+        except ValidationError as error:
+            raise HTTPException(422, "资产核查字段不合法，请填写范围、页面版本及实际权限，不得提交系统验证状态") from error
     selection.update(copy.deepcopy(edit))
     selection["asset_operation"] = requested_operation
     output["asset_operation"] = requested_operation
@@ -1269,9 +1277,23 @@ def revise_execution_proposal(
     output["validation"] = validate_execution_output(output, snapshot)
     output["human_revision"] = {
         "editor": editor,
+        "edited_at": datetime.utcnow().isoformat(),
         "edited_fields": sorted(edit),
         "base_result_version": base_result_version,
     }
+    output.pop("asset_verification_receipt", None)
+    if complete_delivery and selection.get("asset_verification") is not None:
+        output["asset_verification_receipt"] = {
+            "contract_version": "execution_asset_check.v1",
+            "provenance": "USER_REPORTED",
+            "project_id": proposal.project_id,
+            "proposal_id": proposal_id,
+            "base_result_version": base_result_version,
+            "snapshot_hash": digest(selection["asset_verification"]),
+            "system_verified": False,
+            "editor": editor,
+            "edited_at": output["human_revision"]["edited_at"],
+        }
     output_hash = _hash(output)
     version_number = base.version_number + 1
     result = SinglePromptExecutionProposalResult(
@@ -1516,6 +1538,10 @@ def _assess_publication_conformance(report: dict[str, Any], confirmed: dict[str,
         mismatches.append("ACCOUNT_DIFFERS_FROM_CONFIRMATION")
     if report.get("actual_location") != selection.get("publishing_location"):
         mismatches.append("LOCATION_DIFFERS_FROM_CONFIRMATION")
+    if selection.get("asset_operation") == "UPDATE_EXISTING":
+        checked.append("asset_url")
+        if report.get("actual_url") != (selection.get("asset_verification") or {}).get("url"):
+            mismatches.append("ASSET_URL_DIFFERS_FROM_CONFIRMATION")
     content_version = str(report.get("actual_content_version") or "").strip()
     content_excerpt = str(report.get("actual_content_excerpt") or "").strip()
     actual_title = str(report.get("actual_title") or "").strip()

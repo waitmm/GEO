@@ -34,6 +34,8 @@ body {
 .app-shell .ant-tag.ant-tag-warning,
 .app-shell .ant-typography.ant-typography-warning { color: #805500; }
 .app-shell .ant-table-placeholder .ant-table-expanded-row-fixed { color: #595959; }
+.app-shell .ant-tag.ant-tag-cyan { color: #006d75; }
+.app-shell a.ant-typography { color: #0958d9; }
 /* Layout measurement retains its width but never exposes cloned controls to focus. */
 .ant-table-measure-row { visibility: hidden; }
 

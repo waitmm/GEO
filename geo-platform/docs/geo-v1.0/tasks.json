@@ -1104,14 +1104,14 @@
     "status": "IN_PROGRESS",
     "continuation": {
       "updated_at": "2026-10-12",
-      "base_commit": "41e8534",
+      "base_commit": "fb7ebfd",
       "classification": "IMPLEMENTATION_CHANGE",
       "accepted_instruction": "2026-10-10 自动续跑补充令；不改变2026-10-09范围，不增加外调权限",
-      "current_requirement": "T18/T19方案内资产信息核查、独立版本和原稿QA保留；T25引用贡献授权/审核必须先校验Analysis归属再写入",
+      "current_requirement": "T18/T25修复并复检完整方案详情无障碍；继续T19剩余对象纠错及保存结果失败恢复",
       "verified": "d3c5e22同源105606Z：459后端/5启动/19客户端/构建及8of8浏览器通过，源码未变，工程PASS产品INCOMPLETE。随后旧版本读错及10项错误归属先写后拒绝在隔离库复现，原FAIL证据保留。修复扩展40后端/20客户端/构建及browser112410Z通过，涵盖合法请求、历史发布、点击详情/刷新/窄屏/失效错误不回退；不与459混加。真实外调0。",
-      "in_progress": "正式02/API8021/UI5173加载41e8534，worker关闭；deploy-execution-version-20261012保护重启及精确v6/v7读取后47表指纹不变。贡献修复21项、资产相关38项及扩展确认/台账21项、客户端20/构建通过，browser114624Z保存/刷新/390px/旧稿不变通过，9模拟请求/0真实。114303Z定位失败保留。新改动待提交、保护加载及同源全套复检。",
+      "in_progress": "正式02/API8021/UI5173后端fb7ebfd，worker关闭，47业务表及v6/v7不变。同源115131Z保留FAIL：486后端/5启动/20客户端/构建，6/8浏览器通过。无障碍修复后官方121711Z/补充122517Z通过；资格503导致旧稿消失的122052Z复现FAIL保留，修复122332Z只读指纹及双503通过，122517Z另验证实际重试/策略404拒绝恢复。客户端20/构建/台账9通过，0真实外调。formal-detail-recovery-20261012正式v7只读/刷新/390通过，47表不变，首屏正文16.136秒不作为性能通过。本轮提交后运行固定源码完整套件。",
       "next_command": "cd geo-platform/backend && .venv/bin/python scripts/delivery_acceptance.py --checks-only",
-      "next_unblocked_gap": "同源完整验收与精确版本部署；继续答案/关系纠错和性能问题。不得以专项通过替代全部必需用例",
+      "next_unblocked_gap": "固定源码完整验收；继续答案/关系纠错和性能问题。不得以专项通过替代全部必需用例",
       "external_blocker": "P0-A/P0-B待明确授权：新验收项目/文心最多4次/最多60公开URL各2次/DeepSeek最多80请求300万tokens累计30元/自动重试0。官方别名现指向V4.1-Flash，已另行明确实际模型版本待授权；没有调用。其余工程继续。"
     },
     "contract": "SC-DELIVERY-001@1.0.0",

@@ -1597,6 +1597,8 @@ export default function App() {
   const [v2CriticGoldOpenKeys, setV2CriticGoldOpenKeys] = useState<string[]>([]);
   const [v2Strategy, setV2Strategy] = useState<SinglePromptV2StrategyStatus | null>(null);
   const [v2StrategyLoading, setV2StrategyLoading] = useState(false);
+  const [v2StrategyContextError, setV2StrategyContextError] = useState<string | null>(null);
+  const [v2StrategyReadError, setV2StrategyReadError] = useState<string | null>(null);
   const [v2StrategyEditor, setV2StrategyEditor] = useState("本地审核人");
   const [v2StrategyNote, setV2StrategyNote] = useState("");
   const [v2StrategyPriorityReason, setV2StrategyPriorityReason] = useState("");
@@ -3010,55 +3012,54 @@ export default function App() {
   async function refreshV2StrategyContext(diagnosisStatus: SinglePromptV2DiagnosisStatus | null = v2Diagnosis) {
     if (!v2Analysis || !diagnosisStatus?.result || !projectId || !activePromptId) return;
     const current = beginV2Read('strategy');
+    const analysisId = v2Analysis.analysis.analysis_id;
+    const diagnosisId = diagnosisStatus.diagnosis.diagnosis_id;
+    const resultVersion = diagnosisStatus.result.result_version;
+    const strategyId = new URLSearchParams(window.location.search).get("v2_strategy");
     setV2StrategyLoading(true);
-    try {
-      const [readiness, qualification] = await Promise.all([
-        api.getSinglePromptV2StrategyReadiness(
-          v2Analysis.analysis.analysis_id,
-          diagnosisStatus.diagnosis.diagnosis_id,
-          diagnosisStatus.result.result_version,
-          projectId,
-          activePromptId,
-        ),
-        api.getSinglePromptV2QualificationProjection(
-          v2Analysis.analysis.analysis_id,
-          diagnosisStatus.diagnosis.diagnosis_id,
-          diagnosisStatus.result.result_version,
-          projectId,
-          activePromptId,
-        ),
-      ]);
-      if (!current()) return;
-      setV2StrategyReadiness(readiness);
-      setV2QualificationProjection(qualification);
-      const params = new URLSearchParams(window.location.search);
-      const strategyId = params.get("v2_strategy");
+    setV2StrategyContextError(null);
+    setV2StrategyReadError(null);
+    setV2StrategyReadiness(null);
+    setV2QualificationProjection(null);
+    const loadContext = async () => {
+      try {
+        const [readiness, qualification] = await Promise.all([
+          api.getSinglePromptV2StrategyReadiness(analysisId, diagnosisId, resultVersion, projectId, activePromptId),
+          api.getSinglePromptV2QualificationProjection(analysisId, diagnosisId, resultVersion, projectId, activePromptId),
+        ]);
+        if (!current()) return;
+        setV2StrategyReadiness(readiness);
+        setV2QualificationProjection(qualification);
+      } catch (error: any) {
+        if (current()) setV2StrategyContextError(error.message || "读取当前策略资格失败");
+      }
+    };
+    // Saved results retain their own scope checks; a live projection is not a read prerequisite.
+    const loadSavedStrategy = async () => {
       if (!strategyId) {
         setV2Strategy(null);
         setV2StrategyDirectionOrder([]);
         return;
       }
-      const status = await api.getSinglePromptV2Strategy(
-        v2Analysis.analysis.analysis_id,
-        diagnosisStatus.diagnosis.diagnosis_id,
-        strategyId,
-        projectId,
-        activePromptId,
-      );
-      if (!current()) return;
-      setV2Strategy(status);
-      persistV2StrategyIdentity(status);
-      setV2StrategyDirectionOrder(
-        [...(status.result?.output.directions || [])]
-          .sort((left, right) => (left.priority_order || Number.MAX_SAFE_INTEGER) - (right.priority_order || Number.MAX_SAFE_INTEGER))
-          .map((row) => row.direction_id),
-      );
-      if ((status.result?.output.directions || []).length === 1) setV2ExecutionDirectionId(status.result!.output.directions[0].direction_id);
-    } catch (error: any) {
-      if (current()) message.error(error.message || "读取 V2 策略状态失败");
-    } finally {
-      if (current()) setV2StrategyLoading(false);
-    }
+      try {
+        const status = await api.getSinglePromptV2Strategy(analysisId, diagnosisId, strategyId, projectId, activePromptId);
+        if (!current()) return;
+        setV2Strategy(status);
+        persistV2StrategyIdentity(status);
+        setV2StrategyDirectionOrder(
+          [...(status.result?.output.directions || [])]
+            .sort((left, right) => (left.priority_order || Number.MAX_SAFE_INTEGER) - (right.priority_order || Number.MAX_SAFE_INTEGER))
+            .map((row) => row.direction_id),
+        );
+        if ((status.result?.output.directions || []).length === 1) setV2ExecutionDirectionId(status.result!.output.directions[0].direction_id);
+      } catch (error: any) {
+        if (!current()) return;
+        setV2Strategy(null);
+        setV2StrategyReadError(error.message || "读取已保存策略失败");
+      }
+    };
+    await Promise.all([loadSavedStrategy(), loadContext()]);
+    if (current()) setV2StrategyLoading(false);
   }
 
   async function refreshV2QualificationCritic(quiet = false) {
@@ -4056,6 +4057,10 @@ export default function App() {
   useEffect(() => {
     setV2ExecutionError(null);
   }, [projectId, activePromptId, v2Strategy?.strategy.strategy_id]);
+  useEffect(() => {
+    setV2StrategyContextError(null);
+    setV2StrategyReadError(null);
+  }, [projectId, activePromptId, v2Analysis?.analysis.analysis_id]);
   useEffect(() => {
     if (v2Execution?.result && window.location.hash === "#v2-execution") {
       document.getElementById("v2-execution")?.scrollIntoView({ block: "start" });
@@ -6220,7 +6225,8 @@ export default function App() {
                   title={<Space><ListChecks size={18} />自动策略方向与执行草案</Space>}
                   extra={<Button icon={<RefreshCw size={14} />} loading={v2StrategyLoading} onClick={() => refreshV2StrategyContext()} aria-label="刷新策略状态">刷新</Button>}
                 >
-                  {!v2QualificationProjection ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={v2StrategyLoading ? "正在计算用途资格、策略方向和执行草案" : "尚未取得自动资格投影"} /> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
+                  {v2StrategyContextError ? <Alert type="warning" showIcon message="当前资格暂不可用，已保存稿件仍可查看" description={v2StrategyContextError} action={<Button icon={<RefreshCw size={14} />} loading={v2StrategyLoading} onClick={() => refreshV2StrategyContext()}>重试读取资格</Button>} />
+                  : !v2QualificationProjection ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={v2StrategyLoading ? "正在计算用途资格、策略方向和执行草案" : "尚未取得自动资格投影"} /> : <Space direction="vertical" size={14} style={{ width: "100%" }}>
                     <Alert
                       type={v2QualificationProjection.final_plan.machine_direction_count > 0 ? "success" : "warning"}
                       showIcon
@@ -6894,7 +6900,7 @@ export default function App() {
                     />
                     <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
                       <Col xs={24} md={10}><Input value={v2TruthDraft.capabilityLabel} onChange={(event) => setV2TruthDraft((current) => ({ ...current, capabilityLabel: event.target.value }))} placeholder="先点击上方一项能力" maxLength={160} /></Col>
-                      <Col xs={24} md={6}><Select style={{ width: "100%" }} value={v2TruthDraft.productTruthStatus} onChange={(value) => setV2TruthDraft((current) => ({ ...current, productTruthStatus: value }))} options={[
+                      <Col xs={24} md={6}><Select aria-label="目标品牌是否具备该能力" style={{ width: "100%" }} value={v2TruthDraft.productTruthStatus} onChange={(value) => setV2TruthDraft((current) => ({ ...current, productTruthStatus: value }))} options={[
                         { value: "SUPPORTED", label: "有" },
                         { value: "PARTIALLY_SUPPORTED", label: "部分有" },
                         { value: "NOT_SUPPORTED", label: "没有" },
@@ -6987,7 +6993,7 @@ export default function App() {
                       <Descriptions.Item label="Answer Review">{v2Diagnosis.review ? <Text code>{v2Diagnosis.review.review_id}</Text> : <Tag color="gold">尚未审核</Tag>}</Descriptions.Item>
                       <Descriptions.Item label="Citation Manifest">{v2SourcePreparation ? <Text code>{v2SourcePreparation.citation_manifest.manifest_id}</Text> : <Tag color="red">缺失</Tag>}</Descriptions.Item>
                       <Descriptions.Item label="Source Completion">{v2SourcePreparation?.completion_manifest ? <Tag color={v2SourcePreparation.completion_manifest.status === "FROZEN" ? "green" : "red"}>{v2SourcePreparation.completion_manifest.status}</Tag> : <Tag color="gold">尚未冻结</Tag>}</Descriptions.Item>
-                      <Descriptions.Item label="Evidence 外部策略">{v2Diagnosis.result.output.result_scope === "ANSWER_ONLY" ? <Select disabled={v2EvidenceExecutionActive} style={{ minWidth: 150 }} value={v2EvidencePolicy} onChange={setV2EvidencePolicy} options={[{ value: "CACHE_ONLY", label: "仅兼容缓存" }, { value: "ALLOW_EXTERNAL", label: "授权 Evidence LLM" }]} /> : "已形成结果"}</Descriptions.Item>
+                      <Descriptions.Item label="证据分析调用策略">{v2Diagnosis.result.output.result_scope === "ANSWER_ONLY" ? <Select aria-label="证据分析调用策略" disabled={v2EvidenceExecutionActive} style={{ minWidth: 150 }} value={v2EvidencePolicy} onChange={setV2EvidencePolicy} options={[{ value: "CACHE_ONLY", label: "仅兼容缓存" }, { value: "ALLOW_EXTERNAL", label: "授权证据分析模型调用" }]} /> : "已形成结果"}</Descriptions.Item>
                     </Descriptions>
                     {v2Diagnosis.result.output.result_scope === "ANSWER_AND_EVIDENCE" ? <Alert type="success" showIcon message="Evidence 已消费精确双输入版本" description="当前 Evidence 结果是新的不可变 ResultVersion；若需人工确认，应审核这个新版本，不能继承 Answer-only 版本的审核。" /> : v2Diagnosis.result.output.result_scope !== "ANSWER_ONLY" ? <Alert type="info" showIcon message="历史诊断结果不具备本切片的显式 Evidence 交接身份" description="系统不会通过 latest Snapshot 或旧工作流状态补齐。" /> : <>
                       {!v2Diagnosis.review && <Alert type="warning" showIcon message="Answer Result 尚未完成精确版本审核" description="Evidence 不会把机器输出或其他结果版本的审核当成本次授权。" />}
@@ -7297,7 +7303,8 @@ export default function App() {
                 </Card>}
 
                 <Card id="v2-execution" size="small" title={<Space><FileText size={18} />执行方案、完整稿件与发布准备</Space>} extra={v2Execution && <Tooltip title="只读取当前执行方案、确认和发布记录"><Button icon={<RefreshCw size={15} />} loading={v2ExecutionLoading} onClick={refreshV2Execution} aria-label="刷新执行方案" /></Tooltip>}>
-                  {!v2Strategy?.result && v2StrategyLoading ? <Alert type="info" showIcon message="正在读取已保存的策略与稿件" />
+                  {v2StrategyReadError ? <Alert type="error" showIcon message="无法读取已保存策略与稿件" description={v2StrategyReadError} action={<Button icon={<RefreshCw size={14} />} loading={v2StrategyLoading} onClick={() => refreshV2StrategyContext()}>重试读取结果</Button>} />
+                  : !v2Strategy?.result && v2StrategyLoading ? <Alert type="info" showIcon message="正在读取已保存的策略与稿件" />
                   : !v2Strategy?.result ? <Alert type="info" showIcon message="尚无策略候选" description="当前诊断需要先形成合法策略方向。" />
                   : v2Strategy.strategy.input_authority_type !== "MACHINE_QUALIFICATION" && (!v2Strategy.review || v2Strategy.review.decision !== "ACCEPTED") ? <Alert type="warning" showIcon message="策略尚未确认" description="执行方案只能消费有效机器资格或已确认的精确策略结果版本；人工排序不等于确认。" />
                   : !v2Execution && v2ExecutionLoading ? <Alert type="info" showIcon message="正在读取已保存的执行稿件" />
@@ -7385,7 +7392,7 @@ export default function App() {
 
                     <Divider orientation="left">稿件结构与依据</Divider>
                     <Form component={false} disabled={!v2Execution.allowed_operations.includes("REVISE")}>
-                    <Input value={v2ExecutionEdit.title || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, title: event.target.value }))} addonBefore="安全标题" />
+                    <Input aria-label="安全标题" value={v2ExecutionEdit.title || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, title: event.target.value }))} addonBefore="安全标题" />
                     <Checkbox.Group
                       style={{ width: "100%" }}
                       value={v2ExecutionEdit.section_order || []}
@@ -7395,7 +7402,7 @@ export default function App() {
                         {v2ExecutionOutput.public_content_candidates.map((section) => {
                           const selectedIndex = (v2ExecutionEdit.section_order || []).indexOf(section.section_id);
                           return <div key={section.section_id} className="v2-execution-section">
-                            <Checkbox value={section.section_id} />
+                            <Checkbox aria-label={`保留章节：${section.title}`} value={section.section_id} />
                             <div><Text strong>{section.title}</Text><div><Text type="secondary">{section.purpose} · Truth {(section.truth_ids || []).join("、") || "无目标品牌声明"}</Text></div>{section.draft_text && <div><Text>{section.draft_text}</Text></div>}</div>
                             <Space size={4} className="v2-execution-section-order">
                               <Tooltip title="上移"><Button size="small" icon={<ArrowUp size={14} />} disabled={!v2Execution.allowed_operations.includes("REVISE") || selectedIndex <= 0} onClick={() => moveV2ExecutionSection(section.section_id, -1)} aria-label="上移公开 Section" /></Tooltip>
@@ -7464,15 +7471,15 @@ export default function App() {
                     <Divider orientation="left">发布前的必要业务信息</Divider>
                     <Form component={false} disabled={!v2Execution.allowed_operations.includes("REVISE")}>
                     <Row gutter={[12, 12]}>
-                      <Col xs={24} md={8}><Text type="secondary">资产类型</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_type || undefined} options={v2ExecutionOutput.asset_type_candidates.map((row) => ({ label: row.label, value: row.asset_type }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_type: value, publication_surface: null }))} /></Col>
-                      <Col xs={24} md={8}><Text type="secondary">计划发布位置</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.publication_surface || undefined} options={v2ExecutionOutput.publication_surface_candidates.filter((row) => row.asset_type === v2ExecutionEdit.asset_type).map((row) => ({ label: row.label, value: row.surface_key }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, publication_surface: value }))} /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">资产类型</Text><Select aria-label="资产类型" style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_type || undefined} options={v2ExecutionOutput.asset_type_candidates.map((row) => ({ label: row.label, value: row.asset_type }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_type: value, publication_surface: null }))} /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">计划发布位置</Text><Select aria-label="计划发布位置" style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.publication_surface || undefined} options={v2ExecutionOutput.publication_surface_candidates.filter((row) => row.asset_type === v2ExecutionEdit.asset_type).map((row) => ({ label: row.label, value: row.surface_key }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, publication_surface: value }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">最终资产操作</Text><Select aria-label="最终资产操作" style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_operation || "CONDITIONAL"} options={[
                         { value: "CONDITIONAL", label: "先核查已有资产" },
                         { value: "CREATE_NEW", label: "核查后确认新建" },
                         { value: "UPDATE_EXISTING", label: "更新已核实的页面" },
                       ]} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_operation: value, asset_verification: null }))} /></Col>
-                      <Col xs={24} md={8}><Text type="secondary">发布账号</Text><Input style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_account || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_account: event.target.value }))} /></Col>
-                      <Col xs={24} md={8}><Text type="secondary">栏目或拟建页面位置</Text><Input style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_location || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_location: event.target.value }))} /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">发布账号</Text><Input aria-label="发布账号" style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_account || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_account: event.target.value }))} /></Col>
+                      <Col xs={24} md={8}><Text type="secondary">栏目或拟建页面位置</Text><Input aria-label="栏目或拟建页面位置" style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_location || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_location: event.target.value }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">账号可操作性</Text><div style={{ marginTop: 9 }}><Checkbox checked={v2ExecutionEdit.account_control_status === "USER_REPORTED_CONTROL"} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, account_control_status: event.target.checked ? "USER_REPORTED_CONTROL" : "UNVERIFIED" }))}>用户确认可操作</Checkbox></div></Col>
                     </Row>
                     <AssetVerificationFields selection={v2ExecutionEdit} onChange={asset_verification => setV2ExecutionEdit(current => ({ ...current, asset_verification }))} />

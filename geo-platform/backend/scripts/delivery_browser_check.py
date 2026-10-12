@@ -16,6 +16,50 @@ from playwright.sync_api import sync_playwright, expect
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def saved_detail_failure_check(page, report, expected_body):
+    detail = page.locator('#v2-execution')
+    article = detail.get_by_role('article', name='方案详情完整正文')
+    exact_url = page.url
+    for endpoint in ['strategy-readiness', 'qualification-projection']:
+        pattern = f'**/{endpoint}?*'
+        failures = []
+        def fail(route):
+            failures.append(route.request.url)
+            route.fulfill(status=503, content_type='application/json', body=json.dumps({'detail': '隔离资格读取故障'}))
+        page.route(pattern, fail)
+        try:
+            page.reload()
+            expect(article).to_contain_text(expected_body, timeout=15000)
+            expect(page).to_have_url(exact_url)
+            expect(page.get_by_text('当前资格暂不可用，已保存稿件仍可查看', exact=True)).to_be_visible()
+            expect(page.get_by_role('button', name='固化策略并继续', exact=True)).to_have_count(0)
+            assert failures
+        finally:
+            page.unroute(pattern, fail)
+        page.get_by_role('button', name='重试读取资格', exact=True).click()
+        expect(page.get_by_text('当前资格暂不可用，已保存稿件仍可查看', exact=True)).to_have_count(0)
+        expect(page.get_by_text('机器分析已自动到达策略和执行草案', exact=True)).to_be_visible(timeout=15000)
+        expect(article).to_contain_text(expected_body)
+        report.setdefault('saved_detail_read_recovery', []).append(endpoint)
+    from urllib.parse import urlsplit, parse_qs
+    strategy_id = parse_qs(urlsplit(exact_url).query)['v2_strategy'][0]
+    pattern = f'**/diagnoses/*/strategies/{strategy_id}?*'
+    def unavailable(route):
+        route.fulfill(status=404, content_type='application/json', body=json.dumps({'detail': '隔离策略归属不匹配'}))
+    page.route(pattern, unavailable)
+    try:
+        page.reload()
+        expect(detail.get_by_text('无法读取已保存策略与稿件', exact=True)).to_be_visible(timeout=15000)
+        expect(article).to_have_count(0)
+        expect(detail.get_by_role('button', name='生成完整执行方案与稿件')).to_have_count(0)
+        expect(page).to_have_url(exact_url)
+    finally:
+        page.unroute(pattern, unavailable)
+    detail.get_by_role('button', name='重试读取结果', exact=True).click()
+    expect(article).to_contain_text(expected_body, timeout=15000)
+    report['saved_detail_missing_strategy_refused'] = True
+
+
 def accessibility_check(page, out, report, name):
     page.wait_for_function("""() => document.fonts.status === 'loaded' &&
         document.getAnimations().every(a => a.playState !== 'running' ||
@@ -694,12 +738,15 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         detail.get_by_role('textbox', name='已有页面 URL', exact=True).scroll_into_view_if_needed()
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
         accessibility_check(page, out, report, 'asset-verification-390')
+        detail.get_by_role('textbox', name='已有页面 URL', exact=True).scroll_into_view_if_needed()
         page.screenshot(path=str(out / 'asset-verification-390.png'), full_page=False)
         report['screenshots'].append('asset-verification-390.png')
         assert len(calls) == before_detail
         assert page.request.get(f'{origin}/api/v2/single-prompt/optimization-tasks/{regenerated_task}/deliveries?project_id=1&prompt_id=44').json()[0] == regenerated
         report['asset_verification'] = {'operation': 'UPDATE_EXISTING', 'refresh_preserved': True,
             'original_delivery_unchanged': True, 'model_calls': 0, 'provenance': 'USER_REPORTED'}
+        saved_detail_failure_check(page, report, regenerated['output']['publication_draft']['body_markdown'])
+        assert len(calls) == before_detail
         page.set_viewport_size({'width': 1440, 'height': 1000})
     page.goto(f'{origin}/?v2_project=1&v2_prompt=44&v2_analysis={analysis.analysis_id}&optimization_task=missing-task')
     expect(panel.get_by_text('当前链接未匹配本分析的自动任务', exact=True)).to_be_visible(timeout=15000)

@@ -45,6 +45,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     revise_diagnosis_result,
 )
 from app.modules.single_prompt_v2.schemas import (
+    TruthCorrectionPreview, TruthCorrectionCreate, TruthReprojectionCreate,
     AutomaticOptimizationCreate, AutomaticOptimizationAction, AutomaticOptimizationAuthorization, AutomaticDraftRevisionCreate, AutomaticDraftRegenerationCreate,
     SinglePromptAnalysisCreate,
     SinglePromptAutomaticStrategyCreate,
@@ -122,6 +123,42 @@ from app.modules.single_prompt_v2.source_preparation import (
 
 router = APIRouter(prefix="/api/v2/single-prompt", tags=["single-prompt-v2-release"])
 get_db = get_release_db
+
+@router.get("/optimization-tasks/{task_id}/truths")
+def read_task_truths(task_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+    from .truth_corrections import task_truths
+    return task_truths(db, parent_task_id=task_id, project_id=project_id, prompt_id=prompt_id)
+
+
+@router.post("/optimization-tasks/{task_id}/truth-corrections/preview")
+def preview_task_truth_correction(task_id: str, payload: TruthCorrectionPreview, db: Session = Depends(get_db)):
+    from .truth_corrections import preview_correction
+    return preview_correction(db, parent_task_id=task_id, **payload.model_dump())
+
+
+@router.post("/optimization-tasks/{task_id}/truth-corrections", status_code=201)
+def save_task_truth_correction(task_id: str, payload: TruthCorrectionCreate,
+                               request: Request, response: Response, db: Session = Depends(get_db)):
+    from .truth_corrections import correct_truth, correction_view
+    from .automatic_delivery import require_task
+    from app.core.release_access import principal
+    require_task(db, task_id, payload.project_id, payload.prompt_id)
+    row, created = correct_truth(db, parent_task_id=task_id, actor=principal(request)['name'],
+        **payload.model_dump(exclude={'human_confirmed'}))
+    if not created:
+        response.status_code = 200
+    return correction_view(row)
+
+
+@router.post('/optimization-tasks/{task_id}/truth-reprojections', status_code=201)
+def queue_truth_reprojection(task_id: str, payload: TruthReprojectionCreate,
+                             response: Response, db: Session = Depends(get_db)):
+    from .truth_corrections import create_reprojection_task
+    from .automatic_delivery import task_view
+    row, created = create_reprojection_task(db, parent_task_id=task_id, **payload.model_dump())
+    if not created:
+        response.status_code = 200
+    return task_view(row)
 
 
 @router.post("/analyses/{analysis_id}/optimization-tasks", status_code=201)

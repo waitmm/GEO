@@ -7,7 +7,7 @@
     "dev": "vite --mode release",
     "dev:legacy": "vite --mode legacy --port 5174",
     "test:startup": "node --test tests/startup.test.mjs",
-    "test:client": "node --experimental-strip-types --test tests/api-client.test.mjs tests/evidence.test.mjs tests/manuscript-export.test.mjs tests/optimization-selection.test.mjs",
+    "test:client": "node --experimental-strip-types --test tests/api-client.test.mjs tests/evidence.test.mjs tests/manuscript-export.test.mjs tests/optimization-selection.test.mjs tests/optimization-status.test.mjs",
     "build": "tsc && vite build --mode release",
     "build:release": "tsc && vite build --mode release",
     "build:legacy": "tsc && vite build --mode legacy --outDir dist-legacy",

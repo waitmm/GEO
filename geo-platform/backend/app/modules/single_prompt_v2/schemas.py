@@ -6,6 +6,33 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .delivery_generation import DraftResponse
 
 
+class TruthCorrectionPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: int = Field(gt=0)
+    prompt_id: int = Field(gt=0)
+    truth_id: int = Field(gt=0)
+    base_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expected_set_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    capability_label: str = Field(min_length=1, max_length=160)
+    product_truth_status: Literal["SUPPORTED", "PARTIALLY_SUPPORTED", "NOT_SUPPORTED", "UNKNOWN"]
+    source_reference: str = Field(max_length=2000)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class TruthCorrectionCreate(TruthCorrectionPreview):
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    preview_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    human_confirmed: Literal[True]
+
+
+class TruthReprojectionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: int = Field(gt=0)
+    prompt_id: int = Field(gt=0)
+    correction_id: str = Field(min_length=1, max_length=100)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
 class AutomaticDraftRegenerationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     project_id: int = Field(gt=0)

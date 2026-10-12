@@ -710,6 +710,100 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
         report['simulated_source_acquisitions'] = 1
 
 
+def truth_correction_check(page, origin, fixture, Session, monkeypatch, out, report):
+    from datetime import datetime
+    from app.models import Project, TargetBrandCapabilityTruth, SinglePromptAnalysisContext, SinglePromptOptimizationTask
+    from app.modules.single_prompt_v2.automatic_delivery import execute_task
+    from test_automatic_delivery import simulated_delivery_transport
+    from test_delivery_truth_corrections import grounded_brand_answer
+    with Session() as db:
+        db.get(Project, 1).brand_name = '甲工具'
+        db.add(TargetBrandCapabilityTruth(project_id=1, capability_key='支持批量生成短链', capability_label='支持批量生成短链',
+            product_truth_status='SUPPORTED', truth_source='MANUAL_CONFIRMED', source_reference='https://example.com/product',
+            reviewed_by='isolated-human-fixture', reviewed_at=datetime.utcnow()))
+        db.commit()
+        raw_hash = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=fixture['analysis'].analysis_id).one().raw_output_hash
+    calls = simulated_delivery_transport(monkeypatch, answer_response=grounded_brand_answer)
+    base = origin + '/api/v2/single-prompt'
+    created = page.request.post(f'{base}/analyses/{fixture["analysis"].analysis_id}/optimization-tasks', data={
+        'project_id': 1, 'prompt_id': 44, 'raw_output_hash': raw_hash, 'idempotency_key': 'browser-truth-correction-parent'})
+    assert created.status == 201, created.text()
+    parent = created.json()
+    auth = {'project_id': 1, 'prompt_id': 44, 'expected_revision': parent['revision'], 'input_hash': parent['input_hash'],
+        'max_requests': 4, 'max_tokens': 800000, 'max_cost_cny': 8, 'conservative_cny_per_million_tokens': 10,
+        'pricing_source': 'isolated-not-real-model-billing', 'pricing_checked_at': datetime.utcnow().date().isoformat()}
+    assert page.request.post(f'{base}/optimization-tasks/{parent["task_id"]}/authorization', data=auth).status == 200
+    execute_task(parent['task_id'], session_factory=Session)
+    with Session() as db:
+        row = db.query(SinglePromptOptimizationTask).filter_by(task_id=parent['task_id']).one()
+        assert row.status.startswith('COMPLETED'), row.blocker_detail
+        original = (row.input_json, row.progress_json)
+    url = f'{origin}/?v2_project=1&v2_prompt=44&v2_analysis={fixture["analysis"].analysis_id}&optimization_task={parent["task_id"]}'
+    page.goto(url)
+    panel = page.get_by_role('region', name='自动优化交付')
+    panel.get_by_role('button', name='纠正品牌事实', exact=True).click(timeout=15000)
+    dialog = page.get_by_role('dialog', name='品牌事实纠错', exact=True)
+    select = dialog.get_by_role('combobox', name='选择待纠正事实', exact=True)
+    select.press('ArrowDown'); select.press('Enter')
+    expect(dialog.get_by_label('单项事实及适用条件', exact=True)).to_have_value('支持批量生成短链')
+    dialog.get_by_label('人工判断', exact=True).select_option('UNKNOWN')
+    dialog.get_by_label('纠错原因与依据', exact=True).fill('隔离人工验收：原资料未确认当前能力，不应作公开承诺。')
+    dialog.get_by_role('button', name='预览影响范围', exact=True).click()
+    expect(dialog.get_by_text('受影响方向', exact=True)).to_be_visible()
+    expect(dialog.get_by_role('button', name='保存事实纠错', exact=True)).to_be_disabled()
+    for width in [1440, 390]:
+        page.set_viewport_size({'width': width, 'height': 1000})
+        accessibility_check(page, out, report, f'truth-preview-{width}')
+        screenshot = f'truth-preview-{width}.png'
+        page.screenshot(path=str(out / screenshot), full_page=True); report['screenshots'].append(screenshot)
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    dialog.get_by_role('checkbox', name='我已核对事实与依据，确认保存独立纠错版本').check()
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/truth-corrections')) as saved:
+        dialog.get_by_role('button', name='保存事实纠错', exact=True).click()
+    correction = saved.value.json()
+    assert saved.value.status == 201 and correction['output']['product_truth_status'] == 'UNKNOWN'
+    expect(dialog.get_by_text('事实纠错第 1 版已保存；原稿和原判断保持不变', exact=True)).to_be_visible()
+    page.reload()
+    panel.get_by_role('button', name='纠正品牌事实', exact=True).click(timeout=15000)
+    dialog.get_by_text('纠错 1 · 支持批量生成短链 · 尚无法确认', exact=True).click()
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/truth-reprojections')) as queued:
+        dialog.get_by_role('button', name='更新受影响内容', exact=True).click()
+    new = queued.value.json()
+    assert queued.value.status == 201 and new['task_kind'] == 'TRUTH_REPROJECTION'
+    assert new['authorization']['policy'] == 'CACHE_ONLY'
+    execute_task(new['task_id'], session_factory=Session)
+    panel.get_by_role('button', name='授权本任务模型调用', exact=True).click(timeout=15000)
+    authorization = page.get_by_role('dialog', name='本任务独立调用授权')
+    expect(authorization).to_contain_text('回答、引用和资料核实不允许新增模型请求')
+    for label, value in [('请求次数上限', '2'), ('总 token 上限', '800000'), ('人民币硬预算', '8'),
+        ('输入 / 输出每百万 token 的较高保守单价（人民币）', '10'),
+        ('已核实计费依据', '隔离工程模拟价格，不是真实调用授权'), ('计费核实日期', datetime.utcnow().date().isoformat())]:
+        authorization.get_by_label(label, exact=True).fill(value)
+    authorization.get_by_role('button', name='确认授权并继续', exact=True).click()
+    expect(authorization).not_to_be_visible()
+    execute_task(new['task_id'], session_factory=Session)
+    expect(panel.get_by_role('button', name='复制完整正文', exact=True)).to_be_visible(timeout=15000)
+    page.reload()
+    expect(panel.get_by_role('button', name='复制完整正文', exact=True)).to_be_visible(timeout=15000)
+    expect(panel.get_by_text(re.compile('^事实纠错局部更新：'))).to_be_visible()
+    with Session() as db:
+        old = db.query(SinglePromptOptimizationTask).filter_by(task_id=parent['task_id']).one()
+        row = db.query(SinglePromptOptimizationTask).filter_by(task_id=new['task_id']).one()
+        assert (old.input_json, old.progress_json) == original
+        assert row.status.startswith('COMPLETED'), row.blocker_detail
+        requests = json.loads(row.progress_json)['requests']
+        assert len(requests) == 2 and {r['stage'] for r in requests} == {'DRAFT', 'TEXT_QA'}
+        assert db.query(TargetBrandCapabilityTruth).one().product_truth_status == 'SUPPORTED'
+    panel.get_by_role('button', name='查看原任务与历史稿件', exact=True).click()
+    expect(panel.get_by_text(re.compile('^事实纠错局部更新：'))).to_have_count(0)
+    expect(panel.get_by_role('button', name='复制完整正文', exact=True)).to_be_visible(timeout=15000)
+    assert len(calls) == 6 and not report['errors']
+    report.update(status='PASS_OFFLINE_SIMULATED_PROVIDER', simulated_provider_requests=len(calls),
+        verified=['HUMAN_PREVIEW_AND_EXPLICIT_CONFIRMATION', 'APPEND_ONLY_CORRECTION', 'REFRESH_HISTORY',
+            'EXACT_PARENT_REPROJECTION', 'NO_UPSTREAM_EXTERNAL_CALLS', 'NEW_DRAFT_AND_QA', 'ORIGINAL_UNCHANGED'],
+        not_verified=['REAL_MODEL_QUALITY', 'REAL_HUMAN_FACT_ACCURACY'], correction_id=correction['correction_id'])
+
+
 def main():
     from datetime import datetime, timezone
     out = ROOT / 'backend/artifacts/acceptance' / ('browser-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
@@ -824,6 +918,8 @@ def main():
                     access_check(page, origin, fixture, out, report)
                 elif '--observe' in sys.argv:
                     observation_check(page, f'http://127.0.0.1:{port}', fixture, out, report)
+                elif '--truth-correction' in sys.argv:
+                    truth_correction_check(page, origin, fixture, Session, monkeypatch, out, report)
                 else:
                     automatic_check(page, f'http://127.0.0.1:{port}', fixture, Session, monkeypatch, out, report)
                 return

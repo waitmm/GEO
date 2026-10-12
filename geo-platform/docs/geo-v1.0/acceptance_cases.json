@@ -920,7 +920,11 @@
     {
       "id": "AC-COR-02",
       "automated_checks": [
-        "tests.test_delivery_truth_update::test_truth_update_keeps_old_delivery_and_reuses_answer_citation"
+        "tests.test_delivery_truth_update::test_truth_update_keeps_old_delivery_and_reuses_answer_citation",
+        "tests.test_delivery_truth_corrections::test_truth_correction_append_only_and_scoped_reprojection_reuses_upstream",
+        "tests.test_delivery_truth_corrections::test_direction_filter_never_rewrites_unaffected_actions",
+        "tests.test_delivery_truth_corrections::test_correction_replaces_selected_direction_with_existing_qualified_candidate",
+        "tests.test_delivery_truth_corrections::test_upstream_request_guard_cannot_spend_correction_authority"
       ],
       "module": "COR",
       "name": "局部事实修改",
@@ -931,11 +935,15 @@
         "COR-002",
         "COR-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": "Component only: recovery-access-20261010/pytest.xml verifies a new explicit synthetic Truth snapshot, unchanged old result and Answer/Citation cache reuse; legal-zero direction does not consume unrelated Truth. Related-action correction UI remains unverified, so NOT_RUN retained."
+      "status": "PARTIAL",
+      "evidence": "truth-correction-api-20261010/pytest.xml 5 PASS; browser-20261010T054853Z/report.json PASS isolated human-form interaction: preview/save/refresh/new affected draft, original unchanged, only writer/QA requests, original Answer/Citation caches reused. 6 simulated requests in complete browser path, zero real calls. truth-replacement-final-20261012/pytest.xml: selected candidate replacement and unselected fact correction/no-new-draft pass; original single-direction qualification policy preserved. Other correction types and real model quality remain unverified. Initial browser054631Z accessibility FAIL retained."
     },
     {
       "id": "AC-COR-03",
+      "automated_checks": [
+        "tests.test_delivery_truth_corrections::test_truth_correction_refuses_wrong_identity_stale_preview_and_unsupported_assertion",
+        "tests.test_delivery_truth_corrections::test_api_requires_human_confirmation_and_retains_independent_actor_history"
+      ],
       "module": "COR",
       "name": "版本冲突",
       "given": "编辑基于旧版本",
@@ -944,8 +952,8 @@
       "requirements": [
         "COR-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "truth-correction-api-20261010/pytest.xml: exact fact/set/preview conflicts and wrong-project/forged-actor/absent-human-confirmation rejected. Other correction object types not covered; not full AC-COR-03 PASS."
     },
     {
       "id": "AC-COR-04",

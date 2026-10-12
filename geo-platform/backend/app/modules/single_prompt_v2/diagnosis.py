@@ -401,13 +401,8 @@ def _snapshot_truth(row: TargetBrandCapabilityTruth) -> dict[str, Any]:
 
 
 def _project_truth_state(db: Session, project_id: int, frozen_truth_set_hash: str = "") -> dict[str, Any]:
-    rows = (
-        db.query(TargetBrandCapabilityTruth)
-        .filter(TargetBrandCapabilityTruth.project_id == project_id)
-        .order_by(TargetBrandCapabilityTruth.id)
-        .all()
-    )
-    truths = [_snapshot_truth(row) for row in rows]
+    from .truth_corrections import project_truths
+    truths = project_truths(db, project_id)
     current_hash = _hash(truths)
     return {
         "truths": truths,
@@ -506,7 +501,7 @@ def record_target_brand_truth(
         TargetBrandCapabilityTruth.project_id == project_id,
         TargetBrandCapabilityTruth.capability_key == key,
     ).one_or_none()
-    if existing:
+    if existing or any(t['capability_key'] == key for t in current_state['truths']):
         raise HTTPException(status_code=409, detail="该目标品牌事实已存在；本入口不会覆盖既有人工事实")
 
     project = db.get(Project, project_id)
@@ -638,12 +633,6 @@ def create_diagnosis(
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
 
-    truths = (
-        db.query(TargetBrandCapabilityTruth)
-        .filter(TargetBrandCapabilityTruth.project_id == project_id)
-        .order_by(TargetBrandCapabilityTruth.id)
-        .all()
-    )
     brand_snapshot = {
         "project_id": project.id,
         "brand_name": project.brand_name,
@@ -651,7 +640,8 @@ def create_diagnosis(
         "website_url": project.website_url,
         "project_updated_at": _iso(project.updated_at),
     }
-    truth_snapshot = [_snapshot_truth(row) for row in truths]
+    from .truth_corrections import project_truths
+    truth_snapshot = [] if automatic_task_id else project_truths(db, project_id)
     if automatic_task_id:
         from .automatic_delivery import require_task
         parent = require_task(db, automatic_task_id, project_id, prompt_id)
@@ -2587,13 +2577,8 @@ def reproject_target_brand_truths(
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
-    truth_rows = (
-        db.query(TargetBrandCapabilityTruth)
-        .filter(TargetBrandCapabilityTruth.project_id == project_id)
-        .order_by(TargetBrandCapabilityTruth.id)
-        .all()
-    )
-    truth_snapshot = [_snapshot_truth(row) for row in truth_rows]
+    from .truth_corrections import project_truths
+    truth_snapshot = project_truths(db, project_id)
     truth_set_hash = _hash(truth_snapshot)
     if truth_set_hash != expected_project_truth_set_hash:
         raise HTTPException(status_code=409, detail="项目事实集合已变化，请重新加载后再提交")

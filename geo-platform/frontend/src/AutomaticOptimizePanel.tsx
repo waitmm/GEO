@@ -5,10 +5,12 @@ import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { SupplementalSources } from "./SupplementalSources";
 import { ManuscriptEditor } from "./ManuscriptEditor";
+import { TruthCorrectionPanel } from './TruthCorrectionPanel';
 import { DeliveryEvidence } from "./DeliveryEvidence";
 import { ManuscriptPreview } from "./ManuscriptPreview";
 import { downloadManuscript } from "./manuscriptExport";
 import { readOptimizationSelection, resolveOptimizationSelection } from "./optimizationSelection";
+import { optimizationStatus as statusLabel } from './optimizationStatus';
 import type { OptimizationSelection } from "./optimizationSelection";
 
 type Task = {
@@ -20,7 +22,6 @@ type Task = {
   objects: Record<string, any>; limitations: any[];
   usage: { external_requests: number; cache_hits: number; reserved_tokens: number; reserved_cost_cny: number; actual_tokens: number; unsettled_requests: number };
 };
-const statuses: Record<string, string> = { QUEUED: "等待执行", RUNNING: "正在执行", WAITING_AUTHORIZATION: "等待调用授权", BLOCKED: "需要处理", INTERRUPTED: "执行中断", CANCELLED: "已取消", COMPLETED: "稿件已交付", COMPLETED_WITH_LIMITATIONS: "稿件已交付，有范围限制" };
 const stages = [{ key: "SOURCES", title: "正文准备" }, { key: "ANSWER", title: "回答分析" }, { key: "CITATION", title: "引用分析" }, { key: "STRATEGY", title: "优化建议" }, { key: "TRUTH", title: "品牌资料核实" }, { key: "DRAFT", title: "具体稿件" }, { key: "TEXT_QA", title: "文本检查" }];
 const assetNames: Record<string, string> = { HELP_DOC: "帮助文档", FEATURE_PAGE: "功能说明页", PRODUCT_PAGE: "产品页", ARTICLE: "文章", VIDEO: "视频稿" };
 
@@ -144,16 +145,18 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           ]} />}
         <Checkbox checked={!sourceVersion && fetchAllowed} disabled={!!active || !!sourceVersion} onChange={e => setFetchAllowed(e.target.checked)}>允许获取本次引用正文，每个 URL 最多两次</Checkbox>
         <Space wrap><Button type="primary" icon={<Play size={16} />} disabled={!!active || !rawHash} loading={busy} onClick={() => void mutate("create")}>开始自动优化</Button>
-          {task && <Tag color={active ? "processing" : task.status.startsWith("COMPLETED") ? "success" : "default"}>{statuses[task.status] || "状态待核对"}</Tag>}
+          {task && <Tag color={active ? "processing" : task.status.startsWith("COMPLETED") ? "success" : "default"}>{statusLabel(task)}</Tag>}
         </Space>
       </Space>
       {selected && !task && !readError && <Alert type="warning" showIcon message="当前链接未匹配本分析的自动任务" description="未替换为其他稿件。可重新选择任务；旧入口保存的稿件仍可在原方案详情中查看。" />}
-      {tasks.length > 0 && <Select aria-label="优化任务版本" value={task?.task_id} onChange={selectTask} placeholder="选择当前分析的任务" style={{ width: "100%", marginTop: 12 }} options={tasks.map((t, i) => ({ value: t.task_id, label: `任务 ${tasks.length - i} · ${statuses[t.status] || t.status} · Run ${t.scope.join("、")}` }))} />}
+      {tasks.length > 0 && <Select aria-label="优化任务版本" value={task?.task_id} onChange={selectTask} placeholder="选择当前分析的任务" style={{ width: "100%", marginTop: 12 }} options={tasks.map((t, i) => ({ value: t.task_id, label: `任务 ${tasks.length - i} · ${statusLabel(t)} · Run ${t.scope.join("、")}` }))} />}
       {task && <>
         {task.task_kind === "TEXT_REVISION" && <Alert type="info" message="正文修改复检：沿用原始分析与证据，只检查本次修改稿" />}
         {task.task_kind === "TEXT_REGENERATION" && <Alert type="info" message="正文重新生成：保留原稿，沿用冻结分析与证据，仅生成和检查新正文" />}
+        {task.task_kind === 'TRUTH_REPROJECTION' && <Alert type="info" message="事实纠错局部更新：只更新受影响方向；回答与引用仅复用兼容缓存，其他稿件保留在原任务" />}
+        {task.objects.truth_reprojection && <Button onClick={() => selectTask(task.objects.truth_reprojection.parent_task_id)}>查看原任务与历史稿件</Button>}
         <Steps size="small" responsive current={task.stage === "COMPLETE" ? stages.length : Math.max(0, stages.findIndex(s => s.key === task.stage))} items={stages.map(s => ({ title: s.title }))} style={{ margin: "20px 0" }} />
-        {task.blocker_detail && <Alert type="warning" showIcon message={statuses[task.status]} description={task.blocker_detail} />}
+        {task.blocker_detail && <Alert type="warning" showIcon message={statusLabel(task)} description={task.blocker_detail} />}
         <Descriptions size="small" column={{ xs: 1, md: 3 }}>
           <Descriptions.Item label="固定样本">{task.scope.map(r => `Run #${r}`).join("、")}</Descriptions.Item>
           <Descriptions.Item label="本任务冻结资料">{task.brand_context_label}；额外公开资料 {task.supplemental_source_count} 份</Descriptions.Item>
@@ -164,6 +167,9 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           <Descriptions.Item label="模型">{task.provider} / {task.requested_model}</Descriptions.Item>
         </Descriptions>
         <Space wrap>
+          {!['TEXT_REVISION', 'TEXT_REGENERATION'].includes(task.task_kind) && task.objects.strategy_id && <TruthCorrectionPanel
+            key={`truth:${task.task_id}`} taskId={task.task_id} projectId={projectId} promptId={promptId}
+            onQueued={saved => { if (!alive.current) return; ++sequence.current; selectTask(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />}
           {task.authorization.policy === "CACHE_ONLY" && !active && !task.status.startsWith("COMPLETED") && task.status !== "CANCELLED" && <Button icon={<ShieldCheck size={16} />} onClick={() => setAuthOpen(true)}>授权本任务模型调用</Button>}
           {["INTERRUPTED", "BLOCKED"].includes(task.status) && <Button disabled={!!task.usage.unsettled_requests} loading={busy} icon={<Play size={16} />} onClick={() => void mutate("resume")}>恢复未完成步骤</Button>}
           {!task.status.startsWith("COMPLETED") && task.status !== "CANCELLED" && <Button danger icon={<Square size={16} />} loading={busy} onClick={() => void mutate("cancel")}>停止后续步骤</Button>}
@@ -220,6 +226,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
     <Modal title="本任务独立调用授权" open={authOpen} onCancel={() => setAuthOpen(false)} footer={null} destroyOnHidden>
       <Alert type="warning" showIcon message="失败请求计入预算；自动重试为 0。刷新、恢复和新结果不重置额度。" />
       {task?.task_kind === "TEXT_REGENERATION" ? <Typography.Paragraph>本次只允许正文生成和文本检查各最多一次；不重新计算回答、引用或品牌事实，不继承旧任务额度。</Typography.Paragraph>
+        : task?.task_kind === 'TRUTH_REPROJECTION' ? <Typography.Paragraph>本次只允许受影响稿件的正文生成和文本检查；回答、引用和资料核实不允许新增模型请求，不重新抓取来源。</Typography.Paragraph>
         : task?.task_kind !== "TEXT_REVISION" && <Typography.Paragraph>范围包括本任务的回答、引用分析、合格官方资料的主张提取与核实、正文生成及文本检查；不包含其他项目或重新采样。</Typography.Paragraph>}
       <Form form={form} layout="vertical" onFinish={v => void mutate("authorization", v)} style={{ marginTop: 16 }}>
         <Form.Item label="请求次数上限" name="max_requests" rules={[{ required: true }]}><InputNumber min={1} max={task?.task_kind === "TEXT_REVISION" ? 1 : task?.task_kind === "TEXT_REGENERATION" ? 2 : 1000} precision={0} /></Form.Item>

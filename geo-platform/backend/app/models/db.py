@@ -1552,6 +1552,30 @@ class TargetBrandCapabilityTruth(Base, TimestampMixin):
     note: Mapped[str] = mapped_column(Text, default="")
 
 
+class SinglePromptTruthCorrection(Base):
+    __tablename__ = "single_prompt_truth_corrections"
+    __table_args__ = (
+        UniqueConstraint("truth_id", "version_number", name="uq_truth_correction_version"),
+        UniqueConstraint("truth_id", "base_hash", name="uq_truth_correction_parent"),
+        UniqueConstraint("project_id", "idempotency_key", name="uq_truth_correction_request"),
+    )
+    correction_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    truth_id: Mapped[int] = mapped_column(ForeignKey("target_brand_capability_truths.id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    request_json: Mapped[str] = mapped_column(Text)
+    base_hash: Mapped[str] = mapped_column(String(64))
+    base_json: Mapped[str] = mapped_column(Text)
+    output_hash: Mapped[str] = mapped_column(String(64))
+    output_json: Mapped[str] = mapped_column(Text)
+    impact_json: Mapped[str] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(String(120))
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class DecisionGapDiagnosis(Base, TimestampMixin):
     __tablename__ = "decision_gap_diagnoses"
     __table_args__ = (

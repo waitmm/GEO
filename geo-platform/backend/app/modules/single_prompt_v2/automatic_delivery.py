@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import (Project, SinglePromptAnalysisContext, SinglePromptOptimizationTask, TargetBrandCapabilityTruth)
+from app.models import (Project, SinglePromptAnalysisContext, SinglePromptOptimizationTask)
 from app.services.serialization import loads
 from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import DeepSeekClient, resolve_deepseek_request_model
@@ -45,13 +45,13 @@ def configuration_snapshot(db: Session, project_id: int, prompt_text: str, conte
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "项目不存在")
-    from .diagnosis import _snapshot_truth
+    from .truth_corrections import project_truths
     model = get_settings().deepseek_model
     return {"computation_contracts": computation_contracts(),
         "brand": {"project_id": project_id, "brand_name": project.brand_name,
             "brand_aliases": loads(project.brand_aliases_json, []), "website_url": project.website_url,
             "project_updated_at": project.updated_at.isoformat() if project.updated_at else None},
-        "truth_snapshot": [_snapshot_truth(t) for t in db.query(TargetBrandCapabilityTruth).filter_by(project_id=project_id).order_by(TargetBrandCapabilityTruth.id)],
+        "truth_snapshot": project_truths(db, project_id),
         "brand_context": select_context(db, project_id=project_id, context_version_id=context_version_id, query=prompt_text),
         "provider": "deepseek", "requested_model": model,
         "effective_request_model": resolve_deepseek_request_model(model, "JSON_SCHEMA")}
@@ -116,7 +116,7 @@ def task_view(row: SinglePromptOptimizationTask) -> dict:
     requests = progress.get("requests") or []
     return {"task_id": row.task_id, "project_id": row.project_id, "prompt_id": row.prompt_id,
         "task_kind": ("TEXT_REGENERATION" if (inputs.get("delivery_revision") or {}).get("contract_version") == "delivery_text_regeneration.v1"
-            else "TEXT_REVISION" if inputs.get("delivery_revision") else "AUTOMATIC_OPTIMIZE"),
+            else "TEXT_REVISION" if inputs.get("delivery_revision") else "TRUTH_REPROJECTION" if inputs.get("truth_correction") else "AUTOMATIC_OPTIMIZE"),
         "pending_draft": (inputs.get("delivery_revision") or {}).get("draft"),
         "analysis_id": row.analysis_id, "context_id": row.context_id, "input_hash": row.input_hash,
         "status": row.status, "revision": row.revision, "stage": progress.get("stage"),
@@ -283,6 +283,11 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
         authorization = loads(active.authorization_json, {})
         progress = loads(active.progress_json, {})
         requests = progress.setdefault("requests", [])
+        if inputs.get("truth_correction"):
+            from .delivery_generation import GENERATION_VERSION, QA_VERSION
+            allowed = {GENERATION_VERSION: 'DRAFT', QA_VERSION: 'TEXT_QA'}
+            if identity.get('prompt_version') not in allowed or progress.get('stage') != allowed[identity['prompt_version']]:
+                raise SemanticLLMError('TRUTH_REPROJECTION_FORBIDS_UPSTREAM_EXTERNAL_CALL')
         if inputs.get("delivery_revision"):
             from .delivery_generation import GENERATION_VERSION, QA_VERSION
             regenerate = inputs["delivery_revision"].get("contract_version") == "delivery_text_regeneration.v1"
@@ -352,8 +357,10 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
                 return
         raise SemanticLLMError("OPTIMIZATION_AUDIT_CONFLICT_ARTIFACT_PRESERVED")
 
+    upstream_reprojection = bool(inputs.get('truth_correction') and
+        loads(row.progress_json, {}).get('stage') not in {'DRAFT', 'TEXT_QA'})
     return DeepSeekClient(thinking_mode="disabled", max_attempts=1,
-        cache_only=loads(row.authorization_json, {}).get("policy") != "ALLOW_EXTERNAL",
+        cache_only=upstream_reprojection or loads(row.authorization_json, {}).get("policy") != "ALLOW_EXTERNAL",
         request_guard=reserve, response_audit_sink=audit)
 
 
@@ -399,6 +406,9 @@ def execute_task(task_id: str, *, session_factory) -> None:
             from .delivery_revision import execute_revision
             execute_revision(db, row, fixed)
             return
+        if fixed.get('truth_correction'):
+            from .truth_corrections import validate_reprojection
+            validate_reprojection(db, row)
         policy = loads(row.authorization_json, {}).get("policy", "CACHE_ONLY")
         key = f"{task_id}:{policy}"
         objects = loads(row.progress_json, {}).get("objects") or {}
@@ -455,6 +465,10 @@ def execute_task(task_id: str, *, session_factory) -> None:
         checkpoint(db, row, objects={"answer_result_version": result.result_version,
             "answer_result_hash": result.output_hash, "answer_coverage": coverage})
         if not coverage["valid_compute_run_ids"]:
+            if fixed.get('truth_correction'):
+                checkpoint(db, row, status='BLOCKED', code='TRUTH_REPROJECTION_UPSTREAM_UNAVAILABLE',
+                    detail='原回答缺少合格兼容缓存，本次纠错不授权重新调用回答模型；旧结果保留。')
+                return
             pending_authority = bool(coverage["pending_external_authorization_run_ids"])
             checkpoint(db, row, status="WAITING_AUTHORIZATION" if policy == "CACHE_ONLY" else "BLOCKED",
                 code="ANSWER_AUTHORIZATION_INSUFFICIENT" if pending_authority else "NO_CONSUMABLE_ANSWER",
@@ -516,7 +530,18 @@ def execute_task(task_id: str, *, session_factory) -> None:
 
         checkpoint(db, row, stage="DRAFT")
         drafts = []
-        for direction in loads(strategy_result.output_json, {})["directions"]:
+        directions = loads(strategy_result.output_json, {})['directions']
+        if fixed.get('truth_correction'):
+            from .truth_corrections import affected_directions
+            directions = affected_directions(directions, fixed['truth_correction'])
+            checkpoint(db, row, objects={'truth_reprojection': {
+                **fixed['truth_correction'], 'new_affected_direction_ids': [d['strategy_id'] for d in directions],
+                'unchanged_deliveries_location': 'PARENT_TASK'}})
+            if not directions:
+                checkpoint(db, row, stage='COMPLETE', status='COMPLETED_WITH_LIMITATIONS',
+                    detail='纠错已应用，本次没有需要生成的新稿件；原稿作为历史版本保留，未受影响内容无需重写。')
+                return
+        for direction in directions:
             proposal, base, _ = create_execution_proposal(db, strategy_id=strategy.strategy_id,
                 strategy_result_version=strategy_result.result_version, strategy_result_hash=strategy_result.output_hash,
                 project_id=row.project_id, prompt_id=row.prompt_id, direction_id=direction["strategy_id"],

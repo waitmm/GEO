@@ -195,7 +195,7 @@ def test_budget_rejected_answer_is_pending_not_failed_and_has_no_external_call(s
 
 
 def simulated_delivery_transport(monkeypatch, on_request=None, qa_response=None, citation_response=None,
-                                 source_response=None, fact_response=None, draft_response=None):
+                                 source_response=None, fact_response=None, draft_response=None, answer_response=None):
     """Test-only Responses/chat boundary for offline API and browser wiring checks."""
     from app.services.semantic_llm import deepseek
     calls = []
@@ -229,7 +229,7 @@ def simulated_delivery_transport(monkeypatch, on_request=None, qa_response=None,
                     'rationale': '已逐项检查该固定候选，模拟结果为没有内容对应。'}
                     for pair in payload['frozen_candidate_pairs']], 'no_binding_reason': None}
             else:
-                response = {'events': [], 'selection_criteria': [], 'unresolved_items': []}
+                response = answer_response(payload) if answer_response else {'events': [], 'selection_criteria': [], 'unresolved_items': []}
             content = codec.dumps(response, ensure_ascii=False)
             usage = {'input_tokens': 100, 'output_tokens': 50, 'total_tokens': 150}
             if url.endswith('/responses'):

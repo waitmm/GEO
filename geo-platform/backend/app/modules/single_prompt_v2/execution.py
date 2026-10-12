@@ -1629,6 +1629,7 @@ def get_execution_proposal_status(
     strategy_id: str,
     project_id: int,
     prompt_id: int,
+    result_version: str | None = None,
 ) -> dict[str, Any]:
     proposal = db.query(SinglePromptExecutionProposal).filter_by(
         proposal_id=proposal_id, strategy_id=strategy_id
@@ -1637,9 +1638,13 @@ def get_execution_proposal_status(
         raise HTTPException(status_code=404, detail="V2 执行方案不存在")
     if proposal.project_id != project_id or proposal.prompt_id != prompt_id:
         raise HTTPException(status_code=409, detail="执行方案身份与当前 Project/Prompt 不匹配")
+    selected_version = result_version if result_version is not None else proposal.active_result_version
     result = db.query(SinglePromptExecutionProposalResult).filter_by(
-        result_version=proposal.active_result_version
+        proposal_id=proposal_id, result_version=selected_version
     ).one_or_none()
+    if result_version is not None and not result:
+        raise HTTPException(status_code=404, detail="指定执行方案结果版本不存在或不属于当前方案")
+    is_active_result = bool(result and result.result_version == proposal.active_result_version)
     confirmations = db.query(SinglePromptExecutionConfirmation).filter_by(
         proposal_id=proposal_id
     ).order_by(SinglePromptExecutionConfirmation.created_at).all()
@@ -1648,21 +1653,25 @@ def get_execution_proposal_status(
         SinglePromptPublicationRecord.confirmation_id.in_(confirmation_ids)
     ).order_by(SinglePromptPublicationRecord.created_at).all() if confirmation_ids else []
     applicability = _proposal_applicability(db, proposal)
-    active_confirmation = next((row for row in confirmations if row.result_version == proposal.active_result_version), None)
+    selected_confirmation = next((row for row in confirmations if row.result_version == selected_version), None)
     allowed_operations = ["VIEW"]
     output = loads(result.output_json, {}) if result else {}
     needs_upgrade = bool(
         proposal.input_authority_type == "MACHINE_QUALIFICATION"
         and output.get("deliverable_contract_version") != EXECUTION_DELIVERABLE_VERSION
     )
-    if applicability["is_current_input"]:
+    if applicability["is_current_input"] and is_active_result:
         allowed_operations.append("GENERATE_DELIVERABLE" if needs_upgrade else "REVISE")
         current_validation = validate_execution_output(output, loads(proposal.input_snapshot_json, {})) if result and not needs_upgrade else {}
-        if current_validation.get("status") == "READY_FOR_CONFIRMATION" and not active_confirmation:
+        if current_validation.get("status") == "READY_FOR_CONFIRMATION" and not selected_confirmation:
             allowed_operations.append("CONFIRM")
-    if confirmations:
+    if selected_confirmation:
         allowed_operations.append("RECORD_PUBLICATION")
     return {
+        "version_selection": {
+            "active_result_version": proposal.active_result_version,
+            "is_active_result": is_active_result,
+        },
         "proposal": {
             "proposal_id": proposal.proposal_id, "strategy_id": proposal.strategy_id,
             "analysis_id": proposal.analysis_id, "context_id": proposal.context_id,
@@ -1702,7 +1711,7 @@ def get_execution_proposal_status(
         "delivery_status": {
             "needs_upgrade": needs_upgrade,
             "content_available": bool(output.get("publication_draft")),
-            "next_action": "GENERATE_DELIVERABLE" if needs_upgrade else "PROVIDE_PUBLICATION_DETAILS",
+            "next_action": "VIEW_HISTORY" if not is_active_result else "GENERATE_DELIVERABLE" if needs_upgrade else "PROVIDE_PUBLICATION_DETAILS",
         },
         "boundary": {
             "external_llm_calls": 0, "web_refetches": 0, "automatic_publication": False,

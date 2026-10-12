@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { request } from '../src/api/client.ts';
+import { api, request } from '../src/api/client.ts';
+
+test('execution detail passes exact and empty versions without silently selecting current', async t => {
+  const urls = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    urls.push(new URL(url, 'http://127.0.0.1'));
+    return Response.json({});
+  });
+  for (const version of ['execution-v1:hash/value', '', undefined]) {
+    await api.getSinglePromptV2ExecutionProposal('strategy', 'proposal', 1, 44, version);
+  }
+  assert.equal(urls[0].searchParams.get('result_version'), 'execution-v1:hash/value');
+  assert.equal(urls[1].searchParams.get('result_version'), '');
+  assert.equal(urls[2].searchParams.has('result_version'), false);
+});
 
 test('read JSON and merge Headers without dropping content type', async t => {
   t.mock.method(globalThis, 'fetch', async (url, init) => {

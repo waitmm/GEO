@@ -1600,6 +1600,7 @@ export default function App() {
   const v2PendingStrategyKey = useRef<string | null>(null);
   const [v2Execution, setV2Execution] = useState<SinglePromptV2ExecutionStatus | null>(null);
   const [v2ExecutionLoading, setV2ExecutionLoading] = useState(false);
+  const [v2ExecutionError, setV2ExecutionError] = useState<string | null>(null);
   const [v2ExecutionDirectionId, setV2ExecutionDirectionId] = useState("");
   const [brandContextChoice, setBrandContextChoice] = useState<{ projectId: number; id?: string }>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -3382,13 +3383,16 @@ export default function App() {
 
   async function refreshV2Execution() {
     if (!v2Strategy || !projectId || !activePromptId) return;
-    const proposalId = v2Execution?.proposal.proposal_id || new URLSearchParams(window.location.search).get("v2_execution_proposal");
+    const params = new URLSearchParams(window.location.search);
+    const proposalId = params.get("v2_execution_proposal") ?? v2Execution?.proposal.proposal_id;
+    const resultVersion = params.get("v2_execution_result") ?? v2Execution?.result?.result_version;
     if (!proposalId) return;
     const current = beginV2Read('execution');
     setV2ExecutionLoading(true);
+    setV2ExecutionError(null);
     try {
       const status = await api.getSinglePromptV2ExecutionProposal(
-        v2Strategy.strategy.strategy_id, proposalId, projectId, activePromptId,
+        v2Strategy.strategy.strategy_id, proposalId, projectId, activePromptId, resultVersion,
       );
       if (!current()) return;
       setV2Execution(status);
@@ -3397,7 +3401,7 @@ export default function App() {
     } catch (error: any) {
       if (!current()) return;
       setV2Execution(null);
-      message.error(error.message || "读取 V2 执行方案失败");
+      setV2ExecutionError(error.message || "读取执行方案失败");
     } finally {
       if (current()) setV2ExecutionLoading(false);
     }
@@ -4045,6 +4049,9 @@ export default function App() {
     if (!proposalId || v2Execution?.proposal.strategy_id === v2Strategy.strategy.strategy_id) return;
     void refreshV2Execution();
   }, [page, v2Strategy?.strategy.strategy_id, v2Strategy?.result?.result_version, v2Strategy?.review?.review_id, projectId, activePromptId]);
+  useEffect(() => {
+    setV2ExecutionError(null);
+  }, [projectId, activePromptId, v2Strategy?.strategy.strategy_id]);
   useEffect(() => {
     if (v2Execution?.result && window.location.hash === "#v2-execution") {
       document.getElementById("v2-execution")?.scrollIntoView({ block: "start" });
@@ -7290,6 +7297,7 @@ export default function App() {
                   : !v2Strategy?.result ? <Alert type="info" showIcon message="尚无策略候选" description="当前诊断需要先形成合法策略方向。" />
                   : v2Strategy.strategy.input_authority_type !== "MACHINE_QUALIFICATION" && (!v2Strategy.review || v2Strategy.review.decision !== "ACCEPTED") ? <Alert type="warning" showIcon message="策略尚未确认" description="执行方案只能消费有效机器资格或已确认的精确策略结果版本；人工排序不等于确认。" />
                   : !v2Execution && v2ExecutionLoading ? <Alert type="info" showIcon message="正在读取已保存的执行稿件" />
+                  : v2ExecutionError ? <Alert type="error" showIcon message="无法读取指定稿件版本" description={v2ExecutionError} action={<Button icon={<RefreshCw size={15} />} onClick={refreshV2Execution}>重试读取</Button>} />
                   : !v2Execution ? <Space direction="vertical" size={12} style={{ width: "100%" }}>
                     <Alert type="info" showIcon message="选择一个合格方向" description="一次方案只承接一个方向和一个明确资产选择，不会合并多个渠道或页面。" />
                     <Select
@@ -7329,6 +7337,7 @@ export default function App() {
                     </Descriptions>
                     {v2Execution.allowed_operations.includes("GENERATE_DELIVERABLE") && <Alert type="warning" showIcon message="旧版本保留，生成新的冻结输入稿件与 QA" description={<Button type="primary" icon={<FileText size={15} />} loading={v2ExecutionLoading} onClick={generateV2CompleteDeliverable}>生成完整稿件并自动检查</Button>} />}
                     {v2ExecutionOutput.direction.direction_type === "FOUNDATION" && <Alert type="info" showIcon message="Foundation 与渠道 Role 保持分离" description="下面选择的官网产品页、功能页或帮助中心只是执行目的地，不会把策略改成 OFFICIAL_SITE PRIMARY。" />}
+                    {!v2Execution.version_selection.is_active_result && <Alert type="info" showIcon message="正在查看历史稿件版本" description="内容与质量检查保持当时版本，不允许据此修改或重新确认当前方案。" />}
                     {!v2Execution.applicability.is_current_input && <Alert type="warning" showIcon message="执行输入已经过期" description="历史方案和发布记录仍保留，但该版本不能继续授权新编辑或确认。" />}
 
                     {v2ExecutionOutput.asset_resolution && <>
@@ -7361,7 +7370,7 @@ export default function App() {
                     {v2ExecutionOutput.publication_draft && <>
                       <Divider orientation="left">完整可用稿件</Divider>
                       <Alert type={v2ExecutionOutput.automatic_qa?.status === "READY" ? "success" : "warning"} showIcon message="完整稿件" description="具体方法与适用范围保留来源出处；引用是来源表述，不代表已独立核实。发布信息未补齐也可以查看稿件。" />
-                      <Typography.Paragraph copyable={{ text: v2ExecutionOutput.publication_draft.body_markdown }} style={{ whiteSpace: "pre-wrap", marginTop: 12, maxHeight: 620, overflow: "auto", padding: 16, background: "#fafafa", border: "1px solid #e5e7eb" }}>{v2ExecutionOutput.publication_draft.body_markdown}</Typography.Paragraph>
+                      <Typography.Paragraph role="article" aria-label="方案详情完整正文" copyable={{ text: v2ExecutionOutput.publication_draft.body_markdown }} style={{ whiteSpace: "pre-wrap", marginTop: 12, maxHeight: 620, overflow: "auto", padding: 16, background: "#fafafa", border: "1px solid #e5e7eb" }}>{v2ExecutionOutput.publication_draft.body_markdown}</Typography.Paragraph>
                       {v2ExecutionOutput.brand_association && <Descriptions size="small" column={1}>
                         <Descriptions.Item label="品牌关联依据">{v2ExecutionOutput.brand_association.action_hypothesis}</Descriptions.Item>
                         <Descriptions.Item label="已观察事实">{v2ExecutionOutput.brand_association.observed_fact}</Descriptions.Item>
@@ -7371,6 +7380,7 @@ export default function App() {
                     </>}
 
                     <Divider orientation="left">稿件结构与依据</Divider>
+                    <Form component={false} disabled={!v2Execution.allowed_operations.includes("REVISE")}>
                     <Input value={v2ExecutionEdit.title || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, title: event.target.value }))} addonBefore="安全标题" />
                     <Checkbox.Group
                       style={{ width: "100%" }}
@@ -7384,14 +7394,15 @@ export default function App() {
                             <Checkbox value={section.section_id} />
                             <div><Text strong>{section.title}</Text><div><Text type="secondary">{section.purpose} · Truth {(section.truth_ids || []).join("、") || "无目标品牌声明"}</Text></div>{section.draft_text && <div><Text>{section.draft_text}</Text></div>}</div>
                             <Space size={4} className="v2-execution-section-order">
-                              <Tooltip title="上移"><Button size="small" icon={<ArrowUp size={14} />} disabled={selectedIndex <= 0} onClick={() => moveV2ExecutionSection(section.section_id, -1)} aria-label="上移公开 Section" /></Tooltip>
-                              <Tooltip title="下移"><Button size="small" icon={<ArrowDown size={14} />} disabled={selectedIndex < 0 || selectedIndex >= (v2ExecutionEdit.section_order || []).length - 1} onClick={() => moveV2ExecutionSection(section.section_id, 1)} aria-label="下移公开 Section" /></Tooltip>
+                              <Tooltip title="上移"><Button size="small" icon={<ArrowUp size={14} />} disabled={!v2Execution.allowed_operations.includes("REVISE") || selectedIndex <= 0} onClick={() => moveV2ExecutionSection(section.section_id, -1)} aria-label="上移公开 Section" /></Tooltip>
+                              <Tooltip title="下移"><Button size="small" icon={<ArrowDown size={14} />} disabled={!v2Execution.allowed_operations.includes("REVISE") || selectedIndex < 0 || selectedIndex >= (v2ExecutionEdit.section_order || []).length - 1} onClick={() => moveV2ExecutionSection(section.section_id, 1)} aria-label="下移公开 Section" /></Tooltip>
                             </Space>
                           </div>;
                         })}
                       </div>
                     </Checkbox.Group>
                     <Input.TextArea rows={2} value={v2ExecutionEdit.execution_note || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, execution_note: event.target.value }))} placeholder="执行备注" />
+                    </Form>
 
                     <Divider orientation="left">内部待确认清单</Divider>
                     <div className="v2-strategy-list">{v2ExecutionOutput.internal_checklist.map((item, index) => typeof item === "string"
@@ -7447,6 +7458,7 @@ export default function App() {
                     </>}
 
                     <Divider orientation="left">发布前的必要业务信息</Divider>
+                    <Form component={false} disabled={!v2Execution.allowed_operations.includes("REVISE")}>
                     <Row gutter={[12, 12]}>
                       <Col xs={24} md={8}><Text type="secondary">资产类型</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.asset_type || undefined} options={v2ExecutionOutput.asset_type_candidates.map((row) => ({ label: row.label, value: row.asset_type }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, asset_type: value, publication_surface: null }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">计划发布位置</Text><Select style={{ width: "100%", marginTop: 5 }} value={v2ExecutionEdit.publication_surface || undefined} options={v2ExecutionOutput.publication_surface_candidates.filter((row) => row.asset_type === v2ExecutionEdit.asset_type).map((row) => ({ label: row.label, value: row.surface_key }))} onChange={(value) => setV2ExecutionEdit((current) => ({ ...current, publication_surface: value }))} /></Col>
@@ -7459,6 +7471,7 @@ export default function App() {
                       <Col xs={24} md={8}><Text type="secondary">栏目或拟建页面位置</Text><Input style={{ marginTop: 5 }} value={v2ExecutionEdit.publishing_location || ""} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, publishing_location: event.target.value }))} /></Col>
                       <Col xs={24} md={8}><Text type="secondary">账号可操作性</Text><div style={{ marginTop: 9 }}><Checkbox checked={v2ExecutionEdit.account_control_status === "USER_REPORTED_CONTROL"} onChange={(event) => setV2ExecutionEdit((current) => ({ ...current, account_control_status: event.target.checked ? "USER_REPORTED_CONTROL" : "UNVERIFIED" }))}>用户确认可操作</Checkbox></div></Col>
                     </Row>
+                    </Form>
                     {v2ExecutionOutput.validation.errors.length > 0 && <Alert type="warning" showIcon message={v2ExecutionOutput.validation.content_delivery_status === "READY" ? "稿件已完成，发布前还需要最少业务信息" : "方案尚不能确认"} description={v2ExecutionOutput.validation.errors.map(v2ExecutionValidationLabel).join("；")} />}
                     {v2Execution.allowed_operations.includes("REVISE") && <Row gutter={[12, 12]} align="middle">
                       <Col xs={24} md={8}><Input value={v2ExecutionEditor} onChange={(event) => setV2ExecutionEditor(event.target.value)} placeholder="执行人/确认人" /></Col>
@@ -7466,7 +7479,7 @@ export default function App() {
                     </Row>}
                     {v2ExecutionConfirmation && <Alert type="success" showIcon message="执行方案已确认，尚未报告发布" description={`Confirmation ${v2ExecutionConfirmation.confirmation_id} · ${formatDateTime(v2ExecutionConfirmation.created_at)}`} />}
 
-                    {v2ExecutionConfirmation && <>
+                    {v2ExecutionConfirmation && v2Execution.allowed_operations.includes("RECORD_PUBLICATION") && <>
                       <Divider orientation="left">登记实际发布</Divider>
                       <Row gutter={[12, 12]}>
                         <Col xs={24} md={8}><Input value={v2Publication.actual_channel || ""} onChange={(event) => setV2Publication((current) => ({ ...current, actual_channel: event.target.value }))} placeholder="实际渠道" /></Col>

@@ -1106,6 +1106,7 @@ def read_execution_proposal(
     proposal_id: str,
     project_id: int,
     prompt_id: int,
+    result_version: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
     return get_execution_proposal_status(
@@ -1114,6 +1115,7 @@ def read_execution_proposal(
         strategy_id=strategy_id,
         project_id=project_id,
         prompt_id=prompt_id,
+        result_version=result_version,
     )
 
 
@@ -1127,6 +1129,10 @@ def revise_execution(
 ) -> dict:
     if result_version != payload.base_result_version:
         raise HTTPException(status_code=409, detail="路径执行方案版本与提交版本不一致")
+    get_execution_proposal_status(
+        db, proposal_id=proposal_id, strategy_id=strategy_id,
+        project_id=payload.project_id, prompt_id=payload.prompt_id,
+    )
     revise_execution_proposal(
         db,
         proposal_id=proposal_id,
@@ -1187,6 +1193,10 @@ def confirm_execution(
     response: Response,
     db: Session = Depends(get_db),
 ) -> dict:
+    get_execution_proposal_status(
+        db, proposal_id=proposal_id, strategy_id=strategy_id,
+        project_id=payload.project_id, prompt_id=payload.prompt_id,
+    )
     _confirmation, created = confirm_execution_proposal(
         db,
         proposal_id=proposal_id,
@@ -1220,6 +1230,10 @@ def record_execution_publication(
     response: Response,
     db: Session = Depends(get_db),
 ) -> dict:
+    status = get_execution_proposal_status(
+        db, proposal_id=proposal_id, strategy_id=strategy_id,
+        project_id=payload.project_id, prompt_id=payload.prompt_id,
+    )
     report = payload.model_dump(
         exclude={"project_id", "prompt_id", "idempotency_key", "prior_publication_id", "recorder"}
     )
@@ -1240,6 +1254,8 @@ def record_execution_publication(
         strategy_id=strategy_id,
         project_id=payload.project_id,
         prompt_id=payload.prompt_id,
+        result_version=next(row["result_version"] for row in status["confirmations"]
+                            if row["confirmation_id"] == confirmation_id),
     )
 
 

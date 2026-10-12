@@ -745,11 +745,13 @@ def read_execution_proposal(
     proposal_id: str,
     project_id: int,
     prompt_id: int,
+    result_version: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
     return get_execution_proposal_status(
         db, proposal_id=proposal_id, strategy_id=strategy_id,
         project_id=project_id, prompt_id=prompt_id,
+        result_version=result_version,
     )
 
 

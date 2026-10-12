@@ -735,7 +735,9 @@
       "id": "AC-EXE-04",
       "automated_checks": [
         "tests.test_delivery_revision::test_revision_is_pending_without_authority_then_one_qa_repairs_actual_text",
-        "tests.test_delivery_revision::test_revision_rejects_wrong_scope_hash_and_unbound_new_target_facts"
+        "tests.test_delivery_revision::test_revision_rejects_wrong_scope_hash_and_unbound_new_target_facts",
+        "tests.test_release_execution_versions::test_detail_reads_exact_old_or_current_version_without_writes",
+        "tests.test_release_execution_versions::test_detail_missing_empty_or_foreign_version_never_falls_back"
       ],
       "module": "EXE",
       "name": "版本资格",
@@ -992,7 +994,9 @@
         "tests.test_release_access::test_invitation_scope_revocation_and_logout",
         "tests.test_release_first_slice::test_release_run_selection_combines_tasks_and_rejects_cross_project_runs",
         "tests.test_release_object_access::test_every_release_business_route_requires_project_permission_before_database",
-        "tests.test_release_object_access::test_foreign_object_ids_cannot_be_disguised_as_authorized_project"
+        "tests.test_release_object_access::test_foreign_object_ids_cannot_be_disguised_as_authorized_project",
+        "tests.test_release_execution_versions::test_execution_mutation_rejects_wrong_scope_before_any_commit",
+        "tests.test_release_execution_versions::test_invited_project_cannot_mutate_foreign_proposal_by_forging_body_scope"
       ],
       "module": "OPS",
       "name": "跨项目访问",

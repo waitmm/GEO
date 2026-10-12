@@ -955,6 +955,7 @@ export type SinglePromptV2StrategyStatus = {
 };
 
 export type SinglePromptV2ExecutionStatus = {
+  version_selection: { active_result_version: string | null; is_active_result: boolean };
   proposal: {
     proposal_id: string;
     strategy_id: string;

@@ -636,6 +636,38 @@ def automatic_check(page, origin, fixture, Session, monkeypatch, out, report):
     page.reload()
     expect(exact_link).to_have_attribute('href', re.compile(re.escape(quote(persisted.json()[0]['result_version'], safe=''))), timeout=15000)
     report['historical_version_refresh'] = {'task_id': task_id, 'result_version': persisted.json()[0]['result_version'], 'preserved': True}
+    if official:
+        historical_url = origin + exact_link.get_attribute('href')
+        before_detail = len(calls)
+        exact_link.click()
+        detail = page.locator('#v2-execution')
+        expect(detail.get_by_text('正在查看历史稿件版本', exact=True)).to_be_visible(timeout=15000)
+        expect(detail.get_by_role('article', name='方案详情完整正文')).to_contain_text(expected_body)
+        expect(detail.get_by_role('button', name='保存并重新校验')).to_have_count(0)
+        expect(detail.get_by_role('textbox').first).to_be_disabled()
+        page.reload()
+        expect(detail.get_by_text('正在查看历史稿件版本', exact=True)).to_be_visible(timeout=15000)
+        expect(detail.get_by_text(persisted.json()[0]['result_version'], exact=True)).to_be_visible()
+        expect(detail.get_by_role('article', name='方案详情完整正文')).to_contain_text(expected_body)
+        page.set_viewport_size({'width': 390, 'height': 1000})
+        detail.scroll_into_view_if_needed()
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+        page.screenshot(path=str(out / 'historical-detail-390.png'), full_page=False)
+        report['screenshots'].append('historical-detail-390.png')
+        from urllib.parse import urlsplit, urlunsplit, parse_qs, urlencode
+        parts = urlsplit(historical_url)
+        query = parse_qs(parts.query)
+        query['v2_execution_result'] = ['missing-result']
+        missing_url = urlunsplit(parts._replace(query=urlencode(query, doseq=True)))
+        page.goto(missing_url)
+        expect(detail.get_by_text('无法读取指定稿件版本', exact=True)).to_be_visible(timeout=15000)
+        expect(detail.get_by_role('article', name='方案详情完整正文')).to_have_count(0)
+        expect(detail.get_by_role('button', name='生成完整执行方案与稿件')).to_have_count(0)
+        expect(page).to_have_url(re.compile('v2_execution_result=missing-result'))
+        assert len(calls) == before_detail
+        report['historical_detail'] = {'version': persisted.json()[0]['result_version'],
+            'refresh_preserved': True, 'missing_rejected': True, 'model_calls': 0}
+        page.set_viewport_size({'width': 1440, 'height': 1000})
     page.goto(f'{origin}/?v2_project=1&v2_prompt=44&v2_analysis={analysis.analysis_id}&optimization_task=missing-task')
     expect(panel.get_by_text('当前链接未匹配本分析的自动任务', exact=True)).to_be_visible(timeout=15000)
     expect(panel.get_by_role('article', name='完整稿件正文', exact=True)).to_have_count(0)

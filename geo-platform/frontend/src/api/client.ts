@@ -207,8 +207,8 @@ export const api = {
     strategy_result_hash: string; strategy_review_id?: string | null; strategy_review_snapshot_hash: string;
     input_authority_type: "HUMAN_REVIEW" | "MACHINE_QUALIFICATION"; input_authority_id: string; input_authority_hash: string;
   }) => request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}/diagnoses/${encodeURIComponent(diagnosisId)}/strategies/${encodeURIComponent(strategyId)}/results/${encodeURIComponent(resultVersion)}/execution-proposals`, { method: "POST", body: JSON.stringify(payload) }),
-  getSinglePromptV2ExecutionProposal: (strategyId: string, proposalId: string, projectId: number, promptId: number) =>
-    request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/strategies/${encodeURIComponent(strategyId)}/execution-proposals/${encodeURIComponent(proposalId)}?project_id=${projectId}&prompt_id=${promptId}`),
+  getSinglePromptV2ExecutionProposal: (strategyId: string, proposalId: string, projectId: number, promptId: number, resultVersion?: string | null) =>
+    request<SinglePromptV2ExecutionStatus>(`/api/v2/single-prompt/strategies/${encodeURIComponent(strategyId)}/execution-proposals/${encodeURIComponent(proposalId)}?project_id=${projectId}&prompt_id=${promptId}${resultVersion != null ? `&result_version=${encodeURIComponent(resultVersion)}` : ""}`),
   reviseSinglePromptV2ExecutionProposal: (strategyId: string, proposalId: string, resultVersion: string, payload: {
     project_id: number; prompt_id: number; base_result_version: string; base_result_hash: string;
     reviewable_set_hash: string; editor: string; edit: Record<string, any>;

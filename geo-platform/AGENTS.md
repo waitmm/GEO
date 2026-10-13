@@ -130,8 +130,12 @@ in recent local run notes.
 
 ## Boundaries
 
-- 2026-10-13 owner pause: finish bounded Codex relay tooling only; no new GEO
-  product unit and no real `codex exec` during this tooling acceptance. Preserve
+- 2026-10-13 owner follow-up: offline relay accepted; authorize at most ONE
+  real documentation-only smoke unit T25-RELAY-USAGE-SMOKE, zero repairs,
+  600 seconds, 30,000 activity-token post-session soft threshold. No new GEO
+  product unit or scheduler expansion. Require effective Sol Medium/non-priority
+  configuration preflight; stop on mismatch without model fallback. This does
+  not authorize GEO model/platform calls or a second paid attempt. Preserve
   existing semantic, permission and data-protection gates. Subsequent automated
   units must use the existing tasks ledger, an explicit independent gate and
   the `codex/geo-integration` baseline. Never auto-merge main, reset unknown

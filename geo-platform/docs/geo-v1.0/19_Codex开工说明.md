@@ -2,9 +2,11 @@
 
 ## 2026-10-13 有界接力入口（优先于旧的无限续跑描述）
 
-本轮只交付开发工具，挂现有 T25。产品仍 INCOMPLETE；不领取新功能、不运行真实 `codex exec`。正常研发从本文件和 `tasks.json` 当前检查点恢复，不把整段聊天或历史开发日志不断搬进每次任务。AGENTS 的必读契约及权限约束不减少；用目录/标题检索定位相关段落，避免反复输出整个历史日志。
+最新授权：离线工具 OFFLINE_ACCEPTED，真实冒烟 REAL_SMOKE_PENDING。只运行 T25-RELAY-USAGE-SMOKE 文档任务，最多1任务、0修复、600秒、30,000活动Token软阈值；配置或运行异常即停，不换模型、不自动重试、不扩调度器或领取产品功能。此前65项离线验收记录保留，不等于真实节省额度。真实结果见下方后续记录；没有结果就不能推定成功。
 
-入口：`backend/scripts/delivery_codex_relay.py`；专项：`backend/tests/test_delivery_codex_relay.py`，由既有 delivery harness 的 `test_delivery*.py` 自动发现。没有引入新调度服务或第二套产品任务台账。小任务写入原 `tasks.json.codex_relay.units`，必须绑定现有 `task_id`、`requirements`、依赖、精确允许修改文件、外部验收命令和不可改的预期文件。本轮该列表故意为空。
+此前一轮只交付开发工具，挂现有 T25，未运行真实 `codex exec`。产品仍 INCOMPLETE。正常研发从本文件和 `tasks.json` 当前检查点恢复，不把整段聊天或历史开发日志不断搬进每次任务。AGENTS 的必读契约及权限约束不减少；用目录/标题检索定位相关段落，避免反复输出整个历史日志。
+
+入口：`backend/scripts/delivery_codex_relay.py`；专项：`backend/tests/test_delivery_codex_relay.py`，由既有 delivery harness 的 `test_delivery*.py` 自动发现。没有引入新调度服务或第二套产品任务台账。小任务写入原 `tasks.json.codex_relay.units`，必须绑定现有 `task_id`、`requirements`、依赖、精确允许修改文件、外部验收命令和不可改的预期文件。当前只登记一个文档用量说明任务，原离线空队列证据保留。
 
 ### 核心执行流程
 
@@ -27,23 +29,21 @@
 ### 命令（从仓库根目录）
 
 ```bash
-# 预演，安全默认；当前返回空队列、0个会话。
-geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py
+# 首次冒烟预演，安全默认；计划1个会话，实际启动0个。
+geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000
 
 # 离线专项，不调用真实 Codex。
 cd geo-platform/backend
 .venv/bin/python -m pytest tests/test_delivery_codex_relay.py tests/test_delivery_acceptance.py -q
 ```
 
-后续才可使用的真实启动命令，本轮**未执行**；需先登记本批小任务和独立 Gate，核对 integration 和账户可用性，且在允许创建子沙箱的本机终端运行：
+首次真实冒烟的授权命令，需先提交准备检查点并快进 integration，在允许创建子沙箱的本机终端运行。命令列在这里不代表已通过真实验证：
 
 ```bash
-geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --max-tasks 3 --max-repairs 2 --session-seconds 900 --token-threshold 100000
-# 同一批恢复，参数必须与原批次一致；未知调用用量不自动恢复。
-geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --resume --max-tasks 3 --max-repairs 2 --session-seconds 900 --token-threshold 100000
+geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000
 ```
 
-新批次必须先核对并归档上一批 `unreviewed-batch.json`，将已验收单元在原台账标记 ACCEPTED，保留报告及提交。不得通过删 receipt、清零用量或重建工作树来自动绕开停机原因。开发负责人准备下一批，不要求用户逐项发送“继续”。
+同一批恢复须显式加 `--resume` 且预算参数完全一致；先审查停机原因，用量不明不能再调用。新批次必须先核对并归档上一批 `unreviewed-batch.json`，将已验收单元在原台账标记 ACCEPTED，保留报告及提交。不得通过删 receipt、清零用量或重建工作树来自动绕开停机原因。本次只授权一批一项，完成或停止后均不自动开始下一批。
 
 ### 本轮证据与未验证事项
 

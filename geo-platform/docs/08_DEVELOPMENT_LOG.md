@@ -1,5 +1,15 @@
 # 08 Development Log
 
+2026-10-13 / IMPLEMENTATION_CHANGE / T25 relay smoke preparation: owner accepts
+the 65-check offline tool and authorizes one documentation-only live smoke.
+Frozen unit T25-RELAY-USAGE-SMOKE uses OPS-002, one allowed documentation file,
+independent arithmetic/limitation oracle and existing usage tests. Limits:
+1 task, 0 repairs, 600 seconds, 30,000 activity-token post-session threshold.
+Preparation uses codex/relay-smoke-prep; integration is advanced only from the
+verified predecessor. Main is not merged or changed. No scheduler or GEO
+business implementation change, no business external-call authorization.
+At preparation: real model call and savings are NOT verified.
+
 2026-10-13 / IMPLEMENTATION_CHANGE / T25 tooling only: checkpoint75ee37c preserves prior work.
 Added bounded Codex relay with explicit medium/default overrides, read-only effective-config/model
 preflight, dedicated integration CAS, independent gates, per-unit fresh sessions, immutable

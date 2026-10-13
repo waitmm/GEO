@@ -2,6 +2,13 @@
 
 ## 2026-10-13 Bounded Development Checkpoint
 
+Current owner follow-up: OFFLINE_ACCEPTED / REAL_SMOKE_PENDING. Only
+T25-RELAY-USAGE-SMOKE is authorized: one documentation unit, zero repairs,
+600 seconds, 30,000 post-session soft threshold. No scheduler expansion,
+product pickup, main merge or GEO external call. A nonempty dry-run and actual
+CLI configuration preflight precede any paid child; savings remain unmeasured.
+The offline handoff paragraph below describes the preceding acceptance round.
+
 Relay tooling handoff: `backend/scripts/delivery_codex_relay.py` uses dedicated
 `codex/geo-integration`, fresh bounded sessions, independent gates, effective-config
 preflight, isolated resources and durable recovery. The existing task ledger holds

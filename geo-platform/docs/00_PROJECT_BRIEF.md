@@ -2,6 +2,15 @@
 
 ## 2026-10-13 Bounded Development Checkpoint
 
+Current authorization TERMINAL-SMOKE-20261013-01: prepare/dry-run only in this
+agent turn; one fresh Terminal unit for the exact prior T25 documentation goal,
+gpt-5.6-sol/medium/default,1task/0repairs/600s/30000soft. Controller reads its
+own checkout ledger (codex/relay-smoke-prep), not integration's ledger; child
+code starts from integration. Old blocked unit, reports and UNKNOWN usage
+remain unchanged; retained receipt is archived without zeroing history.
+Explicit standalone binary: /Users/bmwqr/.local/bin/codex. No exec this turn,
+no GEO feature change, no main merge. Earlier smoke outcomes below are history.
+
 Latest Sol5.6 outcome: OFFLINE_ACCEPTED / REAL_SMOKE_PENDING,
 BLOCKED_EXEC_STARTUP_PERMISSION.69offline tests pass; exact dependency symlink
 ignore/pinning and standard-tier interpretation fixed in14ab455. CLI preflight

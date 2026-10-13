@@ -145,8 +145,14 @@ in recent local run notes.
   and authorizes one rerun of the same documentation smoke after fixing the
   dependency symlink. Preserve/archive the prior no-exec preflight receipt;
   do not reset unknown usage. No further automatic task or paid repair.
-  Sol5.6 rerun stopped at exec startup with EPERM and no usage events. The
-  current receipt must remain blocked; do not retry or drop sandbox protection.
+  Sol5.6 rerun stopped at exec startup with EPERM and no usage events. That
+  failed unit and UNKNOWN usage remain blocked; do not resume or drop protection.
+  Latest owner authorization creates TERMINAL-SMOKE-20261013-01 solely for the
+  identical T25 documentation acceptance target, via standalone local CLI.
+  This agent turn may prepare/dry-run only, never exec. A later Terminal launch
+  is limited to one fresh unit, zero repairs,600s/30000soft,5.6-sol/medium/default.
+  Prior receipt may be retained byte-for-byte in its original batch directory
+  with a review record; UNKNOWN historical usage is not reconciled or reset.
 
 - Keep `Prompt` semantics stable: one Prompt is one question.
 - Keep `run#` and `Sample` labels visible in user-facing run detail.

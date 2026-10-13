@@ -2,7 +2,25 @@
 
 ## 2026-10-13 有界接力入口（优先于旧的无限续跑描述）
 
-最新结果：已按授权改为 `gpt-5.6-sol / medium / default`，软链接修复及69项离线验证通过。唯一真实入口通过配置预检，但exec启动报权限错误，无用量事件，已停止。状态 OFFLINE_ACCEPTED / REAL_SMOKE_PENDING / BLOCKED_EXEC_STARTUP_PERMISSION。未改全局/IDE配置，不重试、不绕过沙箱、不领取产品功能；未知用量不能计为零。下方保留两次现场及各自授权边界。
+最新准备：`TERMINAL-SMOKE-20261013-01` 是用户新授权的独立Terminal批次，本轮代理仅准备与dry-run，禁止真实exec。原任务和未知用量不改；新单元 `T25-RELAY-USAGE-SMOKE-TERMINAL-01` 仅复用原T25文档目标、文件范围与Gate。指定独立CLI `/Users/bmwqr/.local/bin/codex`，仍为5.6-sol/medium/default、1任务/0修复/600秒/30000软阈值。旧EPERM记录保留，是否已解决必须由未来真实调用确认。
+
+### 新Terminal批次与读取基线
+
+- 调度器通过脚本文件位置计算ROOT，再读取该工作树的 `tasks.json`，不是按shell当前目录寻找台账，也不是直接读取integration分支。当前控制器分支为 `codex/relay-smoke-prep`；执行代码工作树仍从 `codex/geo-integration` 创建，准备提交需先快进到integration。
+- `live_execution_authorized_this_round=false` 保留，因为本轮代理不得执行真实调用；当前选择器不检查此元数据，旧空队列的直接原因是BLOCKED。新批次的Terminal授权和固定参数单独记在同一台账的 `terminal_smoke_batch`，并未更改调度器。
+- 原单元保持BLOCKED；原报告的 `accounting_complete=false` 与UNKNOWN用量不改。原活动receipt逐字节保存在旧批次目录 `retained-receipt-before-terminal-batch.json`，并保存复核记录；它不是已验收、已结算或可resume状态。新30000只是新授权的会话后软阈值；历史总量仍UNKNOWN，不能宣称累计余额已重置。
+- 本机终端只运行下述新批次命令，不加 `--resume`，不恢复产品任务。所有旧沙箱和权限校验保留；本轮不验证CLI真实配置、模型可用性、额度或EPERM是否解决。
+- 准备验证：从 `/private/tmp` 调用仓库脚本，dry-run仍读取控制器工作树台账，恰好返回1个新单元、max_sessions=1、external_calls=0。5项定向测试通过、55项未选（不是全量重跑）。原任务、验收条件、旧报告与归档receipt逐字节校验不变。证据：`backend/artifacts/acceptance/codex-relay-terminal-prep-20261013/`。独立CLI链接指向0.162.1发布目录，仅核实文件存在与可执行属性，没有启动CLI。
+
+```bash
+cd /Users/bmwqr/Desktop/python/GEO
+# 先核对输出为 codex/relay-smoke-prep，且 git status --short 为空。
+git branch --show-current
+git status --short
+geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000 --codex /Users/bmwqr/.local/bin/codex
+# 仅在本机Terminal执行；本轮代理不会执行下一行。
+geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000 --codex /Users/bmwqr/.local/bin/codex
+```
 
 此前一轮只交付开发工具，挂现有 T25，未运行真实 `codex exec`。产品仍 INCOMPLETE。正常研发从本文件和 `tasks.json` 当前检查点恢复，不把整段聊天或历史开发日志不断搬进每次任务。AGENTS 的必读契约及权限约束不减少；用目录/标题检索定位相关段落，避免反复输出整个历史日志。
 

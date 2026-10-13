@@ -1,5 +1,24 @@
 # 08 Development Log
 
+2026-10-13 / IMPLEMENTATION_CHANGE / T25 Terminal batch preparation only:
+owner explicitly authorizes fresh TERMINAL-SMOKE-20261013-01 for the SAME
+documentation objective/gates/files, not a product task or old --resume.
+Controller ROOT derives from the script file, so tasks come from the current
+codex/relay-smoke-prep checkout; child code comes from codex/geo-integration.
+units=[] was caused by BLOCKED status; live_execution_authorized_this_round
+is metadata, not a selector gate. It stays false for this no-exec agent turn;
+separate Terminal authorization records one5.6-sol/medium/default unit with
+0repairs/600s/30000soft. Standalone CLI exists at ~/.local/bin/codex; no Codex
+process is started to claim availability. Preserve old failure reports/receipt
+bytes/UNKNOWN usage. User attributes EPERM to nesting; no execution this turn
+can confirm resolution. No scheduler or product implementation changes.
+Preparation evidence: codex-relay-terminal-prep-20261013/dry-run.json selects
+exactlyT25-RELAY-USAGE-SMOKE-TERMINAL-01 even when invoked from/private/tmp,
+proving script-root ledger lookup.5focused checks pass,55deselected (not a
+full-suite run). Original unit/gates and report/receipt bytes unchanged;
+UNKNOWN history retained. Standalone symlink resolves to release0.162.1;
+binary not executed, availability/config/runtime success unverified.
+
 2026-10-13 / T25 Sol5.6 real smoke STOPPED, not accepted: fix14ab455 on
 integration, main5846acd unchanged. Preflight accepted requested model,
 medium/default/never/workspace-write. One exec process returned after0.144s

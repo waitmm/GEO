@@ -1,10 +1,14 @@
 # 08 Development Log
 
+2026-10-13 / IMPLEMENTATION_CHANGE / T25: owner redirected work to token control before further features. Saved scope checkpoint, including browser132015Z conflict case with21 synthetic Runs, preserved raw counts and refused delta after refresh,0externalcalls. The earlier in-progress browser note is now resolved; product remains INCOMPLETE. No new full-suite execution is inferred. Next increment adds bounded fresh-session execution and accounting; no live Codex child call authorized by the engineering test itself.
+
 ## 2026-10-09 Final Delivery Implementation In Progress
 
 Approved SEMANTIC_CHANGE: SC-DELIVERY-001 removes publication/global-review prerequisites from continuous monitoring, automatic Optimize and observation comparison. Scope, permissions, unknown semantics, immutable inputs and call authorization remain enforced. Existing T01..T25 and acceptance IDs are reused. This entry is implementation start, not completion evidence; v7 remains a regression asset.
 
 ### Checkpoint: Monitor, Context, Scheduling And Access
+
+2026-10-12 / IMPLEMENTATION_CHANGE / T25: merged49f1926 and protectedly loaded API8021,47 business tables and exactv6/v7 unchanged,workerNOT_RUNNING. Actual read-only desktop/narrow/refresh pass on5173 and built8021. CPU profiling finds substantial React development element creation overhead (18.827s total vs built6.368s); not a production speedup claim or closed performance gate. Expanded frozen-scope fixture to exact9+3 while retaining1+1;32 scoped checks pass. Reconciled AC-BRD-03/AC-PRM-01 evidence and partial no-review/GET/condition cases, without turning overall test count into completion. Added isolated different-platform browser comparison, verification ongoing.0realcalls.
 
 Audit identity follow-up: browser130841Z passes Chinese readonly operator, actual persisted actor, refresh,390px and saved-result fault recovery;130403Z passes scoped login/logout/revocation and unchanged business tables.14 current audit/ledger checks pass.9 simulated requests in the full Optimize path,0realcalls. Formal loading is a separate next check, not inferred from isolated testing. Earlier in-progress note below retains its checkpoint meaning.
 

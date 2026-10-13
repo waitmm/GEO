@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -160,14 +161,17 @@ def test_zero_valid_runs_fail_without_context(tmp_path):
         engine.dispose()
 
 
-def test_frozen_context_ignores_later_run_mutation_and_new_sampling(tmp_path):
+@pytest.mark.parametrize('baseline_count,new_count', [(1, 1), (9, 3)])
+def test_frozen_context_ignores_later_run_mutation_and_new_sampling(tmp_path, baseline_count, new_count):
     db, engine = _session(tmp_path)
     try:
         _seed(db)
-        analysis = _create(db, count=1)
+        analysis = _create(db, count=baseline_count)
         token = claim_analysis(db, analysis.analysis_id)
-        run = _runs(db, analysis)[0]
-        _succeed(run, "冻结时的有效回答正文，不应被后续采样覆盖。")
+        baseline_runs = _runs(db, analysis)
+        for run in baseline_runs:
+            _succeed(run, "冻结时的有效回答正文，不应被后续采样覆盖。")
+        run = baseline_runs[0]
         db.add(ReferenceSource(run_id=run.id, reference_index=1, display_title="Only reference", url="https://example.com/reference-only"))
         db.commit()
         assert finalize_analysis(db, analysis.analysis_id, token)
@@ -175,15 +179,19 @@ def test_frozen_context_ignores_later_run_mutation_and_new_sampling(tmp_path):
         assert "RETRIEVAL_OBSERVATION_UNAVAILABLE" in {warning["code"] for warning in frozen["warnings"]}
 
         run.answer_text = "后来被旧采集路径修改的回答"
-        other_task = BrowserMonitorTask(project_id=1, question_ids_json="[11]", run_count=1)
+        other_task = BrowserMonitorTask(project_id=1, question_ids_json="[11]", run_count=new_count)
         db.add(other_task)
         db.flush()
-        db.add(BrowserMonitorRun(task_id=other_task.id, project_id=1, prompt_id=11, status="success", answer_text="新增采样"))
+        for _ in range(new_count):
+            db.add(BrowserMonitorRun(task_id=other_task.id, project_id=1, prompt_id=11, status="success", answer_text="新增采样"))
         db.commit()
 
         after = get_analysis_status(db, analysis.analysis_id)
         assert after["result_version"] == frozen["result_version"]
-        assert len(after["runs"]) == 1
+        assert len(after["runs"]) == baseline_count
+        assert after["runs"] == frozen["runs"]
+        assert after["context_id"] == frozen["context_id"]
+        assert db.query(BrowserMonitorRun).filter_by(task_id=other_task.id).count() == new_count
         assert after["runs"][0]["answer_text"] == "冻结时的有效回答正文，不应被后续采样覆盖。"
     finally:
         db.close()

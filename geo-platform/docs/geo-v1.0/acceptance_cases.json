@@ -16,7 +16,7 @@
         "BRD-001"
       ],
       "status": "PARTIAL",
-      "evidence": "PARTIAL: browser-20261012T105120Z verifies create/edit/normalization preview, invalid-save recovery, exact saved domain and locale after reload. catalog-preview-stable-20261012:26 scoped checks pass. Empty Monitor onboarding assertion added for next complete run; not all BRD accepted."
+      "evidence": "PARTIAL: browser-20261012T123951Z executed the empty Monitor onboarding assertion as part of f32df69 full batch123203Z; create/edit/shared preview, invalid-save recovery, domain and locale refresh verified. Does not cover all brand identity/update scenarios."
     },
     {
       "id": "AC-BRD-02",
@@ -45,8 +45,8 @@
       "requirements": [
         "BRD-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "scope-evidence-20261012/pytest.xml: independent expected ambiguous alias counts, excluded run IDs, null zero-denominator, rejected stale FAILED_SCHEMA entity, and accepted grounded entity tested. Deterministic software contract acceptance; not a claim of universal model disambiguation. 0 real external calls."
     },
     {
       "id": "AC-BRD-04",
@@ -74,8 +74,8 @@
       "requirements": [
         "PRM-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "scope-evidence-20261012/pytest.xml: test_frozen_context_ignores_later_run_mutation_and_new_sampling[9-3] freezes nine successful Runs, changes a raw answer and adds three later Runs, then verifies exact old runs/context/result version unchanged and three new records retained. Original1-1 case retained. Isolated synthetic data, no sampling or model calls."
     },
     {
       "id": "AC-PRM-02",
@@ -857,8 +857,8 @@
       "requirements": [
         "VAL-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "scope-evidence-20261012/pytest.xml and browser-20261012T132015Z/report.json: platform conflict retains raw0/9 vs1/1, refuses delta and shows the conflict after refresh at1440/390px.21 isolated synthetic Runs,0realcalls. Actual webpage/API collection condition integration is not verified; remains PARTIAL."
     },
     {
       "id": "AC-VAL-03",
@@ -923,8 +923,8 @@
       "requirements": [
         "COR-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "browser-20261012T130841Z/report.json: existing worker chain produces concrete manuscript/QA and reloads without a human review operation. Uses9 simulated provider responses,0 real calls. This verifies no-review software routing, not real model content quality or all correction object types."
     },
     {
       "id": "AC-COR-02",
@@ -991,8 +991,8 @@
       "requirements": [
         "OPS-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "formal-audit-profile-20261012/report.json: real savedv7 detail,1440/390px and refresh through5173, all non-read requests blocked,47 business-table fingerprints unchanged,0 external calls. Existing scoped API tests cover source/automatic status reads; not exhaustive coverage of every GET route."
     },
     {
       "id": "AC-OPS-02",

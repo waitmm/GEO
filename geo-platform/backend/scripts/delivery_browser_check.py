@@ -330,6 +330,30 @@ def observation_check(page, origin, fixture, out, report):
         accessibility_check(page, out, report, f'nine-run-comparison-{width}')
         page.screenshot(path=str(out / name), full_page=True)
         report['screenshots'].append(name)
+    page.set_viewport_size({'width': 1440, 'height': 1000})
+    for label, ids in [('基线范围', fixture['metric_baseline']), ('对照范围', [fixture['conflict_run_id']])]:
+        select_comparison_scope(page, label, ids)
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/observation-comparisons')) as response:
+        page.get_by_role('button', name='生成变化比较', exact=True).click()
+    conflict = response.value.json()
+    conflict_metric = conflict['output']['metrics']['brand_mention_rate']
+    assert (conflict_metric['baseline']['hit_count'], conflict_metric['baseline']['evaluable_count']) == (0, 9)
+    assert (conflict_metric['comparison']['hit_count'], conflict_metric['comparison']['evaluable_count']) == (1, 1)
+    assert conflict_metric['delta_percentage_points'] is None
+    assert 'platform:CONFLICT' in conflict['output']['conflicts']
+    for width in [1440, 390]:
+        page.set_viewport_size({'width': width, 'height': 1000})
+        page.reload()
+        row = page.get_by_role('row').filter(has_text='正文提及')
+        expect(row).to_contain_text('0/9 (0.0%)')
+        expect(row).to_contain_text('1/1 (100.0%)')
+        expect(row).to_contain_text('不可比/不可计算')
+        expect(page.get_by_text('条件不可比：采样平台不一致', exact=False)).to_be_visible()
+        accessibility_check(page, out, report, f'condition-conflict-{width}')
+        page.screenshot(path=str(out / f'condition-conflict-{width}.png'), full_page=True)
+        report['screenshots'].append(f'condition-conflict-{width}.png')
+    report['condition_conflict'] = {'result_version': conflict['result_version'], 'raw_counts_preserved': True,
+        'delta_blocked': True, 'warning_visible_after_refresh': True}
     report.update(status='PASS_SCOPED_SYNTHETIC_OBSERVATION_NOT_REAL_SAMPLING', comparison_version=saved['result_version'],
         nine_run_comparison_version=nine['result_version'],
         negative_comparison_version=negative['result_version'], monitor_analysis=handoff['analysis']['analysis_id'],
@@ -339,7 +363,7 @@ def observation_check(page, origin, fixture, out, report):
             'HISTORICAL_MEASUREMENT_IDENTITY_SURVIVES_PROJECT_EDIT',
             'PRIMARY_OPTIMIZE_ACTION_FIRST_VIEWPORT', 'NINE_RUN_ZERO_TO_ONE_INDEPENDENT_COUNTS',
             'PROJECT_SWITCH_CLEARS_PREVIOUS_DATA', 'RESPONSIVE_NO_PAGE_OVERFLOW'],
-        not_verified=['REAL_SAMPLING', 'REAL_MODEL_QUALITY'], synthetic_runs=20)
+        not_verified=['REAL_SAMPLING', 'REAL_MODEL_QUALITY'], synthetic_runs=21)
     assert not report['errors'], report['errors']
 
 
@@ -993,6 +1017,16 @@ def main():
                     db.commit()
                     assert finalize_analysis(db, batch.analysis_id, token)
                     fixture[f'metric_{part}'] = [r.id for r in runs]
+                batch, _ = create_analysis(db, project_id=metric_project.id, prompt_id=metric_prompt.id,
+                    sample_count=1, idempotency_key='isolated-conflicting-platform')
+                token = claim_analysis(db, batch.analysis_id)
+                run = db.query(BrowserMonitorRun).filter_by(task_id=batch.task_id).one()
+                run.status = 'success'; run.stage = 'success'; run.platform = 'isolated_other_platform'
+                run.answer_text = 'MetricTarget 是一个名称。'
+                run.answer_char_count = len(run.answer_text); run.reference_complete = True
+                db.commit()
+                assert finalize_analysis(db, batch.analysis_id, token)
+                fixture['conflict_run_id'] = run.id
     report = {'scope': 'OFFLINE_ISOLATED_UI', 'external_calls': 0, 'screenshots': [], 'errors': [], 'status': 'FAIL'}
     log = (out / 'api.log').open('w')
     server = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'app.release_main:app', '--host', '127.0.0.1', '--port', str(port)],

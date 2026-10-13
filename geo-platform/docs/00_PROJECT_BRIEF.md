@@ -1,6 +1,12 @@
 # 00 Project Brief
 
+## 2026-10-13 Bounded Development Checkpoint
+
+Product remains INCOMPLETE. Owner paused unlimited feature pickup to implement bounded Codex task relay and usage accounting first. Running release stays49f1926; no new business/model/platform operations. The pending scope checkpoint now includes browser132015Z:21 isolated synthetic Runs, conflicting-platform raw0/9 versus1/1 preserved, delta refused, warning survives refresh;0realcalls.32 scoped backend checks and9 ledger checks passed (overlapping, not additive). Remaining Answer/multidimensional-relation corrections, stable performance and authorized real integration are not closed. Next work is developer tooling under existing T25, not another v7 revision.
+
 ## 2026-10-09 Active Delivery Implementation
+
+Loaded checkpoint 2026-10-12: `49f1926` on API8021, protected47-table/v6/v7 invariance and workerNOT_RUNNING. Actual GET-only5173 and built8021 detail/390px/refresh pass; respective profiled visibility18.827s and6.368s are observations, not performance acceptance.32 scoped checks pass including new exact9+3 scope fixture and audit/measurement assertions. Acceptance ledger reconciles only verified atomic cases; remaining object corrections, real integration and stable performance are open. Product INCOMPLETE; no new external calls or v7 revisions.
 
 Current checkpoint 2026-10-12: `f32df69` same-source full run `20261012T123203Z` passes486 backend/5startup/20client/build/all8browser paths,0fail/0skip, unchanged source. Product remains INCOMPLETE with required real integration and object-level correction coverage open. Follow-up T19/OPS audit test reproduced2 forged-operator failures in isolated data;18 release audit writes now bind the actual access identity, while old machine/review results remain unchanged.59 scoped regressions,14 audit/ledger checks,20client/build pass (overlapping counts, not summed). Browser130841Z verifies Chinese readonly actor, persisted identity, refresh and390px;130403Z verifies login/logout/revocation/isolation. Formal protected loading follows. No real external calls or publication.
 

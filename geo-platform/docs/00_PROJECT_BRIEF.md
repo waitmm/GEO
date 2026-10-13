@@ -2,6 +2,14 @@
 
 ## 2026-10-13 Bounded Development Checkpoint
 
+Relay tooling handoff: `backend/scripts/delivery_codex_relay.py` uses dedicated
+`codex/geo-integration`, fresh bounded sessions, independent gates, effective-config
+preflight, isolated resources and durable recovery. The existing task ledger holds
+an empty relay queue intentionally: owner requested no product task pickup and no
+real Codex execution this round. Offline evidence and commands are in
+`geo-v1.0/19_Codex开工说明.md`; product and T25 remain incomplete, not promoted by
+tooling checks. Main/runtime business results are unchanged.
+
 Product remains INCOMPLETE. Owner paused unlimited feature pickup to implement bounded Codex task relay and usage accounting first. Running release stays49f1926; no new business/model/platform operations. The pending scope checkpoint now includes browser132015Z:21 isolated synthetic Runs, conflicting-platform raw0/9 versus1/1 preserved, delta refused, warning survives refresh;0realcalls.32 scoped backend checks and9 ledger checks passed (overlapping, not additive). Remaining Answer/multidimensional-relation corrections, stable performance and authorized real integration are not closed. Next work is developer tooling under existing T25, not another v7 revision.
 
 ## 2026-10-09 Active Delivery Implementation

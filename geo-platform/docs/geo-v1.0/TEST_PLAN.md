@@ -4,6 +4,16 @@
 
 ## 环境与隔离
 
+2026-10-13 T25 接力工具专项：`tests/test_delivery_codex_relay.py` 与既有
+`tests/test_delivery_acceptance.py` 定向执行，不运行整套产品验收。
+验收覆盖有效配置拒绝 High/Priority、依赖排序/环、独立 Git 仓库的 integration
+连续基线、主分支不变、Gate 预期保护、cache/reasoning 不重复统计、超时后代清理、
+连续失败和重试上限、进程异常、未知用量停机、干净工作区、锁/receipt 幂等及原子检查点恢复。
+全部 CLI 传输为 Mock；真实 subprocess 仅为本机测试程序，不是 Codex。
+另有独立 macOS Mock 隔离探针，阻断临时“生产”文件读取及未授权的临时端口。
+证据目录 `backend/artifacts/acceptance/codex-relay-offline-20261013/`；
+真实 CLI/账户模型可用性和节省幅度 NOT_RUN，不把专项通过映射为任何产品用例 PASS。
+
 - 已测环境：macOS、Python3.14.3、Node24.14.0、应用 SQLite3.51.3、WAL、外键开启。以运行报告记录的实际值为准。
 - 在 `backend` 使用 `.venv/bin/python`，不解析到系统 Python；前端命令需要安装后的 Node/npm PATH。
 - pytest 使用临时数据库；浏览器脚本新建迁移库和临时 loopback 端口，通过正式 API/页面操作，结束后关闭本轮服务。不得清空正式库或借真实定时计划测试。

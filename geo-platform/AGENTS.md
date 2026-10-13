@@ -130,6 +130,14 @@ in recent local run notes.
 
 ## Boundaries
 
+- 2026-10-13 owner pause: finish bounded Codex relay tooling only; no new GEO
+  product unit and no real `codex exec` during this tooling acceptance. Preserve
+  existing semantic, permission and data-protection gates. Subsequent automated
+  units must use the existing tasks ledger, an explicit independent gate and
+  the `codex/geo-integration` baseline. Never auto-merge main, reset unknown
+  usage/retries, or treat a relay gate as full product acceptance. See
+  `docs/geo-v1.0/19_Codex开工说明.md` for recovery and invocation boundaries.
+
 - Keep `Prompt` semantics stable: one Prompt is one question.
 - Keep `run#` and `Sample` labels visible in user-facing run detail.
 - `partial_success` is not a successful full parse; do not redefine success to

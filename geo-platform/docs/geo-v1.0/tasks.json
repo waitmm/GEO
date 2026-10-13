@@ -2,6 +2,20 @@
   "schema_version": "1.0",
   "baseline_date": "2026-09-30",
   "implementation_verified": true,
+  "codex_relay": {
+    "owner_task": "T25",
+    "status": "OFFLINE_VALIDATION_ONLY",
+    "integration_branch": "codex/geo-integration",
+    "default_model": "gpt-6.1-sol",
+    "default_effort": "medium",
+    "default_service_tier": "default",
+    "max_tasks_per_batch": 3,
+    "max_repairs_per_unit": 2,
+    "live_execution_authorized_this_round": false,
+    "units": [],
+    "note": "2026-10-13用户限定只完成自动接力工具；本轮不领取产品功能，不启动真实codex exec。未来小任务仍挂现有任务和需求编号，不能将T19等大任务整体作为一个会话。",
+    "evidence": "backend/artifacts/acceptance/codex-relay-offline-20261013/"
+  },
   "active_delivery_slice": {
     "name": "one_prompt_one_run_formal_delivery",
     "status": "REGRESSION_ASSET_PRESERVED",
@@ -1082,6 +1096,8 @@
         "backend/alembic_release/env.py",
         "backend/alembic_release/versions/20261009_03_schedule_handoff.py",
         "backend/scripts/delivery_acceptance.py",
+        "backend/scripts/delivery_codex_relay.py",
+        "backend/tests/test_delivery_codex_relay.py",
         "backend/scripts/delivery_browser_check.py"
       ],
       "acceptance_evidence": [
@@ -1113,10 +1129,10 @@
       "base_commit": "49f1926",
       "classification": "IMPLEMENTATION_CHANGE",
       "accepted_instruction": "2026-10-10 自动续跑补充令；不改变2026-10-09范围，不增加外调权限",
-      "current_requirement": "用户暂停无限领取功能任务；先在T25接入有边界的Codex独立会话与用量记录",
+      "current_requirement": "T25有界接力工具专项离线交付；按用户要求完成后停止，不领取产品任务、不运行真实codex exec",
       "verified": "d3c5e22同源105606Z：459后端/5启动/19客户端/构建及8of8浏览器通过，源码未变，工程PASS产品INCOMPLETE。随后旧版本读错及10项错误归属先写后拒绝在隔离库复现，原FAIL证据保留。修复扩展40后端/20客户端/构建及browser112410Z通过，涵盖合法请求、历史发布、点击详情/刷新/窄屏/失效错误不回退；不与459混加。真实外调0。",
       "in_progress": "f32df69同源123203Z：486后端/5启动/20客户端/构建/8浏览器通过。审计增量：原2FAIL保留，59相邻回归含5新检查、另14审计/台账检查、20客户端/构建通过。browser130841Z验证中文只读操作人、实际保存身份、刷新及390px；130403Z验证登录/退出/撤权/隔离。9模拟请求/0真实，正式保护加载另记。产品仍INCOMPLETE，不能用这些专项覆盖剩余纠错和真实集成。",
-      "next_command": "先完成T25用量控制专项及离线验证；暂不启动下一项产品任务或付费Codex子会话",
+      "next_command": "geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py（默认仅预演；本轮队列为空）",
       "next_unblocked_gap": "49f1926已保护加载；32项范围/审计检查、9项台账检查及browser132015Z不同平台比较通过，0真实调用。产品仍INCOMPLETE；答案/关系纠错、稳定性能、真实集成保留待办。",
       "external_blocker": "P0-A/P0-B待明确授权：新验收项目/文心最多4次/最多60公开URL各2次/DeepSeek最多80请求300万tokens累计30元/自动重试0。官方别名现指向V4.1-Flash，已另行明确实际模型版本待授权；没有调用。其余工程继续。"
     },

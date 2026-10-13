@@ -1,5 +1,19 @@
 # 08 Development Log
 
+2026-10-13 / IMPLEMENTATION_CHANGE / T25 tooling only: checkpoint75ee37c preserves prior work.
+Added bounded Codex relay with explicit medium/default overrides, read-only effective-config/model
+preflight, dedicated integration CAS, independent gates, per-unit fresh sessions, immutable
+checkpoint identities, usage accounting and recovery. No real codex exec, GEO model/platform call,
+new product unit or main auto-merge. Local Mock isolation first exposed invalid SBPL numeric-host
+syntax; localhost form subsequently blocks a Mock production file and unassigned Mock port while
+allowing isolated writes. Nested sandbox execution is disallowed by this agent's outer sandbox;
+the local Mock probe was separately reviewed, not an unprotected fallback. Tests and limitations
+are recorded in the existing TEST_PLAN and Codex instructions. Current user/IDE model config is
+not modified; only future relay invocations get explicit overrides.
+Final scoped verification:65passed/0failed/0skipped (56relay+9existing harness);
+dry-run has empty queue and zero sessions; local Mock isolation probe exits0.
+No product acceptance case is promoted. Finish this tooling handoff and stop.
+
 2026-10-13 / IMPLEMENTATION_CHANGE / T25: owner redirected work to token control before further features. Saved scope checkpoint, including browser132015Z conflict case with21 synthetic Runs, preserved raw counts and refused delta after refresh,0externalcalls. The earlier in-progress browser note is now resolved; product remains INCOMPLETE. No new full-suite execution is inferred. Next increment adds bounded fresh-session execution and accounting; no live Codex child call authorized by the engineering test itself.
 
 ## 2026-10-09 Final Delivery Implementation In Progress

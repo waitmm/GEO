@@ -2,7 +2,7 @@
 
 ## 2026-10-13 有界接力入口（优先于旧的无限续跑描述）
 
-最新状态：离线工具 OFFLINE_ACCEPTED，真实冒烟 REAL_SMOKE_PENDING，本次 BLOCKED_CONFIG_PREFLIGHT。唯一授权的 T25-RELAY-USAGE-SMOKE 文档任务在模型调用前停止，已标 BLOCKED。范围仍是最多1任务、0修复、600秒、30,000活动Token软阈值；不换模型、不自动重试、不扩调度器或领取产品功能。此前65项离线验收记录保留，不等于真实节省额度。真实预检结果见下方后续记录。
+最新授权：用户明确改用 `gpt-5.6-sol / medium / default`，修复软链接后重新执行同一个 T25-RELAY-USAGE-SMOKE 文档任务。仍最多1任务、0修复、600秒、30,000活动Token软阈值，不扩调度器或领取产品功能，不改全局/IDE配置。上次6.1模型预检失败现场保留，归档receipt后建立新的授权批次，不清零未知消耗。状态 OFFLINE_ACCEPTED / REAL_SMOKE_PENDING，不能由离线通过推定实际节省。
 
 此前一轮只交付开发工具，挂现有 T25，未运行真实 `codex exec`。产品仍 INCOMPLETE。正常研发从本文件和 `tasks.json` 当前检查点恢复，不把整段聊天或历史开发日志不断搬进每次任务。AGENTS 的必读契约及权限约束不减少；用目录/标题检索定位相关段落，避免反复输出整个历史日志。
 
@@ -13,7 +13,7 @@
 1. 默认仅预演，输出队列、配置和预算，不启动任何 Codex 进程，不建工作树、不修改 Git。
 2. 显式执行前要求工作区干净；单实例文件锁；上一批 receipt 未处理则不能偷偷重跑。默认1项、最多3项；每项最多初次执行加2次定向修复。
 3. 唯一连续基线为 `codex/geo-integration`。从该分支创建隔离工作树；每项通过独立 Gate 后由控制器提交、CAS 快进 integration。后项必须以此前已集成的提交启动。禁止自动合并/推送主分支，也禁止代理自行提交。integration 被检出或被外部移动时停止。
-4. 每次独立 `codex exec` 显式覆盖为 `gpt-6.1-sol / medium / default`，关闭多 Agent、goals、apps、plugins 和 shell 外网；审批为 never，sandbox 为 workspace-write。不改全局配置，不跳过已有安全规则，不授权 GEO 业务外调。
+4. 每次独立 `codex exec` 显式覆盖为 `gpt-5.6-sol / medium / default`，关闭多 Agent、goals、apps、plugins 和 shell 外网；审批为 never，sandbox 为 workspace-write。不改全局配置，不跳过已有安全规则，不授权 GEO 业务外调。CLI协议规定default为标准速度，目录中的serviceTiers可能只列额外加速档，不据此否认标准档；实际请求结果单独验证。
 5. 首次模型执行前用只读 `app-server` 的 initialize/config-read/model-list 核验实际配置与可用模型；无 thread/start 或 turn/start。High、Priority、模型不可用、启用的外部 MCP/Hook 或隔离失败都停止，不偷偷降级模型或绕过权限。本轮该协议由本地 Mock 验证，不代表账户已确认可用 Sol。
 6. 工作树不复制 `.env`、业务 DB、账号 profile。环境清除继承的业务凭证，使用隔离 SQLite、scratch、临时端口和 offline 标记。macOS 额外 sandbox 拒绝读取原仓库业务数据、写入原仓库及连接未分配本地端口；模型进程仅额外允许 HTTPS/DNS，测试 Gate 不允许外网。依赖目录仅只读复用。无可用隔离机制就拒绝执行，不支持无保护降级。
 7. 冻结队列及验收预期；变更超白名单、修改 Gate 预期、HEAD 异常、无用量、进程失败或超时立即停止。只有正常模型结束且 Gate 失败才允许有限修复。子进程结束/超时/中断均清理整个进程组，包括忽略 TERM 的后代。
@@ -29,7 +29,7 @@
 ### 命令（从仓库根目录）
 
 ```bash
-# 安全预演；首次已验证非空1项。当前单元BLOCKED，故再次预演为0项。
+# 安全预演；本次5.6 Sol授权批次仅1项，预演不启动模型。
 geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000
 
 # 离线专项，不调用真实 Codex。
@@ -37,7 +37,7 @@ cd geo-platform/backend
 .venv/bin/python -m pytest tests/test_delivery_codex_relay.py tests/test_delivery_acceptance.py -q
 ```
 
-本次实际执行过的入口命令（已在预检停止，不要直接重试）；准备提交和 integration 在调用前固定，运行环境为允许创建子沙箱的本机终端：
+本次5.6 Sol单次授权入口（上次6.1预检记录独立保留）；准备提交和 integration 在调用前固定，运行环境为允许创建子沙箱的本机终端：
 
 ```bash
 geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000

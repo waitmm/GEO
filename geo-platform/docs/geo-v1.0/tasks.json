@@ -6,14 +6,14 @@
     "owner_task": "T25",
     "status": "OFFLINE_ACCEPTED / REAL_SMOKE_PENDING",
     "integration_branch": "codex/geo-integration",
-    "default_model": "gpt-6.1-sol",
+    "default_model": "gpt-5.6-sol",
     "default_effort": "medium",
     "default_service_tier": "default",
     "max_tasks_per_batch": 3,
     "max_repairs_per_unit": 2,
-    "live_execution_authorized_this_round": false,
+    "live_execution_authorized_this_round": true,
     "smoke_limits": {"max_tasks": 1, "max_repairs": 0, "session_seconds": 600, "token_threshold": 30000},
-    "smoke_result": {
+    "previous_smoke_result": {
       "status": "BLOCKED_CONFIG_PREFLIGHT",
       "requested_model": "gpt-6.1-sol",
       "catalog_sol_model": "gpt-5.6-sol",
@@ -31,15 +31,14 @@
         "id": "T25-RELAY-USAGE-SMOKE",
         "task_id": "T25",
         "requirements": ["OPS-002"],
-        "status": "BLOCKED",
-        "blocker": "Requested model absent from CLI catalog; retained preflight receipt requires review before any new attempt.",
+        "status": "READY",
         "depends_on": [],
         "objective": "仅在19_Codex开工说明.md用量口径一节增加一个简短的三级标题 Token 记账示例（假设数据）。保留原文，不改其他章节。用一个json代码块说明假设input_tokens=1000、cached_input_tokens=800、output_tokens=200、reasoning_output_tokens=50、activity_tokens=1200，明确cached属于input、reasoning属于output，不重复相加；明确这不是本次真实消耗，不可换算套餐额度或宣称节省比例。该节同时明确用量缺失时停止、30,000是会话结束后软阈值而不是硬上限。不要伪造真实调用成功；不运行任何codex命令或业务服务，不提交，验收后停止。仅运行本unit指定的本地Gate。",
         "allowed_files": ["geo-platform/docs/geo-v1.0/19_Codex开工说明.md"],
         "gates": [
           {
             "cwd": "geo-platform/backend",
-            "argv": ["{python}", "-c", "import json,re; from pathlib import Path; p=Path('../docs/geo-v1.0/19_Codex开工说明.md'); s=p.read_text().split('### Token 记账示例（假设数据）',1)[1].split('\\n### ',1)[0]; blocks=re.findall(r'```json\\s*\\n(.*?)```',s,re.S); assert len(blocks)==1; x=json.loads(blocks[0]); assert x==dict(input_tokens=1000,cached_input_tokens=800,output_tokens=200,reasoning_output_tokens=50,activity_tokens=1200); assert x['activity_tokens']==x['input_tokens']+x['output_tokens']; assert all(k in s for k in ['假设','套餐','缺失','停止','30,000','软阈值','不是硬上限']); print('USAGE_DOC_GATE_PASS: synthetic arithmetic and limits, not measured savings')"],
+            "argv": ["{python}", "-c", "import json; from pathlib import Path; p=Path('../docs/geo-v1.0/19_Codex开工说明.md'); s=p.read_text().split('### Token 记账示例（假设数据）',1)[1].split('### ',1)[0]; assert s.count('```json')==1; x=json.loads(s.split('```json',1)[1].split('```',1)[0]); assert x==dict(input_tokens=1000,cached_input_tokens=800,output_tokens=200,reasoning_output_tokens=50,activity_tokens=1200); assert x['activity_tokens']==x['input_tokens']+x['output_tokens']; assert all(k in s for k in ['假设','套餐','缺失','停止','30,000','软阈值','不是硬上限']); print('USAGE_DOC_GATE_PASS: synthetic arithmetic and limits, not measured savings')"],
             "protected_files": ["geo-platform/docs/geo-v1.0/tasks.json"]
           },
           {
@@ -50,7 +49,7 @@
         ]
       }
     ],
-    "note": "2026-10-13唯一真实入口尝试在配置预检停止，exec为0。非空预演已验证1任务/0修复/600秒/30000软阈值；离线65项重新通过。当前阻塞单元不再可领取，未改变模型或服务档位约束，未扩调度器及产品功能，未合并main。离线验收不代表实际节省额度。",
+    "note": "用户明确改用gpt-5.6-sol/medium/default并授权重新执行原单文档冒烟，1任务/0修复/600秒/30000软阈值。旧模型预检失败报告和receipt归档保留；不重置任何未知用量，不扩功能、不合并main。仅修已知软链接和标准档误判；Gate解析修正经独立正负例验证，不改变验收目标。",
     "evidence": "backend/artifacts/acceptance/codex-relay-offline-20261013/"
   },
   "active_delivery_slice": {
@@ -1166,10 +1165,10 @@
       "base_commit": "49f1926",
       "classification": "IMPLEMENTATION_CHANGE",
       "accepted_instruction": "2026-10-10 自动续跑补充令；不改变2026-10-09范围，不增加外调权限",
-      "current_requirement": "T25接力OFFLINE_ACCEPTED / REAL_SMOKE_PENDING；本次配置预检因6.1 Sol不在目录而停止，真实exec为0，不领取产品功能",
+      "current_requirement": "T25接力OFFLINE_ACCEPTED / REAL_SMOKE_PENDING；用户已明确选择5.6 Sol Medium/default，修复后仅重跑同一文档冒烟，不领取产品功能",
       "verified": "d3c5e22同源105606Z：459后端/5启动/19客户端/构建及8of8浏览器通过，源码未变，工程PASS产品INCOMPLETE。随后旧版本读错及10项错误归属先写后拒绝在隔离库复现，原FAIL证据保留。修复扩展40后端/20客户端/构建及browser112410Z通过，涵盖合法请求、历史发布、点击详情/刷新/窄屏/失效错误不回退；不与459混加。真实外调0。",
       "in_progress": "f32df69同源123203Z：486后端/5启动/20客户端/构建/8浏览器通过。审计增量：原2FAIL保留，59相邻回归含5新检查、另14审计/台账检查、20客户端/构建通过。browser130841Z验证中文只读操作人、实际保存身份、刷新及390px；130403Z验证登录/退出/撤权/隔离。9模拟请求/0真实，正式保护加载另记。产品仍INCOMPLETE，不能用这些专项覆盖剩余纠错和真实集成。",
-      "next_command": "STOP：保留20261013T155241-e2186ed6检查点；先明确可用模型及标准档位，不自动重试，不删除receipt。默认dry-run不启动任何模型。",
+      "next_command": "geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000（仅本次已授权5.6 Sol冒烟，旧零调用receipt经核对归档）",
       "next_unblocked_gap": "49f1926已保护加载；32项范围/审计检查、9项台账检查及browser132015Z不同平台比较通过，0真实调用。产品仍INCOMPLETE；答案/关系纠错、稳定性能、真实集成保留待办。",
       "external_blocker": "P0-A/P0-B待明确授权：新验收项目/文心最多4次/最多60公开URL各2次/DeepSeek最多80请求300万tokens累计30元/自动重试0。官方别名现指向V4.1-Flash，已另行明确实际模型版本待授权；没有调用。其余工程继续。"
     },

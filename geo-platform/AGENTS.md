@@ -141,9 +141,10 @@ in recent local run notes.
   the `codex/geo-integration` baseline. Never auto-merge main, reset unknown
   usage/retries, or treat a relay gate as full product acceptance. See
   `docs/geo-v1.0/19_Codex开工说明.md` for recovery and invocation boundaries.
-  Smoke outcome: preflight stopped before any exec; requested gpt-6.1-sol was
-  absent from the CLI catalog. Receipt is retained and the unit is BLOCKED.
-  Do not retry or substitute gpt-5.6-sol without a reviewed model decision.
+  Subsequent owner decision explicitly selects gpt-5.6-sol / medium / default
+  and authorizes one rerun of the same documentation smoke after fixing the
+  dependency symlink. Preserve/archive the prior no-exec preflight receipt;
+  do not reset unknown usage. No further automatic task or paid repair.
 
 - Keep `Prompt` semantics stable: one Prompt is one question.
 - Keep `run#` and `Sample` labels visible in user-facing run detail.

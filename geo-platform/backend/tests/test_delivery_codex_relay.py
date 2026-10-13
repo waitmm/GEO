@@ -94,7 +94,7 @@ def test_unknown_usage_never_authorizes_next_session(tmp_path, payload):
 def test_command_is_fresh_medium_standard_sandboxed_without_policy_bypass():
     cmd = codex_command("codex", Path("/tmp/test"))
     text = " ".join(cmd)
-    assert "gpt-6.1-sol" in cmd and 'model_reasoning_effort="medium"' in cmd
+    assert "gpt-5.6-sol" in cmd and 'model_reasoning_effort="medium"' in cmd
     assert 'service_tier="default"' in cmd and "features.multi_agent=false" in cmd
     assert "workspace-write" in cmd and 'approval_policy="never"' in cmd
     assert not any(x in text for x in ["resume", "--ignore", "dangerously", "priority"])
@@ -181,7 +181,7 @@ def models():
 
 
 @pytest.mark.parametrize("key,value", [("model_reasoning_effort", "high"), ("service_tier", "priority"),
-    ("model", "gpt-5.6-sol"), ("approval_policy", "on-request"), ("sandbox_mode", "danger-full-access"),
+    ("model", "gpt-6.1-sol"), ("approval_policy", "on-request"), ("sandbox_mode", "danger-full-access"),
     ("features", {"multi_agent": True}), ("mcp_servers", {"production": {"enabled": True}}),
     ("sandbox_workspace_write", {"network_access": True})])
 def test_effective_config_mismatch_blocks_execution(key, value):
@@ -193,6 +193,60 @@ def test_config_and_catalog_must_both_validate_without_automatic_model_fallback(
     assert validate_effective(effective_config(), models())["model_reasoning_effort"] == "medium"
     with pytest.raises(ValueError):
         validate_effective(effective_config(), [])
+
+
+def test_standard_tier_is_not_an_optional_catalog_upgrade():
+    catalog = models()
+    catalog[0]["serviceTiers"] = [{"id": "priority"}]
+    assert validate_effective(effective_config(), catalog)["service_tier"] == "default"
+    for tier in ("priority", "fast", "ultrafast", "auto"):
+        with pytest.raises(ValueError, match="service_tier"):
+            validate_effective({**effective_config(), "service_tier": tier}, catalog)
+
+
+@pytest.mark.parametrize("retarget", [False, True])
+def test_controller_dependency_symlink_is_ignored_but_pinned(tmp_path, repo, retarget):
+    source = repo / "geo-platform/frontend/node_modules"
+    source.mkdir(parents=True)
+    (source / "tool.txt").write_text("read-only shared dependency")
+    (source.parent / "package.json").write_text("{}")
+    (repo / ".gitignore").write_text((relay.ROOT / ".gitignore").read_text())
+    subprocess.run(["git", "-C", str(repo), "add", ".gitignore", "geo-platform/frontend/package.json"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "dependency ignore"], check=True)
+    subprocess.run(["git", "-C", str(repo), "update-ref", "refs/heads/" + INTEGRATION, "HEAD"], check=True)
+    def runner(argv, cwd, output, timeout, stdin=None, **kwargs):
+        if stdin is not None:
+            link = cwd / "geo-platform/frontend/node_modules"
+            assert link.is_symlink()
+            assert not relay.changes(cwd)
+            if retarget:
+                link.unlink()
+                link.symlink_to(tmp_path)
+        return good_runner(argv, cwd, output, timeout, stdin, **kwargs)
+    result = batch(tmp_path, repo, [unit()], runner)
+    if retarget:
+        assert result["status"] == "STOPPED" and "dependency link changed" in result["reason"]
+        assert not result["accepted"]
+    else:
+        assert result["status"] == "BATCH_GATES_PASS_REVIEW_REQUIRED"
+
+
+def test_smoke_document_oracle_accepts_correct_and_rejects_wrong_example(tmp_path):
+    task = json.loads((relay.ROOT / relay.LEDGER).read_text())["codex_relay"]["units"][0]
+    gate = task["gates"][0]
+    cwd = tmp_path / gate["cwd"]
+    cwd.mkdir(parents=True)
+    doc = tmp_path / task["allowed_files"][0]
+    doc.parent.mkdir(parents=True)
+    example = dict(input_tokens=1000, cached_input_tokens=800, output_tokens=200,
+                   reasoning_output_tokens=50, activity_tokens=1200)
+    for total, expected in [(1200, 0), (2050, 1)]:
+        example["activity_tokens"] = total
+        doc.write_text("### Token 记账示例（假设数据）\n```json\n" + json.dumps(example)
+                       + "\n```\n假设不能换算套餐；用量缺失停止；30,000是软阈值，不是硬上限。\n### 下一节\n")
+        result = subprocess.run([a.replace("{python}", sys.executable) for a in gate["argv"]],
+                                cwd=cwd, capture_output=True)
+        assert result.returncode == expected
 
 
 def test_reasoning_is_not_added_to_total(tmp_path):

@@ -8,6 +8,8 @@ env/
 
 # Node.js
 node_modules/
+# Relay worktrees reuse this directory through a read-only symlink.
+/geo-platform/frontend/node_modules
 dist/
 
 # Database

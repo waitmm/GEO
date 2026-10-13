@@ -1,5 +1,20 @@
 # 08 Development Log
 
+2026-10-13 / IMPLEMENTATION_CHANGE / T25 owner-authorized Sol5.6 rerun:
+target gpt-5.6-sol/medium/default, same one-document unit,0repairs/600s/30000soft.
+Fix controller dependency symlink ignore with explicit target pinning; correct
+the assumption that optional serviceTiers must list default. CLI0.153 protocol
+TurnStartParams explicitly defines default as standard speed. Config mismatch
+checks and permissions remain enforced. Fix the document gate's escaped-regex
+parser with a JSON fence parser, adding independent positive/negative fixtures.
+Archive prior receipt only after verifying attempts=[] and accounting complete;
+preserve old report/worktree. No product code, global setting or main merge.
+Before live rerun:69scoped checks pass in30.07s (65existing+4regressions),
+nonempty dry-run selects1session/0calls, requested5.6-sol medium/default.
+Document gate remains RED before the child; independent synthetic correct
+example passes and incorrect double-counted2050 fails. Evidence:
+backend/artifacts/acceptance/codex-relay-sol56-smoke-20261013/.
+
 2026-10-13 / T25 smoke result: OFFLINE_ACCEPTED / REAL_SMOKE_PENDING;
 BLOCKED_CONFIG_PREFLIGHT. Preparation51fbab0 advanced integration from5846acd,
 main stayed5846acd. Nonempty dry-run selected onlyT25-RELAY-USAGE-SMOKE with

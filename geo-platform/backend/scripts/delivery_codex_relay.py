@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[3]
 LEDGER = Path("geo-platform/docs/geo-v1.0/tasks.json")
-MODEL = "gpt-6.1-sol"
+MODEL = "gpt-5.6-sol"
 INTEGRATION = "codex/geo-integration"
 EXPECTED = {"model": MODEL, "model_reasoning_effort": "medium", "service_tier": "default",
             "approval_policy": "never", "sandbox_mode": "workspace-write"}
@@ -190,9 +190,7 @@ def validate_effective(config, models):
     model = next((m for m in models if m.get("model") == MODEL), None)
     if not model or "medium" not in {e["reasoningEffort"] for e in model["supportedReasoningEfforts"]}:
         raise ValueError("Requested model/effort unavailable; never fall back automatically")
-    tiers = model.get("serviceTiers", [])
-    if tiers and "default" not in {t["id"] for t in tiers}:
-        raise ValueError("Standard service tier not advertised")
+    # CLI protocol defines "default" as standard; serviceTiers may list only optional upgrades.
     return {**EXPECTED, "features": {k: False for k in ("multi_agent", "goals", "apps", "plugins")}}
 
 
@@ -331,9 +329,13 @@ def changes(root):
     return sorted(set(tracked + untracked))
 
 
-def guard(worktree, head, allowed, oracles):
+def guard(worktree, head, allowed, oracles, dependency_links=None):
     if git(worktree, "rev-parse", "HEAD") != head:
         raise ValueError("Child changed HEAD; controller owns commits")
+    for name, target in (dependency_links or {}).items():
+        link = worktree / name
+        if not link.is_symlink() or link.resolve() != target:
+            raise ValueError("Controller dependency link changed: " + name)
     paths = changes(worktree)
     if set(paths) - set(allowed):
         raise ValueError("Out-of-scope edits: " + str(sorted(set(paths) - set(allowed))))
@@ -391,10 +393,13 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
             git(root, "worktree", "add", "-b", branch, str(worktree), integration_head)
         environment = isolated_environment(directory)
         # Dependencies are read-only shared tools, never production data/config copies.
+        dependency_links = {}
         for source in ("geo-platform/frontend/node_modules",):
             target = worktree / source
-            if (root / source).exists() and not target.exists():
-                target.symlink_to(root / source, target_is_directory=True)
+            if (root / source).exists():
+                dependency_links[source] = (root / source).resolve()
+                if not target.exists() and not target.is_symlink():
+                    target.symlink_to(root / source, target_is_directory=True)
         for name, model_network in (("agent.sb", True), ("gate.sb", False)):
             (directory / name).write_text(sandbox_profile(root, worktree, directory, environment, model_network))
         report["isolation"] = {k: environment[k] for k in (
@@ -461,7 +466,7 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                     if rc:
                         raise ValueError(f"Codex exited {rc}; no automatic transport/model retry")
                 redo_gates = False
-                paths = guard(worktree, head, unit["allowed_files"], oracles)
+                paths = guard(worktree, head, unit["allowed_files"], oracles, dependency_links)
                 gates = []
                 for index, gate in enumerate(unit["gates"]):
                     argv = [s.replace("{python}", os.sys.executable) for s in gate["argv"]]
@@ -470,7 +475,7 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                                   env=environment, profile=directory / "gate.sb")
                     gates.append({"exit_code": code, "log": str(log)})
                 row["gates"] = gates
-                paths = guard(worktree, head, unit["allowed_files"], oracles)
+                paths = guard(worktree, head, unit["allowed_files"], oracles, dependency_links)
                 if all(g["exit_code"] == 0 for g in gates):
                     if paths:
                         git(worktree, "add", "--", *paths)

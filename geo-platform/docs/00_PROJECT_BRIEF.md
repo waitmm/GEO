@@ -2,6 +2,12 @@
 
 ## 2026-10-13 Bounded Development Checkpoint
 
+Latest owner decision: target gpt-5.6-sol / medium / default for relay children
+only; one rerun of the same tiny documentation smoke,0repairs/600s/30000soft.
+Fix exact dependency symlink handling and standard-tier catalog interpretation;
+retain prior preflight evidence. No global/IDE setting or product code changes.
+The preceding attempt's outcome below is historical, not this rerun's result.
+
 Current owner follow-up: OFFLINE_ACCEPTED / REAL_SMOKE_PENDING, with
 BLOCKED_CONFIG_PREFLIGHT. The one authorized entry stopped before exec:
 CLI0.153.0 catalog has gpt-5.6-sol, not requested gpt-6.1-sol. No substitution,

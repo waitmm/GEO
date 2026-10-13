@@ -145,6 +145,8 @@ in recent local run notes.
   and authorizes one rerun of the same documentation smoke after fixing the
   dependency symlink. Preserve/archive the prior no-exec preflight receipt;
   do not reset unknown usage. No further automatic task or paid repair.
+  Sol5.6 rerun stopped at exec startup with EPERM and no usage events. The
+  current receipt must remain blocked; do not retry or drop sandbox protection.
 
 - Keep `Prompt` semantics stable: one Prompt is one question.
 - Keep `run#` and `Sample` labels visible in user-facing run detail.

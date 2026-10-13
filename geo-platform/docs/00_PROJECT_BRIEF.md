@@ -2,11 +2,15 @@
 
 ## 2026-10-13 Bounded Development Checkpoint
 
-Latest owner decision: target gpt-5.6-sol / medium / default for relay children
-only; one rerun of the same tiny documentation smoke,0repairs/600s/30000soft.
-Fix exact dependency symlink handling and standard-tier catalog interpretation;
-retain prior preflight evidence. No global/IDE setting or product code changes.
-The preceding attempt's outcome below is historical, not this rerun's result.
+Latest Sol5.6 outcome: OFFLINE_ACCEPTED / REAL_SMOKE_PENDING,
+BLOCKED_EXEC_STARTUP_PERMISSION.69offline tests pass; exact dependency symlink
+ignore/pinning and standard-tier interpretation fixed in14ab455. CLI preflight
+confirms gpt-5.6-sol/medium/default. One exec attempt exits at startup with
+Operation not permitted, empty JSONL, UNKNOWN usage, no child changes/commit.
+No automatic retry, no sandbox bypass, no product or global/IDE config change.
+Sandboxed no-model config-read succeeds; exact denied operation remains open.
+Current receipt20261013T171626-16900909 retained; unit BLOCKED. Main5846acd
+unchanged; integration14ab455. Earlier outcome paragraphs are historical.
 
 Current owner follow-up: OFFLINE_ACCEPTED / REAL_SMOKE_PENDING, with
 BLOCKED_CONFIG_PREFLIGHT. The one authorized entry stopped before exec:

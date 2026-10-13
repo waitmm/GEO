@@ -1,5 +1,21 @@
 # 08 Development Log
 
+2026-10-13 / T25 Sol5.6 real smoke STOPPED, not accepted: fix14ab455 on
+integration, main5846acd unchanged. Preflight accepted requested model,
+medium/default/never/workspace-write. One exec process returned after0.144s
+with stderr Operation not permitted (os error1), empty JSONL; accounting_complete
+false, UNKNOWN usage, no document changes or child integration. Initial
+activity_tokens0 is not evidence of zero consumed tokens. No automatic repair,
+resume or sandbox bypass. Old6.1 no-exec receipt archived only after checking
+attempts=[]/known0 and explicit new owner authorization; new receipt retained.
+No-model probes: sandboxed version/help/app-server startup and complete
+initialize/config-read pass; first config probe closed stdin before response
+and is retained as inconclusive. Exact exec-only denied operation unresolved.
+Worktree is clean including dependency symlink; no child process remains.
+69offline tests passed before this attempt, product stillINCOMPLETE.
+Evidence: backend/artifacts/codex_usage/20261013T171626-16900909/ and
+backend/artifacts/acceptance/codex-relay-sol56-smoke-20261013/.
+
 2026-10-13 / IMPLEMENTATION_CHANGE / T25 owner-authorized Sol5.6 rerun:
 target gpt-5.6-sol/medium/default, same one-document unit,0repairs/600s/30000soft.
 Fix controller dependency symlink ignore with explicit target pinning; correct

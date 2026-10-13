@@ -2,7 +2,7 @@
 
 ## 2026-10-13 有界接力入口（优先于旧的无限续跑描述）
 
-最新授权：用户明确改用 `gpt-5.6-sol / medium / default`，修复软链接后重新执行同一个 T25-RELAY-USAGE-SMOKE 文档任务。仍最多1任务、0修复、600秒、30,000活动Token软阈值，不扩调度器或领取产品功能，不改全局/IDE配置。上次6.1模型预检失败现场保留，归档receipt后建立新的授权批次，不清零未知消耗。状态 OFFLINE_ACCEPTED / REAL_SMOKE_PENDING，不能由离线通过推定实际节省。
+最新结果：已按授权改为 `gpt-5.6-sol / medium / default`，软链接修复及69项离线验证通过。唯一真实入口通过配置预检，但exec启动报权限错误，无用量事件，已停止。状态 OFFLINE_ACCEPTED / REAL_SMOKE_PENDING / BLOCKED_EXEC_STARTUP_PERMISSION。未改全局/IDE配置，不重试、不绕过沙箱、不领取产品功能；未知用量不能计为零。下方保留两次现场及各自授权边界。
 
 此前一轮只交付开发工具，挂现有 T25，未运行真实 `codex exec`。产品仍 INCOMPLETE。正常研发从本文件和 `tasks.json` 当前检查点恢复，不把整段聊天或历史开发日志不断搬进每次任务。AGENTS 的必读契约及权限约束不减少；用目录/标题检索定位相关段落，避免反复输出整个历史日志。
 
@@ -29,7 +29,7 @@
 ### 命令（从仓库根目录）
 
 ```bash
-# 安全预演；本次5.6 Sol授权批次仅1项，预演不启动模型。
+# 安全预演；本次曾选中1项，当前已阻塞故返回0项；不会启动模型。
 geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000
 
 # 离线专项，不调用真实 Codex。
@@ -37,7 +37,7 @@ cd geo-platform/backend
 .venv/bin/python -m pytest tests/test_delivery_codex_relay.py tests/test_delivery_acceptance.py -q
 ```
 
-本次5.6 Sol单次授权入口（上次6.1预检记录独立保留）；准备提交和 integration 在调用前固定，运行环境为允许创建子沙箱的本机终端：
+本次5.6 Sol实际执行过的入口（已停止，不要直接重试）；准备提交和 integration 在调用前固定，运行环境为允许创建子沙箱的本机终端：
 
 ```bash
 geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000
@@ -67,6 +67,16 @@ geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_code
 - 四项真实验证：配置读取及不符停止有现场证据；真实模型请求档位、JSONL用量、子任务提交集成仍 NOT_RUN。报告中活动量0只因为未启动模型，不是节省额度的测量，更不是当前IDE对话免费。
 - 收尾发现额外集成隐患：控制器创建的 `geo-platform/frontend/node_modules` 复用软链接出现在 Git 未跟踪列表，当前白名单检查会拒绝它。这不是模型修改，工作树没有 tracked diff；保留现场，不把离线测试覆盖称为实际集成通过。本轮未改调度器，后续首次重试前需局部处理。只读进程检查未发现本次 app-server/exec 残留；台账/harness复检9项通过，与65项有重叠、不相加。
 - 下一步只需明确 CLI 可用的目标模型并核实其标准档位语义，再审查原receipt及冻结队列；不得直接 `--resume` 重置本次授权。GEO业务开发继续暂停，实际额度收益 NOT_MEASURED。
+
+### Sol5.6 单次重试结果（2026-10-13）
+
+- 用户明确选择5.6 Sol后，提交 `14ab455` 修复默认模型、标准档目录误判、精确依赖软链接忽略与指向保护。另修复文档Gate的转义错误，以独立正确/错误假设样例验证，不修改业务断言。69项离线通过，0失败、0跳过。
+- 原 `20261013T155241-e2186ed6` 的0次exec预检receipt经核对归档在原目录，原报告与工作树不删。新批次 `20261013T171626-16900909` 为1任务、0修复、600秒、30,000软阈值；main未变，integration=`14ab455`。
+- 新批次CLI预检确认 `gpt-5.6-sol / medium / default / never / workspace-write`，无High/Priority继承。**exec进程启动1次，但0.144秒即失败**：stderr为 `Error: Operation not permitted (os error 1)`，JSONL为空。没有正文变更、用量完成事件或子任务提交。
+- `accounting_complete=false`，用量 **UNKNOWN**。报告里的初始活动量0不能当作实耗0；attempt保留RUNNING表示没有完成记账，不表示进程仍在运行。没有匹配的子进程残留，receipt保留、任务BLOCKED，不允许自动resume或再试。
+- 无模型权限探针证明同一额外沙箱下版本/帮助/app-server启动与完整config/read成功；第一个提前关闭stdin的RPC探针无结果，未算通过。具体exec启动受限操作还未定位。这是本地运行兼容问题，不是已证明账户无权限或需要新业务凭证。
+- 当前工作树Git干净，软链接不再误报，且离线改指向负例仍被拒绝。实际模型请求档位、真实JSONL记账、任务提交集成及节省效果仍未验证。下一步先无模型定位启动错误，保留双层保护；不以绕过沙箱换取成功。
+- 证据：`backend/artifacts/acceptance/codex-relay-sol56-smoke-20261013/` 与 `backend/artifacts/codex_usage/20261013T171626-16900909/`。没有继续GEO功能开发或切换当前IDE会话模型。
 
 ## 正确开工方式
 

@@ -2,11 +2,17 @@
 
 ## 2026-10-13 Bounded Development Checkpoint
 
-Current owner follow-up: OFFLINE_ACCEPTED / REAL_SMOKE_PENDING. Only
-T25-RELAY-USAGE-SMOKE is authorized: one documentation unit, zero repairs,
-600 seconds, 30,000 post-session soft threshold. No scheduler expansion,
-product pickup, main merge or GEO external call. A nonempty dry-run and actual
-CLI configuration preflight precede any paid child; savings remain unmeasured.
+Current owner follow-up: OFFLINE_ACCEPTED / REAL_SMOKE_PENDING, with
+BLOCKED_CONFIG_PREFLIGHT. The one authorized entry stopped before exec:
+CLI0.153.0 catalog has gpt-5.6-sol, not requested gpt-6.1-sol. No substitution,
+no paid child, no actual task integration and no savings measurement. Config
+read confirms medium/default overrides, not successful service-tier execution.
+Nonempty dry-run selected one unit (zero repairs,600s,30,000 soft threshold);
+65 offline checks passed again. Receipt/worktree are retained; unit BLOCKED,
+no automatic retry, scheduler expansion, product pickup or main merge.
+Cleanup audit also found the controller-created node_modules symlink untracked
+by Git; the current scope guard would reject it. This local integration risk
+is recorded, not repaired or counted as passed in this bounded smoke.
 The offline handoff paragraph below describes the preceding acceptance round.
 
 Relay tooling handoff: `backend/scripts/delivery_codex_relay.py` uses dedicated

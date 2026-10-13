@@ -2,7 +2,7 @@
 
 ## 2026-10-13 有界接力入口（优先于旧的无限续跑描述）
 
-最新授权：离线工具 OFFLINE_ACCEPTED，真实冒烟 REAL_SMOKE_PENDING。只运行 T25-RELAY-USAGE-SMOKE 文档任务，最多1任务、0修复、600秒、30,000活动Token软阈值；配置或运行异常即停，不换模型、不自动重试、不扩调度器或领取产品功能。此前65项离线验收记录保留，不等于真实节省额度。真实结果见下方后续记录；没有结果就不能推定成功。
+最新状态：离线工具 OFFLINE_ACCEPTED，真实冒烟 REAL_SMOKE_PENDING，本次 BLOCKED_CONFIG_PREFLIGHT。唯一授权的 T25-RELAY-USAGE-SMOKE 文档任务在模型调用前停止，已标 BLOCKED。范围仍是最多1任务、0修复、600秒、30,000活动Token软阈值；不换模型、不自动重试、不扩调度器或领取产品功能。此前65项离线验收记录保留，不等于真实节省额度。真实预检结果见下方后续记录。
 
 此前一轮只交付开发工具，挂现有 T25，未运行真实 `codex exec`。产品仍 INCOMPLETE。正常研发从本文件和 `tasks.json` 当前检查点恢复，不把整段聊天或历史开发日志不断搬进每次任务。AGENTS 的必读契约及权限约束不减少；用目录/标题检索定位相关段落，避免反复输出整个历史日志。
 
@@ -29,7 +29,7 @@
 ### 命令（从仓库根目录）
 
 ```bash
-# 首次冒烟预演，安全默认；计划1个会话，实际启动0个。
+# 安全预演；首次已验证非空1项。当前单元BLOCKED，故再次预演为0项。
 geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000
 
 # 离线专项，不调用真实 Codex。
@@ -37,7 +37,7 @@ cd geo-platform/backend
 .venv/bin/python -m pytest tests/test_delivery_codex_relay.py tests/test_delivery_acceptance.py -q
 ```
 
-首次真实冒烟的授权命令，需先提交准备检查点并快进 integration，在允许创建子沙箱的本机终端运行。命令列在这里不代表已通过真实验证：
+本次实际执行过的入口命令（已在预检停止，不要直接重试）；准备提交和 integration 在调用前固定，运行环境为允许创建子沙箱的本机终端：
 
 ```bash
 geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000
@@ -55,6 +55,18 @@ geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_code
 真实 Codex 子会话，不代表当前人机对话本身没有消耗 Token。
 
 当前 Codex 外层沙箱禁止嵌套 sandbox-exec，探针在独立受审查的本地进程执行；不能据此称当前嵌套运行已可用。实际账户模型可用性、真实 CLI 端到端及用量/质量收益依用户要求未测试。当前 IDE 会话和用户级配置没有被切换；以上覆盖只用于此入口创建的会话。
+
+### 后续单次冒烟结果（2026-10-13）
+
+- 准备提交 `51fbab0` 在独立 `codex/relay-smoke-prep`；integration 由 `5846acd` 快进至该提交。冒烟期间 main 始终为 `5846acd`，没有自动合并。
+- 非空预演选中 `T25-RELAY-USAGE-SMOKE`，max_sessions=1，external_calls=0。文档 Gate 在修改前未通过，独立预期不是空跑。65项离线回归本次重新通过，28.82秒。
+- 唯一 `--execute` 入口生成隔离工作树后停在配置预检：`Requested model/effort unavailable; never fall back automatically`。检查点 `attempts=[]`、`accepted={}`，真实 `codex exec` 子会话0次，文档未由子会话完成，没有子任务提交或集成。
+- CLI `0.153.0` 的 `config/read` 接受 `gpt-6.1-sol / medium / default` 和原沙箱约束；`model/list` 包含 `gpt-5.6-sol`，不含 `gpt-6.1-sol`。后续只读元数据核查没有 thread/start、turn/start 或 exec。配置接受不等于服务端执行成功，目录返回也不证明不可列出的模型永远不可用；当前保守 Gate 不允许继续。
+- 目录各模型的 `serviceTiers` 只列 `priority`。它可能仅列可选档位，因此不能断言标准档不存在；也不能把 `default` 的配置回显当作已验证的标准档位请求。本轮不改 Gate、不绕过隔离、不偷偷换模型。
+- `backend/artifacts/acceptance/codex-relay-smoke-20261013/` 保存非空预演、原文档Gate失败和65项JUnit；`backend/artifacts/codex_usage/20261013T155241-e2186ed6/` 保存停止报告、隔离参数和非敏感配置目录审计。保留 `unreviewed-batch.json` 与工作树，单元 BLOCKED，不清零或自动再试。
+- 四项真实验证：配置读取及不符停止有现场证据；真实模型请求档位、JSONL用量、子任务提交集成仍 NOT_RUN。报告中活动量0只因为未启动模型，不是节省额度的测量，更不是当前IDE对话免费。
+- 收尾发现额外集成隐患：控制器创建的 `geo-platform/frontend/node_modules` 复用软链接出现在 Git 未跟踪列表，当前白名单检查会拒绝它。这不是模型修改，工作树没有 tracked diff；保留现场，不把离线测试覆盖称为实际集成通过。本轮未改调度器，后续首次重试前需局部处理。只读进程检查未发现本次 app-server/exec 残留；台账/harness复检9项通过，与65项有重叠、不相加。
+- 下一步只需明确 CLI 可用的目标模型并核实其标准档位语义，再审查原receipt及冻结队列；不得直接 `--resume` 重置本次授权。GEO业务开发继续暂停，实际额度收益 NOT_MEASURED。
 
 ## 正确开工方式
 

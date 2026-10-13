@@ -1,5 +1,27 @@
 # 08 Development Log
 
+2026-10-13 / T25 smoke result: OFFLINE_ACCEPTED / REAL_SMOKE_PENDING;
+BLOCKED_CONFIG_PREFLIGHT. Preparation51fbab0 advanced integration from5846acd,
+main stayed5846acd. Nonempty dry-run selected onlyT25-RELAY-USAGE-SMOKE with
+1session/0repairs/600seconds/30000softthreshold; documentation oracle failed
+before implementation as expected. Existing65offline tests passed in28.82s.
+Exactly one --execute entry created isolated worktree20261013T155241-e2186ed6,
+then stopped: requestedgpt-6.1-sol absent from CLI0.153.0 catalog. attempts=[],
+accepted={}, no real exec and no child commit. A subsequent read-only metadata
+audit (initialize/config-read/model-list only, no thread/turn) confirms the
+same blocker and effective medium/default config. gpt-5.6-sol is listed but
+was not substituted. serviceTiers advertises priority only; this does not prove
+standard is unsupported or that a default-tier request succeeded. Keep receipt
+and worktree; unit nowBLOCKED, no retry authorization. No scheduler/business
+code changed. No measured savings, new product task, DB access or main merge.
+Evidence: backend/artifacts/acceptance/codex-relay-smoke-20261013/ and
+backend/artifacts/codex_usage/20261013T155241-e2186ed6/.
+Final audit: no tracked worktree diff, but controller-created node_modules
+symlink is untracked and would fail the scope guard. Preserve this unresolved
+local integration risk; do not describe the stop as only an external blocker.
+No matching child app-server/exec process remains. Ledger/harness9checks pass
+again (overlapping the65, not additive). Main remains5846acd.
+
 2026-10-13 / IMPLEMENTATION_CHANGE / T25 relay smoke preparation: owner accepts
 the 65-check offline tool and authorizes one documentation-only live smoke.
 Frozen unit T25-RELAY-USAGE-SMOKE uses OPS-002, one allowed documentation file,

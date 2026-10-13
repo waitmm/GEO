@@ -11,14 +11,28 @@
     "default_service_tier": "default",
     "max_tasks_per_batch": 3,
     "max_repairs_per_unit": 2,
-    "live_execution_authorized_this_round": true,
+    "live_execution_authorized_this_round": false,
     "smoke_limits": {"max_tasks": 1, "max_repairs": 0, "session_seconds": 600, "token_threshold": 30000},
+    "smoke_result": {
+      "status": "BLOCKED_CONFIG_PREFLIGHT",
+      "requested_model": "gpt-6.1-sol",
+      "catalog_sol_model": "gpt-5.6-sol",
+      "cli_version": "0.153.0",
+      "real_codex_exec_sessions": 0,
+      "real_task_integrations": 0,
+      "savings": "NOT_MEASURED",
+      "additional_integration_risk": "控制器创建的frontend/node_modules软链接出现在git未跟踪列表；当前guard白名单会拒绝它。不是模型改动；本轮保留现场未扩修调度器，真实任务集成仍未验证。",
+      "report": "backend/artifacts/codex_usage/20261013T155241-e2186ed6/report.json",
+      "config_audit": "backend/artifacts/codex_usage/20261013T155241-e2186ed6/config-catalog-audit.json",
+      "reason": "请求的6.1 Sol不在CLI目录；未自动换成5.6 Sol。config/read接受medium/default，但真实请求档位未验证；serviceTiers只返回priority可选档，不能推定标准档不存在。保留receipt，未启动exec，不重试。"
+    },
     "units": [
       {
         "id": "T25-RELAY-USAGE-SMOKE",
         "task_id": "T25",
         "requirements": ["OPS-002"],
-        "status": "READY",
+        "status": "BLOCKED",
+        "blocker": "Requested model absent from CLI catalog; retained preflight receipt requires review before any new attempt.",
         "depends_on": [],
         "objective": "仅在19_Codex开工说明.md用量口径一节增加一个简短的三级标题 Token 记账示例（假设数据）。保留原文，不改其他章节。用一个json代码块说明假设input_tokens=1000、cached_input_tokens=800、output_tokens=200、reasoning_output_tokens=50、activity_tokens=1200，明确cached属于input、reasoning属于output，不重复相加；明确这不是本次真实消耗，不可换算套餐额度或宣称节省比例。该节同时明确用量缺失时停止、30,000是会话结束后软阈值而不是硬上限。不要伪造真实调用成功；不运行任何codex命令或业务服务，不提交，验收后停止。仅运行本unit指定的本地Gate。",
         "allowed_files": ["geo-platform/docs/geo-v1.0/19_Codex开工说明.md"],
@@ -36,7 +50,7 @@
         ]
       }
     ],
-    "note": "2026-10-13后续授权一次极小文档真实冒烟；1任务/0修复/600秒/30000软阈值。无新产品功能、无调度器扩展、无主分支合并。失败或配置不符即停止，不自动换模型或再试。离线验收不代表实际节省额度。",
+    "note": "2026-10-13唯一真实入口尝试在配置预检停止，exec为0。非空预演已验证1任务/0修复/600秒/30000软阈值；离线65项重新通过。当前阻塞单元不再可领取，未改变模型或服务档位约束，未扩调度器及产品功能，未合并main。离线验收不代表实际节省额度。",
     "evidence": "backend/artifacts/acceptance/codex-relay-offline-20261013/"
   },
   "active_delivery_slice": {
@@ -1152,10 +1166,10 @@
       "base_commit": "49f1926",
       "classification": "IMPLEMENTATION_CHANGE",
       "accepted_instruction": "2026-10-10 自动续跑补充令；不改变2026-10-09范围，不增加外调权限",
-      "current_requirement": "T25接力离线已验收；仅一次有界文档真实冒烟，不领取产品功能，不扩调度器",
+      "current_requirement": "T25接力OFFLINE_ACCEPTED / REAL_SMOKE_PENDING；本次配置预检因6.1 Sol不在目录而停止，真实exec为0，不领取产品功能",
       "verified": "d3c5e22同源105606Z：459后端/5启动/19客户端/构建及8of8浏览器通过，源码未变，工程PASS产品INCOMPLETE。随后旧版本读错及10项错误归属先写后拒绝在隔离库复现，原FAIL证据保留。修复扩展40后端/20客户端/构建及browser112410Z通过，涵盖合法请求、历史发布、点击详情/刷新/窄屏/失效错误不回退；不与459混加。真实外调0。",
       "in_progress": "f32df69同源123203Z：486后端/5启动/20客户端/构建/8浏览器通过。审计增量：原2FAIL保留，59相邻回归含5新检查、另14审计/台账检查、20客户端/构建通过。browser130841Z验证中文只读操作人、实际保存身份、刷新及390px；130403Z验证登录/退出/撤权/隔离。9模拟请求/0真实，正式保护加载另记。产品仍INCOMPLETE，不能用这些专项覆盖剩余纠错和真实集成。",
-      "next_command": "geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000（默认仅预演；配置核验通过后最多一次真实执行）",
+      "next_command": "STOP：保留20261013T155241-e2186ed6检查点；先明确可用模型及标准档位，不自动重试，不删除receipt。默认dry-run不启动任何模型。",
       "next_unblocked_gap": "49f1926已保护加载；32项范围/审计检查、9项台账检查及browser132015Z不同平台比较通过，0真实调用。产品仍INCOMPLETE；答案/关系纠错、稳定性能、真实集成保留待办。",
       "external_blocker": "P0-A/P0-B待明确授权：新验收项目/文心最多4次/最多60公开URL各2次/DeepSeek最多80请求300万tokens累计30元/自动重试0。官方别名现指向V4.1-Flash，已另行明确实际模型版本待授权；没有调用。其余工程继续。"
     },

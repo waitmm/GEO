@@ -1,4 +1,4 @@
-import type { BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2RunPool, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
+import type { AnswerRelationCorrectionStatus, BrowserMonitorRun, BrowserMonitorRunDetail, BrowserMonitorTask, BrowserQueueSummary, EvidencePackage, Metrics, MonitoringBatch, MonitorRun, Observation, OptimizationAction, OptimizationEvidenceChain, OptimizationExperiment, OptimizationIssue, Platform, Project, Prompt, PromptCluster, PromptDailyReport, RunArtifactContent, SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2RunPool, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness, SinglePromptV2StrategyStatus, StrategyCandidate, Topic, ValidationDashboard } from "../types";
 
 const API_BASE = "";
 
@@ -76,6 +76,12 @@ export async function request<T>(path: string, init?: RequestInit, timeoutMs = 6
 
 export const api = {
   listProjects: () => request<Project[]>("/api/projects"),
+  getAnswerRelationCorrections: (taskId: string, projectId: number, promptId: number) =>
+    request<AnswerRelationCorrectionStatus>(`/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(taskId)}/answer-relation-corrections?project_id=${projectId}&prompt_id=${promptId}`),
+  previewAnswerRelationCorrection: (taskId: string, payload: Record<string, unknown>) =>
+    request<Record<string, any>>(`/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(taskId)}/answer-relation-corrections/preview`, { method: "POST", body: JSON.stringify(payload) }),
+  saveAnswerRelationCorrection: (taskId: string, payload: Record<string, unknown>) =>
+    request<Record<string, any>>(`/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(taskId)}/answer-relation-corrections`, { method: "POST", body: JSON.stringify(payload) }),
   createSinglePromptV2Analysis: (payload: { project_id: number; prompt_id: number; sample_count: number; idempotency_key: string }) =>
     request<SinglePromptV2Status>("/api/v2/single-prompt/analyses", { method: "POST", body: JSON.stringify(payload) }),
   listSinglePromptV2RunPool: (projectId: number, promptId: number, page = 1, pageSize = 20) =>

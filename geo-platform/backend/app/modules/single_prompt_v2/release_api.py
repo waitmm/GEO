@@ -47,6 +47,7 @@ from app.modules.single_prompt_v2.diagnosis import (
 )
 from app.modules.single_prompt_v2.schemas import (
     TruthCorrectionPreview, TruthCorrectionCreate, TruthReprojectionCreate,
+    AnswerRelationCorrectionPreview, AnswerRelationCorrectionCreate,
     AutomaticOptimizationCreate, AutomaticOptimizationAction, AutomaticOptimizationAuthorization, AutomaticDraftRevisionCreate, AutomaticDraftRegenerationCreate,
     SinglePromptAnalysisCreate,
     SinglePromptAutomaticStrategyCreate,
@@ -124,6 +125,29 @@ from app.modules.single_prompt_v2.source_preparation import (
 
 router = APIRouter(prefix="/api/v2/single-prompt", tags=["single-prompt-v2-release"])
 get_db = get_release_db
+
+
+@router.get("/optimization-tasks/{task_id}/answer-relation-corrections")
+def read_answer_relation_corrections(task_id: str, project_id: int, prompt_id: int,
+                                     db: Session = Depends(get_db)) -> dict:
+    from .answer_relation_corrections import correction_status
+    return correction_status(db, task_id=task_id, project_id=project_id, prompt_id=prompt_id)
+
+
+@router.post("/optimization-tasks/{task_id}/answer-relation-corrections/preview")
+def preview_answer_relation_correction(task_id: str, payload: AnswerRelationCorrectionPreview,
+                                       db: Session = Depends(get_db)) -> dict:
+    from .answer_relation_corrections import preview_correction
+    return preview_correction(db, task_id=task_id, **payload.model_dump())
+
+
+@router.post("/optimization-tasks/{task_id}/answer-relation-corrections", status_code=201)
+def create_answer_relation_correction(task_id: str, payload: AnswerRelationCorrectionCreate,
+                                      actor: str = Depends(authenticated_actor),
+                                      db: Session = Depends(get_db)) -> dict:
+    from .answer_relation_corrections import save_correction
+    return save_correction(db, task_id=task_id, actor=actor,
+        **payload.model_dump(exclude={"human_confirmed"}))
 
 @router.get("/optimization-tasks/{task_id}/truths")
 def read_task_truths(task_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)):

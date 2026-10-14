@@ -373,6 +373,50 @@ export type SinglePromptV2DiagnosisEdit = {
   reason: string;
 };
 
+export type AnswerRelationCorrectionImpact = {
+  affected_reason_ids: string[];
+  unaffected_reason_ids: string[];
+  affected_strategy_ids: string[];
+  unaffected_strategy_ids: string[];
+  affected_deliveries: Array<{ proposal_id: string; strategy_id: string; result_version: string; result_hash: string }>;
+  unaffected_deliveries: Array<{ proposal_id: string; strategy_id: string; result_version: string; result_hash: string }>;
+  fixed_strategy: { strategy_id: string; result_version: string; result_hash: string };
+  unchanged_objects: string[];
+  recompute_task_created: false;
+  external_calls: 0;
+};
+
+export type AnswerRelationCorrectionStatus = {
+  task_id: string;
+  diagnosis_id: string;
+  frozen_result_version: string;
+  base_result_version: string;
+  base_result_hash: string;
+  reviewable_set_hash: string;
+  targets: Array<{
+    target_type: "RECOMMENDATION_EVENT" | "EVIDENCE_RELATION";
+    target_id: string;
+    target_hash: string;
+    current_value: string | null;
+    machine_value: string | null;
+    can_correct: boolean;
+    blocked_reason?: string;
+    label: string;
+    reason_ids: string[];
+    alignment_evaluation?: string;
+    allowed_values: string[];
+  }>;
+  history: Array<{
+    result_version: string;
+    parent_result_version: string;
+    result_hash: string;
+    actor: string;
+    created_at: string;
+    summary: { target_type: string; target_id: string; before: string; after: string; reason: string };
+    impact: AnswerRelationCorrectionImpact;
+  }>;
+};
+
 export type SinglePromptV2DiagnosisStatus = {
   diagnosis: {
     diagnosis_id: string;

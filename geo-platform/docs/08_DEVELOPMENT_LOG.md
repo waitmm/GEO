@@ -1,5 +1,21 @@
 # 08 Development Log
 
+2026-10-14 / IMPLEMENTATION_CHANGE / T19 answer-relation correction entry:
+formal release Optimize task detail now previews and saves task-scoped answer
+behavior or evaluated evidence-relation corrections as append-only diagnosis
+revisions. Preview binds the exact diagnosis result/reviewable-set, strategy and
+delivery identities and lists affected/unaffected reasons, directions and drafts.
+Authenticated access identity is authoritative; form actors, stale/cross-scope
+hashes, wrong objects, empty reasons and non-evaluated/failed relations are
+rejected. Original answer/span, CitationContribution, strategy, delivery, task
+input and historical rows remain unchanged. This slice creates no recompute task,
+does not upgrade old strategies/drafts, and makes zero external calls. Dedicated
+backend gate passes 47 tests; Python compile and native esbuild TS/TSX parse pass.
+The exact frontend node test and release build gates did not start in this
+restricted worktree because `node` and `npm` are unavailable on PATH and the
+installed runtime directory is not readable; no dependency install or permission
+change was attempted. This is not T19 or GEO 1.0 completion.
+
 2026-10-14 / IMPLEMENTATION_CHANGE / relay feature freeze:
 continue actual80323bd baseline, preserving its path parsing and process receipts.
 Explicit DOCUMENT_SMALL defaults8 commands/20000 output characters/180 seconds;

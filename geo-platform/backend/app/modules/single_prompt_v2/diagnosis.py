@@ -3694,6 +3694,7 @@ def revise_diagnosis_result(
     reviewable_set_hash: str,
     edits: list[dict],
     editor: str,
+    revision_metadata: dict | None = None,
 ) -> SinglePromptDiagnosisResult:
     execution = db.query(SinglePromptDiagnosisExecution).filter(
         SinglePromptDiagnosisExecution.diagnosis_id == diagnosis_id
@@ -3760,6 +3761,7 @@ def revise_diagnosis_result(
         "parent_result_version": base.result_version,
         "editor": editor,
         "applied_edits": applied,
+        **(copy.deepcopy(revision_metadata) if revision_metadata else {}),
     }
     output_hash = _hash(output)
     new_result = SinglePromptDiagnosisResult(

@@ -6,6 +6,7 @@ import { BrandContextSelect } from "./BrandContextSelect";
 import { SupplementalSources } from "./SupplementalSources";
 import { ManuscriptEditor } from "./ManuscriptEditor";
 import { TruthCorrectionPanel } from './TruthCorrectionPanel';
+import { AnswerRelationCorrectionPanel } from './AnswerRelationCorrectionPanel';
 import { DeliveryEvidence } from "./DeliveryEvidence";
 import { ManuscriptPreview } from "./ManuscriptPreview";
 import { downloadManuscript } from "./manuscriptExport";
@@ -170,6 +171,8 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           {!['TEXT_REVISION', 'TEXT_REGENERATION'].includes(task.task_kind) && task.objects.strategy_id && <TruthCorrectionPanel
             key={`truth:${task.task_id}`} taskId={task.task_id} projectId={projectId} promptId={promptId}
             onQueued={saved => { if (!alive.current) return; ++sequence.current; selectTask(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />}
+          {task.task_kind === 'AUTOMATIC_OPTIMIZE' && task.objects.strategy_id && <AnswerRelationCorrectionPanel
+            key={`answer-relation:${task.task_id}`} taskId={task.task_id} projectId={projectId} promptId={promptId} />}
           {task.authorization.policy === "CACHE_ONLY" && !active && !task.status.startsWith("COMPLETED") && task.status !== "CANCELLED" && <Button icon={<ShieldCheck size={16} />} onClick={() => setAuthOpen(true)}>授权本任务模型调用</Button>}
           {["INTERRUPTED", "BLOCKED"].includes(task.status) && <Button disabled={!!task.usage.unsettled_requests} loading={busy} icon={<Play size={16} />} onClick={() => void mutate("resume")}>恢复未完成步骤</Button>}
           {!task.status.startsWith("COMPLETED") && task.status !== "CANCELLED" && <Button danger icon={<Square size={16} />} loading={busy} onClick={() => void mutate("cancel")}>停止后续步骤</Button>}

@@ -67,7 +67,7 @@
     },
     "units": [
       {
-        "id": "T25-RELAY-USAGE-SMOKE-TERMINAL-01",
+        "id": "T25-RELAY-USAGE-SMOKE-TERMINAL-02",
         "task_id": "T25",
         "requirements": [
           "OPS-002"
@@ -109,7 +109,7 @@
             ]
           }
         ],
-        "authorization_batch": "TERMINAL-SMOKE-20261013-01"
+        "authorization_batch": "TERMINAL-SMOKE-20261014-02"
       },
       {
         "id": "T25-RELAY-USAGE-SMOKE",

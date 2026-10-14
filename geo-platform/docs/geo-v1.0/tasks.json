@@ -3,8 +3,8 @@
   "baseline_date": "2026-09-30",
   "implementation_verified": true,
   "codex_relay": {
-    "owner_task": "T25",
-    "status": "OFFLINE_ACCEPTED / REAL_SMOKE_PENDING",
+    "owner_task": "T19",
+    "status": "FEATURE_FROZEN / OFFLINE_ACCEPTED",
     "integration_branch": "codex/geo-integration",
     "default_model": "gpt-5.6-sol",
     "default_effort": "medium",
@@ -40,8 +40,8 @@
     },
     "terminal_smoke_batch": {
       "id": "TERMINAL-SMOKE-20261013-01",
-      "status": "READY_FOR_TERMINAL_DRY_RUN_ONLY_THIS_TURN",
-      "terminal_execution_authorized": true,
+      "status": "HISTORICAL_STOPPED_DO_NOT_RESUME",
+      "terminal_execution_authorized": false,
       "execute_in_this_agent_turn": false,
       "unit_id": "T25-RELAY-USAGE-SMOKE-TERMINAL-01",
       "same_acceptance_target_as": "T25-RELAY-USAGE-SMOKE",
@@ -64,6 +64,22 @@
       "historical_report": "backend/artifacts/codex_usage/20261013T171626-16900909/report.json",
       "resume_previous_batch": false,
       "main_merge_authorized": false
+    },
+    "product_development_batch": {
+      "id": "GEO-PRODUCT-20261014-01",
+      "status": "READY_DRY_RUN_ONLY_THIS_TURN",
+      "selected_unit_id": "T19-ANSWER-RELATION-CORRECTION-ENTRY-01",
+      "controller_branch": "codex/geo-product-ready",
+      "code_baseline_branch": "codex/geo-integration",
+      "source_baseline_commit": "3979af597e975f4cc3687b198c0b96d5da23b721",
+      "execute_in_this_agent_turn": false,
+      "external_geo_calls_authorized": 0,
+      "production_database_operations_authorized": false,
+      "resume_previous_batch": false,
+      "main_merge_authorized": false,
+      "historical_usage": "UNKNOWN_PRESERVED",
+      "reviewed_receipt": "backend/artifacts/codex_usage/20261014T113603-538bb98f/reviewed-batch-receipt.json",
+      "receipt_review": "backend/artifacts/codex_usage/20261014T113603-538bb98f/receipt-review.json"
     },
     "units": [
       {
@@ -117,7 +133,8 @@
         "requirements": [
           "OPS-002"
         ],
-        "status": "READY",
+        "status": "STOPPED",
+        "blocker": "文档修改已产生但第二项Gate因隔离环境缺少可用git/xcrun而未全绿；控制器report accounting_complete=false。旧工作树、STOPPED报告、receipt及UNKNOWN用量保留，不resume、不重试。",
         "depends_on": [],
         "objective": "仅在19_Codex开工说明.md用量口径一节增加一个简短的三级标题 Token 记账示例（假设数据）。保留原文，不改其他章节。用一个json代码块说明假设input_tokens=1000、cached_input_tokens=800、output_tokens=200、reasoning_output_tokens=50、activity_tokens=1200，明确cached属于input、reasoning属于output，不重复相加；明确这不是本次真实消耗，不可换算套餐额度或宣称节省比例。该节同时明确用量缺失时停止、30,000是会话结束后软阈值而不是硬上限。不要伪造真实调用成功；不运行任何codex命令或业务服务，不提交，验收后停止。仅运行本unit指定的本地Gate。",
         "allowed_files": [
@@ -154,7 +171,10 @@
             ]
           }
         ],
-        "authorization_batch": "TERMINAL-SMOKE-20261014-03"
+        "authorization_batch": "TERMINAL-SMOKE-20261014-03",
+        "report": "backend/artifacts/codex_usage/20261014T113603-538bb98f/report.json",
+        "receipt_review": "backend/artifacts/codex_usage/20261014T113603-538bb98f/receipt-review.json",
+        "usage": "UNKNOWN_ACCOUNTING_INCOMPLETE"
       },
       {
         "id": "T25-RELAY-USAGE-SMOKE",
@@ -177,9 +197,130 @@
             "protected_files": ["geo-platform/backend/tests/test_delivery_codex_relay.py", "geo-platform/backend/scripts/delivery_codex_relay.py"]
           }
         ]
+      },
+      {
+        "id": "T19-ANSWER-RELATION-CORRECTION-ENTRY-01",
+        "task_id": "T19",
+        "task_type": "PRODUCT",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "requirements": [
+          "COR-002",
+          "COR-003"
+        ],
+        "status": "READY",
+        "depends_on": [],
+        "task_dependencies": [
+          {
+            "task_id": "T13",
+            "required_existing_slice": "冻结诊断输入、事实/关系投影和版本校验；不要求T13整体DONE"
+          },
+          {
+            "task_id": "T18",
+            "required_existing_slice": "正式release Optimize任务详情、刷新恢复和实际访问身份；不要求T18整体DONE"
+          }
+        ],
+        "business_value": "让用户在正式Optimize主链中纠正机器识别的答案推荐归属或已评估证据关系，保存前看到会受影响的理由、方向和稿件；避免把错误关系继续当成策略依据，同时不覆盖原结果、不重跑回答/引用、不触发外部调用。",
+        "objective": "把现有V2诊断结果修订能力接入正式release Optimize任务详情，形成答案/关系纠错的第一个可独立验收切片。只允许修改当前任务冻结diagnosis_id/result_version内的RECOMMENDATION_EVENT有效行为或alignment_evaluation=EVALUATED的EVIDENCE_RELATION；不可改原回答、span、引用正文、未评估/失败关系或跨项目对象。提交前用固定base_result_version、result_hash、reviewable_set_hash和当前任务对象计算并展示受影响reason_id、strategy_id、delivery result_version及明确不受影响对象。保存必须复用append-only diagnosis revision，记录authenticated_actor而非表单身份，保留机器结果、CitationContribution、策略、稿件和历史版本原样；陈旧版本、伪造actor、错误项目/Prompt及空依据必须拒绝。保存后正式Optimize页显示纠错版本、修改摘要、操作者、时间和影响清单，并明确本单元尚未重算/升级旧策略与稿件。全过程不得调用模型、抓取来源、写生产数据库、改变1-8/V2主链顺序、创建第二套语义或把人工纠错变成必经审核。不要实现后续受影响内容重算；该动作留给独立单元。",
+        "reference_docs": [
+          "docs/geo-v1.0/00_产品范围与交付基线.md#本轮冻结原则",
+          "docs/geo-v1.0/14_纠错与局部重算.md#目标与范围",
+          "docs/geo-v1.0/14_纠错与局部重算.md#需求与规则",
+          "docs/geo-v1.0/17_验收矩阵.md#功能验收",
+          "docs/semantics/00_DOMAIN_MODEL.md#AnswerDecisionBinding",
+          "docs/semantics/00_DOMAIN_MODEL.md#CitationContribution",
+          "docs/semantics/01_SEMANTIC_CONTRACTS.md#SC-CITATION-CONTRIBUTION-001-Citation-Contribution-V1",
+          "docs/semantics/01_SEMANTIC_CONTRACTS.md#SC-HISTORY-001-Accepted-History-Is-Immutable",
+          "docs/semantics/01_SEMANTIC_CONTRACTS.md#SC-SCOPE-001-Current-Scope-History-Isolation",
+          "docs/semantics/04_CONFLICT_REGISTER.md#SEM-CONFLICT-003-Runtime-ANSWER_SEMANTIC-输出契约不可执行",
+          "docs/semantics/04_CONFLICT_REGISTER.md#SEM-CONFLICT-004-Runtime-BINDING-上游-lineage-与-Legacy-边界冲突"
+        ],
+        "allowed_files": [
+          "geo-platform/backend/app/modules/single_prompt_v2/answer_relation_corrections.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/automatic_delivery.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/diagnosis.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/release_api.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/schemas.py",
+          "geo-platform/backend/tests/test_delivery_answer_relation_corrections.py",
+          "geo-platform/frontend/src/AnswerRelationCorrectionPanel.tsx",
+          "geo-platform/frontend/src/AutomaticOptimizePanel.tsx",
+          "geo-platform/frontend/src/api/client.ts",
+          "geo-platform/frontend/src/types.ts",
+          "geo-platform/frontend/tests/answer-relation-correction.test.mjs",
+          "geo-platform/docs/geo-v1.0/14_纠错与局部重算.md",
+          "geo-platform/docs/08_DEVELOPMENT_LOG.md"
+        ],
+        "acceptance_conditions": [
+          "正式release Optimize任务详情可从任务固定diagnosis/result打开中文纠错入口，刷新后仍显示同一追加版本和实际访问主体。",
+          "答案行为纠错与已评估证据关系纠错各有正例；FAILED、NOT_EVALUATED、错误span/对象、跨项目及陈旧hash均被拒绝，UNKNOWN不升级。",
+          "影响预览绑定原任务固定输入，精确列出受影响与不受影响reason/strategy/delivery identity；不读取latest补齐，不跨Prompt或项目扫描。",
+          "保存只新增diagnosis revision并保留parent_result_version；旧机器结果、CitationContribution、策略、稿件、历史验收和原任务输入逐字节/哈希不变。",
+          "本单元外部模型请求、来源抓取和生产数据库操作均为0；不创建重算任务，不把旧稿标成已按纠错更新。",
+          "独立后端专项、既有诊断修订回归、前端交互专项和release build全部通过；这些Gate仅验收本单元，不升级T19或GEO 1.0整体状态。"
+        ],
+        "gates": [
+          {
+            "cwd": "geo-platform/backend",
+            "argv": [
+              "{python}",
+              "-m",
+              "pytest",
+              "-p",
+              "no:cacheprovider",
+              "tests/test_delivery_answer_relation_corrections.py",
+              "tests/test_single_prompt_v2_diagnosis.py",
+              "-q"
+            ],
+            "protected_files": [
+              "geo-platform/docs/geo-v1.0/tasks.json",
+              "geo-platform/backend/tests/test_single_prompt_v2_diagnosis.py",
+              "geo-platform/docs/semantics/01_SEMANTIC_CONTRACTS.md",
+              "geo-platform/docs/semantics/04_CONFLICT_REGISTER.md"
+            ]
+          },
+          {
+            "cwd": "geo-platform/frontend",
+            "argv": [
+              "node",
+              "--experimental-strip-types",
+              "--test",
+              "tests/answer-relation-correction.test.mjs",
+              "tests/api-client.test.mjs",
+              "tests/optimization-status.test.mjs"
+            ],
+            "protected_files": [
+              "geo-platform/docs/geo-v1.0/tasks.json",
+              "geo-platform/frontend/tests/api-client.test.mjs",
+              "geo-platform/frontend/tests/optimization-status.test.mjs"
+            ]
+          },
+          {
+            "cwd": "geo-platform/frontend",
+            "argv": [
+              "npm",
+              "run",
+              "build:release"
+            ],
+            "protected_files": [
+              "geo-platform/frontend/package.json",
+              "geo-platform/frontend/package-lock.json",
+              "geo-platform/docs/geo-v1.0/tasks.json"
+            ]
+          }
+        ],
+        "execution_constraints": {
+          "external_calls": 0,
+          "production_database_operations": false,
+          "real_codex_exec_this_turn": false,
+          "integration_branch": "codex/geo-integration",
+          "auto_merge_main": false,
+          "preserve_frozen_versions": true,
+          "preserve_evidence_ownership": true
+        },
+        "session_seconds": 1800,
+        "authorization_batch": "GEO-PRODUCT-20261014-01"
       }
     ],
-    "note": "本轮仅准备新授权TERMINAL-SMOKE-20261013-01并完成非空dry-run，不运行Codex。原任务继续BLOCKED，旧receipt原字节归档且用量UNKNOWN不变。新Terminal单元仅复用原文档目标和Gate，独立增量授权，不resume旧批次、不合并main、不恢复产品功能。",
+    "note": "接力工具保持FEATURE_FROZEN / OFFLINE_ACCEPTED，不再扩建。旧T25-03批次STOPPED，receipt原字节归档且UNKNOWN记账不变，不resume。当前仅准备一个T19正式产品READY单元并dry-run；不运行Codex、不外调、不操作生产数据库、不自动合并main。",
     "evidence": "backend/artifacts/acceptance/codex-relay-offline-20261013/"
   },
   "active_delivery_slice": {

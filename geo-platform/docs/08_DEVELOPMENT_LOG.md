@@ -1,5 +1,20 @@
 # 08 Development Log
 
+2026-10-14 / IMPLEMENTATION_CHANGE / T25 relay final closeout:
+Git changes uses raw NUL-delimited paths, including both sides of renames;
+preserve out-of-scope, symlink and oracle rejection. Persist per-attempt process
+exit metadata, timeout and observed/accounted usage; refuse acceptance or recovery
+without normal completion plus independent gates. Markdown-only units default to
+10 commands/32000 output characters per session, configurable in frozen units;
+business budgets unchanged. Stream stop-loss cleans entire process group, saves
+evidence and stops further calls. Actual T25-03 JSONL/worktree replay only, existing
+doc gate logs reused without regenerating content or rerunning those gates.
+Historical2865 files unchanged; missing historical exit code remains unknown.
+Evidence:backend/artifacts/acceptance/relay-final-20261014/. No Codex invocation,
+product work, historical receipt rewrite or main merge. Final host regression134
+passed; earlier timing/killpg failures retained. Cleanup failure itself preserves
+exit evidence and blocks continuation. See19_Codex for limits.
+
 2026-10-14 / IMPLEMENTATION_CHANGE / T25 context and usage only:
 replace unconditional product-doc reading with task-scoped AGENTS routing;
 preserve all business, semantic, permission and evidence invariants. Recognize

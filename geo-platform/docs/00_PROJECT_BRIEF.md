@@ -1,5 +1,17 @@
 # 00 Project Brief
 
+## 2026-10-14 Relay Final Closeout
+
+Tooling only: NUL-delimited Git paths fix the Chinese scope false positive;
+per-attempt process receipts retain returncode/reason/timeout/observed usage and
+accounting completeness; Markdown-only units receive configurable command/output
+stop-loss, without changing business-unit budgets. Gates and integration recovery
+require verified normal completion. Offline T25-03 replay passes the real scope
+guard and reuses existing documentation acceptance evidence; historical STOPPED,
+receipt, UNKNOWN and worktree are untouched. No Codex exec or product development.
+Final offline regression:134 passed on the host with local Mock processes only.
+See19_Codex instructions and artifacts/acceptance/relay-final-20261014/.
+
 ## 2026-10-14 Relay Context And Accounting Follow-up
 
 T25 tooling only: task-scoped AGENTS reading and reconnect-aware JSONL parsing.

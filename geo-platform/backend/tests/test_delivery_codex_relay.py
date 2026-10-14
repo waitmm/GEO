@@ -178,6 +178,168 @@ def test_prompt_limits_reading_without_waiving_instructions():
     assert "required documents" not in prompt
 
 
+@pytest.mark.parametrize("name", ["中文说明.md", " spaced name .md", "tab\tline\nname.md", 'quote"back\\slash.md'])
+def test_raw_git_paths_round_trip_tracked_and_untracked(tmp_path, repo, name):
+    (repo / name).write_text("original")
+    assert relay.changes(repo) == [name]
+    relay.git(repo, "add", "--", name)
+    relay.git(repo, "commit", "-m", "path fixture")
+    head = relay.git(repo, "rev-parse", "HEAD")
+    (repo / name).write_text("updated")
+    assert guard(repo, head, [name], {}) == [name]
+    with pytest.raises(ValueError, match="Out-of-scope"):
+        guard(repo, head, ["different.md"], {})
+
+
+def test_rename_cannot_hide_out_of_scope_source(repo):
+    head = relay.git(repo, "rev-parse", "HEAD")
+    relay.git(repo, "mv", "oracle.txt", "允许.md")
+    assert set(relay.changes(repo)) == {"oracle.txt", "允许.md"}
+    with pytest.raises(ValueError, match="Out-of-scope"):
+        guard(repo, head, ["允许.md"], {})
+
+
+def test_documentation_limits_do_not_change_business_defaults():
+    assert relay.stream_limits(unit()) is None
+    doc = unit(allowed_files=["说明.md"])
+    assert relay.stream_limits(doc) == {"max_commands": 10, "max_output_chars": 32000}
+    assert relay.stream_limits({**doc, "stream_limits": {"max_commands": 3}})["max_commands"] == 3
+
+
+@pytest.mark.parametrize("limits", [{"max_commands": 0}, {"max_output_chars": -1},
+    {"max_commands": True}, {"unknown": 1}, None])
+def test_invalid_documentation_limits_rejected_before_execution(limits):
+    with pytest.raises(ValueError):
+        select_units(ledger(unit(allowed_files=["doc.md"], stream_limits=limits)), 1)
+
+
+def command_event(identity="cmd1", output="", kind="item.completed"):
+    return json.dumps({"type": kind, "item": {"id": identity, "type": "command_execution",
+                                              "aggregated_output": output}}) + "\n"
+
+
+def test_stream_meter_deduplicates_incremental_snapshots_and_chunks():
+    meter = relay.StreamMeter({"max_commands": 2, "max_output_chars": 5})
+    data = (command_event(kind="item.started") + command_event(output="中文", kind="item.updated")
+            + command_event(output="中文abc") + command_event(output="中文abc")).encode()
+    for byte in data:
+        meter.feed(bytes([byte]))
+    assert meter.snapshot() == {"commands": 1, "output_chars": 5}
+    with pytest.raises(relay.StreamLimitExceeded, match="OUTPUT_LIMIT"):
+        meter.feed(command_event("cmd2", "x").encode())
+
+
+@pytest.mark.parametrize("mode", ["commands", "output", "partial"])
+def test_stream_stop_kills_descendants_and_records_real_returncode(tmp_path, mode):
+    heartbeat = tmp_path / "heartbeat"
+    descendant = ("import signal,time,pathlib; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                  f"p=pathlib.Path({str(heartbeat)!r});\nwhile True: p.write_text(str(time.time())); time.sleep(.01)")
+    payload = (command_event("a", kind="item.started") + command_event("b", kind="item.started")
+               if mode == "commands" else command_event(output="x" * 6) if mode == "output" else "x" * 66000)
+    parent = (f"import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',{descendant!r}]); "
+              f"time.sleep(.2); sys.stdout.write({payload!r}); sys.stdout.flush(); time.sleep(60)")
+    record = {}
+    with pytest.raises(relay.StreamLimitExceeded):
+        run_process([sys.executable, "-c", parent], tmp_path, tmp_path / "events", 5,
+                    limits={"max_commands": 1, "max_output_chars": 5}, record=record)
+    assert record["returncode"] < 0 and not record["timed_out"]
+    assert record["exit_reason"] == {"commands": "COMMAND_LIMIT", "output": "OUTPUT_LIMIT",
+                                    "partial": "STREAM_BUFFER_LIMIT"}[mode]
+    stamp = heartbeat.read_text()
+    time.sleep(.1)
+    assert heartbeat.read_text() == stamp
+
+
+@pytest.mark.parametrize("mode", ["normal", "nonzero", "signal", "timeout", "limit", "missing", "failed"])
+def test_process_receipt_and_acceptance_with_local_mock_child(tmp_path, repo, mode):
+    directory = tmp_path / "batch"
+    directory.mkdir()
+    calls = []
+    def runner(argv, cwd, output, timeout, stdin=None, **kwargs):
+        if stdin is None:
+            output.write_text("local mock independent gate")
+            return 0
+        calls.append(argv)
+        payload = "" if mode == "missing" else event()
+        if mode == "failed":
+            payload += '{"type":"turn.failed"}\n'
+        if mode == "limit":
+            payload += command_event("a") + command_event("b")
+        script = f"import sys,time; print({payload!r},end='',flush=True); "
+        script += ("time.sleep(60)" if mode in {"timeout", "limit"} else "sys.exit(7)" if mode == "nonzero"
+                   else "import os,signal; os.kill(os.getpid(),signal.SIGTERM)" if mode == "signal" else "sys.exit(0)")
+        # Allow interpreter startup under suite load; limit tests must stop by count, not time.
+        return run_process([sys.executable, "-c", script], cwd, output, 2 if mode == "timeout" else 10,
+                           stdin=stdin, **kwargs)
+    units = [unit("doc", allowed_files=["doc.md"], stream_limits={"max_commands": 1}), unit("next")]
+    report = execute_batch(repo, units[:1] if mode == "normal" else units, directory, binary="MOCK",
+                           token_threshold=1000, timeout=1, repairs=0, runner=runner,
+                           verifier=lambda *args: dict(EXPECTED))
+    row = json.loads((directory / "report.json").read_text())["attempts"][0]
+    assert len(calls) == 1
+    assert row["timed_out"] == (mode == "timeout")
+    assert row["returncode"] == (0 if mode in {"normal", "missing", "failed"} else 7 if mode == "nonzero" else -15)
+    assert row["observed_usage"] is None if mode == "missing" else row["observed_usage"]["activity_tokens"] == 110
+    assert row["accounting_complete"] == (mode in {"normal", "nonzero", "signal"})
+    assert bool(report["accepted"]) == (mode == "normal")
+    assert row["exit_reason"] == {"normal": "NORMAL_EXIT", "nonzero": "NONZERO_EXIT", "signal": "SIGNAL_EXIT", "timeout": "TIMEOUT",
+                                  "limit": "COMMAND_LIMIT", "missing": "NORMAL_EXIT", "failed": "NORMAL_EXIT"}[mode]
+
+
+@pytest.mark.parametrize("failure,reason", [(OSError("spawn failed"), "PROCESS_ERROR"),
+                                          (KeyboardInterrupt(), "INTERRUPTED")])
+def test_start_failure_and_interrupt_persist_unknown_receipt(tmp_path, repo, failure, reason):
+    def runner(*args, **kwargs):
+        raise failure
+    report = batch(tmp_path, repo, [unit()], runner)
+    row = report["attempts"][0]
+    assert row["returncode"] is None and row["exit_reason"] == reason
+    assert row["observed_usage"] is None and not row["accounting_complete"]
+    assert not row["timed_out"] and report["status"] == "STOPPED"
+
+
+def test_legacy_missing_process_receipt_cannot_resume_gate_or_repair(tmp_path, repo):
+    def interrupted_gate(argv, cwd, output, timeout, stdin=None, **kwargs):
+        if stdin is None:
+            raise KeyboardInterrupt()
+        return good_runner(argv, cwd, output, timeout, stdin, **kwargs)
+    first = batch(tmp_path, repo, [unit()], interrupted_gate)
+    assert first["attempts"][0]["status"] == "MODEL_DONE"
+    first["attempts"][0].pop("returncode")
+    relay.save_json(tmp_path / "batch/report.json", first)
+    def forbidden(*args, **kwargs):
+        pytest.fail("No model or gate without a verified process receipt")
+    report = batch(tmp_path, repo, [unit()], forbidden, resume=True)
+    assert "Missing verified process receipt" in report["reason"] and not report["accepted"]
+
+
+def test_pending_integration_requires_process_receipt_even_after_gates(tmp_path, repo):
+    report = batch(tmp_path, repo, [unit()], good_runner)
+    row = report["attempts"][0]
+    report["pending_integration"] = {"unit": "scope", "before": report["base_commit"], "commit": row["commit"]}
+    report["accepted"] = {}
+    row.pop("returncode")
+    relay.save_json(tmp_path / "batch/report.json", report)
+    def forbidden(*args, **kwargs):
+        pytest.fail("No new model invocation during checkpoint recovery")
+    resumed = batch(tmp_path, repo, [unit()], forbidden, resume=True)
+    assert resumed["status"] == "STOPPED" and not resumed["accepted"]
+    assert "Integration requires verified process" in resumed["reason"]
+
+
+def test_cleanup_error_still_preserves_real_exit_record(tmp_path, monkeypatch):
+    cleanup = relay.stop_group
+    def rejected_cleanup(child):
+        cleanup(child)
+        raise PermissionError("mock cleanup rejection after real cleanup")
+    monkeypatch.setattr(relay, "stop_group", rejected_cleanup)
+    record = {}
+    with pytest.raises(PermissionError):
+        run_process([sys.executable, "-c", "pass"], tmp_path, tmp_path / "out", 10, record=record)
+    assert record["returncode"] == 0 and record["exit_reason"] == "CLEANUP_FAILED"
+    assert record["termination_trigger"] == "NORMAL_EXIT" and "PermissionError" in record["cleanup_error"]
+
+
 def test_command_is_fresh_medium_standard_sandboxed_without_policy_bypass():
     cmd = codex_command("codex", Path("/tmp/test"), policy())
     text = " ".join(cmd)

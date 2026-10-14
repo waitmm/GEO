@@ -1,5 +1,24 @@
 # Codex 开工与单任务执行说明
 
+## 2026-10-14 接力工具最终收口
+
+本轮仅 `IMPLEMENTATION_CHANGE`，修复下述三项工具问题。不执行Codex模型调用，不领取产品任务，不改历史批次、receipt、UNKNOWN或T25-03正文，不合并main。
+
+1. Git范围检查使用 `git diff --no-renames --name-only -z HEAD` 和 `git ls-files --others --exclude-standard -z` 的原始字节，按NUL分隔、文件系统编码解码。中文、空格、制表符、换行不再被转义误判；改名的源与目标均须在白名单，越界修改、软链接逃逸和Oracle变更仍拒绝。
+2. 每个模型尝试在启动前保存 `returncode=null`、`exit_reason=RUNNING`、`timed_out=false`、`observed_usage=null`、`accounting_complete=false`。退出/超时/中断后保存真实退出码（可获时）、原因、耗时、已观测用量及完整性。超时/止损清理整个进程组后记录终止码；启动失败或控制器被强杀无法取得退出码时保留未知，禁止自动恢复调用。仅NORMAL_EXIT、returncode=0、非超时、有效完整JSONL用量及独立Gate全部通过才能集成。恢复Gate、付费修复及pending integration也检查退出记录，不能用旧缺失字段补造成功。
+3. 允许修改文件全部为 `.md` 的文档单元默认每子会话最多10个命令、32000个累计命令输出字符，可在冻结unit中配置 `stream_limits`，例如 `{"max_commands": 8, "max_output_chars": 24000}`。字段必须为正整数；非文档单元不启用此限制，原超时/Token/修复预算不变。dry-run显示实际阈值，检查点保存本次阈值和已观测计数。
+
+命令按JSONL `command_execution` item ID计数，不把一条shell脚本中的每个命令单独计数；started/updated/completed不重复计数，累计输出快照按每个ID的最大字符长度增量计数。超过阈值即终止整个子进程组，保存原JSONL、stderr、工作树及检查点，不继续Gate、修复或下一任务。未完成JSON行另有字节缓冲保护。监测以50ms轮询和日志实际可见内容为界，可能超出阈值；这不是Token硬上限，也不能保证远端立即停止计费。
+
+### 离线验收证据
+
+- 专项及既有harness最终完整回归 **134 passed**，见 `backend/artifacts/acceptance/relay-final-20261014/regression-host.xml`。覆盖特殊路径、改名越界、真实本地假进程退出/信号/超时/止损、忽略TERM后代清理、未知用量、失败恢复、旧检查点缺退出证据拒绝、原权限及Git集成保护。
+- 中间失败日志保留：一次Mock进程启动超过测试0.3秒，改为充足启动余量而不放宽止损原因断言；一次外层执行环境返回killpg EPERM，随后宿主查询无该测试残留进程，在普通宿主环境重新跑完整回归通过。另补确定性清理失败负例：仍保存真实退出码、CLEANUP_FAILED及原终止触发原因，禁止继续。未关闭Codex沙箱或修改业务权限。
+- T25-03原工作树与原Oracle哈希经新Guard检查通过；原文档Gate及9项用量测试只引用已有日志哈希，不重新生成正文或重新运行历史Gate。
+- 实际JSONL仍为653211活动Token。新文档默认止损在第16条事件触发OUTPUT_LIMIT，当时41595字符、4个命令；单独命令阈值回放在第30条事件、第11个命令触发COMMAND_LIMIT。真实进程清理使用本地Python Mock验证，不调用Codex。
+- 2865份历史文件哈希保持不变。旧T25-03退出码仍未知、STOPPED/receipt/UNKNOWN原样保留；修复后新Guard通过不等于旧任务自动接受或真实节省效果已验证。
+- `replay.py`、`replay-report.json`、`dry-run.json`保存在同一证据目录。预演1单元、0外部调用、600秒/30000软阈值/0修复，未真实执行。旧章节保留当时核查含义；这次修补不授权下一次真实尝试。
+
 ## 2026-10-14 T25 上下文与用量离线修补
 
 仅 `IMPLEMENTATION_CHANGE`：按任务读取指令与JSONL判定修补，不扩产品、调度架构、模型或预算。根目录AGENTS不再要求每次通读八份产品资料；项目AGENTS保留正式主链、数据保护、冻结身份、证据归属和语义变更门禁。纯T25文档单元只读控制器冻结的任务定义、目标章节及必要指令；真实依赖仍须跟进。全局AGENTS为空，历史工作树指令不改，新规则仅对新基线有效。

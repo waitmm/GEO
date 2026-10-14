@@ -119,6 +119,7 @@ def select_units(ledger, limit):
             raise ValueError("Unit must bind existing task requirements")
         if not unit["requirements"] or not unit["objective"].strip():
             raise ValueError("Empty task scope")
+        stream_limits(unit)
         if not set(unit.get("depends_on", [])) <= completed:
             continue
         if not unit["allowed_files"] or any(protected(p) for p in unit["allowed_files"]):
@@ -401,21 +402,135 @@ def permission_profile(root, worktree, directory, binary):
     return {"extends": ":workspace", "filesystem": filesystem, "network": {"enabled": False}}
 
 
-def run_process(argv, cwd, output, timeout, stdin=None, *, env=None):
+def stream_limits(unit):
+    documentation = bool(unit["allowed_files"]) and all(
+        Path(p).suffix.lower() == ".md" for p in unit["allowed_files"])
+    override = unit.get("stream_limits", {})
+    if not documentation:
+        if override:
+            raise ValueError("Stream limits are only supported for documentation-only units")
+        return None
+    defaults = {"max_commands": 10, "max_output_chars": 32000}
+    if not isinstance(override, dict) or set(override) - set(defaults):
+        raise ValueError("Invalid documentation stream limits")
+    limits = {**defaults, **override}
+    if any(type(v) is not int or v <= 0 for v in limits.values()):
+        raise ValueError("Stream limits must be positive integers")
+    return limits
+
+
+class StreamLimitExceeded(RuntimeError):
+    pass
+
+
+class StreamMeter:
+    """Count command identities and cumulative output snapshots without double counting."""
+    def __init__(self, limits):
+        self.limits = limits
+        self.commands = set()
+        self.outputs = {}
+        self.output_chars = 0
+        self.pending = b""
+
+    def snapshot(self):
+        return {"commands": len(self.commands), "output_chars": self.output_chars}
+
+    def feed(self, chunk):
+        self.pending += chunk
+        while b"\n" in self.pending:
+            line, self.pending = self.pending.split(b"\n", 1)
+            event = json.loads(line)
+            item = event.get("item", {})
+            if event.get("type") not in {"item.started", "item.updated", "item.completed"}:
+                continue
+            if item.get("type") != "command_execution":
+                continue
+            identity = item["id"]
+            self.commands.add(identity)
+            size = len(item.get("aggregated_output", ""))
+            previous = self.outputs.get(identity, 0)
+            self.output_chars += max(0, size - previous)
+            self.outputs[identity] = max(previous, size)
+            if len(self.commands) > self.limits["max_commands"]:
+                raise StreamLimitExceeded("COMMAND_LIMIT")
+            if self.output_chars > self.limits["max_output_chars"]:
+                raise StreamLimitExceeded("OUTPUT_LIMIT")
+        # Bound unfinished JSON lines too; JSON escaping can cost six bytes per character.
+        if len(self.pending) > self.limits["max_output_chars"] * 6 + 65536:
+            raise StreamLimitExceeded("STREAM_BUFFER_LIMIT")
+
+
+def run_process(argv, cwd, output, timeout, stdin=None, *, env=None, limits=None, record=None):
     """Bound wall time and terminate the complete child process group on interruption."""
     with output.open("wb") as stdout, output.with_suffix(".stderr").open("wb") as stderr:
         child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                                  stdout=stdout, stderr=stderr, start_new_session=True)
+        reason, timed_out = None, False
+        meter = StreamMeter(limits) if limits else None
         try:
-            child.communicate(stdin.encode() if stdin is not None else None, timeout=timeout)
+            if not meter:
+                child.communicate(stdin.encode() if stdin is not None else None, timeout=timeout)
+            else:
+                deadline = time.monotonic() + timeout
+                payload = stdin.encode() if stdin is not None else None
+                with output.open("rb") as stream:
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(argv, timeout)
+                        done = False
+                        try:
+                            child.communicate(payload, timeout=min(0.05, remaining))
+                            done = True
+                        except subprocess.TimeoutExpired:
+                            pass
+                        payload = None
+                        while chunk := stream.read(65536):
+                            meter.feed(chunk)
+                        if done:
+                            if meter.pending:
+                                meter.feed(b"\n")
+                            break
+        except subprocess.TimeoutExpired:
+            reason, timed_out = "TIMEOUT", True
+            raise
+        except StreamLimitExceeded as exc:
+            reason = str(exc)
+            raise
+        except KeyboardInterrupt:
+            reason = "INTERRUPTED"
+            raise
+        except Exception:
+            reason = "PROCESS_ERROR"
+            raise
         finally:
-            stop_group(child)
+            natural_code = child.poll()
+            if reason is None:
+                reason = "NORMAL_EXIT" if natural_code == 0 else "SIGNAL_EXIT" if natural_code is not None and natural_code < 0 else "NONZERO_EXIT"
+            trigger = reason
+            try:
+                stop_group(child)
+            except (Exception, KeyboardInterrupt) as exc:
+                reason = "CLEANUP_FAILED"
+                if record is not None:
+                    record["cleanup_error"] = f"{type(exc).__name__}: {exc}"
+                raise
+            finally:
+                if record is not None:
+                    record.update(returncode=child.returncode, exit_reason=reason,
+                                  termination_trigger=trigger, timed_out=timed_out)
+                    if meter:
+                        record["stream_observed"] = meter.snapshot()
     return child.returncode
 
 
 def changes(root):
-    tracked = git(root, "diff", "--name-only", "HEAD").splitlines()
-    untracked = git(root, "ls-files", "--others", "--exclude-standard").splitlines()
+    def paths(*args):
+        raw = subprocess.check_output(["git", "-C", str(root), *args, "-z"])
+        return [os.fsdecode(p) for p in raw.split(b"\0") if p]
+    # Disable rename folding so both the old and new path must be authorized.
+    tracked = paths("diff", "--no-renames", "--name-only", "HEAD")
+    untracked = paths("ls-files", "--others", "--exclude-standard")
     return sorted(set(tracked + untracked))
 
 
@@ -454,6 +569,11 @@ def prompt_for(unit, feedback):
             + json.dumps(unit, ensure_ascii=False) + "\nPrior gate feedback: " + feedback)
 
 
+def normal_completion(row):
+    return (row.get("returncode") == 0 and row.get("exit_reason") == "NORMAL_EXIT"
+            and row.get("timed_out") is False and row.get("accounting_complete") is True)
+
+
 def execute_batch(root, units, directory, *, binary, token_threshold, timeout, repairs,
                   runner=run_process, verifier=preflight, resume=False):
     """Units/gates are frozen in controller memory; never reread model-modified task data."""
@@ -468,6 +588,7 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
     branch = "codex-relay/" + directory.name
     report["branch"] = branch
     try:
+        limits_by_unit = {u["id"]: stream_limits(u) for u in units}
         requested_binary = binary
         binary = resolve_codex_binary(binary)
         report["codex_binary"] = {"requested": requested_binary, "resolved": binary}
@@ -505,6 +626,12 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
         save_json(checkpoint, report)
 
         def integrate(pending):
+            accepted_attempt = next((a for a in reversed(report["attempts"])
+                                     if a["unit"] == pending["unit"] and a.get("commit") == pending["commit"]), None)
+            if (not accepted_attempt or not normal_completion(accepted_attempt)
+                    or not accepted_attempt.get("gates")
+                    or not all(g["exit_code"] == 0 for g in accepted_attempt["gates"])):
+                raise ValueError("Integration requires verified process completion and independent gates")
             detached_integration(root)
             current = git(root, "rev-parse", "refs/heads/" + INTEGRATION)
             if current == pending["before"]:
@@ -536,6 +663,8 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
             previous = [a for a in report["attempts"] if a["unit"] == unit["id"]]
             if previous and previous[-1]["status"] not in {"MODEL_DONE", "GATE_FAILED"}:
                 raise ValueError("Prior process failure requires review, not automatic retry")
+            if previous and not normal_completion(previous[-1]):
+                raise ValueError("Missing verified process receipt; no automatic model retry")
             if previous and previous[-1].get("oracles") != oracles:
                 raise ValueError("Oracle changed since checkpoint")
             redo_gates = bool(previous and previous[-1]["status"] == "MODEL_DONE")
@@ -544,7 +673,10 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
             start = len(previous) - int(redo_gates)
             for attempt in range(start, repairs + 1):
                 row = previous[-1] if redo_gates else {
-                    "unit": unit["id"], "attempt": attempt + 1, "status": "RUNNING", "oracles": oracles}
+                    "unit": unit["id"], "attempt": attempt + 1, "status": "RUNNING", "oracles": oracles,
+                    "returncode": None, "exit_reason": "RUNNING", "timed_out": False,
+                    "observed_usage": None, "accounting_complete": False,
+                    "stream_limits": limits_by_unit[unit["id"]]}
                 stem = directory / f"{unit['id']}-{attempt + 1}"
                 output = stem.with_suffix(".jsonl")
                 if not redo_gates:
@@ -553,16 +685,32 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                     save_json(checkpoint, report)
                     started = time.monotonic()
                     rc = None
+                    process = {}
+                    failure = None
                     try:
                         rc = runner(codex_command(binary, worktree, permissions), worktree, output, timeout,
-                                    prompt_for(unit, feedback), env=environment)
+                                    prompt_for(unit, feedback), env=environment,
+                                    limits=row["stream_limits"], record=process)
+                    except (Exception, KeyboardInterrupt) as exc:
+                        failure = exc
+                        raise
                     finally:
                         observation = inspect_usage(output)
                         # Timeout/interruption remains unknown even if a completed turn was observed.
                         report["accounting_complete"] = observation["accounting_complete"] and rc is not None
-                        row.update(elapsed_seconds=round(time.monotonic() - started, 3), exit_code=rc,
+                        report["accounting_complete"] &= failure is None
+                        reason = ("TIMEOUT" if isinstance(failure, subprocess.TimeoutExpired) else
+                                  str(failure) if isinstance(failure, StreamLimitExceeded) else
+                                  "INTERRUPTED" if isinstance(failure, KeyboardInterrupt) else
+                                  "PROCESS_ERROR" if failure else
+                                  "NORMAL_EXIT" if rc == 0 else "NONZERO_EXIT")
+                        row.update(returncode=rc, exit_reason=reason,
+                                   timed_out=isinstance(failure, subprocess.TimeoutExpired))
+                        row.update(process)
+                        row.update(elapsed_seconds=round(time.monotonic() - started, 3), exit_code=row["returncode"],
                                    usage_observation=observation, status="PROCESS_FAILED")
                         observed = observation["observed_usage"]
+                        row.update(observed_usage=observed, accounting_complete=report["accounting_complete"])
                         if observed is not None:
                             report["activity_tokens"] += observed["activity_tokens"]
                         report["observed_activity_tokens"] = report["activity_tokens"]
@@ -575,6 +723,8 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                     if not report["accounting_complete"]:
                         raise ValueError("Incomplete or failed session; no automatic model retry")
                 redo_gates = False
+                if not normal_completion(row):
+                    raise ValueError("Verified normal process completion is required before gates")
                 paths = guard(worktree, head, unit["allowed_files"], oracles, dependency_links)
                 gates = []
                 for index, gate in enumerate(unit["gates"]):
@@ -628,6 +778,7 @@ def main():
     units = select_units(ledger, args.max_tasks)
     if not args.execute:
         print(json.dumps({"status": "DRY_RUN", "units": units, "model": MODEL,
+                          "stream_limits_by_unit": {u["id"]: stream_limits(u) for u in units},
                           "integration_branch": INTEGRATION, "config_overrides": OVERRIDES,
                           "effective_config": "NOT_CHECKED_NO_CODEX_PROCESS_STARTED",
                           "max_sessions": len(units) * (args.max_repairs + 1),

@@ -95,6 +95,89 @@ def test_unknown_usage_never_authorizes_next_session(tmp_path, payload):
         read_usage(path)
 
 
+def reconnect():
+    return json.dumps({"type": "error", "message": "Reconnecting... 2/5 (request timed out)"}) + "\n"
+
+
+def test_usage_reconnect_recovers_only_after_completion(tmp_path):
+    path = tmp_path / "events"
+    path.write_text(reconnect() * 4 + event(647278, 585088, 5933))
+    observation = relay.inspect_usage(path)
+    assert observation["accounting_complete"]
+    assert observation["reconnect_events"] == 4
+    assert read_usage(path)["activity_tokens"] == 653211
+
+
+@pytest.mark.parametrize("suffix", [reconnect(), '{"type":"turn.started"}\n',
+    '{"type":"turn.failed"}\n', '{"type":"error","message":"fatal"}\n',
+    '{"type":"turn.completed","usage":{}}\n', 'null\n', '{"unfinished":',
+    '{"type":"item.started"}\n'])
+def test_usage_partial_stream_preserves_observed_lower_bound(tmp_path, suffix):
+    path = tmp_path / "events"
+    path.write_text(event() + suffix)
+    observation = relay.inspect_usage(path)
+    assert not observation["accounting_complete"]
+    assert observation["observed_usage"]["activity_tokens"] == 110
+    with pytest.raises(ValueError):
+        read_usage(path)
+
+
+@pytest.mark.parametrize("prefix", ['{"type":"turn.failed"}\n',
+    '{"type":"error","message":"authentication failed"}\n', 'not-json\n'])
+def test_usage_completion_does_not_erase_terminal_failure(tmp_path, prefix):
+    path = tmp_path / "events"
+    path.write_text(prefix + event())
+    observation = relay.inspect_usage(path)
+    assert not observation["accounting_complete"]
+    assert observation["observed_usage"]["activity_tokens"] == 110
+
+
+def test_usage_missing_is_unknown_not_measured_zero(tmp_path):
+    observation = relay.inspect_usage(tmp_path / "missing")
+    assert observation["observed_usage"] is None and not observation["accounting_complete"]
+
+
+@pytest.mark.parametrize("mode", ["timeout", "exit", "incomplete", "gate_failed", "budget"])
+def test_usage_reconnect_batch_keeps_observations_and_requires_gates(tmp_path, repo, mode):
+    calls, gates = [], []
+    directory = tmp_path / "batch"
+    directory.mkdir()
+    def runner(argv, cwd, output, timeout, stdin=None, **kwargs):
+        if stdin is not None:
+            calls.append(stdin)
+            output.write_text(reconnect() + event(647278, 585088, 5933)
+                              + (reconnect() if mode == "incomplete" else ""))
+            if mode == "timeout":
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return 71 if mode == "exit" else 0
+        gates.append(argv)
+        output.write_text("mock independent gate")
+        return 1 if mode == "gate_failed" else 0
+    report = execute_batch(repo, [unit("a"), unit("b")], directory, binary="MOCK",
+                           token_threshold=30000, timeout=1, repairs=0, runner=runner,
+                           verifier=lambda *args: dict(EXPECTED))
+    assert report["status"] == "STOPPED" and len(calls) == 1
+    assert report["observed_activity_tokens"] == report["activity_tokens"] == 653211
+    assert report["accounting_complete"] == (mode not in {"timeout", "incomplete"})
+    assert bool(gates) == (mode in {"gate_failed", "budget"})
+    assert bool(report["accepted"]) == (mode == "budget")
+    if mode == "budget":
+        assert "no next task" in report["reason"]
+    if mode == "timeout":
+        again = execute_batch(repo, [unit("a"), unit("b")], directory, binary="MOCK",
+                              token_threshold=30000, timeout=1, repairs=0, runner=runner,
+                              verifier=lambda *args: dict(EXPECTED), resume=True)
+        assert "unknown usage" in again["reason"] and len(calls) == 1
+
+
+def test_prompt_limits_reading_without_waiving_instructions():
+    prompt = relay.prompt_for(unit(), "none")
+    assert "AGENTS.md" in prompt and "task-scoped" in prompt
+    assert "only the target section" in prompt and "concrete dependency" in prompt
+    assert "secrets/live DBs" in prompt and "semantic risk" in prompt
+    assert "required documents" not in prompt
+
+
 def test_command_is_fresh_medium_standard_sandboxed_without_policy_bypass():
     cmd = codex_command("codex", Path("/tmp/test"), policy())
     text = " ".join(cmd)

@@ -1,5 +1,22 @@
 # Codex 开工与单任务执行说明
 
+## 2026-10-14 T25 上下文与用量离线修补
+
+仅 `IMPLEMENTATION_CHANGE`：按任务读取指令与JSONL判定修补，不扩产品、调度架构、模型或预算。根目录AGENTS不再要求每次通读八份产品资料；项目AGENTS保留正式主链、数据保护、冻结身份、证据归属和语义变更门禁。纯T25文档单元只读控制器冻结的任务定义、目标章节及必要指令；真实依赖仍须跟进。全局AGENTS为空，历史工作树指令不改，新规则仅对新基线有效。
+
+- `inspect_usage` 分开返回 `observed_usage` 和 `accounting_complete`。没有有效用量时前者为null，不把初始化0说成实耗0；部分已完成turn的用量是已观测下界，不能代表未完成调用的全部费用。
+- 仅识别 `Reconnecting... n/m (...)` 为可恢复提示，必须随后有有效 `turn.completed`；`turn.failed`、未知错误、坏JSON、缺失/非法用量或最后仍未完成均阻断。非零退出和超时仍停止，不自动重试；新检查点显式保存退出码和观测值。
+- 活动量只加input与output，cached/reasoning不重复相加。批次 `activity_tokens` 与 `observed_activity_tokens` 是已观测累计；只有 `accounting_complete=true` 才是完整JSONL记账，仍不是套餐账单或任务验收。成功结束还须通过原范围、不可改预期及独立Gate。超过软阈值不领下一任务、不进行付费修复。
+- 实际JSONL离线回放：input647278 + output5933 = **653211**；cached585088、reasoning1803为子项；四次重连后完成。历史报告的STOPPED、RUNNING尝试标签和UNKNOWN记账原样保留，不改DONE、不resume。
+- 原T25工作树仅目标章节新增16行；冻结文档Gate通过，用量专项9 passed/70 deselected。新工具与harness回归 **107 passed**。2865份历史文件逐字节哈希不变，包括receipt及工作树内容。
+- **尚未完成真实集成**：旧检查点没有保存进程退出码，不能从turn.completed臆造exit0；另发现 `changes()` 用Git非NUL路径输出，中文文件名被转义后使 `guard` 误报越界。独立NUL路径核对证明实际只改允许文件，但不代替生产Guard。此缺陷登记待单独修复，不在本轮两项范围内扩大修改。
+
+### 流式止损评估（未启用新限制）
+
+本次日志有25次命令调用、292904字符命令输出。离线按item ID去重：假设32000字符门槛，第16条事件已观测41595字符；假设10次命令门槛，第28条事件触发。数字仅用于比较候选止损方式，本轮没有新增运行参数或偷偷改变任务预算。输出通常到item.completed才可计数，单条命令仍可能超限；工具数量也不约束无工具推理消耗。未来若采用流式止损，应复用进程组清理并保留部分用量/UNKNOWN，不能宣称Token硬上限或远端立刻停止计费。
+
+证据：`backend/artifacts/acceptance/relay-usage-replay-20261014/` 下的 `replay.py`、`replay-report.json`、`regression.xml`、两份 `historical-gate-*.log` 和 `history-before.json`。回放只调用本地Python Gate，不启动Codex或产品服务。本轮新Codex进程/模型调用均0；不代表当前IDE对话免费，也不证明节省额度。
+
 ## 2026-10-14 Codex 自身执行路径修复
 
 本轮仅修复 T25 工具的可执行文件路径与单文件只读权限，分类 `IMPLEMENTATION_CHANGE`。保留此前单层官方沙箱，不改模型、预算、队列和Git集成规则；不调用真实exec或模型，不恢复产品开发。
@@ -80,7 +97,7 @@ geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_code
 geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000 --codex /Users/bmwqr/.local/bin/codex
 ```
 
-此前一轮只交付开发工具，挂现有 T25，未运行真实 `codex exec`。产品仍 INCOMPLETE。正常研发从本文件和 `tasks.json` 当前检查点恢复，不把整段聊天或历史开发日志不断搬进每次任务。AGENTS 的必读契约及权限约束不减少；用目录/标题检索定位相关段落，避免反复输出整个历史日志。
+此前一轮只交付开发工具，挂现有 T25，未运行真实 `codex exec`。产品仍 INCOMPLETE。按AGENTS任务路由读取本文件相关章节和控制器冻结的单元定义；没有提供定义时才定位 `tasks.json` 对应条目。不把整段聊天、完整台账或历史日志搬进每次任务；纯文档任务无须通读产品契约，适用契约与权限约束仍必须遵守。
 
 入口：`backend/scripts/delivery_codex_relay.py`；专项：`backend/tests/test_delivery_codex_relay.py`，由既有 delivery harness 的 `test_delivery*.py` 自动发现。没有引入新调度服务或第二套产品任务台账。小任务写入原 `tasks.json.codex_relay.units`，必须绑定现有 `task_id`、`requirements`、依赖、精确允许修改文件、外部验收命令和不可改的预期文件。当前只登记一个文档用量说明任务，原离线空队列证据保留。
 

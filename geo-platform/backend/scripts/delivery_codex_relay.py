@@ -142,28 +142,65 @@ def select_units(ledger, limit):
     return selected
 
 
-def read_usage(path):
+def inspect_usage(path):
+    """Keep observed totals even when the stream cannot authorize continuation."""
     totals = dict(input_tokens=0, cached_input_tokens=0, output_tokens=0)
-    turns, failed = 0, False
-    for line in path.read_text().splitlines():
-        event = json.loads(line)
-        failed |= event.get("type") in {"error", "turn.failed"}
-        if event.get("type") != "turn.completed":
-            continue
-        usage = event["usage"]
-        for key in totals:
-            if type(usage.get(key)) is not int or usage[key] < 0:
-                raise ValueError("Missing/invalid usage; stop instead of assuming zero")
-        if usage["cached_input_tokens"] > usage["input_tokens"]:
-            raise ValueError("Cached input is a subset of input")
-        for key in totals:
-            totals[key] += usage[key]
-        turns += 1
-    if not turns or failed:
-        raise ValueError("Incomplete or failed session; usage cannot authorize continuation")
+    turns, completed, reconnects = 0, False, 0
+    problems = []
+    try:
+        with path.open() as stream:
+            for number, line in enumerate(stream, 1):
+                try:
+                    event = json.loads(line)
+                    if not isinstance(event, dict):
+                        raise ValueError("Invalid event object")
+                    kind = event.get("type")
+                    if kind in {"turn.started", "item.started", "error", "turn.failed"}:
+                        completed = False
+                    if kind == "error":
+                        # Observed CLI transport warning, not a blanket exemption for errors.
+                        if re.fullmatch(r"Reconnecting\.\.\. [1-9]\d*/[1-9]\d* \([^\r\n]+\)",
+                                        str(event.get("message", ""))):
+                            reconnects += 1
+                        else:
+                            problems.append(f"line {number}: terminal/unrecognized error")
+                    if kind == "turn.failed":
+                        problems.append(f"line {number}: turn.failed")
+                    if kind != "turn.completed":
+                        continue
+                    usage = event.get("usage")
+                    if not isinstance(usage, dict) or any(
+                        type(usage.get(k)) is not int or usage[k] < 0 for k in totals
+                    ):
+                        raise ValueError("Missing/invalid usage")
+                    if usage["cached_input_tokens"] > usage["input_tokens"]:
+                        raise ValueError("Cached input is a subset of input")
+                    if "reasoning_output_tokens" in usage and (
+                        type(usage["reasoning_output_tokens"]) is not int
+                        or not 0 <= usage["reasoning_output_tokens"] <= usage["output_tokens"]
+                    ):
+                        raise ValueError("Reasoning is a subset of output")
+                    for key in totals:
+                        totals[key] += usage[key]
+                    turns += 1
+                    completed = True
+                except (ValueError, TypeError) as exc:
+                    completed = False
+                    problems.append(f"line {number}: {exc}")
+    except (OSError, UnicodeError) as exc:
+        problems.append(type(exc).__name__)
     totals["activity_tokens"] = totals["input_tokens"] + totals["output_tokens"]
     totals["turns"] = turns
-    return totals
+    return {"observed_usage": totals if turns else None,
+            "accounting_complete": bool(turns and completed and not problems),
+            "reconnect_events": reconnects, "problems": problems}
+
+
+def read_usage(path):
+    observation = inspect_usage(path)
+    if not observation["accounting_complete"]:
+        raise ValueError("Incomplete or failed session; usage cannot authorize continuation")
+    return observation["observed_usage"]
 
 
 def resolve_codex_binary(binary):
@@ -404,8 +441,12 @@ def guard(worktree, head, allowed, oracles, dependency_links=None):
 
 
 def prompt_for(unit, feedback):
-    return ("Execute ONLY this bounded GEO IMPLEMENTATION_CHANGE unit. Read repository AGENTS.md and its "
-            "required documents; use current tasks/acceptance baseline. Do not pick another task, commit, "
+    return ("Execute ONLY this bounded GEO IMPLEMENTATION_CHANGE unit. Follow the applicable AGENTS.md "
+            "task-scoped reading rules. The frozen unit below supplies the task and acceptance definition; "
+            "do not dump tasks.json or reread unchanged instructions. For documentation-only T25, read "
+            "only the target section and necessary adjacent context; product/semantic documents are not "
+            "prerequisites unless a concrete dependency requires them. Locate headings first, read bounded "
+            "ranges, and do not repeat already available text. Do not pick another task, commit, "
             "merge, push, invoke Codex/subagents, change permissions, access secrets/live DBs, run external "
             "models/platforms, or weaken tests. No external business calls are authorized. Stop and report "
             "semantic risk or missing permission. Preserve user changes and v7. Run targeted checks, not "
@@ -511,16 +552,28 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                     report["accounting_complete"] = False
                     save_json(checkpoint, report)
                     started = time.monotonic()
-                    rc = runner(codex_command(binary, worktree, permissions), worktree, output, timeout,
-                                prompt_for(unit, feedback), env=environment)
-                    row["elapsed_seconds"] = round(time.monotonic() - started, 3)
-                    row["usage"] = read_usage(output)
-                    report["activity_tokens"] += row["usage"]["activity_tokens"]
-                    report["accounting_complete"] = True
-                    row["status"] = "PROCESS_FAILED" if rc else "MODEL_DONE"
-                    save_json(checkpoint, report)
+                    rc = None
+                    try:
+                        rc = runner(codex_command(binary, worktree, permissions), worktree, output, timeout,
+                                    prompt_for(unit, feedback), env=environment)
+                    finally:
+                        observation = inspect_usage(output)
+                        # Timeout/interruption remains unknown even if a completed turn was observed.
+                        report["accounting_complete"] = observation["accounting_complete"] and rc is not None
+                        row.update(elapsed_seconds=round(time.monotonic() - started, 3), exit_code=rc,
+                                   usage_observation=observation, status="PROCESS_FAILED")
+                        observed = observation["observed_usage"]
+                        if observed is not None:
+                            report["activity_tokens"] += observed["activity_tokens"]
+                        report["observed_activity_tokens"] = report["activity_tokens"]
+                        if report["accounting_complete"]:
+                            row["usage"] = observed
+                            row["status"] = "PROCESS_FAILED" if rc else "MODEL_DONE"
+                        save_json(checkpoint, report)
                     if rc:
                         raise ValueError(f"Codex exited {rc}; no automatic transport/model retry")
+                    if not report["accounting_complete"]:
+                        raise ValueError("Incomplete or failed session; no automatic model retry")
                 redo_gates = False
                 paths = guard(worktree, head, unit["allowed_files"], oracles, dependency_links)
                 gates = []

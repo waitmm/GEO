@@ -1,5 +1,19 @@
 # 08 Development Log
 
+2026-10-14 / IMPLEMENTATION_CHANGE / T25 context and usage only:
+replace unconditional product-doc reading with task-scoped AGENTS routing;
+preserve all business, semantic, permission and evidence invariants. Recognize
+observed reconnect warnings only with subsequent valid completion; retain observed
+usage even on interruption, independently of complete accounting and acceptance.
+107 offline regression tests pass. Replay actual653211-token JSONL without Codex;
+original documentation gate and9 usage tests pass;2865 historical files unchanged.
+Historical STOPPED, receipts, UNKNOWN and worktree edits remain untouched, no DONE.
+Record unresolved existing Git quoted-Chinese-path scope rejection and missing
+historical process exit code; do not bypass either to promote the old task.
+Counterfactual10-command/32000-character stop-loss evaluated offline, not enabled
+and not a hard token ceiling. No model/product calls or architecture expansion.
+Evidence:backend/artifacts/acceptance/relay-usage-replay-20261014/.
+
 2026-10-14 / IMPLEMENTATION_CHANGE / T25 canonical self-executable only:
 resolve ~/.local/bin/codex through standalone/current to the native release file;
 validate regular executable and launch the resolved path, no hardcoded version.

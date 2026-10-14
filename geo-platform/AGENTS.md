@@ -29,13 +29,22 @@ from code age, row ID, frontend wording, or conversation recency. Register it in
 
 ## Semantic Change Guard
 
-Before changing core business logic, read:
+Task-scoped reading follows the workspace AGENTS.md. A documentation-only T25
+relay unit does not require product/semantic documents. Relay-only code changes
+read the affected tooling and gates. This exception never authorizes product,
+permission or semantic changes disguised as documentation work.
+
+Before changing core business logic, locate and read all applicable sections in:
 
 1. `docs/semantics/00_DOMAIN_MODEL.md`
 2. `docs/semantics/01_SEMANTIC_CONTRACTS.md`
 3. `docs/semantics/02_GOLDEN_SEMANTIC_CASES.md`
 4. `docs/semantics/03_DEFINITION_REVIEW_CHECKLIST.md`
 5. `docs/semantics/04_CONFLICT_REGISTER.md`
+
+Follow referenced contracts and unresolved conflicts to their controlling source.
+Do not repeatedly dump whole registries or logs. If the affected semantics cannot
+be bounded confidently, expand the review before changing code.
 
 Classify the change before implementation:
 

@@ -1,5 +1,18 @@
 # 00 Project Brief
 
+## 2026-10-14 Relay Context And Accounting Follow-up
+
+T25 tooling only: task-scoped AGENTS reading and reconnect-aware JSONL parsing.
+Observed usage is retained independently of accounting completeness; terminal
+failure, nonzero exit, timeout and missing usage still stop continuation.
+Actual log offline replay:653211 activity tokens,4 recovered reconnect notices;
+107 relay/harness tests pass; historical T25 doc gate plus9 usage tests pass.
+Old worktree, receipt and STOPPED/UNKNOWN are unchanged. No real Codex call,
+product work or task promotion. Historical exit code was not recorded; a newly
+observed Chinese-path quoting defect in the existing Git scope guard also blocks
+claiming integration success. See19_Codex instructions for evidence and the
+streaming stop-loss assessment (not a token hard cap or an enabled new limit).
+
 ## 2026-10-14 Canonical Codex Executable Follow-up
 
 T25 tooling only: dynamically resolve the Codex executable through file/directory

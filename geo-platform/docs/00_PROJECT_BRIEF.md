@@ -1,5 +1,16 @@
 # 00 Project Brief
 
+## 2026-10-14 Relay Feature Freeze
+
+Relay tooling is FEATURE_FROZEN / OFFLINE_ACCEPTED:143 offline checks pass.
+DOCUMENT_SMALL defaults to8 commands/20000 output characters/180 seconds;
+PRODUCT has independent configuration and unchanged default budgets. Effective
+limits are frozen in checkpoints and shown in dry-run. Existing path/exit/usage/
+gate protections remain. Historical T25-03 worktree, receipt and UNKNOWN unchanged;
+no task promotion, real Codex call or product development in this round.
+Next round returns to GEO product work, not additional relay features. Actual
+savings and real task integration remain unverified. See19_Codex instructions.
+
 ## 2026-10-14 Relay Final Closeout
 
 Tooling only: NUL-delimited Git paths fix the Chinese scope false positive;

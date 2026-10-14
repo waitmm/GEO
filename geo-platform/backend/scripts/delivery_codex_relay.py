@@ -120,6 +120,7 @@ def select_units(ledger, limit):
         if not unit["requirements"] or not unit["objective"].strip():
             raise ValueError("Empty task scope")
         stream_limits(unit)
+        session_seconds(unit, 1800)
         if not set(unit.get("depends_on", [])) <= completed:
             continue
         if not unit["allowed_files"] or any(protected(p) for p in unit["allowed_files"]):
@@ -402,18 +403,35 @@ def permission_profile(root, worktree, directory, binary):
     return {"extends": ":workspace", "filesystem": filesystem, "network": {"enabled": False}}
 
 
-def stream_limits(unit):
+def task_type(unit):
     documentation = bool(unit["allowed_files"]) and all(
         Path(p).suffix.lower() == ".md" for p in unit["allowed_files"])
+    kind = unit.get("task_type", "DOCUMENT_SMALL" if documentation else "PRODUCT")
+    if kind not in {"DOCUMENT_SMALL", "PRODUCT"}:
+        raise ValueError("Unknown relay task_type")
+    if kind == "DOCUMENT_SMALL" and not documentation:
+        raise ValueError("DOCUMENT_SMALL requires a Markdown-only file scope")
+    return kind
+
+
+def session_seconds(unit, batch_timeout):
+    seconds = unit.get("session_seconds", 180 if task_type(unit) == "DOCUMENT_SMALL" else batch_timeout)
+    if type(seconds) is not int or not 1 <= seconds <= 1800:
+        raise ValueError("Unit session_seconds must be an integer in 1..1800")
+    return min(seconds, batch_timeout)
+
+
+def stream_limits(unit):
+    kind = task_type(unit)
     override = unit.get("stream_limits", {})
-    if not documentation:
-        if override:
-            raise ValueError("Stream limits are only supported for documentation-only units")
-        return None
-    defaults = {"max_commands": 10, "max_output_chars": 32000}
+    defaults = {"max_commands": 8, "max_output_chars": 20000}
     if not isinstance(override, dict) or set(override) - set(defaults):
-        raise ValueError("Invalid documentation stream limits")
-    limits = {**defaults, **override}
+        raise ValueError("Invalid stream limits")
+    if kind == "PRODUCT" and not override:
+        return None
+    if kind == "PRODUCT" and set(override) != set(defaults):
+        raise ValueError("PRODUCT stream limits require an independent complete configuration")
+    limits = {**defaults, **override} if kind == "DOCUMENT_SMALL" else override
     if any(type(v) is not int or v <= 0 for v in limits.values()):
         raise ValueError("Stream limits must be positive integers")
     return limits
@@ -589,6 +607,9 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
     report["branch"] = branch
     try:
         limits_by_unit = {u["id"]: stream_limits(u) for u in units}
+        options["unit_execution_limits"] = {
+            u["id"]: {"task_type": task_type(u), "stream_limits": limits_by_unit[u["id"]],
+                      "session_seconds": session_seconds(u, timeout)} for u in units}
         requested_binary = binary
         binary = resolve_codex_binary(binary)
         report["codex_binary"] = {"requested": requested_binary, "resolved": binary}
@@ -676,6 +697,7 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                     "unit": unit["id"], "attempt": attempt + 1, "status": "RUNNING", "oracles": oracles,
                     "returncode": None, "exit_reason": "RUNNING", "timed_out": False,
                     "observed_usage": None, "accounting_complete": False,
+                    "task_type": task_type(unit), "session_seconds": session_seconds(unit, timeout),
                     "stream_limits": limits_by_unit[unit["id"]]}
                 stem = directory / f"{unit['id']}-{attempt + 1}"
                 output = stem.with_suffix(".jsonl")
@@ -688,7 +710,7 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                     process = {}
                     failure = None
                     try:
-                        rc = runner(codex_command(binary, worktree, permissions), worktree, output, timeout,
+                        rc = runner(codex_command(binary, worktree, permissions), worktree, output, row["session_seconds"],
                                     prompt_for(unit, feedback), env=environment,
                                     limits=row["stream_limits"], record=process)
                     except (Exception, KeyboardInterrupt) as exc:
@@ -779,6 +801,8 @@ def main():
     if not args.execute:
         print(json.dumps({"status": "DRY_RUN", "units": units, "model": MODEL,
                           "stream_limits_by_unit": {u["id"]: stream_limits(u) for u in units},
+                          "session_seconds_by_unit": {u["id"]: session_seconds(u, args.session_seconds) for u in units},
+                          "task_types": {u["id"]: task_type(u) for u in units},
                           "integration_branch": INTEGRATION, "config_overrides": OVERRIDES,
                           "effective_config": "NOT_CHECKED_NO_CODEX_PROCESS_STARTED",
                           "max_sessions": len(units) * (args.max_repairs + 1),

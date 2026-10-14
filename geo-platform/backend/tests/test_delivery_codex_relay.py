@@ -202,8 +202,55 @@ def test_rename_cannot_hide_out_of_scope_source(repo):
 def test_documentation_limits_do_not_change_business_defaults():
     assert relay.stream_limits(unit()) is None
     doc = unit(allowed_files=["说明.md"])
-    assert relay.stream_limits(doc) == {"max_commands": 10, "max_output_chars": 32000}
+    assert relay.stream_limits(doc) == {"max_commands": 8, "max_output_chars": 20000}
     assert relay.stream_limits({**doc, "stream_limits": {"max_commands": 3}})["max_commands"] == 3
+
+
+def test_document_small_type_and_product_independent_policy():
+    doc = unit(task_type="DOCUMENT_SMALL", allowed_files=["说明.md"])
+    assert relay.session_seconds(doc, 900) == 180
+    assert relay.session_seconds(doc, 60) == 60
+    assert relay.session_seconds({**doc, "session_seconds": 120}, 900) == 120
+    product = {**doc, "task_type": "PRODUCT"}
+    assert relay.stream_limits(product) is None and relay.session_seconds(product, 900) == 900
+    product.update(stream_limits={"max_commands": 30, "max_output_chars": 80000}, session_seconds=600)
+    assert relay.stream_limits(product) == {"max_commands": 30, "max_output_chars": 80000}
+    assert relay.session_seconds(product, 900) == 600
+
+
+@pytest.mark.parametrize("override", [{"task_type": "UNKNOWN"}, {"session_seconds": 0},
+    {"session_seconds": True}, {"session_seconds": 1801}, {"session_seconds": "180"},
+    {"task_type": "DOCUMENT_SMALL", "allowed_files": ["code.py"]},
+    {"task_type": "PRODUCT", "stream_limits": {"max_commands": 8}}])
+def test_invalid_task_policy_rejected_before_launch(override):
+    candidate = unit(allowed_files=["doc.md"])
+    candidate.update(override)
+    with pytest.raises(ValueError):
+        select_units(ledger(candidate), 1)
+
+
+def test_document_policy_is_passed_to_runner_and_frozen_on_resume(tmp_path, repo):
+    directory = tmp_path / "batch"
+    directory.mkdir()
+    doc = unit(allowed_files=["doc.md"], task_type="DOCUMENT_SMALL")
+    def runner(argv, cwd, output, timeout, stdin=None, **kwargs):
+        if stdin is not None:
+            assert timeout == 180
+            assert kwargs["limits"] == {"max_commands": 8, "max_output_chars": 20000}
+            output.write_text(event())
+            return 0
+        raise KeyboardInterrupt()
+    args = dict(binary="MOCK", token_threshold=1000, timeout=900, repairs=0,
+                verifier=lambda *a: dict(EXPECTED))
+    report = execute_batch(repo, [doc], directory, runner=runner, **args)
+    assert report["attempts"][0]["session_seconds"] == 180
+    assert report["options"]["unit_execution_limits"]["scope"]["task_type"] == "DOCUMENT_SMALL"
+    report["options"]["unit_execution_limits"]["scope"]["session_seconds"] = 181
+    relay.save_json(directory / "report.json", report)
+    def forbidden(*args, **kwargs):
+        pytest.fail("Changed frozen limits cannot resume")
+    resumed = execute_batch(repo, [doc], directory, runner=forbidden, resume=True, **args)
+    assert "Checkpoint unit/budget identity changed" in resumed["reason"]
 
 
 @pytest.mark.parametrize("limits", [{"max_commands": 0}, {"max_output_chars": -1},

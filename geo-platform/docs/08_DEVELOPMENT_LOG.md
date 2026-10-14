@@ -1,5 +1,17 @@
 # 08 Development Log
 
+2026-10-14 / IMPLEMENTATION_CHANGE / relay feature freeze:
+continue actual80323bd baseline, preserving its path parsing and process receipts.
+Explicit DOCUMENT_SMALL defaults8 commands/20000 output characters/180 seconds;
+PRODUCT uses independent optional limits and unchanged batch defaults. Freeze
+effective policy in checkpoint options; reject changed limits on recovery.
+143 offline relay/harness checks passed; T25-03 original JSONL/worktree replay
+passed scope checks, reused existing gates and verified2865 unchanged file hashes.
+No real Codex invocation, product task, historical state rewrite or main merge.
+Tool status FEATURE_FROZEN / OFFLINE_ACCEPTED; real savings not inferred.
+Evidence:backend/artifacts/acceptance/relay-freeze-20261014/. Next round product
+implementation, no further relay feature development under the current scope.
+
 2026-10-14 / IMPLEMENTATION_CHANGE / T25 relay final closeout:
 Git changes uses raw NUL-delimited paths, including both sides of renames;
 preserve out-of-scope, symlink and oracle rejection. Persist per-attempt process

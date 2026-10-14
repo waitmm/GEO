@@ -1,5 +1,28 @@
 # Codex 开工与单任务执行说明
 
+## 2026-10-14 功能冻结与 DOCUMENT_SMALL
+
+工具功能状态：**FEATURE_FROZEN / OFFLINE_ACCEPTED**。实际接力节省额度、后续产品任务的真实执行与集成仍须各自验证，不能从离线通过推断。当前从实际提交80323bd继续，不退回较早的bb995c6；本轮只补齐已要求的任务分类和执行限制，不扩框架。下一轮直接处理正式GEO产品任务，不再增加工具功能；本轮不启动任务或模型，也不处理历史receipt以开启新批次。
+
+当前有效配置如下，替代下方历史章节中的文档默认10/32000：
+
+```json
+{
+  "task_type": "DOCUMENT_SMALL",
+  "stream_limits": {"max_commands": 8, "max_output_chars": 20000},
+  "session_seconds": 180
+}
+```
+
+- 配置写在既有冻结unit中，不另建任务系统。DOCUMENT_SMALL只允许Markdown文件白名单；未显式标类型且白名单全为Markdown时默认归为此类，其他默认PRODUCT。可显式标记PRODUCT，避免把复杂产品文档任务机械套用小任务预算。
+- PRODUCT默认沿用批次超时，不启用小任务流式限制；需要限制时独立配置完整的max_commands、max_output_chars及可选session_seconds，不借用文档默认值。会话时间取unit与批次上限的较小值，必须为1..1800整数；命令/输出阈值必须为正整数。
+- 实际任务类型、命令/输出阈值及会话时间写入每次尝试和检查点options；dry-run显示逐任务生效配置。恢复时配置变化会阻断，不能默默刷新预算或重复执行失败任务。原Git范围、正常退出、有效完成、完整用量、独立Gate和integration条件全部保留；AGENTS选择性读取规则不变。
+- 流式超限是观测后终止，存在轮询与单次输出越界，不是Token硬上限。超限后清理进程组、保存原始日志和退出记录，禁止下一任务或自动修复。
+
+验收：**143 passed**（既有回归保留，新增类型、独立配置、180秒实际传入及冻结配置恢复负例），证据 `backend/artifacts/acceptance/relay-freeze-20261014/regression.xml`。只运行本地Mock，不执行Codex。
+
+T25-03原JSONL仍为653211活动Token；新默认输出限制在第16条事件触发，单独命令上限回放在第25条事件观测到第9次命令时触发。原工作树通过真实范围Guard；原文档Gate和用量专项沿用已有日志哈希，不重新生成正文。2865份历史文件不变，旧STOPPED、receipt、UNKNOWN及未知退出码不回填、不标DONE。预演1单元、0外部调用；批次600秒上限下，文档单元实际180秒。见同目录 `replay-report.json`、`dry-run.json`。
+
 ## 2026-10-14 接力工具最终收口
 
 本轮仅 `IMPLEMENTATION_CHANGE`，修复下述三项工具问题。不执行Codex模型调用，不领取产品任务，不改历史批次、receipt、UNKNOWN或T25-03正文，不合并main。

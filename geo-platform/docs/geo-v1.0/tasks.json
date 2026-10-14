@@ -72,7 +72,7 @@
         "requirements": [
           "OPS-002"
         ],
-        "status": "READY",
+        "status": "BLOCKED",
         "depends_on": [],
         "objective": "仅在19_Codex开工说明.md用量口径一节增加一个简短的三级标题 Token 记账示例（假设数据）。保留原文，不改其他章节。用一个json代码块说明假设input_tokens=1000、cached_input_tokens=800、output_tokens=200、reasoning_output_tokens=50、activity_tokens=1200，明确cached属于input、reasoning属于output，不重复相加；明确这不是本次真实消耗，不可换算套餐额度或宣称节省比例。该节同时明确用量缺失时停止、30,000是会话结束后软阈值而不是硬上限。不要伪造真实调用成功；不运行任何codex命令或业务服务，不提交，验收后停止。仅运行本unit指定的本地Gate。",
         "allowed_files": [
@@ -110,6 +110,51 @@
           }
         ],
         "authorization_batch": "TERMINAL-SMOKE-20261014-02"
+      },
+      {
+        "id": "T25-RELAY-USAGE-SMOKE-TERMINAL-03",
+        "task_id": "T25",
+        "requirements": [
+          "OPS-002"
+        ],
+        "status": "READY",
+        "depends_on": [],
+        "objective": "仅在19_Codex开工说明.md用量口径一节增加一个简短的三级标题 Token 记账示例（假设数据）。保留原文，不改其他章节。用一个json代码块说明假设input_tokens=1000、cached_input_tokens=800、output_tokens=200、reasoning_output_tokens=50、activity_tokens=1200，明确cached属于input、reasoning属于output，不重复相加；明确这不是本次真实消耗，不可换算套餐额度或宣称节省比例。该节同时明确用量缺失时停止、30,000是会话结束后软阈值而不是硬上限。不要伪造真实调用成功；不运行任何codex命令或业务服务，不提交，验收后停止。仅运行本unit指定的本地Gate。",
+        "allowed_files": [
+          "geo-platform/docs/geo-v1.0/19_Codex开工说明.md"
+        ],
+        "gates": [
+          {
+            "cwd": "geo-platform/backend",
+            "argv": [
+              "{python}",
+              "-c",
+              "import json; from pathlib import Path; p=Path('../docs/geo-v1.0/19_Codex开工说明.md'); s=p.read_text().split('### Token 记账示例（假设数据）',1)[1].split('### ',1)[0]; assert s.count('```json')==1; x=json.loads(s.split('```json',1)[1].split('```',1)[0]); assert x==dict(input_tokens=1000,cached_input_tokens=800,output_tokens=200,reasoning_output_tokens=50,activity_tokens=1200); assert x['activity_tokens']==x['input_tokens']+x['output_tokens']; assert all(k in s for k in ['假设','套餐','缺失','停止','30,000','软阈值','不是硬上限']); print('USAGE_DOC_GATE_PASS: synthetic arithmetic and limits, not measured savings')"
+            ],
+            "protected_files": [
+              "geo-platform/docs/geo-v1.0/tasks.json"
+            ]
+          },
+          {
+            "cwd": "geo-platform/backend",
+            "argv": [
+              "{python}",
+              "-m",
+              "pytest",
+              "-p",
+              "no:cacheprovider",
+              "tests/test_delivery_codex_relay.py",
+              "-k",
+              "usage",
+              "-q"
+            ],
+            "protected_files": [
+              "geo-platform/backend/tests/test_delivery_codex_relay.py",
+              "geo-platform/backend/scripts/delivery_codex_relay.py"
+            ]
+          }
+        ],
+        "authorization_batch": "TERMINAL-SMOKE-20261014-03"
       },
       {
         "id": "T25-RELAY-USAGE-SMOKE",

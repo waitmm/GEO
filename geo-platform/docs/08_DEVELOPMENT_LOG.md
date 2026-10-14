@@ -1,5 +1,24 @@
 # 08 Development Log
 
+2026-10-14 / IMPLEMENTATION_CHANGE / T25 execution isolation only:
+owner identifies standalone Seatbelt success but nested sandbox exit71.
+Remove extra agent.sb/gate.sb wrappers; retain official Permission Profile
+on tools and single codex sandbox on gates. No --sandbox/legacy mode override;
+config/read validates exact selected profile, ignoring only unset null fields.
+Serialize profile as one round-tripped TOML table to preserve dotted paths.
+Root deny; scratch TMPDIR and worktree write; exact Python runtime/dependencies
+read; secret/DB globs and host credential directories denied; network false.
+Profile failure is fatal, no unprotected fallback or danger-full-access.
+80 regression tests pass (71relay +9harness), no skips.11 real CLI0.162.1
+offline security probes pass in probe-07; earlier failures
+retained, runtime crash never counted as a security denial. No exec, model/list,
+thread/start, turn/start or business calls in this round. Config/CLI tooling
+only. Existing dependency/budget/retry/receipt/CAS/timeout rules preserved.
+Found latest failed batch20261013T222348-732b92c4:0.131s EPERM, empty JSONL,
+UNKNOWN usage. Preserve active receipt and all old reports/worktrees unchanged.
+Future real smoke requires prior receipt review and fresh explicit authorization,
+not --resume. Product work remains paused; main5846acd unchanged.
+
 2026-10-13 / IMPLEMENTATION_CHANGE / T25 Terminal batch preparation only:
 owner explicitly authorizes fresh TERMINAL-SMOKE-20261013-01 for the SAME
 documentation objective/gates/files, not a product task or old --resume.

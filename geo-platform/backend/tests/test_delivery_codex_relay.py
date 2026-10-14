@@ -3,12 +3,13 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import tomllib
 
 import pytest
 
 from scripts.delivery_codex_relay import (
     EXPECTED, INTEGRATION, MODEL, codex_command, execute_batch, guard, read_usage, run_process, select_units,
-    isolated_environment, validate_effective, sandbox_profile,
+    isolated_environment, validate_effective, permission_profile,
 )
 from scripts import delivery_codex_relay as relay
 
@@ -92,11 +93,12 @@ def test_unknown_usage_never_authorizes_next_session(tmp_path, payload):
 
 
 def test_command_is_fresh_medium_standard_sandboxed_without_policy_bypass():
-    cmd = codex_command("codex", Path("/tmp/test"))
+    cmd = codex_command("codex", Path("/tmp/test"), policy())
     text = " ".join(cmd)
     assert "gpt-5.6-sol" in cmd and 'model_reasoning_effort="medium"' in cmd
     assert 'service_tier="default"' in cmd and "features.multi_agent=false" in cmd
-    assert "workspace-write" in cmd and 'approval_policy="never"' in cmd
+    assert 'default_permissions="geo-relay"' in cmd and 'approval_policy="never"' in cmd
+    assert "--sandbox" not in cmd and "sandbox-exec" not in text and "sandbox_mode=" not in text
     assert not any(x in text for x in ["resume", "--ignore", "dangerously", "priority"])
 
 
@@ -105,6 +107,8 @@ def test_two_successful_units_use_fresh_calls_commits_and_leave_main_untouched(t
     head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"])
     def runner(argv, cwd, output, timeout, stdin=None, **kwargs):
         if stdin is not None:
+            assert argv[1] == "exec" and "profile" not in kwargs
+            assert "sandbox-exec" not in " ".join(argv) and "--sandbox" not in argv
             if calls:
                 assert (cwd / "change.txt").read_text() == "1"
                 integrated = subprocess.check_output(["git", "-C", str(repo), "rev-parse", INTEGRATION])
@@ -113,6 +117,8 @@ def test_two_successful_units_use_fresh_calls_commits_and_leave_main_untouched(t
             (cwd / "change.txt").write_text(str(len(calls)))
             output.write_text(event())
         else:
+            assert argv[1] == "sandbox" and "--include-managed-config" in argv
+            assert "profile" not in kwargs
             output.write_text("independent gate passed")
         return 0
     report = batch(tmp_path, repo, [unit("a"), unit("b")], runner)
@@ -170,9 +176,13 @@ def test_symlink_is_not_committed(tmp_path, repo):
         guard(repo, head, ["change.txt"], {})
 
 
+def policy():
+    return permission_profile(Path("/mock/repo"), Path("/mock/worktree"), Path("/mock/batch"))
+
+
 def effective_config():
     return {**EXPECTED, "features": {k: False for k in ("multi_agent", "goals", "apps", "plugins")},
-            "sandbox_workspace_write": {"network_access": False}, "web_search": "disabled"}
+            "permissions": {relay.PERMISSION_PROFILE: policy()}, "web_search": "disabled"}
 
 
 def models():
@@ -186,22 +196,65 @@ def models():
     ("sandbox_workspace_write", {"network_access": True})])
 def test_effective_config_mismatch_blocks_execution(key, value):
     with pytest.raises(ValueError):
-        validate_effective({**effective_config(), key: value}, models())
+        validate_effective({**effective_config(), key: value}, models(), policy())
+
+
+@pytest.mark.parametrize("legacy", ["read-only", "workspace-write", "danger-full-access"])
+def test_legacy_mode_never_silently_overrides_permission_profile(legacy):
+    with pytest.raises(ValueError, match="Legacy sandbox"):
+        validate_effective({**effective_config(), "sandbox_mode": legacy}, models(), policy())
+
+
+@pytest.mark.parametrize("section,key,value", [
+    ("filesystem", ":root", "read"), ("network", "enabled", True),
+    ("filesystem", "/unauthorized", "read"), ("workspace_roots", "/production", True),
+])
+def test_effective_permission_expansion_is_rejected(section, key, value):
+    config = effective_config()
+    config["permissions"][relay.PERMISSION_PROFILE].setdefault(section, {})[key] = value
+    with pytest.raises(ValueError, match="permission profile"):
+        validate_effective(config, models(), policy())
+
+
+def test_cli_permission_table_roundtrip_preserves_dotted_paths_and_globs(tmp_path):
+    permissions = permission_profile(tmp_path, tmp_path / 'space.and "quote"', tmp_path / "batch")
+    args = relay.config_arguments(permissions)
+    value = args[-1].split("=", 1)[1]
+    assert tomllib.loads("profile=" + value)["profile"] == permissions
+    assert not any("sandbox_mode=" in arg or "sandbox_workspace_write" in arg for arg in args)
+
+
+def test_app_server_nullable_defaults_are_not_permission_expansions():
+    config = effective_config()
+    selected = config["permissions"][relay.PERMISSION_PROFILE]
+    selected.update(description=None, workspace_roots=None)
+    selected["filesystem"]["glob_scan_max_depth"] = None
+    selected["network"].update(domains=None, allow_local_binding=None)
+    assert validate_effective(config, models(), policy())["default_permissions"] == relay.PERMISSION_PROFILE
+
+
+def test_gate_uses_official_profile_once_and_preserves_gate_cwd(tmp_path):
+    cwd = tmp_path / "worktree/backend"
+    cmd = relay.sandbox_command("codex", cwd, policy(), ["python", "-m", "pytest"])
+    assert cmd[1] == "sandbox" and cmd.count("sandbox") == 1
+    assert cmd[cmd.index("-C") + 1] == str(cwd)
+    assert cmd[cmd.index("--") + 1:] == ["python", "-m", "pytest"]
+    assert "sandbox-exec" not in cmd and "--sandbox" not in cmd
 
 
 def test_config_and_catalog_must_both_validate_without_automatic_model_fallback():
-    assert validate_effective(effective_config(), models())["model_reasoning_effort"] == "medium"
+    assert validate_effective(effective_config(), models(), policy())["model_reasoning_effort"] == "medium"
     with pytest.raises(ValueError):
-        validate_effective(effective_config(), [])
+        validate_effective(effective_config(), [], policy())
 
 
 def test_standard_tier_is_not_an_optional_catalog_upgrade():
     catalog = models()
     catalog[0]["serviceTiers"] = [{"id": "priority"}]
-    assert validate_effective(effective_config(), catalog)["service_tier"] == "default"
+    assert validate_effective(effective_config(), catalog, policy())["service_tier"] == "default"
     for tier in ("priority", "fast", "ultrafast", "auto"):
         with pytest.raises(ValueError, match="service_tier"):
-            validate_effective({**effective_config(), "service_tier": tier}, catalog)
+            validate_effective({**effective_config(), "service_tier": tier}, catalog, policy())
 
 
 @pytest.mark.parametrize("retarget", [False, True])
@@ -267,10 +320,11 @@ def test_isolated_resources_drop_inherited_database_keys_and_ports(tmp_path, mon
     assert env["DATABASE_URL"] == f"sqlite:///{tmp_path / 'scratch/test-legacy.db'}"
     assert env["DEEPSEEK_API_KEY"] == "" and "OPENAI_API_KEY" not in env
     assert env["BACKEND_PORT"] == "61001" and env["MONITORING_WORKER"] == "0"
-    policy = sandbox_profile(tmp_path / "production", tmp_path / "wt", tmp_path, env)
-    assert '(deny network*)' in policy and '(deny file-read*' in policy
-    assert "8021" not in policy and "5173" not in policy and '*:443' not in policy
-    assert 'remote tcp "localhost:61001"' in policy
+    permissions = permission_profile(tmp_path / "production", tmp_path / "wt", tmp_path)
+    assert permissions["network"] == {"enabled": False}
+    assert permissions["filesystem"][":root"] == "deny"
+    assert permissions["filesystem"][str(tmp_path / "scratch")] == "write"
+    assert permissions["filesystem"][str(Path.home() / ".codex")] == "deny"
 
 
 def test_invalid_dependency_graph_and_unordered_valid_graph():
@@ -369,14 +423,17 @@ def test_main_refuses_dirty_worktree_before_execution(repo, monkeypatch):
     assert result.value.code == 2
 
 
-def test_configuration_preflight_rpc_with_local_mock_only(tmp_path, monkeypatch):
+@pytest.mark.parametrize("check_catalog", [False, True])
+def test_configuration_preflight_rpc_with_local_mock_only(tmp_path, monkeypatch, check_catalog):
     monkeypatch.setattr(relay, "run_process", lambda *a, **k: 0)
+    relay.save_json(tmp_path / "permissions.json", policy())
     script = tmp_path / "mock_app_server.py"
     script.write_text("import json, sys\n"
         + "config = " + repr(effective_config()) + "\nmodels = " + repr(models()) + "\n"
         + "for line in sys.stdin:\n"
         + "    message = json.loads(line)\n"
         + "    assert message['method'] in ('initialize','initialized','config/read','model/list')\n"
+        + ("    assert message['method'] != 'model/list'\n" if not check_catalog else "")
         + "    if 'id' not in message: continue\n"
         + "    result = {'config': config} if message['method']=='config/read' else {'data': models} if message['method']=='model/list' else {}\n"
         + "    print(json.dumps({'id':message['id'], 'result':result}), flush=True)\n")
@@ -386,7 +443,9 @@ def test_configuration_preflight_rpc_with_local_mock_only(tmp_path, monkeypatch)
         assert 'service_tier="default"' in argv and 'model_reasoning_effort="medium"' in argv
         return original([sys.executable, str(script)], **kwargs)
     monkeypatch.setattr(subprocess, "Popen", fake_process)
-    assert relay.preflight("MOCK_NOT_CODEX", tmp_path, tmp_path, isolated_environment(tmp_path))["model"] == MODEL
+    result = relay.preflight("MOCK_NOT_CODEX", tmp_path, tmp_path, isolated_environment(tmp_path),
+                             check_catalog=check_catalog)
+    assert result["model"] == MODEL and result["catalog_checked"] is check_catalog
 
 
 def test_descendant_ignoring_term_is_killed_on_timeout(tmp_path):

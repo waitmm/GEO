@@ -1,5 +1,21 @@
 # 00 Project Brief
 
+## 2026-10-14 Execution Isolation Only
+
+T25 IMPLEMENTATION_CHANGE: replace nested Seatbelt with one official Codex
+Permission Profile, no model/task/product changes. Host Terminal controller;
+Codex tool sandbox and offline gates use the same frozen geo-relay profile.
+Root deny, explicit worktree/scratch write, dependencies/runtime read, secret/DB
+denials, network disabled. Legacy sandbox config conflicts stop execution.
+CLI0.162.1 real offline probes:11 passed;71 relay +9 harness tests passed,
+no exec or model call. See19_Codex
+instructions and artifacts/acceptance/codex-single-sandbox-20261014/.
+Latest historical failed batch20261013T222348-732b92c4 has UNKNOWN usage and
+active unreviewed receipt; preserved unchanged. No resume, receipt removal,
+new smoke authorization, product task pickup or main merge this round.
+Real task execution/integration/token savings remain unverified. Earlier
+checkpoint sections are historical, not authority to retry a failed batch.
+
 ## 2026-10-13 Bounded Development Checkpoint
 
 Current authorization TERMINAL-SMOKE-20261013-01: prepare/dry-run only in this

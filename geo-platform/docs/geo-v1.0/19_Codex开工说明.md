@@ -1,8 +1,45 @@
 # Codex 开工与单任务执行说明
 
+## 2026-10-14 单层官方沙箱修复
+
+本节是当前执行隔离约定，替代下文历史记录中的额外 `agent.sb`/`gate.sb` 包裹；不改变模型、任务、预算、权限目标或产品范围。分类 `IMPLEMENTATION_CHANGE`，仅 T25 开发工具。调度器必须从普通宿主 Terminal 启动，不从另一个 Codex 沙箱内启动。
+
+- Codex 子进程直接启动，工具由官方 Permission Profile `geo-relay` 隔离，不再外包 `sandbox-exec`。本地验收命令单独通过 `codex sandbox -P geo-relay --include-managed-config` 运行，仍是单层。
+- 配置固定 `gpt-5.6-sol / medium / default / approval_policy=never`、`default_permissions=geo-relay`；MCP/Hook 继承检查及 multi_agent/goals/apps/plugins/web_search 禁用检查保留。不修改用户级或 IDE 配置。
+- Profile 继承 `:workspace`，`:root=deny`、`:minimal=read`、`:slash_tmp=deny`。工作树和唯一 scratch 可写，`TMPDIR` 也固定到该 scratch。Git 元数据、共享依赖、当前 Python 系统运行库只读；用户 `.codex/.ssh/.aws/.config` 不可读。工作树内环境文件、数据库、PEM、auth.json 的 deny glob 覆盖后创建文件；工具网络 `enabled=false`，本轮连隔离测试端口也不自动放行。
+- Codex 宿主客户端仍需读取自己的登录状态和连接模型服务，这不是工具网络授权。模型不得通过工具读取宿主登录文件。当前没有发起该模型服务连接验证。
+- **不能混用旧模式**：不传 `--sandbox`，不设置 `sandbox_mode`/`sandbox_workspace_write`；只读 `config/read` 若发现任何旧模式或权限表不一致，停止而不降级。官方[Permission Profiles](https://learn.chatgpt.com/docs/permissions)明确说明旧模式会覆盖新配置。路径表通过一整张 TOML 表传入，避免 CLI dotted-key 拆坏包含点或 glob 的路径。
+- 批次保存 `permissions.json` 和 `effective-permissions.json`。无模型离线检查跳过 model/list；未来真实运行仍须核查目录且无自动模型替换。账户请求成功、服务档位实际计费与节省效果仍未验证。
+
+### 本轮安全与回归证据
+
+`backend/artifacts/acceptance/codex-single-sandbox-20261014/probe-07/report.json`：macOS 宿主上的真实 CLI 0.162.1，11项探针通过，0 exec / 0模型调用。覆盖工作树读写、scratch SQLite、模拟生产密钥/数据库拒读、SQLite只读打开拒绝、软链接绕行拒绝、Git元数据只读、后创建环境文件拒写、回环网络 EPERM/EACCES。宿主先连接同一监听端口成功，排除“端口没开”的假阳性。只使用假秘密和假数据库，没有读取真实生产凭证/数据库。
+
+早期 probe-01..06 保留为修复证据：先修正权限表路径序列化及 CLI 返回的未设置 null 字段，再增加 Python 系统运行库的精确只读路径，最后消除 TMPDIR 与 scratch 同路径 deny/write 冲突。运行库未加载导致的异常不算安全负例通过。没有通过放宽 root、网络、凭证或生产路径访问取得成功。
+
+专项及原 harness 回归共 **80 passed，0 failed，0 skipped**，见同目录 `regression-final.xml`；包含71项接力测试和9项原harness检查。这些是工具工程验收，不是 GEO 产品或真实接力任务验收。原模型、阈值、重试、CAS集成、receipt和整组终止逻辑保留；`main` 不修改。
+
+### 启动与停机条件
+
+```bash
+cd /Users/bmwqr/Desktop/python/GEO
+# 默认预演，仍仅原 T25 文档单元；不启动任何 Codex 进程。
+geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000 --codex /Users/bmwqr/.local/bin/codex
+# 宿主 Terminal 离线重验；输出目录必须全新，不覆盖已有证据。
+geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_isolation_probe.py --codex /Users/bmwqr/.local/bin/codex --output /private/tmp/geo-single-sandbox-new-check
+```
+
+**当前真实启动仍被未复核 receipt 阻止。** 本轮发现后续失败批次 `20261013T222348-732b92c4`：exec启动后0.131秒失败、空JSONL、`accounting_complete=false`。其receipt、报告、旧沙箱文件和未知用量原样保留；没有自动归档、清零或 `--resume`。本轮没有授权再执行一批，也没有改任务排队状态。dry-run的1项不代表receipt已解除。
+
+下面仅为**后续复核旧批次并明确批准新批次后**的单任务真实冒烟命令；本轮不执行，现在直接执行会被receipt保护拒绝。须确保控制器工作树干净，修复提交已快进到 `codex/geo-integration`，且integration未被检出。禁止删除receipt绕过复核，禁止合并main。
+
+```bash
+geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_codex_relay.py --execute --max-tasks 1 --max-repairs 0 --session-seconds 600 --token-threshold 30000 --codex /Users/bmwqr/.local/bin/codex
+```
+
 ## 2026-10-13 有界接力入口（优先于旧的无限续跑描述）
 
-最新准备：`TERMINAL-SMOKE-20261013-01` 是用户新授权的独立Terminal批次，本轮代理仅准备与dry-run，禁止真实exec。原任务和未知用量不改；新单元 `T25-RELAY-USAGE-SMOKE-TERMINAL-01` 仅复用原T25文档目标、文件范围与Gate。指定独立CLI `/Users/bmwqr/.local/bin/codex`，仍为5.6-sol/medium/default、1任务/0修复/600秒/30000软阈值。旧EPERM记录保留，是否已解决必须由未来真实调用确认。
+历史准备记录：`TERMINAL-SMOKE-20261013-01` 是用户当时授权的独立Terminal批次，后续已失败并保留receipt，以2026-10-14节为准。以下保留当时过程，不是当前可重试授权。原任务和未知用量不改；新单元 `T25-RELAY-USAGE-SMOKE-TERMINAL-01` 仅复用原T25文档目标、文件范围与Gate。指定独立CLI `/Users/bmwqr/.local/bin/codex`，仍为5.6-sol/medium/default、1任务/0修复/600秒/30000软阈值。
 
 ### 新Terminal批次与读取基线
 
@@ -31,9 +68,9 @@ geo-platform/backend/.venv/bin/python geo-platform/backend/scripts/delivery_code
 1. 默认仅预演，输出队列、配置和预算，不启动任何 Codex 进程，不建工作树、不修改 Git。
 2. 显式执行前要求工作区干净；单实例文件锁；上一批 receipt 未处理则不能偷偷重跑。默认1项、最多3项；每项最多初次执行加2次定向修复。
 3. 唯一连续基线为 `codex/geo-integration`。从该分支创建隔离工作树；每项通过独立 Gate 后由控制器提交、CAS 快进 integration。后项必须以此前已集成的提交启动。禁止自动合并/推送主分支，也禁止代理自行提交。integration 被检出或被外部移动时停止。
-4. 每次独立 `codex exec` 显式覆盖为 `gpt-5.6-sol / medium / default`，关闭多 Agent、goals、apps、plugins 和 shell 外网；审批为 never，sandbox 为 workspace-write。不改全局配置，不跳过已有安全规则，不授权 GEO 业务外调。CLI协议规定default为标准速度，目录中的serviceTiers可能只列额外加速档，不据此否认标准档；实际请求结果单独验证。
+4. 每次独立 `codex exec` 显式覆盖为 `gpt-5.6-sol / medium / default`，关闭多 Agent、goals、apps、plugins 和 shell 外网；审批为 never，使用单层 `geo-relay` Permission Profile。不改全局配置，不跳过已有安全规则，不授权 GEO 业务外调。CLI协议规定default为标准速度，目录中的serviceTiers可能只列额外加速档，不据此否认标准档；实际请求结果单独验证。
 5. 首次模型执行前用只读 `app-server` 的 initialize/config-read/model-list 核验实际配置与可用模型；无 thread/start 或 turn/start。High、Priority、模型不可用、启用的外部 MCP/Hook 或隔离失败都停止，不偷偷降级模型或绕过权限。本轮该协议由本地 Mock 验证，不代表账户已确认可用 Sol。
-6. 工作树不复制 `.env`、业务 DB、账号 profile。环境清除继承的业务凭证，使用隔离 SQLite、scratch、临时端口和 offline 标记。macOS 额外 sandbox 拒绝读取原仓库业务数据、写入原仓库及连接未分配本地端口；模型进程仅额外允许 HTTPS/DNS，测试 Gate 不允许外网。依赖目录仅只读复用。无可用隔离机制就拒绝执行，不支持无保护降级。
+6. 工作树不复制 `.env`、业务 DB、账号 profile。环境清除继承的业务凭证，使用隔离 SQLite、scratch、临时端口和 offline 标记。官方单层 Profile 拒绝工具读取生产数据、凭证和未授权路径，工具网络默认全部关闭，依赖目录只读复用。不再给Codex宿主进程外套Seatbelt。无可用隔离机制就拒绝执行，不支持无保护降级。
 7. 冻结队列及验收预期；变更超白名单、修改 Gate 预期、HEAD 异常、无用量、进程失败或超时立即停止。只有正常模型结束且 Gate 失败才允许有限修复。子进程结束/超时/中断均清理整个进程组，包括忽略 TERM 的后代。
 8. 原子保存每次调用前、用量后、Gate 后和 integration 更新前后的检查点。恢复不重置预算/重试；已验收任务不重复执行；模型已结束而 Gate 中断只重跑本地 Gate；integration 已更新但状态未落盘时补记账。调用中断且用量不明必须人工核对，不能自动再调用。
 

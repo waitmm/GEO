@@ -13,17 +13,19 @@ import signal
 import socket
 import subprocess
 import time
+import tomllib
 import uuid
 
 ROOT = Path(__file__).resolve().parents[3]
 LEDGER = Path("geo-platform/docs/geo-v1.0/tasks.json")
 MODEL = "gpt-5.6-sol"
 INTEGRATION = "codex/geo-integration"
+PERMISSION_PROFILE = "geo-relay"
 EXPECTED = {"model": MODEL, "model_reasoning_effort": "medium", "service_tier": "default",
-            "approval_policy": "never", "sandbox_mode": "workspace-write"}
+            "approval_policy": "never", "default_permissions": PERMISSION_PROFILE}
 OVERRIDES = {**EXPECTED, "features.multi_agent": False, "features.goals": False,
              "features.apps": False, "features.plugins": False,
-             "web_search": "disabled", "sandbox_workspace_write.network_access": False}
+             "web_search": "disabled"}
 
 
 def save_json(path, value):
@@ -163,43 +165,73 @@ def read_usage(path):
     return totals
 
 
-def codex_command(binary, worktree):
-    return [binary, "exec", "--model", MODEL, "--sandbox", "workspace-write", "--json",
-            "--cd", str(worktree), *config_arguments(), "-"]
+def codex_command(binary, worktree, permissions):
+    # Codex itself enforces the profile on tools. Never wrap this process in Seatbelt.
+    return [binary, "exec", "--model", MODEL, "--json",
+            "--cd", str(worktree), *config_arguments(permissions), "-"]
 
 
-def config_arguments():
-    return [arg for key, value in OVERRIDES.items() for arg in ("-c", key + "=" + json.dumps(value))]
+def config_arguments(permissions):
+    # CLI dotted-key overrides split literal dots, including dots inside quoted paths.
+    # Pass one parsed TOML table instead, preserving path/glob keys exactly.
+    def inline(value):
+        if isinstance(value, dict):
+            return "{" + ",".join(json.dumps(k) + "=" + inline(v) for k, v in value.items()) + "}"
+        if not isinstance(value, (str, bool)):
+            raise ValueError("Permission values must be strings, booleans, or tables")
+        return json.dumps(value)
+    table = inline(permissions)
+    if tomllib.loads("profile=" + table)["profile"] != permissions:
+        raise ValueError("Permission configuration did not round-trip")
+    return [arg for key, value in OVERRIDES.items() for arg in ("-c", key + "=" + json.dumps(value))] + [
+        "-c", f"permissions.{PERMISSION_PROFILE}={table}"]
 
 
-def validate_effective(config, models):
+def sandbox_command(binary, worktree, permissions, argv):
+    return [binary, "sandbox", "-P", PERMISSION_PROFILE, "--include-managed-config",
+            "-C", str(worktree), *config_arguments(permissions), "--", *argv]
+
+
+def validate_effective(config, models, permissions):
+    def without_unset(value):
+        if isinstance(value, dict):
+            return {k: without_unset(v) for k, v in value.items() if v is not None}
+        return value
     for key, value in EXPECTED.items():
         if config.get(key) != value:
             raise ValueError(f"Effective config mismatch: {key}")
     for key in ("multi_agent", "goals", "apps", "plugins"):
         if config.get("features", {}).get(key) is not False:
             raise ValueError(f"Effective feature not disabled: {key}")
-    if config.get("sandbox_workspace_write", {}).get("network_access") is not False:
-        raise ValueError("Shell network access not disabled")
+    if config.get("sandbox_mode") is not None or config.get("sandbox_workspace_write") is not None:
+        raise ValueError("Legacy sandbox configuration overrides permission profiles; refuse execution")
+    if without_unset(config.get("permissions", {}).get(PERMISSION_PROFILE)) != permissions:
+        raise ValueError("Effective permission profile differs from the frozen isolation policy")
+    if permissions.get("network", {}).get("enabled") is not False:
+        raise ValueError("Tool network access not disabled")
     if config.get("web_search") != "disabled":
         raise ValueError("Web search not disabled")
     if any(s.get("enabled", True) for s in config.get("mcp_servers", {}).values()):
         raise ValueError("Enabled inherited MCP servers require explicit isolation review")
     if config.get("hooks") or config.get("features", {}).get("hooks"):
         raise ValueError("Inherited hooks require explicit isolation review")
-    model = next((m for m in models if m.get("model") == MODEL), None)
-    if not model or "medium" not in {e["reasoningEffort"] for e in model["supportedReasoningEfforts"]}:
-        raise ValueError("Requested model/effort unavailable; never fall back automatically")
+    if models is not None:
+        model = next((m for m in models if m.get("model") == MODEL), None)
+        if not model or "medium" not in {e["reasoningEffort"] for e in model["supportedReasoningEfforts"]}:
+            raise ValueError("Requested model/effort unavailable; never fall back automatically")
     # CLI protocol defines "default" as standard; serviceTiers may list only optional upgrades.
-    return {**EXPECTED, "features": {k: False for k in ("multi_agent", "goals", "apps", "plugins")}}
+    return {**EXPECTED, "permissions": {PERMISSION_PROFILE: permissions},
+            "catalog_checked": models is not None,
+            "features": {k: False for k in ("multi_agent", "goals", "apps", "plugins")}}
 
 
-def preflight(binary, worktree, directory, environment):
+def preflight(binary, worktree, directory, environment, *, check_catalog=True):
     """Read effective config/catalog, never start a thread/turn. Mocked in offline tests."""
-    if run_process(["/usr/bin/true"], worktree, directory / "isolation.log", 10,
-                   env=environment, profile=directory / "agent.sb"):
+    permissions = json.loads((directory / "permissions.json").read_text())
+    if run_process(sandbox_command(binary, worktree, permissions, ["/usr/bin/true"]),
+                   worktree, directory / "isolation.log", 10, env=environment):
         raise ValueError("Isolation runtime unavailable; never fall back to unsandboxed execution")
-    command = [binary, "app-server", "--stdio", *config_arguments()]
+    command = [binary, "app-server", "--stdio", *config_arguments(permissions)]
     with (directory / "preflight.stderr").open("wb") as stderr:
         child = subprocess.Popen(command, cwd=worktree, env=environment, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=stderr, start_new_session=True)
@@ -236,6 +268,12 @@ def preflight(binary, worktree, directory, environment):
             child.stdin.write(b'{"method":"initialized"}\n')
             child.stdin.flush()
             config = rpc("config/read", {"cwd": str(worktree), "includeLayers": False})["config"]
+            save_json(directory / "effective-permissions.json", {
+                **{key: config.get(key) for key in (
+                    "default_permissions", "sandbox_mode", "sandbox_workspace_write")},
+                "permissions": {PERMISSION_PROFILE: config.get("permissions", {}).get(PERMISSION_PROFILE)}})
+            if not check_catalog:
+                return validate_effective(config, None, permissions)
             models, cursor = [], None
             for _ in range(10):
                 page = rpc("model/list", {"cursor": cursor, "limit": 100, "includeHidden": True})
@@ -243,7 +281,7 @@ def preflight(binary, worktree, directory, environment):
                 cursor = page.get("nextCursor")
                 if not cursor:
                     break
-            return validate_effective(config, models)
+            return validate_effective(config, models, permissions)
         finally:
             stop_group(child)
             selector.close()
@@ -285,35 +323,31 @@ def allocate_ports():
     return ports
 
 
-def sandbox_profile(root, worktree, directory, environment, model_network=False):
-    """Additional macOS isolation for both gates and the child; Codex sandbox stays enabled."""
-    quote = lambda p: json.dumps(str(Path(p).resolve()))
-    lines = ['(version 1)', '(allow default)', '(deny file-write*)',
-             f'(allow file-write* (subpath {quote(worktree)}) (subpath {quote(directory / "scratch")}))',
-             '(allow file-write* (literal "/dev/null") (literal "/dev/tty"))',
-             f'(deny file-read* (subpath {quote(root)}))']
-    for path in (worktree, root / ".git", root / "geo-platform/backend/.venv",
-                 root / "geo-platform/frontend/node_modules"):
-        lines.append(f'(allow file-read* (subpath {quote(path)}))')
-    lines += ['(deny network*)']
-    for port in (environment["BACKEND_PORT"], environment["FRONTEND_PORT"]):
-        lines.append(f'(allow network-outbound (remote tcp "localhost:{port}"))')
-        lines.append(f'(allow network-bind network-inbound (local tcp "localhost:{port}"))')
-    if model_network:
-        lines += ['(allow network-outbound (remote tcp "*:443") (remote udp "*:53"))',
-                  f'(allow file-write* (subpath {quote(Path.home() / ".codex")}))']
-        for name in ("config.toml", "auth.json", "rules"):
-            lines.append(f'(deny file-write* (subpath {quote(Path.home() / ".codex" / name)}))')
-    return "\n".join(lines) + "\n"
+def permission_profile(root, worktree, directory):
+    """One official tool sandbox; controller/auth transport remain on the host."""
+    root, worktree, directory = (Path(p).resolve() for p in (root, worktree, directory))
+    filesystem = {":root": "deny", ":minimal": "read", ":tmpdir": "write", ":slash_tmp": "deny",
+                  str(worktree): "write", str(directory / "scratch"): "write"}
+    for path in (root / ".git", root / "geo-platform/backend/.venv",
+                 root / "geo-platform/frontend/node_modules", Path(os.sys.base_prefix)):
+        filesystem[str(path.resolve())] = "read"
+    for name in (".git", ".agents", ".codex"):
+        filesystem[str(worktree / name)] = "read"
+    for name in (".aws", ".ssh"):
+        filesystem[str(worktree / name)] = "deny"
+    for name in (".codex", ".ssh", ".aws", ".config"):
+        filesystem[str(Path.home() / name)] = "deny"
+    # Includes files created after policy compilation; never allow copied secrets/live DBs.
+    filesystem[str(worktree)] = {".": "write"}
+    for pattern in ("**/.env", "**/.env.*", "**/*.env", "**/*.db", "**/*.sqlite", "**/*.sqlite3",
+                    "**/*.pem", "**/auth.json"):
+        filesystem[str(worktree)][pattern] = "deny"
+    return {"extends": ":workspace", "filesystem": filesystem, "network": {"enabled": False}}
 
 
-def run_process(argv, cwd, output, timeout, stdin=None, *, env=None, profile=None):
+def run_process(argv, cwd, output, timeout, stdin=None, *, env=None):
     """Bound wall time and terminate the complete child process group on interruption."""
     with output.open("wb") as stdout, output.with_suffix(".stderr").open("wb") as stderr:
-        if profile:
-            if not Path("/usr/bin/sandbox-exec").exists():
-                raise ValueError("No validated isolation runner on this OS; refusing execution")
-            argv = ["/usr/bin/sandbox-exec", "-f", str(profile), *argv]
         child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                                  stdout=stdout, stderr=stderr, start_new_session=True)
         try:
@@ -400,8 +434,8 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                 dependency_links[source] = (root / source).resolve()
                 if not target.exists() and not target.is_symlink():
                     target.symlink_to(root / source, target_is_directory=True)
-        for name, model_network in (("agent.sb", True), ("gate.sb", False)):
-            (directory / name).write_text(sandbox_profile(root, worktree, directory, environment, model_network))
+        permissions = permission_profile(root, worktree, directory)
+        save_json(directory / "permissions.json", permissions)
         report["isolation"] = {k: environment[k] for k in (
             "GEO_RELEASE_DATABASE_URL", "DATABASE_URL", "TMPDIR", "BACKEND_PORT", "FRONTEND_PORT")}
         report["effective_config"] = verifier(binary, worktree, directory, environment)
@@ -455,8 +489,8 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                     report["accounting_complete"] = False
                     save_json(checkpoint, report)
                     started = time.monotonic()
-                    rc = runner(codex_command(binary, worktree), worktree, output, timeout,
-                                prompt_for(unit, feedback), env=environment, profile=directory / "agent.sb")
+                    rc = runner(codex_command(binary, worktree, permissions), worktree, output, timeout,
+                                prompt_for(unit, feedback), env=environment)
                     row["elapsed_seconds"] = round(time.monotonic() - started, 3)
                     row["usage"] = read_usage(output)
                     report["activity_tokens"] += row["usage"]["activity_tokens"]
@@ -471,8 +505,8 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                 for index, gate in enumerate(unit["gates"]):
                     argv = [s.replace("{python}", os.sys.executable) for s in gate["argv"]]
                     log = directory / f"{unit['id']}-{attempt + 1}-gate{index}.log"
-                    code = runner(argv, worktree / gate["cwd"], log, min(timeout, 300),
-                                  env=environment, profile=directory / "gate.sb")
+                    code = runner(sandbox_command(binary, worktree / gate["cwd"], permissions, argv),
+                                  worktree / gate["cwd"], log, min(timeout, 300), env=environment)
                     gates.append({"exit_code": code, "log": str(log)})
                 row["gates"] = gates
                 paths = guard(worktree, head, unit["allowed_files"], oracles, dependency_links)

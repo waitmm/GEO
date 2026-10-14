@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shutil
 import signal
 import socket
 import subprocess
@@ -165,6 +166,20 @@ def read_usage(path):
     return totals
 
 
+def resolve_codex_binary(binary):
+    """Resolve file and directory symlinks before Codex records its self-exec path."""
+    candidate = shutil.which(str(Path(binary).expanduser()))
+    if not candidate:
+        raise ValueError("Codex executable not found or not executable")
+    try:
+        resolved = Path(candidate).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("Codex executable has an invalid symlink chain") from exc
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise ValueError("Codex executable must be a regular executable file")
+    return str(resolved)
+
+
 def codex_command(binary, worktree, permissions):
     # Codex itself enforces the profile on tools. Never wrap this process in Seatbelt.
     return [binary, "exec", "--model", MODEL, "--json",
@@ -228,9 +243,11 @@ def validate_effective(config, models, permissions):
 def preflight(binary, worktree, directory, environment, *, check_catalog=True):
     """Read effective config/catalog, never start a thread/turn. Mocked in offline tests."""
     permissions = json.loads((directory / "permissions.json").read_text())
-    if run_process(sandbox_command(binary, worktree, permissions, ["/usr/bin/true"]),
+    if run_process(sandbox_command(binary, worktree, permissions, [binary, "--version"]),
                    worktree, directory / "isolation.log", 10, env=environment):
-        raise ValueError("Isolation runtime unavailable; never fall back to unsandboxed execution")
+        raise ValueError("Sandbox cannot execute Codex itself; never widen permissions or fall back")
+    if not (directory / "isolation.log").read_text().strip().startswith("codex-cli "):
+        raise ValueError("Sandboxed executable did not identify itself as Codex CLI")
     command = [binary, "app-server", "--stdio", *config_arguments(permissions)]
     with (directory / "preflight.stderr").open("wb") as stderr:
         child = subprocess.Popen(command, cwd=worktree, env=environment, stdin=subprocess.PIPE,
@@ -323,7 +340,7 @@ def allocate_ports():
     return ports
 
 
-def permission_profile(root, worktree, directory):
+def permission_profile(root, worktree, directory, binary):
     """One official tool sandbox; controller/auth transport remain on the host."""
     root, worktree, directory = (Path(p).resolve() for p in (root, worktree, directory))
     filesystem = {":root": "deny", ":minimal": "read", ":tmpdir": "write", ":slash_tmp": "deny",
@@ -337,6 +354,8 @@ def permission_profile(root, worktree, directory):
         filesystem[str(worktree / name)] = "deny"
     for name in (".codex", ".ssh", ".aws", ".config"):
         filesystem[str(Path.home() / name)] = "deny"
+    # Canonical startup avoids granting an installer symlink directory and its siblings.
+    filesystem[resolve_codex_binary(binary)] = "read"
     # Includes files created after policy compilation; never allow copied secrets/live DBs.
     filesystem[str(worktree)] = {".": "write"}
     for pattern in ("**/.env", "**/.env.*", "**/*.env", "**/*.db", "**/*.sqlite", "**/*.sqlite3",
@@ -408,6 +427,9 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
     branch = "codex-relay/" + directory.name
     report["branch"] = branch
     try:
+        requested_binary = binary
+        binary = resolve_codex_binary(binary)
+        report["codex_binary"] = {"requested": requested_binary, "resolved": binary}
         detached_integration(root)
         integration_head = git(root, "rev-parse", "refs/heads/" + INTEGRATION)
         if resume:
@@ -434,7 +456,7 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                 dependency_links[source] = (root / source).resolve()
                 if not target.exists() and not target.is_symlink():
                     target.symlink_to(root / source, target_is_directory=True)
-        permissions = permission_profile(root, worktree, directory)
+        permissions = permission_profile(root, worktree, directory, binary)
         save_json(directory / "permissions.json", permissions)
         report["isolation"] = {k: environment[k] for k in (
             "GEO_RELEASE_DATABASE_URL", "DATABASE_URL", "TMPDIR", "BACKEND_PORT", "FRONTEND_PORT")}

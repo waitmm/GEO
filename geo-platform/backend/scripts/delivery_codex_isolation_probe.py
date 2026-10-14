@@ -11,11 +11,13 @@ import sys
 
 from delivery_codex_relay import (
     ROOT, isolated_environment, permission_profile, preflight, run_process,
-    sandbox_command, save_json,
+    sandbox_command, save_json, resolve_codex_binary, config_arguments,
 )
 
 
 def probe(binary, directory):
+    requested_binary = binary
+    binary = resolve_codex_binary(binary)
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=False)
     worktree = directory / "worktree"
@@ -24,20 +26,25 @@ def probe(binary, directory):
     (worktree / ".git").mkdir()
     (worktree / ".git/config").write_text("[core]\nrepositoryformatversion = 0\n")
     (worktree / "allowed.txt").write_text("offline fixture")
+    (worktree / "AGENTS.md").write_bytes((ROOT / "geo-platform/AGENTS.md").read_bytes())
     private = directory / "mock-production"
     private.mkdir()
     key = private / "production.key"
     key.write_text("MOCK_SECRET_NOT_A_REAL_CREDENTIAL")
+    (private / ".codex").mkdir()
+    auth = private / ".codex/auth.json"
+    auth.write_text('{"mock_only":"NOT_A_REAL_CREDENTIAL"}')
     with sqlite3.connect(private / "production.db") as connection:
         connection.execute("create table private_data(value text)")
     (worktree / ".env").write_text("MOCK_CREDENTIAL=not-real")
     (worktree / "secret-alias").symlink_to(key)
     (worktree / "db-alias").symlink_to(private / "production.db")
     environment = isolated_environment(directory)
-    permissions = permission_profile(ROOT, worktree, directory)
+    permissions = permission_profile(ROOT, worktree, directory, binary)
     save_json(directory / "permissions.json", permissions)
     report = {"status": "RUNNING", "kind": "REAL_SANDBOX_OFFLINE_FIXTURES",
-              "model_calls": 0, "exec_calls": 0, "checks": [], "permissions": permissions}
+              "model_calls": 0, "exec_calls": 0, "checks": [], "permissions": permissions,
+              "binary": {"requested": requested_binary, "resolved": binary}}
     listener = socket.socket()
     try:
         report["cli_version"] = subprocess.check_output([binary, "--version"], text=True).strip()
@@ -50,7 +57,22 @@ def probe(binary, directory):
             peer.close()
         report["host_network_control"] = "CONNECTED"
         report["effective_config"] = preflight(binary, worktree, directory, environment, check_catalog=False)
+        report["checks"].append({"name": "codex_self_version", "exit_code": 0,
+                                "log": str(directory / "isolation.log")})
+        # This debug command renders input locally, without requesting model generation.
+        # Run on host: its fs helper applies the same profile itself (no nested Seatbelt).
+        prompt_log = directory / "agents-input.json"
+        offline_env = {**environment, **{key: "http://127.0.0.1:9" for key in (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")}}
+        rc = run_process([binary, "-C", str(worktree), "debug", "prompt-input",
+                          *config_arguments(permissions), "OFFLINE_INPUT_RENDER_ONLY"],
+                         worktree, prompt_log, 30, env=offline_env)
+        if rc or "GEO Platform Agent Guide" not in prompt_log.read_text():
+            raise ValueError("Codex AGENTS input loading failed; do not expand permissions")
+        report["checks"].append({"name": "codex_agents_loader", "exit_code": rc, "log": str(prompt_log)})
         checks = [
+            ("project_agents_readable", "from pathlib import Path; "
+             "assert 'GEO Platform Agent Guide' in Path('../AGENTS.md').read_text()"),
             ("authorized_read_write", "from pathlib import Path; "
              "assert Path('../allowed.txt').read_text() == 'offline fixture'; "
              "Path('../result.txt').write_text('ok'); assert Path('../result.txt').read_text() == 'ok'"),
@@ -58,13 +80,17 @@ def probe(binary, directory):
              "c=sqlite3.connect(os.environ['TMPDIR']+'/test.db'); "
              "c.execute('create table probe(value text)'); c.close()"),
         ]
-        for name, path in [("mock_key_denied", key), ("mock_database_file_denied", private / "production.db"),
+        for name, path in [("mock_key_denied", key), ("mock_auth_json_denied", auth),
+                           ("mock_database_file_denied", private / "production.db"),
                            ("workspace_env_denied", worktree / ".env"),
                            ("secret_symlink_denied", worktree / "secret-alias"),
                            ("database_symlink_denied", worktree / "db-alias")]:
             checks.append((name, f"from pathlib import Path\ntry: Path({str(path)!r}).read_bytes()\n"
                            "except PermissionError: pass\nelse: raise AssertionError('unauthorized read succeeded')"))
         checks += [
+            ("unauthorized_write_denied", "from pathlib import Path\ntry: "
+             f"Path({str(private / 'unauthorized-write')!r}).write_text('not allowed')\n"
+             "except PermissionError: pass\nelse: raise AssertionError('unauthorized write succeeded')"),
             ("mock_sqlite_denied", "import sqlite3\ntry: "
              f"sqlite3.connect('file:{private / 'production.db'}?mode=ro', uri=True)\n"
              "except sqlite3.OperationalError: pass\nelse: raise AssertionError('database opened')"),

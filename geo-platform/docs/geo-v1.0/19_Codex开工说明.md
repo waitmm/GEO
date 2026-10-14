@@ -1,5 +1,26 @@
 # Codex 开工与单任务执行说明
 
+## 2026-10-14 Codex 自身执行路径修复
+
+本轮仅修复 T25 工具的可执行文件路径与单文件只读权限，分类 `IMPLEMENTATION_CHANGE`。保留此前单层官方沙箱，不改模型、预算、队列和Git集成规则；不调用真实exec或模型，不恢复产品开发。
+
+现场软链接链：`~/.local/bin/codex` -> `~/.codex/packages/standalone/current/bin/codex`，其中 `current` -> `releases/0.162.1-x86_64-apple-darwin`。最终文件为 `/Users/bmwqr/.codex/packages/standalone/releases/0.162.1-x86_64-apple-darwin/bin/codex`。版本号仅是本次观察值，实现没有硬编码：使用PATH查找和 `Path.resolve(strict=True)` 解析文件及目录软链接，要求普通可执行文件，失效/循环链接、目录及不可执行文件拒绝。
+
+- 控制器先解析，再用真实路径启动CLI和其自执行探针；保存请求路径及最终路径。
+- 生成的权限表只新增最终程序文件 `read`。`~/.codex=deny` 不变，不授权别名路径、`current`目录、版本目录或bin目录；因此没有为解决软链接问题扩大目录可读范围。既有auth.json、凭证、数据库和网络保护不变。
+- 预检不再仅执行 `/usr/bin/true`：必须在实际生成的官方沙箱中成功执行该Codex文件 `--version` 并返回CLI标识，否则在模型调用前停止。没有 `project_doc_max_bytes=0`、danger-full-access、sudo或关闭沙箱。
+
+### 本次验证与因果边界
+
+证据目录：`backend/artifacts/acceptance/codex-self-exe-20261014/`。
+
+- `comparison.json` 四组离线对照：别名+旧权限=71；真实路径+旧权限=0；别名+新增单文件权限=71；真实路径+新增权限=0。**本机关键修正是启动路径规范化，不能声称仅添加read权限就解决了别名自执行问题。** 最初将“真实路径+旧权限”预期为失败的检查不成立，原日志保留，四组结果纠正该假设。
+- `probe-02/report.json`：16项真实CLI离线检查全部通过。包括沙箱内Codex版本、`debug prompt-input`本地渲染成功且含项目AGENTS正文、项目文件读取、工作树写入、scratch SQLite、模拟密钥/auth.json/生产DB拒读、软链接绕行拒绝、工作树外非授权写入拒绝、Git只读、后创建环境文件拒写和网络拒绝。debug命令由宿主启动，其文件helper自行应用Profile，不嵌套Seatbelt；未发起模型生成，网络代理指向不可用本地端口。
+- `regression.xml`：88 passed，0 failed，0 skipped（79项工具测试+9项原harness检查）。新增动态两级软链接、无效程序路径、精确单文件授权及自执行失败提前停止的回归。
+- 与上游 [#41493](https://github.com/openai/codex/issues/41493)、[#38286](https://github.com/openai/codex/issues/38286) 报告的helper自执行路径症状一致；它们是参考，不代表所有版本上游缺陷已修复。本次修复由本机探针验证。
+
+最新历史失败批次为 `20261014T103915-c2664ed2`，其receipt及UNKNOWN用量继续保留；本轮不归档或resume。`history-before.json`记录修改前48份历史文件的hash，收尾逐项复核。队列、授权和产品状态不改。真实模型调用、子任务集成与节省效果仍未验证，不能凭离线通过自动开始下一批。
+
 ## 2026-10-14 单层官方沙箱修复
 
 本节是当前执行隔离约定，替代下文历史记录中的额外 `agent.sb`/`gate.sb` 包裹；不改变模型、任务、预算、权限目标或产品范围。分类 `IMPLEMENTATION_CHANGE`，仅 T25 开发工具。调度器必须从普通宿主 Terminal 启动，不从另一个 Codex 沙箱内启动。

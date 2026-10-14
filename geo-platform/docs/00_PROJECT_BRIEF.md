@@ -1,5 +1,18 @@
 # 00 Project Brief
 
+## 2026-10-14 Canonical Codex Executable Follow-up
+
+T25 tooling only: dynamically resolve the Codex executable through file/directory
+symlinks, start the canonical file, and grant only that file read access while
+keeping ~/.codex denied. Version is not hardcoded. Sandboxed self --version is
+now mandatory in preflight.16 offline probes pass, including Codex's own AGENTS
+input loader;88 regression tests pass. Four-way comparison shows canonical
+startup is essential: adding the file permission alone does not fix alias exec.
+No real exec/model call, product/queue/budget change or main merge. Latest failed
+batch20261014T103915-c2664ed2, receipt and UNKNOWN usage stay intact. See19_Codex
+instructions and artifacts/acceptance/codex-self-exe-20261014/. Prior sections
+remain historical; no new real-smoke authorization is implied.
+
 ## 2026-10-14 Execution Isolation Only
 
 T25 IMPLEMENTATION_CHANGE: replace nested Seatbelt with one official Codex

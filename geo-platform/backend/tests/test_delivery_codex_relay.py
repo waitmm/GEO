@@ -17,6 +17,9 @@ from scripts import delivery_codex_relay as relay
 @pytest.fixture(autouse=True)
 def mock_ports(monkeypatch):
     monkeypatch.setattr(relay, "allocate_ports", lambda: (61001, 61002))
+    resolve = relay.resolve_codex_binary
+    monkeypatch.setattr(relay, "resolve_codex_binary", lambda binary: resolve(sys.executable)
+                        if binary in {"FAKE_NOT_CODEX", "MOCK_NOT_CODEX", "MOCK"} else resolve(binary))
 
 
 def unit(name="scope", **overrides):
@@ -102,6 +105,54 @@ def test_command_is_fresh_medium_standard_sandboxed_without_policy_bypass():
     assert not any(x in text for x in ["resume", "--ignore", "dangerously", "priority"])
 
 
+def test_codex_symlink_chain_resolves_dynamically_with_only_file_permission(tmp_path, monkeypatch):
+    install = tmp_path / ".codex/packages/standalone"
+    real = install / "releases/test-version/bin/codex"
+    real.parent.mkdir(parents=True)
+    real.write_text("offline executable fixture")
+    real.chmod(0o700)
+    (install / "current").symlink_to("releases/test-version", target_is_directory=True)
+    link = tmp_path / "bin/codex"
+    link.parent.mkdir()
+    link.symlink_to(install / "current/bin/codex")
+    monkeypatch.setenv("PATH", str(link.parent))
+    assert relay.resolve_codex_binary("codex") == str(real)
+    permissions = permission_profile(tmp_path / "repo", tmp_path / "wt", tmp_path / "batch", str(link))
+    fs = permissions["filesystem"]
+    assert fs[str(real)] == "read" and fs[str(Path.home() / ".codex")] == "deny"
+    assert all(str(p) not in fs for p in (link, install, install / "current", real.parent, real.parent.parent))
+    assert str(Path.home() / ".codex/auth.json") not in fs
+    assert "project_doc_max_bytes" not in " ".join(relay.config_arguments(permissions))
+
+
+@pytest.mark.parametrize("kind", ["missing", "dangling", "loop", "directory", "non_executable"])
+def test_invalid_codex_binary_is_rejected(tmp_path, kind):
+    binary = tmp_path / "codex"
+    if kind == "dangling":
+        binary.symlink_to(tmp_path / "missing")
+    elif kind == "loop":
+        binary.symlink_to(binary)
+    elif kind == "directory":
+        binary.mkdir()
+    elif kind == "non_executable":
+        binary.write_text("fixture")
+        binary.chmod(0o600)
+    with pytest.raises(ValueError):
+        relay.resolve_codex_binary(str(binary))
+
+
+@pytest.mark.parametrize("rc,version", [(71, ""), (0, "not the Codex CLI")])
+def test_failed_codex_self_execution_stops_before_rpc(tmp_path, monkeypatch, rc, version):
+    relay.save_json(tmp_path / "permissions.json", policy())
+    def probe(argv, cwd, output, timeout, **kwargs):
+        output.write_text(version)
+        return rc
+    monkeypatch.setattr(relay, "run_process", probe)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("No RPC/model after failed self probe"))
+    with pytest.raises(ValueError):
+        relay.preflight("MOCK_NOT_CODEX", tmp_path, tmp_path, isolated_environment(tmp_path))
+
+
 def test_two_successful_units_use_fresh_calls_commits_and_leave_main_untouched(tmp_path, repo):
     calls = []
     head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"])
@@ -123,6 +174,8 @@ def test_two_successful_units_use_fresh_calls_commits_and_leave_main_untouched(t
         return 0
     report = batch(tmp_path, repo, [unit("a"), unit("b")], runner)
     assert report["status"] == "BATCH_GATES_PASS_REVIEW_REQUIRED"
+    assert report["codex_binary"]["resolved"] == str(Path(sys.executable).resolve())
+    assert all(call[0] == report["codex_binary"]["resolved"] for call in calls)
     assert report["activity_tokens"] == 220 and len(calls) == 2
     assert report["attempts"][0]["commit"] != report["attempts"][1]["commit"]
     assert not (repo / "change.txt").exists()
@@ -177,7 +230,7 @@ def test_symlink_is_not_committed(tmp_path, repo):
 
 
 def policy():
-    return permission_profile(Path("/mock/repo"), Path("/mock/worktree"), Path("/mock/batch"))
+    return permission_profile(Path("/mock/repo"), Path("/mock/worktree"), Path("/mock/batch"), sys.executable)
 
 
 def effective_config():
@@ -217,7 +270,7 @@ def test_effective_permission_expansion_is_rejected(section, key, value):
 
 
 def test_cli_permission_table_roundtrip_preserves_dotted_paths_and_globs(tmp_path):
-    permissions = permission_profile(tmp_path, tmp_path / 'space.and "quote"', tmp_path / "batch")
+    permissions = permission_profile(tmp_path, tmp_path / 'space.and "quote"', tmp_path / "batch", sys.executable)
     args = relay.config_arguments(permissions)
     value = args[-1].split("=", 1)[1]
     assert tomllib.loads("profile=" + value)["profile"] == permissions
@@ -320,7 +373,7 @@ def test_isolated_resources_drop_inherited_database_keys_and_ports(tmp_path, mon
     assert env["DATABASE_URL"] == f"sqlite:///{tmp_path / 'scratch/test-legacy.db'}"
     assert env["DEEPSEEK_API_KEY"] == "" and "OPENAI_API_KEY" not in env
     assert env["BACKEND_PORT"] == "61001" and env["MONITORING_WORKER"] == "0"
-    permissions = permission_profile(tmp_path / "production", tmp_path / "wt", tmp_path)
+    permissions = permission_profile(tmp_path / "production", tmp_path / "wt", tmp_path, sys.executable)
     assert permissions["network"] == {"enabled": False}
     assert permissions["filesystem"][":root"] == "deny"
     assert permissions["filesystem"][str(tmp_path / "scratch")] == "write"
@@ -425,7 +478,11 @@ def test_main_refuses_dirty_worktree_before_execution(repo, monkeypatch):
 
 @pytest.mark.parametrize("check_catalog", [False, True])
 def test_configuration_preflight_rpc_with_local_mock_only(tmp_path, monkeypatch, check_catalog):
-    monkeypatch.setattr(relay, "run_process", lambda *a, **k: 0)
+    def mock_version(argv, cwd, output, timeout, **kwargs):
+        assert argv[-2:] == ["MOCK_NOT_CODEX", "--version"]
+        output.write_text("codex-cli MOCK\n")
+        return 0
+    monkeypatch.setattr(relay, "run_process", mock_version)
     relay.save_json(tmp_path / "permissions.json", policy())
     script = tmp_path / "mock_app_server.py"
     script.write_text("import json, sys\n"

@@ -1,5 +1,22 @@
 # 08 Development Log
 
+2026-10-14 / IMPLEMENTATION_CHANGE / T25 canonical self-executable only:
+resolve ~/.local/bin/codex through standalone/current to the native release file;
+validate regular executable and launch the resolved path, no hardcoded version.
+Add only this file read grant, retain ~/.codex deny and all credential/DB/network
+restrictions. Self --version under the actual profile replaces /usr/bin/true
+in preflight; failure stops before model activity. No project-doc bypass.
+Four-way no-model comparison: alias old/new profile exit71, canonical old/new
+exit0. Thus canonical startup is decisive; the initial canonical-old expected
+failure was disproven and its log retained, not reported as a passed negative.
+16 offline probes pass including debug prompt-input AGENTS loading (local input
+rendering, no model generation), fake auth/DB denials and unauthorized write/network.
+88 regression checks pass, no skips. Evidence codex-self-exe-20261014/.
+48 historical files hashed before edits; latest failed batch20261014T103915-c2664ed2,
+receipt and UNKNOWN usage preserved. No task pickup, budget/model/scheduler change,
+real exec, resume, product edits or main merge. Commit and integration checkpoint
+are recorded in the final handoff artifact; actual paid smoke remains unverified.
+
 2026-10-14 / IMPLEMENTATION_CHANGE / T25 execution isolation only:
 owner identifies standalone Seatbelt success but nested sandbox exit71.
 Remove extra agent.sb/gate.sb wrappers; retain official Permission Profile

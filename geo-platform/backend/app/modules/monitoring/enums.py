@@ -44,5 +44,6 @@ RETRYABLE_ERRORS = {
 NON_RETRYABLE_ERRORS = {
     "login_required",
     "captcha_required",
+    "rate_limited",
     "configuration_error",
 }

@@ -22,6 +22,7 @@ from app.modules.monitoring.collectors.wenxin.exceptions import (
     ConversationResetError,
     LoginRequiredError,
     PageStructureError,
+    RateLimitedError,
 )
 from app.modules.monitoring.collectors.wenxin.reference_parser import resolve_reference_url
 from app.modules.monitoring.collectors.wenxin.search_process import (
@@ -164,6 +165,7 @@ class WenxinWebCollector(BaseCollector):
         self._requested_collection_mode = str(run.collection_mode or "")
         self._actual_sampling_mode = "UNKNOWN"
         self._session_verification_basis = "NOT_CHECKED"
+        await self._raise_for_rate_limit(self._page)
         try:
             await self._prepare_collection_mode(self._page, self._requested_collection_mode)
             await self._submit_query(self._page, run.original_query)
@@ -389,6 +391,7 @@ class WenxinWebCollector(BaseCollector):
         return False
 
     async def _submit_query(self, page, query: str) -> None:
+        await self._raise_for_rate_limit(page)
         for selector in INPUT_CANDIDATES:
             locator = page.locator(selector).last
             try:
@@ -399,8 +402,11 @@ class WenxinWebCollector(BaseCollector):
                 await self._click_submit(page)
                 await page.wait_for_timeout(1200)
                 body_text = await page.locator("body").inner_text(timeout=5000)
+                await self._raise_for_rate_limit(page, body_text)
                 if query[:20] in body_text:
                     return
+            except RateLimitedError:
+                raise
             except Exception:
                 continue
         raise PageStructureError("未找到可输入的问题输入框")
@@ -423,7 +429,9 @@ class WenxinWebCollector(BaseCollector):
         deadline = asyncio.get_event_loop().time() + timeout_seconds
         while asyncio.get_event_loop().time() < deadline:
             await self._raise_for_login_or_captcha(page)
+            await self._raise_for_rate_limit(page)
             body_text = await page.locator("body").inner_text(timeout=5000)
+            await self._raise_for_rate_limit(page, body_text)
             answer_text = await self._current_answer_text(page)
             current_hash = hashlib.sha256(answer_text.encode("utf-8")).hexdigest()
             has_reference = re.search(REFERENCE_TEXT_PATTERN, body_text) is not None
@@ -446,6 +454,31 @@ class WenxinWebCollector(BaseCollector):
         if best_answer:
             return best_answer
         raise AnswerTimeoutError("等待回答超时，未采集到回答正文")
+
+    async def _raise_for_rate_limit(self, page, body_text: str | None = None) -> None:
+        if any(int(event.get("status") or 0) == 429 for event in self._network_events):
+            raise RateLimitedError("文心响应 HTTP 429（请求过多）")
+        if body_text is None:
+            try:
+                body_text = await page.locator("body").inner_text(timeout=2000)
+            except Exception:
+                return
+        reason = self._rate_limit_reason_from_text(body_text)
+        if reason:
+            raise RateLimitedError(reason)
+
+    @staticmethod
+    def _rate_limit_reason_from_text(body_text: str) -> str:
+        patterns = (
+            r"(?:请求|操作|访问|提问).{0,16}(?:过于频繁|太频繁|频率过高|达到上限|已达上限)",
+            r"(?:提问次数|请求次数|使用次数|配额|额度).{0,16}(?:已用完|已用尽|不足|达到上限|已达上限)",
+            r"(?:限流|请求过多|Too Many Requests)",
+        )
+        for raw_line in str(body_text or "").splitlines():
+            line = re.sub(r"\s+", " ", raw_line).strip()
+            if line and any(re.search(pattern, line, re.IGNORECASE) for pattern in patterns):
+                return line[:160]
+        return ""
 
     async def _current_answer_text(self, page) -> str:
         container = await self._last_answer_container(page)

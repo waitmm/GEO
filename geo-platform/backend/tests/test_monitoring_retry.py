@@ -7,12 +7,13 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, BrowserMonitorRun, Project, Prompt, RunArtifact
+from app.models import Base, BrowserMonitorRun, BrowserMonitorTask, Project, Prompt, RunArtifact
 from app.modules.monitoring import executor as executor_module
 from app.modules.monitoring.api import claim_run_for_retry, retry_run
 from app.modules.monitoring.artifacts import ArtifactService
-from app.modules.monitoring.collectors.wenxin.exceptions import AnswerTimeoutError
+from app.modules.monitoring.collectors.wenxin.exceptions import AnswerTimeoutError, RateLimitedError
 from app.modules.monitoring.executor import MonitoringTaskExecutor
+from app.modules.monitoring.services import update_task_status_from_runs
 
 
 @pytest.fixture()
@@ -159,3 +160,49 @@ def test_success_retry_leaves_single_result_artifact(db, tmp_path, monkeypatch):
     paths = [item.storage_path for item in artifacts]
     assert len(paths) == len(set(paths))
     assert {item.artifact_type for item in artifacts} == {"raw_result", "collector_log"}
+
+
+def test_rate_limit_is_blocked_with_recovery_action(db, tmp_path, monkeypatch):
+    _seed_failed_run(db)
+
+    class _RateLimitedCollector(_FakeCollector):
+        async def collect(self, run):
+            raise RateLimitedError("今日提问次数已用完，请明日再试")
+
+    monkeypatch.setattr(executor_module, "get_collector", lambda adapter: _RateLimitedCollector())
+    executor = _executor_with_tmp_artifacts(tmp_path)
+    try:
+        run = executor.execute_run(db, 1)
+    finally:
+        executor.close()
+
+    assert run.status == "blocked"
+    assert run.error_type == run.blocked_type == "rate_limited"
+    assert run.error_message == "今日提问次数已用完，请明日再试"
+    assert "恢复操作" in run.blocked_reason
+    assert "人工重新授权" in run.blocked_reason
+    assert run.answer_text == ""
+
+
+def test_task_summary_keeps_mixed_failure_and_rate_limit_blocked(db):
+    project = Project(id=1, organization_id=1, name="Summary", brand_name="Brand")
+    prompt = Prompt(id=1, project_id=1, prompt_text="Question", title="Question")
+    task = BrowserMonitorTask(id=1, project_id=1, run_count=2, status="running")
+    runs = [
+        BrowserMonitorRun(id=1, task_id=1, project_id=1, prompt_id=1, status="failed"),
+        BrowserMonitorRun(
+            id=2,
+            task_id=1,
+            project_id=1,
+            prompt_id=1,
+            status="blocked",
+            error_type="rate_limited",
+            blocked_type="rate_limited",
+        ),
+    ]
+    db.add_all([project, prompt, task, *runs])
+    db.commit()
+
+    update_task_status_from_runs(db, task)
+
+    assert task.status == "blocked"

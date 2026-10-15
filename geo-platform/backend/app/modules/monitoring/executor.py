@@ -288,7 +288,12 @@ class MonitoringTaskExecutor:
         db.refresh(run)
 
     def _fail_run(self, run: BrowserMonitorRun, error_type: str, error_message: str) -> None:
-        is_blocked = error_type in {"login_required", "captcha_required"}
+        recovery_actions = {
+            "login_required": "完成登录后，由人工重新授权采样",
+            "captcha_required": "完成验证码后，由人工重新授权采样",
+            "rate_limited": "等待平台限流或配额恢复（或提升配额）后，由人工重新授权采样",
+        }
+        is_blocked = error_type in recovery_actions
         run.status = "blocked" if is_blocked else "failed"
         run.error_stage = run.stage
         run.stage = "failed"
@@ -299,7 +304,10 @@ class MonitoringTaskExecutor:
         if hasattr(run, "blocked_type"):
             run.blocked_type = error_type if is_blocked else ""
         if hasattr(run, "blocked_reason"):
-            run.blocked_reason = error_message if is_blocked else ""
+            run.blocked_reason = (
+                f"{error_message}；恢复操作：{recovery_actions[error_type]}。"
+                if is_blocked else ""
+            )
 
     def _clear_run_outputs(self, db: Session, run_id: int) -> None:
         db.query(BrandMention).filter(BrandMention.run_id == run_id).delete()

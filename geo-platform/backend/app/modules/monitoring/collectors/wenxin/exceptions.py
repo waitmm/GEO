@@ -10,6 +10,10 @@ class CaptchaRequiredError(WenxinCollectorError):
     error_type = "captcha_required"
 
 
+class RateLimitedError(WenxinCollectorError):
+    error_type = "rate_limited"
+
+
 class AnswerTimeoutError(WenxinCollectorError):
     error_type = "answer_timeout"
 

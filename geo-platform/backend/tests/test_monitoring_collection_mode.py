@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, BrowserMonitorRun, MonitoringBatch, Project, Prompt
 from app.modules.monitoring.collectors.wenxin.collector import WenxinWebCollector
-from app.modules.monitoring.collectors.wenxin.exceptions import ConversationResetError
+from app.modules.monitoring.collectors.wenxin.exceptions import ConversationResetError, RateLimitedError
 from app.modules.monitoring.services import create_browser_task, queue_due_daily_prompt_tasks
 
 
@@ -157,6 +157,29 @@ def test_environment_reports_actual_verified_sampling_mode(tmp_path):
     assert metadata["collection_mode"] == "single_independent"
     assert metadata["sampling_mode"] == "single_independent"
     assert metadata["session_verification_basis"] == "PRE_SUBMIT_ZERO_TURN_DOM_GATE"
+
+
+def test_wenxin_http_429_is_a_stable_rate_limit_error():
+    collector = WenxinWebCollector()
+    collector._network_events = [{"status": 429, "url": "https://chat.baidu.com/api/chat"}]
+
+    with pytest.raises(RateLimitedError, match="HTTP 429") as error:
+        asyncio.run(collector._raise_for_rate_limit(object()))
+
+    assert error.value.error_type == "rate_limited"
+
+
+def test_wenxin_preserves_concise_quota_page_reason():
+    collector = WenxinWebCollector()
+    reason = collector._rate_limit_reason_from_text("提示\n今日提问次数已用完，请明日再试\n帮助")
+
+    assert reason == "今日提问次数已用完，请明日再试"
+
+
+def test_generic_failure_text_is_not_guessed_as_rate_limit():
+    collector = WenxinWebCollector()
+
+    assert collector._rate_limit_reason_from_text("服务暂时不可用，请稍后再试") == ""
 
 
 class _SemanticRegionLocator:

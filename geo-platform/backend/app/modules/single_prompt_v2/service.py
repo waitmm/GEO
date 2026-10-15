@@ -432,9 +432,13 @@ def queue_run_retry(
             },
         )
 
-    if source.status != "failed":
-        raise HTTPException(status_code=409, detail=f"当前状态 {source.status} 不支持重试，仅 failed 可重试")
-    if source.error_type in NON_RETRYABLE_ERRORS:
+    is_recoverable_rate_limit = source.status == "blocked" and source.error_type == "rate_limited"
+    if source.status != "failed" and not is_recoverable_rate_limit:
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前状态 {source.status} 不支持重试，仅 failed 或 blocked/rate_limited 可显式重试",
+        )
+    if source.error_type in NON_RETRYABLE_ERRORS and not is_recoverable_rate_limit:
         raise HTTPException(status_code=422, detail="该错误类型不支持自动重试")
 
     latest_attempt = (
@@ -444,7 +448,10 @@ def queue_run_retry(
         .first()
     )
     if not latest_attempt or latest_attempt.id != source.id:
-        raise HTTPException(status_code=409, detail="仅允许从当前最新失败 attempt 重试")
+        raise HTTPException(
+            status_code=409,
+            detail="仅允许从当前最新失败 attempt 或 blocked/rate_limited attempt 重试",
+        )
 
     _require_sampling_enabled(db, project_id, prompt_id)
     created_by = f"single_prompt_v2:run_retry:{source.logical_run_id}:{idempotency_key}"

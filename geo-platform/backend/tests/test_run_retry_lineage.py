@@ -150,6 +150,56 @@ def test_retry_appends_attempt_lineage_and_is_idempotent(tmp_path):
         engine.dispose()
 
 
+def test_latest_rate_limited_blocked_attempt_allows_only_explicit_append_retry(tmp_path):
+    db, engine, source = _db(tmp_path)
+    try:
+        source.status = "blocked"
+        source.stage = "failed"
+        source.error_type = "rate_limited"
+        source.blocked_type = "rate_limited"
+        source.blocked_reason = "今日提问次数已用完；恢复操作：确认配额恢复后人工重试。"
+        db.commit()
+
+        retry, created = queue_run_retry(
+            db,
+            run_id=source.id,
+            project_id=1,
+            prompt_id=11,
+            idempotency_key="rate-limit-recovery-confirmed",
+        )
+
+        assert created is True
+        assert retry.status == "queued"
+        assert retry.retry_of_run_id == source.id
+        assert retry.attempt_no == source.attempt_no + 1
+        assert source.status == "blocked"
+
+        with pytest.raises(HTTPException, match="最新失败 attempt"):
+            queue_run_retry(
+                db,
+                run_id=source.id,
+                project_id=1,
+                prompt_id=11,
+                idempotency_key="older-rate-limit-attempt",
+            )
+
+        retry.status = "blocked"
+        retry.error_type = "captcha_required"
+        db.commit()
+        with pytest.raises(HTTPException) as rejected:
+            queue_run_retry(
+                db,
+                run_id=retry.id,
+                project_id=1,
+                prompt_id=11,
+                idempotency_key="captcha-must-stay-blocked",
+            )
+        assert rejected.value.status_code == 409
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_run_selection_rejects_multiple_attempts_of_one_logical_run(tmp_path):
     db, engine, source = _db(tmp_path)
     try:

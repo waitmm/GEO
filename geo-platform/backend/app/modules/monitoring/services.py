@@ -297,10 +297,10 @@ def update_task_status_from_runs(db: Session, task: BrowserMonitorTask) -> Brows
         task.status = "partial_completed"
     elif all(run.status == "failed" for run in runs):
         task.status = "failed"
-    elif all(run.status == "blocked" for run in runs):
-        task.status = "blocked"
     elif any(run.status == "running" for run in runs):
         task.status = "running"
+    elif any(run.status == "blocked" for run in runs):
+        task.status = "blocked"
     else:
         task.status = "queued"
     db.commit()

@@ -552,9 +552,60 @@
           "real_provider_interop": "REQUIRES_SEPARATE_EXPLICIT_AUTHORIZATION",
           "completed_on": "2026-10-15"
         }
+      },
+      {
+        "id": "T19-ANSWER-RELATION-DELIVERY-AUTHORIZATION-04",
+        "task_id": "T19",
+        "task_type": "PRODUCT_SMALL",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "requirements": [
+          "COR-003",
+          "COR-004"
+        ],
+        "status": "DONE",
+        "depends_on": [],
+        "completed_unit_dependencies": [
+          {
+            "unit_id": "T19-ANSWER-RELATION-AFFECTED-DELIVERY-REGENERATION-03",
+            "required_status": "DONE",
+            "accepted_commit": "a655f2f665005067829d86ea077769b1e859ada6"
+          }
+        ],
+        "business_value": "让等待授权的受影响稿件局部再生成具备明确、有限且可审计的人工预算入口，同时保持授权与实际执行分离，避免无限请求、伪造审计身份或误触发外部模型。",
+        "objective": "复用既有任务授权接口，为ANSWER_RELATION_DELIVERY_REGENERATION冻结任务按受影响稿件数N限定最多2N次请求，并由服务端重新核验revision、input_hash、项目/Prompt、固定生成计划及实际登录身份。页面只在WAITING_AUTHORIZATION且冻结字段完整时显示预算表单；授权成功仅刷新任务状态，不自动恢复或执行。",
+        "allowed_files": [
+          "geo-platform/backend/app/modules/single_prompt_v2/automatic_delivery.py",
+          "geo-platform/backend/tests/test_delivery_answer_relation_delivery_regeneration.py",
+          "geo-platform/frontend/src/AnswerRelationCorrectionPanel.tsx",
+          "geo-platform/frontend/tests/answer-relation-delivery-authorization.test.mjs"
+        ],
+        "acceptance_conditions": [
+          "服务端拒绝空affected集合、冻结计划数量不一致、max_requests非正数或超过2N、陈旧revision/input_hash、跨项目/Prompt、伪造身份、RUNNING及终态任务。",
+          "授权审计身份只取真实登录principal；重复授权和预算字段继续遵循既有幂等与有限预算账本，不修改历史稿件或纠错/策略版本。",
+          "页面仅在WAITING_AUTHORIZATION、revision和input_hash有效、affected数量为正整数时显示入口；请求固定max_requests=2N且不发送actor。",
+          "授权响应只更新task view，不调用resume/execute，不抓取来源、不重算上游，也不暗示真实付费生成已经完成。",
+          "后端组合Gate、前端专项、release build和独立Luna审计均通过；真实provider生成仍需单独显式授权。"
+        ],
+        "completion": {
+          "method": "CODEX_NATIVE_MULTI_AGENT_WITH_ISOLATED_GIT_WORKTREES",
+          "backend_agent_commit": "fd3f458",
+          "frontend_agent_commits": [
+            "3e91f57",
+            "90863fd"
+          ],
+          "integrated_product_head": "5800eff",
+          "backend_gate": "41_PASSED",
+          "frontend_gate": "12_PASSED",
+          "release_build": "PASSED_WITH_EXISTING_CHUNK_SIZE_WARNING",
+          "independent_review": "PASS_NO_P0_P1",
+          "external_calls": 0,
+          "production_database_operations": 0,
+          "real_provider_interop": "REQUIRES_SEPARATE_EXPLICIT_AUTHORIZATION",
+          "completed_on": "2026-10-15"
+        }
       }
     ],
-    "note": "接力工具保持FEATURE_FROZEN / OFFLINE_ACCEPTED，不再扩建或用于新产品开发。T25历史STOPPED/UNKNOWN与T19历史STOPPED、原始JSONL和7,189,445活动Token均保留，不resume；T19旧自动批次仍不追认成功。T19-02与T19-03已改由Codex原生多Agent和隔离Git Worktree完成，未外调、未操作生产数据库、未合并main。",
+    "note": "接力工具保持FEATURE_FROZEN / OFFLINE_ACCEPTED，不再扩建或用于新产品开发。T25历史STOPPED/UNKNOWN与T19历史STOPPED、原始JSONL和7,189,445活动Token均保留，不resume；T19旧自动批次仍不追认成功。T19-02、T19-03与T19-04已改由Codex原生多Agent和隔离Git Worktree完成，未外调、未操作生产数据库、未合并main。",
     "evidence": "backend/artifacts/acceptance/codex-relay-offline-20261013/"
   },
   "active_delivery_slice": {
@@ -644,7 +695,7 @@
       "milestone": "M0",
       "owner_role": "后端",
       "owner_name": "Codex（后端）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T00"
       ],
@@ -670,10 +721,10 @@
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
-      "actual_end": "",
+      "actual_end": "2026-10-15",
       "blocker": "",
-      "commit": "",
-      "audit_classification": "需修复",
+      "commit": "49fa7c2",
+      "audit_classification": "已按既有契约完成并复核",
       "corrective_task": {
         "id": "T01-fixed-scope-fixture-repair",
         "commit": "3585917",
@@ -700,6 +751,17 @@
         "scope": "固定Run范围内将显式采集失败、空回答和不可读输入单列为input_unavailable；保留expected denominator，不再误归为分析待计算、分析失败或零事件。success/partial_success及无status的legacy非空回答继续兼容。",
         "verification": "专项6 passed；批次组合28 passed；Luna独立审核PASS_NO_P0_P1",
         "boundary": "本切片DONE不等于T01整体DONE；不重构业务状态机。"
+      },
+      "status_finalization_slice": {
+        "id": "T01-M0-SMALL-02",
+        "status": "DONE",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "completed_on": "2026-10-15",
+        "source_commit": "7d95074",
+        "integrated_commit": "49fa7c2",
+        "scope": "采集成功和部分成功的任务完成固定范围校验后进入READY或READY_WITH_FAILURES，并清除已失真的NEXT_STAGE_NOT_IMPLEMENTED blocker；完整失败、INTERRUPTED和retry语义保持不变。",
+        "verification": "专项12 passed；批次后端组合41 passed；Luna独立审核PASS_NO_P0_P1。",
+        "boundary": "只统一现有终态口径，不引入第二套状态机；与前一固定范围input_unavailable切片共同覆盖T01既定DoD。"
       },
       "current_checkpoint": "delivery_checkpoint_20261009"
     },

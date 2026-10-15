@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Alert, Button, Checkbox, Collapse, Descriptions, Empty, Form, Input, Modal, Select, Space, Spin, Tag, Typography } from "antd";
+import { Alert, Button, Checkbox, Collapse, Descriptions, Empty, Form, Input, InputNumber, Modal, Select, Space, Spin, Tag, Typography } from "antd";
 import { Pencil, Search } from "lucide-react";
 import { api, request } from "./api/client";
 import type { AnswerRelationCorrectionImpact, AnswerRelationCorrectionStatus } from "./types";
@@ -58,6 +58,8 @@ type DeliveryRegenerationManifest = Partial<Record<"affected" | "regenerated" | 
 type DeliveryRegenerationTask = {
   task_id: string;
   status: string;
+  revision?: number;
+  input_hash?: string;
   objects?: {
     answer_relation_delivery_regeneration?: {
       affected_deliveries?: unknown[];
@@ -70,6 +72,26 @@ type DeliveryRegenerationTask = {
   manifest?: DeliveryRegenerationManifest;
   delivery_manifest?: DeliveryRegenerationManifest;
 };
+
+type DeliveryAuthorizationValues = {
+  max_tokens: number;
+  max_cost_cny: number;
+  conservative_cny_per_million_tokens: number;
+  pricing_source: string;
+  pricing_checked_at: string;
+};
+
+function affectedDeliveryCount(task: DeliveryRegenerationTask) {
+  return task.objects?.answer_relation_delivery_regeneration?.affected_deliveries?.length;
+}
+
+function deliveryAuthorizationReady(task: DeliveryRegenerationTask) {
+  const count = affectedDeliveryCount(task);
+  return task.status === "WAITING_AUTHORIZATION"
+    && typeof task.revision === "number"
+    && !!task.input_hash
+    && Number.isInteger(count) && count > 0;
+}
 
 type SavedCorrection = { result_version: string; result_hash: string } & Record<string, string>;
 
@@ -129,7 +151,9 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
   const [saved, setSaved] = useState<SavedCorrection>();
   const [reprojection, setReprojection] = useState<ReprojectionTask>();
   const [deliveryRegeneration, setDeliveryRegeneration] = useState<DeliveryRegenerationTask>();
+  const [deliveryAuthorizationOpen, setDeliveryAuthorizationOpen] = useState(false);
   const [form] = Form.useForm();
+  const [deliveryAuthorizationForm] = Form.useForm<DeliveryAuthorizationValues>();
   const selected = data?.targets.find(row => `${row.target_type}:${row.target_id}` === selectedKey);
   const reprojectionCompleted = reprojection?.status.startsWith("COMPLETED");
 
@@ -243,6 +267,37 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
     finally { setBusy(false); }
   }
 
+  async function authorizeDeliveryRegeneration(values: DeliveryAuthorizationValues) {
+    if (!deliveryRegeneration || !deliveryAuthorizationReady(deliveryRegeneration)) return;
+    const affectedCount = affectedDeliveryCount(deliveryRegeneration);
+    if (affectedCount === undefined) return;
+    setBusy(true); setError("");
+    try {
+      const authorized = await request<DeliveryRegenerationTask>(
+        `/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(deliveryRegeneration.task_id)}/authorization`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            project_id: projectId,
+            prompt_id: promptId,
+            expected_revision: deliveryRegeneration.revision,
+            input_hash: deliveryRegeneration.input_hash,
+            max_requests: 2 * affectedCount,
+            max_tokens: values.max_tokens,
+            max_cost_cny: values.max_cost_cny,
+            conservative_cny_per_million_tokens: values.conservative_cny_per_million_tokens,
+            pricing_source: values.pricing_source,
+            pricing_checked_at: values.pricing_checked_at,
+          }),
+        },
+      );
+      setDeliveryRegeneration(authorized);
+      setDeliveryAuthorizationOpen(false);
+      deliveryAuthorizationForm.resetFields();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
   return <>
     <Button icon={<Pencil size={16} />} onClick={() => setOpen(true)}>纠正答案或证据关系</Button>
     <Modal open={open} title="答案与证据关系纠错" footer={null} width={760} onCancel={() => setOpen(false)} destroyOnHidden>
@@ -297,7 +352,8 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
             <span>历史稿件保持不变；未受影响稿件保持不变。</span>
             <DeliveryRegenerationManifestView task={deliveryRegeneration} />
           </Space>}
-          action={<Button loading={busy} onClick={() => void refreshDeliveryRegeneration()}>刷新局部再生成状态</Button>} />}
+          action={<Space><Button loading={busy} onClick={() => void refreshDeliveryRegeneration()}>刷新局部再生成状态</Button>
+            {deliveryAuthorizationReady(deliveryRegeneration) && <Button type="primary" loading={busy} onClick={() => setDeliveryAuthorizationOpen(true)}>授权局部稿件生成</Button>}</Space>} />}
         {!!data.history.length && <Collapse items={data.history.slice().reverse().map(row => ({
           key: row.result_version, label: `${row.result_version} · ${row.actor} · ${row.created_at}`,
           children: <Space direction="vertical" style={{ width: "100%" }}>
@@ -308,6 +364,24 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
             <Button type="primary" loading={busy} onClick={() => void reproject(row)}>更新受影响策略</Button>
           </Space>,
         }))} />}
+      </Space>}
+    </Modal>
+    <Modal open={deliveryAuthorizationOpen} title="授权局部稿件生成" footer={null}
+      onCancel={() => setDeliveryAuthorizationOpen(false)} destroyOnHidden>
+      {deliveryRegeneration && deliveryAuthorizationReady(deliveryRegeneration) && <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        <Alert type="warning" showIcon message="这是人工有限授权，不会自动执行或表示稿件已完成。"
+          description={`仅限 ${affectedDeliveryCount(deliveryRegeneration)} 篇受影响稿件；每稿最多生成加 QA 两次请求，共固定 ${2 * (affectedDeliveryCount(deliveryRegeneration) || 0)} 次。不会抓取来源、重算上游或改动历史稿件。`} />
+        <Form form={deliveryAuthorizationForm} layout="vertical" onFinish={values => void authorizeDeliveryRegeneration(values)} disabled={busy}>
+          <Form.Item label="请求次数上限（固定为每稿生成加 QA 两次）">
+            <InputNumber value={2 * (affectedDeliveryCount(deliveryRegeneration) || 0)} disabled precision={0} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="总 token 上限" name="max_tokens" rules={[{ required: true }]}><InputNumber min={1} max={10000000} precision={0} style={{ width: "100%" }} /></Form.Item>
+          <Form.Item label="人民币硬预算" name="max_cost_cny" rules={[{ required: true }]}><InputNumber min={0.01} max={1000} precision={2} style={{ width: "100%" }} /></Form.Item>
+          <Form.Item label="输入 / 输出每百万 token 的较高保守单价（人民币）" name="conservative_cny_per_million_tokens" rules={[{ required: true }]}><InputNumber min={0.01} max={1000} style={{ width: "100%" }} /></Form.Item>
+          <Form.Item label="已核实计费依据" name="pricing_source" rules={[{ required: true, min: 8 }]}><Input maxLength={2000} /></Form.Item>
+          <Form.Item label="计费核实日期" name="pricing_checked_at" rules={[{ required: true }]}><Input type="date" /></Form.Item>
+          <Button type="primary" htmlType="submit" loading={busy}>确认有限授权</Button>
+        </Form>
       </Space>}
     </Modal>
   </>;

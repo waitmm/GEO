@@ -8,11 +8,13 @@ import pytest
 from fastapi import HTTPException
 
 from test_release_first_slice import _migrated_session, _seed_citation_contribution_fixture
-from app.models import SinglePromptAnalysisContext, SinglePromptDiagnosisReview
+from app.api.release_catalog import _record_project_configuration
+from app.models import Project, SinglePromptAnalysisContext, SinglePromptDiagnosisReview, SinglePromptOptimizationTask
 from app.modules.single_prompt_v2.automatic_delivery import (
     authorize_task, cancel_task, create_task, encode, scoped_client, task_view, execute_task,
-    recover_interrupted_tasks, resume_task,
+    recover_interrupted_tasks, require_task, resume_task,
 )
+from app.modules.single_prompt_v2.delivery_text import digest
 from app.services.semantic_llm.base import SemanticLLMError
 
 
@@ -20,6 +22,8 @@ from app.services.semantic_llm.base import SemanticLLMError
 def scene(tmp_path, monkeypatch):
     db, engine = _migrated_session(tmp_path, monkeypatch)
     fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path, reviewed=False)
+    _record_project_configuration(db, db.get(Project, 1))
+    db.commit()
     context = db.query(SinglePromptAnalysisContext).one()
     args = dict(analysis_id=fixture['analysis'].analysis_id, project_id=1, prompt_id=44,
         raw_output_hash=context.raw_output_hash, idempotency_key='finite-delivery')
@@ -54,6 +58,79 @@ def test_creation_is_idempotent_and_never_confers_external_or_review_authority(s
     assert db.query(SinglePromptDiagnosisReview).count() == 0
     with pytest.raises(HTTPException):
         create_task(db, **{**args, 'raw_output_hash': '0' * 64})
+
+
+def test_tasks_bind_exact_project_configuration_versions_without_replacing_history(scene):
+    db, first, args, _ = scene
+    first_input = first.input_json
+    v1 = json.loads(first_input)['project_configuration_version']
+    assert v1['version_number'] == 1 and len(v1['snapshot_hash']) == 64
+    assert task_view(first)['project_configuration_version'] == v1
+
+    project = db.get(Project, 1)
+    project.brand_name = 'Target V2'
+    project.brand_aliases_json = '["target-v2"]'
+    db.flush()
+    v2_row = _record_project_configuration(db, project)
+    db.commit()
+    second, created = create_task(db, **{**args, 'idempotency_key': 'finite-delivery-v2'})
+    assert created and second.input_hash != first.input_hash
+    v2 = json.loads(second.input_json)['project_configuration_version']
+    assert v2 == {"configuration_version_id": v2_row.configuration_version_id,
+        "version_number": 2, "snapshot_hash": v2_row.snapshot_hash}
+    assert json.loads(second.input_json)['brand']['brand_name'] == 'Target V2'
+    db.refresh(first)
+    assert first.input_json == first_input
+    assert require_task(db, first.task_id, 1, 44).task_id == first.task_id
+
+
+def test_task_configuration_binding_rejects_cross_project_or_changed_identity_and_marks_legacy(scene):
+    db, row, _, _ = scene
+    frozen = json.loads(row.input_json)
+    project = db.get(Project, 1)
+    other = Project(organization_id=project.organization_id, name='Other', brand_name='Other')
+    db.add(other)
+    db.flush()
+    foreign = _record_project_configuration(db, other)
+    db.commit()
+    forged = dict(frozen)
+    forged['project_configuration_version'] = {
+        'configuration_version_id': foreign.configuration_version_id,
+        'version_number': foreign.version_number, 'snapshot_hash': foreign.snapshot_hash}
+    forged_row = SinglePromptOptimizationTask(task_id='forged-config-task', project_id=1, prompt_id=44,
+        analysis_id=row.analysis_id, context_id=row.context_id, idempotency_key='forged-config-task',
+        input_json=encode(forged), input_hash=digest(forged), authorization_json=row.authorization_json,
+        progress_json=row.progress_json)
+    db.add(forged_row)
+    db.commit()
+    with pytest.raises(HTTPException, match='不存在或不属于当前项目'):
+        require_task(db, forged_row.task_id, 1, 44)
+    from sqlalchemy.orm import sessionmaker
+    execute_task(forged_row.task_id, session_factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
+    db.refresh(forged_row)
+    assert forged_row.status == 'BLOCKED' and '不属于当前项目' in forged_row.blocker_detail
+
+    changed = dict(frozen)
+    changed['project_configuration_version'] = dict(changed['project_configuration_version'], snapshot_hash='0' * 64)
+    changed_row = SinglePromptOptimizationTask(task_id='changed-config-task', project_id=1, prompt_id=44,
+        analysis_id=row.analysis_id, context_id=row.context_id, idempotency_key='changed-config-task',
+        input_json=encode(changed), input_hash=digest(changed), authorization_json=row.authorization_json,
+        progress_json=row.progress_json)
+    db.add(changed_row)
+    db.commit()
+    with pytest.raises(HTTPException, match='内容或 hash 已变化'):
+        require_task(db, changed_row.task_id, 1, 44)
+
+    legacy = dict(frozen)
+    legacy.pop('project_configuration_version')
+    legacy_row = SinglePromptOptimizationTask(task_id='legacy-config-task', project_id=1, prompt_id=44,
+        analysis_id=row.analysis_id, context_id=row.context_id, idempotency_key='legacy-config-task',
+        input_json=encode(legacy), input_hash=digest(legacy), authorization_json=row.authorization_json,
+        progress_json=row.progress_json)
+    db.add(legacy_row)
+    db.commit()
+    assert require_task(db, legacy_row.task_id, 1, 44).task_id == legacy_row.task_id
+    assert task_view(legacy_row)['project_configuration_version'] == {'binding_status': 'LEGACY_UNBOUND'}
 
 
 def test_task_read_guard_rejects_flush_and_bulk_business_writes(scene):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -9,10 +10,10 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.core.config import get_settings
-from app.models import (Project, SinglePromptAnalysisContext, SinglePromptOptimizationTask)
+from app.models import (Project, ProjectConfigurationVersion, SinglePromptAnalysisContext, SinglePromptOptimizationTask)
 from app.services.serialization import loads
 from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import DeepSeekClient, resolve_deepseek_request_model
@@ -41,15 +42,72 @@ def computation_contracts() -> dict:
         "official_claim_schema": V2_SOURCE_CLAIM_SCHEMA_VERSION}
 
 
+def _validated_project_configuration(
+    db: Session, project_id: int, binding: dict | None = None,
+) -> tuple[ProjectConfigurationVersion | None, dict | None]:
+    if binding is None:
+        # Tasks created before project configuration version binding retain their
+        # own hashed input. They never acquire a synthetic/latest version later.
+        return None, None
+    if not isinstance(binding, dict) or set(binding) != {
+        "configuration_version_id", "version_number", "snapshot_hash",
+    }:
+        raise HTTPException(409, "自动优化绑定的项目配置版本格式无效")
+    version_id = binding.get("configuration_version_id")
+    version_number = binding.get("version_number")
+    snapshot_hash = binding.get("snapshot_hash")
+    if (not isinstance(version_id, str) or not version_id
+            or not isinstance(version_number, int) or isinstance(version_number, bool)
+            or version_number < 1 or not isinstance(snapshot_hash, str) or len(snapshot_hash) != 64):
+        raise HTTPException(409, "自动优化绑定的项目配置版本身份不完整")
+    row = db.query(ProjectConfigurationVersion).filter_by(
+        project_id=project_id, configuration_version_id=version_id,
+        version_number=version_number,
+    ).one_or_none()
+    if not row:
+        raise HTTPException(409, "自动优化绑定的项目配置版本不存在或不属于当前项目")
+    actual_hash = hashlib.sha256(row.snapshot_json.encode("utf-8")).hexdigest()
+    snapshot = loads(row.snapshot_json, None)
+    if (snapshot_hash != row.snapshot_hash or actual_hash != row.snapshot_hash
+            or not isinstance(snapshot, dict) or snapshot.get("project_id") != project_id):
+        raise HTTPException(409, "自动优化绑定的项目配置版本内容或 hash 已变化")
+    return row, snapshot
+
+
+def _current_project_configuration(db: Session, project_id: int) -> tuple[dict, dict]:
+    row = db.query(ProjectConfigurationVersion).filter_by(project_id=project_id).order_by(
+        ProjectConfigurationVersion.version_number.desc()).first()
+    if not row:
+        raise HTTPException(409, "项目尚无可绑定的配置版本，请先通过项目配置入口保存")
+    binding = {"configuration_version_id": row.configuration_version_id,
+        "version_number": row.version_number, "snapshot_hash": row.snapshot_hash}
+    _, snapshot = _validated_project_configuration(db, project_id, binding)
+    return binding, snapshot or {}
+
+
+def _validate_task_project_configuration(db: Session, project_id: int, inputs: dict) -> None:
+    binding = inputs.get("project_configuration_version")
+    _, snapshot = _validated_project_configuration(db, project_id, binding)
+    if snapshot is None:
+        return
+    brand = inputs.get("brand") or {}
+    expected = {"project_id": project_id, "brand_name": snapshot.get("brand_name"),
+        "brand_aliases": snapshot.get("brand_aliases"), "website_url": snapshot.get("website_url")}
+    if any(brand.get(key) != value for key, value in expected.items()):
+        raise HTTPException(409, "自动优化冻结品牌配置与绑定版本不一致")
+
+
 def configuration_snapshot(db: Session, project_id: int, prompt_text: str, context_version_id: str | None) -> dict:
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "项目不存在")
+    configuration_version, project_snapshot = _current_project_configuration(db, project_id)
     from .truth_corrections import project_truths
     model = get_settings().deepseek_model
     return {"computation_contracts": computation_contracts(),
-        "brand": {"project_id": project_id, "brand_name": project.brand_name,
-            "brand_aliases": loads(project.brand_aliases_json, []), "website_url": project.website_url,
+        "project_configuration_version": configuration_version,
+        "brand": {"project_id": project_id, "brand_name": project_snapshot["brand_name"],
+            "brand_aliases": project_snapshot["brand_aliases"], "website_url": project_snapshot["website_url"],
             "project_updated_at": project.updated_at.isoformat() if project.updated_at else None},
         "truth_snapshot": project_truths(db, project_id),
         "brand_context": select_context(db, project_id=project_id, context_version_id=context_version_id, query=prompt_text),
@@ -112,6 +170,9 @@ def encode(value) -> str:
 
 def task_view(row: SinglePromptOptimizationTask) -> dict:
     inputs = loads(row.input_json, {})
+    db = object_session(row)
+    if db is not None:
+        _validate_task_project_configuration(db, row.project_id, inputs)
     progress = loads(row.progress_json, {})
     requests = progress.get("requests") or []
     return {"task_id": row.task_id, "project_id": row.project_id, "prompt_id": row.prompt_id,
@@ -126,6 +187,7 @@ def task_view(row: SinglePromptOptimizationTask) -> dict:
         "objects": progress.get("objects") or {}, "limitations": progress.get("limitations") or [],
         "blocker_code": row.blocker_code, "blocker_detail": row.blocker_detail,
         "scope": inputs.get("run_ids"), "brand_context_version_id": (inputs.get("brand_context") or {}).get("context_version_id"),
+        "project_configuration_version": inputs.get("project_configuration_version") or {"binding_status": "LEGACY_UNBOUND"},
         "brand_context_label": ((inputs.get('brand_context') or {}).get('title') or '未选择') +
             (f" · 版本 {(inputs.get('brand_context') or {})['version_number']}" if (inputs.get('brand_context') or {}).get('version_number') else ''),
         "supplemental_source_count": len(inputs.get('supplemental_sources') or []),
@@ -145,8 +207,10 @@ def require_task(db: Session, task_id: str, project_id: int, prompt_id: int) -> 
     row = db.query(SinglePromptOptimizationTask).filter_by(task_id=task_id, project_id=project_id, prompt_id=prompt_id).one_or_none()
     if not row:
         raise HTTPException(404, "自动优化任务不存在或不属于当前项目/问题")
-    if digest(loads(row.input_json, {})) != row.input_hash:
+    inputs = loads(row.input_json, {})
+    if digest(inputs) != row.input_hash:
         raise HTTPException(409, "自动优化冻结输入 hash 不匹配")
+    _validate_task_project_configuration(db, project_id, inputs)
     return row
 
 

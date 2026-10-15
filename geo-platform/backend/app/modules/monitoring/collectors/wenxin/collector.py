@@ -42,6 +42,19 @@ from app.modules.monitoring.collectors.wenxin.selectors import (
 )
 
 
+TRUSTED_WENXIN_HOSTS = {"chat.baidu.com", "yiyan.baidu.com"}
+RATE_LIMIT_ERROR_CANDIDATES = (
+    '[role="alert"]',
+    '[aria-live="assertive"]',
+    '.ant-message-notice-content',
+    '.ant-notification-notice',
+    '[class*="toast"]',
+    '[class*="message-error"]',
+    '[class*="error-message"]',
+    '[class*="error-tip"]',
+)
+
+
 class WenxinWebCollector(BaseCollector):
     def __init__(self) -> None:
         self._playwright = None
@@ -402,7 +415,7 @@ class WenxinWebCollector(BaseCollector):
                 await self._click_submit(page)
                 await page.wait_for_timeout(1200)
                 body_text = await page.locator("body").inner_text(timeout=5000)
-                await self._raise_for_rate_limit(page, body_text)
+                await self._raise_for_rate_limit(page)
                 if query[:20] in body_text:
                     return
             except RateLimitedError:
@@ -431,7 +444,6 @@ class WenxinWebCollector(BaseCollector):
             await self._raise_for_login_or_captcha(page)
             await self._raise_for_rate_limit(page)
             body_text = await page.locator("body").inner_text(timeout=5000)
-            await self._raise_for_rate_limit(page, body_text)
             answer_text = await self._current_answer_text(page)
             current_hash = hashlib.sha256(answer_text.encode("utf-8")).hexdigest()
             has_reference = re.search(REFERENCE_TEXT_PATTERN, body_text) is not None
@@ -455,17 +467,53 @@ class WenxinWebCollector(BaseCollector):
             return best_answer
         raise AnswerTimeoutError("等待回答超时，未采集到回答正文")
 
-    async def _raise_for_rate_limit(self, page, body_text: str | None = None) -> None:
-        if any(int(event.get("status") or 0) == 429 for event in self._network_events):
+    async def _raise_for_rate_limit(self, page) -> None:
+        page_url = str(getattr(page, "url", "") or "")
+        if any(self._is_rate_limit_response(event, page_url) for event in self._network_events):
             raise RateLimitedError("文心响应 HTTP 429（请求过多）")
-        if body_text is None:
+        for selector in RATE_LIMIT_ERROR_CANDIDATES:
             try:
-                body_text = await page.locator("body").inner_text(timeout=2000)
+                locator = page.locator(selector).last
+                if not await locator.is_visible(timeout=300):
+                    continue
+                reason = self._rate_limit_reason_from_text(await locator.inner_text(timeout=1000))
             except Exception:
-                return
-        reason = self._rate_limit_reason_from_text(body_text)
-        if reason:
-            raise RateLimitedError(reason)
+                continue
+            if reason:
+                raise RateLimitedError(reason)
+
+    @staticmethod
+    def _is_rate_limit_response(event: dict, page_url: str) -> bool:
+        try:
+            status = int(event.get("status") or 0)
+        except (TypeError, ValueError):
+            return False
+        if (
+            status != 429
+            or str(event.get("method") or "").upper() != "POST"
+            or str(event.get("resource_type") or "").lower() not in {"fetch", "xhr"}
+        ):
+            return False
+        try:
+            response_url = urllib.parse.urlsplit(str(event.get("url") or ""))
+            page_origin = urllib.parse.urlsplit(page_url)
+        except Exception:
+            return False
+        response_host = str(response_url.hostname or "").lower()
+        same_origin = (
+            response_url.scheme in {"http", "https"}
+            and response_url.scheme == page_origin.scheme
+            and response_url.netloc == page_origin.netloc
+        )
+        trusted_host = response_url.scheme == "https" and response_host in TRUSTED_WENXIN_HOSTS
+        if not (same_origin or trusted_host):
+            return False
+        path_segments = {
+            segment for segment in urllib.parse.unquote(response_url.path).lower().split("/") if segment
+        }
+        return not path_segments.isdisjoint({
+            "chat", "chats", "conversation", "conversations", "message", "messages",
+        })
 
     @staticmethod
     def _rate_limit_reason_from_text(body_text: str) -> str:

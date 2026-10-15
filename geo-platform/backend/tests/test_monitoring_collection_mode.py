@@ -161,25 +161,92 @@ def test_environment_reports_actual_verified_sampling_mode(tmp_path):
 
 def test_wenxin_http_429_is_a_stable_rate_limit_error():
     collector = WenxinWebCollector()
-    collector._network_events = [{"status": 429, "url": "https://chat.baidu.com/api/chat"}]
+    collector._network_events = [{
+        "status": 429,
+        "url": "https://chat.baidu.com/api/chat",
+        "resource_type": "fetch",
+        "method": "POST",
+    }]
 
     with pytest.raises(RateLimitedError, match="HTTP 429") as error:
-        asyncio.run(collector._raise_for_rate_limit(object()))
+        asyncio.run(collector._raise_for_rate_limit(SimpleNamespace(url="https://chat.baidu.com/")))
 
     assert error.value.error_type == "rate_limited"
 
 
-def test_wenxin_preserves_concise_quota_page_reason():
+class _RateLimitLocator:
+    def __init__(self, text="", visible=False):
+        self.text = text
+        self.visible = visible
+
+    @property
+    def last(self):
+        return self
+
+    async def is_visible(self, timeout=0):
+        return self.visible
+
+    async def inner_text(self, timeout=0):
+        return self.text
+
+
+class _RateLimitPage:
+    url = "https://chat.baidu.com/"
+
+    def __init__(self, *, error_text="", body_text=""):
+        self.error_text = error_text
+        self.body_text = body_text
+
+    def locator(self, selector):
+        if selector == '[role="alert"]':
+            return _RateLimitLocator(self.error_text, bool(self.error_text))
+        if selector == "body":
+            return _RateLimitLocator(self.body_text, True)
+        return _RateLimitLocator()
+
+
+def test_wenxin_preserves_concise_reason_from_visible_error_container():
     collector = WenxinWebCollector()
-    reason = collector._rate_limit_reason_from_text("提示\n今日提问次数已用完，请明日再试\n帮助")
+    page = _RateLimitPage(error_text="提示\n今日提问次数已用完，请明日再试\n帮助")
 
-    assert reason == "今日提问次数已用完，请明日再试"
+    with pytest.raises(RateLimitedError) as error:
+        asyncio.run(collector._raise_for_rate_limit(page))
+
+    assert str(error.value) == "今日提问次数已用完，请明日再试"
 
 
-def test_generic_failure_text_is_not_guessed_as_rate_limit():
+@pytest.mark.parametrize("event", [
+    {
+        "status": 429,
+        "url": "https://stats.example.com/api/chat",
+        "resource_type": "fetch",
+        "method": "POST",
+    },
+    {
+        "status": 429,
+        "url": "https://chat.baidu.com/api/chat-banner.png",
+        "resource_type": "image",
+        "method": "GET",
+    },
+    {
+        "status": 429,
+        "url": "https://chat.baidu.com/api/telemetry",
+        "resource_type": "xhr",
+        "method": "POST",
+    },
+])
+def test_untrusted_or_non_submission_resource_429_does_not_trigger_rate_limit(event):
     collector = WenxinWebCollector()
+    collector._network_events = [event]
 
-    assert collector._rate_limit_reason_from_text("服务暂时不可用，请稍后再试") == ""
+    asyncio.run(collector._raise_for_rate_limit(_RateLimitPage()))
+
+
+def test_normal_answer_rate_limit_words_are_not_scanned():
+    collector = WenxinWebCollector()
+    page = _RateLimitPage(body_text="正常回答正文：如果配额不足或请求次数已用完，可以升级套餐。")
+
+    asyncio.run(collector._raise_for_rate_limit(page))
 
 
 class _SemanticRegionLocator:

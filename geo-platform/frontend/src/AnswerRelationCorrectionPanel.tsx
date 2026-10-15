@@ -90,7 +90,7 @@ function deliveryAuthorizationReady(task: DeliveryRegenerationTask) {
   return task.status === "WAITING_AUTHORIZATION"
     && typeof task.revision === "number"
     && !!task.input_hash
-    && Number.isInteger(count) && count > 0;
+    && typeof count === "number" && Number.isInteger(count) && count > 0;
 }
 
 type SavedCorrection = { result_version: string; result_hash: string } & Record<string, string>;

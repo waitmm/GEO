@@ -9,7 +9,7 @@ test('local delivery authorization is available only for a fully bound waiting t
   assert.match(source, /task\.status === "WAITING_AUTHORIZATION"/);
   assert.match(source, /typeof task\.revision === "number"/);
   assert.match(source, /!!task\.input_hash/);
-  assert.match(source, /Number\.isInteger\(count\) && count > 0/);
+  assert.match(source, /typeof count === "number" && Number\.isInteger\(count\) && count > 0/);
   assert.match(source, /授权局部稿件生成/);
 });
 

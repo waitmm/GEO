@@ -39,7 +39,17 @@ test('completed reprojection and regeneration statuses can be refreshed from the
 
 test('delivery regeneration states and optional manifest are shown in Chinese', async () => {
   const source = await readFile(new URL('../src/AnswerRelationCorrectionPanel.tsx', import.meta.url), 'utf8');
-  for (const text of ['局部稿件再生成任务已创建', '正在重新生成受影响稿件', '缺少已授权生成能力', '受影响稿件已生成新版本', 'affected', 'regenerated', 'pending', 'failed', 'unchanged']) {
+  assert.ok(source.includes('objects?.answer_relation_delivery_regeneration'));
+  for (const text of ['局部稿件再生成任务已创建', '正在重新生成受影响稿件', '缺少已授权生成能力', '受影响稿件已生成新版本',
+    'affected_deliveries', 'regenerated_deliveries', 'pending_deliveries', 'failed_deliveries', 'unchanged_deliveries',
+    '受影响稿件', '已重新生成稿件', '待处理稿件', '失败稿件', '保持不变稿件']) {
     assert.match(source, new RegExp(text));
   }
+});
+
+test('completed reprojection summary reads the actual task-view manifest first', async () => {
+  const source = await readFile(new URL('../src/AnswerRelationCorrectionPanel.tsx', import.meta.url), 'utf8');
+  assert.match(source, /function reprojectionStrategyResultVersion/);
+  assert.match(source, /manifest\?\.new_strategy_result_version/);
+  assert.match(source, /reprojectionStrategyResultVersion\(reprojection\) \|\| "未返回"/);
 });

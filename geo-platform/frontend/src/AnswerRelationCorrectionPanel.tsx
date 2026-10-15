@@ -58,6 +58,15 @@ type DeliveryRegenerationManifest = Partial<Record<"affected" | "regenerated" | 
 type DeliveryRegenerationTask = {
   task_id: string;
   status: string;
+  objects?: {
+    answer_relation_delivery_regeneration?: {
+      affected_deliveries?: unknown[];
+      regenerated_deliveries?: unknown[];
+      pending_deliveries?: unknown[];
+      failed_deliveries?: unknown[];
+      unchanged_deliveries?: unknown[];
+    };
+  };
   manifest?: DeliveryRegenerationManifest;
   delivery_manifest?: DeliveryRegenerationManifest;
 };
@@ -67,8 +76,7 @@ type SavedCorrection = { result_version: string; result_hash: string } & Record<
 function reprojectionResult(reprojection: ReprojectionTask) {
   const manifest = reprojection.objects?.answer_relation_reprojection;
   const expectedRevision = reprojection.revision ?? reprojection.expected_revision;
-  const strategyResultVersion = manifest?.new_strategy_result_version || manifest?.strategy_result_version ||
-    reprojection.new_strategy_result_version || reprojection.strategy_result_version;
+  const strategyResultVersion = reprojectionStrategyResultVersion(reprojection);
   const strategyResultHash = manifest?.new_strategy_result_hash || manifest?.strategy_result_hash ||
     reprojection.new_strategy_result_hash || reprojection.strategy_result_hash;
   const affectedDeliverySetHash = manifest?.affected_delivery_set_hash || reprojection.affected_delivery_set_hash;
@@ -82,6 +90,12 @@ function reprojectionResult(reprojection: ReprojectionTask) {
   };
 }
 
+function reprojectionStrategyResultVersion(reprojection: ReprojectionTask) {
+  const manifest = reprojection.objects?.answer_relation_reprojection;
+  return manifest?.new_strategy_result_version || manifest?.strategy_result_version ||
+    reprojection.new_strategy_result_version || reprojection.strategy_result_version || reprojection.result_version;
+}
+
 function ManifestList({ title, values }: { title: string; values?: unknown[] }) {
   if (!values) return null;
   return <Descriptions.Item label={title}>{values.length ? values.map((value, index) =>
@@ -89,14 +103,15 @@ function ManifestList({ title, values }: { title: string; values?: unknown[] }) 
 }
 
 function DeliveryRegenerationManifestView({ task }: { task: DeliveryRegenerationTask }) {
+  const actualManifest = task.objects?.answer_relation_delivery_regeneration;
   const manifest = task.manifest || task.delivery_manifest;
-  if (!manifest) return null;
+  if (!actualManifest && !manifest) return null;
   return <Descriptions size="small" column={1} bordered>
-    <ManifestList title="affected" values={manifest.affected} />
-    <ManifestList title="regenerated" values={manifest.regenerated} />
-    <ManifestList title="pending" values={manifest.pending} />
-    <ManifestList title="failed" values={manifest.failed} />
-    <ManifestList title="unchanged" values={manifest.unchanged} />
+    <ManifestList title="受影响稿件" values={actualManifest?.affected_deliveries || manifest?.affected} />
+    <ManifestList title="已重新生成稿件" values={actualManifest?.regenerated_deliveries || manifest?.regenerated} />
+    <ManifestList title="待处理稿件" values={actualManifest?.pending_deliveries || manifest?.pending} />
+    <ManifestList title="失败稿件" values={actualManifest?.failed_deliveries || manifest?.failed} />
+    <ManifestList title="保持不变稿件" values={actualManifest?.unchanged_deliveries || manifest?.unchanged} />
   </Descriptions>;
 }
 
@@ -266,7 +281,7 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
           message={reprojectionCompleted ? "策略已重新投影，稿件尚未重新生成" : reprojection.status === "QUEUED" ? "策略重投影任务已创建，稿件尚未重新生成" : "策略重投影任务处理中，稿件尚未重新生成"}
           description={<Space direction="vertical" size={0}>
             {reprojectionCompleted
-              ? <span>任务：{reprojection.task_id}；新策略版本：{reprojection.new_strategy_result_version || reprojection.strategy_result_version || reprojection.result_version || "未返回"}；状态：{reprojection.status}</span>
+              ? <span>任务：{reprojection.task_id}；新策略版本：{reprojectionStrategyResultVersion(reprojection) || "未返回"}；状态：{reprojection.status}</span>
               : <span>任务：{reprojection.task_id}；状态：{reprojection.status}</span>}
             {reprojectionCompleted && <span>受影响稿件待更新；未受影响稿件保持不变。</span>}
           </Space>}

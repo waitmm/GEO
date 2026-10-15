@@ -32,12 +32,54 @@ function ImpactView({ impact }: { impact: AnswerRelationCorrectionImpact }) {
 type ReprojectionTask = {
   task_id: string;
   status: string;
+  expected_revision?: number | string;
   new_strategy_result_version?: string;
   strategy_result_version?: string;
+  strategy_result_hash?: string;
+  affected_delivery_set_hash?: string;
   result_version?: string;
 };
 
+type DeliveryRegenerationManifest = Partial<Record<"affected" | "regenerated" | "pending" | "failed" | "unchanged", unknown[]>>;
+
+type DeliveryRegenerationTask = {
+  task_id: string;
+  status: string;
+  manifest?: DeliveryRegenerationManifest;
+  delivery_manifest?: DeliveryRegenerationManifest;
+};
+
 type SavedCorrection = { result_version: string; result_hash: string } & Record<string, string>;
+
+function reprojectionResult(reprojection: ReprojectionTask) {
+  const strategyResultVersion = reprojection.new_strategy_result_version || reprojection.strategy_result_version;
+  if (!reprojection.status.startsWith("COMPLETED") || reprojection.expected_revision === undefined ||
+      !strategyResultVersion || !reprojection.strategy_result_hash || !reprojection.affected_delivery_set_hash) return undefined;
+  return {
+    expected_revision: reprojection.expected_revision,
+    strategy_result_version: strategyResultVersion,
+    strategy_result_hash: reprojection.strategy_result_hash,
+    affected_delivery_set_hash: reprojection.affected_delivery_set_hash,
+  };
+}
+
+function ManifestList({ title, values }: { title: string; values?: unknown[] }) {
+  if (!values) return null;
+  return <Descriptions.Item label={title}>{values.length ? values.map((value, index) =>
+    <Typography.Text key={index} code>{typeof value === "string" ? value : JSON.stringify(value)}</Typography.Text>) : "无"}</Descriptions.Item>;
+}
+
+function DeliveryRegenerationManifestView({ task }: { task: DeliveryRegenerationTask }) {
+  const manifest = task.manifest || task.delivery_manifest;
+  if (!manifest) return null;
+  return <Descriptions size="small" column={1} bordered>
+    <ManifestList title="affected" values={manifest.affected} />
+    <ManifestList title="regenerated" values={manifest.regenerated} />
+    <ManifestList title="pending" values={manifest.pending} />
+    <ManifestList title="failed" values={manifest.failed} />
+    <ManifestList title="unchanged" values={manifest.unchanged} />
+  </Descriptions>;
+}
 
 export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
   taskId: string; projectId: number; promptId: number;
@@ -52,6 +94,7 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState<SavedCorrection>();
   const [reprojection, setReprojection] = useState<ReprojectionTask>();
+  const [deliveryRegeneration, setDeliveryRegeneration] = useState<DeliveryRegenerationTask>();
   const [form] = Form.useForm();
   const selected = data?.targets.find(row => `${row.target_type}:${row.target_id}` === selectedKey);
   const reprojectionCompleted = reprojection?.status.startsWith("COMPLETED");
@@ -66,7 +109,7 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
 
   function choose(key: string) {
     const target = data?.targets.find(row => `${row.target_type}:${row.target_id}` === key);
-    setSelectedKey(key); setPreview(undefined); setPreviewInput(undefined); setConfirmed(false); setSaved(undefined); setReprojection(undefined);
+    setSelectedKey(key); setPreview(undefined); setPreviewInput(undefined); setConfirmed(false); setSaved(undefined); setReprojection(undefined); setDeliveryRegeneration(undefined);
     form.setFieldsValue({ value: undefined, reason: "" });
     if (!target?.can_correct) setError(target?.blocked_reason || "该对象不能纠正"); else setError("");
   }
@@ -92,14 +135,14 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
       const result = await api.saveAnswerRelationCorrection(taskId, {
         ...previewInput, preview_hash: preview.preview_hash, human_confirmed: true,
       });
-      setSaved(result as SavedCorrection); setReprojection(undefined); setPreview(undefined); setPreviewInput(undefined); setConfirmed(false); setSelectedKey(undefined);
+      setSaved(result as SavedCorrection); setReprojection(undefined); setDeliveryRegeneration(undefined); setPreview(undefined); setPreviewInput(undefined); setConfirmed(false); setSelectedKey(undefined);
       form.resetFields(); await load();
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
 
   async function reproject(correction: { result_version: string; result_hash: string }) {
-    setBusy(true); setError(""); setReprojection(undefined);
+    setBusy(true); setError(""); setReprojection(undefined); setDeliveryRegeneration(undefined);
     try {
       const result = await request<ReprojectionTask>(
         `/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(taskId)}/answer-relation-reprojections`,
@@ -115,6 +158,31 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
         },
       );
       setReprojection(result);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function regenerateAffectedDeliveries(task: ReprojectionTask) {
+    const result = reprojectionResult(task);
+    if (!result) return;
+    setBusy(true); setError(""); setDeliveryRegeneration(undefined);
+    try {
+      const regeneration = await request<DeliveryRegenerationTask>(
+        `/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(taskId)}/affected-draft-regenerations`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            project_id: projectId,
+            prompt_id: promptId,
+            expected_revision: result.expected_revision,
+            strategy_result_version: result.strategy_result_version,
+            strategy_result_hash: result.strategy_result_hash,
+            affected_delivery_set_hash: result.affected_delivery_set_hash,
+            idempotency_key: `affected-draft-regeneration:${taskId}:${result.strategy_result_version}:${result.affected_delivery_set_hash}`,
+          }),
+        },
+      );
+      setDeliveryRegeneration(regeneration);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -160,6 +228,17 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
               ? <span>任务：{reprojection.task_id}；新策略版本：{reprojection.new_strategy_result_version || reprojection.strategy_result_version || reprojection.result_version || "未返回"}；状态：{reprojection.status}</span>
               : <span>任务：{reprojection.task_id}；状态：{reprojection.status}</span>}
             {reprojectionCompleted && <span>受影响稿件待更新；未受影响稿件保持不变。</span>}
+          </Space>}
+          action={reprojectionResult(reprojection) && <Button type="primary" loading={busy} onClick={() => void regenerateAffectedDeliveries(reprojection)}>重新生成受影响稿件</Button>} />}
+        {deliveryRegeneration && <Alert type={deliveryRegeneration.status.startsWith("COMPLETED") ? "success" : deliveryRegeneration.status === "WAITING_AUTHORIZATION" ? "warning" : "info"} showIcon
+          message={deliveryRegeneration.status === "QUEUED" ? "局部稿件再生成任务已创建" :
+            deliveryRegeneration.status === "RUNNING" ? "正在重新生成受影响稿件" :
+            deliveryRegeneration.status === "WAITING_AUTHORIZATION" ? "缺少已授权生成能力" :
+            deliveryRegeneration.status.startsWith("COMPLETED") ? "受影响稿件已生成新版本；未受影响稿件保持不变" : "局部稿件再生成任务处理中"}
+          description={<Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <span>任务：{deliveryRegeneration.task_id}；状态：{deliveryRegeneration.status}</span>
+            <span>历史稿件保持不变；未受影响稿件保持不变。</span>
+            <DeliveryRegenerationManifestView task={deliveryRegeneration} />
           </Space>} />}
         {!!data.history.length && <Collapse items={data.history.slice().reverse().map(row => ({
           key: row.result_version, label: `${row.result_version} · ${row.actor} · ${row.created_at}`,

@@ -954,7 +954,9 @@
         "frontend/src/App.tsx"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/tests/test_run_retry_lineage.py",
+        "frontend/tests/retry-lineage.test.mjs"
       ],
       "estimate": "3人日",
       "planned_start": "",
@@ -1035,9 +1037,31 @@
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
-      "commit": "",
-      "audit_classification": "需修复",
+      "blocker": "SAM-003单Run重试谱系已完成；SAM-001、SAM-002、SAM-004剩余口径与真实产品验收按后续独立切片闭环。",
+      "commit": "923817d",
+      "audit_classification": "SAM-003已按契约完成并复核，其余IN_PROGRESS",
+      "run_retry_lineage_slice": {
+        "id": "T05-M1-SMALL-01",
+        "status": "DONE",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "completed_on": "2026-10-15",
+        "backend_source_commits": [
+          "e6abe47",
+          "405ac54",
+          "c45586a",
+          "8377c1c",
+          "1802725"
+        ],
+        "frontend_source_commits": [
+          "670a0bf",
+          "5a6b64d",
+          "2d21405"
+        ],
+        "integrated_product_head": "923817d",
+        "scope": "为每个物理Run持久化logical_run_id、attempt_id、attempt_no和直接父Run；显式重试追加新Run并保留原结果，幂等、并发唯一、跨父键复用、旧attempt分叉和跨项目均fail-closed。历史行只确定性回填为独立逻辑根，不猜测旧retry_count谱系；分析范围每个逻辑样本最多一个attempt，样本分母与物理尝试数分开。旧Monitoring原地覆盖式重试返回410并引导正式V2追加入口。",
+        "verification": "后端最终组合65 passed；T05专项5 passed且clean release migration到20261015_03通过；前端组合10 passed；Release build通过（仅既有chunk warning）；Luna最终独立审核PASS_NO_P0_P1。",
+        "boundary": "未调用采集器、外部模型或网络；本切片只闭合SAM-003，不宣称T05整体DONE。"
+      },
       "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {

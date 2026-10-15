@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
+from app.api.release_catalog import _record_project_configuration
 from app.models import (Project, TargetBrandCapabilityTruth, SinglePromptTruthCorrection,
     SinglePromptExecutionProposalResult, SinglePromptDiagnosisReview, SinglePromptStrategyResult,
     BrowserMonitorRun, SinglePromptAnalysisContext)
@@ -27,7 +28,10 @@ def grounded_brand_answer(_):
 @pytest.fixture
 def fact_delivery(scene, monkeypatch):
     db, _, args, _ = scene
-    db.get(Project, 1).brand_name = '甲工具'
+    project = db.get(Project, 1)
+    project.brand_name = '甲工具'
+    db.flush()
+    _record_project_configuration(db, project)
     truth = TargetBrandCapabilityTruth(project_id=1, capability_key='支持批量生成短链', capability_label='支持批量生成短链',
         product_truth_status='SUPPORTED', truth_source='MANUAL_CONFIRMED', source_reference='https://example.com/product',
         reviewed_by='isolated-human-fixture', reviewed_at=datetime.utcnow())
@@ -70,7 +74,11 @@ def test_truth_correction_append_only_and_scoped_reprojection_reuses_upstream(fa
     with pytest.raises(HTTPException, match='版本已变化'):
         preview_correction(db, **values)
     # Configuration changes cannot leak into a task whose only intent is this correction.
-    db.get(Project, 1).brand_name = '之后修改的项目名称'; db.commit()
+    project = db.get(Project, 1)
+    project.brand_name = '之后修改的项目名称'
+    db.flush()
+    _record_project_configuration(db, project)
+    db.commit()
     task, created = create_reprojection_task(db, parent_task_id=parent.task_id, project_id=1, prompt_id=44,
         correction_id=correction.correction_id, idempotency_key='local-truth-reprojection')
     assert created and task_view(task)['authorization']['policy'] == 'CACHE_ONLY'
@@ -126,7 +134,10 @@ def test_direction_filter_never_rewrites_unaffected_actions():
 def test_correction_replaces_selected_direction_with_existing_qualified_candidate(scene, monkeypatch, correct_selected):
     from app.modules.single_prompt_v2.service import create_analysis, claim_analysis, finalize_analysis
     db, _, _, _ = scene
-    db.get(Project, 1).brand_name = '甲工具'
+    project = db.get(Project, 1)
+    project.brand_name = '甲工具'
+    db.flush()
+    _record_project_configuration(db, project)
     labels = ['支持批量生成短链', '支持自定义域名']
     for label in labels:
         db.add(TargetBrandCapabilityTruth(project_id=1, capability_key=label, capability_label=label,

@@ -83,7 +83,7 @@
     },
     "next_product_development_batch": {
       "id": "GEO-PRODUCT-SMALL-20261015-01",
-      "status": "READY_DRY_RUN_ONLY_THIS_TURN",
+      "status": "SUPERSEDED_BY_NATIVE_MULTI_AGENT_COMPLETED",
       "selected_unit_id": "T19-ANSWER-RELATION-STRATEGY-REPROJECTION-02",
       "controller_branch": "codex/geo-next-product-ready",
       "code_baseline_branch": "codex/geo-integration",
@@ -347,7 +347,7 @@
           "COR-002",
           "COR-003"
         ],
-        "status": "READY",
+        "status": "DONE",
         "depends_on": [],
         "completed_unit_dependencies": [
           {
@@ -470,10 +470,30 @@
           "max_output_chars": 30000
         },
         "session_seconds": 300,
-        "authorization_batch": "GEO-PRODUCT-SMALL-20261015-01"
+        "authorization_batch": "GEO-PRODUCT-SMALL-20261015-01",
+        "completion": {
+          "method": "CODEX_NATIVE_MULTI_AGENT_WITH_ISOLATED_GIT_WORKTREES",
+          "backend_agent_commits": [
+            "3ce7d6a9a0bd4d8103b56d64ae1da61bae206827",
+            "b6fc17a1b6031cd1d82962f2bed832f0e7ac4c1a"
+          ],
+          "frontend_agent_commits": [
+            "c94aff584a4e97e5eecf06bcffae83a7e78c8f99",
+            "2d6d85afca7f5b6c50532a303c11c95a69064280"
+          ],
+          "integrated_product_head": "407bfcda5b580d614b694a81b8a3629b8cb15fd0",
+          "controller_gate_commit": "978aae94b97886f02993a992114d5a8715abf4ac",
+          "backend_gate": "21_PASSED",
+          "frontend_gate": "6_PASSED",
+          "release_build": "PASSED",
+          "independent_review": "PASS_NO_P0_P1",
+          "external_calls": 0,
+          "production_database_operations": 0,
+          "completed_on": "2026-10-15"
+        }
       }
     ],
-    "note": "接力工具保持FEATURE_FROZEN / OFFLINE_ACCEPTED，不再扩建。T25历史STOPPED/UNKNOWN与T19历史STOPPED、原始JSONL和7,189,445活动Token均保留，不resume。T19活动receipt已逐字节归档并复核，但不追认旧自动批次成功。当前仅准备一个PRODUCT_SMALL策略重投影单元并dry-run；不运行Codex、不外调、不操作生产数据库、不自动合并main。",
+    "note": "接力工具保持FEATURE_FROZEN / OFFLINE_ACCEPTED，不再扩建或用于新产品开发。T25历史STOPPED/UNKNOWN与T19历史STOPPED、原始JSONL和7,189,445活动Token均保留，不resume；T19旧自动批次仍不追认成功。T19-02已改由Codex原生多Agent和隔离Git Worktree完成，未外调、未操作生产数据库、未合并main。",
     "evidence": "backend/artifacts/acceptance/codex-relay-offline-20261013/"
   },
   "active_delivery_slice": {

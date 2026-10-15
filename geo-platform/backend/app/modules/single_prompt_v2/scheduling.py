@@ -43,6 +43,25 @@ def view(row):
             "authorization_note": row.authorization_note}
 
 
+def _current_prompt_snapshot(prompt: Prompt) -> dict:
+    return {
+        "project_id": prompt.project_id,
+        "prompt_id": prompt.id,
+        "prompt_text": prompt.prompt_text,
+        "title": prompt.title,
+        "intent_type": prompt.intent_type,
+        "prompt_group": prompt.prompt_group,
+        "enabled": prompt.enabled,
+        "topic_id": prompt.topic_id,
+        "cluster_id": prompt.cluster_id,
+        "importance": prompt.importance,
+        "sample_count": prompt.sample_count,
+        "daily_tracking_enabled": prompt.daily_tracking_enabled,
+        "daily_schedule_time": prompt.daily_schedule_time,
+        "daily_sample_count": prompt.daily_sample_count,
+    }
+
+
 def create_schedule(db, *, project_id, prompt_id, prompt_version_id, snapshot_hash,
                     timezone_name, local_time, sample_count, max_attempts,
                     authorization_note, optimization=None, now=None):
@@ -59,6 +78,11 @@ def create_schedule(db, *, project_id, prompt_id, prompt_version_id, snapshot_ha
     prompt_version = _load_prompt_version_binding(db, project_id=project_id, prompt_id=prompt_id,
         prompt_version_id=prompt_version_id, snapshot_hash=snapshot_hash)
     prompt_snapshot = prompt_version['snapshot']
+    if prompt_snapshot != _current_prompt_snapshot(prompt):
+        raise HTTPException(409, detail={
+            "code": "PROMPT_VERSION_NOT_CURRENT",
+            "message": "所选 Prompt 版本不是当前有效配置，请刷新后重新授权计划",
+        })
     plan = {"contract_version": "sampling-schedule-v1", "project_id": project_id, "prompt_id": prompt_id,
             "prompt_text": prompt_snapshot['prompt_text'], "prompt_text_hash": _hash(prompt_snapshot['prompt_text']),
             "prompt_version": prompt_version, "sample_count": sample_count,

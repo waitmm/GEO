@@ -5,6 +5,7 @@ from fastapi import HTTPException
 import pytest
 
 from app.models import BrowserMonitorRun, Prompt, SinglePromptAnalysis, SinglePromptSamplingSchedule
+from app.api.release_catalog import _record_prompt_version
 from app.modules.single_prompt_v2.scheduling import create_schedule, next_daily, pause_schedule, tick, allow_scheduled_start
 from test_release_first_slice import _migrated_session, _seed_frozen_analysis
 
@@ -49,6 +50,29 @@ def test_daily_timezone_dst_does_not_duplicate_or_invent_slot():
     assert next_daily(datetime(2026, 3, 8, 0), 'America/New_York', '02:30') == datetime(2026, 3, 9, 6, 30)
     with pytest.raises(HTTPException):
         next_daily(datetime.utcnow(), 'not-a-zone', '09:00')
+
+
+def test_schedule_rejects_superseded_prompt_version_at_creation(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    try:
+        _seed_frozen_analysis(db, reference_urls=[])
+        v1 = _version_kwargs(db)
+        prompt = db.get(Prompt, 44)
+        prompt.prompt_group = 'V2 group'
+        v2 = _record_prompt_version(db, prompt)
+        db.commit()
+        arguments = dict(project_id=1, prompt_id=44, timezone_name='Asia/Shanghai', local_time='09:00',
+            sample_count=1, max_attempts=1, authorization_note='explicit current-version schedule',
+            now=datetime(2026, 10, 9))
+        with pytest.raises(HTTPException) as error:
+            create_schedule(db, **arguments, **v1)
+        assert error.value.status_code == 409
+        assert error.value.detail['code'] == 'PROMPT_VERSION_NOT_CURRENT'
+        created = create_schedule(db, **arguments,
+            prompt_version_id=v2.prompt_version_id, snapshot_hash=v2.snapshot_hash)
+        assert json.loads(created.plan_json)['prompt_version']['prompt_version_id'] == v2.prompt_version_id
+    finally:
+        db.close(); engine.dispose()
 
 
 def test_schedule_reservation_reopen_pause_and_authorization_bound(tmp_path, monkeypatch):

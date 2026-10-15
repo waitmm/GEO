@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -9,9 +8,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, BrowserMonitorRun, Project, Prompt, RunArtifact
-from app.modules.monitoring import api as monitoring_api
 from app.modules.monitoring import executor as executor_module
-from app.modules.monitoring.api import claim_run_for_retry
+from app.modules.monitoring.api import claim_run_for_retry, retry_run
 from app.modules.monitoring.artifacts import ArtifactService
 from app.modules.monitoring.collectors.wenxin.exceptions import AnswerTimeoutError
 from app.modules.monitoring.executor import MonitoringTaskExecutor
@@ -46,91 +44,27 @@ def _seed_failed_run(db, run_id: int = 1, error_type: str = "answer_timeout") ->
     db.commit()
 
 
-@pytest.mark.parametrize(
-    "status",
-    ["queued", "pending", "running", "success", "partial_success", "blocked"],
-)
-def test_retry_refuses_non_failed_statuses(db, status):
+def test_legacy_retry_is_gone_and_never_mutates_the_run(db):
     _seed_failed_run(db)
-    run = db.get(BrowserMonitorRun, 1)
-    run.status = status
-    db.commit()
+    before = db.get(BrowserMonitorRun, 1)
+    original = (before.status, before.stage, before.retry_count, before.error_type, before.error_message)
 
     with pytest.raises(HTTPException) as excinfo:
         claim_run_for_retry(db, 1)
-    assert excinfo.value.status_code == 409
-
-
-def test_retry_refuses_non_retryable_error_type(db):
-    _seed_failed_run(db, error_type="configuration_error")
-
-    with pytest.raises(HTTPException) as excinfo:
-        claim_run_for_retry(db, 1)
-    assert excinfo.value.status_code == 400
-
-
-def test_retry_missing_run_404(db):
-    with pytest.raises(HTTPException) as excinfo:
-        claim_run_for_retry(db, 999)
-    assert excinfo.value.status_code == 404
-
-
-def test_retry_claims_failed_run(db):
-    _seed_failed_run(db)
-
-    claimed = claim_run_for_retry(db, 1)
-
-    assert claimed.id == 1
-    assert claimed.status == "running"
-    assert claimed.stage == "launching_browser"
-    assert claimed.retry_count == 1
-    assert claimed.error_type == ""
-    assert claimed.error_message == ""
-
-
-def test_concurrent_retry_only_one_request_claims(tmp_path):
-    """两个并发请求都先读到 failed，只有第一个 CAS 能成功占用，第二个得到 409。"""
-    db_url = f"sqlite:///{(tmp_path / 'concurrent_retry.db').as_posix()}"
-    engine_a = create_engine(db_url, connect_args={"check_same_thread": False, "timeout": 30})
-    engine_b = create_engine(db_url, connect_args={"check_same_thread": False, "timeout": 30})
-    Base.metadata.create_all(engine_a)
-    session_a = sessionmaker(bind=engine_a)()
-    session_b = sessionmaker(bind=engine_b)()
-    try:
-        _seed_failed_run(session_a)
-
-        # 两个并发请求在占用前都读到 failed
-        assert session_a.get(BrowserMonitorRun, 1).status == "failed"
-        assert session_b.get(BrowserMonitorRun, 1).status == "failed"
-
-        winner = claim_run_for_retry(session_a, 1)
-        assert winner.status == "running"
-        assert winner.retry_count == 1
-
-        with pytest.raises(HTTPException) as excinfo:
-            claim_run_for_retry(session_b, 1)
-        assert excinfo.value.status_code == 409
-        assert "running" in excinfo.value.detail
-    finally:
-        session_a.close()
-        session_b.close()
-        engine_a.dispose()
-        engine_b.dispose()
-
-
-def test_claimed_run_not_visible_to_queue_query(db):
-    """retry claim 成功后 run 不再满足 queue 的 queued/pending 查询条件。"""
-    _seed_failed_run(db)
-
-    claim_run_for_retry(db, 1)
-
-    queued = (
-        db.query(BrowserMonitorRun)
-        .filter(BrowserMonitorRun.status.in_(["queued", "pending"]))
-        .all()
-    )
-    assert all(item.id != 1 for item in queued)
-    assert db.get(BrowserMonitorRun, 1).status == "running"
+    assert excinfo.value.status_code == 410
+    assert excinfo.value.detail == {
+        "code": "LEGACY_IN_PLACE_RETRY_RETIRED",
+        "message": "原地重试入口已停用，请使用正式 V2 样本池的追加式 Run 重试接口",
+        "replacement": "/api/v2/single-prompt/runs/{run_id}/retry",
+    }
+    with pytest.raises(HTTPException) as route_excinfo:
+        retry_run(1, db)
+    assert route_excinfo.value.status_code == 410
+    assert route_excinfo.value.detail == excinfo.value.detail
+    db.expire_all()
+    unchanged = db.get(BrowserMonitorRun, 1)
+    assert (unchanged.status, unchanged.stage, unchanged.retry_count,
+            unchanged.error_type, unchanged.error_message) == original
 
 
 class _FakeCollector:

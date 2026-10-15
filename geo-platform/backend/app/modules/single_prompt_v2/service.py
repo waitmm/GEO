@@ -1051,7 +1051,8 @@ def list_prompt_run_pool(
     if not prompt or prompt.project_id != project_id:
         raise HTTPException(status_code=404, detail="Prompt 不存在或不属于当前项目")
     query = db.query(BrowserMonitorRun).filter_by(project_id=project_id, prompt_id=prompt_id)
-    total = query.count()
+    attempt_total = query.count()
+    logical_sample_total = query.with_entities(BrowserMonitorRun.logical_run_id).distinct().count()
     rows = (
         query.order_by(BrowserMonitorRun.id.desc())
         .offset((page - 1) * page_size)
@@ -1078,7 +1079,9 @@ def list_prompt_run_pool(
         "prompt_id": prompt_id,
         "page": page,
         "page_size": page_size,
-        "total": total,
+        "total": logical_sample_total,
+        "logical_sample_total": logical_sample_total,
+        "attempt_total": attempt_total,
         "items": items,
     }
 

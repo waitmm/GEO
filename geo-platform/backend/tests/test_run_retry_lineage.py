@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
@@ -128,6 +131,8 @@ def test_retry_appends_attempt_lineage_and_is_idempotent(tmp_path):
         )
 
         pool = list_prompt_run_pool(db, project_id=1, prompt_id=11, page=1, page_size=20)
+        assert pool["total"] == pool["logical_sample_total"] == 1
+        assert pool["attempt_total"] == 3
         lineage = {
             item["run_id"]: (
                 item["logical_run_id"],
@@ -270,3 +275,60 @@ def test_release_migration_backfills_each_historical_run_as_its_own_root(tmp_pat
                 "VALUES (12, 0, 'legacy-logical-run-10', 'new-attempt', 1)"
             ))
     engine.dispose()
+
+
+def test_release_migration_preserves_existing_valid_lineage_on_replayed_upgrade(tmp_path):
+    db, engine, source = _db(tmp_path)
+    try:
+        task = BrowserMonitorTask(
+            project_id=1,
+            question_ids_json="[11]",
+            run_count=1,
+            status="failed",
+            created_by="test:existing-lineage",
+        )
+        db.add(task)
+        db.flush()
+        child = BrowserMonitorRun(
+            task_id=task.id,
+            project_id=1,
+            prompt_id=11,
+            status="failed",
+            original_query="Question",
+            logical_run_id=source.logical_run_id,
+            attempt_id="existing-attempt-id",
+            attempt_no=2,
+            retry_of_run_id=source.id,
+            retry_idempotency_key="existing-idempotency-key",
+        )
+        db.add(child)
+        db.commit()
+        before = (
+            child.logical_run_id,
+            child.attempt_id,
+            child.attempt_no,
+            child.retry_of_run_id,
+            child.retry_idempotency_key,
+        )
+
+        migration_path = BACKEND_ROOT / "alembic_release/versions/20261015_03_run_retry_lineage.py"
+        spec = importlib.util.spec_from_file_location("replayed_run_lineage_migration", migration_path)
+        assert spec and spec.loader
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        connection = db.connection()
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+        db.expire_all()
+
+        preserved = db.get(BrowserMonitorRun, child.id)
+        assert (
+            preserved.logical_run_id,
+            preserved.attempt_id,
+            preserved.attempt_no,
+            preserved.retry_of_run_id,
+            preserved.retry_idempotency_key,
+        ) == before
+    finally:
+        db.close()
+        engine.dispose()

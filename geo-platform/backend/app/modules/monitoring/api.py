@@ -5,13 +5,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models import BrowserMonitorRun, BrowserMonitorTask, MonitoringBatch, Project, Prompt, ReferenceSource, RetrievalCandidate, RunArtifact
-from app.modules.monitoring.enums import BROWSER_AUDIT_ENTRY_TYPE, NON_RETRYABLE_ERRORS, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER
+from app.modules.monitoring.enums import BROWSER_AUDIT_ENTRY_TYPE, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER
 from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.importers import import_wenxin_plugin_payload
 from app.modules.monitoring.schemas import (
@@ -278,57 +277,21 @@ def import_wenxin_plugin(payload: WenxinPluginImportRequest, db: Session = Depen
 
 
 def claim_run_for_retry(db: Session, run_id: int) -> BrowserMonitorRun:
-    """原子占用一个 failed run 用于重试（compare-and-set，并发安全）。
+    """Retired in-place retry path; immutable V2 attempts are the only supported path."""
 
-    - 仅允许 status == "failed" 的 run 被重试；该约束由 UPDATE 的 WHERE 子句在
-      数据库层面保证，两个并发 retry 请求只有第一个能成功，第二个匹配 0 行。
-    - queued / pending / running / success / partial_success / blocked 全部拒绝。
-    - 直接 CAS 到 running（而非经过 queued），避免在 queued 已提交、execute_run
-      尚未切换 running 的窗口里被 queue worker 的 queued/pending 查询重复捞走。
-    - 成功后返回已被占用的 run（status=running, retry_count 已 +1）。
-    """
-    run = db.get(BrowserMonitorRun, run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="运行不存在")
-    if run.error_type in NON_RETRYABLE_ERRORS:
-        raise HTTPException(status_code=400, detail="该错误类型不支持自动重试")
-    claimed = db.execute(
-        update(BrowserMonitorRun)
-        .where(BrowserMonitorRun.id == run_id, BrowserMonitorRun.status == "failed")
-        .values(
-            status="running",
-            stage="launching_browser",
-            retry_count=BrowserMonitorRun.retry_count + 1,
-            error_type="",
-            error_message="",
-            error_stage="",
-            blocked_type="",
-            blocked_reason="",
-            outcome_category="",
-        )
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "LEGACY_IN_PLACE_RETRY_RETIRED",
+            "message": "原地重试入口已停用，请使用正式 V2 样本池的追加式 Run 重试接口",
+            "replacement": "/api/v2/single-prompt/runs/{run_id}/retry",
+        },
     )
-    db.commit()
-    if claimed.rowcount == 0:
-        # 运行已不存在或已被其他请求/worker 占用，返回当前实际状态供排查。
-        db.expire_all()
-        current = db.get(BrowserMonitorRun, run_id)
-        if not current:
-            raise HTTPException(status_code=404, detail="运行不存在")
-        raise HTTPException(status_code=409, detail=f"当前状态 {current.status} 不支持重试，仅 failed 状态可重试")
-    db.refresh(run)
-    return run
 
 
 @router.post("/runs/{run_id}/retry", response_model=BrowserRunRead)
 def retry_run(run_id: int, db: Session = Depends(get_db)) -> BrowserMonitorRun:
-    run = claim_run_for_retry(db, run_id)
-    executor = MonitoringTaskExecutor()
-    try:
-        executor.execute_run(db, run.id)
-    finally:
-        executor.close()
-    db.refresh(run)
-    return run
+    return claim_run_for_retry(db, run_id)
 
 
 def _run_detail(db: Session, run: BrowserMonitorRun) -> BrowserRunDetailRead:

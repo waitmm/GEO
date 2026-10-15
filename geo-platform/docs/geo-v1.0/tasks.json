@@ -833,7 +833,7 @@
       "milestone": "M1",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T01"
       ],
@@ -861,10 +861,10 @@
       "planned_start": "",
       "planned_end": "",
       "actual_start": "",
-      "actual_end": "",
-      "blocker": "optimization task已绑定配置版本；分析创建链及前端历史版本呈现尚未统一闭环。",
-      "commit": "",
-      "audit_classification": "需修复",
+      "actual_end": "2026-10-15",
+      "blocker": "",
+      "commit": "d713872",
+      "audit_classification": "已按BRD契约完成并复核",
       "configuration_history_slice": {
         "id": "T03-M1-SMALL-01",
         "status": "DONE",
@@ -892,6 +892,25 @@
         "scope": "新optimization task在input_json/input_hash冻结ProjectConfigurationVersion的ID、序号和snapshot hash，并从该快照形成brand投影；task_view、require与execute按项目和精确版本复核，Project更新后的旧任务继续使用V1、新任务绑定V2。",
         "verification": "automatic delivery 19 passed、truth correction 7 passed、第五批组合61 passed；Luna独立审核PASS_NO_P0_P1。",
         "boundary": "基线前旧任务显式LEGACY_UNBOUND且不回填latest；本切片未绑定SinglePromptAnalysis，也未完成前端版本历史呈现，T03整体保持IN_PROGRESS。"
+      },
+      "analysis_configuration_and_history_ui_slice": {
+        "id": "T03-M1-SMALL-03",
+        "status": "DONE",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "completed_on": "2026-10-15",
+        "backend_source_commits": [
+          "131095a",
+          "559a12f",
+          "a9bd195"
+        ],
+        "frontend_source_commits": [
+          "d313a61",
+          "9a2d25b"
+        ],
+        "integrated_product_head": "d713872",
+        "scope": "三类新Analysis均在sampling_plan/hash中冻结项目配置ID、序号、hash及brand快照，queue/claim/finalize/retry/status按项目和精确版本复核；历史未绑定Analysis只显式LEGACY_UNBOUND。项目编辑页新增只读配置历史，以稳定configuration_version_id读取EFFECTIVE/SUPERSEDED冻结详情。",
+        "verification": "后端组合35 passed；前端专项5 passed；release build通过（仅既有chunk warning）；Luna独立审核PASS_NO_P0_P1。",
+        "boundary": "无配置版本的新Analysis fail-closed；历史结果与任务不回填latest。与前两切片及既有创建/设置能力共同闭合T03 DoD。"
       },
       "current_checkpoint": "delivery_checkpoint_20261009"
     },

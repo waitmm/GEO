@@ -19,7 +19,7 @@ import { ReleasePromptPanel } from "./ReleasePromptPanel";
 import { useTableKeyboardScroll } from "./useTableKeyboardScroll";
 import { ReleaseWorkerStatus } from "./ReleaseWorkerStatus";
 import type {
-  BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, RunArtifactContent, Topic,
+  BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, PromptVersion, PromptVersionBinding, RunArtifactContent, Topic,
   SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
@@ -1559,6 +1559,9 @@ export default function App() {
   const [v2RunPoolLoading, setV2RunPoolLoading] = useState(false);
   const [v2SelectedRunIds, setV2SelectedRunIds] = useState<Key[]>([]);
   const [v2SelectedRunFingerprints, setV2SelectedRunFingerprints] = useState<Record<number, string>>({});
+  const [v2PromptVersions, setV2PromptVersions] = useState<PromptVersion[]>([]);
+  const [v2SelectedPromptVersion, setV2SelectedPromptVersion] = useState<PromptVersion | null>(null);
+  const [v2PromptVersionsLoading, setV2PromptVersionsLoading] = useState(false);
   const [v2Loading, setV2Loading] = useState(false);
   const [v2SampleCount, setV2SampleCount] = useState(3);
   const v2PendingIdempotencyKey = useRef<string | null>(null);
@@ -1770,6 +1773,25 @@ export default function App() {
   }
   const scopedPrompt = activePromptId ? prompts.find((item) => item.id === activePromptId) : undefined;
   const visibleRuns = activePromptId ? runs.filter((item) => item.prompt_id === activePromptId) : runs;
+
+  function promptVersionBindingLabel(binding: PromptVersionBinding) {
+    if (binding.binding === "LEGACY_UNBOUND") return <Tag color="orange">LEGACY_UNBOUND</Tag>;
+    return <Space size={4} wrap><Tag color="blue">Prompt V{binding.version_number}</Tag><Text code>{binding.snapshot_hash.slice(0, 12)}</Text></Space>;
+  }
+
+  async function selectV2PromptVersion(promptVersionId: string) {
+    if (!projectId || !activePromptId) return;
+    setV2PromptVersionsLoading(true);
+    setV2SelectedPromptVersion(null);
+    try {
+      // The detail endpoint is the authority for the ID/hash submitted to mutations.
+      setV2SelectedPromptVersion(await api.getPromptVersion(projectId, activePromptId, promptVersionId));
+    } catch (error: any) {
+      message.error(error.message || "读取所选 Prompt 冻结版本失败");
+    } finally {
+      setV2PromptVersionsLoading(false);
+    }
+  }
 
   function resetPromptScopedAnalysisState() {
     citationDecisionRequestSeq.current += 1;
@@ -2053,6 +2075,10 @@ export default function App() {
 
   async function createV2AnalysisFromSelectedRuns() {
     if (!projectId || !activePromptId || !v2SelectedRunIds.length) return;
+    if (!v2SelectedPromptVersion) {
+      message.warning("请先选择并读取一个明确的 Prompt 冻结版本");
+      return;
+    }
     const runIds = v2SelectedRunIds.map(Number).sort((a, b) => a - b);
     const missingFingerprint = runIds.find((runId) => !v2SelectedRunFingerprints[runId]);
     if (missingFingerprint) {
@@ -2068,6 +2094,8 @@ export default function App() {
         run_ids: runIds,
         run_fingerprints: Object.fromEntries(runIds.map((runId) => [runId, v2SelectedRunFingerprints[runId]])),
         base_context_id: v2Analysis?.context_id || null,
+        prompt_version_id: v2SelectedPromptVersion.prompt_version_id,
+        snapshot_hash: v2SelectedPromptVersion.snapshot_hash,
         idempotency_key: crypto.randomUUID(),
       });
       if (!current()) return;
@@ -2195,6 +2223,10 @@ export default function App() {
       message.warning("请先选择一个 Prompt");
       return;
     }
+    if (!v2SelectedPromptVersion) {
+      message.warning("请先选择并读取一个明确的 Prompt 冻结版本");
+      return;
+    }
     const current = beginV2Read('analysis', false);
     setV2Loading(true);
     const key = v2PendingIdempotencyKey.current || crypto.randomUUID();
@@ -2225,6 +2257,8 @@ export default function App() {
         project_id: projectId,
         prompt_id: activePromptId,
         sample_count: v2SampleCount,
+        prompt_version_id: v2SelectedPromptVersion.prompt_version_id,
+        snapshot_hash: v2SelectedPromptVersion.snapshot_hash,
         idempotency_key: key,
       });
       if (!current()) return;
@@ -3985,6 +4019,21 @@ export default function App() {
     }
     if (!params.get("v2_analysis")) return;
     void refreshV2Analysis();
+  }, [page, projectId, activePromptId]);
+  useEffect(() => {
+    if (page !== "coreV2" || !projectId || !activePromptId) {
+      setV2PromptVersions([]);
+      setV2SelectedPromptVersion(null);
+      return;
+    }
+    let cancelled = false;
+    setV2PromptVersionsLoading(true);
+    setV2SelectedPromptVersion(null);
+    api.listPromptVersions(projectId, activePromptId)
+      .then((versions) => { if (!cancelled) setV2PromptVersions(versions); })
+      .catch((error: Error) => { if (!cancelled) { setV2PromptVersions([]); message.error(error.message || "读取 Prompt 版本列表失败"); } })
+      .finally(() => { if (!cancelled) setV2PromptVersionsLoading(false); });
+    return () => { cancelled = true; };
   }, [page, projectId, activePromptId]);
   useEffect(() => {
     if (!v2Analysis || !["QUEUED", "COLLECTING"].includes(v2Analysis.sampling.status)) return;
@@ -5830,7 +5879,7 @@ export default function App() {
                 onConfirm={startV2Analysis}
               >
                 <Tooltip title="只新增采样记录；继续历史分析请使用下方已有分析">
-                  <Button icon={<Play size={15} />} loading={v2Loading} disabled={scopedPrompt?.enabled === false || v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")}>
+                  <Button icon={<Play size={15} />} loading={v2Loading} disabled={!v2SelectedPromptVersion || scopedPrompt?.enabled === false || v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")}>
                     {v2AnalysisHistory.length ? "新增采样" : "开始首次采样"}
                   </Button>
                 </Tooltip>
@@ -5840,6 +5889,17 @@ export default function App() {
               </Tooltip>
             </Space>}>
               <Text>{scopedPrompt?.prompt_text}</Text>
+              <Alert style={{ marginTop: 12 }} type={v2SelectedPromptVersion ? "info" : "warning"} showIcon
+                message="新建采样必须绑定明确的 Prompt 冻结版本"
+                description={<Space wrap>
+                  <Select aria-label="本次新建采样绑定的 Prompt 冻结版本" style={{ minWidth: 320 }} loading={v2PromptVersionsLoading}
+                    value={v2SelectedPromptVersion?.prompt_version_id} placeholder="选择冻结 Prompt 版本"
+                    onChange={(value) => void selectV2PromptVersion(value)}
+                    options={v2PromptVersions.map((version) => ({ value: version.prompt_version_id, label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash.slice(0, 12)}` }))} />
+                  {v2SelectedPromptVersion
+                    ? <Text>将提交 V{v2SelectedPromptVersion.version_number} · <Text code>{v2SelectedPromptVersion.snapshot_hash.slice(0, 12)}</Text></Text>
+                    : <Text type="secondary">请从已有冻结版本中明确选择；不会隐式使用 latest。</Text>}
+                </Space>} />
               {scopedPrompt?.enabled === false && <Alert type="info" message="问题已停用：不再发起新采样，历史样本和已有分析仍可使用" />}
             </Card>
 
@@ -5911,7 +5971,7 @@ export default function App() {
               />
               <Row justify="space-between" align="middle" gutter={[12, 12]}>
                 <Col><Text>已选择 <Text strong>{v2SelectedRunIds.length}</Text> 个 Run：{v2SelectedRunIds.length ? v2SelectedRunIds.map(Number).sort((a, b) => a - b).join("、") : "尚未选择"}</Text></Col>
-                <Col><Button type="primary" icon={<ListChecks size={15} />} disabled={!v2SelectedRunIds.length} loading={v2Loading} onClick={createV2AnalysisFromSelectedRuns}>用所选 Run 建立分析版本</Button></Col>
+                <Col><Button type="primary" icon={<ListChecks size={15} />} disabled={!v2SelectedRunIds.length || !v2SelectedPromptVersion} loading={v2Loading} onClick={createV2AnalysisFromSelectedRuns}>用所选 Run 建立分析版本</Button></Col>
               </Row>
             </Card>
             </details>
@@ -5924,6 +5984,7 @@ export default function App() {
                 dataSource={v2AnalysisHistory}
                 columns={[
                   { title: "状态", width: 120, render: (_: unknown, row) => v2AnalysisStatusTag(row.sampling.status) },
+                  { title: "Prompt 绑定", width: 220, render: (_: unknown, row) => promptVersionBindingLabel(row.analysis.prompt_version) },
                   { title: "采样", width: 150, render: (_: unknown, row) => `${row.sampling.valid_run_count}/${row.sampling.planned_run_count} 有效` },
                   { title: "Analysis", render: (_: unknown, row: SinglePromptV2AnalysisListItem) => <Text code copyable>{row.analysis.analysis_id}</Text> },
                   { title: "当前进度", width: 230, render: (_: unknown, row: SinglePromptV2AnalysisListItem) => row.source_preparation_summary
@@ -5961,11 +6022,13 @@ export default function App() {
                 </div>
                 <Descriptions size="small" column={{ xs: 1, md: 2 }} style={{ marginTop: 18 }}>
                   <Descriptions.Item label="输入来源">{v2Analysis.analysis.task_id ? `采集任务 #${v2Analysis.analysis.task_id} · ${v2Analysis.active_task?.status || "-"}` : "显式选择历史 Run"}</Descriptions.Item>
+                  <Descriptions.Item label="Prompt 绑定">{promptVersionBindingLabel(v2Analysis.analysis.prompt_version)}</Descriptions.Item>
                   <Descriptions.Item label="结果版本">{v2Analysis.result_version || "采集完成后生成"}</Descriptions.Item>
                   <Descriptions.Item label="AnalysisContext">{v2Analysis.context_id || "尚未冻结"}</Descriptions.Item>
                   <Descriptions.Item label="开始时间">{formatDateTime(v2Analysis.started_at)}</Descriptions.Item>
                   <Descriptions.Item label="分析 ID"><Text style={{ overflowWrap: "anywhere" }}>{v2Analysis.analysis.analysis_id}</Text></Descriptions.Item>
                 </Descriptions>
+                {v2Analysis.analysis.prompt_version.binding === "LEGACY_UNBOUND" && <Alert style={{ marginTop: 14 }} type="warning" showIcon message="LEGACY_UNBOUND：历史 Analysis 未绑定 Prompt 版本" description="此 Analysis 仅按其既有冻结输入继续读取/处理；不会被当前 Prompt 重新解释，也不会伪造版本归属。" />}
                 {v2Analysis.blocker && v2Analysis.blocker.code !== "NEXT_STAGE_NOT_IMPLEMENTED" && <Alert style={{ marginTop: 14 }} type={v2Analysis.context_id ? "info" : "error"} showIcon message={v2BlockerLabel(v2Analysis.blocker.code)} description={v2Analysis.blocker.detail} action={v2Analysis.allowed_operations.includes("RETRY_COLLECTION") ? <Button size="small" danger loading={v2Loading} onClick={retryV2Analysis}>明确重试</Button> : undefined} />}
                 {v2Analysis.warnings.map((warning) => <Alert key={warning.code} style={{ marginTop: 10 }} type="warning" showIcon message={warning.code === "RETRIEVAL_OBSERVATION_UNAVAILABLE" ? "检索观测不可用" : "独立会话证明不可用"} description={warning.detail} />)}
               </Card>

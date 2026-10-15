@@ -238,6 +238,7 @@ export type SinglePromptV2Status = {
     task_id: number | null;
     prompt_text: string;
     sampling_plan_hash: string;
+    prompt_version: PromptVersionBinding;
   };
   sampling: {
     status: string;
@@ -260,6 +261,35 @@ export type SinglePromptV2Status = {
   started_at: string | null;
   finished_at: string | null;
 };
+
+export type PromptVersionSnapshot = {
+  prompt_text?: string;
+  title?: string;
+  intent_type?: string;
+  prompt_group?: string;
+  enabled?: boolean;
+  [key: string]: unknown;
+};
+
+export type PromptVersion = {
+  prompt_version_id: string;
+  version_number: number;
+  status: string;
+  snapshot_hash: string;
+  created_at: string;
+  snapshot?: PromptVersionSnapshot;
+};
+
+/** A historical Analysis may have no immutable PromptVersion identity. */
+export type PromptVersionBinding =
+  | {
+    binding: "BOUND";
+    prompt_version_id: string;
+    version_number: number;
+    snapshot_hash: string;
+    snapshot: PromptVersionSnapshot;
+  }
+  | { binding: "LEGACY_UNBOUND" };
 
 export type SinglePromptV2RunPoolItem = SinglePromptV2Run & {
   input_fingerprint: string;

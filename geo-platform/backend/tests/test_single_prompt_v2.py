@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import pytest
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -11,6 +13,7 @@ from app.models import (
     BrowserMonitorRun,
     BrowserMonitorTask,
     Project,
+    ProjectConfigurationVersion,
     Prompt,
     ReferenceSource,
     RetrievalCandidate,
@@ -21,6 +24,7 @@ from app.models import (
 from app.modules.single_prompt_v2.service import (
     claim_analysis,
     create_analysis,
+    create_frozen_analysis,
     finalize_analysis,
     get_analysis_status,
     project_platform_reported_search,
@@ -93,6 +97,112 @@ def test_create_is_idempotent_and_plan_is_fixed(tmp_path):
         assert db.query(BrowserMonitorTask).count() == 1
         assert len(_runs(db, first)) == 2
         assert get_analysis_status(db, first.analysis_id)["context_id"] is None
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_analysis_configuration_binding_is_exact_versioned_and_legacy_is_not_backfilled(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        _seed(db)
+        legacy = _create(db, count=1, key="legacy-analysis-before-config-ledger")
+        assert get_analysis_status(db, legacy.analysis_id)["project_configuration"] == {
+            "binding_status": "LEGACY_UNBOUND",
+        }
+
+        project = db.get(Project, 1)
+        v1_snapshot = {
+            "name": project.name, "brand_name": "Target V1", "brand_aliases": ["Old"],
+            "website_url": "https://v1.example", "industry": "software",
+            "region": "CN", "language": "zh-CN", "competitors": [],
+        }
+        v1 = ProjectConfigurationVersion(
+            configuration_version_id="project-config:1:v1", project_id=1, version_number=1,
+            snapshot_json=json.dumps(v1_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            snapshot_hash=hashlib.sha256(
+                json.dumps(v1_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(),
+            ).hexdigest(),
+        )
+        db.add(v1); db.commit()
+        first = _create(db, count=1, key="analysis-config-v1")
+
+        v2_snapshot = {**v1_snapshot, "brand_name": "Target V2", "brand_aliases": ["New"]}
+        v2 = ProjectConfigurationVersion(
+            configuration_version_id="project-config:1:v2", project_id=1, version_number=2,
+            snapshot_json=json.dumps(v2_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            snapshot_hash=hashlib.sha256(
+                json.dumps(v2_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(),
+            ).hexdigest(),
+        )
+        project.brand_name = "mutable-project-value-must-not-replace-frozen-config"
+        db.add(v2); db.commit()
+        second = _create(db, count=1, key="analysis-config-v2")
+
+        first_binding = get_analysis_status(db, first.analysis_id)["project_configuration"]
+        second_binding = get_analysis_status(db, second.analysis_id)["project_configuration"]
+        assert (first_binding["configuration_version_id"], first_binding["version_number"],
+                first_binding["snapshot_hash"], first_binding["brand"]["brand_name"]) == (
+            v1.configuration_version_id, 1, v1.snapshot_hash, "Target V1",
+        )
+        assert (second_binding["configuration_version_id"], second_binding["version_number"],
+                second_binding["snapshot_hash"], second_binding["brand"]["brand_name"]) == (
+            v2.configuration_version_id, 2, v2.snapshot_hash, "Target V2",
+        )
+        assert get_analysis_status(db, legacy.analysis_id)["project_configuration"] == {
+            "binding_status": "LEGACY_UNBOUND",
+        }
+
+        prompt = db.get(Prompt, 11)
+        frozen, created = create_frozen_analysis(
+            db,
+            project_id=1,
+            prompt_id=11,
+            prompt_text=prompt.prompt_text,
+            sampling_plan={
+                "contract_version": "single-prompt-sampling-plan-v1",
+                "project_id": 1,
+                "prompt_id": 11,
+                "prompt_text_hash": hashlib.sha256(json.dumps(
+                    prompt.prompt_text, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode()).hexdigest(),
+                "sample_count": 1,
+                "platform": "wenxin_web",
+                "source_type": "browser_audit_entry",
+                "adapter": "wenxin_web",
+                "collection_mode": "single_independent",
+                "project_configuration": first_binding,
+            },
+            idempotency_key="frozen-analysis-keeps-v1",
+            created_by="test:configuration-binding",
+        )
+        assert created is True
+        assert get_analysis_status(db, frozen.analysis_id)["project_configuration"] == first_binding
+
+        token = claim_analysis(db, first.analysis_id)
+        _succeed(_runs(db, first)[0])
+        db.commit()
+        assert token and finalize_analysis(db, first.analysis_id, token)
+        frozen_output = json.loads(db.query(SinglePromptAnalysisContext).filter_by(
+            analysis_id=first.analysis_id,
+        ).one().raw_output_json)
+        assert frozen_output["sampling_plan"]["project_configuration"] == first_binding
+
+        forged_plan = json.loads(frozen.sampling_plan_json)
+        forged_plan["project_configuration"]["snapshot_hash"] = "0" * 64
+        forged_json = json.dumps(forged_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        frozen.sampling_plan_json = forged_json
+        frozen.sampling_plan_hash = hashlib.sha256(forged_json.encode()).hexdigest()
+        frozen.status = "INTERRUPTED"
+        db.commit()
+        for operation in (
+            lambda: get_analysis_status(db, frozen.analysis_id),
+            lambda: claim_analysis(db, frozen.analysis_id),
+            lambda: retry_analysis(db, frozen.analysis_id),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                operation()
+            assert exc_info.value.status_code == 409
     finally:
         db.close()
         engine.dispose()

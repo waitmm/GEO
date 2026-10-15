@@ -16,6 +16,7 @@ from app.models import (
     BrowserMonitorRun,
     BrowserMonitorTask,
     Project,
+    ProjectConfigurationVersion,
     Prompt,
     ReferenceSource,
     RetrievalCandidate,
@@ -106,6 +107,70 @@ def _require_sampling_enabled(db: Session, project_id: int, prompt_id: int) -> N
         raise HTTPException(status_code=409, detail="问题已停用，不能发起新采样；历史样本和已有分析仍可使用")
 
 
+def _configuration_brand(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "brand_name": snapshot.get("brand_name") or "",
+        "brand_aliases": snapshot.get("brand_aliases") or [],
+        "website_url": snapshot.get("website_url") or "",
+        "industry": snapshot.get("industry") or "",
+        "region": snapshot.get("region") or "",
+        "language": snapshot.get("language") or "",
+    }
+
+
+def _current_analysis_configuration(db: Session, project_id: int) -> dict[str, Any]:
+    row = db.query(ProjectConfigurationVersion).filter_by(project_id=project_id).order_by(
+        ProjectConfigurationVersion.version_number.desc(), ProjectConfigurationVersion.id.desc(),
+    ).first()
+    if not row:
+        return {"binding_status": "LEGACY_UNBOUND"}
+    snapshot = loads(row.snapshot_json, {})
+    if not isinstance(snapshot, dict) or _hash(snapshot) != row.snapshot_hash:
+        raise HTTPException(status_code=409, detail="当前项目配置版本 snapshot hash 不匹配")
+    return {
+        "binding_status": "BOUND",
+        "configuration_version_id": row.configuration_version_id,
+        "version_number": row.version_number,
+        "snapshot_hash": row.snapshot_hash,
+        "brand": _configuration_brand(snapshot),
+    }
+
+
+def _validate_configuration_binding(db: Session, project_id: int,
+                                    binding: Any) -> dict[str, Any]:
+    if not isinstance(binding, dict) or binding.get("binding_status") not in {"BOUND", "LEGACY_UNBOUND"}:
+        raise HTTPException(status_code=409, detail="Analysis 项目配置绑定无效")
+    if binding.get("binding_status") == "LEGACY_UNBOUND":
+        if set(binding) != {"binding_status"}:
+            raise HTTPException(status_code=409, detail="Legacy Analysis 不能携带伪造的配置版本")
+        return binding
+    required = {"configuration_version_id", "version_number", "snapshot_hash", "brand"}
+    if not required.issubset(binding):
+        raise HTTPException(status_code=409, detail="Analysis 项目配置绑定不完整")
+    row = db.query(ProjectConfigurationVersion).filter_by(
+        project_id=project_id,
+        configuration_version_id=binding["configuration_version_id"],
+        version_number=binding["version_number"],
+        snapshot_hash=binding["snapshot_hash"],
+    ).one_or_none()
+    snapshot = loads(row.snapshot_json, {}) if row else {}
+    if (not row or not isinstance(snapshot, dict) or _hash(snapshot) != row.snapshot_hash
+            or binding["brand"] != _configuration_brand(snapshot)):
+        raise HTTPException(status_code=409, detail="Analysis 项目配置版本、hash 或品牌快照不匹配")
+    return binding
+
+
+def _validate_analysis_configuration(db: Session, analysis: SinglePromptAnalysis,
+                                     plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    plan = plan if plan is not None else loads(analysis.sampling_plan_json, {})
+    if not isinstance(plan, dict) or _hash(plan) != analysis.sampling_plan_hash:
+        raise HTTPException(status_code=409, detail="Analysis 冻结采样计划 hash 不匹配")
+    binding = plan.get("project_configuration")
+    if binding is None:
+        return {"binding_status": "LEGACY_UNBOUND"}
+    return _validate_configuration_binding(db, analysis.project_id, binding)
+
+
 def create_analysis(
     db: Session,
     *,
@@ -132,6 +197,7 @@ def create_analysis(
         "source_type": BROWSER_AUDIT_ENTRY_TYPE,
         "adapter": WENXIN_WEB_ADAPTER,
         "collection_mode": "single_independent",
+        "project_configuration": _current_analysis_configuration(db, project_id),
     }
     plan_hash = _hash(plan)
     existing = (
@@ -254,6 +320,11 @@ def create_frozen_analysis(
 ) -> tuple[SinglePromptAnalysis, bool]:
     """Create a planned V2 analysis exclusively from an already frozen plan."""
 
+    sampling_plan = dict(sampling_plan)
+    if "project_configuration" not in sampling_plan:
+        sampling_plan["project_configuration"] = _current_analysis_configuration(db, project_id)
+    else:
+        _validate_configuration_binding(db, project_id, sampling_plan["project_configuration"])
     required = {"sample_count", "platform", "source_type", "adapter", "collection_mode", "prompt_text_hash"}
     missing = sorted(required - set(sampling_plan))
     if missing:
@@ -313,6 +384,7 @@ def queue_frozen_analysis(db: Session, analysis_id: str) -> SinglePromptAnalysis
         raise HTTPException(status_code=409, detail=f"当前状态 {analysis.status} 不能启动采样")
     _require_sampling_enabled(db, analysis.project_id, analysis.prompt_id)
     plan = loads(analysis.sampling_plan_json, {})
+    _validate_analysis_configuration(db, analysis, plan)
     runs = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).order_by(BrowserMonitorRun.id).all()
     if len(runs) != int(plan.get("sample_count") or 0):
         raise HTTPException(status_code=409, detail="复测计划 Run 数与冻结计划不一致")
@@ -334,6 +406,10 @@ def queue_frozen_analysis(db: Session, analysis_id: str) -> SinglePromptAnalysis
 
 
 def claim_analysis(db: Session, analysis_id: str) -> str | None:
+    analysis = db.query(SinglePromptAnalysis).filter_by(analysis_id=analysis_id).one_or_none()
+    if not analysis:
+        return None
+    _validate_analysis_configuration(db, analysis)
     token = uuid4().hex
     claimed = db.execute(
         update(SinglePromptAnalysis)
@@ -626,6 +702,7 @@ def create_analysis_from_runs(
         "run_ids": ordered_ids,
         "run_fingerprints": actual_fingerprints,
         "base_context_id": base_context_id,
+        "project_configuration": _current_analysis_configuration(db, project_id),
     }
     if origin_monitor_scope is not None:
         plan['origin_monitor_scope'] = origin_monitor_scope
@@ -760,6 +837,7 @@ def finalize_analysis(db: Session, analysis_id: str, token: str) -> bool:
         return False
 
     plan = loads(analysis.sampling_plan_json, {})
+    _validate_analysis_configuration(db, analysis, plan)
     runs = _snapshot_runs(db, analysis)
     planned = int(plan.get("sample_count") or 0)
     if len(runs) != planned or any(run["status"] not in TERMINAL_RUN_STATUSES for run in runs):
@@ -854,6 +932,7 @@ def retry_analysis(db: Session, analysis_id: str) -> SinglePromptAnalysis:
         raise HTTPException(status_code=409, detail="AnalysisContext 已冻结，不能原地重采样；请创建一次新分析")
     if analysis.status not in {"FAILED", "INTERRUPTED"}:
         raise HTTPException(status_code=409, detail=f"当前状态 {analysis.status} 不允许重试")
+    _validate_analysis_configuration(db, analysis)
     _require_sampling_enabled(db, analysis.project_id, analysis.prompt_id)
 
     runs = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == analysis.task_id).all()
@@ -945,6 +1024,7 @@ def get_analysis_status(db: Session, analysis_id: str) -> dict[str, Any]:
     analysis = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.analysis_id == analysis_id).one_or_none()
     if not analysis:
         raise HTTPException(status_code=404, detail="V2 分析不存在")
+    configuration = _validate_analysis_configuration(db, analysis)
     task = db.get(BrowserMonitorTask, analysis.task_id) if analysis.task_id is not None else None
     context = db.query(SinglePromptAnalysisContext).filter(SinglePromptAnalysisContext.analysis_id == analysis_id).one_or_none()
     if context:
@@ -1019,6 +1099,7 @@ def get_analysis_status(db: Session, analysis_id: str) -> dict[str, Any]:
         "context_id": context.context_id if context else None,
         "result_source": result_source,
         "origin_monitor_scope": plan.get('origin_monitor_scope'),
+        "project_configuration": configuration,
         "blocker": blocker,
         "allowed_operations": operations,
         "active_task": {

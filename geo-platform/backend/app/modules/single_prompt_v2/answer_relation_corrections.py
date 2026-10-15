@@ -616,6 +616,236 @@ def execute_reprojection(db, task: SinglePromptOptimizationTask, fixed: dict) ->
     )
 
 
+def _delivery_regeneration_input(
+    db, *, reprojection_task_id: str, project_id: int, prompt_id: int,
+    expected_revision: int, strategy_result_version: str, strategy_result_hash: str,
+    affected_delivery_set_hash: str, requested_by: str,
+) -> tuple[SinglePromptOptimizationTask, dict, dict]:
+    parent = require_task(db, reprojection_task_id, project_id, prompt_id)
+    parent_fixed = loads(parent.input_json, {})
+    if parent_fixed.get("answer_relation_delivery_regeneration") or not parent_fixed.get("answer_relation_correction"):
+        raise HTTPException(409, "受影响稿件重新生成必须直接绑定答案与关系策略重投影任务")
+    if parent.status not in _CORRECTION_READY_TASK_STATUSES:
+        raise HTTPException(409, "答案与关系策略重投影尚未成功完成")
+    if parent.revision != expected_revision:
+        raise HTTPException(409, "策略重投影任务 revision 已变化，请重新加载")
+    ref = validate_reprojection(db, parent)
+    progress = loads(parent.progress_json, {})
+    manifest = (progress.get("objects") or {}).get("answer_relation_reprojection") or {}
+    impact = ref["impact"]
+    expected_manifest = {
+        "parent_task_id": ref["parent_task_id"],
+        "parent_input_hash": ref["parent_input_hash"],
+        "diagnosis_id": ref["diagnosis_id"],
+        "correction_result_version": ref["correction_result_version"],
+        "correction_result_hash": ref["correction_result_hash"],
+        "reviewable_set_hash": ref["reviewable_set_hash"],
+        "fixed_strategy": ref["fixed_strategy"],
+        "affected_strategy_ids": impact["affected_strategy_ids"],
+        "unaffected_strategy_ids": impact["unaffected_strategy_ids"],
+        "pending_delivery_updates": impact["affected_deliveries"],
+        "unchanged_deliveries": impact["unaffected_deliveries"],
+        "deliveries_regenerated": False,
+    }
+    if any(manifest.get(key) != value for key, value in expected_manifest.items()):
+        raise HTTPException(409, "策略重投影结果与冻结纠错影响范围不一致")
+    if (manifest.get("new_strategy_result_version") != strategy_result_version
+            or manifest.get("new_strategy_result_hash") != strategy_result_hash):
+        raise HTTPException(409, "必须使用该重投影任务产生的新策略版本与 hash")
+    affected = sorted(impact["affected_deliveries"],
+        key=lambda row: (row["strategy_id"], row["proposal_id"], row["result_version"], row["result_hash"]))
+    if not affected or digest(affected) != affected_delivery_set_hash:
+        raise HTTPException(409, "受影响稿件集合 hash 不完整、已变化或不是完整冻结集合")
+    unchanged = sorted(impact["unaffected_deliveries"],
+        key=lambda row: (row["strategy_id"], row["proposal_id"], row["result_version"], row["result_hash"]))
+    if set(row["proposal_id"] for row in affected) & set(row["proposal_id"] for row in unchanged):
+        raise HTTPException(409, "受影响与未受影响稿件集合重叠")
+    for binding in affected + unchanged:
+        result = db.query(SinglePromptExecutionProposalResult).filter_by(
+            proposal_id=binding["proposal_id"], result_version=binding["result_version"],
+            output_hash=binding["result_hash"],
+        ).one_or_none()
+        if not result or digest(loads(result.output_json, {})) != result.output_hash:
+            raise HTTPException(409, "父任务冻结稿件版本或 hash 已变化")
+    strategy_id = manifest.get("new_strategy_id")
+    strategy = db.query(SinglePromptStrategyExecution).filter_by(
+        strategy_id=strategy_id, analysis_id=parent.analysis_id, context_id=parent.context_id,
+        diagnosis_id=ref["diagnosis_id"], project_id=project_id, prompt_id=prompt_id,
+        active_result_version=strategy_result_version,
+    ).one_or_none()
+    strategy_result = db.query(SinglePromptStrategyResult).filter_by(
+        strategy_id=strategy_id, result_version=strategy_result_version,
+        output_hash=strategy_result_hash,
+    ).one_or_none()
+    strategy_output = loads(strategy_result.output_json, {}) if strategy_result else {}
+    if (not strategy or not strategy_result or digest(strategy_output) != strategy_result_hash
+            or strategy.diagnosis_result_version != ref["correction_result_version"]
+            or strategy.diagnosis_result_hash != ref["correction_result_hash"]):
+        raise HTTPException(409, "新策略身份、纠错版本或 hash 不一致")
+    direction_ids = [str(row.get("direction_id") or row.get("strategy_id") or "")
+                     for row in strategy_output.get("directions") or []]
+    if not direction_ids or any(not value for value in direction_ids) or len(set(direction_ids)) != len(direction_ids):
+        raise HTTPException(409, "新策略没有完整且唯一的受影响方向集合")
+    if not str(requested_by).strip():
+        raise HTTPException(403, "缺少实际访问身份")
+    fixed = copy.deepcopy(parent_fixed)
+    fixed["source_fetch_authorized"] = False
+    fixed["answer_relation_delivery_regeneration"] = {
+        "contract_version": "answer_relation_delivery_regeneration.v1",
+        "reprojection_task_id": parent.task_id,
+        "reprojection_input_hash": parent.input_hash,
+        "reprojection_revision": parent.revision,
+        "correction_result_version": ref["correction_result_version"],
+        "correction_result_hash": ref["correction_result_hash"],
+        "strategy_id": strategy_id,
+        "strategy_result_version": strategy_result_version,
+        "strategy_result_hash": strategy_result_hash,
+        "affected_delivery_set_hash": affected_delivery_set_hash,
+        "affected_deliveries": affected,
+        "unchanged_deliveries": unchanged,
+        "new_direction_ids": direction_ids,
+        "requested_by": requested_by.strip(),
+    }
+    return parent, fixed, strategy_output
+
+
+def create_delivery_regeneration_task(
+    db, *, reprojection_task_id: str, project_id: int, prompt_id: int,
+    expected_revision: int, strategy_result_version: str, strategy_result_hash: str,
+    affected_delivery_set_hash: str, idempotency_key: str, requested_by: str,
+):
+    from .automatic_delivery import encode
+    parent, fixed, _ = _delivery_regeneration_input(
+        db, reprojection_task_id=reprojection_task_id, project_id=project_id, prompt_id=prompt_id,
+        expected_revision=expected_revision, strategy_result_version=strategy_result_version,
+        strategy_result_hash=strategy_result_hash, affected_delivery_set_hash=affected_delivery_set_hash,
+        requested_by=requested_by,
+    )
+    fingerprint = digest(fixed)
+    same_key = db.query(SinglePromptOptimizationTask).filter_by(
+        project_id=project_id, idempotency_key=idempotency_key,
+    ).one_or_none()
+    if same_key and same_key.input_hash != fingerprint:
+        raise HTTPException(409, "幂等键已绑定其他受影响稿件重新生成输入")
+    existing = same_key or db.query(SinglePromptOptimizationTask).filter_by(
+        analysis_id=parent.analysis_id, input_hash=fingerprint,
+    ).one_or_none()
+    if existing:
+        return existing, False
+    ref = fixed["answer_relation_delivery_regeneration"]
+    initial_manifest = {
+        "strategy_result_version": ref["strategy_result_version"],
+        "strategy_result_hash": ref["strategy_result_hash"],
+        "affected_deliveries": ref["affected_deliveries"],
+        "regenerated_deliveries": [],
+        "unchanged_deliveries": ref["unchanged_deliveries"],
+        "pending_deliveries": ref["affected_deliveries"],
+        "failed_deliveries": [],
+        "deliveries_regenerated": False,
+    }
+    row = SinglePromptOptimizationTask(
+        task_id=f"optimize-{uuid4()}", project_id=project_id, prompt_id=prompt_id,
+        analysis_id=parent.analysis_id, context_id=parent.context_id,
+        input_json=encode(fixed), input_hash=fingerprint, idempotency_key=idempotency_key,
+        authorization_json=encode({"policy": "CACHE_ONLY", "max_requests": 0,
+                                   "max_tokens": 0, "max_cost_cny": 0}),
+        progress_json=encode({"stage": "DRAFT", "objects": {
+            "answer_relation_delivery_regeneration": initial_manifest,
+        }, "requests": [], "limitations": []}),
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent = db.query(SinglePromptOptimizationTask).filter_by(
+            analysis_id=parent.analysis_id, input_hash=fingerprint,
+        ).one_or_none()
+        if concurrent:
+            return concurrent, False
+        raise
+    return row, True
+
+
+def validate_delivery_regeneration(db, task: SinglePromptOptimizationTask) -> tuple[dict, dict]:
+    fixed = loads(task.input_json, {})
+    ref = fixed.get("answer_relation_delivery_regeneration") or {}
+    required = {
+        "reprojection_task_id", "reprojection_revision", "strategy_result_version",
+        "strategy_result_hash", "affected_delivery_set_hash", "requested_by",
+    }
+    if not required.issubset(ref):
+        raise HTTPException(409, "受影响稿件重新生成缺少冻结身份")
+    _, expected, strategy_output = _delivery_regeneration_input(
+        db, reprojection_task_id=ref["reprojection_task_id"], project_id=task.project_id,
+        prompt_id=task.prompt_id, expected_revision=ref["reprojection_revision"],
+        strategy_result_version=ref["strategy_result_version"],
+        strategy_result_hash=ref["strategy_result_hash"],
+        affected_delivery_set_hash=ref["affected_delivery_set_hash"], requested_by=ref["requested_by"],
+    )
+    if fixed != expected or digest(expected) != task.input_hash:
+        raise HTTPException(409, "受影响稿件重新生成输入、lineage 或冻结集合已变化")
+    return ref, strategy_output
+
+
+def execute_delivery_regeneration(db, task: SinglePromptOptimizationTask, fixed: dict) -> None:
+    from .automatic_delivery import checkpoint, scoped_client
+    from .execution import create_execution_proposal, generate_complete_execution_deliverable
+
+    ref, strategy_output = validate_delivery_regeneration(db, task)
+    directions = strategy_output.get("directions") or []
+    regenerated = []
+    context_version = (fixed.get("brand_context") or {}).get("context_version_id")
+    for direction in directions:
+        direction_id = str(direction.get("direction_id") or direction.get("strategy_id") or "")
+        proposal, base, _ = create_execution_proposal(
+            db, strategy_id=ref["strategy_id"],
+            strategy_result_version=ref["strategy_result_version"],
+            strategy_result_hash=ref["strategy_result_hash"], project_id=task.project_id,
+            prompt_id=task.prompt_id, direction_id=direction_id,
+            idempotency_key=f"{task.task_id}:answer-relation-delivery:{direction_id}",
+            strategy_review_id=None, strategy_review_snapshot_hash="",
+            input_authority_type="MACHINE_QUALIFICATION",
+            input_authority_id=(strategy_output.get("authority") or {}).get("authority_id", ""),
+            input_authority_hash=(strategy_output.get("authority") or {}).get("authority_hash", ""),
+            brand_context_version_id=context_version,
+            supplemental_source_refs=[{"source_id": source["snapshot_id"], "snapshot_hash": digest(source)}
+                for source in fixed.get("supplemental_sources") or []], commit=False,
+            allow_frozen_strategy=True,
+            answer_identity_override={
+                "answer_result_version": fixed["answer_relation_correction"]["parent_answer_result_version"],
+                "answer_result_hash": fixed["answer_relation_correction"]["parent_answer_result_hash"],
+            },
+        )
+        result, _ = generate_complete_execution_deliverable(
+            db, proposal_id=proposal.proposal_id, base_result_version=base.result_version,
+            base_result_hash=base.output_hash, reviewable_set_hash=base.reviewable_set_hash,
+            generation_client=scoped_client(db, task),
+            allow_frozen_strategy=True,
+        )
+        output = loads(result.output_json, {})
+        status = (output.get("validation") or {}).get("content_delivery_status")
+        if status != "READY":
+            raise HTTPException(409, "受影响稿件的新策略生成结果未通过正文检查")
+        regenerated.append({
+            "proposal_id": result.proposal_id, "strategy_id": direction_id,
+            "result_version": result.result_version, "result_hash": result.output_hash,
+            "content_delivery_status": status,
+        })
+    manifest = {
+        "strategy_result_version": ref["strategy_result_version"],
+        "strategy_result_hash": ref["strategy_result_hash"],
+        "affected_deliveries": ref["affected_deliveries"],
+        "regenerated_deliveries": regenerated,
+        "unchanged_deliveries": ref["unchanged_deliveries"],
+        "pending_deliveries": [], "failed_deliveries": [],
+        "deliveries_regenerated": True,
+    }
+    checkpoint(db, task, stage="COMPLETE",
+        objects={"answer_relation_delivery_regeneration": manifest, "deliveries": regenerated},
+        status="COMPLETED")
+
+
 def _canonical(value) -> str:
     from .automatic_delivery import encode
     return encode(value)

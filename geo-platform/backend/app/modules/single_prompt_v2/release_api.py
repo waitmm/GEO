@@ -48,6 +48,7 @@ from app.modules.single_prompt_v2.diagnosis import (
 from app.modules.single_prompt_v2.schemas import (
     TruthCorrectionPreview, TruthCorrectionCreate, TruthReprojectionCreate,
     AnswerRelationCorrectionPreview, AnswerRelationCorrectionCreate, AnswerRelationReprojectionCreate,
+    AnswerRelationDeliveryRegenerationCreate,
     AutomaticOptimizationCreate, AutomaticOptimizationAction, AutomaticOptimizationAuthorization, AutomaticDraftRevisionCreate, AutomaticDraftRegenerationCreate,
     SinglePromptAnalysisCreate,
     SinglePromptAutomaticStrategyCreate,
@@ -159,6 +160,23 @@ def queue_answer_relation_reprojection(task_id: str, payload: AnswerRelationRepr
     from .automatic_delivery import task_view
     row, created = create_reprojection_task(
         db, parent_task_id=task_id, requested_by=principal(request)["name"], **payload.model_dump(),
+    )
+    if not created:
+        response.status_code = 200
+    return task_view(row)
+
+
+@router.post("/optimization-tasks/{task_id}/affected-draft-regenerations", status_code=201)
+def queue_answer_relation_delivery_regeneration(
+    task_id: str, payload: AnswerRelationDeliveryRegenerationCreate,
+    request: Request, response: Response, db: Session = Depends(get_db),
+) -> dict:
+    from app.core.release_access import principal
+    from .answer_relation_corrections import create_delivery_regeneration_task
+    from .automatic_delivery import task_view
+    row, created = create_delivery_regeneration_task(
+        db, reprojection_task_id=task_id, requested_by=principal(request)["name"],
+        **payload.model_dump(),
     )
     if not created:
         response.status_code = 200

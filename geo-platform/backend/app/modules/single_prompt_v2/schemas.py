@@ -61,6 +61,17 @@ class AnswerRelationReprojectionCreate(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=120)
 
 
+class AnswerRelationDeliveryRegenerationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: int = Field(gt=0)
+    prompt_id: int = Field(gt=0)
+    expected_revision: int = Field(gt=0)
+    strategy_result_version: str = Field(min_length=1, max_length=96)
+    strategy_result_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    affected_delivery_set_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
 class AutomaticDraftRegenerationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     project_id: int = Field(gt=0)

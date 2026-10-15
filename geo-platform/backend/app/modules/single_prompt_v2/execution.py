@@ -195,6 +195,7 @@ def _strategy_input_for_execution(
     project_id: int,
     prompt_id: int,
     direction_id: str,
+    allow_frozen_strategy: bool = False,
 ) -> dict[str, Any]:
     strategy = db.query(SinglePromptStrategyExecution).filter(
         SinglePromptStrategyExecution.strategy_id == strategy_id
@@ -216,7 +217,7 @@ def _strategy_input_for_execution(
     is_machine_authority = strategy.input_authority_type == "MACHINE_QUALIFICATION"
     if not result or (not is_machine_authority and (not review or review.decision != "ACCEPTED")):
         raise HTTPException(status_code=409, detail="当前精确策略版本没有有效的机器资格或人工确认")
-    applicability = _strategy_applicability(db, strategy)
+    applicability = _strategy_applicability(db, strategy) if not allow_frozen_strategy else {"is_current_input": True}
     if not applicability["is_current_input"]:
         raise HTTPException(status_code=409, detail="策略输入已过期，不能授权新的执行方案")
     output = loads(result.output_json, {})
@@ -1080,11 +1081,19 @@ def create_execution_proposal(
     input_authority_hash: str = "",
     brand_context_version_id: str | None = None,
     supplemental_source_refs: list[dict] | None = None,
+    commit: bool = True,
+    allow_frozen_strategy: bool = False,
+    answer_identity_override: dict | None = None,
 ) -> tuple[SinglePromptExecutionProposal, SinglePromptExecutionProposalResult, bool]:
     snapshot = _strategy_input_for_execution(
         db, strategy_id=strategy_id, strategy_result_version=strategy_result_version,
         project_id=project_id, prompt_id=prompt_id, direction_id=direction_id,
+        allow_frozen_strategy=allow_frozen_strategy,
     )
+    if answer_identity_override is not None:
+        if set(answer_identity_override) != {"answer_result_version", "answer_result_hash"}:
+            raise HTTPException(422, detail="稿件 Answer 身份覆盖字段不完整")
+        snapshot["identity"].update(answer_identity_override)
     current = snapshot["identity"]
     expected_authority = {
         "input_authority_type": current.get("input_authority_type") or "HUMAN_REVIEW",
@@ -1176,7 +1185,10 @@ def create_execution_proposal(
     )
     db.add_all([proposal, result])
     try:
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError:
         db.rollback()
         concurrent = db.query(SinglePromptExecutionProposal).filter(
@@ -1337,6 +1349,7 @@ def generate_complete_execution_deliverable(
     submitted_draft: dict | None = None,
     revision_identity: dict | None = None,
     regeneration_identity: dict | None = None,
+    allow_frozen_strategy: bool = False,
 ) -> tuple[SinglePromptExecutionProposalResult, bool]:
     proposal = db.query(SinglePromptExecutionProposal).filter_by(proposal_id=proposal_id).one_or_none()
     text_task = submitted_draft is not None or regeneration_identity is not None
@@ -1367,7 +1380,7 @@ def generate_complete_execution_deliverable(
                 return saved, False
     if not proposal or proposal.active_result_version != base_result_version:
         raise HTTPException(status_code=409, detail="执行方案结果版本已变化，请重新加载")
-    if not _proposal_applicability(db, proposal)["is_current_input"]:
+    if not allow_frozen_strategy and not _proposal_applicability(db, proposal)["is_current_input"]:
         raise HTTPException(status_code=409, detail="执行方案输入已过期，不能生成新的完整交付")
     base = db.query(SinglePromptExecutionProposalResult).filter_by(
         proposal_id=proposal_id, result_version=base_result_version

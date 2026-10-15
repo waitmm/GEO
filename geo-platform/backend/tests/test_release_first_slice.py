@@ -337,7 +337,13 @@ def test_release_migration_is_explicit_allowlisted_and_runtime_version_is_checke
     database_path = tmp_path / "geo-release.db"
     monkeypatch.setenv("GEO_RELEASE_DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
     config = Config(str(ROOT / "alembic.release.ini"))
-    command.upgrade(config, "head")
+    configuration_table = Base.metadata.tables["project_configuration_versions"]
+    Base.metadata.remove(configuration_table)
+    assert "project_configuration_versions" not in Base.metadata.tables
+    try:
+        command.upgrade(config, "head")
+    finally:
+        Base.metadata._add_table(configuration_table.name, configuration_table.schema, configuration_table)
 
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
 

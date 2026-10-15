@@ -7,8 +7,6 @@ from uuid import uuid4
 from alembic import op
 import sqlalchemy as sa
 
-from app.models import Base
-
 
 revision = "20261015_01"
 down_revision = "20261010_02"
@@ -27,8 +25,29 @@ def _json_list(value):
 def upgrade():
     name = "project_configuration_versions"
     connection = op.get_bind()
-    table = Base.metadata.tables[name]
-    table.create(connection, checkfirst=False)
+    op.create_table(
+        name,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("configuration_version_id", sa.String(80), nullable=False),
+        sa.Column("project_id", sa.Integer(), sa.ForeignKey("projects.id"), nullable=False),
+        sa.Column("version_number", sa.Integer(), nullable=False),
+        sa.Column("snapshot_json", sa.Text(), nullable=False),
+        sa.Column("snapshot_hash", sa.String(64), nullable=False),
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.UniqueConstraint("project_id", "version_number", name="uq_project_configuration_version"),
+    )
+    op.create_index("ix_project_configuration_versions_configuration_version_id", name,
+        ["configuration_version_id"], unique=True)
+    op.create_index("ix_project_configuration_versions_project_id", name, ["project_id"])
+    op.create_index("ix_project_configuration_versions_snapshot_hash", name, ["snapshot_hash"])
+    table = sa.table(
+        name,
+        sa.column("configuration_version_id", sa.String(80)),
+        sa.column("project_id", sa.Integer()),
+        sa.column("version_number", sa.Integer()),
+        sa.column("snapshot_json", sa.Text()),
+        sa.column("snapshot_hash", sa.String(64)),
+    )
     projects = connection.execute(sa.text("""SELECT id, name, brand_name, brand_aliases_json,
       website_url, industry, region, language, status FROM projects ORDER BY id""")).mappings()
     for project in projects:
@@ -56,4 +75,4 @@ def upgrade():
 
 
 def downgrade():
-    Base.metadata.tables["project_configuration_versions"].drop(op.get_bind())
+    op.drop_table("project_configuration_versions")

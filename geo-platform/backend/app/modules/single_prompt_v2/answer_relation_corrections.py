@@ -592,6 +592,9 @@ def execute_reprojection(db, task: SinglePromptOptimizationTask, fixed: dict) ->
         )
         db.add_all([strategy, strategy_result])
         db.commit()
+    affected_deliveries = sorted(impact["affected_deliveries"],
+        key=lambda row: (row["strategy_id"], row["proposal_id"], row["result_version"], row["result_hash"]))
+    regeneration_plan = _affected_delivery_regeneration_plan(db, ref, loads(strategy_result.output_json, {}))
     manifest = {
         "parent_task_id": ref["parent_task_id"],
         "parent_input_hash": ref["parent_input_hash"],
@@ -605,7 +608,9 @@ def execute_reprojection(db, task: SinglePromptOptimizationTask, fixed: dict) ->
         "new_strategy_result_hash": strategy_result.output_hash,
         "affected_strategy_ids": impact["affected_strategy_ids"],
         "unaffected_strategy_ids": impact["unaffected_strategy_ids"],
-        "pending_delivery_updates": impact["affected_deliveries"],
+        "pending_delivery_updates": affected_deliveries,
+        "affected_delivery_set_hash": digest(affected_deliveries),
+        "affected_delivery_regeneration_plan": regeneration_plan,
         "unchanged_deliveries": impact["unaffected_deliveries"],
         "deliveries_regenerated": False,
     }
@@ -614,6 +619,52 @@ def execute_reprojection(db, task: SinglePromptOptimizationTask, fixed: dict) ->
         limitations=["ANSWER_RELATION_REPROJECTION_REQUIRES_EXPLICIT_DELIVERY_UPDATE"],
         status="COMPLETED_WITH_LIMITATIONS",
     )
+
+
+def _direction_reason_ids(direction: dict) -> frozenset[str]:
+    values = {str(value) for value in direction.get("reason_ids") or [] if value}
+    if direction.get("reason_id"):
+        values.add(str(direction["reason_id"]))
+    return frozenset(values)
+
+
+def _affected_delivery_regeneration_plan(db, ref: dict, new_strategy_output: dict) -> list[dict]:
+    """Freeze an exact one-old-delivery to one-new-direction regeneration plan."""
+    old = db.query(SinglePromptStrategyResult).filter_by(
+        strategy_id=ref["fixed_strategy"]["strategy_id"],
+        result_version=ref["fixed_strategy"]["result_version"],
+        output_hash=ref["fixed_strategy"]["result_hash"],
+    ).one_or_none()
+    old_output = loads(old.output_json, {}) if old else {}
+    if not old or digest(old_output) != old.output_hash:
+        raise HTTPException(409, "受影响稿件的父策略版本或 hash 不一致")
+    old_directions = {
+        str(row.get("strategy_id") or row.get("direction_id") or ""): row
+        for row in old_output.get("directions") or []
+    }
+    new_directions = {
+        str(row.get("direction_id") or row.get("strategy_id") or ""): row
+        for row in new_strategy_output.get("directions") or []
+    }
+    affected = sorted(ref["impact"]["affected_deliveries"],
+        key=lambda row: (row["strategy_id"], row["proposal_id"], row["result_version"], row["result_hash"]))
+    if len(affected) != len(new_directions):
+        raise HTTPException(409, "受影响稿件与新策略方向数量不一致，禁止静默少生成或多生成")
+    plan, used = [], set()
+    for binding in affected:
+        old_direction = old_directions.get(str(binding["strategy_id"]))
+        old_reasons = _direction_reason_ids(old_direction or {})
+        candidates = [direction_id for direction_id, direction in new_directions.items()
+            if direction_id not in used and old_reasons and _direction_reason_ids(direction) == old_reasons]
+        if len(candidates) != 1:
+            raise HTTPException(409, "受影响稿件与新策略方向无法形成唯一 reason identity 映射")
+        direction_id = candidates[0]
+        used.add(direction_id)
+        plan.append({"affected_delivery": copy.deepcopy(binding), "new_direction_id": direction_id,
+                     "reason_ids": sorted(old_reasons)})
+    if used != set(new_directions):
+        raise HTTPException(409, "新策略包含未绑定受影响稿件的额外方向")
+    return plan
 
 
 def _delivery_regeneration_input(
@@ -643,7 +694,8 @@ def _delivery_regeneration_input(
         "fixed_strategy": ref["fixed_strategy"],
         "affected_strategy_ids": impact["affected_strategy_ids"],
         "unaffected_strategy_ids": impact["unaffected_strategy_ids"],
-        "pending_delivery_updates": impact["affected_deliveries"],
+        "pending_delivery_updates": sorted(impact["affected_deliveries"],
+            key=lambda row: (row["strategy_id"], row["proposal_id"], row["result_version"], row["result_hash"])),
         "unchanged_deliveries": impact["unaffected_deliveries"],
         "deliveries_regenerated": False,
     }
@@ -682,6 +734,11 @@ def _delivery_regeneration_input(
             or strategy.diagnosis_result_version != ref["correction_result_version"]
             or strategy.diagnosis_result_hash != ref["correction_result_hash"]):
         raise HTTPException(409, "新策略身份、纠错版本或 hash 不一致")
+    regeneration_plan = _affected_delivery_regeneration_plan(db, ref, strategy_output)
+    expected_set_hash = digest(affected)
+    if (manifest.get("affected_delivery_set_hash") != expected_set_hash
+            or manifest.get("affected_delivery_regeneration_plan") != regeneration_plan):
+        raise HTTPException(409, "策略重投影冻结的受影响稿件 hash 或生成映射不一致")
     direction_ids = [str(row.get("direction_id") or row.get("strategy_id") or "")
                      for row in strategy_output.get("directions") or []]
     if not direction_ids or any(not value for value in direction_ids) or len(set(direction_ids)) != len(direction_ids):
@@ -703,6 +760,7 @@ def _delivery_regeneration_input(
         "affected_delivery_set_hash": affected_delivery_set_hash,
         "affected_deliveries": affected,
         "unchanged_deliveries": unchanged,
+        "delivery_regeneration_plan": regeneration_plan,
         "new_direction_ids": direction_ids,
         "requested_by": requested_by.strip(),
     }
@@ -793,45 +851,75 @@ def execute_delivery_regeneration(db, task: SinglePromptOptimizationTask, fixed:
     from .execution import create_execution_proposal, generate_complete_execution_deliverable
 
     ref, strategy_output = validate_delivery_regeneration(db, task)
-    directions = strategy_output.get("directions") or []
     regenerated = []
     context_version = (fixed.get("brand_context") or {}).get("context_version_id")
-    for direction in directions:
-        direction_id = str(direction.get("direction_id") or direction.get("strategy_id") or "")
-        proposal, base, _ = create_execution_proposal(
-            db, strategy_id=ref["strategy_id"],
-            strategy_result_version=ref["strategy_result_version"],
-            strategy_result_hash=ref["strategy_result_hash"], project_id=task.project_id,
-            prompt_id=task.prompt_id, direction_id=direction_id,
-            idempotency_key=f"{task.task_id}:answer-relation-delivery:{direction_id}",
-            strategy_review_id=None, strategy_review_snapshot_hash="",
-            input_authority_type="MACHINE_QUALIFICATION",
-            input_authority_id=(strategy_output.get("authority") or {}).get("authority_id", ""),
-            input_authority_hash=(strategy_output.get("authority") or {}).get("authority_hash", ""),
-            brand_context_version_id=context_version,
-            supplemental_source_refs=[{"source_id": source["snapshot_id"], "snapshot_hash": digest(source)}
-                for source in fixed.get("supplemental_sources") or []], commit=False,
-            allow_frozen_strategy=True,
-            answer_identity_override={
-                "answer_result_version": fixed["answer_relation_correction"]["parent_answer_result_version"],
-                "answer_result_hash": fixed["answer_relation_correction"]["parent_answer_result_hash"],
-            },
-        )
-        result, _ = generate_complete_execution_deliverable(
-            db, proposal_id=proposal.proposal_id, base_result_version=base.result_version,
-            base_result_hash=base.output_hash, reviewable_set_hash=base.reviewable_set_hash,
-            generation_client=scoped_client(db, task),
-            allow_frozen_strategy=True,
-        )
-        output = loads(result.output_json, {})
-        status = (output.get("validation") or {}).get("content_delivery_status")
-        if status != "READY":
-            raise HTTPException(409, "受影响稿件的新策略生成结果未通过正文检查")
-        regenerated.append({
-            "proposal_id": result.proposal_id, "strategy_id": direction_id,
-            "result_version": result.result_version, "result_hash": result.output_hash,
-            "content_delivery_status": status,
-        })
+    plan = ref["delivery_regeneration_plan"]
+    for index, item in enumerate(plan):
+        direction_id = item["new_direction_id"]
+        try:
+            proposal, base, _ = create_execution_proposal(
+                db, strategy_id=ref["strategy_id"],
+                strategy_result_version=ref["strategy_result_version"],
+                strategy_result_hash=ref["strategy_result_hash"], project_id=task.project_id,
+                prompt_id=task.prompt_id, direction_id=direction_id,
+                idempotency_key=f"{task.task_id}:answer-relation-delivery:{direction_id}",
+                strategy_review_id=None, strategy_review_snapshot_hash="",
+                input_authority_type="MACHINE_QUALIFICATION",
+                input_authority_id=(strategy_output.get("authority") or {}).get("authority_id", ""),
+                input_authority_hash=(strategy_output.get("authority") or {}).get("authority_hash", ""),
+                brand_context_version_id=context_version,
+                supplemental_source_refs=[{"source_id": source["snapshot_id"], "snapshot_hash": digest(source)}
+                    for source in fixed.get("supplemental_sources") or []], commit=False,
+                allow_frozen_strategy=True,
+                answer_identity_override={
+                    "answer_result_version": fixed["answer_relation_correction"]["parent_answer_result_version"],
+                    "answer_result_hash": fixed["answer_relation_correction"]["parent_answer_result_hash"],
+                },
+            )
+            result, _ = generate_complete_execution_deliverable(
+                db, proposal_id=proposal.proposal_id, base_result_version=base.result_version,
+                base_result_hash=base.output_hash, reviewable_set_hash=base.reviewable_set_hash,
+                generation_client=scoped_client(db, task), allow_frozen_strategy=True,
+            )
+            output = loads(result.output_json, {})
+            status = (output.get("validation") or {}).get("content_delivery_status")
+            if status != "READY":
+                raise HTTPException(409, "受影响稿件的新策略生成结果未通过正文检查")
+            regenerated.append({
+                "proposal_id": result.proposal_id, "strategy_id": direction_id,
+                "result_version": result.result_version, "result_hash": result.output_hash,
+                "content_delivery_status": status,
+                "replaces_delivery": copy.deepcopy(item["affected_delivery"]),
+            })
+            partial = {
+                "strategy_result_version": ref["strategy_result_version"],
+                "strategy_result_hash": ref["strategy_result_hash"],
+                "affected_deliveries": ref["affected_deliveries"],
+                "regenerated_deliveries": copy.deepcopy(regenerated),
+                "unchanged_deliveries": ref["unchanged_deliveries"],
+                "pending_deliveries": [row["affected_delivery"] for row in plan[index + 1:]],
+                "failed_deliveries": [], "deliveries_regenerated": False,
+            }
+            checkpoint(db, task, stage="DRAFT", objects={
+                "answer_relation_delivery_regeneration": partial,
+                "deliveries": copy.deepcopy(regenerated),
+            })
+        except Exception as exc:
+            code = str(getattr(exc, "code", "") or exc)
+            if code != "CACHE_MISS":
+                failed = [{"delivery": copy.deepcopy(item["affected_delivery"]), "reason": code[:500]}]
+                checkpoint(db, task, stage="DRAFT", objects={
+                    "answer_relation_delivery_regeneration": {
+                        "strategy_result_version": ref["strategy_result_version"],
+                        "strategy_result_hash": ref["strategy_result_hash"],
+                        "affected_deliveries": ref["affected_deliveries"],
+                        "regenerated_deliveries": copy.deepcopy(regenerated),
+                        "unchanged_deliveries": ref["unchanged_deliveries"],
+                        "pending_deliveries": [row["affected_delivery"] for row in plan[index + 1:]],
+                        "failed_deliveries": failed, "deliveries_regenerated": False,
+                    }, "deliveries": copy.deepcopy(regenerated),
+                })
+            raise
     manifest = {
         "strategy_result_version": ref["strategy_result_version"],
         "strategy_result_hash": ref["strategy_result_hash"],

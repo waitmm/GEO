@@ -1,17 +1,22 @@
 """Affected-only delivery regeneration after answer/relation strategy reprojection."""
 from __future__ import annotations
 
+import copy
 from datetime import datetime
 import json
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
     SinglePromptExecutionProposal,
     SinglePromptExecutionProposalResult,
     SinglePromptOptimizationTask,
+    SinglePromptStrategyResult,
 )
 from app.modules.single_prompt_v2.answer_relation_corrections import (
+    _affected_delivery_regeneration_plan,
     create_reprojection_task,
     preview_correction,
     save_correction,
@@ -41,7 +46,10 @@ def _completed_reprojection(db, parent, factory):
     execute_task(task.task_id, session_factory=factory)
     db.refresh(task)
     assert task.status == "COMPLETED_WITH_LIMITATIONS", task.blocker_detail
-    return task, task_view(task)["objects"]["answer_relation_reprojection"]
+    manifest = task_view(task)["objects"]["answer_relation_reprojection"]
+    assert manifest["affected_delivery_set_hash"] == digest(manifest["pending_delivery_updates"])
+    assert manifest["affected_delivery_regeneration_plan"]
+    return task, manifest
 
 
 def _payload(task, manifest, key="affected-delivery-regeneration:one"):
@@ -53,7 +61,7 @@ def _payload(task, manifest, key="affected-delivery-regeneration:one"):
         "expected_revision": task.revision,
         "strategy_result_version": manifest["new_strategy_result_version"],
         "strategy_result_hash": manifest["new_strategy_result_hash"],
-        "affected_delivery_set_hash": digest(affected),
+        "affected_delivery_set_hash": manifest["affected_delivery_set_hash"],
         "idempotency_key": key,
     }
 
@@ -162,3 +170,48 @@ def test_queue_rejects_stale_strategy_revision_set_hash_scope_and_idempotency(fa
         assert response.status_code in {403, 404, 409}, response.text
     conflict = client.post(url, json={**body, "strategy_result_hash": "0" * 64})
     assert conflict.status_code == 409
+
+
+def test_multi_affected_delivery_plan_is_exact_one_to_one(fact_delivery):
+    db, original, _, _, _, _ = fact_delivery
+    objects = task_view(original)["objects"]
+    old = db.query(SinglePromptStrategyResult).filter_by(
+        strategy_id=objects["strategy_id"], result_version=objects["strategy_result_version"],
+    ).one()
+    template = json.loads(old.output_json)["directions"][0]
+    old_directions, new_directions, affected = [], [], []
+    for index in range(2):
+        reason_id = f"reason-{index}"
+        prior = copy.deepcopy(template)
+        prior.update(strategy_id=f"old-{index}", direction_id=f"old-{index}",
+                     reason_id=reason_id, reason_ids=[reason_id])
+        projected = copy.deepcopy(template)
+        projected.update(strategy_id=f"new-{index}", direction_id=f"new-{index}",
+                         reason_id=reason_id, reason_ids=[reason_id])
+        old_directions.append(prior)
+        new_directions.append(projected)
+        affected.append({"proposal_id": f"proposal-{index}", "strategy_id": f"old-{index}",
+                         "result_version": f"result-{index}", "result_hash": str(index) * 64})
+    old_output = {**json.loads(old.output_json), "directions": old_directions}
+    old_hash = digest(old_output)
+    synthetic = SinglePromptStrategyResult(
+        result_version=f"strategy-plan-test:{old_hash[:16]}", strategy_id=old.strategy_id,
+        version_number=old.version_number + 50, parent_result_version=old.result_version,
+        output_json=json.dumps(old_output, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        output_hash=old_hash, reviewable_set_hash=old.reviewable_set_hash,
+        limitations_json=old.limitations_json,
+    )
+    db.add(synthetic); db.commit()
+    ref = {"fixed_strategy": {"strategy_id": old.strategy_id,
+        "result_version": synthetic.result_version, "result_hash": synthetic.output_hash},
+        "impact": {"affected_deliveries": affected}}
+    plan = _affected_delivery_regeneration_plan(db, ref, {"directions": new_directions})
+    assert [(row["affected_delivery"]["proposal_id"], row["new_direction_id"]) for row in plan] == [
+        ("proposal-0", "new-0"), ("proposal-1", "new-1"),
+    ]
+    with pytest.raises(HTTPException, match="数量不一致"):
+        _affected_delivery_regeneration_plan(db, ref, {"directions": new_directions[:1]})
+    with pytest.raises(HTTPException, match="额外方向|唯一"):
+        mismatched = copy.deepcopy(new_directions)
+        mismatched[1]["reason_id"] = mismatched[1]["reason_ids"] = "different"
+        _affected_delivery_regeneration_plan(db, ref, {"directions": mismatched})

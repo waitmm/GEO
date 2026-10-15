@@ -474,10 +474,62 @@ def execute_reprojection(db, task: SinglePromptOptimizationTask, fixed: dict) ->
                 "passage_ids": [passage["passage_id"] for passage in context["passages"]],
                 "result": "INTERNAL_SCOPE_CHECK_NOT_VERIFIED_TRUTH",
             })
+    impact = ref["impact"]
+    affected_reason_ids = set(impact["affected_reason_ids"])
+    scoped_directions = []
+    projected_reason_ids = set()
+    unscoped_directions = []
+    for direction in qualification["directions"]:
+        reason_ids = {str(value) for value in direction.get("reason_ids") or [] if value}
+        if direction.get("reason_id"):
+            reason_ids.add(str(direction["reason_id"]))
+        if reason_ids and reason_ids.issubset(affected_reason_ids):
+            scoped_directions.append(direction)
+            projected_reason_ids.update(reason_ids)
+        elif not reason_ids:
+            unscoped_directions.append(direction)
+    if not projected_reason_ids and affected_reason_ids and len(qualification["directions"]) == 1 \
+            and len(unscoped_directions) == 1:
+        direction = unscoped_directions[0]
+        direction["reason_ids"] = sorted(affected_reason_ids)
+        direction["reason_id"] = (next(iter(affected_reason_ids))
+                                  if len(affected_reason_ids) == 1 else None)
+        direction.setdefault("reasoning_trace", []).append({
+            "step": "ANSWER_RELATION_REPROJECTION_SCOPE",
+            "object_ids": sorted(affected_reason_ids),
+            "result": "FROZEN_AFFECTED_REASON_IDENTITY",
+        })
+        scoped_directions = [direction]
+        projected_reason_ids = set(affected_reason_ids)
+    if projected_reason_ids != affected_reason_ids:
+        raise HTTPException(409, "纠错后的策略投影不能完整覆盖冻结的受影响 reason identity")
+    qualification["directions"] = scoped_directions
+    projected_ids = {str(direction.get("strategy_id") or direction.get("direction_id") or "")
+                     for direction in qualification["directions"]}
+    qualification["execution_drafts"] = [draft for draft in qualification["execution_drafts"]
+        if str(draft.get("direction_id") or "") in projected_ids]
+    draft_direction_ids = {str(draft.get("direction_id") or "")
+                           for draft in qualification["execution_drafts"]}
+    if draft_direction_ids != projected_ids:
+        raise HTTPException(409, "局部策略投影与执行草稿的 direction identity 集合不一致")
+    final_plan = qualification.get("final_plan") or {}
+    final_plan["machine_direction_count"] = len(qualification["directions"])
+    final_plan["execution_draft_count"] = len(qualification["execution_drafts"])
+    final_plan["execution_ready_count"] = sum(1 for draft in qualification["execution_drafts"]
+        if (draft.get("boundary") or {}).get("public_claims_ready"))
+    final_plan["draftable_verify_first_count"] = sum(1 for draft in qualification["execution_drafts"]
+        if not (draft.get("boundary") or {}).get("public_claims_ready"))
+    qualification["reprojection_scope"] = {
+        "mode": "AFFECTED_STRATEGIES_ONLY",
+        "affected_reason_ids": impact["affected_reason_ids"],
+        "projected_reason_ids": sorted(projected_reason_ids),
+        "affected_strategy_ids": impact["affected_strategy_ids"],
+        "unaffected_parent_strategy": {
+            **ref["fixed_strategy"], "strategy_ids": impact["unaffected_strategy_ids"],
+        },
+    }
     qualification.pop("projection_hash")
     qualification["projection_hash"] = digest(qualification)
-    if not qualification.get("directions") or not qualification.get("execution_drafts"):
-        raise HTTPException(409, "纠错后的机器资格投影没有可保存的策略方向")
 
     projection_hash = qualification["projection_hash"]
     authority_id = f"qualification:{projection_hash}"
@@ -508,6 +560,7 @@ def execute_reprojection(db, task: SinglePromptOptimizationTask, fixed: dict) ->
             "input_projection_hash": projection_hash,
             "directions": copy.deepcopy(qualification["directions"]),
             "execution_drafts": copy.deepcopy(qualification["execution_drafts"]),
+            "parent_strategy_reference": copy.deepcopy(qualification["reprojection_scope"]["unaffected_parent_strategy"]),
             "object_qualifications": copy.deepcopy(qualification.get("object_qualifications") or []),
             "analysis_scope": copy.deepcopy(qualification.get("analysis_scope") or {}),
             "evidence_scope": copy.deepcopy(qualification.get("evidence_scope") or {}),
@@ -539,7 +592,6 @@ def execute_reprojection(db, task: SinglePromptOptimizationTask, fixed: dict) ->
         )
         db.add_all([strategy, strategy_result])
         db.commit()
-    impact = ref["impact"]
     manifest = {
         "parent_task_id": ref["parent_task_id"],
         "parent_input_hash": ref["parent_input_hash"],

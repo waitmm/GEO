@@ -11,6 +11,7 @@ import { ObservationPanel } from "./ObservationPanel";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { AutomaticOptimizePanel } from "./AutomaticOptimizePanel";
 import { ProjectConfigurationPreview } from './ProjectConfigurationPreview';
+import { ProjectConfigurationHistory } from './ProjectConfigurationHistory';
 import { AssetVerificationFields } from './AssetVerificationFields';
 import { projectConfigurationPayload } from './projectConfiguration';
 import { ReleasePromptPanel } from "./ReleasePromptPanel";
@@ -10675,6 +10676,7 @@ export default function App() {
           <Input.TextArea rows={5} placeholder="草料二维码:草料;cli.im:https://cli.im&#10;二维斑马:二维斑马二维码:&#10;微微二维码::" />
         </Form.Item>
         {RELEASE_FIRST_SLICE && <ProjectConfigurationPreview projectId={editingProjectId} />}
+        {editingProjectId && <ProjectConfigurationHistory projectId={editingProjectId} />}
         <Space style={{ justifyContent: "flex-end", width: "100%" }}>
           {editingProjectId && (
             <Popconfirm title="确定删除该项目？所有数据将丢失" onConfirm={deleteCurrentProject} okText="确定删除" cancelText="取消">

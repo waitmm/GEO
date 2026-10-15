@@ -11,7 +11,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, BrowserMonitorRun, BrowserMonitorTask, Project, Prompt
-from app.modules.single_prompt_v2.service import list_prompt_run_pool, queue_run_retry
+from app.modules.single_prompt_v2.service import (
+    _selected_run_snapshots,
+    list_prompt_run_pool,
+    queue_run_retry,
+)
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +102,17 @@ def test_retry_appends_attempt_lineage_and_is_idempotent(tmp_path):
         retry.stage = "failed"
         retry.error_type = "network_error"
         db.commit()
+        with pytest.raises(HTTPException) as reused_parent_key:
+            queue_run_retry(
+                db,
+                run_id=retry.id,
+                project_id=1,
+                prompt_id=11,
+                idempotency_key="retry-key-1",
+            )
+        assert reused_parent_key.value.status_code == 409
+        assert reused_parent_key.value.detail["code"] == "RETRY_IDEMPOTENCY_PARENT_MISMATCH"
+
         third, third_created = queue_run_retry(
             db,
             run_id=retry.id,
@@ -125,6 +140,55 @@ def test_retry_appends_attempt_lineage_and_is_idempotent(tmp_path):
         assert lineage[source.id][2:] == (1, None)
         assert lineage[retry.id][2:] == (2, source.id)
         assert lineage[third.id][2:] == (3, retry.id)
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_run_selection_rejects_multiple_attempts_of_one_logical_run(tmp_path):
+    db, engine, source = _db(tmp_path)
+    try:
+        source.status = "success"
+        source.stage = "success"
+        source.answer_text = "First physical attempt"
+        task = BrowserMonitorTask(
+            project_id=1,
+            question_ids_json="[11]",
+            run_count=1,
+            status="success",
+            created_by="test:second-attempt",
+        )
+        db.add(task)
+        db.flush()
+        second = BrowserMonitorRun(
+            task_id=task.id,
+            project_id=1,
+            prompt_id=11,
+            status="success",
+            stage="success",
+            original_query="Question",
+            answer_text="Second physical attempt",
+            logical_run_id=source.logical_run_id,
+            attempt_no=2,
+            retry_of_run_id=source.id,
+        )
+        db.add(second)
+        db.commit()
+
+        with pytest.raises(HTTPException) as duplicate_logical_run:
+            _selected_run_snapshots(
+                db,
+                project_id=1,
+                prompt_id=11,
+                run_ids=[source.id, second.id],
+            )
+        assert duplicate_logical_run.value.status_code == 409
+        assert duplicate_logical_run.value.detail == {
+            "code": "DUPLICATE_LOGICAL_RUN",
+            "message": "同一逻辑 Run 只能选择一个物理 attempt",
+            "logical_runs": {source.logical_run_id: [source.id, second.id]},
+            "run_ids": [source.id, second.id],
+        }
     finally:
         db.close()
         engine.dispose()

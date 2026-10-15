@@ -420,7 +420,17 @@ def queue_run_retry(
         .one_or_none()
     )
     if existing_run:
-        return existing_run, False
+        if existing_run.retry_of_run_id == source.id:
+            return existing_run, False
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RETRY_IDEMPOTENCY_PARENT_MISMATCH",
+                "message": "该幂等键已用于同一逻辑 Run 的另一父 attempt",
+                "retry_run_id": existing_run.id,
+                "retry_of_run_id": existing_run.retry_of_run_id,
+            },
+        )
 
     if source.status != "failed":
         raise HTTPException(status_code=409, detail=f"当前状态 {source.status} 不支持重试，仅 failed 可重试")
@@ -472,7 +482,17 @@ def queue_run_retry(
             .one_or_none()
         )
         if existing_run:
-            return existing_run, False
+            if existing_run.retry_of_run_id == source.id:
+                return existing_run, False
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "RETRY_IDEMPOTENCY_PARENT_MISMATCH",
+                    "message": "该幂等键已用于同一逻辑 Run 的另一父 attempt",
+                    "retry_run_id": existing_run.id,
+                    "retry_of_run_id": existing_run.retry_of_run_id,
+                },
+            )
         raise HTTPException(status_code=409, detail="该逻辑 Run 已产生更新的 attempt，请刷新后重试")
     db.refresh(retry_run)
     return retry_run, True
@@ -834,6 +854,28 @@ def _selected_run_snapshots(
     ]
     if wrong_scope:
         raise HTTPException(status_code=409, detail={"code": "RUN_SCOPE_MISMATCH", "run_ids": sorted(wrong_scope)})
+    attempts_by_logical_run: dict[str, list[int]] = {}
+    for row in rows:
+        attempts_by_logical_run.setdefault(row.logical_run_id, []).append(row.id)
+    duplicate_logical_runs = {
+        logical_run_id: sorted(selected_ids)
+        for logical_run_id, selected_ids in attempts_by_logical_run.items()
+        if len(selected_ids) > 1
+    }
+    if duplicate_logical_runs:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DUPLICATE_LOGICAL_RUN",
+                "message": "同一逻辑 Run 只能选择一个物理 attempt",
+                "logical_runs": duplicate_logical_runs,
+                "run_ids": sorted(
+                    run_id
+                    for selected_ids in duplicate_logical_runs.values()
+                    for run_id in selected_ids
+                ),
+            },
+        )
     invalid = [
         row.id for row in rows
         if row.status not in VALID_RUN_STATUSES or not str(row.answer_text or "").strip()

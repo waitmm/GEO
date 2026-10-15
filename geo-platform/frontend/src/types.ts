@@ -283,13 +283,13 @@ export type PromptVersion = {
 /** A historical Analysis may have no immutable PromptVersion identity. */
 export type PromptVersionBinding =
   | {
-    binding: "BOUND";
+    binding_status: "BOUND";
     prompt_version_id: string;
     version_number: number;
     snapshot_hash: string;
     snapshot: PromptVersionSnapshot;
   }
-  | { binding: "LEGACY_UNBOUND" };
+  | { binding_status: "LEGACY_UNBOUND" };
 
 export type SinglePromptV2RunPoolItem = SinglePromptV2Run & {
   input_fingerprint: string;

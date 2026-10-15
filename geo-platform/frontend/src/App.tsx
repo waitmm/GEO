@@ -1775,7 +1775,7 @@ export default function App() {
   const visibleRuns = activePromptId ? runs.filter((item) => item.prompt_id === activePromptId) : runs;
 
   function promptVersionBindingLabel(binding: PromptVersionBinding) {
-    if (binding.binding === "LEGACY_UNBOUND") return <Tag color="orange">LEGACY_UNBOUND</Tag>;
+    if (binding.binding_status === "LEGACY_UNBOUND") return <Tag color="orange">LEGACY_UNBOUND</Tag>;
     return <Space size={4} wrap><Tag color="blue">Prompt V{binding.version_number}</Tag><Text code>{binding.snapshot_hash.slice(0, 12)}</Text></Space>;
   }
 
@@ -6028,7 +6028,7 @@ export default function App() {
                   <Descriptions.Item label="开始时间">{formatDateTime(v2Analysis.started_at)}</Descriptions.Item>
                   <Descriptions.Item label="分析 ID"><Text style={{ overflowWrap: "anywhere" }}>{v2Analysis.analysis.analysis_id}</Text></Descriptions.Item>
                 </Descriptions>
-                {v2Analysis.analysis.prompt_version.binding === "LEGACY_UNBOUND" && <Alert style={{ marginTop: 14 }} type="warning" showIcon message="LEGACY_UNBOUND：历史 Analysis 未绑定 Prompt 版本" description="此 Analysis 仅按其既有冻结输入继续读取/处理；不会被当前 Prompt 重新解释，也不会伪造版本归属。" />}
+                {v2Analysis.analysis.prompt_version.binding_status === "LEGACY_UNBOUND" && <Alert style={{ marginTop: 14 }} type="warning" showIcon message="LEGACY_UNBOUND：历史 Analysis 未绑定 Prompt 版本" description="此 Analysis 仅按其既有冻结输入继续读取/处理；不会被当前 Prompt 重新解释，也不会伪造版本归属。" />}
                 {v2Analysis.blocker && v2Analysis.blocker.code !== "NEXT_STAGE_NOT_IMPLEMENTED" && <Alert style={{ marginTop: 14 }} type={v2Analysis.context_id ? "info" : "error"} showIcon message={v2BlockerLabel(v2Analysis.blocker.code)} description={v2Analysis.blocker.detail} action={v2Analysis.allowed_operations.includes("RETRY_COLLECTION") ? <Button size="small" danger loading={v2Loading} onClick={retryV2Analysis}>明确重试</Button> : undefined} />}
                 {v2Analysis.warnings.map((warning) => <Alert key={warning.code} style={{ marginTop: 10 }} type="warning" showIcon message={warning.code === "RETRIEVAL_OBSERVATION_UNAVAILABLE" ? "检索观测不可用" : "独立会话证明不可用"} description={warning.detail} />)}
               </Card>

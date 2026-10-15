@@ -128,10 +128,19 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
   async function openAnalysis(row: any) {
     const epoch = generation.current;
     const selection = row.analysis_selection;
+    const promptVersion = selection?.prompt_version;
+    if (promptVersion?.binding_status !== "BOUND" || !promptVersion.prompt_version_id || !promptVersion.snapshot_hash) {
+      setError(monitorAnalysisBindingReason(selection));
+      return;
+    }
     setOpeningPrompt(row.prompt.id); setError("");
     try {
       const next = await request<any>(`/api/v2/projects/${project.id}/prompts/${row.prompt.id}/monitor-analysis`, {
-        method: "POST", body: JSON.stringify({ scope_hash: selection.scope_hash }),
+        method: "POST", body: JSON.stringify({
+          scope_hash: selection.scope_hash,
+          prompt_version_id: promptVersion.prompt_version_id,
+          snapshot_hash: promptVersion.snapshot_hash,
+        }),
       });
       if (epoch !== generation.current) return;
       const params = new URLSearchParams({ release_view: "coreV2", v2_project: String(project.id),
@@ -141,6 +150,12 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     finally { if (epoch === generation.current) setOpeningPrompt(undefined); }
   }
   const options = scopes.map(s => ({ value: s.context_id, label: `Runs ${(s.run_scope.run_ids || []).join("、")} · ${s.created_at}` }));
+  const monitorAnalysisBindingReason = (selection: any) => {
+    const status = selection?.prompt_version?.binding_status;
+    if (status === "LEGACY_UNBOUND") return "这些历史回答未绑定 Prompt 冻结版本，不能用当前或 latest Prompt 替代建立分析。";
+    if (status) return `这些回答的 Prompt 版本绑定为 ${status}，不是可证明的单一冻结版本，不能建立分析。`;
+    return "后端未提供这些回答可证明的 Prompt 冻结版本，不能建立分析。";
+  };
   const output = result?.output || result || (mode === "monitor" && pool?.runs?.length ? pool : undefined);
   const measuredIdentity = result?.input?.identity || output?.identity;
   const measuredTarget = result?.input?.target_url ?? output?.target_url;
@@ -182,8 +197,11 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
           { title: "下一步", render: (_, row: any) => <><Typography.Text>{row.opportunity.label}</Typography.Text><br /><Typography.Text type="secondary">{row.opportunity.reason}</Typography.Text></> },
           { title: "采样范围", render: (_, row: any) => `${row.run_ids.length} 条当前问题回答 / ${row.pool_count} 条历史尝试` },
           { title: "操作", render: (_, row: any) => <>
-            <Button loading={openingPrompt === row.prompt.id} disabled={openingPrompt !== undefined || !row.analysis_selection.selected_run_ids.length}
+            <Button loading={openingPrompt === row.prompt.id} disabled={openingPrompt !== undefined || !row.analysis_selection.selected_run_ids.length || row.analysis_selection.prompt_version?.binding_status !== "BOUND" || !row.analysis_selection.prompt_version?.prompt_version_id || !row.analysis_selection.prompt_version?.snapshot_hash}
               onClick={() => openAnalysis(row)}>分析这 {row.analysis_selection.selected_run_ids.length} 条回答</Button>
+            {row.analysis_selection.prompt_version?.binding_status !== "BOUND" && <Typography.Paragraph type="warning">
+              {monitorAnalysisBindingReason(row.analysis_selection)}
+            </Typography.Paragraph>}
             {row.analysis_selection.excluded_run_ids.length > 0 && <Typography.Paragraph type="warning">
               Run {row.analysis_selection.excluded_run_ids.join("、")} 没有可分析正文，不进入该分析；监测统计仍保留这些尝试。
             </Typography.Paragraph>}

@@ -73,8 +73,8 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
       <Alert type={selectedPromptVersion ? "info" : "warning"} showIcon message="采样计划必须绑定明确的 Prompt 冻结版本"
         description={<Space wrap><Select aria-label="每日采样计划绑定的 Prompt 冻结版本" style={{ minWidth: 320 }} loading={promptVersionsLoading}
           value={selectedPromptVersion?.prompt_version_id} placeholder="选择冻结 Prompt 版本" onChange={(value) => void selectPromptVersion(value)}
-          options={promptVersions.map((version) => ({ value: version.prompt_version_id, label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash.slice(0, 12)}` }))} />
-          {selectedPromptVersion ? <Typography.Text>将提交 V{selectedPromptVersion.version_number} · <code>{selectedPromptVersion.snapshot_hash.slice(0, 12)}</code></Typography.Text> : <Typography.Text type="secondary">必须精确读取所选版本；不会使用 latest。</Typography.Text>}</Space>} />
+          options={promptVersions.filter((version) => version.status === "EFFECTIVE").map((version) => ({ value: version.prompt_version_id, label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash.slice(0, 12)}` }))} />
+          {selectedPromptVersion ? <Typography.Text>将提交 V{selectedPromptVersion.version_number} · <code>{selectedPromptVersion.snapshot_hash.slice(0, 12)}</code></Typography.Text> : <Typography.Text type="secondary">只能选择当前 EFFECTIVE 冻结版本；历史版本仅可查看，不可用于新计划，也不会使用 latest。</Typography.Text>}</Space>} />
       <Space wrap align="start">
         <Form.Item label="时区" name="timezone_name" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item label="每日时间" name="local_time" rules={[{ required: true }]}><Input type="time" /></Form.Item>

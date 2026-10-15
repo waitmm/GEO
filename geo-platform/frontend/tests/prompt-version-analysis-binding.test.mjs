@@ -45,5 +45,7 @@ test('daily sampling schedules bind an exact selected PromptVersion', async () =
   assert.match(source, /prompt_version_id: selectedPromptVersion\.prompt_version_id/);
   assert.match(source, /snapshot_hash: selectedPromptVersion\.snapshot_hash/);
   assert.match(source, /不会使用 latest/);
+  assert.match(source, /promptVersions\.filter\(\(version\) => version\.status === "EFFECTIVE"\)/);
+  assert.match(source, /历史版本仅可查看，不可用于新计划/);
   assert.match(source, /disabled=\{!selectedPromptVersion/);
 });

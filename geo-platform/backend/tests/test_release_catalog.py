@@ -3,7 +3,7 @@ import pytest
 from release_test_client import TestClient
 
 from app.core.release_database import get_release_db
-from app.models import BrowserMonitorRun, BrowserMonitorTask, Competitor, Prompt
+from app.models import BrowserMonitorRun, BrowserMonitorTask, Competitor, Project, ProjectConfigurationVersion, Prompt
 from app.modules.single_prompt_v2.service import (
     create_analysis, create_analysis_from_runs, create_frozen_analysis,
     queue_frozen_analysis, queue_run_retry, retry_analysis, list_prompt_run_pool, get_analysis_status,
@@ -69,6 +69,63 @@ def test_configuration_preview_matches_saved_normalization_without_business_writ
     assert client.post('/api/projects/configuration-preview', json={
         **payload, 'website_url': 'https://user:password@example.com'}).status_code == 422
     assert business_fingerprint(db.get_bind().url.database) == before
+
+
+def test_project_configuration_versions_are_append_only_and_exactly_readable(catalog):
+    client, db = catalog
+    created = client.post('/api/projects', json={
+        'name': 'Project', 'brand_name': 'Brand V1', 'brand_aliases': ['old'],
+        'website_url': 'https://v1.example/path',
+        'competitors': [{'name': 'Competitor V1', 'aliases': ['C1']}],
+    }).json()
+    project_id = created['id']
+    versions = client.get(f'/api/projects/{project_id}/configuration-versions').json()
+    assert len(versions) == 1 and versions[0]['version_number'] == 1
+    v1_id = versions[0]['configuration_version_id']
+    assert versions[0]['snapshot']['brand_aliases'] == ['old']
+
+    response = client.patch(f'/api/projects/{project_id}', json={
+        'brand_name': 'Brand V2', 'brand_aliases': ['new'],
+        'competitors': [{'name': 'Competitor V2', 'aliases': []}],
+    })
+    assert response.status_code == 200
+    versions = client.get(f'/api/projects/{project_id}/configuration-versions').json()
+    assert [(row['version_number'], row['status']) for row in versions] == [
+        (2, 'EFFECTIVE'), (1, 'SUPERSEDED')]
+    frozen = client.get(f'/api/projects/{project_id}/configuration-versions/{v1_id}').json()
+    assert frozen['snapshot']['brand_name'] == 'Brand V1'
+    assert frozen['snapshot']['brand_aliases'] == ['old']
+    assert frozen['snapshot']['competitors'][0]['name'] == 'Competitor V1'
+    assert frozen['snapshot']['website_url'] == 'https://v1.example/path'
+
+    # A no-op write does not invent a new semantic version.
+    assert client.patch(f'/api/projects/{project_id}', json={'brand_name': 'Brand V2'}).status_code == 200
+    assert db.query(ProjectConfigurationVersion).filter_by(project_id=project_id).count() == 2
+    row = db.query(ProjectConfigurationVersion).filter_by(configuration_version_id=v1_id).one()
+    original = row.snapshot_json
+    row.snapshot_json = '{}'
+    with pytest.raises(Exception, match='PROJECT_CONFIGURATION_IMMUTABLE'):
+        db.commit()
+    db.rollback()
+    assert db.query(ProjectConfigurationVersion).filter_by(configuration_version_id=v1_id).one().snapshot_json == original
+    db.delete(db.query(ProjectConfigurationVersion).filter_by(configuration_version_id=v1_id).one())
+    with pytest.raises(Exception, match='PROJECT_CONFIGURATION_IMMUTABLE'):
+        db.commit()
+    db.rollback()
+
+    other = client.post('/api/projects', json={'name': 'Other', 'brand_name': 'Other'}).json()
+    assert client.get(f"/api/projects/{other['id']}/configuration-versions/{v1_id}").status_code == 404
+
+
+def test_first_edit_freezes_pre_versioned_project_before_mutation(catalog):
+    client, db = catalog
+    # Simulate a project carried forward from a release before this ledger existed.
+    existing = client.post('/api/projects', json={'name': 'Existing', 'brand_name': 'Existing'}).json()
+    legacy = Project(organization_id=existing['organization_id'], name='Legacy', brand_name='Before')
+    db.add(legacy); db.commit(); db.refresh(legacy)
+    assert client.patch(f"/api/projects/{legacy.id}", json={'brand_name': 'After'}).status_code == 200
+    versions = client.get(f"/api/projects/{legacy.id}/configuration-versions").json()
+    assert [row['snapshot']['brand_name'] for row in versions] == ['After', 'Before']
 
 
 def test_batch_prompts_preserve_multiline_and_report_each_item_without_sampling(catalog):

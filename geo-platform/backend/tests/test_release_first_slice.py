@@ -18,6 +18,7 @@ from app.models import (
     Base,
     BrowserMonitorRun,
     BrowserMonitorTask,
+    Competitor,
     Organization,
     Project,
     Prompt,
@@ -373,6 +374,31 @@ def test_release_migration_is_explicit_allowlisted_and_runtime_version_is_checke
     else:
         with pytest.raises(RuntimeError, match="RELEASE_SQLITE_VERSION_UNSAFE"):
             validate_release_database(engine)
+    engine.dispose()
+
+
+def test_project_configuration_migration_backfills_existing_project(tmp_path, monkeypatch):
+    database_path = tmp_path / "project-config-backfill.db"
+    monkeypatch.setenv("GEO_RELEASE_DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
+    config = Config(str(ROOT / "alembic.release.ini"))
+    command.upgrade(config, "20261010_02")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    db = sessionmaker(bind=engine)()
+    db.add(Organization(id=7, name="Legacy Org", plan_type="release-1.0"))
+    db.add(Project(id=9, organization_id=7, name="Legacy Project", brand_name="Brand V1",
+        brand_aliases_json='["old"]', website_url="https://legacy.example/path"))
+    db.add(Competitor(project_id=9, name="Legacy Competitor", aliases_json='["LC"]'))
+    db.commit(); db.close(); engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.connect() as connection:
+        row = connection.execute(text("""SELECT version_number, snapshot_json, snapshot_hash
+          FROM project_configuration_versions WHERE project_id = 9""")).mappings().one()
+    snapshot = json.loads(row["snapshot_json"])
+    assert row["version_number"] == 1 and len(row["snapshot_hash"]) == 64
+    assert snapshot["brand_name"] == "Brand V1" and snapshot["brand_aliases"] == ["old"]
+    assert snapshot["competitors"] == [{"name": "Legacy Competitor", "aliases": ["LC"], "website_url": ""}]
     engine.dispose()
 
 

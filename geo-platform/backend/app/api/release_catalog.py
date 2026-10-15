@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Optional
+from uuid import uuid4
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,7 +16,9 @@ from sqlalchemy.orm import Session
 
 from app.adapters.registry import list_platforms
 from app.core.release_database import get_release_db
-from app.models import Base, Competitor, Organization, Project, Prompt, PromptCluster, Topic
+from app.models import (
+    Base, Competitor, Organization, Project, ProjectConfigurationVersion, Prompt, PromptCluster, Topic,
+)
 from app.release_schema import RELEASE_TABLE_ALLOWLIST
 from app.schemas.v0 import (
     CompetitorRead,
@@ -150,6 +155,57 @@ def db_competitors(project: Project) -> list[Competitor]:
     return list(project.competitors)
 
 
+def _project_configuration_snapshot(project: Project, competitors: list[Competitor]) -> dict:
+    return {
+        "project_id": project.id,
+        "name": project.name,
+        "brand_name": project.brand_name,
+        "brand_aliases": loads(project.brand_aliases_json, []),
+        "website_url": project.website_url,
+        "industry": project.industry,
+        "region": project.region,
+        "language": project.language,
+        "status": project.status,
+        "competitors": [
+            {"name": row.name, "aliases": loads(row.aliases_json, []), "website_url": row.website_url}
+            for row in sorted(competitors, key=lambda item: item.id or 0)
+        ],
+    }
+
+
+def _record_project_configuration(db: Session, project: Project) -> ProjectConfigurationVersion:
+    competitors = db.query(Competitor).filter_by(project_id=project.id).order_by(Competitor.id).all()
+    snapshot = _project_configuration_snapshot(project, competitors)
+    serialized = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    snapshot_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    latest = db.query(ProjectConfigurationVersion).filter_by(project_id=project.id).order_by(
+        ProjectConfigurationVersion.version_number.desc()).first()
+    if latest and latest.snapshot_hash == snapshot_hash:
+        return latest
+    row = ProjectConfigurationVersion(
+        configuration_version_id=f"project-config-{uuid4()}",
+        project_id=project.id,
+        version_number=(latest.version_number + 1) if latest else 1,
+        snapshot_json=serialized,
+        snapshot_hash=snapshot_hash,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _configuration_version_read(row: ProjectConfigurationVersion, latest_number: int) -> dict:
+    return {
+        "configuration_version_id": row.configuration_version_id,
+        "project_id": row.project_id,
+        "version_number": row.version_number,
+        "status": "EFFECTIVE" if row.version_number == latest_number else "SUPERSEDED",
+        "snapshot": loads(row.snapshot_json, {}),
+        "snapshot_hash": row.snapshot_hash,
+        "created_at": row.created_at,
+    }
+
+
 @router.get("/projects", response_model=list[ProjectRead])
 def list_projects(request: Request, db: Session = Depends(get_db)) -> list[ProjectRead]:
     user = request.state.principal
@@ -181,6 +237,8 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
             aliases_json=dumps(item["aliases"]),
             website_url=item["website_url"],
         ))
+    db.flush()
+    _record_project_configuration(db, project)
     db.commit()
     db.refresh(project)
     return _project_read(project, db.query(Competitor).filter_by(project_id=project.id).all())
@@ -203,6 +261,9 @@ def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depend
     if not project:
         raise HTTPException(status_code=404, detail="Project 不存在")
     values = _project_values(payload.model_dump(exclude_unset=True))
+    # Upgraded databases may contain projects created before the version ledger.
+    # Freeze their current configuration before applying the first later edit.
+    _record_project_configuration(db, project)
     aliases = values.pop("brand_aliases", None)
     competitors = values.pop("competitors", None)
     if aliases is not None:
@@ -218,9 +279,34 @@ def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depend
             ))
     for key, value in values.items():
         setattr(project, key, value)
+    db.flush()
+    _record_project_configuration(db, project)
     db.commit()
     db.refresh(project)
     return _project_read(project, db.query(Competitor).filter_by(project_id=project.id).all())
+
+
+@router.get("/projects/{project_id}/configuration-versions")
+def list_project_configuration_versions(project_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    if not db.get(Project, project_id):
+        raise HTTPException(status_code=404, detail="Project 不存在")
+    rows = db.query(ProjectConfigurationVersion).filter_by(project_id=project_id).order_by(
+        ProjectConfigurationVersion.version_number.desc()).all()
+    latest_number = rows[0].version_number if rows else 0
+    return [_configuration_version_read(row, latest_number) for row in rows]
+
+
+@router.get("/projects/{project_id}/configuration-versions/{configuration_version_id}")
+def get_project_configuration_version(
+    project_id: int, configuration_version_id: str, db: Session = Depends(get_db),
+) -> dict:
+    row = db.query(ProjectConfigurationVersion).filter_by(
+        project_id=project_id, configuration_version_id=configuration_version_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="项目配置版本不存在")
+    latest_number = db.query(ProjectConfigurationVersion.version_number).filter_by(project_id=project_id).order_by(
+        ProjectConfigurationVersion.version_number.desc()).limit(1).scalar() or 0
+    return _configuration_version_read(row, latest_number)
 
 
 @router.get("/projects/{project_id}/prompts", response_model=list[PromptRead])

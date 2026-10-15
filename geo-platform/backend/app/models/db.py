@@ -56,6 +56,23 @@ class Project(Base, TimestampMixin):
     page_snapshots: Mapped[list["PageSnapshot"]] = relationship(cascade="all, delete-orphan")
 
 
+class ProjectConfigurationVersion(Base):
+    """Append-only project/brand configuration snapshot."""
+
+    __tablename__ = "project_configuration_versions"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version_number", name="uq_project_configuration_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    configuration_version_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    snapshot_json: Mapped[str] = mapped_column(Text)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Topic(Base, TimestampMixin):
     __tablename__ = "topics"
 

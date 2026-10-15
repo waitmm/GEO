@@ -1,5 +1,20 @@
 # 08 Development Log
 
+2026-10-15 / IMPLEMENTATION_CHANGE / T19 lifecycle acceptance repair:
+answer/relation correction now admits only explicit successful immutable task
+states `COMPLETED` and `COMPLETED_WITH_LIMITATIONS`, with every fixed strategy
+direction mapped exactly once to a READY delivery whose proposal, diagnosis,
+strategy version/hash, scope and result version/hash match the task identities.
+Read, preview and save share
+the same server guard; task revision/status are part of the preview hash, so a
+post-preview task change is rejected. The release UI uses the same exact status
+and nonempty-delivery rule. Added nonterminal/missing-delivery rejection,
+post-preview revision conflict, completed relation, multi-direction/delivery
+partition and authenticated HTTP append-only history coverage. T19 backend gate
+passes 53 tests, frontend targeted gate passes 10 tests and release build passes;
+all use isolated fixtures with zero external model, collection or production DB
+operations. This repairs the bounded P1 finding and does not implement recompute.
+
 2026-10-14 / IMPLEMENTATION_CHANGE / T19 answer-relation correction entry:
 formal release Optimize task detail now previews and saves task-scoped answer
 behavior or evaluated evidence-relation corrections as append-only diagnosis

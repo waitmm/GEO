@@ -22,12 +22,67 @@ _VALUES = {
     "EVIDENCE_RELATION": {"SOURCE_SUPPORTS_REASON", "SOURCE_CONTRADICTS_REASON", "RELATED", "NONE"},
 }
 
+_CORRECTION_READY_TASK_STATUSES = {"COMPLETED", "COMPLETED_WITH_LIMITATIONS"}
+
+
+def _fixed_strategy_and_deliveries(db, task, objects: dict):
+    strategy = db.query(SinglePromptStrategyResult).filter_by(
+        strategy_id=objects["strategy_id"], result_version=objects["strategy_result_version"],
+        output_hash=objects["strategy_result_hash"],
+    ).one_or_none()
+    if not strategy or digest(loads(strategy.output_json, {})) != strategy.output_hash:
+        raise HTTPException(409, "自动优化任务的固定策略身份或 hash 不一致")
+    directions = loads(strategy.output_json, {}).get("directions") or []
+    direction_ids = [str(row.get("strategy_id") or row.get("direction_id") or "") for row in directions]
+    if not direction_ids or any(not value for value in direction_ids) or len(set(direction_ids)) != len(direction_ids):
+        raise HTTPException(409, "固定策略方向身份缺失或重复")
+
+    bindings = objects.get("deliveries")
+    if not isinstance(bindings, list) or not bindings:
+        raise HTTPException(409, "自动优化任务尚未形成完整固定稿件集合，不能纠错")
+    deliveries = []
+    seen = set()
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            raise HTTPException(409, "自动优化任务的固定稿件身份缺失或重复")
+        identity = (binding.get("proposal_id"), binding.get("result_version"), binding.get("result_hash"))
+        if not all(identity) or identity in seen:
+            raise HTTPException(409, "自动优化任务的固定稿件身份缺失或重复")
+        seen.add(identity)
+        proposal = db.query(SinglePromptExecutionProposal).filter_by(
+            proposal_id=identity[0], strategy_id=objects["strategy_id"],
+            strategy_result_version=objects["strategy_result_version"],
+            strategy_result_hash=objects["strategy_result_hash"], diagnosis_id=objects["diagnosis_id"],
+            analysis_id=task.analysis_id, context_id=task.context_id,
+            project_id=task.project_id, prompt_id=task.prompt_id,
+        ).one_or_none()
+        result = db.query(SinglePromptExecutionProposalResult).filter_by(
+            proposal_id=identity[0], result_version=identity[1], output_hash=identity[2],
+        ).one_or_none() if proposal else None
+        result_output = loads(result.output_json, {}) if result else {}
+        if (not proposal or proposal.direction_id not in direction_ids or not result
+                or digest(result_output) != result.output_hash
+                or (result_output.get("validation") or {}).get("content_delivery_status") != "READY"):
+            raise HTTPException(409, "自动优化任务的固定稿件身份、方向、版本或质量状态不一致")
+        deliveries.append({
+            "proposal_id": proposal.proposal_id,
+            "strategy_id": proposal.direction_id,
+            "result_version": result.result_version,
+            "result_hash": result.output_hash,
+        })
+    delivery_direction_ids = [row["strategy_id"] for row in deliveries]
+    if len(delivery_direction_ids) != len(direction_ids) or set(delivery_direction_ids) != set(direction_ids):
+        raise HTTPException(409, "自动优化任务的固定稿件集合不完整或方向重复，不能纠错")
+    return strategy, directions, deliveries
+
 
 def _task_binding(db, *, task_id: str, project_id: int, prompt_id: int):
     task = require_task(db, task_id, project_id, prompt_id)
     fixed = loads(task.input_json, {})
     if fixed.get("delivery_revision") or fixed.get("truth_correction"):
         raise HTTPException(409, "答案与关系纠错必须从原始自动优化任务进入")
+    if task.status not in _CORRECTION_READY_TASK_STATUSES:
+        raise HTTPException(409, "答案与关系纠错仅允许在自动优化成功完成且稿件集合冻结后进行")
     objects = (loads(task.progress_json, {}).get("objects") or {})
     required = {
         "diagnosis_id", "answer_result_version", "answer_result_hash",
@@ -67,6 +122,7 @@ def _task_binding(db, *, task_id: str, project_id: int, prompt_id: int):
         cursor = by_version.get(cursor.parent_result_version)
         if not cursor:
             raise HTTPException(409, "诊断纠错 lineage 不完整")
+    _fixed_strategy_and_deliveries(db, task, objects)
     return task, objects, frozen, current
 
 
@@ -86,13 +142,7 @@ def _identity_manifest(db, task, objects: dict, output: dict, affected_reason_id
         for event in (output.get("answer_diagnosis") or {}).get("events") or []
         for reason in event.get("reasons") or [] if reason.get("reason_id")
     }
-    strategy = db.query(SinglePromptStrategyResult).filter_by(
-        strategy_id=objects["strategy_id"], result_version=objects["strategy_result_version"],
-        output_hash=objects["strategy_result_hash"],
-    ).one_or_none()
-    if not strategy or digest(loads(strategy.output_json, {})) != strategy.output_hash:
-        raise HTTPException(409, "自动优化任务的固定策略身份或 hash 不一致")
-    directions = (loads(strategy.output_json, {}).get("directions") or [])
+    strategy, directions, deliveries = _fixed_strategy_and_deliveries(db, task, objects)
     affected_strategy_ids, unaffected_strategy_ids = [], []
     for row in directions:
         direction_id = str(row.get("strategy_id") or row.get("direction_id") or "")
@@ -103,25 +153,6 @@ def _identity_manifest(db, task, objects: dict, output: dict, affected_reason_id
         ) else unaffected_strategy_ids
         bucket.append(direction_id)
 
-    deliveries = []
-    for binding in objects.get("deliveries") or []:
-        proposal = db.query(SinglePromptExecutionProposal).filter_by(
-            proposal_id=binding.get("proposal_id"), strategy_id=objects["strategy_id"],
-            strategy_result_version=objects["strategy_result_version"], analysis_id=task.analysis_id,
-            context_id=task.context_id, project_id=task.project_id, prompt_id=task.prompt_id,
-        ).one_or_none()
-        result = db.query(SinglePromptExecutionProposalResult).filter_by(
-            proposal_id=binding.get("proposal_id"), result_version=binding.get("result_version"),
-            output_hash=binding.get("result_hash"),
-        ).one_or_none() if proposal else None
-        if not proposal or not result or digest(loads(result.output_json, {})) != result.output_hash:
-            raise HTTPException(409, "自动优化任务的固定稿件身份或 hash 不一致")
-        deliveries.append({
-            "proposal_id": proposal.proposal_id,
-            "strategy_id": proposal.direction_id,
-            "result_version": result.result_version,
-            "result_hash": result.output_hash,
-        })
     affected_set = set(affected_strategy_ids)
     affected_deliveries = [row for row in deliveries if row["strategy_id"] in affected_set]
     unaffected_deliveries = [row for row in deliveries if row["strategy_id"] not in affected_set]
@@ -220,6 +251,7 @@ def preview_correction(db, *, task_id: str, project_id: int, prompt_id: int,
     }
     payload = {
         "parent_task_id": task.task_id, "parent_input_hash": task.input_hash,
+        "parent_task_revision": task.revision, "parent_task_status": task.status,
         "diagnosis_id": objects["diagnosis_id"], "base_result_version": current.result_version,
         "base_result_hash": current.output_hash, "reviewable_set_hash": current.reviewable_set_hash,
         "edit": edit, "impact": impact,

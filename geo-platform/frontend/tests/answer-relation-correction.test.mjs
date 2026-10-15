@@ -27,6 +27,10 @@ test('formal Optimize panel exposes Chinese preview, immutable history, and no-r
     '本纠错版本尚未重算或升级既有策略与稿件']) assert.match(source, new RegExp(text));
   assert.match(source, /human_confirmed: true/);
   assert.doesNotMatch(source, /actor\s*:/);
-  assert.match(optimize, /task\.task_kind === 'AUTOMATIC_OPTIMIZE'/);
+  assert.match(optimize, /task\.task_kind === "AUTOMATIC_OPTIMIZE"/);
+  assert.match(optimize, /\["COMPLETED", "COMPLETED_WITH_LIMITATIONS"\]\.includes\(task\.status\)/);
+  assert.match(optimize, /Array\.isArray\(task\.objects\.deliveries\)/);
+  assert.match(optimize, /task\.objects\.deliveries\.length > 0/);
+  assert.match(optimize, /answerRelationCorrectionReady\(task\) && <AnswerRelationCorrectionPanel/);
   assert.match(optimize, /AnswerRelationCorrectionPanel/);
 });

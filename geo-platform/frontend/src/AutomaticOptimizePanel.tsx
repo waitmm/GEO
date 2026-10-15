@@ -25,6 +25,9 @@ type Task = {
 };
 const stages = [{ key: "SOURCES", title: "正文准备" }, { key: "ANSWER", title: "回答分析" }, { key: "CITATION", title: "引用分析" }, { key: "STRATEGY", title: "优化建议" }, { key: "TRUTH", title: "品牌资料核实" }, { key: "DRAFT", title: "具体稿件" }, { key: "TEXT_QA", title: "文本检查" }];
 const assetNames: Record<string, string> = { HELP_DOC: "帮助文档", FEATURE_PAGE: "功能说明页", PRODUCT_PAGE: "产品页", ARTICLE: "文章", VIDEO: "视频稿" };
+const answerRelationCorrectionReady = (task: Task) => task.task_kind === "AUTOMATIC_OPTIMIZE"
+  && ["COMPLETED", "COMPLETED_WITH_LIMITATIONS"].includes(task.status)
+  && Array.isArray(task.objects.deliveries) && task.objects.deliveries.length > 0;
 
 export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHash, completion }: { projectId: number; promptId: number; analysisId: string; rawHash: string; completion?: { manifest_id: string; payload_hash: string; version_number: number } | null }) {
   const { message } = AntApp.useApp();
@@ -171,7 +174,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
           {!['TEXT_REVISION', 'TEXT_REGENERATION'].includes(task.task_kind) && task.objects.strategy_id && <TruthCorrectionPanel
             key={`truth:${task.task_id}`} taskId={task.task_id} projectId={projectId} promptId={promptId}
             onQueued={saved => { if (!alive.current) return; ++sequence.current; selectTask(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />}
-          {task.task_kind === 'AUTOMATIC_OPTIMIZE' && task.objects.strategy_id && <AnswerRelationCorrectionPanel
+          {answerRelationCorrectionReady(task) && <AnswerRelationCorrectionPanel
             key={`answer-relation:${task.task_id}`} taskId={task.task_id} projectId={projectId} promptId={promptId} />}
           {task.authorization.policy === "CACHE_ONLY" && !active && !task.status.startsWith("COMPLETED") && task.status !== "CANCELLED" && <Button icon={<ShieldCheck size={16} />} onClick={() => setAuthOpen(true)}>授权本任务模型调用</Button>}
           {["INTERRUPTED", "BLOCKED"].includes(task.status) && <Button disabled={!!task.usage.unsettled_requests} loading={busy} icon={<Play size={16} />} onClick={() => void mutate("resume")}>恢复未完成步骤</Button>}

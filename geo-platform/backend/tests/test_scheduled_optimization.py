@@ -27,7 +27,13 @@ def scene(tmp_path, monkeypatch):
 
 
 def schedule(db, now, settings):
-    return create_schedule(db, project_id=1, prompt_id=44, timezone_name='UTC', local_time='09:00',
+    source = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.task_id.is_not(None)).order_by(
+        SinglePromptAnalysis.id
+    ).first()
+    binding = json.loads(source.sampling_plan_json)['prompt_version']
+    return create_schedule(db, project_id=1, prompt_id=44,
+        prompt_version_id=binding['prompt_version_id'], snapshot_hash=binding['snapshot_hash'],
+        timezone_name='UTC', local_time='09:00',
         sample_count=1, max_attempts=3, authorization_note='synthetic scheduler, no browser', optimization=settings, now=now)
 
 

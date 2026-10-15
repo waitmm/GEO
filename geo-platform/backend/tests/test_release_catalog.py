@@ -301,8 +301,12 @@ def test_prompt_null_update_cannot_reach_database(catalog, payload):
 def test_disabled_prompt_blocks_new_attempts_not_history_or_idempotent_read(catalog):
     client, db = catalog
     analysis = _seed_frozen_analysis(db, reference_urls=[])
+    prompt_version = json.loads(analysis.sampling_plan_json)['prompt_version']
+    version_args = {'prompt_version_id': prompt_version['prompt_version_id'],
+        'snapshot_hash': prompt_version['snapshot_hash']}
     original = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).one()
-    failed, _ = create_analysis(db, project_id=1, prompt_id=44, sample_count=1, idempotency_key='failed-sampling-attempt')
+    failed, _ = create_analysis(db, project_id=1, prompt_id=44, **version_args,
+        sample_count=1, idempotency_key='failed-sampling-attempt')
     failed_run = db.query(BrowserMonitorRun).filter_by(task_id=failed.task_id).one()
     failed.status = 'FAILED'; failed_run.status = 'failed'; failed_run.error_type = 'network_error'
     db.commit()
@@ -310,7 +314,8 @@ def test_disabled_prompt_blocks_new_attempts_not_history_or_idempotent_read(cata
     db.commit()
     counts = (db.query(BrowserMonitorTask).count(), db.query(BrowserMonitorRun).count())
     for action in [
-        lambda: create_analysis(db, project_id=1, prompt_id=44, sample_count=1, idempotency_key='new-attempt'),
+        lambda: create_analysis(db, project_id=1, prompt_id=44, **version_args,
+            sample_count=1, idempotency_key='new-attempt'),
         lambda: queue_run_retry(db, project_id=1, prompt_id=44, run_id=failed_run.id, idempotency_key='new-retry'),
         lambda: retry_analysis(db, failed.analysis_id),
     ]:
@@ -319,9 +324,11 @@ def test_disabled_prompt_blocks_new_attempts_not_history_or_idempotent_read(cata
         assert error.value.status_code == 409 and '停用' in error.value.detail
     assert (db.query(BrowserMonitorTask).count(), db.query(BrowserMonitorRun).count()) == counts
     assert failed.status == 'FAILED' and failed_run.status == 'failed'
-    previous, created = create_analysis(db, project_id=1, prompt_id=44, sample_count=1, idempotency_key='release-sampling-0001')
+    previous, created = create_analysis(db, project_id=1, prompt_id=44, **version_args,
+        sample_count=1, idempotency_key='release-sampling-0001')
     assert not created and previous.analysis_id == analysis.analysis_id
     historical, created = create_analysis_from_runs(db, project_id=1, prompt_id=44,
+        **version_args,
         run_ids=[original.id], run_fingerprints={row['run_id']: row['input_fingerprint']
             for row in list_prompt_run_pool(db, project_id=1, prompt_id=44, page=1, page_size=20)['items'] if row['run_id'] == original.id},
         base_context_id=None, idempotency_key='disabled-historical-analysis')
@@ -331,11 +338,13 @@ def test_disabled_prompt_blocks_new_attempts_not_history_or_idempotent_read(cata
 
 def test_disabled_prompt_cannot_queue_or_create_a_frozen_sampling_plan(catalog):
     client, db = catalog
-    _seed_frozen_analysis(db, reference_urls=[])
-    query = '冻结的采样问题'
+    source = _seed_frozen_analysis(db, reference_urls=[])
+    query = source.prompt_text_snapshot
+    prompt_version = json.loads(source.sampling_plan_json)['prompt_version']
     plan = {'project_id': 1, 'prompt_id': 44, 'sample_count': 1, 'platform': 'wenxin',
         'source_type': 'browser_audit', 'adapter': 'wenxin_web_audit',
-        'collection_mode': 'single_independent', 'prompt_text_hash': _hash(query)}
+        'collection_mode': 'single_independent', 'prompt_text_hash': _hash(query),
+        'prompt_version': prompt_version}
     planned, _ = create_frozen_analysis(db, project_id=1, prompt_id=44, prompt_text=query,
         sampling_plan=plan, idempotency_key='planned-before-disable', created_by='offline-test')
     db.commit()

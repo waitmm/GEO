@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models import BrowserMonitorRun, BrowserMonitorTask, Prompt, SinglePromptAnalysis, SinglePromptSamplingSchedule
 from app.modules.monitoring.enums import NON_RETRYABLE_ERRORS, WENXIN_PLATFORM, WENXIN_WEB_ADAPTER, BROWSER_AUDIT_ENTRY_TYPE
 from app.services.serialization import dumps, loads
-from .service import _hash, create_frozen_analysis
+from .service import _hash, _load_prompt_version_binding, create_frozen_analysis
 
 
 def next_daily(now, zone, local_time):
@@ -43,7 +43,9 @@ def view(row):
             "authorization_note": row.authorization_note}
 
 
-def create_schedule(db, *, project_id, prompt_id, timezone_name, local_time, sample_count, max_attempts, authorization_note, optimization=None, now=None):
+def create_schedule(db, *, project_id, prompt_id, prompt_version_id, snapshot_hash,
+                    timezone_name, local_time, sample_count, max_attempts,
+                    authorization_note, optimization=None, now=None):
     now = now or datetime.utcnow()
     prompt = db.get(Prompt, prompt_id)
     if not prompt or prompt.project_id != project_id:
@@ -54,14 +56,19 @@ def create_schedule(db, *, project_id, prompt_id, timezone_name, local_time, sam
         raise HTTPException(422, "需要明确授权、每次采样数量及有限总尝试次数")
     if db.query(SinglePromptSamplingSchedule).filter_by(project_id=project_id, prompt_id=prompt_id, status="ACTIVE").first():
         raise HTTPException(409, "该问题已有运行计划，请先暂停")
+    prompt_version = _load_prompt_version_binding(db, project_id=project_id, prompt_id=prompt_id,
+        prompt_version_id=prompt_version_id, snapshot_hash=snapshot_hash)
+    prompt_snapshot = prompt_version['snapshot']
     plan = {"contract_version": "sampling-schedule-v1", "project_id": project_id, "prompt_id": prompt_id,
-            "prompt_text": prompt.prompt_text, "prompt_text_hash": _hash(prompt.prompt_text), "sample_count": sample_count,
-            "prompt_configuration": {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group},
+            "prompt_text": prompt_snapshot['prompt_text'], "prompt_text_hash": _hash(prompt_snapshot['prompt_text']),
+            "prompt_version": prompt_version, "sample_count": sample_count,
+            "prompt_configuration": {"intent_type": prompt_snapshot.get('intent_type', ''),
+                "prompt_group": prompt_snapshot.get('prompt_group', '')},
             "platform": WENXIN_PLATFORM, "source_type": BROWSER_AUDIT_ENTRY_TYPE, "adapter": WENXIN_WEB_ADAPTER,
             "collection_mode": "single_independent", "automatic_retry": 0}
     if optimization:
         from .scheduled_optimization import freeze_settings
-        plan['optimization'] = freeze_settings(db, project_id, prompt.prompt_text, optimization)
+        plan['optimization'] = freeze_settings(db, project_id, prompt_snapshot['prompt_text'], optimization)
     row = SinglePromptSamplingSchedule(schedule_id=f"schedule-{uuid4()}", project_id=project_id, prompt_id=prompt_id,
         plan_json=dumps(plan), plan_hash=_hash(plan), timezone=timezone_name, local_time=local_time,
         next_due_at=next_daily(now, timezone_name, local_time), status="ACTIVE", remaining_attempts=max_attempts,
@@ -101,8 +108,16 @@ def tick(db, now=None):
         if previous:
             failure = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == previous.task_id,
                 BrowserMonitorRun.error_type.in_(NON_RETRYABLE_ERRORS | {"session_reset_failed", "session_verification_failed"})).first()
+        try:
+            frozen_version = plan.get('prompt_version') or {}
+            version_valid = frozen_version.get('binding_status') == 'BOUND' and frozen_version == _load_prompt_version_binding(
+                db, project_id=row.project_id, prompt_id=row.prompt_id,
+                prompt_version_id=frozen_version.get('prompt_version_id'), snapshot_hash=frozen_version.get('snapshot_hash'))
+        except HTTPException:
+            version_valid = False
         reason = ("登录、验证码或会话隔离受阻，需人工恢复" if failure else
-                  "问题配置已变化，请重新授权计划" if not prompt or not prompt.enabled or _hash(prompt.prompt_text) != plan.get("prompt_text_hash")
+                  "问题配置已变化，请重新授权计划" if not prompt or not prompt.enabled or not version_valid
+                    or _hash(prompt.prompt_text) != plan.get("prompt_text_hash")
                     or {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group} != plan.get("prompt_configuration") else
                   "冻结计划校验失败" if _hash(plan) != row.plan_hash else "")
         if reason:
@@ -161,7 +176,16 @@ def allow_scheduled_start(db, analysis):
     row = db.query(SinglePromptSamplingSchedule).filter_by(last_analysis_id=analysis.analysis_id).one_or_none()
     prompt = db.get(Prompt, analysis.prompt_id)
     plan = loads(row.plan_json, {}) if row else {}
-    valid = row and row.status == "ACTIVE" and prompt and prompt.enabled and _hash(prompt.prompt_text) == plan.get("prompt_text_hash") and {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group} == plan.get("prompt_configuration")
+    try:
+        frozen_version = plan.get('prompt_version') or {}
+        version_valid = frozen_version.get('binding_status') == 'BOUND' and frozen_version == _load_prompt_version_binding(
+            db, project_id=analysis.project_id, prompt_id=analysis.prompt_id,
+            prompt_version_id=frozen_version.get('prompt_version_id'), snapshot_hash=frozen_version.get('snapshot_hash'))
+    except HTTPException:
+        version_valid = False
+    valid = (row and row.status == "ACTIVE" and prompt and prompt.enabled and version_valid
+        and _hash(prompt.prompt_text) == plan.get("prompt_text_hash")
+        and {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group} == plan.get("prompt_configuration"))
     if valid:
         return True
     analysis.status, task.status = "CANCELLED", "cancelled"

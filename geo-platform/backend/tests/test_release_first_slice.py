@@ -13,7 +13,7 @@ from release_test_client import TestClient
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker
 
-from app.api.release_catalog import _record_project_configuration
+from app.api.release_catalog import _record_project_configuration, _record_prompt_version
 from app.core.release_database import get_release_db
 from app.models import (
     Base,
@@ -139,10 +139,14 @@ def _seed_frozen_analysis(db, *, reference_urls: list[str]):
     db.add(Prompt(id=44, project_id=1, title="Prompt", prompt_text="推荐一个短链工具"))
     db.commit()
     _add_project_configuration(db, project_id=1, brand_name="Target")
+    prompt_version = _record_prompt_version(db, db.get(Prompt, 44))
+    db.commit()
     analysis, _ = create_analysis(
         db,
         project_id=1,
         prompt_id=44,
+        prompt_version_id=prompt_version.prompt_version_id,
+        snapshot_hash=prompt_version.snapshot_hash,
         sample_count=1,
         idempotency_key="release-sampling-0001",
     )

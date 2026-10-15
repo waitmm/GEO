@@ -18,6 +18,7 @@ from app.models import (
     Project,
     ProjectConfigurationVersion,
     Prompt,
+    PromptVersion,
     ReferenceSource,
     RetrievalCandidate,
     RunArtifact,
@@ -43,7 +44,6 @@ from app.modules.monitoring.collectors.wenxin.search_process import (
     project_platform_search_observation,
 )
 from app.modules.monitoring.services import (
-    create_browser_task,
     create_browser_task_from_frozen_prompt,
     update_task_status_from_runs,
 )
@@ -181,11 +181,122 @@ def _validate_analysis_configuration(db: Session, analysis: SinglePromptAnalysis
     return _validate_configuration_binding(db, analysis.project_id, binding)
 
 
+def _load_prompt_version_binding(
+    db: Session,
+    *,
+    project_id: int,
+    prompt_id: int,
+    prompt_version_id: str,
+    snapshot_hash: str,
+) -> dict[str, Any]:
+    row = db.query(PromptVersion).filter_by(
+        project_id=project_id,
+        prompt_id=prompt_id,
+        prompt_version_id=prompt_version_id,
+        snapshot_hash=snapshot_hash,
+    ).one_or_none()
+    snapshot = loads(row.snapshot_json, {}) if row else {}
+    if (
+        not row
+        or not isinstance(snapshot, dict)
+        or snapshot.get("project_id") != project_id
+        or snapshot.get("prompt_id") != prompt_id
+        or not isinstance(snapshot.get("prompt_text"), str)
+        or not snapshot["prompt_text"].strip()
+        or _hash(snapshot) != row.snapshot_hash
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "PROMPT_VERSION_BINDING_MISMATCH", "message": "Prompt 版本的项目、Prompt、ID 或 hash 不匹配"},
+        )
+    return {
+        "binding_status": "BOUND",
+        "prompt_version_id": row.prompt_version_id,
+        "version_number": row.version_number,
+        "snapshot_hash": row.snapshot_hash,
+        "snapshot": snapshot,
+    }
+
+
+def _validate_analysis_prompt_version(
+    db: Session,
+    analysis: SinglePromptAnalysis,
+    plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    plan = plan if plan is not None else loads(analysis.sampling_plan_json, {})
+    if not isinstance(plan, dict) or _hash(plan) != analysis.sampling_plan_hash:
+        raise HTTPException(status_code=409, detail="Analysis 冻结采样计划 hash 不匹配")
+    binding = plan.get("prompt_version")
+    if binding is None:
+        return {"binding_status": "LEGACY_UNBOUND"}
+    if not isinstance(binding, dict) or binding.get("binding_status") != "BOUND":
+        raise HTTPException(status_code=409, detail="Analysis Prompt 版本绑定无效")
+    required = {"binding_status", "prompt_version_id", "version_number", "snapshot_hash", "snapshot"}
+    if set(binding) != required:
+        raise HTTPException(status_code=409, detail="Analysis Prompt 版本绑定不完整")
+    validated = _load_prompt_version_binding(
+        db,
+        project_id=analysis.project_id,
+        prompt_id=analysis.prompt_id,
+        prompt_version_id=binding["prompt_version_id"],
+        snapshot_hash=binding["snapshot_hash"],
+    )
+    if binding != validated or analysis.prompt_text_snapshot != validated["snapshot"]["prompt_text"]:
+        raise HTTPException(status_code=409, detail="Analysis Prompt 版本冻结快照不匹配")
+    return binding
+
+
+def prompt_version_binding_for_runs(
+    db: Session,
+    *,
+    run_ids: list[int],
+) -> dict[str, Any]:
+    rows = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.id.in_(run_ids)).all()
+    task_ids = {row.task_id for row in rows}
+    source_analyses = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.task_id.in_(task_ids)).all()
+    source_by_task = {row.task_id: row for row in source_analyses}
+    bindings: list[dict[str, Any]] = []
+    for row in rows:
+        source = source_by_task.get(row.task_id)
+        if not source:
+            return {"binding_status": "LEGACY_UNBOUND"}
+        source_binding = _validate_analysis_prompt_version(db, source)
+        if source_binding.get("binding_status") != "BOUND":
+            return {"binding_status": "LEGACY_UNBOUND"}
+        bindings.append(source_binding)
+    if not bindings:
+        return {"binding_status": "LEGACY_UNBOUND"}
+    first = bindings[0]
+    if any(binding != first for binding in bindings[1:]):
+        return {"binding_status": "UNSAFE", "reason": "MIXED_PROMPT_VERSIONS"}
+    return first
+
+
+def _require_runs_bound_to_prompt_version(
+    db: Session,
+    *,
+    run_ids: list[int],
+    prompt_version: dict[str, Any],
+) -> None:
+    proven = prompt_version_binding_for_runs(db, run_ids=run_ids)
+    if proven != prompt_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RUN_PROMPT_VERSION_UNPROVEN",
+                "message": "所选 Run 无法证明属于指定 Prompt 冻结版本",
+                "run_ids": sorted(run_ids),
+            },
+        )
+
+
 def create_analysis(
     db: Session,
     *,
     project_id: int,
     prompt_id: int,
+    prompt_version_id: str,
+    snapshot_hash: str,
     sample_count: int,
     idempotency_key: str,
 ) -> tuple[SinglePromptAnalysis, bool]:
@@ -196,12 +307,25 @@ def create_analysis(
     if not prompt or prompt.project_id != project_id:
         raise HTTPException(status_code=404, detail="Prompt 不存在或不属于当前项目")
 
+    prompt_version = _load_prompt_version_binding(
+        db,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        prompt_version_id=prompt_version_id,
+        snapshot_hash=snapshot_hash,
+    )
+    prompt_snapshot = prompt_version["snapshot"]
+
     plan = {
         "contract_version": "single-prompt-sampling-plan-v1",
         "project_id": project_id,
         "prompt_id": prompt_id,
-        "prompt_text": prompt.prompt_text,
-        "prompt_configuration": {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group},
+        "prompt_text": prompt_snapshot["prompt_text"],
+        "prompt_configuration": {
+            "intent_type": prompt_snapshot.get("intent_type", ""),
+            "prompt_group": prompt_snapshot.get("prompt_group", ""),
+        },
+        "prompt_version": prompt_version,
         "sample_count": sample_count,
         "platform": WENXIN_PLATFORM,
         "source_type": BROWSER_AUDIT_ENTRY_TYPE,
@@ -225,15 +349,17 @@ def create_analysis(
 
     _require_sampling_enabled(db, project_id, prompt_id)
     analysis_id = str(uuid4())
-    task = create_browser_task(
+    task = create_browser_task_from_frozen_prompt(
         db,
-        project,
-        [prompt],
-        sample_count,
-        True,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        prompt_text=prompt_snapshot["prompt_text"],
+        run_count=sample_count,
+        execute_now=True,
         platform=WENXIN_PLATFORM,
         source_type=BROWSER_AUDIT_ENTRY_TYPE,
         adapter=WENXIN_WEB_ADAPTER,
+        collection_mode="single_independent",
         schedule_type="single_prompt_v2",
         created_by=f"single_prompt_v2:{analysis_id}",
         commit=False,
@@ -244,7 +370,7 @@ def create_analysis(
         prompt_id=prompt_id,
         task_id=task.id,
         idempotency_key=idempotency_key,
-        prompt_text_snapshot=prompt.prompt_text,
+        prompt_text_snapshot=prompt_snapshot["prompt_text"],
         sampling_plan_json=_canonical_json(plan),
         sampling_plan_hash=plan_hash,
         status="QUEUED",
@@ -331,6 +457,20 @@ def create_frozen_analysis(
     """Create a planned V2 analysis exclusively from an already frozen plan."""
 
     sampling_plan = dict(sampling_plan)
+    prompt_version = sampling_plan.get("prompt_version")
+    if not isinstance(prompt_version, dict) or prompt_version.get("binding_status") != "BOUND":
+        raise HTTPException(status_code=409, detail="新 Analysis 必须绑定 Prompt 版本")
+    validated_prompt_version = _load_prompt_version_binding(
+        db,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        prompt_version_id=prompt_version.get("prompt_version_id"),
+        snapshot_hash=prompt_version.get("snapshot_hash"),
+    )
+    if prompt_version != validated_prompt_version:
+        raise HTTPException(status_code=409, detail="冻结计划 Prompt 版本绑定不匹配")
+    if prompt_text != validated_prompt_version["snapshot"]["prompt_text"]:
+        raise HTTPException(status_code=409, detail="冻结计划 Prompt 文本与绑定版本不匹配")
     if "project_configuration" not in sampling_plan:
         sampling_plan["project_configuration"] = _current_analysis_configuration(db, project_id)
     else:
@@ -398,6 +538,7 @@ def queue_frozen_analysis(db: Session, analysis_id: str) -> SinglePromptAnalysis
     _require_sampling_enabled(db, analysis.project_id, analysis.prompt_id)
     plan = loads(analysis.sampling_plan_json, {})
     _validate_analysis_configuration(db, analysis, plan)
+    _validate_analysis_prompt_version(db, analysis, plan)
     runs = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).order_by(BrowserMonitorRun.id).all()
     if len(runs) != int(plan.get("sample_count") or 0):
         raise HTTPException(status_code=409, detail="复测计划 Run 数与冻结计划不一致")
@@ -423,6 +564,7 @@ def claim_analysis(db: Session, analysis_id: str) -> str | None:
     if not analysis:
         return None
     _validate_analysis_configuration(db, analysis)
+    _validate_analysis_prompt_version(db, analysis)
     token = uuid4().hex
     claimed = db.execute(
         update(SinglePromptAnalysis)
@@ -668,6 +810,8 @@ def create_analysis_from_runs(
     *,
     project_id: int,
     prompt_id: int,
+    prompt_version_id: str,
+    snapshot_hash: str,
     run_ids: list[int],
     run_fingerprints: dict[int, str],
     base_context_id: str | None,
@@ -680,6 +824,14 @@ def create_analysis_from_runs(
         raise HTTPException(status_code=404, detail="项目不存在")
     if not prompt or prompt.project_id != project_id:
         raise HTTPException(status_code=404, detail="Prompt 不存在或不属于当前项目")
+    prompt_version = _load_prompt_version_binding(
+        db,
+        project_id=project_id,
+        prompt_id=prompt_id,
+        prompt_version_id=prompt_version_id,
+        snapshot_hash=snapshot_hash,
+    )
+    prompt_snapshot = prompt_version["snapshot"]
     if base_context_id:
         base = db.query(SinglePromptAnalysisContext).filter_by(context_id=base_context_id).one_or_none()
         if not base or base.project_id != project_id or base.prompt_id != prompt_id:
@@ -690,6 +842,11 @@ def create_analysis_from_runs(
         project_id=project_id,
         prompt_id=prompt_id,
         run_ids=run_ids,
+    )
+    _require_runs_bound_to_prompt_version(
+        db,
+        run_ids=[int(row["run_id"]) for row in snapshots],
+        prompt_version=prompt_version,
     )
     actual_fingerprints = {
         int(row["run_id"]): _run_input_fingerprint(row)
@@ -708,8 +865,12 @@ def create_analysis_from_runs(
         "contract_version": "single-prompt-explicit-run-selection-v1",
         "project_id": project_id,
         "prompt_id": prompt_id,
-        "prompt_text": prompt.prompt_text,
-        "prompt_configuration": {"intent_type": prompt.intent_type, "prompt_group": prompt.prompt_group},
+        "prompt_text": prompt_snapshot["prompt_text"],
+        "prompt_configuration": {
+            "intent_type": prompt_snapshot.get("intent_type", ""),
+            "prompt_group": prompt_snapshot.get("prompt_group", ""),
+        },
+        "prompt_version": prompt_version,
         "sample_count": len(ordered_ids),
         "input_mode": "EXPLICIT_RUN_SELECTION",
         "run_ids": ordered_ids,
@@ -744,7 +905,7 @@ def create_analysis_from_runs(
         "analysis_id": analysis_id,
         "project_id": project_id,
         "prompt_id": prompt_id,
-        "prompt_text": prompt.prompt_text,
+        "prompt_text": prompt_snapshot["prompt_text"],
         "sampling_plan": plan,
         "runs": snapshots,
     }
@@ -757,7 +918,7 @@ def create_analysis_from_runs(
         prompt_id=prompt_id,
         task_id=None,
         idempotency_key=idempotency_key,
-        prompt_text_snapshot=prompt.prompt_text,
+        prompt_text_snapshot=prompt_snapshot["prompt_text"],
         sampling_plan_json=_canonical_json(plan),
         sampling_plan_hash=plan_hash,
         status="READY",
@@ -851,6 +1012,7 @@ def finalize_analysis(db: Session, analysis_id: str, token: str) -> bool:
 
     plan = loads(analysis.sampling_plan_json, {})
     _validate_analysis_configuration(db, analysis, plan)
+    _validate_analysis_prompt_version(db, analysis, plan)
     runs = _snapshot_runs(db, analysis)
     planned = int(plan.get("sample_count") or 0)
     if len(runs) != planned or any(run["status"] not in TERMINAL_RUN_STATUSES for run in runs):
@@ -946,6 +1108,7 @@ def retry_analysis(db: Session, analysis_id: str) -> SinglePromptAnalysis:
     if analysis.status not in {"FAILED", "INTERRUPTED"}:
         raise HTTPException(status_code=409, detail=f"当前状态 {analysis.status} 不允许重试")
     _validate_analysis_configuration(db, analysis)
+    _validate_analysis_prompt_version(db, analysis)
     _require_sampling_enabled(db, analysis.project_id, analysis.prompt_id)
 
     runs = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.task_id == analysis.task_id).all()
@@ -1038,6 +1201,7 @@ def get_analysis_status(db: Session, analysis_id: str) -> dict[str, Any]:
     if not analysis:
         raise HTTPException(status_code=404, detail="V2 分析不存在")
     configuration = _validate_analysis_configuration(db, analysis)
+    prompt_version = _validate_analysis_prompt_version(db, analysis)
     task = db.get(BrowserMonitorTask, analysis.task_id) if analysis.task_id is not None else None
     context = db.query(SinglePromptAnalysisContext).filter(SinglePromptAnalysisContext.analysis_id == analysis_id).one_or_none()
     if context:
@@ -1098,6 +1262,7 @@ def get_analysis_status(db: Session, analysis_id: str) -> dict[str, Any]:
             "task_id": analysis.task_id,
             "prompt_text": analysis.prompt_text_snapshot,
             "sampling_plan_hash": analysis.sampling_plan_hash,
+            "prompt_version": prompt_version,
         },
         "sampling": {
             "status": analysis.status,

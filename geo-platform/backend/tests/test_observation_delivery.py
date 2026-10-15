@@ -240,7 +240,10 @@ def test_monitor_handoff_freezes_scope_rejects_stale_and_replays_without_new_run
         prompt = db.get(Prompt, 44); prompt.prompt_group = 'changed group'; db.commit()
         assert client.post(base + '/monitor-analysis', json={'scope_hash': current['scope_hash']}).status_code == 409
         assert client.post(base.replace('/1/', '/2/') + '/monitor-analysis', json=payload).status_code == 404
-        pending, _ = create_analysis(db, project_id=1, prompt_id=44, sample_count=1, idempotency_key='later-pending')
+        binding = loads(original.sampling_plan_json, {})['prompt_version']
+        pending, _ = create_analysis(db, project_id=1, prompt_id=44,
+            prompt_version_id=binding['prompt_version_id'], snapshot_hash=binding['snapshot_hash'],
+            sample_count=1, idempotency_key='later-pending')
         current = client.get(base + '/monitor').json()['analysis_selection']
         waiting = db.query(BrowserMonitorRun).filter_by(task_id=pending.task_id).one()
         assert current['excluded_run_ids'] == [waiting.id]
@@ -269,8 +272,11 @@ def test_semantic_uncertainty_is_not_negative_and_options_are_separate():
 def test_formal_api_context_and_comparison_persist_without_reviews(tmp_path, monkeypatch):
     db, engine = _migrated_session(tmp_path, monkeypatch)
     try:
-        _seed_frozen_analysis(db, reference_urls=[])
-        second, _ = create_analysis(db, project_id=1, prompt_id=44, sample_count=1, idempotency_key='second-test-sample')
+        original = _seed_frozen_analysis(db, reference_urls=[])
+        binding = json.loads(original.sampling_plan_json)['prompt_version']
+        second, _ = create_analysis(db, project_id=1, prompt_id=44,
+            prompt_version_id=binding['prompt_version_id'], snapshot_hash=binding['snapshot_hash'],
+            sample_count=1, idempotency_key='second-test-sample')
         token = claim_analysis(db, second.analysis_id)
         run = db.query(BrowserMonitorRun).filter_by(task_id=second.task_id).one()
         run.status = 'success'; run.answer_text = 'Target is mentioned'; run.reference_complete = True

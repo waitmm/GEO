@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from test_release_first_slice import _migrated_session, _seed_citation_contribution_fixture
 from app.api.release_catalog import _record_project_configuration
-from app.models import Project, SinglePromptAnalysisContext, SinglePromptDiagnosisReview, SinglePromptOptimizationTask
+from app.models import Project, SinglePromptAnalysis, SinglePromptAnalysisContext, SinglePromptDiagnosisReview, SinglePromptOptimizationTask
 from app.modules.single_prompt_v2.automatic_delivery import (
     authorize_task, cancel_task, create_task, encode, scoped_client, task_view, execute_task,
     recover_interrupted_tasks, require_task, resume_task,
@@ -503,7 +503,11 @@ def test_multi_run_task_preserves_each_contribution_version_and_never_reads_late
     db.commit()
     pool = list_prompt_run_pool(db, project_id=1, prompt_id=44, page=1, page_size=20)
     selected = [first.id, second.id]
+    source_analysis = db.query(SinglePromptAnalysis).filter_by(task_id=first.task_id).one()
+    prompt_version = json.loads(source_analysis.sampling_plan_json)["prompt_version"]
     analysis, _ = create_analysis_from_runs(db, project_id=1, prompt_id=44, run_ids=selected,
+        prompt_version_id=prompt_version["prompt_version_id"],
+        snapshot_hash=prompt_version["snapshot_hash"],
         run_fingerprints={r['run_id']: r['input_fingerprint'] for r in pool['items']},
         idempotency_key='two-run-offline-scope', base_context_id=None)
     context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis.analysis_id).one()

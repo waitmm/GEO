@@ -117,15 +117,21 @@ class AutomaticOptimizationAuthorization(AutomaticOptimizationAction):
 
 
 class SinglePromptAnalysisCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     project_id: int
     prompt_id: int
+    prompt_version_id: str = Field(min_length=1, max_length=80)
+    snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     sample_count: int = Field(default=3, ge=1, le=10)
     idempotency_key: str = Field(min_length=8, max_length=120)
 
 
 class SinglePromptRunSelectionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     project_id: int
     prompt_id: int
+    prompt_version_id: str = Field(min_length=1, max_length=80)
+    snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     run_ids: list[int] = Field(min_length=1, max_length=500)
     run_fingerprints: dict[int, str]
     base_context_id: str | None = Field(default=None, max_length=80)
@@ -145,6 +151,7 @@ class AnalysisIdentityRead(BaseModel):
     task_id: int | None
     prompt_text: str
     sampling_plan_hash: str
+    prompt_version: dict[str, Any]
 
 
 class SamplingStateRead(BaseModel):

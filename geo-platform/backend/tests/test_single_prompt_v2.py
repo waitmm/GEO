@@ -15,12 +15,14 @@ from app.models import (
     Project,
     ProjectConfigurationVersion,
     Prompt,
+    PromptVersion,
     ReferenceSource,
     RetrievalCandidate,
     RunArtifact,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
 )
+from app.api.release_catalog import _record_prompt_version
 from app.modules.single_prompt_v2.service import (
     claim_analysis,
     create_analysis,
@@ -71,15 +73,23 @@ def _seed(db, *, with_configuration=True):
         Prompt(id=12, project_id=1, title="Prompt B", prompt_text="另一个问题"),
     ])
     db.commit()
+    for prompt_id in (11, 12):
+        _record_prompt_version(db, db.get(Prompt, prompt_id))
+    db.commit()
     if with_configuration:
         _configuration(db)
 
 
 def _create(db, prompt_id=11, count=2, key="request-key-0001"):
+    version = db.query(PromptVersion).filter_by(prompt_id=prompt_id).order_by(
+        PromptVersion.version_number.desc()
+    ).one()
     return create_analysis(
         db,
         project_id=1,
         prompt_id=prompt_id,
+        prompt_version_id=version.prompt_version_id,
+        snapshot_hash=version.snapshot_hash,
         sample_count=count,
         idempotency_key=key,
     )[0]
@@ -106,8 +116,15 @@ def test_create_is_idempotent_and_plan_is_fixed(tmp_path):
     db, engine = _session(tmp_path)
     try:
         _seed(db)
-        first, created = create_analysis(db, project_id=1, prompt_id=11, sample_count=2, idempotency_key="same-request-key")
-        second, created_again = create_analysis(db, project_id=1, prompt_id=11, sample_count=2, idempotency_key="same-request-key")
+        version = db.query(PromptVersion).filter_by(prompt_id=11).one()
+        arguments = {
+            "project_id": 1, "prompt_id": 11,
+            "prompt_version_id": version.prompt_version_id,
+            "snapshot_hash": version.snapshot_hash,
+            "sample_count": 2, "idempotency_key": "same-request-key",
+        }
+        first, created = create_analysis(db, **arguments)
+        second, created_again = create_analysis(db, **arguments)
 
         assert created is True
         assert created_again is False
@@ -165,10 +182,13 @@ def test_all_new_analysis_paths_require_a_project_configuration_version(tmp_path
         db.commit()
 
         with pytest.raises(HTTPException) as selection_error:
+            version = db.query(PromptVersion).filter_by(prompt_id=11).one()
             create_analysis_from_runs(
                 db,
                 project_id=1,
                 prompt_id=11,
+                prompt_version_id=version.prompt_version_id,
+                snapshot_hash=version.snapshot_hash,
                 run_ids=[selected["run_id"]],
                 run_fingerprints={selected["run_id"]: selected["input_fingerprint"]},
                 base_context_id=None,
@@ -237,6 +257,7 @@ def test_analysis_configuration_binding_is_exact_versioned_and_legacy_is_not_bac
         second = _create(db, count=1, key="analysis-config-v2")
 
         first_binding = get_analysis_status(db, first.analysis_id)["project_configuration"]
+        first_prompt_binding = get_analysis_status(db, first.analysis_id)["analysis"]["prompt_version"]
         second_binding = get_analysis_status(db, second.analysis_id)["project_configuration"]
         assert (first_binding["configuration_version_id"], first_binding["version_number"],
                 first_binding["snapshot_hash"], first_binding["brand"]["brand_name"]) == (
@@ -268,6 +289,7 @@ def test_analysis_configuration_binding_is_exact_versioned_and_legacy_is_not_bac
                 "source_type": "browser_audit_entry",
                 "adapter": "wenxin_web",
                 "collection_mode": "single_independent",
+                "prompt_version": first_prompt_binding,
                 "project_configuration": first_binding,
             },
             idempotency_key="frozen-analysis-keeps-v1",

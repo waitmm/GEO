@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 
 from fastapi import HTTPException
 import pytest
@@ -8,13 +9,21 @@ from app.modules.single_prompt_v2.scheduling import create_schedule, next_daily,
 from test_release_first_slice import _migrated_session, _seed_frozen_analysis
 
 
+def _version_kwargs(db):
+    source = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.task_id.is_not(None)).order_by(
+        SinglePromptAnalysis.id
+    ).first()
+    binding = json.loads(source.sampling_plan_json)['prompt_version']
+    return {'prompt_version_id': binding['prompt_version_id'], 'snapshot_hash': binding['snapshot_hash']}
+
+
 def test_collector_stops_later_samples_after_access_block(tmp_path, monkeypatch):
     from app.modules.monitoring.executor import MonitoringTaskExecutor
     db, engine = _migrated_session(tmp_path, monkeypatch)
     executor = MonitoringTaskExecutor()
     try:
         _seed_frozen_analysis(db, reference_urls=[])
-        row = create_schedule(db, project_id=1, prompt_id=44, timezone_name='Asia/Shanghai', local_time='09:00',
+        row = create_schedule(db, project_id=1, prompt_id=44, **_version_kwargs(db), timezone_name='Asia/Shanghai', local_time='09:00',
             sample_count=3, max_attempts=3, authorization_note='offline test only', now=datetime(2026, 10, 9))
         tick(db, datetime(2026, 10, 9, 1))
         analysis = db.query(SinglePromptAnalysis).filter_by(analysis_id=row.last_analysis_id).one()
@@ -46,7 +55,7 @@ def test_schedule_reservation_reopen_pause_and_authorization_bound(tmp_path, mon
     db, engine = _migrated_session(tmp_path, monkeypatch)
     try:
         _seed_frozen_analysis(db, reference_urls=[])
-        row = create_schedule(db, project_id=1, prompt_id=44, timezone_name='Asia/Shanghai', local_time='09:00',
+        row = create_schedule(db, project_id=1, prompt_id=44, **_version_kwargs(db), timezone_name='Asia/Shanghai', local_time='09:00',
             sample_count=1, max_attempts=2, authorization_note='isolated scheduler test, never start browser', now=datetime(2026, 10, 9, 0))
         count = db.query(BrowserMonitorRun).count()
         assert tick(db, datetime(2026, 10, 9, 0, 59)) == []
@@ -70,7 +79,7 @@ def test_schedule_reservation_reopen_pause_and_authorization_bound(tmp_path, mon
         assert tick(db, datetime(2026, 10, 11, 1)) == []
         db.refresh(row)
         assert row.status == 'EXHAUSTED' and row.remaining_attempts == 0
-        second = create_schedule(db, project_id=1, prompt_id=44, timezone_name='Asia/Shanghai', local_time='09:00',
+        second = create_schedule(db, project_id=1, prompt_id=44, **_version_kwargs(db), timezone_name='Asia/Shanghai', local_time='09:00',
             sample_count=1, max_attempts=1, authorization_note='second isolated plan', now=datetime(2026, 10, 12))
         pause_schedule(db, second, second.revision)
         assert tick(db, datetime(2026, 10, 13, 1)) == []
@@ -83,7 +92,7 @@ def test_schedule_stops_when_identity_or_access_changes(tmp_path, monkeypatch, c
     db, engine = _migrated_session(tmp_path, monkeypatch)
     try:
         _seed_frozen_analysis(db, reference_urls=[])
-        row = create_schedule(db, project_id=1, prompt_id=44, timezone_name='Asia/Shanghai', local_time='09:00',
+        row = create_schedule(db, project_id=1, prompt_id=44, **_version_kwargs(db), timezone_name='Asia/Shanghai', local_time='09:00',
             sample_count=1, max_attempts=3, authorization_note='isolated', now=datetime(2026, 10, 9))
         tick(db, datetime(2026, 10, 9, 1))
         if cause == 'prompt_change':

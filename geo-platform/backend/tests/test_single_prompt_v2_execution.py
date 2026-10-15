@@ -14,7 +14,9 @@ from app.models import (
     BrowserMonitorTask,
     Organization,
     Project,
+    ProjectConfigurationVersion,
     Prompt,
+    PromptVersion,
     ReferenceSource,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
@@ -72,10 +74,29 @@ def _seed_accepted_strategy(db, *, foundation=False, include_partial=False, acce
     db.add(Prompt(id=44, project_id=1, title="Changed live title",
                   prompt_text="当前配置的问题，不得替换冻结复测问题", enabled=True))
     db.flush()
+    prompt_snapshot = {"project_id": 1, "prompt_id": 44, "prompt_text": "哪个二维码工具值得推荐",
+        "title": "Frozen title", "intent_type": "unknown", "prompt_group": "", "enabled": True}
+    prompt_version = PromptVersion(
+        prompt_version_id="prompt-version-fixture-v1", project_id=1, prompt_id=44, version_number=1,
+        snapshot_json=json.dumps(prompt_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        snapshot_hash=_hash(prompt_snapshot),
+    )
+    db.add(prompt_version)
+    project_snapshot = {"project_id": 1, "name": "Fixture", "brand_name": "Geo",
+        "brand_aliases": [], "website_url": "", "industry": "", "region": "", "language": ""}
+    db.add(ProjectConfigurationVersion(
+        configuration_version_id="project-config-fixture-v1", project_id=1, version_number=1,
+        snapshot_json=json.dumps(project_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        snapshot_hash=_hash(project_snapshot),
+    ))
+    db.flush()
     plan = {
         "contract_version": "single-prompt-sampling-plan-v1", "project_id": 1, "prompt_id": 44,
         "prompt_text": "哪个二维码工具值得推荐", "sample_count": 3 if include_sampling_failure else 2, "platform": "wenxin",
         "source_type": "browser_audit", "adapter": "wenxin_web_audit", "collection_mode": "single_independent",
+        "prompt_version": {"binding_status": "BOUND", "prompt_version_id": prompt_version.prompt_version_id,
+            "version_number": prompt_version.version_number, "snapshot_hash": prompt_version.snapshot_hash,
+            "snapshot": prompt_snapshot},
     }
     raw = {
         "contract_version": "single-prompt-raw-output-v1", "analysis_id": "analysis-1", "project_id": 1,

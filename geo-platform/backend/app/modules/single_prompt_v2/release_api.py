@@ -514,6 +514,8 @@ def start_analysis(payload: SinglePromptAnalysisCreate, response: Response, db: 
         db,
         project_id=payload.project_id,
         prompt_id=payload.prompt_id,
+        prompt_version_id=payload.prompt_version_id,
+        snapshot_hash=payload.snapshot_hash,
         sample_count=payload.sample_count,
         idempotency_key=payload.idempotency_key,
     )
@@ -553,6 +555,8 @@ def start_analysis_from_runs(
         db,
         project_id=payload.project_id,
         prompt_id=payload.prompt_id,
+        prompt_version_id=payload.prompt_version_id,
+        snapshot_hash=payload.snapshot_hash,
         run_ids=payload.run_ids,
         run_fingerprints=payload.run_fingerprints,
         base_context_id=payload.base_context_id,

@@ -310,6 +310,7 @@ def create_retest(
         "prompt_id": prompt_id,
         "prompt_text": prompt_text,
         "prompt_text_hash": _text_hash(prompt_text),
+        "prompt_version": baseline_plan.get("prompt_version"),
         "sample_count": planned_count,
         "platform": baseline_plan["platform"],
         "source_type": baseline_plan["source_type"],

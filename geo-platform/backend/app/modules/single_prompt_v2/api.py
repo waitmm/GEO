@@ -197,6 +197,8 @@ def start_analysis(
         db,
         project_id=payload.project_id,
         prompt_id=payload.prompt_id,
+        prompt_version_id=payload.prompt_version_id,
+        snapshot_hash=payload.snapshot_hash,
         sample_count=payload.sample_count,
         idempotency_key=payload.idempotency_key,
     )

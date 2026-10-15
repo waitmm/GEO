@@ -12,7 +12,8 @@ from .context_provider import context_view, load_context, save_context
 from .observation import fixed_scope, measure_scope, create_observation_comparison, aggregate_prompt_metrics, opportunity_hint
 from . import scheduling
 from app.models import SinglePromptSamplingSchedule
-from .service import _snapshot_run_rows, _hash, _run_input_fingerprint, create_analysis_from_runs, get_analysis_status, VALID_RUN_STATUSES
+from .service import (_snapshot_run_rows, _hash, _run_input_fingerprint, create_analysis_from_runs,
+    get_analysis_status, prompt_version_binding_for_runs, VALID_RUN_STATUSES)
 from urllib.parse import urlsplit
 
 router = APIRouter(prefix='/api/v2', tags=['monitor-validate'])
@@ -64,6 +65,11 @@ def current_monitor(project_id: int, prompt_id: int, db: Session = Depends(get_r
             if r['status'] in VALID_RUN_STATUSES and str(r.get('answer_text') or '').strip()}}
     selection['selected_run_ids'] = sorted(int(key) for key in selection['run_fingerprints'])
     selection['excluded_run_ids'] = [r.id for r in matching if r.id not in selection['selected_run_ids']]
+    try:
+        selection['prompt_version'] = prompt_version_binding_for_runs(
+            db, run_ids=selection['selected_run_ids'])
+    except HTTPException:
+        selection['prompt_version'] = {'binding_status': 'UNSAFE', 'reason': 'PROMPT_VERSION_BINDING_INVALID'}
     result['analysis_selection'] = {**selection, 'scope_hash': _hash(selection)}
     result['competitor_observations'] = [{
         'competitor_id': competitor.id, 'name': competitor.name,
@@ -99,7 +105,15 @@ def analyze_monitor_scope(project_id: int, prompt_id: int, payload: MonitorAnaly
         raise HTTPException(409, '监测范围或配置已变化，请刷新监测后重新确认；没有替换为新样本')
     if not selected['selected_run_ids'] or len(selected['selected_run_ids']) > 500:
         raise HTTPException(422, '本次可分析回答需为1至500条；请到采样记录池明确选择范围')
+    prompt_version = selected.get('prompt_version') or {}
+    if prompt_version.get('binding_status') != 'BOUND':
+        raise HTTPException(409, detail={
+            'code': 'RUN_PROMPT_VERSION_UNPROVEN',
+            'message': '当前监测范围包含历史未绑定或混合 Prompt 版本，不能创建不安全的新 Analysis',
+        })
     analysis, created = create_analysis_from_runs(db, project_id=project_id, prompt_id=prompt_id,
+        prompt_version_id=prompt_version['prompt_version_id'],
+        snapshot_hash=prompt_version['snapshot_hash'],
         run_ids=selected['selected_run_ids'], run_fingerprints=selected['run_fingerprints'],
         base_context_id=None, idempotency_key=request_key, origin_monitor_scope=selected)
     if not created:
@@ -133,6 +147,8 @@ class ScheduledOptimization(StrictInput):
 
 
 class ScheduleCreate(StrictInput):
+    prompt_version_id: str = Field(min_length=1, max_length=80)
+    snapshot_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
     timezone_name: str = Field(default='Asia/Shanghai', max_length=80)
     local_time: str = Field(pattern=r'^\d{2}:\d{2}$')
     sample_count: int = Field(ge=1, le=10)

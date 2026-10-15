@@ -67,7 +67,7 @@
     },
     "product_development_batch": {
       "id": "GEO-PRODUCT-20261014-01",
-      "status": "READY_DRY_RUN_ONLY_THIS_TURN",
+      "status": "HISTORICAL_COMPLETED_AFTER_MANUAL_ACCEPTANCE",
       "selected_unit_id": "T19-ANSWER-RELATION-CORRECTION-ENTRY-01",
       "controller_branch": "codex/geo-product-ready",
       "code_baseline_branch": "codex/geo-integration",
@@ -80,6 +80,25 @@
       "historical_usage": "UNKNOWN_PRESERVED",
       "reviewed_receipt": "backend/artifacts/codex_usage/20261014T113603-538bb98f/reviewed-batch-receipt.json",
       "receipt_review": "backend/artifacts/codex_usage/20261014T113603-538bb98f/receipt-review.json"
+    },
+    "next_product_development_batch": {
+      "id": "GEO-PRODUCT-SMALL-20261015-01",
+      "status": "READY_DRY_RUN_ONLY_THIS_TURN",
+      "selected_unit_id": "T19-ANSWER-RELATION-STRATEGY-REPROJECTION-02",
+      "controller_branch": "codex/geo-next-product-ready",
+      "code_baseline_branch": "codex/geo-integration",
+      "source_baseline_commit": "fc75fb65762af9e6359f6ca91ac7b3f03f56968d",
+      "execute_in_this_agent_turn": false,
+      "external_geo_calls_authorized": 0,
+      "production_database_operations_authorized": false,
+      "resume_previous_batch": false,
+      "main_merge_authorized": false,
+      "token_threshold": 30000,
+      "token_threshold_kind": "POST_SESSION_SOFT_THRESHOLD_NOT_HARD_CAP",
+      "historical_t19_usage": 7189445,
+      "historical_t19_status": "STOPPED_REVIEWED_NOT_ACCEPTED",
+      "reviewed_receipt": "backend/artifacts/codex_usage/20261014T181941-290bdbcc/reviewed-batch-receipt.json",
+      "receipt_review": "backend/artifacts/codex_usage/20261014T181941-290bdbcc/receipt-review.json"
     },
     "units": [
       {
@@ -318,9 +337,143 @@
         },
         "session_seconds": 1800,
         "authorization_batch": "GEO-PRODUCT-20261014-01"
+      },
+      {
+        "id": "T19-ANSWER-RELATION-STRATEGY-REPROJECTION-02",
+        "task_id": "T19",
+        "task_type": "PRODUCT_SMALL",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "requirements": [
+          "COR-002",
+          "COR-003"
+        ],
+        "status": "READY",
+        "depends_on": [],
+        "completed_unit_dependencies": [
+          {
+            "unit_id": "T19-ANSWER-RELATION-CORRECTION-ENTRY-01",
+            "required_status": "DONE",
+            "accepted_commit": "993f1a9a4250ea42e838ded6e2a91484d64aa7b2"
+          }
+        ],
+        "task_dependencies": [
+          {
+            "task_id": "T13",
+            "required_existing_slice": "固定DiagnosisResult版本、关系投影、CitationContribution和hash校验；不要求T13整体DONE"
+          },
+          {
+            "task_id": "T18",
+            "required_existing_slice": "正式release Optimize任务、状态恢复、CACHE_ONLY执行和任务详情；不要求T18整体DONE"
+          },
+          {
+            "task_id": "T19",
+            "required_existing_slice": "答案/关系纠错追加版本、精确影响清单和既有Truth局部重投影模式"
+          }
+        ],
+        "business_value": "让已保存的答案行为或证据关系纠错真正进入下一步可消费结果：只基于纠错后的固定诊断版本重新投影受影响策略，并明确列出仍待更新的稿件；避免继续展示已知错误策略，也避免为一次纠错重跑回答、引用、来源或无关方向。",
+        "objective": "实现答案/关系纠错后的第一个局部重算切片：用户从正式Optimize纠错历史中显式创建一个独立ANSWER_RELATION_REPROJECTION任务。服务端必须重新校验原任务成功终态、项目/Prompt归属、纠错result_version/result_hash、lineage、影响清单和固定稿件集合；冻结原任务输入、来源快照、CitationContribution及纠错后的DiagnosisResult，只复用现有V2资格和策略投影生成新的append-only策略结果。仅重新投影受影响reason/strategy，未受影响策略和全部旧稿继续引用父任务且逐字节不变；本单元不生成或改写稿件，而是持久化受影响稿件待更新清单并明确提示。任务必须CACHE_ONLY、来源抓取/回答/引用计算/模型请求均为0，幂等重试返回同一任务，陈旧纠错、跨项目/Prompt、错误hash、错误幂等键及预览后lineage变化均拒绝。页面提供“更新受影响策略”操作并显示新策略版本、未受影响对象和“稿件尚未重新生成”，不得宣称内容已更新。不要实现后续稿件生成、发布或复测，不改变V2阶段顺序、语义定义、旧任务选择或历史实验。",
+        "reference_docs": [
+          "docs/geo-v1.0/00_产品范围与交付基线.md#本轮冻结原则",
+          "docs/geo-v1.0/06_Optimize任务与版本.md#正常流程",
+          "docs/geo-v1.0/14_纠错与局部重算.md#正常流程",
+          "docs/geo-v1.0/14_纠错与局部重算.md#需求与规则",
+          "docs/geo-v1.0/17_验收矩阵.md#功能验收",
+          "docs/semantics/00_DOMAIN_MODEL.md#AnswerDecisionBinding",
+          "docs/semantics/01_SEMANTIC_CONTRACTS.md#SC-HISTORY-001-Accepted-History-Is-Immutable",
+          "docs/semantics/01_SEMANTIC_CONTRACTS.md#SC-SCOPE-001-Current-Scope-History-Isolation",
+          "docs/semantics/01_SEMANTIC_CONTRACTS.md#SC-CITATION-CONTRIBUTION-001-Citation-Contribution-V1",
+          "docs/semantics/04_CONFLICT_REGISTER.md#SEM-CONFLICT-003-Runtime-ANSWER_SEMANTIC-输出契约不可执行",
+          "docs/semantics/04_CONFLICT_REGISTER.md#SEM-CONFLICT-004-Runtime-BINDING-上游-lineage-与-Legacy-边界冲突"
+        ],
+        "allowed_files": [
+          "geo-platform/backend/app/modules/single_prompt_v2/answer_relation_corrections.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/automatic_delivery.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/release_api.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/schemas.py",
+          "geo-platform/frontend/src/AnswerRelationCorrectionPanel.tsx"
+        ],
+        "acceptance_conditions": [
+          "仅当前项目/Prompt下成功终态父任务的当前答案/关系纠错版本可创建重投影；服务端绑定parent task input_hash/revision、diagnosis_id、correction result_version/result_hash、reviewable_set_hash、impact和固定策略/稿件identity，陈旧或伪造字段拒绝。",
+          "新任务使用独立task_id/input_hash和CACHE_ONLY零预算，幂等重试返回同一任务；相同幂等键绑定其他输入、跨项目/Prompt、错误hash或纠错lineage变化返回冲突，不读取latest补齐。",
+          "worker不抓取来源、不重算Answer/CitationContribution、不调用模型，只消费父任务冻结来源、精确纠错DiagnosisResult和原CitationContribution，使用正式V2资格/策略能力生成append-only策略投影。",
+          "新结果只包含受影响reason对应的策略重投影；未受影响策略、父任务输入、机器诊断、CitationContribution和全部旧稿逐字节/哈希不变，旧任务不被自动替换或晋升。",
+          "任务持久化受影响与不受影响strategy/delivery identity、新策略版本及待更新稿件清单；本单元不生成稿件，页面明确显示“策略已重新投影，稿件尚未重新生成”，不能把旧稿标成已更新。",
+          "真实HTTP持久化、worker恢复/幂等、跨范围/陈旧版本负例、前端中文操作与状态展示、既有T19/Truth重投影回归以及release build全部通过；外部业务调用和生产数据库操作为0。"
+        ],
+        "gates": [
+          {
+            "cwd": "geo-platform/backend",
+            "argv": [
+              "{python}",
+              "-m",
+              "pytest",
+              "-p",
+              "no:cacheprovider",
+              "tests/test_delivery_answer_relation_reprojection.py",
+              "tests/test_delivery_answer_relation_corrections.py",
+              "tests/test_delivery_truth_corrections.py",
+              "-q"
+            ],
+            "protected_files": [
+              "geo-platform/docs/geo-v1.0/tasks.json",
+              "geo-platform/backend/tests/test_delivery_answer_relation_reprojection.py",
+              "geo-platform/backend/tests/test_delivery_answer_relation_corrections.py",
+              "geo-platform/backend/tests/test_delivery_truth_corrections.py",
+              "geo-platform/docs/semantics/01_SEMANTIC_CONTRACTS.md",
+              "geo-platform/docs/semantics/04_CONFLICT_REGISTER.md"
+            ]
+          },
+          {
+            "cwd": "geo-platform/frontend",
+            "argv": [
+              "node",
+              "--experimental-strip-types",
+              "--test",
+              "tests/answer-relation-reprojection.test.mjs",
+              "tests/answer-relation-correction.test.mjs",
+              "tests/optimization-status.test.mjs"
+            ],
+            "protected_files": [
+              "geo-platform/docs/geo-v1.0/tasks.json",
+              "geo-platform/frontend/tests/answer-relation-reprojection.test.mjs",
+              "geo-platform/frontend/tests/answer-relation-correction.test.mjs",
+              "geo-platform/frontend/tests/optimization-status.test.mjs"
+            ]
+          },
+          {
+            "cwd": "geo-platform/frontend",
+            "argv": [
+              "npm",
+              "run",
+              "build:release"
+            ],
+            "protected_files": [
+              "geo-platform/frontend/package.json",
+              "geo-platform/frontend/package-lock.json",
+              "geo-platform/docs/geo-v1.0/tasks.json"
+            ]
+          }
+        ],
+        "execution_constraints": {
+          "external_calls": 0,
+          "production_database_operations": false,
+          "real_codex_exec_this_turn": false,
+          "integration_branch": "codex/geo-integration",
+          "auto_merge_main": false,
+          "preserve_frozen_versions": true,
+          "preserve_evidence_ownership": true,
+          "token_soft_threshold": 30000,
+          "token_threshold_kind": "POST_SESSION_SOFT_THRESHOLD_NOT_HARD_CAP"
+        },
+        "stream_limits": {
+          "max_commands": 12,
+          "max_output_chars": 30000
+        },
+        "session_seconds": 300,
+        "authorization_batch": "GEO-PRODUCT-SMALL-20261015-01"
       }
     ],
-    "note": "接力工具保持FEATURE_FROZEN / OFFLINE_ACCEPTED，不再扩建。旧T25-03批次STOPPED，receipt原字节归档且UNKNOWN记账不变，不resume。当前仅准备一个T19正式产品READY单元并dry-run；不运行Codex、不外调、不操作生产数据库、不自动合并main。",
+    "note": "接力工具保持FEATURE_FROZEN / OFFLINE_ACCEPTED，不再扩建。T25历史STOPPED/UNKNOWN与T19历史STOPPED、原始JSONL和7,189,445活动Token均保留，不resume。T19活动receipt已逐字节归档并复核，但不追认旧自动批次成功。当前仅准备一个PRODUCT_SMALL策略重投影单元并dry-run；不运行Codex、不外调、不操作生产数据库、不自动合并main。",
     "evidence": "backend/artifacts/acceptance/codex-relay-offline-20261013/"
   },
   "active_delivery_slice": {

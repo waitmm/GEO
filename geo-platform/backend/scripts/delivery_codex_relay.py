@@ -27,6 +27,8 @@ EXPECTED = {"model": MODEL, "model_reasoning_effort": "medium", "service_tier": 
 OVERRIDES = {**EXPECTED, "features.multi_agent": False, "features.goals": False,
              "features.apps": False, "features.plugins": False,
              "web_search": "disabled"}
+DOCUMENT_SMALL_LIMITS = {"max_commands": 8, "max_output_chars": 20000}
+PRODUCT_SMALL_LIMITS = {"max_commands": 12, "max_output_chars": 30000}
 
 
 def save_json(path, value):
@@ -219,6 +221,77 @@ def resolve_codex_binary(binary):
     return str(resolved)
 
 
+def resolve_gate_runtimes(units, root=None):
+    """Pin only the host runtimes required by frozen gate argv entries."""
+    commands = {gate["argv"][0] for unit in units for gate in unit["gates"]}
+    if not commands & {"node", "npm"}:
+        return {}
+    candidate = shutil.which("node")
+    if not candidate:
+        raise ValueError("Node.js required by an independent gate was not found")
+    try:
+        node = Path(candidate).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("Node.js executable has an invalid symlink chain") from exc
+    if not node.is_file() or not os.access(node, os.X_OK):
+        raise ValueError("Node.js gate runtime must be a regular executable file")
+    runtimes = {"node": str(node)}
+    # The signed macOS Node binary reads this system OpenSSL policy at startup.
+    # Grant the one immutable file, never the enclosing system directory.
+    openssl_config = Path("/System/Library/OpenSSL/openssl.cnf")
+    if openssl_config.is_file():
+        runtimes["node_support_files"] = [str(openssl_config.resolve())]
+    if "npm" in commands:
+        candidate = shutil.which("npm")
+        if not candidate:
+            raise ValueError("npm required by an independent gate was not found")
+        try:
+            npm_cli = Path(candidate).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("npm launcher has an invalid symlink chain") from exc
+        npm_root = npm_cli.parent.parent
+        try:
+            package = json.loads((npm_root / "package.json").read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("npm launcher is not inside a verifiable npm package") from exc
+        if (npm_cli != npm_root / "bin/npm-cli.js" or package.get("name") != "npm"
+                or not npm_cli.is_file()):
+            raise ValueError("npm launcher is not the canonical npm CLI")
+        runtimes.update(npm_cli=str(npm_cli), npm_root=str(npm_root.resolve()))
+        cache_dirs = []
+        for unit in units:
+            for gate in unit["gates"]:
+                if root is None or gate["argv"][:3] != ["npm", "run", "build:release"]:
+                    continue
+                node_modules = (Path(root) / gate["cwd"] / "node_modules").resolve(strict=True)
+                cache = node_modules / ".vite-temp"
+                cache.mkdir(exist_ok=True)
+                if cache.resolve(strict=True).parent != node_modules:
+                    raise ValueError("Vite gate cache escaped the pinned dependency tree")
+                cache_dirs.append(str(cache.resolve()))
+        if cache_dirs:
+            runtimes["gate_write_dirs"] = sorted(set(cache_dirs))
+    return runtimes
+
+
+def resolve_gate_argv(argv, runtimes, build_output=None):
+    """Replace PATH-dependent Node launchers with their pinned executable chain."""
+    if argv[0] == "node":
+        if "node" not in runtimes:
+            raise ValueError("Node.js gate runtime was not frozen")
+        return [runtimes["node"], *argv[1:]]
+    if argv[0] == "npm":
+        if not {"node", "npm_cli"} <= set(runtimes):
+            raise ValueError("npm gate runtime was not frozen")
+        resolved = [runtimes["node"], runtimes["npm_cli"], *argv[1:]]
+        if argv[:3] == ["npm", "run", "build:release"]:
+            if build_output is None:
+                raise ValueError("Release build gate requires a fresh isolated output directory")
+            resolved.extend(["--", "--outDir", str(Path(build_output).resolve())])
+        return resolved
+    return argv
+
+
 def codex_command(binary, worktree, permissions):
     # Codex itself enforces the profile on tools. Never wrap this process in Seatbelt.
     return [binary, "exec", "--model", MODEL, "--json",
@@ -403,11 +476,26 @@ def permission_profile(root, worktree, directory, binary):
     return {"extends": ":workspace", "filesystem": filesystem, "network": {"enabled": False}}
 
 
+def gate_permission_profile(root, worktree, directory, binary, gate_runtimes):
+    """Add only the pinned runtime resources needed by offline independent gates."""
+    permissions = permission_profile(root, worktree, directory, binary)
+    filesystem = permissions["filesystem"]
+    if gate_runtimes:
+        filesystem[gate_runtimes["node"]] = "read"
+        for path in gate_runtimes.get("node_support_files", []):
+            filesystem[path] = "read"
+        if "npm_root" in gate_runtimes:
+            filesystem[gate_runtimes["npm_root"]] = "read"
+        for path in gate_runtimes.get("gate_write_dirs", []):
+            filesystem[path] = "write"
+    return permissions
+
+
 def task_type(unit):
     documentation = bool(unit["allowed_files"]) and all(
         Path(p).suffix.lower() == ".md" for p in unit["allowed_files"])
     kind = unit.get("task_type", "DOCUMENT_SMALL" if documentation else "PRODUCT")
-    if kind not in {"DOCUMENT_SMALL", "PRODUCT"}:
+    if kind not in {"DOCUMENT_SMALL", "PRODUCT_SMALL", "PRODUCT"}:
         raise ValueError("Unknown relay task_type")
     if kind == "DOCUMENT_SMALL" and not documentation:
         raise ValueError("DOCUMENT_SMALL requires a Markdown-only file scope")
@@ -415,25 +503,39 @@ def task_type(unit):
 
 
 def session_seconds(unit, batch_timeout):
-    seconds = unit.get("session_seconds", 180 if task_type(unit) == "DOCUMENT_SMALL" else batch_timeout)
+    kind = task_type(unit)
+    default = 180 if kind == "DOCUMENT_SMALL" else 300 if kind == "PRODUCT_SMALL" else batch_timeout
+    seconds = unit.get("session_seconds", default)
     if type(seconds) is not int or not 1 <= seconds <= 1800:
         raise ValueError("Unit session_seconds must be an integer in 1..1800")
+    if kind == "PRODUCT_SMALL" and seconds > 300:
+        raise ValueError("PRODUCT_SMALL session_seconds may not exceed 300")
     return min(seconds, batch_timeout)
 
 
 def stream_limits(unit):
     kind = task_type(unit)
     override = unit.get("stream_limits", {})
-    defaults = {"max_commands": 8, "max_output_chars": 20000}
-    if not isinstance(override, dict) or set(override) - set(defaults):
+    if not isinstance(override, dict) or set(override) - set(DOCUMENT_SMALL_LIMITS):
         raise ValueError("Invalid stream limits")
     if kind == "PRODUCT" and not override:
+        constraints = unit.get("execution_constraints", {})
+        if not isinstance(constraints, dict):
+            raise ValueError("Invalid PRODUCT execution constraints")
+        authorized = (constraints.get("unbounded_product_stream_authorized") is True
+                      and isinstance(unit.get("authorization_batch"), str)
+                      and bool(unit["authorization_batch"].strip()))
+        if not authorized:
+            raise ValueError("PRODUCT requires complete stream limits, PRODUCT_SMALL, or explicit unbounded authorization")
         return None
-    if kind == "PRODUCT" and set(override) != set(defaults):
+    if kind == "PRODUCT" and set(override) != set(DOCUMENT_SMALL_LIMITS):
         raise ValueError("PRODUCT stream limits require an independent complete configuration")
-    limits = {**defaults, **override} if kind == "DOCUMENT_SMALL" else override
+    defaults = DOCUMENT_SMALL_LIMITS if kind == "DOCUMENT_SMALL" else PRODUCT_SMALL_LIMITS
+    limits = {**defaults, **override} if kind != "PRODUCT" else override
     if any(type(v) is not int or v <= 0 for v in limits.values()):
         raise ValueError("Stream limits must be positive integers")
+    if kind == "PRODUCT_SMALL" and any(limits[key] > PRODUCT_SMALL_LIMITS[key] for key in limits):
+        raise ValueError("PRODUCT_SMALL stream limits may only tighten its default budget")
     return limits
 
 
@@ -595,6 +697,7 @@ def normal_completion(row):
 def execute_batch(root, units, directory, *, binary, token_threshold, timeout, repairs,
                   runner=run_process, verifier=preflight, resume=False):
     """Units/gates are frozen in controller memory; never reread model-modified task data."""
+    gate_runtimes = {}
     options = {"token_threshold": token_threshold, "timeout": timeout, "repairs": repairs, "model": MODEL}
     checkpoint = directory / "report.json"
     report = json.loads(checkpoint.read_text()) if resume else {
@@ -606,6 +709,8 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
     branch = "codex-relay/" + directory.name
     report["branch"] = branch
     try:
+        gate_runtimes = resolve_gate_runtimes(units, root)
+        options["gate_runtimes"] = gate_runtimes
         limits_by_unit = {u["id"]: stream_limits(u) for u in units}
         options["unit_execution_limits"] = {
             u["id"]: {"task_type": task_type(u), "stream_limits": limits_by_unit[u["id"]],
@@ -640,7 +745,9 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                 if not target.exists() and not target.is_symlink():
                     target.symlink_to(root / source, target_is_directory=True)
         permissions = permission_profile(root, worktree, directory, binary)
+        gate_permissions = gate_permission_profile(root, worktree, directory, binary, gate_runtimes)
         save_json(directory / "permissions.json", permissions)
+        save_json(directory / "gate-permissions.json", gate_permissions)
         report["isolation"] = {k: environment[k] for k in (
             "GEO_RELEASE_DATABASE_URL", "DATABASE_URL", "TMPDIR", "BACKEND_PORT", "FRONTEND_PORT")}
         report["effective_config"] = verifier(binary, worktree, directory, environment)
@@ -750,9 +857,12 @@ def execute_batch(root, units, directory, *, binary, token_threshold, timeout, r
                 paths = guard(worktree, head, unit["allowed_files"], oracles, dependency_links)
                 gates = []
                 for index, gate in enumerate(unit["gates"]):
-                    argv = [s.replace("{python}", os.sys.executable) for s in gate["argv"]]
+                    build_output = (directory / "scratch" / f"{unit['id']}-{attempt + 1}-gate{index}-{uuid.uuid4().hex}")
+                    argv = resolve_gate_argv(
+                        [s.replace("{python}", os.sys.executable) for s in gate["argv"]], gate_runtimes,
+                        build_output=build_output)
                     log = directory / f"{unit['id']}-{attempt + 1}-gate{index}.log"
-                    code = runner(sandbox_command(binary, worktree / gate["cwd"], permissions, argv),
+                    code = runner(sandbox_command(binary, worktree / gate["cwd"], gate_permissions, argv),
                                   worktree / gate["cwd"], log, min(timeout, 300), env=environment)
                     gates.append({"exit_code": code, "log": str(log)})
                 row["gates"] = gates

@@ -23,9 +23,13 @@ def mock_ports(monkeypatch):
 
 
 def unit(name="scope", **overrides):
-    return {"id": name, "task_id": "T25", "requirements": ["OPS-002"], "status": "READY",
-            "objective": "One isolated test change", "depends_on": [], "allowed_files": ["change.txt"],
-            "gates": [{"cwd": ".", "argv": ["fake-gate"], "protected_files": ["oracle.txt"]}], **overrides}
+    result = {"id": name, "task_id": "T25", "requirements": ["OPS-002"], "status": "READY",
+              "objective": "One isolated test change", "depends_on": [], "allowed_files": ["change.txt"],
+              "gates": [{"cwd": ".", "argv": ["fake-gate"], "protected_files": ["oracle.txt"]}], **overrides}
+    if "task_type" not in overrides:
+        result["task_type"] = ("DOCUMENT_SMALL" if all(
+            Path(path).suffix.lower() == ".md" for path in result["allowed_files"]) else "PRODUCT_SMALL")
+    return result
 
 
 def ledger(*units):
@@ -199,29 +203,41 @@ def test_rename_cannot_hide_out_of_scope_source(repo):
         guard(repo, head, ["允许.md"], {})
 
 
-def test_documentation_limits_do_not_change_business_defaults():
-    assert relay.stream_limits(unit()) is None
+def test_small_unit_limits_are_type_specific():
+    assert relay.stream_limits(unit()) == {"max_commands": 12, "max_output_chars": 30000}
     doc = unit(allowed_files=["说明.md"])
     assert relay.stream_limits(doc) == {"max_commands": 8, "max_output_chars": 20000}
     assert relay.stream_limits({**doc, "stream_limits": {"max_commands": 3}})["max_commands"] == 3
 
 
-def test_document_small_type_and_product_independent_policy():
+def test_small_types_and_large_product_independent_policy():
     doc = unit(task_type="DOCUMENT_SMALL", allowed_files=["说明.md"])
     assert relay.session_seconds(doc, 900) == 180
     assert relay.session_seconds(doc, 60) == 60
     assert relay.session_seconds({**doc, "session_seconds": 120}, 900) == 120
-    product = {**doc, "task_type": "PRODUCT"}
-    assert relay.stream_limits(product) is None and relay.session_seconds(product, 900) == 900
+    small = {**doc, "task_type": "PRODUCT_SMALL", "allowed_files": ["code.py"]}
+    assert relay.stream_limits(small) == {"max_commands": 12, "max_output_chars": 30000}
+    assert relay.session_seconds(small, 900) == 300
+    product = {**small, "task_type": "PRODUCT"}
+    with pytest.raises(ValueError, match="complete stream limits"):
+        relay.stream_limits(product)
     product.update(stream_limits={"max_commands": 30, "max_output_chars": 80000}, session_seconds=600)
     assert relay.stream_limits(product) == {"max_commands": 30, "max_output_chars": 80000}
     assert relay.session_seconds(product, 900) == 600
+    product.pop("stream_limits")
+    product["execution_constraints"] = {"unbounded_product_stream_authorized": True}
+    product["authorization_batch"] = "EXPLICIT-LARGE-PRODUCT-TEST"
+    assert relay.stream_limits(product) is None
 
 
 @pytest.mark.parametrize("override", [{"task_type": "UNKNOWN"}, {"session_seconds": 0},
     {"session_seconds": True}, {"session_seconds": 1801}, {"session_seconds": "180"},
     {"task_type": "DOCUMENT_SMALL", "allowed_files": ["code.py"]},
-    {"task_type": "PRODUCT", "stream_limits": {"max_commands": 8}}])
+    {"task_type": "PRODUCT", "stream_limits": {"max_commands": 8}},
+    {"task_type": "PRODUCT"},
+    {"task_type": "PRODUCT_SMALL", "session_seconds": 301},
+    {"task_type": "PRODUCT_SMALL", "stream_limits": {"max_commands": 13}},
+    {"task_type": "PRODUCT_SMALL", "stream_limits": {"max_output_chars": 30001}}])
 def test_invalid_task_policy_rejected_before_launch(override):
     candidate = unit(allowed_files=["doc.md"])
     candidate.update(override)
@@ -229,27 +245,32 @@ def test_invalid_task_policy_rejected_before_launch(override):
         select_units(ledger(candidate), 1)
 
 
-def test_document_policy_is_passed_to_runner_and_frozen_on_resume(tmp_path, repo):
+@pytest.mark.parametrize("candidate,seconds,limits", [
+    (unit(allowed_files=["doc.md"], task_type="DOCUMENT_SMALL"), 180,
+     {"max_commands": 8, "max_output_chars": 20000}),
+    (unit(task_type="PRODUCT_SMALL"), 300,
+     {"max_commands": 12, "max_output_chars": 30000}),
+])
+def test_small_policy_is_passed_to_runner_and_frozen_on_resume(tmp_path, repo, candidate, seconds, limits):
     directory = tmp_path / "batch"
     directory.mkdir()
-    doc = unit(allowed_files=["doc.md"], task_type="DOCUMENT_SMALL")
     def runner(argv, cwd, output, timeout, stdin=None, **kwargs):
         if stdin is not None:
-            assert timeout == 180
-            assert kwargs["limits"] == {"max_commands": 8, "max_output_chars": 20000}
+            assert timeout == seconds
+            assert kwargs["limits"] == limits
             output.write_text(event())
             return 0
         raise KeyboardInterrupt()
     args = dict(binary="MOCK", token_threshold=1000, timeout=900, repairs=0,
                 verifier=lambda *a: dict(EXPECTED))
-    report = execute_batch(repo, [doc], directory, runner=runner, **args)
-    assert report["attempts"][0]["session_seconds"] == 180
-    assert report["options"]["unit_execution_limits"]["scope"]["task_type"] == "DOCUMENT_SMALL"
-    report["options"]["unit_execution_limits"]["scope"]["session_seconds"] = 181
+    report = execute_batch(repo, [candidate], directory, runner=runner, **args)
+    assert report["attempts"][0]["session_seconds"] == seconds
+    assert report["options"]["unit_execution_limits"]["scope"]["task_type"] == candidate["task_type"]
+    report["options"]["unit_execution_limits"]["scope"]["session_seconds"] = seconds + 1
     relay.save_json(directory / "report.json", report)
     def forbidden(*args, **kwargs):
         pytest.fail("Changed frozen limits cannot resume")
-    resumed = execute_batch(repo, [doc], directory, runner=forbidden, resume=True, **args)
+    resumed = execute_batch(repo, [candidate], directory, runner=forbidden, resume=True, **args)
     assert "Checkpoint unit/budget identity changed" in resumed["reason"]
 
 
@@ -318,7 +339,7 @@ def test_process_receipt_and_acceptance_with_local_mock_child(tmp_path, repo, mo
         # Allow interpreter startup under suite load; limit tests must stop by count, not time.
         return run_process([sys.executable, "-c", script], cwd, output, 2 if mode == "timeout" else 10,
                            stdin=stdin, **kwargs)
-    units = [unit("doc", allowed_files=["doc.md"], stream_limits={"max_commands": 1}), unit("next")]
+    units = [unit("small-product", task_type="PRODUCT_SMALL", stream_limits={"max_commands": 1}), unit("next")]
     report = execute_batch(repo, units[:1] if mode == "normal" else units, directory, binary="MOCK",
                            token_threshold=1000, timeout=1, repairs=0, runner=runner,
                            verifier=lambda *args: dict(EXPECTED))
@@ -585,6 +606,58 @@ def test_gate_uses_official_profile_once_and_preserves_gate_cwd(tmp_path):
     assert cmd[cmd.index("-C") + 1] == str(cwd)
     assert cmd[cmd.index("--") + 1:] == ["python", "-m", "pytest"]
     assert "sandbox-exec" not in cmd and "--sandbox" not in cmd
+
+
+def test_node_and_npm_gates_use_pinned_runtime_with_minimum_read_scope(tmp_path, monkeypatch):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    node = tools / "node"
+    node.write_text("offline executable fixture")
+    node.chmod(0o700)
+    npm_root = tmp_path / "lib/node_modules/npm"
+    npm_cli = npm_root / "bin/npm-cli.js"
+    npm_cli.parent.mkdir(parents=True)
+    npm_cli.write_text("offline npm fixture")
+    npm_cli.chmod(0o700)
+    (npm_root / "package.json").write_text('{"name":"npm"}')
+    npm = tools / "npm"
+    npm.symlink_to(npm_cli)
+    monkeypatch.setenv("PATH", str(tools))
+    project = tmp_path / "repo"
+    (project / "node_modules").mkdir(parents=True)
+    candidate = unit(gates=[
+        {"cwd": ".", "argv": ["node", "--test", "test.mjs"], "protected_files": ["oracle.txt"]},
+        {"cwd": ".", "argv": ["npm", "run", "build:release"], "protected_files": ["oracle.txt"]},
+    ])
+    runtimes = relay.resolve_gate_runtimes([candidate], project)
+    assert {key: runtimes[key] for key in ("node", "npm_cli", "npm_root")} == {
+        "node": str(node), "npm_cli": str(npm_cli), "npm_root": str(npm_root)}
+    assert relay.resolve_gate_argv(candidate["gates"][0]["argv"], runtimes) == [
+        str(node), "--test", "test.mjs"]
+    output = tmp_path / "scratch/release"
+    assert relay.resolve_gate_argv(candidate["gates"][1]["argv"], runtimes, output) == [
+        str(node), str(npm_cli), "run", "build:release", "--", "--outDir", str(output)]
+    cache = str((project / "node_modules/.vite-temp").resolve())
+    assert runtimes["gate_write_dirs"] == [cache]
+    base_permissions = permission_profile(project, tmp_path / "wt", tmp_path / "batch",
+                                          sys.executable)
+    permissions = relay.gate_permission_profile(project, tmp_path / "wt", tmp_path / "batch",
+                                                sys.executable, runtimes)
+    filesystem = permissions["filesystem"]
+    assert filesystem[str(node)] == "read" and filesystem[str(npm_root)] == "read"
+    assert all(filesystem[path] == "read" for path in runtimes.get("node_support_files", []))
+    assert filesystem[cache] == "write"
+    assert str(tools) not in filesystem and permissions["network"] == {"enabled": False}
+    assert str(node) not in base_permissions["filesystem"] and cache not in base_permissions["filesystem"]
+
+
+def test_missing_node_runtime_fails_closed_before_gate_launch(monkeypatch):
+    monkeypatch.setattr(relay.shutil, "which", lambda name: None if name == "node" else sys.executable)
+    candidate = unit(gates=[
+        {"cwd": ".", "argv": ["node", "--test", "test.mjs"], "protected_files": ["oracle.txt"]},
+    ])
+    with pytest.raises(ValueError, match="Node.js required"):
+        relay.resolve_gate_runtimes([candidate])
 
 
 def test_config_and_catalog_must_both_validate_without_automatic_model_fallback():

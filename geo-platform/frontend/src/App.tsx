@@ -18,6 +18,7 @@ import { projectConfigurationPayload } from './projectConfiguration';
 import { ReleasePromptPanel } from "./ReleasePromptPanel";
 import { useTableKeyboardScroll } from "./useTableKeyboardScroll";
 import { ReleaseWorkerStatus } from "./ReleaseWorkerStatus";
+import { isRateLimited, RATE_LIMIT_LABEL, RATE_LIMIT_RECOVERY_GUIDANCE } from "./rateLimitFeedback";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, PromptVersion, PromptVersionBinding, RunArtifactContent, Topic,
   SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
@@ -225,6 +226,26 @@ function statusTag(status: string) {
     running: "processing", pending: "default", queued: "blue"
   };
   return <Tag color={colors[status]}>{labels[status] || status || "未知"}</Tag>;
+}
+
+function RateLimitAlert({ action }: { action?: any }) {
+  return <Alert
+    type="warning"
+    showIcon
+    message={RATE_LIMIT_LABEL}
+    description={RATE_LIMIT_RECOVERY_GUIDANCE}
+    action={action}
+  />;
+}
+
+function isV2RunRateLimited(row: SinglePromptV2RunItemLike) {
+  return isRateLimited({ status: row.status, errorType: row.error?.type, blockedType: row.error?.blocked_type });
+}
+
+type SinglePromptV2RunItemLike = Pick<SinglePromptV2RunPoolItem, "status" | "error">;
+
+function isMonitorRunRateLimited(row: Pick<BrowserMonitorRun, "status" | "error_type">) {
+  return isRateLimited({ status: row.status, errorType: row.error_type });
 }
 
 function v2AnalysisStatusTag(status?: string) {
@@ -5952,6 +5973,7 @@ export default function App() {
                 }}
                 scroll={{ x: 1240 }}
                 expandable={{ expandedRowRender: (row) => <Space direction="vertical" style={{ width: "100%" }}>
+                  {isV2RunRateLimited(row) && <RateLimitAlert />}
                   <Text strong>实际回答正文</Text>
                   <Typography.Paragraph className="v2-answer-text">{row.answer_text || "无可用回答"}</Typography.Paragraph>
                   <Text type="secondary">引用 {row.references?.length || 0} 条 · 输入指纹 <Text code copyable>{row.input_fingerprint}</Text></Text>
@@ -5960,7 +5982,9 @@ export default function App() {
                   { title: "Run", width: 82, render: (_: unknown, row) => <Text code>#{row.run_id}</Text> },
                   { title: "逻辑样本 ID", width: 170, render: (_: unknown, row) => <Text code ellipsis={{ tooltip: row.logical_run_id }}>{row.logical_run_id}</Text> },
                   { title: "尝试", width: 150, render: (_: unknown, row) => <Space direction="vertical" size={0}><Text>尝试 #{row.attempt_no}</Text><Text type="secondary">父 Run {row.retry_of_run_id === null ? "无（首次）" : `#${row.retry_of_run_id}`}</Text></Space> },
-                  { title: "状态", width: 110, render: (_: unknown, row) => statusTag(row.status) },
+                  { title: "状态", width: 190, render: (_: unknown, row) => isV2RunRateLimited(row)
+                    ? <Space size={4}>{statusTag(row.status)}<Tag color="orange">{RATE_LIMIT_LABEL}</Tag></Space>
+                    : statusTag(row.status) },
                   { title: "采样时间", width: 170, render: (_: unknown, row) => formatDateTime(row.finished_at || row.started_at) },
                   { title: "回答", width: 110, render: (_: unknown, row) => row.answer_text ? `${row.answer_char_count || row.answer_text.length} 字` : "无" },
                   { title: "引用", width: 80, render: (_: unknown, row) => row.references?.length || 0 },
@@ -5968,7 +5992,9 @@ export default function App() {
                   { title: "已用于分析", width: 210, render: (_: unknown, row) => row.analysis_memberships?.length
                     ? <Text ellipsis={{ tooltip: row.analysis_memberships.map((item) => item.analysis_id).join("、") }}>{row.analysis_memberships.length} 个版本</Text>
                     : <Text type="secondary">尚未纳入</Text> },
-                  { title: "操作", width: 100, fixed: "right", render: (_: unknown, row) => row.status === "failed" ? <Popconfirm title={`重试 Run #${row.run_id}？`} description="会为同一逻辑样本追加新的尝试，不增加独立样本分母，并保留旧 Run。" onConfirm={() => retryV2Run(row)}><Button size="small">重试</Button></Popconfirm> : null },
+                  { title: "操作", width: 150, fixed: "right", render: (_: unknown, row) => isV2RunRateLimited(row)
+                    ? <Popconfirm title={`确认在窗口/配额恢复后追加 Run #${row.run_id}？`} description="不会自动重试。此操作会为同一逻辑样本追加新的尝试，不增加独立样本分母，并保留旧 Run。" okText="确认追加尝试" cancelText="取消" onConfirm={() => retryV2Run(row)}><Button size="small" danger>恢复后追加尝试</Button></Popconfirm>
+                    : row.status === "failed" ? <Popconfirm title={`重试 Run #${row.run_id}？`} description="会为同一逻辑样本追加新的尝试，不增加独立样本分母，并保留旧 Run。" onConfirm={() => retryV2Run(row)}><Button size="small">重试</Button></Popconfirm> : null },
                 ]}
               />
               <Row justify="space-between" align="middle" gutter={[12, 12]}>
@@ -6092,7 +6118,7 @@ export default function App() {
                     { title: "耗时", width: 92, render: (_: unknown, row: any) => row.duration_ms ? `${Math.round(row.duration_ms / 1000)} 秒` : "-" },
                   ]}
                   expandable={{ expandedRowRender: (row: any) => <div className="v2-run-detail">
-                    {row.error && <Alert type="error" showIcon message={row.error.type || row.status} description={row.error.message || row.error.blocked_reason || "采集未完成"} />}
+                    {isV2RunRateLimited(row) ? <RateLimitAlert /> : row.error && <Alert type="error" showIcon message={row.error.type || row.status} description={row.error.message || row.error.blocked_reason || "采集未完成"} />}
                     <div className="v2-reported-search">
                       <Text strong>本轮实际提交 Prompt</Text>
                       <div><Text>{row.observed_conditions?.original_query?.value || v2Analysis.analysis.prompt_text}</Text></div>
@@ -10277,13 +10303,14 @@ export default function App() {
           {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下仅展示该 Prompt 的采集记录；切回「全部 Prompt」查看项目全部采样。" />}
           <Card title="采集记录" extra={<Tag>{activePromptId ? `Prompt #${activePromptId} · 每行是一次独立采样` : "每行是一次独立采样"}</Tag>}>
           <Alert type="info" showIcon message="失败 Run 请在正式 V2 采样记录池中追加式重试" description="旧监测页不再提供会覆盖原 Run 的“重新采集”。请前往正式 V2 采样记录池；重试会保留旧 Run，并且不会增加独立样本分母。" action={<Button size="small" onClick={() => setPage("coreV2")}>前往正式 V2 采样记录池</Button>} style={{ marginBottom: 12 }} />
+          {visibleRuns.some(isMonitorRunRateLimited) && <RateLimitAlert action={<Button size="small" onClick={() => setPage("coreV2")}>前往正式 V2 样本池</Button>} />}
           <Table rowKey="id" loading={loading} dataSource={visibleRuns} locale={{ emptyText: activePromptId ? "该 Prompt 还没有采集记录" : "暂无采集记录" }} pagination={{ pageSize: 12 }} onRow={(row) => ({ onClick: () => openRun(row.id) })} columns={[
             { title: "编号", dataIndex: "id", width: 70, render: (id) => `#${id}` },
             { title: "采集时间", width: 150, render: (_, row: any) => formatDateTime(row.finished_at || row.started_at || row.created_at) },
             { title: "问题", dataIndex: "original_query", ellipsis: true },
-            { title: "状态", dataIndex: "status", width: 100, render: statusTag },
+            { title: "状态", dataIndex: "status", width: 190, render: (_: unknown, row) => isMonitorRunRateLimited(row) ? <Space size={4}>{statusTag(row.status)}<Tag color="orange">{RATE_LIMIT_LABEL}</Tag></Space> : statusTag(row.status) },
             { title: "样本", dataIndex: "run_sequence", width: 70, render: (value) => `第${value}次` },
-            { title: "品牌", width: 110, render: (_, row) => row.brand_mentioned ? <Tag color="blue">出现 {row.brand_mention_count} 次</Tag> : <Tag>未出现</Tag> },
+            { title: "品牌", width: 150, render: (_, row) => isMonitorRunRateLimited(row) ? <Text type="secondary">—（本次未获得回答）</Text> : row.brand_mentioned ? <Tag color="blue">出现 {row.brand_mention_count} 次</Tag> : <Tag>未出现</Tag> },
             { title: "引用解析", width: 230, render: (_, row) => <Space size={4}><Tag>界面 {row.expected_reference_count}</Tag><Tag>结构 {row.detected_reference_count}</Tag><Tag>标题 {row.detected_reference_count}</Tag><Tag color={row.resolved_reference_count === row.detected_reference_count ? "green" : "gold"}>链接 {row.resolved_reference_count}</Tag></Space> },
             { title: "操作", width: 170, render: (_, row) => <Space size={4}>
               <Button size="small" onClick={(event) => { event.stopPropagation(); openRun(row.id); }}>查看</Button>
@@ -10827,8 +10854,9 @@ export default function App() {
           { key: "status", label: "状态", children: statusTag(detail.status) },
           { key: "sample", label: "轮次", children: detail.run_sequence },
           { key: "duration", label: "耗时", children: `${detail.duration_ms} ms` },
-          { key: "brand", label: "品牌", children: detail.brand_mentioned ? `出现 ${detail.brand_mention_count} 次` : "未出现" }
+          { key: "brand", label: "品牌", children: isMonitorRunRateLimited(detail) ? "—（本次未获得回答；不作为品牌未提及处理）" : detail.brand_mentioned ? `出现 ${detail.brand_mention_count} 次` : "未出现" }
         ]} />
+        {isMonitorRunRateLimited(detail) && <RateLimitAlert action={<Button size="small" onClick={() => { setDetail(undefined); setPage("coreV2"); }}>前往正式 V2 样本池</Button>} />}
         <Card size="small" title="四层引用计数">
           <Row gutter={12}><Col span={6}><Statistic title="界面声明" value={detail.expected_reference_count} /></Col><Col span={6}><Statistic title="页面结构条目" value={detail.detected_reference_count} /></Col><Col span={6}><Statistic title="解析标题" value={detail.references.filter((r) => r.display_title).length} /></Col><Col span={6}><Statistic title="解析链接" value={detail.resolved_reference_count} /></Col></Row>
         </Card>

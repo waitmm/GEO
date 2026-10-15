@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -1143,6 +1144,16 @@ class SinglePromptComparisonResult(Base):
 
 class BrowserMonitorRun(Base):
     __tablename__ = "browser_monitor_runs"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", name="uq_browser_monitor_run_attempt_id"),
+        UniqueConstraint("logical_run_id", "attempt_no", name="uq_browser_monitor_run_logical_attempt"),
+        UniqueConstraint(
+            "logical_run_id",
+            "retry_idempotency_key",
+            name="uq_browser_monitor_run_retry_idempotency",
+        ),
+        Index("ix_browser_monitor_runs_logical_run_id", "logical_run_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_tasks.id"), index=True)
@@ -1196,6 +1207,17 @@ class BrowserMonitorRun(Base):
     blocked_type: Mapped[str] = mapped_column(String(80), default="")
     blocked_reason: Mapped[str] = mapped_column(Text, default="")
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    logical_run_id: Mapped[str] = mapped_column(
+        String(80), default=lambda: f"logical-run-{uuid4()}"
+    )
+    attempt_id: Mapped[str] = mapped_column(
+        String(80), default=lambda: f"run-attempt-{uuid4()}"
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    retry_of_run_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("browser_monitor_runs.id"), nullable=True, index=True
+    )
+    retry_idempotency_key: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

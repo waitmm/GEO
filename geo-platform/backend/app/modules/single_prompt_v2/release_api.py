@@ -586,6 +586,10 @@ def retry_single_run(
     return {
         "source_run_id": run_id,
         "retry_run_id": run.id,
+        "logical_run_id": run.logical_run_id,
+        "attempt_id": run.attempt_id,
+        "attempt_no": run.attempt_no,
+        "retry_of_run_id": run.retry_of_run_id,
         "task_id": run.task_id,
         "status": run.status,
         "created": created,

@@ -99,6 +99,10 @@ class BrowserRunRead(BaseModel):
     blocked_type: str
     blocked_reason: str
     retry_count: int
+    logical_run_id: str
+    attempt_id: str
+    attempt_no: int
+    retry_of_run_id: Optional[int]
     created_at: UtcDatetime
     updated_at: UtcDatetime
 

@@ -410,18 +410,34 @@ def queue_run_retry(
         raise HTTPException(status_code=404, detail="Run 不存在")
     if source.project_id != project_id or source.prompt_id != prompt_id:
         raise HTTPException(status_code=409, detail="Run 与当前 Project/Prompt 不匹配")
+
+    existing_run = (
+        db.query(BrowserMonitorRun)
+        .filter_by(
+            logical_run_id=source.logical_run_id,
+            retry_idempotency_key=idempotency_key,
+        )
+        .one_or_none()
+    )
+    if existing_run:
+        return existing_run, False
+
     if source.status != "failed":
         raise HTTPException(status_code=409, detail=f"当前状态 {source.status} 不支持重试，仅 failed 可重试")
     if source.error_type in NON_RETRYABLE_ERRORS:
         raise HTTPException(status_code=422, detail="该错误类型不支持自动重试")
 
-    created_by = f"single_prompt_v2:run_retry:{run_id}:{idempotency_key}"
-    existing_task = db.query(BrowserMonitorTask).filter_by(created_by=created_by).one_or_none()
-    if existing_task:
-        existing_run = db.query(BrowserMonitorRun).filter_by(task_id=existing_task.id).one()
-        return existing_run, False
+    latest_attempt = (
+        db.query(BrowserMonitorRun)
+        .filter_by(logical_run_id=source.logical_run_id)
+        .order_by(BrowserMonitorRun.attempt_no.desc(), BrowserMonitorRun.id.desc())
+        .first()
+    )
+    if not latest_attempt or latest_attempt.id != source.id:
+        raise HTTPException(status_code=409, detail="仅允许从当前最新失败 attempt 重试")
 
     _require_sampling_enabled(db, project_id, prompt_id)
+    created_by = f"single_prompt_v2:run_retry:{source.logical_run_id}:{idempotency_key}"
     task = create_browser_task_from_frozen_prompt(
         db,
         project_id=project_id,
@@ -439,7 +455,25 @@ def queue_run_retry(
     )
     retry_run = db.query(BrowserMonitorRun).filter_by(task_id=task.id).one()
     retry_run.retry_count = source.retry_count + 1
-    db.commit()
+    retry_run.logical_run_id = source.logical_run_id
+    retry_run.attempt_no = source.attempt_no + 1
+    retry_run.retry_of_run_id = source.id
+    retry_run.retry_idempotency_key = idempotency_key
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing_run = (
+            db.query(BrowserMonitorRun)
+            .filter_by(
+                logical_run_id=source.logical_run_id,
+                retry_idempotency_key=idempotency_key,
+            )
+            .one_or_none()
+        )
+        if existing_run:
+            return existing_run, False
+        raise HTTPException(status_code=409, detail="该逻辑 Run 已产生更新的 attempt，请刷新后重试")
     db.refresh(retry_run)
     return retry_run, True
 
@@ -662,6 +696,10 @@ def _snapshot_run_rows(db: Session, runs: list[BrowserMonitorRun]) -> list[dict[
     return [
         {
             "run_id": run.id,
+            "logical_run_id": run.logical_run_id,
+            "attempt_id": run.attempt_id,
+            "attempt_no": run.attempt_no,
+            "retry_of_run_id": run.retry_of_run_id,
             "run_sequence": run.run_sequence,
             "sample_index": run.sample_index,
             "status": run.status,

@@ -131,8 +131,8 @@ def test_retry_appends_attempt_lineage_and_is_idempotent(tmp_path):
         )
 
         pool = list_prompt_run_pool(db, project_id=1, prompt_id=11, page=1, page_size=20)
-        assert pool["total"] == pool["logical_sample_total"] == 1
-        assert pool["attempt_total"] == 3
+        assert pool["total"] == pool["attempt_total"] == 3
+        assert pool["logical_sample_total"] == 1
         lineage = {
             item["run_id"]: (
                 item["logical_run_id"],

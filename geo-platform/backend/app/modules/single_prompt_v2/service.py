@@ -1079,7 +1079,7 @@ def list_prompt_run_pool(
         "prompt_id": prompt_id,
         "page": page,
         "page_size": page_size,
-        "total": logical_sample_total,
+        "total": attempt_total,
         "logical_sample_total": logical_sample_total,
         "attempt_total": attempt_total,
         "items": items,

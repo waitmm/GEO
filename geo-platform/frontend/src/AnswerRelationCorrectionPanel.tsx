@@ -32,12 +32,25 @@ function ImpactView({ impact }: { impact: AnswerRelationCorrectionImpact }) {
 type ReprojectionTask = {
   task_id: string;
   status: string;
+  revision?: number;
   expected_revision?: number | string;
   new_strategy_result_version?: string;
   strategy_result_version?: string;
+  new_strategy_result_hash?: string;
   strategy_result_hash?: string;
   affected_delivery_set_hash?: string;
   result_version?: string;
+  objects?: {
+    answer_relation_reprojection?: {
+      new_strategy_result_version?: string;
+      strategy_result_version?: string;
+      new_strategy_result_hash?: string;
+      strategy_result_hash?: string;
+      affected_delivery_set_hash?: string;
+      pending_delivery_updates?: unknown[];
+      unchanged_deliveries?: unknown[];
+    };
+  };
 };
 
 type DeliveryRegenerationManifest = Partial<Record<"affected" | "regenerated" | "pending" | "failed" | "unchanged", unknown[]>>;
@@ -52,14 +65,20 @@ type DeliveryRegenerationTask = {
 type SavedCorrection = { result_version: string; result_hash: string } & Record<string, string>;
 
 function reprojectionResult(reprojection: ReprojectionTask) {
-  const strategyResultVersion = reprojection.new_strategy_result_version || reprojection.strategy_result_version;
-  if (!reprojection.status.startsWith("COMPLETED") || reprojection.expected_revision === undefined ||
-      !strategyResultVersion || !reprojection.strategy_result_hash || !reprojection.affected_delivery_set_hash) return undefined;
+  const manifest = reprojection.objects?.answer_relation_reprojection;
+  const expectedRevision = reprojection.revision ?? reprojection.expected_revision;
+  const strategyResultVersion = manifest?.new_strategy_result_version || manifest?.strategy_result_version ||
+    reprojection.new_strategy_result_version || reprojection.strategy_result_version;
+  const strategyResultHash = manifest?.new_strategy_result_hash || manifest?.strategy_result_hash ||
+    reprojection.new_strategy_result_hash || reprojection.strategy_result_hash;
+  const affectedDeliverySetHash = manifest?.affected_delivery_set_hash || reprojection.affected_delivery_set_hash;
+  if (!reprojection.status.startsWith("COMPLETED") || expectedRevision === undefined ||
+      !strategyResultVersion || !strategyResultHash || !affectedDeliverySetHash) return undefined;
   return {
-    expected_revision: reprojection.expected_revision,
+    expected_revision: expectedRevision,
     strategy_result_version: strategyResultVersion,
-    strategy_result_hash: reprojection.strategy_result_hash,
-    affected_delivery_set_hash: reprojection.affected_delivery_set_hash,
+    strategy_result_hash: strategyResultHash,
+    affected_delivery_set_hash: affectedDeliverySetHash,
   };
 }
 
@@ -168,7 +187,7 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
     setBusy(true); setError(""); setDeliveryRegeneration(undefined);
     try {
       const regeneration = await request<DeliveryRegenerationTask>(
-        `/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(taskId)}/affected-draft-regenerations`,
+        `/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(task.task_id)}/affected-draft-regenerations`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -183,6 +202,28 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
         },
       );
       setDeliveryRegeneration(regeneration);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function refreshReprojection() {
+    if (!reprojection) return;
+    setBusy(true); setError("");
+    try {
+      setReprojection(await request<ReprojectionTask>(
+        `/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(reprojection.task_id)}?project_id=${projectId}&prompt_id=${promptId}`,
+      ));
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function refreshDeliveryRegeneration() {
+    if (!deliveryRegeneration) return;
+    setBusy(true); setError("");
+    try {
+      setDeliveryRegeneration(await request<DeliveryRegenerationTask>(
+        `/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(deliveryRegeneration.task_id)}?project_id=${projectId}&prompt_id=${promptId}`,
+      ));
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -229,7 +270,8 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
               : <span>任务：{reprojection.task_id}；状态：{reprojection.status}</span>}
             {reprojectionCompleted && <span>受影响稿件待更新；未受影响稿件保持不变。</span>}
           </Space>}
-          action={reprojectionResult(reprojection) && <Button type="primary" loading={busy} onClick={() => void regenerateAffectedDeliveries(reprojection)}>重新生成受影响稿件</Button>} />}
+          action={<Space><Button loading={busy} onClick={() => void refreshReprojection()}>刷新重投影状态</Button>
+            {reprojectionResult(reprojection) && <Button type="primary" loading={busy} onClick={() => void regenerateAffectedDeliveries(reprojection)}>重新生成受影响稿件</Button>}</Space>} />}
         {deliveryRegeneration && <Alert type={deliveryRegeneration.status.startsWith("COMPLETED") ? "success" : deliveryRegeneration.status === "WAITING_AUTHORIZATION" ? "warning" : "info"} showIcon
           message={deliveryRegeneration.status === "QUEUED" ? "局部稿件再生成任务已创建" :
             deliveryRegeneration.status === "RUNNING" ? "正在重新生成受影响稿件" :
@@ -239,7 +281,8 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
             <span>任务：{deliveryRegeneration.task_id}；状态：{deliveryRegeneration.status}</span>
             <span>历史稿件保持不变；未受影响稿件保持不变。</span>
             <DeliveryRegenerationManifestView task={deliveryRegeneration} />
-          </Space>} />}
+          </Space>}
+          action={<Button loading={busy} onClick={() => void refreshDeliveryRegeneration()}>刷新局部再生成状态</Button>} />}
         {!!data.history.length && <Collapse items={data.history.slice().reverse().map(row => ({
           key: row.result_version, label: `${row.result_version} · ${row.actor} · ${row.created_at}`,
           children: <Space direction="vertical" style={{ width: "100%" }}>

@@ -6,14 +6,20 @@ test('affected draft regeneration is available only from a complete, fully bound
   const source = await readFile(new URL('../src/AnswerRelationCorrectionPanel.tsx', import.meta.url), 'utf8');
   assert.match(source, /重新生成受影响稿件/);
   assert.match(source, /status\.startsWith\("COMPLETED"\)/);
-  for (const field of ['expected_revision', 'strategy_result_version', 'strategy_result_hash', 'affected_delivery_set_hash']) {
-    assert.match(source, new RegExp(`!reprojection\\.${field}|${field}: result\\.${field}`));
-  }
+  assert.match(source, /reprojection\.objects\?\.answer_relation_reprojection/);
+  assert.match(source, /manifest\?\.new_strategy_result_version/);
+  assert.match(source, /manifest\?\.new_strategy_result_hash/);
+  assert.match(source, /manifest\?\.affected_delivery_set_hash/);
+  assert.match(source, /reprojection\.revision \?\? reprojection\.expected_revision/);
+  assert.match(source, /pending_delivery_updates/);
+  assert.match(source, /unchanged_deliveries/);
 });
 
 test('affected draft regeneration sends exactly the frozen scoped request and does not claim historical drafts changed', async () => {
   const source = await readFile(new URL('../src/AnswerRelationCorrectionPanel.tsx', import.meta.url), 'utf8');
   assert.match(source, /affected-draft-regenerations/);
+  assert.match(source, /\$\{encodeURIComponent\(task\.task_id\)\}\/affected-draft-regenerations/);
+  assert.doesNotMatch(source, /\$\{encodeURIComponent\(taskId\)\}\/affected-draft-regenerations/);
   for (const field of ['project_id', 'prompt_id', 'expected_revision', 'strategy_result_version', 'strategy_result_hash', 'affected_delivery_set_hash', 'idempotency_key']) {
     assert.match(source, new RegExp(`${field}:`));
   }
@@ -21,6 +27,14 @@ test('affected draft regeneration sends exactly the frozen scoped request and do
   assert.doesNotMatch(source, /budget\s*:/);
   assert.match(source, /历史稿件保持不变/);
   assert.match(source, /未受影响稿件保持不变/);
+});
+
+test('completed reprojection and regeneration statuses can be refreshed from their task views', async () => {
+  const source = await readFile(new URL('../src/AnswerRelationCorrectionPanel.tsx', import.meta.url), 'utf8');
+  assert.match(source, /刷新重投影状态/);
+  assert.match(source, /刷新局部再生成状态/);
+  assert.match(source, /encodeURIComponent\(reprojection\.task_id\)\}\?project_id=\$\{projectId\}&prompt_id=\$\{promptId\}/);
+  assert.match(source, /encodeURIComponent\(deliveryRegeneration\.task_id\)\}\?project_id=\$\{projectId\}&prompt_id=\$\{promptId\}/);
 });
 
 test('delivery regeneration states and optional manifest are shown in Chinese', async () => {

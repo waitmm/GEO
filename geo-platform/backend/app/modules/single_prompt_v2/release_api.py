@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, Request
 from sqlalchemy.orm import Session
 
-from app.core.release_database import ReleaseSessionLocal, get_release_db
+from app.core.release_database import ReleaseSessionLocal, get_release_db, read_only_release_session
 from app.core.release_access import authenticated_actor
 from app.modules.single_prompt_v2.execution import (
     confirm_execution_proposal,
@@ -128,9 +128,14 @@ router = APIRouter(prefix="/api/v2/single-prompt", tags=["single-prompt-v2-relea
 get_db = get_release_db
 
 
+def get_task_read_db(db: Session = Depends(get_db)):
+    with read_only_release_session(db):
+        yield db
+
+
 @router.get("/optimization-tasks/{task_id}/answer-relation-corrections")
 def read_answer_relation_corrections(task_id: str, project_id: int, prompt_id: int,
-                                     db: Session = Depends(get_db)) -> dict:
+                                     db: Session = Depends(get_task_read_db)) -> dict:
     from .answer_relation_corrections import correction_status
     return correction_status(db, task_id=task_id, project_id=project_id, prompt_id=prompt_id)
 
@@ -183,7 +188,8 @@ def queue_answer_relation_delivery_regeneration(
     return task_view(row)
 
 @router.get("/optimization-tasks/{task_id}/truths")
-def read_task_truths(task_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)):
+def read_task_truths(task_id: str, project_id: int, prompt_id: int,
+                     db: Session = Depends(get_task_read_db)):
     from .truth_corrections import task_truths
     return task_truths(db, parent_task_id=task_id, project_id=project_id, prompt_id=prompt_id)
 
@@ -230,7 +236,8 @@ def queue_automatic_optimization(analysis_id: str, payload: AutomaticOptimizatio
 
 
 @router.get("/analyses/{analysis_id}/optimization-tasks")
-def list_automatic_optimization(analysis_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> list[dict]:
+def list_automatic_optimization(analysis_id: str, project_id: int, prompt_id: int,
+                                db: Session = Depends(get_task_read_db)) -> list[dict]:
     from app.models import SinglePromptAnalysis, SinglePromptOptimizationTask
     from .automatic_delivery import task_view
     if not db.query(SinglePromptAnalysis).filter_by(analysis_id=analysis_id, project_id=project_id, prompt_id=prompt_id).one_or_none():
@@ -240,13 +247,15 @@ def list_automatic_optimization(analysis_id: str, project_id: int, prompt_id: in
 
 
 @router.get("/optimization-tasks/{task_id}")
-def read_automatic_optimization(task_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> dict:
+def read_automatic_optimization(task_id: str, project_id: int, prompt_id: int,
+                                db: Session = Depends(get_task_read_db)) -> dict:
     from .automatic_delivery import require_task, task_view
     return task_view(require_task(db, task_id, project_id, prompt_id))
 
 
 @router.get("/optimization-tasks/{task_id}/deliveries")
-def read_automatic_deliveries(task_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> list[dict]:
+def read_automatic_deliveries(task_id: str, project_id: int, prompt_id: int,
+                              db: Session = Depends(get_task_read_db)) -> list[dict]:
     from .automatic_delivery import require_task
     from app.models import SinglePromptExecutionProposal, SinglePromptExecutionProposalResult
     from app.services.serialization import loads

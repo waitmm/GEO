@@ -56,6 +56,29 @@ def test_creation_is_idempotent_and_never_confers_external_or_review_authority(s
         create_task(db, **{**args, 'raw_output_hash': '0' * 64})
 
 
+def test_task_read_guard_rejects_flush_and_bulk_business_writes(scene):
+    from sqlalchemy import update
+    from app.core.release_database import ReadOnlyBusinessQueryError, read_only_release_session
+    from app.models import SinglePromptOptimizationTask
+    db, row, _, _ = scene
+    original_status = row.status
+
+    with pytest.raises(ReadOnlyBusinessQueryError, match='business write'):
+        with read_only_release_session(db):
+            row.status = 'CANCELLED'
+            db.commit()
+    db.refresh(row)
+    assert row.status == original_status
+
+    with pytest.raises(ReadOnlyBusinessQueryError, match='business write'):
+        with read_only_release_session(db):
+            db.execute(update(SinglePromptOptimizationTask).where(
+                SinglePromptOptimizationTask.id == row.id,
+            ).values(status='CANCELLED'))
+    db.refresh(row)
+    assert row.status == original_status
+
+
 def test_source_version_is_explicit_and_changes_task_identity_without_replacing_history(scene):
     from app.models import SinglePromptSourceCompletionManifest, SinglePromptSourceDisposition
     from app.modules.single_prompt_v2.source_preparation import freeze_completion_manifest
@@ -456,7 +479,8 @@ def test_official_task_api_is_scoped_read_only_and_requires_exact_authorization(
     from release_test_client import TestClient
     from app.core.release_database import get_release_db
     from app.release_main import create_release_app
-    from app.models import SinglePromptOptimizationTask
+    from sqlalchemy import event
+    from scripts.release_upgrade_check import business_fingerprint
     db, row, args, _ = scene
     app = create_release_app(validate_on_startup=False)
     app.dependency_overrides[get_release_db] = lambda: db
@@ -465,13 +489,24 @@ def test_official_task_api_is_scoped_read_only_and_requires_exact_authorization(
     path = f"{root}/analyses/{args['analysis_id']}/optimization-tasks"
     value = {k: v for k, v in args.items() if k != 'analysis_id'}
     assert client.post(path, json=value).status_code == 200
-    count = db.query(SinglePromptOptimizationTask).count()
+    before = business_fingerprint(db.get_bind().url.database)
+    statements = []
+
+    def record_statement(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.lstrip().split(None, 1)[0].upper())
+
+    event.listen(db.get_bind(), 'before_cursor_execute', record_statement)
     for _ in range(2):
         listing = client.get(path + '?project_id=1&prompt_id=44')
         assert listing.status_code == 200 and listing.json()[0]['task_id'] == row.task_id
+        detail = client.get(f'{root}/optimization-tasks/{row.task_id}?project_id=1&prompt_id=44')
+        assert detail.status_code == 200 and detail.json()['task_id'] == row.task_id
         response = client.get(f'{root}/optimization-tasks/{row.task_id}/deliveries?project_id=1&prompt_id=44')
         assert response.status_code == 200 and response.json() == []
-    assert db.query(SinglePromptOptimizationTask).count() == count
+    event.remove(db.get_bind(), 'before_cursor_execute', record_statement)
+    assert statements and set(statements) == {'SELECT'}
+    assert business_fingerprint(db.get_bind().url.database) == before
+    assert not db.new and not db.dirty and not db.deleted
     assert client.get(path + '?project_id=2&prompt_id=44').status_code == 404
     assert client.get(f'{root}/optimization-tasks/{row.task_id}?project_id=2&prompt_id=44').status_code == 404
     bad = client.post(f'{root}/optimization-tasks/{row.task_id}/authorization', json={

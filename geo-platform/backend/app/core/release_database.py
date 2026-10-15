@@ -1,6 +1,7 @@
 """Dedicated database connection for the GEO 1.0 release control plane."""
 
 from collections.abc import Generator
+from contextlib import contextmanager
 import os
 
 from sqlalchemy import create_engine, event
@@ -37,6 +38,36 @@ ReleaseSessionLocal = sessionmaker(
     autoflush=False,
     bind=release_engine,
 )
+
+
+class ReadOnlyBusinessQueryError(RuntimeError):
+    """A release GET path attempted to mutate durable business state."""
+
+
+@contextmanager
+def read_only_release_session(db: Session) -> Generator[Session, None, None]:
+    """Reject ORM writes while a release query is being served."""
+
+    def reject_flush(session, flush_context, instances) -> None:
+        if session.new or session.dirty or session.deleted:
+            raise ReadOnlyBusinessQueryError("release query attempted a business write")
+
+    def reject_orm_write(execute_state) -> None:
+        if execute_state.is_insert or execute_state.is_update or execute_state.is_delete:
+            raise ReadOnlyBusinessQueryError("release query attempted a business write")
+
+    event.listen(db, "before_flush", reject_flush)
+    event.listen(db, "do_orm_execute", reject_orm_write)
+    try:
+        yield db
+        if db.new or db.dirty or db.deleted:
+            raise ReadOnlyBusinessQueryError("release query left pending business writes")
+    except ReadOnlyBusinessQueryError:
+        db.rollback()
+        raise
+    finally:
+        event.remove(db, "do_orm_execute", reject_orm_write)
+        event.remove(db, "before_flush", reject_flush)
 
 
 def get_release_db() -> Generator[Session, None, None]:

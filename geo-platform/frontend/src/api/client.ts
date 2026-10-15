@@ -301,8 +301,6 @@ export const api = {
     request<RunArtifactContent>(`/api/monitoring/artifacts/${artifactId}`),
   importWenxinPluginResult: (payload: unknown) =>
     request<BrowserMonitorRunDetail>("/api/monitoring/imports/wenxin-plugin", { method: "POST", body: JSON.stringify(payload) }),
-  retryBrowserAuditRun: (runId: number) =>
-    request<BrowserMonitorRun>(`/api/monitoring/runs/${runId}/retry`, { method: "POST" }),
   executeBrowserAuditTask: (taskId: number) =>
     request<BrowserMonitorTask>(`/api/monitoring/tasks/${taskId}/execute`, { method: "POST" }),
   executeQueuedRuns: (projectId: number) =>

@@ -309,7 +309,10 @@ export type SinglePromptV2RunPool = {
   prompt_id: number;
   page: number;
   page_size: number;
-  total: number;
+  /** Number of unique logical samples: the analysis denominator. */
+  logical_sample_total: number;
+  /** Number of stored physical execution attempts, including retries. */
+  attempt_total: number;
   items: SinglePromptV2RunPoolItem[];
 };
 

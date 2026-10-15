@@ -1733,7 +1733,6 @@ export default function App() {
     }
   }
   const [loading, setLoading] = useState(false);
-  const [retryingRuns, setRetryingRuns] = useState<Set<number>>(new Set());
   const [fallback, setFallback] = useState(false);
   const [promptForm] = Form.useForm();
   const [auditForm] = Form.useForm();
@@ -4270,20 +4269,6 @@ export default function App() {
     }
   }
 
-  async function retryRun(runId: number) {
-    if (!projectId) return;
-    setRetryingRuns((prev) => new Set(prev).add(runId));
-    try {
-      await api.retryBrowserAuditRun(runId);
-      message.success("已重新采集该 Run");
-      await loadProject(projectId);
-    } catch (err: any) {
-      message.error(err.message || "重新采集失败");
-    } finally {
-      setRetryingRuns((prev) => { const next = new Set(prev); next.delete(runId); return next; });
-    }
-  }
-
   async function createPrompt(values: { topic?: string; prompt_group: string; prompt_text: string; importance?: number }) {
     if (!projectId) return;
     setLoading(true);
@@ -5933,8 +5918,8 @@ export default function App() {
                 completion={v2SourcePreparation?.completion_manifest} />
             </>}
             <details className="v2-advanced-details" key={`run-pool:${v2Analysis?.analysis.analysis_id || 'unselected'}`} open={!v2Analysis}>
-            <summary>采样记录与新分析范围（{v2RunPool?.total || 0} 条）</summary>
-            <Card size="small" title={<Space><Monitor size={18} />采样记录池<Tag>{v2RunPool?.total || 0} Runs</Tag></Space>} extra={<Space>
+            <summary>采样记录与新分析范围（{v2RunPool?.logical_sample_total || 0} 个逻辑样本 · {v2RunPool?.attempt_total || 0} 次物理尝试）</summary>
+            <Card size="small" title={<Space><Monitor size={18} />采样记录池<Tag>{v2RunPool?.logical_sample_total || 0} 个逻辑样本 · {v2RunPool?.attempt_total || 0} 次物理尝试</Tag></Space>} extra={<Space>
               <Text type="secondary">新增采样不会改变已有分析</Text>
               <Button icon={<RefreshCw size={15} />} loading={v2RunPoolLoading} onClick={() => refreshV2RunPool()}>刷新</Button>
             </Space>}>
@@ -5961,7 +5946,7 @@ export default function App() {
                 pagination={{
                   current: v2RunPool?.page || 1,
                   pageSize: v2RunPool?.page_size || 20,
-                  total: v2RunPool?.total || 0,
+                  total: v2RunPool?.attempt_total || 0,
                   showSizeChanger: false,
                   onChange: (nextPage) => refreshV2RunPool(nextPage),
                 }}
@@ -10291,6 +10276,7 @@ export default function App() {
         </Space> : <Space direction="vertical" size={16} className="page-stack">
           {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下仅展示该 Prompt 的采集记录；切回「全部 Prompt」查看项目全部采样。" />}
           <Card title="采集记录" extra={<Tag>{activePromptId ? `Prompt #${activePromptId} · 每行是一次独立采样` : "每行是一次独立采样"}</Tag>}>
+          <Alert type="info" showIcon message="失败 Run 请在正式 V2 采样记录池中追加式重试" description="旧监测页不再提供会覆盖原 Run 的“重新采集”。请前往正式 V2 采样记录池；重试会保留旧 Run，并且不会增加独立样本分母。" action={<Button size="small" onClick={() => setPage("coreV2")}>前往正式 V2 采样记录池</Button>} style={{ marginBottom: 12 }} />
           <Table rowKey="id" loading={loading} dataSource={visibleRuns} locale={{ emptyText: activePromptId ? "该 Prompt 还没有采集记录" : "暂无采集记录" }} pagination={{ pageSize: 12 }} onRow={(row) => ({ onClick: () => openRun(row.id) })} columns={[
             { title: "编号", dataIndex: "id", width: 70, render: (id) => `#${id}` },
             { title: "采集时间", width: 150, render: (_, row: any) => formatDateTime(row.finished_at || row.started_at || row.created_at) },
@@ -10301,9 +10287,6 @@ export default function App() {
             { title: "引用解析", width: 230, render: (_, row) => <Space size={4}><Tag>界面 {row.expected_reference_count}</Tag><Tag>结构 {row.detected_reference_count}</Tag><Tag>标题 {row.detected_reference_count}</Tag><Tag color={row.resolved_reference_count === row.detected_reference_count ? "green" : "gold"}>链接 {row.resolved_reference_count}</Tag></Space> },
             { title: "操作", width: 170, render: (_, row) => <Space size={4}>
               <Button size="small" onClick={(event) => { event.stopPropagation(); openRun(row.id); }}>查看</Button>
-              {row.status === "failed" && (
-                <Button size="small" type="primary" ghost danger icon={<RefreshCw size={12} />} loading={retryingRuns.has(row.id)} onClick={(event) => { event.stopPropagation(); retryRun(row.id); }}>重新采集</Button>
-              )}
             </Space> }
           ]} />
           </Card>

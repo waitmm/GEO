@@ -125,8 +125,9 @@ def _current_analysis_configuration(db: Session, project_id: int) -> dict[str, A
     if not row:
         raise HTTPException(status_code=409, detail="当前项目没有可绑定的配置版本")
     snapshot = loads(row.snapshot_json, {})
-    if not isinstance(snapshot, dict) or _hash(snapshot) != row.snapshot_hash:
-        raise HTTPException(status_code=409, detail="当前项目配置版本 snapshot hash 不匹配")
+    if (not isinstance(snapshot, dict) or snapshot.get("project_id") != project_id
+            or _hash(snapshot) != row.snapshot_hash):
+        raise HTTPException(status_code=409, detail="当前项目配置版本 snapshot 归属或 hash 不匹配")
     return {
         "binding_status": "BOUND",
         "configuration_version_id": row.configuration_version_id,
@@ -162,9 +163,10 @@ def _validate_configuration_binding(db: Session, project_id: int,
         snapshot_hash=binding["snapshot_hash"],
     ).one_or_none()
     snapshot = loads(row.snapshot_json, {}) if row else {}
-    if (not row or not isinstance(snapshot, dict) or _hash(snapshot) != row.snapshot_hash
+    if (not row or not isinstance(snapshot, dict) or snapshot.get("project_id") != project_id
+            or _hash(snapshot) != row.snapshot_hash
             or binding["brand"] != _configuration_brand(snapshot)):
-        raise HTTPException(status_code=409, detail="Analysis 项目配置版本、hash 或品牌快照不匹配")
+        raise HTTPException(status_code=409, detail="Analysis 项目、配置版本、hash 或品牌快照不匹配")
     return binding
 
 

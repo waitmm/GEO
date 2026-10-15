@@ -13,6 +13,7 @@ from release_test_client import TestClient
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker
 
+from app.api.release_catalog import _record_project_configuration
 from app.core.release_database import get_release_db
 from app.models import (
     Base,
@@ -21,7 +22,6 @@ from app.models import (
     Competitor,
     Organization,
     Project,
-    ProjectConfigurationVersion,
     Prompt,
     ReferenceSource,
     SinglePromptAnalysisContext,
@@ -127,18 +127,9 @@ def _migrated_session(tmp_path: Path, monkeypatch):
 
 
 def _add_project_configuration(db, *, project_id: int, brand_name: str) -> None:
-    snapshot = {
-        "name": brand_name, "brand_name": brand_name, "brand_aliases": [], "website_url": "",
-        "industry": "", "region": "", "language": "", "competitors": [],
-    }
-    raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    db.add(ProjectConfigurationVersion(
-        configuration_version_id=f"project-config:{project_id}:v1",
-        project_id=project_id,
-        version_number=1,
-        snapshot_json=raw,
-        snapshot_hash=hashlib.sha256(raw.encode()).hexdigest(),
-    ))
+    project = db.get(Project, project_id)
+    assert project is not None and project.brand_name == brand_name
+    _record_project_configuration(db, project)
     db.commit()
 
 

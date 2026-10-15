@@ -51,7 +51,7 @@ def _session(tmp_path):
 
 def _configuration(db, *, version=1, brand_name="Target"):
     snapshot = {
-        "name": "V2", "brand_name": brand_name, "brand_aliases": [],
+        "project_id": 1, "name": "V2", "brand_name": brand_name, "brand_aliases": [],
         "website_url": "", "industry": "", "region": "", "language": "", "competitors": [],
     }
     raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -210,7 +210,7 @@ def test_analysis_configuration_binding_is_exact_versioned_and_legacy_is_not_bac
 
         project = db.get(Project, 1)
         v1_snapshot = {
-            "name": project.name, "brand_name": "Target V1", "brand_aliases": ["Old"],
+            "project_id": 1, "name": project.name, "brand_name": "Target V1", "brand_aliases": ["Old"],
             "website_url": "https://v1.example", "industry": "software",
             "region": "CN", "language": "zh-CN", "competitors": [],
         }
@@ -285,8 +285,16 @@ def test_analysis_configuration_binding_is_exact_versioned_and_legacy_is_not_bac
         ).one().raw_output_json)
         assert frozen_output["sampling_plan"]["project_configuration"] == first_binding
 
+        cross_project_snapshot = json.loads(v1.snapshot_json)
+        cross_project_snapshot["project_id"] = 2
+        cross_project_json = json.dumps(
+            cross_project_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        cross_project_hash = hashlib.sha256(cross_project_json.encode()).hexdigest()
+        v1.snapshot_json = cross_project_json
+        v1.snapshot_hash = cross_project_hash
         forged_plan = json.loads(frozen.sampling_plan_json)
-        forged_plan["project_configuration"]["snapshot_hash"] = "0" * 64
+        forged_plan["project_configuration"]["snapshot_hash"] = cross_project_hash
         forged_json = json.dumps(forged_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         frozen.sampling_plan_json = forged_json
         frozen.sampling_plan_hash = hashlib.sha256(forged_json.encode()).hexdigest()

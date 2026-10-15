@@ -2130,7 +2130,7 @@ export default function App() {
         prompt_id: activePromptId,
         idempotency_key: crypto.randomUUID(),
       });
-      message.success(`已保留 Run #${row.run_id}，新重试为 Run #${result.retry_run_id}`);
+      message.success(`已保留 Run #${row.run_id}；逻辑样本 ${result.logical_run_id} 已追加尝试 #${result.attempt_no}（Run #${result.retry_run_id}）`);
       await refreshV2RunPool();
     } catch (error: any) {
       message.error(error.message || "单 Run 重试排队失败");
@@ -5927,7 +5927,7 @@ export default function App() {
                 type="info"
                 showIcon
                 message="先选择 Run，再决定是否建立新的分析版本"
-                description="可以只选新增样本，也可以选择历史加新增样本。旧 Analysis、Context、审核和正文准备不会被修改。"
+                description="可以只选新增样本，也可以选择历史加新增样本。重试仅追加同一逻辑样本的新尝试，不增加独立样本分母，并保留旧 Run。旧 Analysis、Context、审核和正文准备不会被修改。"
                 style={{ marginBottom: 12 }}
               />
               <Table<SinglePromptV2RunPoolItem>
@@ -5950,7 +5950,7 @@ export default function App() {
                   showSizeChanger: false,
                   onChange: (nextPage) => refreshV2RunPool(nextPage),
                 }}
-                scroll={{ x: 980 }}
+                scroll={{ x: 1240 }}
                 expandable={{ expandedRowRender: (row) => <Space direction="vertical" style={{ width: "100%" }}>
                   <Text strong>实际回答正文</Text>
                   <Typography.Paragraph className="v2-answer-text">{row.answer_text || "无可用回答"}</Typography.Paragraph>
@@ -5958,6 +5958,8 @@ export default function App() {
                 </Space> }}
                 columns={[
                   { title: "Run", width: 82, render: (_: unknown, row) => <Text code>#{row.run_id}</Text> },
+                  { title: "逻辑样本 ID", width: 170, render: (_: unknown, row) => <Text code ellipsis={{ tooltip: row.logical_run_id }}>{row.logical_run_id}</Text> },
+                  { title: "尝试", width: 150, render: (_: unknown, row) => <Space direction="vertical" size={0}><Text>尝试 #{row.attempt_no}</Text><Text type="secondary">父 Run {row.retry_of_run_id === null ? "无（首次）" : `#${row.retry_of_run_id}`}</Text></Space> },
                   { title: "状态", width: 110, render: (_: unknown, row) => statusTag(row.status) },
                   { title: "采样时间", width: 170, render: (_: unknown, row) => formatDateTime(row.finished_at || row.started_at) },
                   { title: "回答", width: 110, render: (_: unknown, row) => row.answer_text ? `${row.answer_char_count || row.answer_text.length} 字` : "无" },
@@ -5966,7 +5968,7 @@ export default function App() {
                   { title: "已用于分析", width: 210, render: (_: unknown, row) => row.analysis_memberships?.length
                     ? <Text ellipsis={{ tooltip: row.analysis_memberships.map((item) => item.analysis_id).join("、") }}>{row.analysis_memberships.length} 个版本</Text>
                     : <Text type="secondary">尚未纳入</Text> },
-                  { title: "操作", width: 100, fixed: "right", render: (_: unknown, row) => row.status === "failed" ? <Popconfirm title={`重试 Run #${row.run_id}？`} description="原 Run 保留不变，系统会创建一个新的 Run 尝试。" onConfirm={() => retryV2Run(row)}><Button size="small">重试</Button></Popconfirm> : null },
+                  { title: "操作", width: 100, fixed: "right", render: (_: unknown, row) => row.status === "failed" ? <Popconfirm title={`重试 Run #${row.run_id}？`} description="会为同一逻辑样本追加新的尝试，不增加独立样本分母，并保留旧 Run。" onConfirm={() => retryV2Run(row)}><Button size="small">重试</Button></Popconfirm> : null },
                 ]}
               />
               <Row justify="space-between" align="middle" gutter={[12, 12]}>

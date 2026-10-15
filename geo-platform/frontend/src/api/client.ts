@@ -95,7 +95,10 @@ export const api = {
     base_context_id: string | null; prompt_version_id: string; snapshot_hash: string; idempotency_key: string;
   }) => request<SinglePromptV2Status>("/api/v2/single-prompt/analyses/from-runs", { method: "POST", body: JSON.stringify(payload) }),
   retrySinglePromptV2Run: (runId: number, payload: { project_id: number; prompt_id: number; idempotency_key: string }) =>
-    request<{ source_run_id: number; retry_run_id: number; task_id: number; status: string; created: boolean }>(`/api/v2/single-prompt/runs/${runId}/retry`, { method: "POST", body: JSON.stringify(payload) }),
+    request<{
+      source_run_id: number; retry_run_id: number; task_id: number; status: string; created: boolean;
+      logical_run_id: string; attempt_id: string; attempt_no: number; retry_of_run_id: number | null;
+    }>(`/api/v2/single-prompt/runs/${runId}/retry`, { method: "POST", body: JSON.stringify(payload) }),
   listSinglePromptV2Analyses: (projectId: number, promptId: number) =>
     request<SinglePromptV2AnalysisListItem[]>(`/api/v2/single-prompt/analyses?project_id=${projectId}&prompt_id=${promptId}`),
   getSinglePromptV2Analysis: (analysisId: string, projectId: number, promptId: number) =>

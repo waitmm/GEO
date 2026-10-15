@@ -292,6 +292,14 @@ export type PromptVersionBinding =
   | { binding_status: "LEGACY_UNBOUND" };
 
 export type SinglePromptV2RunPoolItem = SinglePromptV2Run & {
+  /** Stable sample identity shared by every retry attempt. */
+  logical_run_id: string;
+  /** Immutable identity of this individual execution attempt. */
+  attempt_id: string;
+  /** One-based execution attempt number within the logical sample. */
+  attempt_no: number;
+  /** The immediately preceding Run when this is a retry. */
+  retry_of_run_id: number | null;
   input_fingerprint: string;
   analysis_memberships: Array<{ analysis_id: string; context_id: string }>;
 };

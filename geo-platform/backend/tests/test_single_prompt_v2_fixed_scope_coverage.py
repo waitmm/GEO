@@ -69,6 +69,47 @@ def test_invalid_cache_keeps_rejection_separate_from_next_required_action():
     assert coverage["actual_failure_run_ids"] == []
 
 
+def test_unavailable_input_is_preserved_in_denominator_and_excluded_from_compute_groups():
+    raw = {
+        "runs": [
+            {"run_id": 1, "status": "failed", "answer_text": "过期回答"},
+            {"run_id": 2, "status": "success", "answer_text": ""},
+            {"run_id": 3, "status": "partial_success", "answer_text": "部分回答"},
+            {"run_id": 4, "answer_text": "遗留回答"},
+        ]
+    }
+    answer = {
+        "answer_jobs": [
+            {"answer_hash": _hash("过期回答"), "run_ids": [1], "status": "DONE"},
+            {"answer_hash": _hash("部分回答"), "run_ids": [3], "status": "DONE_ZERO_EVENTS"},
+            {"answer_hash": _hash("遗留回答"), "run_ids": [4], "status": "DONE"},
+        ]
+    }
+
+    projections = diagnosis_coverage_projections(
+        raw,
+        {"answer_diagnosis": answer, "evidence_diagnosis": {}},
+        None,
+    )
+    input_scope = projections["input_scope_coverage"]
+    coverage = projections["compute_coverage"]
+
+    assert input_scope["bound_run_ids"] == [3, 4]
+    assert input_scope["missing_run_ids"] == [1, 2]
+    assert input_scope["input_unavailable_run_ids"] == [1, 2]
+    assert "1" not in input_scope["answer_sha256_by_run"]
+    assert coverage["input_unavailable_run_ids"] == [1, 2]
+    assert coverage["pending_compute_run_ids"] == []
+    assert coverage["pending_external_authorization_run_ids"] == []
+    assert coverage["actual_failure_run_ids"] == []
+    assert coverage["success_zero_events_run_ids"] == [3]
+    assert coverage["success_with_events_run_ids"] == [4]
+    assert coverage["valid_compute_run_ids"] == [3, 4]
+    assert coverage["expected_run_count"] == 4
+    assert coverage["all_runs_validly_understood"] is False
+    assert coverage["all_runs_have_terminal_disposition"] is False
+
+
 def test_review_and_strategy_scope_do_not_turn_partial_compute_into_full_completion():
     raw = _raw_runs()
     answer = {

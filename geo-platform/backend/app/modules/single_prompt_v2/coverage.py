@@ -25,19 +25,26 @@ def _run_rows(raw_output: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in raw_output.get("runs") or [] if row.get("run_id") is not None]
 
 
+def _has_available_input(row: dict[str, Any]) -> bool:
+    if not str(row.get("answer_text") or "").strip():
+        return False
+    status = str(row.get("status") or "").strip().lower()
+    return not status or status in {"success", "partial_success"}
+
+
 def input_scope_coverage(raw_output: dict[str, Any]) -> dict[str, Any]:
     rows = _run_rows(raw_output)
     expected = sorted(int(row["run_id"]) for row in rows)
     bound = sorted(
         int(row["run_id"])
         for row in rows
-        if str(row.get("answer_text") or "").strip()
+        if _has_available_input(row)
     )
-    unreadable = sorted(set(expected) - set(bound))
+    unavailable = sorted(set(expected) - set(bound))
     hashes = {
         str(int(row["run_id"])): _answer_hash(str(row.get("answer_text") or ""))
         for row in rows
-        if str(row.get("answer_text") or "").strip()
+        if _has_available_input(row)
     }
     limitations = {
         str(int(row["run_id"])): sorted({
@@ -55,12 +62,14 @@ def input_scope_coverage(raw_output: dict[str, Any]) -> dict[str, Any]:
         "contract_version": COVERAGE_PROJECTION_VERSION,
         "expected_run_ids": expected,
         "bound_run_ids": bound,
-        "missing_run_ids": unreadable,
+        "missing_run_ids": unavailable,
+        "input_unavailable_run_ids": unavailable,
+        "input_unavailable_count": len(unavailable),
         "readable_answer_count": len(bound),
         "expected_run_count": len(expected),
         "answer_sha256_by_run": hashes,
         "quality_limitations_by_run": limitations,
-        "scope_complete": not unreadable and bool(expected),
+        "scope_complete": not unavailable and bool(expected),
         "boundary": "INPUT_SCOPE_ONLY_NOT_COMPUTE_COMPLETION",
     }
 
@@ -72,7 +81,9 @@ def _jobs_by_run(raw_output: dict[str, Any], answer_diagnosis: dict[str, Any]) -
         if job.get("answer_hash")
     }
     result: dict[int, dict[str, Any]] = {}
-    for run in _run_rows(raw_output):
+    available_runs = [run for run in _run_rows(raw_output) if _has_available_input(run)]
+    available_run_ids = {int(run["run_id"]) for run in available_runs}
+    for run in available_runs:
         run_id = int(run["run_id"])
         answer = str(run.get("answer_text") or "")
         job = by_hash.get(_answer_hash(answer))
@@ -85,12 +96,12 @@ def _jobs_by_run(raw_output: dict[str, Any], answer_diagnosis: dict[str, Any]) -
                 *(answer_diagnosis.get("events") or []),
                 *(answer_diagnosis.get("market_criteria") or []),
             ]
-            if row.get("run_id") is not None
+            if row.get("run_id") is not None and int(row["run_id"]) in available_run_ids
         }
         failed_runs = {
             int(row.get("run_id"))
             for row in answer_diagnosis.get("failures") or []
-            if row.get("run_id") is not None
+            if row.get("run_id") is not None and int(row["run_id"]) in available_run_ids
         }
         for run_id in projected_runs:
             result[run_id] = {"status": "DONE", "result_source": "LEGACY_PROJECTED_OBJECT"}
@@ -113,6 +124,7 @@ def compute_coverage(raw_output: dict[str, Any], answer_diagnosis: dict[str, Any
     input_scope = input_scope_coverage(raw_output)
     jobs = _jobs_by_run(raw_output, answer_diagnosis)
     groups: dict[str, list[int]] = {
+        "input_unavailable_run_ids": [],
         "success_with_events_run_ids": [],
         "success_zero_events_run_ids": [],
         "actual_failure_run_ids": [],
@@ -122,6 +134,9 @@ def compute_coverage(raw_output: dict[str, Any], answer_diagnosis: dict[str, Any
         "invalid_cache_run_ids": [],
     }
     for run_id in input_scope["expected_run_ids"]:
+        if run_id in input_scope["input_unavailable_run_ids"]:
+            groups["input_unavailable_run_ids"].append(run_id)
+            continue
         job = jobs.get(run_id)
         if not job:
             groups["pending_compute_run_ids"].append(run_id)
@@ -153,6 +168,7 @@ def compute_coverage(raw_output: dict[str, Any], answer_diagnosis: dict[str, Any
         "valid_compute_run_ids": valid,
         "valid_compute_count": len(valid),
         "expected_run_count": expected_count,
+        "input_unavailable_count": len(groups["input_unavailable_run_ids"]),
         "terminal_execution_run_ids": terminal,
         "terminal_execution_count": len(terminal),
         "all_runs_validly_understood": bool(expected_count) and len(valid) == expected_count,

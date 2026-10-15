@@ -207,7 +207,7 @@
           "COR-002",
           "COR-003"
         ],
-        "status": "READY",
+        "status": "DONE",
         "depends_on": [],
         "task_dependencies": [
           {

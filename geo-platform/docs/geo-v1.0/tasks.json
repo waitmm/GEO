@@ -771,7 +771,7 @@
       "milestone": "M0",
       "owner_role": "后端",
       "owner_name": "Codex（后端）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T01"
       ],
@@ -793,16 +793,18 @@
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json",
+        "backend/artifacts/acceptance/browser-20261015T131117Z/report.json",
+        "backend/artifacts/acceptance/browser-20261015T131611Z/report.json"
       ],
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
-      "actual_end": "",
-      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
-      "commit": "",
-      "audit_classification": "需修复",
+      "actual_end": "2026-10-15",
+      "blocker": "",
+      "commit": "b924ea2",
+      "audit_classification": "已按OPS契约完成并复核",
       "query_read_only_slice": {
         "id": "T02-M0-SMALL-01",
         "status": "DONE",
@@ -824,6 +826,20 @@
         "scope": "worker启动时仅将崩溃遗留的running单Run retry父任务及其queued/running子Run fail-closed为worker_restart_interrupted，明确用量未知且不自动重放；queued retry、优化任务QUEUED/WAITING_AUTHORIZATION与成功sibling保持不变。",
         "verification": "worker生命周期3 passed；直接恢复/调度组合12 passed；第五批组合61 passed；Luna独立审核PASS_NO_P0_P1。",
         "boundary": "不实例化浏览器执行器、不清空未知用量；完整真实环境恢复和浏览器验收仍保留，T02整体保持IN_PROGRESS。"
+      },
+      "final_runtime_browser_acceptance": {
+        "id": "T02-M0-FINAL-ACCEPTANCE",
+        "status": "DONE",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "completed_on": "2026-10-15",
+        "accepted_product_head": "3c33ab8",
+        "scope": "在隔离SQLite和本地进程中验证worker排他领取、崩溃后fail-closed恢复、重复恢复幂等、重复提交不重复建任务、GET零业务写入、跨项目隔离，并以真实Chrome完成操作、刷新、历史精确读取、无权限深链和注销撤权。",
+        "verification": "后端生命周期与自动交付22 passed；批次后端组合65 passed；本地Chrome优化流程报告PASS_SCOPED_SIMULATED_INTEGRATION_NOT_REAL_MODEL，访问控制报告PASS_ISOLATED_INVITATION_NOT_REMOTE_TLS_DEPLOYMENT；两次浏览器验收external_calls=0且业务表指纹保持不变；Luna独立审核PASS_NO_P0_P1。",
+        "evidence": [
+          "backend/artifacts/acceptance/browser-20261015T131117Z/report.json",
+          "backend/artifacts/acceptance/browser-20261015T131611Z/report.json"
+        ],
+        "boundary": "未访问生产数据库，未调用真实模型、采集或外部网络；T02生命周期、幂等、查询只读及浏览器产品验收已闭环。"
       },
       "current_checkpoint": "delivery_checkpoint_20261009"
     },
@@ -920,7 +936,7 @@
       "milestone": "M1",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T03"
       ],
@@ -943,11 +959,11 @@
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
-      "actual_start": "",
-      "actual_end": "",
-      "blocker": "Prompt版本账本和只读历史已完成；Analysis尚未绑定prompt_version_id，继续旧Analysis与新版本采样的产品入口仍需闭环。",
-      "commit": "",
-      "audit_classification": "需修复",
+      "actual_start": "2026-10-15",
+      "actual_end": "2026-10-15",
+      "blocker": "",
+      "commit": "3c33ab8",
+      "audit_classification": "已按PRM契约完成并复核",
       "prompt_version_history_slice": {
         "id": "T04-M1-SMALL-01",
         "status": "DONE",
@@ -959,6 +975,26 @@
         "scope": "新增prompt_versions append-only账本和自包含20261015_02迁移；Prompt创建写V1、有效编辑追加、no-op幂等、历史Prompt回填V1、数据库拒绝版本UPDATE/DELETE。提供项目/Prompt/稳定版本ID精确限定的列表与详情GET；现有Prompt行提供只读历史入口，展示EFFECTIVE/SUPERSEDED冻结内容。",
         "verification": "后端catalog+迁移组合29 passed；前端专项3 passed；release build通过（仅既有chunk warning）；Luna独立审核PASS_NO_P0_P1。",
         "boundary": "本切片不修改Analysis sampling plan，不宣称完成继续旧Analysis或新采样绑定V2；T04整体保持IN_PROGRESS。"
+      },
+      "analysis_prompt_version_binding_slice": {
+        "id": "T04-M1-SMALL-02",
+        "status": "DONE",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "completed_on": "2026-10-15",
+        "backend_source_commits": [
+          "286ed5f",
+          "04e4deb"
+        ],
+        "frontend_source_commits": [
+          "5d35817",
+          "9c435c0",
+          "64c5368",
+          "aa247f3"
+        ],
+        "integrated_product_head": "3c33ab8",
+        "scope": "新Analysis、Run选择、Monitor、每日计划和Retest均绑定精确prompt_version_id与snapshot_hash；读取展示冻结快照，历史未绑定仅显式LEGACY_UNBOUND且禁止猜测归属。继续旧Analysis保持原语义，按所选冻结版本创建新采样；每日计划仅接受当前EFFECTIVE版本。",
+        "verification": "后端批次组合65 passed，最终Schedule/PromptVersion专项8 passed；前端专项7 passed；Release build通过；Luna独立审核PASS_NO_P0_P1。",
+        "boundary": "未修改Runtime Phase 1B；不回填latest，不改写历史Analysis，不调用外部模型或采集。"
       },
       "current_checkpoint": "delivery_checkpoint_20261009"
     },

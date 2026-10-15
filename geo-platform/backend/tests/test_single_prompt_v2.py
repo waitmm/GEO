@@ -24,9 +24,11 @@ from app.models import (
 from app.modules.single_prompt_v2.service import (
     claim_analysis,
     create_analysis,
+    create_analysis_from_runs,
     create_frozen_analysis,
     finalize_analysis,
     get_analysis_status,
+    list_prompt_run_pool,
     project_platform_reported_search,
     recover_interrupted_analyses,
     retry_analysis,
@@ -47,13 +49,30 @@ def _session(tmp_path):
     return sessionmaker(bind=engine)(), engine
 
 
-def _seed(db):
+def _configuration(db, *, version=1, brand_name="Target"):
+    snapshot = {
+        "name": "V2", "brand_name": brand_name, "brand_aliases": [],
+        "website_url": "", "industry": "", "region": "", "language": "", "competitors": [],
+    }
+    raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    row = ProjectConfigurationVersion(
+        configuration_version_id=f"project-config:1:v{version}", project_id=1, version_number=version,
+        snapshot_json=raw, snapshot_hash=hashlib.sha256(raw.encode()).hexdigest(),
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def _seed(db, *, with_configuration=True):
     db.add(Project(id=1, organization_id=1, name="V2", brand_name="Target"))
     db.add_all([
         Prompt(id=11, project_id=1, title="Prompt A", prompt_text="哪个工具支持短链？"),
         Prompt(id=12, project_id=1, title="Prompt B", prompt_text="另一个问题"),
     ])
     db.commit()
+    if with_configuration:
+        _configuration(db)
 
 
 def _create(db, prompt_id=11, count=2, key="request-key-0001"):
@@ -102,11 +121,89 @@ def test_create_is_idempotent_and_plan_is_fixed(tmp_path):
         engine.dispose()
 
 
+def test_all_new_analysis_paths_require_a_project_configuration_version(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        _seed(db, with_configuration=False)
+        with pytest.raises(HTTPException) as ordinary_error:
+            _create(db, count=1, key="missing-config-ordinary")
+        assert ordinary_error.value.status_code == 409
+
+        with pytest.raises(HTTPException) as frozen_error:
+            create_frozen_analysis(
+                db,
+                project_id=1,
+                prompt_id=11,
+                prompt_text="哪个工具支持短链？",
+                sampling_plan={},
+                idempotency_key="missing-config-frozen",
+                created_by="test:missing-config",
+            )
+        assert frozen_error.value.status_code == 409
+
+        with pytest.raises(HTTPException) as forged_legacy_error:
+            create_frozen_analysis(
+                db,
+                project_id=1,
+                prompt_id=11,
+                prompt_text="哪个工具支持短链？",
+                sampling_plan={"project_configuration": {"binding_status": "LEGACY_UNBOUND"}},
+                idempotency_key="forged-legacy-frozen",
+                created_by="test:forged-legacy",
+            )
+        assert forged_legacy_error.value.status_code == 409
+
+        _configuration(db)
+        source = _create(db, count=1, key="source-before-config-removal")
+        token = claim_analysis(db, source.analysis_id)
+        _succeed(_runs(db, source)[0])
+        db.commit()
+        assert token and finalize_analysis(db, source.analysis_id, token)
+        pool = list_prompt_run_pool(db, project_id=1, prompt_id=11, page=1, page_size=20)
+        selected = pool["items"][0]
+        db.query(ProjectConfigurationVersion).delete()
+        db.commit()
+
+        with pytest.raises(HTTPException) as selection_error:
+            create_analysis_from_runs(
+                db,
+                project_id=1,
+                prompt_id=11,
+                run_ids=[selected["run_id"]],
+                run_fingerprints={selected["run_id"]: selected["input_fingerprint"]},
+                base_context_id=None,
+                idempotency_key="missing-config-run-selection",
+            )
+        assert selection_error.value.status_code == 409
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_analysis_configuration_binding_is_exact_versioned_and_legacy_is_not_backfilled(tmp_path):
     db, engine = _session(tmp_path)
     try:
-        _seed(db)
-        legacy = _create(db, count=1, key="legacy-analysis-before-config-ledger")
+        _seed(db, with_configuration=False)
+        legacy_plan = {
+            "contract_version": "single-prompt-sampling-plan-v1",
+            "project_id": 1,
+            "prompt_id": 11,
+            "sample_count": 0,
+        }
+        legacy_json = json.dumps(legacy_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        legacy = SinglePromptAnalysis(
+            analysis_id="legacy-analysis-before-config-ledger",
+            project_id=1,
+            prompt_id=11,
+            task_id=None,
+            idempotency_key="legacy-analysis-before-config-ledger",
+            prompt_text_snapshot="哪个工具支持短链？",
+            sampling_plan_json=legacy_json,
+            sampling_plan_hash=hashlib.sha256(legacy_json.encode()).hexdigest(),
+            status="READY",
+        )
+        db.add(legacy)
+        db.commit()
         assert get_analysis_status(db, legacy.analysis_id)["project_configuration"] == {
             "binding_status": "LEGACY_UNBOUND",
         }

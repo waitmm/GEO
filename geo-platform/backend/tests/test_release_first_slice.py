@@ -21,6 +21,7 @@ from app.models import (
     Competitor,
     Organization,
     Project,
+    ProjectConfigurationVersion,
     Prompt,
     ReferenceSource,
     SinglePromptAnalysisContext,
@@ -125,11 +126,28 @@ def _migrated_session(tmp_path: Path, monkeypatch):
     return sessionmaker(bind=engine, expire_on_commit=False)(), engine
 
 
+def _add_project_configuration(db, *, project_id: int, brand_name: str) -> None:
+    snapshot = {
+        "name": brand_name, "brand_name": brand_name, "brand_aliases": [], "website_url": "",
+        "industry": "", "region": "", "language": "", "competitors": [],
+    }
+    raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    db.add(ProjectConfigurationVersion(
+        configuration_version_id=f"project-config:{project_id}:v1",
+        project_id=project_id,
+        version_number=1,
+        snapshot_json=raw,
+        snapshot_hash=hashlib.sha256(raw.encode()).hexdigest(),
+    ))
+    db.commit()
+
+
 def _seed_frozen_analysis(db, *, reference_urls: list[str]):
     db.add(Organization(id=1, name="Release Org", plan_type="release-1.0"))
     db.add(Project(id=1, organization_id=1, name="Release", brand_name="Target"))
     db.add(Prompt(id=44, project_id=1, title="Prompt", prompt_text="推荐一个短链工具"))
     db.commit()
+    _add_project_configuration(db, project_id=1, brand_name="Target")
     analysis, _ = create_analysis(
         db,
         project_id=1,
@@ -688,6 +706,7 @@ def test_release_run_selection_combines_tasks_and_rejects_cross_project_runs(tmp
         db.add(Project(id=2, organization_id=1, name="Other", brand_name="Other"))
         db.add(Prompt(id=45, project_id=2, title="Other Prompt", prompt_text="其他问题"))
         db.commit()
+        _add_project_configuration(db, project_id=2, brand_name="Other")
         foreign, _ = create_analysis(
             db,
             project_id=2,

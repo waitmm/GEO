@@ -123,7 +123,7 @@ def _current_analysis_configuration(db: Session, project_id: int) -> dict[str, A
         ProjectConfigurationVersion.version_number.desc(), ProjectConfigurationVersion.id.desc(),
     ).first()
     if not row:
-        return {"binding_status": "LEGACY_UNBOUND"}
+        raise HTTPException(status_code=409, detail="当前项目没有可绑定的配置版本")
     snapshot = loads(row.snapshot_json, {})
     if not isinstance(snapshot, dict) or _hash(snapshot) != row.snapshot_hash:
         raise HTTPException(status_code=409, detail="当前项目配置版本 snapshot hash 不匹配")
@@ -144,9 +144,17 @@ def _validate_configuration_binding(db: Session, project_id: int,
         if set(binding) != {"binding_status"}:
             raise HTTPException(status_code=409, detail="Legacy Analysis 不能携带伪造的配置版本")
         return binding
-    required = {"configuration_version_id", "version_number", "snapshot_hash", "brand"}
-    if not required.issubset(binding):
+    required = {"binding_status", "configuration_version_id", "version_number", "snapshot_hash", "brand"}
+    if set(binding) != required:
         raise HTTPException(status_code=409, detail="Analysis 项目配置绑定不完整")
+    version_number = binding["version_number"]
+    snapshot_hash = binding["snapshot_hash"]
+    if (not isinstance(binding["configuration_version_id"], str)
+            or not binding["configuration_version_id"]
+            or not isinstance(version_number, int) or isinstance(version_number, bool) or version_number <= 0
+            or not isinstance(snapshot_hash, str) or len(snapshot_hash) != 64
+            or any(char not in "0123456789abcdef" for char in snapshot_hash)):
+        raise HTTPException(status_code=409, detail="Analysis 项目配置绑定字段无效")
     row = db.query(ProjectConfigurationVersion).filter_by(
         project_id=project_id,
         configuration_version_id=binding["configuration_version_id"],
@@ -324,6 +332,9 @@ def create_frozen_analysis(
     if "project_configuration" not in sampling_plan:
         sampling_plan["project_configuration"] = _current_analysis_configuration(db, project_id)
     else:
+        if (not isinstance(sampling_plan["project_configuration"], dict)
+                or sampling_plan["project_configuration"].get("binding_status") != "BOUND"):
+            raise HTTPException(status_code=409, detail="新 Analysis 必须绑定项目配置版本")
         _validate_configuration_binding(db, project_id, sampling_plan["project_configuration"])
     required = {"sample_count", "platform", "source_type", "adapter", "collection_mode", "prompt_text_hash"}
     missing = sorted(required - set(sampling_plan))

@@ -245,6 +245,15 @@ def authorize_task(db: Session, row: SinglePromptOptimizationTask, *, expected_r
         raise HTTPException(409, "答案与关系策略重投影固定为 CACHE_ONLY，不接受外部调用授权")
     if row.status in TERMINAL or row.status == "RUNNING" or row.input_hash != input_hash:
         raise HTTPException(409, "任务不可授权或输入已变化")
+    regeneration = inputs.get("answer_relation_delivery_regeneration")
+    if regeneration:
+        affected = regeneration.get("affected_deliveries")
+        plan = regeneration.get("delivery_regeneration_plan")
+        if (not isinstance(affected, list) or not affected or not isinstance(plan, list)
+                or len(plan) != len(affected)):
+            raise HTTPException(409, "受影响稿件重新生成的冻结稿件集合或生成映射无效")
+        if max_requests > 2 * len(affected):
+            raise HTTPException(422, "受影响稿件重新生成每稿最多授权一次生成和一次文本复检请求")
     revision = loads(row.input_json, {}).get("delivery_revision")
     if revision:
         regenerate = revision.get("contract_version") == "delivery_text_regeneration.v1"

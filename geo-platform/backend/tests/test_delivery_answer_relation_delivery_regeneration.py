@@ -149,6 +149,86 @@ def test_affected_regeneration_waits_without_delivery_write_then_uses_new_strate
         assert (row.output_json, row.output_hash) == previous
 
 
+def test_http_authorization_is_principal_owned_and_bounded_by_frozen_affected_set(fact_delivery):
+    db, original, _, calls, _, _ = fact_delivery
+    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+    reprojection, projected = _completed_reprojection(db, original, factory)
+    client = _client(db)
+    queue_url = f"/api/v2/single-prompt/optimization-tasks/{reprojection.task_id}/affected-draft-regenerations"
+    created = client.post(queue_url, json=_payload(
+        reprojection, projected, "affected-delivery-regeneration:authorization",
+    ))
+    assert created.status_code == 201, created.text
+    child = db.query(SinglePromptOptimizationTask).filter_by(task_id=created.json()["task_id"]).one()
+    frozen = json.loads(child.input_json)["answer_relation_delivery_regeneration"]
+    affected_count = len(frozen["affected_deliveries"])
+    assert affected_count > 0
+    assert len(frozen["delivery_regeneration_plan"]) == affected_count
+
+    historical_bytes = (original.input_json, original.progress_json,
+                        reprojection.input_json, reprojection.progress_json)
+    result_bytes = {
+        (row.proposal_id, row.result_version): (row.output_json, row.output_hash)
+        for row in db.query(SinglePromptExecutionProposalResult)
+    }
+    call_count = len(calls)
+    authorization_url = f"/api/v2/single-prompt/optimization-tasks/{child.task_id}/authorization"
+    payload = {
+        "project_id": 1,
+        "prompt_id": 44,
+        "expected_revision": child.revision,
+        "input_hash": child.input_hash,
+        "max_requests": 2 * affected_count,
+        "max_tokens": 400000,
+        "max_cost_cny": 4,
+        "conservative_cny_per_million_tokens": 10,
+        "pricing_source": "isolated-fixture-not-real-billing",
+        "pricing_checked_at": datetime.utcnow().date().isoformat(),
+    }
+    zero = client.post(authorization_url, json={**payload, "max_requests": 0})
+    assert zero.status_code == 422, zero.text
+    excessive = client.post(authorization_url, json={
+        **payload, "max_requests": 2 * affected_count + 1,
+    })
+    assert excessive.status_code == 422, excessive.text
+    stale_revision = client.post(authorization_url, json={
+        **payload, "expected_revision": child.revision + 1,
+    })
+    assert stale_revision.status_code == 409, stale_revision.text
+    stale_hash = client.post(authorization_url, json={**payload, "input_hash": "0" * 64})
+    assert stale_hash.status_code == 409, stale_hash.text
+    forged = client.post(authorization_url, json={**payload, "actor": "forged-owner"})
+    assert forged.status_code == 422, forged.text
+
+    initial_status = child.status
+    for forbidden_status in ("RUNNING", "CANCELLED"):
+        child.status = forbidden_status
+        db.commit()
+        forbidden = client.post(authorization_url, json=payload)
+        assert forbidden.status_code == 409, forbidden.text
+    child.status = initial_status
+    db.commit()
+
+    authorized = client.post(authorization_url, json=payload)
+    assert authorized.status_code == 200, authorized.text
+    view = authorized.json()
+    assert view["authorization"]["max_requests"] == 2 * affected_count
+    assert view["authorization"]["authorized_by"]
+    assert view["authorization"]["authorized_by"] != "forged-owner"
+    db.refresh(child)
+    repeated = client.post(authorization_url, json={**payload, "expected_revision": child.revision})
+    assert repeated.status_code == 409, repeated.text
+
+    assert len(calls) == call_count
+    db.refresh(original); db.refresh(reprojection)
+    assert (original.input_json, original.progress_json,
+            reprojection.input_json, reprojection.progress_json) == historical_bytes
+    assert {
+        (row.proposal_id, row.result_version): (row.output_json, row.output_hash)
+        for row in db.query(SinglePromptExecutionProposalResult)
+    } == result_bytes
+
+
 def test_queue_rejects_stale_strategy_revision_set_hash_scope_and_idempotency(fact_delivery):
     db, original, _, _, _, _ = fact_delivery
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)

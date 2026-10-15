@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Checkbox, Collapse, Descriptions, Empty, Form, Input, Modal, Select, Space, Spin, Tag, Typography } from "antd";
 import { Pencil, Search } from "lucide-react";
-import { api } from "./api/client";
+import { api, request } from "./api/client";
 import type { AnswerRelationCorrectionImpact, AnswerRelationCorrectionStatus } from "./types";
 
 const valueLabels: Record<string, string> = {
@@ -29,6 +29,16 @@ function ImpactView({ impact }: { impact: AnswerRelationCorrectionImpact }) {
   </Descriptions>;
 }
 
+type ReprojectionTask = {
+  task_id: string;
+  status: string;
+  new_strategy_result_version?: string;
+  strategy_result_version?: string;
+  result_version?: string;
+};
+
+type SavedCorrection = { result_version: string; result_hash: string } & Record<string, string>;
+
 export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
   taskId: string; projectId: number; promptId: number;
 }) {
@@ -40,7 +50,8 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [saved, setSaved] = useState<Record<string, any>>();
+  const [saved, setSaved] = useState<SavedCorrection>();
+  const [reprojection, setReprojection] = useState<ReprojectionTask>();
   const [form] = Form.useForm();
   const selected = data?.targets.find(row => `${row.target_type}:${row.target_id}` === selectedKey);
 
@@ -54,7 +65,7 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
 
   function choose(key: string) {
     const target = data?.targets.find(row => `${row.target_type}:${row.target_id}` === key);
-    setSelectedKey(key); setPreview(undefined); setPreviewInput(undefined); setConfirmed(false); setSaved(undefined);
+    setSelectedKey(key); setPreview(undefined); setPreviewInput(undefined); setConfirmed(false); setSaved(undefined); setReprojection(undefined);
     form.setFieldsValue({ value: undefined, reason: "" });
     if (!target?.can_correct) setError(target?.blocked_reason || "该对象不能纠正"); else setError("");
   }
@@ -80,8 +91,29 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
       const result = await api.saveAnswerRelationCorrection(taskId, {
         ...previewInput, preview_hash: preview.preview_hash, human_confirmed: true,
       });
-      setSaved(result); setPreview(undefined); setPreviewInput(undefined); setConfirmed(false); setSelectedKey(undefined);
+      setSaved(result as SavedCorrection); setReprojection(undefined); setPreview(undefined); setPreviewInput(undefined); setConfirmed(false); setSelectedKey(undefined);
       form.resetFields(); await load();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function reproject(correction: { result_version: string; result_hash: string }) {
+    setBusy(true); setError(""); setReprojection(undefined);
+    try {
+      const result = await request<ReprojectionTask>(
+        `/api/v2/single-prompt/optimization-tasks/${encodeURIComponent(taskId)}/answer-relation-reprojections`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            project_id: projectId,
+            prompt_id: promptId,
+            correction_result_version: correction.result_version,
+            correction_result_hash: correction.result_hash,
+            idempotency_key: `answer-relation-reprojection:${taskId}:${correction.result_version}`,
+          }),
+        },
+      );
+      setReprojection(result);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -118,7 +150,13 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
           <Button type="primary" disabled={!confirmed} loading={busy} onClick={() => void save()}>保存纠错版本</Button>
         </>}
         {saved && <Alert type="success" showIcon message={`纠错版本 ${saved.result_version} 已保存`}
-          description={`操作者：${saved.actor}；保存时间：${saved.created_at}。既有策略与稿件尚未按本次纠错重算或升级。`} />}
+          description={`操作者：${saved.actor}；保存时间：${saved.created_at}。既有策略与稿件尚未按本次纠错重算或升级。`}
+          action={saved.result_hash && <Button type="primary" loading={busy} onClick={() => void reproject(saved)}>更新受影响策略</Button>} />}
+        {reprojection && <Alert type="success" showIcon message="策略已重新投影，稿件尚未重新生成"
+          description={<Space direction="vertical" size={0}>
+            <span>任务：{reprojection.task_id}；新策略版本：{reprojection.new_strategy_result_version || reprojection.strategy_result_version || reprojection.result_version || "等待任务生成"}；状态：{reprojection.status}</span>
+            <span>受影响稿件待更新；未受影响稿件保持不变。</span>
+          </Space>} />}
         {!!data.history.length && <Collapse items={data.history.slice().reverse().map(row => ({
           key: row.result_version, label: `${row.result_version} · ${row.actor} · ${row.created_at}`,
           children: <Space direction="vertical" style={{ width: "100%" }}>
@@ -126,6 +164,7 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
             <Typography.Paragraph>依据：{row.summary.reason}</Typography.Paragraph>
             <ImpactView impact={row.impact} />
             <Alert type="warning" showIcon message="本纠错版本尚未重算或升级既有策略与稿件" />
+            <Button type="primary" loading={busy} onClick={() => void reproject(row)}>更新受影响策略</Button>
           </Space>,
         }))} />}
       </Space>}

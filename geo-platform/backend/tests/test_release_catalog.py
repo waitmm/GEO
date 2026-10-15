@@ -1,16 +1,26 @@
+import hashlib
+import json
+
+from alembic import command
+from alembic.config import Config
 from fastapi import HTTPException
 import pytest
 from release_test_client import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.core.release_database import get_release_db
-from app.models import BrowserMonitorRun, BrowserMonitorTask, Competitor, Project, ProjectConfigurationVersion, Prompt
+from app.models import (
+    BrowserMonitorRun, BrowserMonitorTask, Competitor, Organization, Project, ProjectConfigurationVersion, Prompt,
+    PromptVersion,
+)
 from app.modules.single_prompt_v2.service import (
     create_analysis, create_analysis_from_runs, create_frozen_analysis,
     queue_frozen_analysis, queue_run_retry, retry_analysis, list_prompt_run_pool, get_analysis_status,
     _hash,
 )
 from app.release_main import create_release_app
-from test_release_first_slice import _migrated_session, _seed_frozen_analysis
+from test_release_first_slice import ROOT, _migrated_session, _seed_frozen_analysis
 
 
 @pytest.fixture
@@ -42,6 +52,94 @@ def test_catalog_normalizes_and_rejects_duplicates_without_partial_mutation(cata
     assert invalid.status_code == 422
     assert client.get('/api/projects').json() == before
     assert db.query(Competitor).one().name == 'Other'
+
+
+def test_prompt_versions_are_append_only_noop_idempotent_and_project_scoped(catalog):
+    client, db = catalog
+    first_project = client.post('/api/projects', json={'name': 'First', 'brand_name': 'First'}).json()
+    second_project = client.post('/api/projects', json={'name': 'Second', 'brand_name': 'Second'}).json()
+    route = f"/api/projects/{first_project['id']}/prompts"
+    prompt = client.post(route, json={
+        'prompt_text': 'Question V1', 'title': 'Title V1', 'intent_type': 'unknown',
+        'prompt_group': 'Group V1', 'enabled': True,
+    }).json()
+    versions_route = f"{route}/{prompt['id']}/versions"
+    versions = client.get(versions_route).json()
+    assert len(versions) == 1
+    v1 = versions[0]
+    assert v1['version_number'] == 1 and v1['status'] == 'EFFECTIVE'
+    assert {key: v1['snapshot'][key] for key in (
+        'project_id', 'prompt_id', 'prompt_text', 'title', 'intent_type', 'prompt_group', 'enabled',
+    )} == {
+        'project_id': first_project['id'], 'prompt_id': prompt['id'], 'prompt_text': 'Question V1',
+        'title': 'Title V1', 'intent_type': 'unknown', 'prompt_group': 'Group V1', 'enabled': True,
+    }
+    canonical = json.dumps(v1['snapshot'], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    assert hashlib.sha256(canonical.encode()).hexdigest() == v1['snapshot_hash']
+
+    assert client.patch(f"{route}/{prompt['id']}", json={'title': 'Title V1'}).status_code == 200
+    assert db.query(PromptVersion).filter_by(prompt_id=prompt['id']).count() == 1
+    assert client.patch(f"{route}/{prompt['id']}", json={
+        'prompt_text': 'Question V2', 'title': 'Title V2', 'enabled': False,
+    }).status_code == 200
+    versions = client.get(versions_route).json()
+    assert [(row['version_number'], row['status']) for row in versions] == [
+        (2, 'EFFECTIVE'), (1, 'SUPERSEDED'),
+    ]
+    assert versions[0]['snapshot']['prompt_text'] == 'Question V2'
+    assert client.get(f"{versions_route}/{v1['prompt_version_id']}").json()['snapshot'] == v1['snapshot']
+
+    row = db.query(PromptVersion).filter_by(prompt_version_id=v1['prompt_version_id']).one()
+    original = row.snapshot_json
+    row.snapshot_json = '{}'
+    with pytest.raises(Exception, match='PROMPT_VERSION_IMMUTABLE'):
+        db.commit()
+    db.rollback()
+    assert db.query(PromptVersion).filter_by(prompt_version_id=v1['prompt_version_id']).one().snapshot_json == original
+    db.delete(db.query(PromptVersion).filter_by(prompt_version_id=v1['prompt_version_id']).one())
+    with pytest.raises(Exception, match='PROMPT_VERSION_IMMUTABLE'):
+        db.commit()
+    db.rollback()
+
+    other = client.post(f"/api/projects/{second_project['id']}/prompts", json={'prompt_text': 'Other'}).json()
+    assert client.get(
+        f"/api/projects/{second_project['id']}/prompts/{other['id']}/versions/{v1['prompt_version_id']}"
+    ).status_code == 404
+    assert client.get(f"/api/projects/{second_project['id']}/prompts/{prompt['id']}/versions").status_code == 404
+
+
+def test_prompt_version_migration_backfills_historical_prompts(tmp_path, monkeypatch):
+    database_path = tmp_path / 'prompt-version-backfill.db'
+    monkeypatch.setenv('GEO_RELEASE_DATABASE_URL', f'sqlite:///{database_path.as_posix()}')
+    config = Config(str(ROOT / 'alembic.release.ini'))
+    command.upgrade(config, '20261015_01')
+    engine = create_engine(f'sqlite:///{database_path.as_posix()}')
+    db = sessionmaker(bind=engine)()
+    db.add(Organization(id=91, name='Historical Org'))
+    db.add(Project(id=92, organization_id=91, name='Historical Project', brand_name='Historical'))
+    db.add(Prompt(
+        id=93, project_id=92, prompt_text='Historical question', title='Historical title',
+        intent_type='usage_instruction', prompt_group='Historical group', enabled=False,
+    ))
+    db.commit()
+    db.close()
+    engine.dispose()
+
+    command.upgrade(config, 'head')
+    engine = create_engine(f'sqlite:///{database_path.as_posix()}')
+    db = sessionmaker(bind=engine)()
+    try:
+        row = db.query(PromptVersion).filter_by(project_id=92, prompt_id=93).one()
+        snapshot = json.loads(row.snapshot_json)
+        assert row.version_number == 1
+        assert snapshot['prompt_text'] == 'Historical question'
+        assert snapshot['title'] == 'Historical title'
+        assert snapshot['intent_type'] == 'usage_instruction'
+        assert snapshot['prompt_group'] == 'Historical group'
+        assert snapshot['enabled'] is False
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def test_configuration_preview_matches_saved_normalization_without_business_writes(catalog):

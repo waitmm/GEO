@@ -217,6 +217,25 @@ class Prompt(Base, TimestampMixin):
     project: Mapped[Project] = relationship(back_populates="prompts")
 
 
+class PromptVersion(Base):
+    """Append-only Prompt configuration snapshot."""
+
+    __tablename__ = "prompt_versions"
+    __table_args__ = (
+        UniqueConstraint("prompt_id", "version_number", name="uq_prompt_version"),
+        Index("ix_prompt_versions_project_prompt", "project_id", "prompt_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    prompt_version_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(Integer, index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    snapshot_json: Mapped[str] = mapped_column(Text)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class MonitorRun(Base):
     __tablename__ = "monitor_runs"
 

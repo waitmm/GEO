@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 from app.adapters.registry import list_platforms
 from app.core.release_database import get_release_db
 from app.models import (
-    Base, Competitor, Organization, Project, ProjectConfigurationVersion, Prompt, PromptCluster, Topic,
+    Base, Competitor, Organization, Project, ProjectConfigurationVersion, Prompt, PromptCluster,
+    PromptVersion, Topic,
 )
 from app.release_schema import RELEASE_TABLE_ALLOWLIST
 from app.schemas.v0 import (
@@ -108,6 +109,57 @@ def _prompt_values(values: dict) -> dict:
         if key in values:
             values[key] = _text(values[key], label, limit, required=key in {"prompt_text", "intent_type"})
     return values
+
+
+def _prompt_snapshot(prompt: Prompt) -> dict:
+    return {
+        "project_id": prompt.project_id,
+        "prompt_id": prompt.id,
+        "prompt_text": prompt.prompt_text,
+        "title": prompt.title,
+        "intent_type": prompt.intent_type,
+        "prompt_group": prompt.prompt_group,
+        "enabled": prompt.enabled,
+        "topic_id": prompt.topic_id,
+        "cluster_id": prompt.cluster_id,
+        "importance": prompt.importance,
+        "sample_count": prompt.sample_count,
+        "daily_tracking_enabled": prompt.daily_tracking_enabled,
+        "daily_schedule_time": prompt.daily_schedule_time,
+        "daily_sample_count": prompt.daily_sample_count,
+    }
+
+
+def _record_prompt_version(db: Session, prompt: Prompt) -> PromptVersion:
+    snapshot = _prompt_snapshot(prompt)
+    serialized = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    snapshot_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    latest = db.query(PromptVersion).filter_by(prompt_id=prompt.id).order_by(
+        PromptVersion.version_number.desc()).first()
+    if latest and latest.snapshot_hash == snapshot_hash:
+        return latest
+    row = PromptVersion(
+        prompt_version_id=f"prompt-version-{uuid4()}",
+        project_id=prompt.project_id,
+        prompt_id=prompt.id,
+        version_number=(latest.version_number + 1) if latest else 1,
+        snapshot_json=serialized,
+        snapshot_hash=snapshot_hash,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _prompt_version_read(row: PromptVersion, latest_number: int) -> dict:
+    return {
+        "prompt_version_id": row.prompt_version_id,
+        "version_number": row.version_number,
+        "status": "EFFECTIVE" if row.version_number == latest_number else "SUPERSEDED",
+        "snapshot": loads(row.snapshot_json, {}),
+        "snapshot_hash": row.snapshot_hash,
+        "created_at": row.created_at,
+    }
 
 
 def _default_org(db: Session) -> Organization:
@@ -314,6 +366,34 @@ def list_prompts(project_id: int, db: Session = Depends(get_db)) -> list[Prompt]
     return db.query(Prompt).filter_by(project_id=project_id).order_by(Prompt.id.desc()).all()
 
 
+@router.get("/projects/{project_id}/prompts/{prompt_id}/versions")
+def list_prompt_versions(project_id: int, prompt_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    prompt = db.get(Prompt, prompt_id)
+    if not prompt or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Prompt 不存在")
+    rows = db.query(PromptVersion).filter_by(project_id=project_id, prompt_id=prompt_id).order_by(
+        PromptVersion.version_number.desc()).all()
+    latest_number = rows[0].version_number if rows else 0
+    return [_prompt_version_read(row, latest_number) for row in rows]
+
+
+@router.get("/projects/{project_id}/prompts/{prompt_id}/versions/{prompt_version_id}")
+def get_prompt_version(
+    project_id: int, prompt_id: int, prompt_version_id: str, db: Session = Depends(get_db),
+) -> dict:
+    prompt = db.get(Prompt, prompt_id)
+    if not prompt or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Prompt 不存在")
+    row = db.query(PromptVersion).filter_by(
+        project_id=project_id, prompt_id=prompt_id, prompt_version_id=prompt_version_id,
+    ).one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Prompt 版本不存在")
+    latest_number = db.query(PromptVersion.version_number).filter_by(prompt_id=prompt_id).order_by(
+        PromptVersion.version_number.desc()).limit(1).scalar() or 0
+    return _prompt_version_read(row, latest_number)
+
+
 @router.post("/projects/{project_id}/prompts", response_model=PromptRead)
 def create_prompt(project_id: int, payload: PromptCreate, db: Session = Depends(get_db)) -> Prompt:
     if not db.get(Project, project_id):
@@ -333,6 +413,8 @@ def create_prompt(project_id: int, payload: PromptCreate, db: Session = Depends(
         raise HTTPException(409, "该项目已有相同问题，请继续使用已有问题")
     prompt = Prompt(project_id=project_id, **values)
     db.add(prompt)
+    db.flush()
+    _record_prompt_version(db, prompt)
     db.commit()
     db.refresh(prompt)
     return prompt
@@ -388,8 +470,14 @@ def update_prompt(project_id: int, prompt_id: int, payload: PromptUpdate, db: Se
         cluster = db.get(PromptCluster, values["cluster_id"])
         if not cluster or cluster.project_id != project_id:
             raise HTTPException(status_code=422, detail="Prompt Cluster 不属于当前 Project")
-    for key, value in values.items():
+    changed = {key: value for key, value in values.items() if getattr(prompt, key) != value}
+    if not changed:
+        return prompt
+    if not db.query(PromptVersion.id).filter_by(prompt_id=prompt_id).first():
+        _record_prompt_version(db, prompt)
+    for key, value in changed.items():
         setattr(prompt, key, value)
+    _record_prompt_version(db, prompt)
     db.commit()
     db.refresh(prompt)
     return prompt
@@ -402,7 +490,8 @@ def delete_unused_prompt(project_id: int, prompt_id: int, db: Session = Depends(
         raise HTTPException(404, "问题不存在")
     # Guard in the DELETE itself: a history/plan created concurrently must not be cascaded away.
     references = [table for table in Base.metadata.sorted_tables
-                  if table.name in RELEASE_TABLE_ALLOWLIST and "prompt_id" in table.c]
+                  if table.name in RELEASE_TABLE_ALLOWLIST and table.name != "prompt_versions"
+                  and "prompt_id" in table.c]
     statement = delete(Prompt).where(Prompt.id == prompt_id, Prompt.project_id == project_id,
         *(~exists(select(1).select_from(table).where(table.c.prompt_id == prompt_id)) for table in references))
     try:

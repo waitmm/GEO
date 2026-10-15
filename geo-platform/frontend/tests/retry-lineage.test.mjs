@@ -21,3 +21,15 @@ test('Run pool presents retry lineage without turning retries into independent s
   assert.match(appSource, /不增加独立样本分母，并保留旧 Run/);
   assert.match(appSource, /追加新的尝试/);
 });
+
+test('Run pool selection permits at most one physical attempt for each logical sample', async () => {
+  const appSource = await readFile(app, 'utf8');
+
+  assert.match(appSource, /const \[v2SelectedRuns, setV2SelectedRuns\]/);
+  assert.match(appSource, /new Map<string, SinglePromptV2RunPoolItem>\(\)/);
+  assert.match(appSource, /newestByLogicalRun\.set\(row\.logical_run_id, row\)/);
+  assert.match(appSource, /同一逻辑样本只能选择一个尝试；已用新选择替换该样本此前的 Run。/);
+  assert.match(appSource, /同一逻辑样本只能选择一个尝试，选择新尝试会替换此前选择。/);
+  assert.match(appSource, /onSelectAll: \(selected, _selectedRows, changeRows\) => selectV2Runs\(changeRows, selected\)/);
+  assert.match(appSource, /个逻辑样本/);
+});

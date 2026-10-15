@@ -1557,8 +1557,9 @@ export default function App() {
   const [v2AnalysisHistoryLoading, setV2AnalysisHistoryLoading] = useState(false);
   const [v2RunPool, setV2RunPool] = useState<SinglePromptV2RunPool | null>(null);
   const [v2RunPoolLoading, setV2RunPoolLoading] = useState(false);
-  const [v2SelectedRunIds, setV2SelectedRunIds] = useState<Key[]>([]);
-  const [v2SelectedRunFingerprints, setV2SelectedRunFingerprints] = useState<Record<number, string>>({});
+  const [v2SelectedRuns, setV2SelectedRuns] = useState<Array<{ run_id: number; input_fingerprint: string; logical_run_id: string; attempt_no: number }>>([]);
+  const v2SelectedRunIds = v2SelectedRuns.map((run) => run.run_id);
+  const v2SelectedRunFingerprints = Object.fromEntries(v2SelectedRuns.map((run) => [run.run_id, run.input_fingerprint]));
   const [v2PromptVersions, setV2PromptVersions] = useState<PromptVersion[]>([]);
   const [v2SelectedPromptVersion, setV2SelectedPromptVersion] = useState<PromptVersion | null>(null);
   const [v2PromptVersionsLoading, setV2PromptVersionsLoading] = useState(false);
@@ -1901,8 +1902,7 @@ export default function App() {
       setV2Execution(null);
       setV2RetestReadiness(null);
       setV2Retest(null);
-      setV2SelectedRunIds([]);
-      setV2SelectedRunFingerprints({});
+      setV2SelectedRuns([]);
     }
     setProjectId(id);
   }
@@ -1914,7 +1914,7 @@ export default function App() {
       const params = new URLSearchParams({ release_view: page, v2_project: String(projectId), v2_prompt: String(id) });
       window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
       setV2Analysis(null); setV2AnalysisHistory([]); setV2RunPool(null);
-      setV2SelectedRunIds([]); setV2SelectedRunFingerprints({});
+      setV2SelectedRuns([]);
       setV2SourcePreparation(null); setV2Diagnosis(null); setV2CitationContribution(null);
       setV2StrategyReadiness(null); setV2QualificationProjection(null); setV2QualificationCritic(null);
       setV2Strategy(null); setV2Execution(null); setV2RetestReadiness(null); setV2Retest(null);
@@ -2061,15 +2061,31 @@ export default function App() {
     }
   }
 
-  function selectV2Run(row: SinglePromptV2RunPoolItem, selected: boolean) {
-    setV2SelectedRunIds((current) => selected
-      ? [...new Set([...current.map(Number), row.run_id])]
-      : current.filter((value) => Number(value) !== row.run_id));
-    setV2SelectedRunFingerprints((current) => {
-      const next = { ...current };
-      if (selected) next[row.run_id] = row.input_fingerprint;
-      else delete next[row.run_id];
-      return next;
+  function selectV2Runs(rows: SinglePromptV2RunPoolItem[], selected: boolean) {
+    if (!rows.length) return;
+    if (selected && rows.some((row) => v2SelectedRuns.some((current) => current.logical_run_id === row.logical_run_id && current.run_id !== row.run_id))) {
+      message.info("同一逻辑样本只能选择一个尝试；已用新选择替换该样本此前的 Run。");
+    }
+    setV2SelectedRuns((current) => {
+      if (!selected) {
+        const removed = new Set(rows.map((row) => row.run_id));
+        return current.filter((run) => !removed.has(run.run_id));
+      }
+      const newestByLogicalRun = new Map<string, SinglePromptV2RunPoolItem>();
+      for (const row of rows) {
+        const existing = newestByLogicalRun.get(row.logical_run_id);
+        if (!existing || row.attempt_no > existing.attempt_no || (row.attempt_no === existing.attempt_no && row.run_id > existing.run_id)) {
+          newestByLogicalRun.set(row.logical_run_id, row);
+        }
+      }
+      const replacingLogicalRunIds = new Set(newestByLogicalRun.keys());
+      const retained = current.filter((run) => !replacingLogicalRunIds.has(run.logical_run_id));
+      return [...retained, ...[...newestByLogicalRun.values()].map((row) => ({
+        run_id: row.run_id,
+        input_fingerprint: row.input_fingerprint,
+        logical_run_id: row.logical_run_id,
+        attempt_no: row.attempt_no,
+      }))];
     });
   }
 
@@ -4002,8 +4018,7 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     if (Number(params.get("v2_project")) !== projectId || Number(params.get("v2_prompt")) !== activePromptId) {
       setV2Analysis(null);
-      setV2SelectedRunIds([]);
-      setV2SelectedRunFingerprints({});
+      setV2SelectedRuns([]);
       setV2Diagnosis(null);
       setV2DiagnosisEdits({});
       setV2SourcePreparation(null);
@@ -5927,7 +5942,7 @@ export default function App() {
                 type="info"
                 showIcon
                 message="先选择 Run，再决定是否建立新的分析版本"
-                description="可以只选新增样本，也可以选择历史加新增样本。重试仅追加同一逻辑样本的新尝试，不增加独立样本分母，并保留旧 Run。旧 Analysis、Context、审核和正文准备不会被修改。"
+                description="可以只选新增样本，也可以选择历史加新增样本。重试仅追加同一逻辑样本的新尝试，不增加独立样本分母，并保留旧 Run；同一逻辑样本只能选择一个尝试，选择新尝试会替换此前选择。旧 Analysis、Context、审核和正文准备不会被修改。"
                 style={{ marginBottom: 12 }}
               />
               <Table<SinglePromptV2RunPoolItem>
@@ -5940,8 +5955,8 @@ export default function App() {
                   getCheckboxProps: row => ({ name: `run-${row.run_id}`, "aria-label": `选择 Run ${row.run_id}` }),
                   getTitleCheckboxProps: () => ({ name: "all-visible-runs", "aria-label": "选择当前页全部 Run" }),
                   preserveSelectedRowKeys: true,
-                  onSelect: (row, selected) => selectV2Run(row, selected),
-                  onSelectAll: (selected, rows) => rows.forEach((row) => selectV2Run(row, selected)),
+                  onSelect: (row, selected) => selectV2Runs([row], selected),
+                  onSelectAll: (selected, _selectedRows, changeRows) => selectV2Runs(changeRows, selected),
                 }}
                 pagination={{
                   current: v2RunPool?.page || 1,
@@ -5972,7 +5987,7 @@ export default function App() {
                 ]}
               />
               <Row justify="space-between" align="middle" gutter={[12, 12]}>
-                <Col><Text>已选择 <Text strong>{v2SelectedRunIds.length}</Text> 个 Run：{v2SelectedRunIds.length ? v2SelectedRunIds.map(Number).sort((a, b) => a - b).join("、") : "尚未选择"}</Text></Col>
+                <Col><Text>已选择 <Text strong>{v2SelectedRuns.length}</Text> 个逻辑样本：{v2SelectedRunIds.length ? v2SelectedRunIds.map(Number).sort((a, b) => a - b).join("、") : "尚未选择"}</Text></Col>
                 <Col><Button type="primary" icon={<ListChecks size={15} />} disabled={!v2SelectedRunIds.length || !v2SelectedPromptVersion} loading={v2Loading} onClick={createV2AnalysisFromSelectedRuns}>用所选 Run 建立分析版本</Button></Col>
               </Row>
             </Card>

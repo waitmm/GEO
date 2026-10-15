@@ -810,8 +810,8 @@ def finalize_analysis(db: Session, analysis_id: str, token: str) -> bool:
     )
     db.add(context)
     analysis.status = "READY" if not failed else "READY_WITH_FAILURES"
-    analysis.blocker_code = "NEXT_STAGE_NOT_IMPLEMENTED"
-    analysis.blocker_detail = "采样结果已冻结；诊断阶段不在本次交付范围内"
+    analysis.blocker_code = ""
+    analysis.blocker_detail = ""
     analysis.active_attempt_token = ""
     analysis.finished_at = datetime.utcnow()
     db.commit()

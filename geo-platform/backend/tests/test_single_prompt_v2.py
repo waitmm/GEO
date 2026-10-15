@@ -118,15 +118,54 @@ def test_success_and_failure_freeze_exact_raw_outputs(tmp_path):
         status = get_analysis_status(db, analysis.analysis_id)
 
         assert status["sampling"]["status"] == "READY_WITH_FAILURES"
+        assert status["sampling"]["planned_run_count"] == 2
+        assert status["sampling"]["terminal_run_count"] == 2
         assert status["sampling"]["valid_run_count"] == 1
         assert status["sampling"]["failed_run_count"] == 1
         assert status["context_id"]
         assert status["result_version"].startswith("raw-v1:")
         assert status["result_source"] == "FROZEN_ANALYSIS_CONTEXT"
+        assert status["blocker"] is None
+        assert status["allowed_operations"] == ["VIEW_RESULTS"]
         assert status["runs"][0]["references"][0]["title"] == "Source"
         assert status["runs"][0]["retrieval_candidates"][0]["title"] == "Candidate"
         assert status["failures"][0]["error"]["type"] == "network_error"
         assert [warning["code"] for warning in status["warnings"]] == ["INDEPENDENT_SESSION_PROOF_UNAVAILABLE"]
+        SinglePromptAnalysisStatusRead.model_validate(status)
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_success_freezes_context_without_blocker(tmp_path):
+    db, engine = _session(tmp_path)
+    try:
+        _seed(db)
+        analysis = _create(db, count=2)
+        token = claim_analysis(db, analysis.analysis_id)
+        for run in _runs(db, analysis):
+            _succeed(run)
+        db.commit()
+
+        assert finalize_analysis(db, analysis.analysis_id, token) is True
+        status = get_analysis_status(db, analysis.analysis_id)
+
+        assert status["sampling"] == {
+            "status": "READY",
+            "planned_run_count": 2,
+            "terminal_run_count": 2,
+            "valid_run_count": 2,
+            "failed_run_count": 0,
+            "attempt_count": 1,
+        }
+        assert status["context_id"]
+        assert status["result_source"] == "FROZEN_ANALYSIS_CONTEXT"
+        assert status["failures"] == []
+        assert status["blocker"] is None
+        assert status["allowed_operations"] == ["VIEW_RESULTS"]
+        frozen = db.query(SinglePromptAnalysis).filter_by(analysis_id=analysis.analysis_id).one()
+        assert frozen.blocker_code == ""
+        assert frozen.blocker_detail == ""
         SinglePromptAnalysisStatusRead.model_validate(status)
     finally:
         db.close()
@@ -152,10 +191,13 @@ def test_zero_valid_runs_fail_without_context(tmp_path):
         assert finalize_analysis(db, analysis.analysis_id, token) is False
         status = get_analysis_status(db, analysis.analysis_id)
         assert status["sampling"]["status"] == "FAILED"
+        assert status["sampling"]["planned_run_count"] == 2
+        assert status["sampling"]["terminal_run_count"] == 2
         assert status["sampling"]["valid_run_count"] == 0
+        assert status["sampling"]["failed_run_count"] == 2
         assert status["context_id"] is None
         assert status["blocker"]["code"] == "NO_VALID_RUNS"
-        assert "RETRY_COLLECTION" in status["allowed_operations"]
+        assert status["allowed_operations"] == ["VIEW_STATUS", "RETRY_COLLECTION"]
     finally:
         db.close()
         engine.dispose()

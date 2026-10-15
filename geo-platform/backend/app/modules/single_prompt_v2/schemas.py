@@ -52,6 +52,15 @@ class AnswerRelationCorrectionCreate(AnswerRelationCorrectionPreview):
     human_confirmed: Literal[True]
 
 
+class AnswerRelationReprojectionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: int = Field(gt=0)
+    prompt_id: int = Field(gt=0)
+    correction_result_version: str = Field(min_length=1, max_length=96)
+    correction_result_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
 class AutomaticDraftRegenerationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     project_id: int = Field(gt=0)

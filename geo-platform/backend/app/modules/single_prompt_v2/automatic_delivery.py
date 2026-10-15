@@ -116,7 +116,9 @@ def task_view(row: SinglePromptOptimizationTask) -> dict:
     requests = progress.get("requests") or []
     return {"task_id": row.task_id, "project_id": row.project_id, "prompt_id": row.prompt_id,
         "task_kind": ("TEXT_REGENERATION" if (inputs.get("delivery_revision") or {}).get("contract_version") == "delivery_text_regeneration.v1"
-            else "TEXT_REVISION" if inputs.get("delivery_revision") else "TRUTH_REPROJECTION" if inputs.get("truth_correction") else "AUTOMATIC_OPTIMIZE"),
+            else "TEXT_REVISION" if inputs.get("delivery_revision")
+            else "ANSWER_RELATION_REPROJECTION" if inputs.get("answer_relation_correction")
+            else "TRUTH_REPROJECTION" if inputs.get("truth_correction") else "AUTOMATIC_OPTIMIZE"),
         "pending_draft": (inputs.get("delivery_revision") or {}).get("draft"),
         "analysis_id": row.analysis_id, "context_id": row.context_id, "input_hash": row.input_hash,
         "status": row.status, "revision": row.revision, "stage": progress.get("stage"),
@@ -237,6 +239,9 @@ def authorize_task(db: Session, row: SinglePromptOptimizationTask, *, expected_r
                    max_requests: int, max_tokens: int, max_cost_cny: float,
                    conservative_cny_per_million_tokens: float, pricing_source: str, pricing_checked_at: str,
                    authorized_by: str) -> SinglePromptOptimizationTask:
+    inputs = loads(row.input_json, {})
+    if inputs.get("answer_relation_correction"):
+        raise HTTPException(409, "答案与关系策略重投影固定为 CACHE_ONLY，不接受外部调用授权")
     if row.status in TERMINAL or row.status == "RUNNING" or row.input_hash != input_hash:
         raise HTTPException(409, "任务不可授权或输入已变化")
     revision = loads(row.input_json, {}).get("delivery_revision")
@@ -283,6 +288,8 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
         authorization = loads(active.authorization_json, {})
         progress = loads(active.progress_json, {})
         requests = progress.setdefault("requests", [])
+        if inputs.get("answer_relation_correction"):
+            raise SemanticLLMError("ANSWER_RELATION_REPROJECTION_FORBIDS_EXTERNAL_CALL")
         if inputs.get("truth_correction"):
             from .delivery_generation import GENERATION_VERSION, QA_VERSION
             allowed = {GENERATION_VERSION: 'DRAFT', QA_VERSION: 'TEXT_QA'}
@@ -357,8 +364,9 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
                 return
         raise SemanticLLMError("OPTIMIZATION_AUDIT_CONFLICT_ARTIFACT_PRESERVED")
 
-    upstream_reprojection = bool(inputs.get('truth_correction') and
+    upstream_reprojection = bool(inputs.get("answer_relation_correction") or (inputs.get('truth_correction') and
         loads(row.progress_json, {}).get('stage') not in {'DRAFT', 'TEXT_QA'})
+    )
     return DeepSeekClient(thinking_mode="disabled", max_attempts=1,
         cache_only=upstream_reprojection or loads(row.authorization_json, {}).get("policy") != "ALLOW_EXTERNAL",
         request_guard=reserve, response_audit_sink=audit)
@@ -405,6 +413,10 @@ def execute_task(task_id: str, *, session_factory) -> None:
         if fixed.get("delivery_revision"):
             from .delivery_revision import execute_revision
             execute_revision(db, row, fixed)
+            return
+        if fixed.get("answer_relation_correction"):
+            from .answer_relation_corrections import execute_reprojection
+            execute_reprojection(db, row, fixed)
             return
         if fixed.get('truth_correction'):
             from .truth_corrections import validate_reprojection

@@ -47,7 +47,7 @@ from app.modules.single_prompt_v2.diagnosis import (
 )
 from app.modules.single_prompt_v2.schemas import (
     TruthCorrectionPreview, TruthCorrectionCreate, TruthReprojectionCreate,
-    AnswerRelationCorrectionPreview, AnswerRelationCorrectionCreate,
+    AnswerRelationCorrectionPreview, AnswerRelationCorrectionCreate, AnswerRelationReprojectionCreate,
     AutomaticOptimizationCreate, AutomaticOptimizationAction, AutomaticOptimizationAuthorization, AutomaticDraftRevisionCreate, AutomaticDraftRegenerationCreate,
     SinglePromptAnalysisCreate,
     SinglePromptAutomaticStrategyCreate,
@@ -148,6 +148,21 @@ def create_answer_relation_correction(task_id: str, payload: AnswerRelationCorre
     from .answer_relation_corrections import save_correction
     return save_correction(db, task_id=task_id, actor=actor,
         **payload.model_dump(exclude={"human_confirmed"}))
+
+
+@router.post("/optimization-tasks/{task_id}/answer-relation-reprojections", status_code=201)
+def queue_answer_relation_reprojection(task_id: str, payload: AnswerRelationReprojectionCreate,
+                                       request: Request, response: Response,
+                                       db: Session = Depends(get_db)) -> dict:
+    from app.core.release_access import principal
+    from .answer_relation_corrections import create_reprojection_task
+    from .automatic_delivery import task_view
+    row, created = create_reprojection_task(
+        db, parent_task_id=task_id, requested_by=principal(request)["name"], **payload.model_dump(),
+    )
+    if not created:
+        response.status_code = 200
+    return task_view(row)
 
 @router.get("/optimization-tasks/{task_id}/truths")
 def read_task_truths(task_id: str, project_id: int, prompt_id: int, db: Session = Depends(get_db)):

@@ -491,9 +491,70 @@
           "production_database_operations": 0,
           "completed_on": "2026-10-15"
         }
+      },
+      {
+        "id": "T19-ANSWER-RELATION-AFFECTED-DELIVERY-REGENERATION-03",
+        "task_id": "T19",
+        "task_type": "PRODUCT_SMALL",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "requirements": [
+          "COR-002",
+          "COR-003",
+          "COR-004"
+        ],
+        "status": "DONE",
+        "depends_on": [],
+        "completed_unit_dependencies": [
+          {
+            "unit_id": "T19-ANSWER-RELATION-STRATEGY-REPROJECTION-02",
+            "required_status": "DONE",
+            "accepted_commit": "bdebd145cce28fb9e8f167af784ee2c5de1c4fb0"
+          }
+        ],
+        "business_value": "让答案或证据关系纠错后的新策略真正形成可交付的新稿版本：严格按冻结的受影响稿件集合逐项重新生成，同时保留未受影响稿件和全部历史版本，避免全量重跑或把旧稿误标为已更新。",
+        "objective": "从已完成的ANSWER_RELATION_REPROJECTION任务显式创建ANSWER_RELATION_DELIVERY_REGENERATION任务，绑定重投影revision、新策略version/hash和canonical affected delivery set hash。服务端再次核验项目/Prompt、纠错lineage、旧稿version/hash及一一生成映射；只为受影响稿件创建append-only新Proposal/Result，逐稿记录regenerated/pending/failed，未受影响稿件与历史对象不变。默认CACHE_ONLY零预算，缓存不足进入WAITING_AUTHORIZATION且不虚报成功；只有既有有限预算授权后才允许生成/QA请求，不抓取来源或重算上游。正式页面从真实task_view对象显示中文入口、状态刷新及affected/regenerated/pending/failed/unchanged清单。",
+        "allowed_files": [
+          "geo-platform/backend/app/modules/single_prompt_v2/answer_relation_corrections.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/automatic_delivery.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/execution.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/release_api.py",
+          "geo-platform/backend/app/modules/single_prompt_v2/schemas.py",
+          "geo-platform/backend/tests/test_delivery_answer_relation_delivery_regeneration.py",
+          "geo-platform/frontend/src/AnswerRelationCorrectionPanel.tsx",
+          "geo-platform/frontend/tests/answer-relation-delivery-regeneration.test.mjs"
+        ],
+        "acceptance_conditions": [
+          "创建请求严格绑定完成态重投影revision、新策略version/hash和完整affected delivery set hash；陈旧、错误范围、跨项目/Prompt、伪造身份和幂等冲突均拒绝。",
+          "受影响旧稿与新策略方向按reason identity一一冻结，不允许少生成、多生成或额外方向；新结果append-only并明确记录replaces_delivery。",
+          "CACHE_ONLY缺失时为WAITING_AUTHORIZATION、0请求/0 token且不写新Proposal/Result；后续逐稿缺失时已完成与pending清单保持准确。",
+          "授权后的隔离Mock路径只生成受影响稿件；原任务、纠错/策略版本、旧Proposal/Result及未受影响稿件逐字节或hash不变。",
+          "页面只在真实完成态重投影具备全部冻结字段时提供入口，使用重投影task_id调用，并可刷新显示QUEUED/RUNNING/WAITING_AUTHORIZATION/COMPLETED和五组清单。",
+          "后端组合Gate、前端专项、release build和独立Luna审计均通过；真实付费模型联调仍需单独显式授权，不影响本地可执行契约验收。"
+        ],
+        "completion": {
+          "method": "CODEX_NATIVE_MULTI_AGENT_WITH_ISOLATED_GIT_WORKTREES",
+          "backend_agent_commits": [
+            "72d0c36",
+            "2302340"
+          ],
+          "frontend_agent_commits": [
+            "37d8fe3",
+            "c01f6e9",
+            "c0c7b1f"
+          ],
+          "integrated_product_head": "77918ca",
+          "backend_gate": "28_PASSED",
+          "frontend_gate": "9_PASSED",
+          "release_build": "PASSED_WITH_EXISTING_CHUNK_SIZE_WARNING",
+          "independent_review": "PASS_NO_P0_P1",
+          "external_calls": 0,
+          "production_database_operations": 0,
+          "real_provider_interop": "REQUIRES_SEPARATE_EXPLICIT_AUTHORIZATION",
+          "completed_on": "2026-10-15"
+        }
       }
     ],
-    "note": "接力工具保持FEATURE_FROZEN / OFFLINE_ACCEPTED，不再扩建或用于新产品开发。T25历史STOPPED/UNKNOWN与T19历史STOPPED、原始JSONL和7,189,445活动Token均保留，不resume；T19旧自动批次仍不追认成功。T19-02已改由Codex原生多Agent和隔离Git Worktree完成，未外调、未操作生产数据库、未合并main。",
+    "note": "接力工具保持FEATURE_FROZEN / OFFLINE_ACCEPTED，不再扩建或用于新产品开发。T25历史STOPPED/UNKNOWN与T19历史STOPPED、原始JSONL和7,189,445活动Token均保留，不resume；T19旧自动批次仍不追认成功。T19-02与T19-03已改由Codex原生多Agent和隔离Git Worktree完成，未外调、未操作生产数据库、未合并main。",
     "evidence": "backend/artifacts/acceptance/codex-relay-offline-20261013/"
   },
   "active_delivery_slice": {
@@ -628,6 +689,17 @@
         "status": "PARTIALLY_VERIFIED",
         "scope": "单 Prompt / Run 1；归因式正文；不是全模块 DONE",
         "evidence": "docs/geo-v1.0/single-run-delivery-acceptance-2026-09-30.md#9-2026-10-08-稿件交付器修补"
+      },
+      "status_consistency_slice": {
+        "id": "T01-M0-SMALL",
+        "status": "DONE",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "completed_on": "2026-10-15",
+        "source_commit": "9928f8e",
+        "integrated_commit": "1ed6d97",
+        "scope": "固定Run范围内将显式采集失败、空回答和不可读输入单列为input_unavailable；保留expected denominator，不再误归为分析待计算、分析失败或零事件。success/partial_success及无status的legacy非空回答继续兼容。",
+        "verification": "专项6 passed；批次组合28 passed；Luna独立审核PASS_NO_P0_P1",
+        "boundary": "本切片DONE不等于T01整体DONE；不重构业务状态机。"
       },
       "current_checkpoint": "delivery_checkpoint_20261009"
     },

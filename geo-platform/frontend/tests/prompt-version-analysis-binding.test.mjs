@@ -6,6 +6,7 @@ const app = new URL('../src/App.tsx', import.meta.url);
 const client = new URL('../src/api/client.ts', import.meta.url);
 const types = new URL('../src/types.ts', import.meta.url);
 const observation = new URL('../src/ObservationPanel.tsx', import.meta.url);
+const schedule = new URL('../src/SamplingSchedulePanel.tsx', import.meta.url);
 
 test('new sampling and selected-run analyses submit an exact PromptVersion binding', async () => {
   const [appSource, clientSource] = await Promise.all([readFile(app, 'utf8'), readFile(client, 'utf8')]);
@@ -28,11 +29,21 @@ test('the UI obtains the selected version by exact ID and exposes immutable/lega
   assert.match(typeSource, /binding_status: "LEGACY_UNBOUND"/);
 });
 
-test('Monitor to Analysis forwards only a proven frozen PromptVersion binding', async () => {
+test('Monitor to Analysis opens only a selection proven bound by the backend', async () => {
   const source = await readFile(observation, 'utf8');
   assert.match(source, /promptVersion\?\.binding_status !== "BOUND"/);
-  assert.match(source, /prompt_version_id: promptVersion\.prompt_version_id/);
-  assert.match(source, /snapshot_hash: promptVersion\.snapshot_hash/);
+  assert.match(source, /JSON\.stringify\(\{ scope_hash: selection\.scope_hash \}\)/);
+  assert.doesNotMatch(source, /prompt_version_id: promptVersion\.prompt_version_id/);
   assert.match(source, /不能用当前或 latest Prompt 替代建立分析/);
   assert.match(source, /disabled=.*binding_status !== "BOUND"/);
+});
+
+test('daily sampling schedules bind an exact selected PromptVersion', async () => {
+  const source = await readFile(schedule, 'utf8');
+  assert.match(source, /api\.listPromptVersions\(projectId, promptId\)/);
+  assert.match(source, /api\.getPromptVersion\(projectId, promptId, promptVersionId\)/);
+  assert.match(source, /prompt_version_id: selectedPromptVersion\.prompt_version_id/);
+  assert.match(source, /snapshot_hash: selectedPromptVersion\.snapshot_hash/);
+  assert.match(source, /不会使用 latest/);
+  assert.match(source, /disabled=\{!selectedPromptVersion/);
 });

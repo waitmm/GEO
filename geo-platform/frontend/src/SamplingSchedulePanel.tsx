@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Alert, Button, Checkbox, Collapse, Form, Input, InputNumber, Popconfirm, Space, Table, Typography } from "antd";
+import { Alert, Button, Checkbox, Collapse, Form, Input, InputNumber, Popconfirm, Select, Space, Table, Typography } from "antd";
 import { CalendarClock, Pause } from "lucide-react";
-import { request } from "./api/client";
+import { api, request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
+import type { PromptVersion } from "./types";
 
 const labels: Record<string, string> = { ACTIVE: "已开启", PAUSED: "已暂停", BLOCKED: "需恢复", EXHAUSTED: "次数已用完" };
 
@@ -11,6 +12,9 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
+  const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
+  const [selectedPromptVersion, setSelectedPromptVersion] = useState<PromptVersion | null>(null);
+  const [promptVersionsLoading, setPromptVersionsLoading] = useState(false);
   const [form] = Form.useForm();
   const optimizeEnabled = Form.useWatch("optimize_enabled", form);
   const tasks = Form.useWatch(["optimization", "max_tasks"], form) || 0;
@@ -21,6 +25,23 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
     request<any[]>(base, { signal: c.signal }).then(setRows).catch(e => { if (!c.signal.aborted) setError(e.message); }).finally(() => { if (!c.signal.aborted) setBusy(false); });
     return () => c.abort();
   }, [base, reload]);
+  useEffect(() => {
+    let cancelled = false;
+    setPromptVersionsLoading(true);
+    setSelectedPromptVersion(null);
+    api.listPromptVersions(projectId, promptId)
+      .then((versions) => { if (!cancelled) setPromptVersions(versions); })
+      .catch((e: Error) => { if (!cancelled) { setPromptVersions([]); setError(e.message); } })
+      .finally(() => { if (!cancelled) setPromptVersionsLoading(false); });
+    return () => { cancelled = true; };
+  }, [projectId, promptId]);
+  async function selectPromptVersion(promptVersionId: string) {
+    setPromptVersionsLoading(true);
+    setSelectedPromptVersion(null);
+    try { setSelectedPromptVersion(await api.getPromptVersion(projectId, promptId, promptVersionId)); }
+    catch (e) { setError((e as Error).message); }
+    finally { setPromptVersionsLoading(false); }
+  }
   async function post(path: string, value: unknown) {
     setBusy(true); setError("");
     try { await request(base + path, { method: "POST", body: JSON.stringify(value) }); setReload(n => n + 1); }
@@ -44,7 +65,16 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
       { title: "操作", render: (_, r) => r.status === "ACTIVE" && <Popconfirm title="暂停新采样和排队的自动优化；已开始的任务保留结果，可在任务页单独停止。" okText="确认暂停" cancelText="保留计划" onConfirm={() => post(`/${r.schedule_id}/pause`, { expected_revision: r.revision })}><Button disabled={busy} icon={<Pause size={14} />}>暂停</Button></Popconfirm> },
     ]} />
     <Form form={form} layout="vertical" initialValues={{ timezone_name: "Asia/Shanghai", local_time: "09:00", sample_count: 1, max_attempts: 7,
-      optimize_enabled: false, optimization: { every_batches: 1, max_tasks: 1 } }} onFinish={({ optimize_enabled, optimization, ...v }) => post("", { ...v, optimization: optimize_enabled ? optimization : null })} style={{ marginTop: 16 }}>
+      optimize_enabled: false, optimization: { every_batches: 1, max_tasks: 1 } }} onFinish={({ optimize_enabled, optimization, ...v }) => {
+        if (!selectedPromptVersion) { setError("请选择并读取一个明确的 Prompt 冻结版本后再授权采样计划。"); return; }
+        return post("", { ...v, optimization: optimize_enabled ? optimization : null,
+          prompt_version_id: selectedPromptVersion.prompt_version_id, snapshot_hash: selectedPromptVersion.snapshot_hash });
+      }} style={{ marginTop: 16 }}>
+      <Alert type={selectedPromptVersion ? "info" : "warning"} showIcon message="采样计划必须绑定明确的 Prompt 冻结版本"
+        description={<Space wrap><Select aria-label="每日采样计划绑定的 Prompt 冻结版本" style={{ minWidth: 320 }} loading={promptVersionsLoading}
+          value={selectedPromptVersion?.prompt_version_id} placeholder="选择冻结 Prompt 版本" onChange={(value) => void selectPromptVersion(value)}
+          options={promptVersions.map((version) => ({ value: version.prompt_version_id, label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash.slice(0, 12)}` }))} />
+          {selectedPromptVersion ? <Typography.Text>将提交 V{selectedPromptVersion.version_number} · <code>{selectedPromptVersion.snapshot_hash.slice(0, 12)}</code></Typography.Text> : <Typography.Text type="secondary">必须精确读取所选版本；不会使用 latest。</Typography.Text>}</Space>} />
       <Space wrap align="start">
         <Form.Item label="时区" name="timezone_name" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item label="每日时间" name="local_time" rules={[{ required: true }]}><Input type="time" /></Form.Item>
@@ -73,7 +103,7 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
           <Form.Item label="授权人" name={["optimization", "authorization", "authorized_by"]} rules={[{ required: true, whitespace: true }]}><Input maxLength={240} /></Form.Item>
         </> }]} />
       </section>}
-      <Button htmlType="submit" type="primary" loading={busy} disabled={rows.some(r => r.status === "ACTIVE")} icon={<CalendarClock size={16} />}>授权并开启每日采样</Button>
+      <Button htmlType="submit" type="primary" loading={busy} disabled={!selectedPromptVersion || rows.some(r => r.status === "ACTIVE")} icon={<CalendarClock size={16} />}>授权并开启每日采样</Button>
     </Form>
   </section>;
 }

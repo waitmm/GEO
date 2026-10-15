@@ -136,11 +136,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     setOpeningPrompt(row.prompt.id); setError("");
     try {
       const next = await request<any>(`/api/v2/projects/${project.id}/prompts/${row.prompt.id}/monitor-analysis`, {
-        method: "POST", body: JSON.stringify({
-          scope_hash: selection.scope_hash,
-          prompt_version_id: promptVersion.prompt_version_id,
-          snapshot_hash: promptVersion.snapshot_hash,
-        }),
+        method: "POST", body: JSON.stringify({ scope_hash: selection.scope_hash }),
       });
       if (epoch !== generation.current) return;
       const params = new URLSearchParams({ release_view: "coreV2", v2_project: String(project.id),

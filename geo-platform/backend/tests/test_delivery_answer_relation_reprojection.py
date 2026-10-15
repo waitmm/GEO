@@ -132,6 +132,24 @@ def test_worker_reprojects_strategy_only_and_preserves_parent_evidence_and_deliv
     assert manifest["pending_delivery_updates"] == correction["impact"]["affected_deliveries"]
     assert manifest["unchanged_deliveries"] == correction["impact"]["unaffected_deliveries"]
     assert manifest["deliveries_regenerated"] is False
+    projected = db.query(SinglePromptStrategyResult).filter_by(
+        strategy_id=manifest["new_strategy_id"],
+        result_version=manifest["new_strategy_result_version"],
+    ).one()
+    projected_output = json.loads(projected.output_json)
+    affected_reason_ids = set(correction["impact"]["affected_reason_ids"])
+    projected_reason_ids = {
+        reason_id
+        for row in projected_output["directions"]
+        for reason_id in (row.get("reason_ids") or [row.get("reason_id")])
+        if reason_id
+    }
+    projected_direction_ids = {row["strategy_id"] for row in projected_output["directions"]}
+    assert projected_reason_ids == affected_reason_ids
+    assert {row["direction_id"] for row in projected_output["execution_drafts"]} == projected_direction_ids
+    assert set(correction["impact"]["affected_strategy_ids"]).isdisjoint(
+        correction["impact"]["unaffected_strategy_ids"],
+    )
 
     db.refresh(parent)
     assert (parent.input_json, parent.progress_json) == parent_bytes

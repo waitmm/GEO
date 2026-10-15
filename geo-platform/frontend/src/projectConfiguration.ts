@@ -10,3 +10,7 @@ export function projectConfigurationPayload(values: Record<string, string | unde
     }),
   };
 }
+
+export function projectConfigurationVersionPath(projectId: number, configurationVersionId: string) {
+  return `/api/projects/${projectId}/configuration-versions/${encodeURIComponent(configurationVersionId)}`;
+}

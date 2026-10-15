@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Descriptions, Empty, Select, Space, Spin, Tag } from "antd";
 import { request } from "./api/client";
+import { projectConfigurationVersionPath } from "./projectConfiguration";
 
 type Competitor = { name?: string; aliases?: string[]; website_url?: string };
 type ConfigurationSnapshot = {
@@ -12,6 +13,7 @@ type ConfigurationSnapshot = {
   competitors?: Competitor[];
 };
 type ConfigurationVersion = {
+  configuration_version_id: string;
   version_number: number;
   status: string;
   snapshot_hash: string;
@@ -30,12 +32,12 @@ function snapshotFrom(version: ConfigurationVersion) {
 
 export function ProjectConfigurationHistory({ projectId }: { projectId: number }) {
   const [versions, setVersions] = useState<ConfigurationVersion[]>();
-  const [selectedVersion, setSelectedVersion] = useState<number>();
+  const [selectedVersionId, setSelectedVersionId] = useState<string>();
   const [selected, setSelected] = useState<ConfigurationVersion>();
   const [error, setError] = useState("");
 
   async function loadVersions() {
-    setError(""); setVersions(undefined); setSelectedVersion(undefined); setSelected(undefined);
+    setError(""); setVersions(undefined); setSelectedVersionId(undefined); setSelected(undefined);
     try {
       const response = await request<ConfigurationVersionList>(`/api/projects/${projectId}/configuration-versions`);
       setVersions(versionsFrom(response));
@@ -44,11 +46,11 @@ export function ProjectConfigurationHistory({ projectId }: { projectId: number }
 
   useEffect(() => { void loadVersions(); }, [projectId]);
 
-  async function selectVersion(versionNumber: number) {
-    setSelectedVersion(versionNumber); setSelected(undefined); setError("");
+  async function selectVersion(configurationVersionId: string) {
+    setSelectedVersionId(configurationVersionId); setSelected(undefined); setError("");
     try {
       setSelected(await request<ConfigurationVersion>(
-        `/api/projects/${projectId}/configuration-versions/${encodeURIComponent(String(versionNumber))}`,
+        projectConfigurationVersionPath(projectId, configurationVersionId),
       ));
     } catch (e) { setError((e as Error).message); }
   }
@@ -61,15 +63,15 @@ export function ProjectConfigurationHistory({ projectId }: { projectId: number }
     {!versions && !error && <Spin style={{ marginTop: 12 }} aria-label="正在读取配置历史" />}
     {versions && !versions.length && <Empty style={{ marginTop: 12 }} description="暂无配置历史版本" />}
     {!!versions?.length && <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 12 }}>
-      <Select aria-label="选择冻结配置版本" value={selectedVersion} placeholder="选择一个冻结配置版本查看"
+      <Select aria-label="选择冻结配置版本" value={selectedVersionId} placeholder="选择一个冻结配置版本查看"
         onChange={value => void selectVersion(value)} options={versions.map(version => ({
-          value: version.version_number,
+          value: version.configuration_version_id,
           label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash} · ${version.created_at}`,
         }))} />
       <Button onClick={() => void loadVersions()}>刷新配置历史</Button>
-      {selectedVersion !== undefined && !selected && !error && <Spin size="small" aria-label="正在读取冻结配置版本" />}
+      {selectedVersionId !== undefined && !selected && !error && <Spin size="small" aria-label="正在读取冻结配置版本" />}
       {selected && <Descriptions size="small" column={1} bordered title={`冻结配置 V${selected.version_number}`}>
-        <Descriptions.Item label="版本 / 状态">V{selected.version_number} <Tag color={selected.status === "ACTIVE" ? "green" : "default"}>{selected.status}</Tag></Descriptions.Item>
+        <Descriptions.Item label="版本 / 状态">V{selected.version_number} <Tag color={selected.status === "EFFECTIVE" ? "green" : "default"}>{selected.status}</Tag></Descriptions.Item>
         <Descriptions.Item label="快照哈希"><code>{selected.snapshot_hash}</code></Descriptions.Item>
         <Descriptions.Item label="创建时间">{selected.created_at}</Descriptions.Item>
         <Descriptions.Item label="冻结品牌">{snapshot?.brand_name || "未提供"}</Descriptions.Item>

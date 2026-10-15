@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { projectConfigurationVersionPath } from '../src/projectConfiguration.ts';
 
 const history = new URL('../src/ProjectConfigurationHistory.tsx', import.meta.url);
 
 test('configuration history uses the frozen list and exact-version read endpoints', async () => {
   const source = await readFile(history, 'utf8');
   assert.match(source, /\/api\/projects\/\$\{projectId\}\/configuration-versions/);
-  assert.match(source, /configuration-versions\/\$\{encodeURIComponent\(String\(versionNumber\)\)\}/);
+  assert.match(source, /configuration_version_id/);
+  assert.match(source, /projectConfigurationVersionPath\(projectId, configurationVersionId\)/);
+  assert.match(source, /value: version\.configuration_version_id/);
+  assert.equal(
+    projectConfigurationVersionPath(41, 'project-config-20261015-v2'),
+    '/api/projects/41/configuration-versions/project-config-20261015-v2',
+  );
   assert.doesNotMatch(source, /method:\s*["'](?:POST|PUT|PATCH|DELETE)/);
 });
 
@@ -16,7 +23,7 @@ test('configuration history exposes frozen identity and never presents supersede
   for (const text of ['version_number', 'status', 'snapshot_hash', 'created_at', '冻结品牌', '品牌别名', '品牌官网', '地区 / 语言', '竞品', '项目配置历史（只读）', 'SUPERSEDED']) {
     assert.ok(source.includes(text));
   }
-  assert.match(source, /selected\.status === "ACTIVE"/);
+  assert.match(source, /selected\.status === "EFFECTIVE"/);
   assert.doesNotMatch(source, /selected\.status === "SUPERSEDED"\s*\?\s*["']green/);
   assert.doesNotMatch(source, /<Input|<Form|<Popconfirm/);
 });

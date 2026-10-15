@@ -11,6 +11,7 @@ import { ObservationPanel } from "./ObservationPanel";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { AutomaticOptimizePanel } from "./AutomaticOptimizePanel";
 import { ProjectConfigurationPreview } from './ProjectConfigurationPreview';
+import { PromptVersionHistory } from './PromptVersionHistory';
 import { ProjectConfigurationHistory } from './ProjectConfigurationHistory';
 import { AssetVerificationFields } from './AssetVerificationFields';
 import { projectConfigurationPayload } from './projectConfiguration';
@@ -9796,10 +9797,10 @@ export default function App() {
                     { title: "主题", width: 120, render: (_, row) => <Tag color="geekblue">{topics.find((item) => item.id === row.topic_id)?.name || "未分类"}</Tag> },
                     { title: "问题组", width: 120, render: (_, row) => <Tag color="cyan">{clusters.find((item) => item.id === row.cluster_id)?.name || row.prompt_group || "-"}</Tag> },
                     { title: "问题内容", dataIndex: "prompt_text", ellipsis: true },
-                    { title: "操作", width: 80, render: (_, row) => <Popconfirm title="确定删除？该问题的全部采集 Run、引用、事件与关联分析数据将一并删除，不可恢复。" onConfirm={async()=>{
+                    { title: "操作", width: 170, render: (_, row) => <Space><PromptVersionHistory projectId={projectId!} promptId={row.id} /><Popconfirm title="确定删除？该问题的全部采集 Run、引用、事件与关联分析数据将一并删除，不可恢复。" onConfirm={async()=>{
                       try{const r:any = await api.deletePrompt(projectId!,row.id);message.success(`已删除（含 ${r?.runs_deleted ?? 0} 条采集 Run）`);loadProject(projectId!)}
                       catch(e:any){message.error(e.message)}
-                    }}><Button danger size="small">删除</Button></Popconfirm> }
+                    }}><Button danger size="small">删除</Button></Popconfirm></Space> }
                   ]}
                 />
               </Card>

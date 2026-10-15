@@ -803,6 +803,17 @@
       "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
       "commit": "",
       "audit_classification": "需修复",
+      "query_read_only_slice": {
+        "id": "T02-M0-SMALL-01",
+        "status": "DONE",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "completed_on": "2026-10-15",
+        "source_commit": "09db131",
+        "integrated_commit": "aacf02e",
+        "scope": "为optimization task的列表、详情、稿件、答案关系纠错状态和事实读取入口增加request-scoped只读ORM防线；阻断flush及ORM INSERT/UPDATE/DELETE并回滚，写接口和既有项目隔离保持不变。",
+        "verification": "专项2 passed；T02邻接27 passed及纠错读取2 passed；批次组合相关项通过，Luna独立审核PASS_NO_P0_P1。",
+        "boundary": "本切片只闭合查询零业务写入，不替代T02剩余真实浏览器与运行恢复验收；T02整体保持IN_PROGRESS。"
+      },
       "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {
@@ -840,9 +851,23 @@
       "planned_end": "",
       "actual_start": "",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "新配置版本尚未统一绑定到分析/优化任务固定输入；本轮只完成append-only配置快照基础能力。",
       "commit": "",
       "audit_classification": "需修复",
+      "configuration_history_slice": {
+        "id": "T03-M1-SMALL-01",
+        "status": "DONE",
+        "classification": "IMPLEMENTATION_CHANGE",
+        "completed_on": "2026-10-15",
+        "source_commits": [
+          "ff35866",
+          "063f76d"
+        ],
+        "integrated_product_head": "e598a9f",
+        "scope": "新增project_configuration_versions append-only账本、稳定版本ID/序号/规范化快照/hash、精确版本读取与列表；Project创建写V1，有效变化追加版本，同内容幂等，历史Project迁移回填V1，UPDATE/DELETE由数据库触发器拒绝。",
+        "verification": "配置与迁移定向28 passed；更大组合105 passed，另1个既有legacy-route 404文案断言在父候选同样失败，非本批回归；Luna独立审核PASS_NO_P0_P1。",
+        "boundary": "未把configuration_version_id绑定到分析或优化任务，因此不宣称旧任务V1/新任务V2闭环，T03整体保持IN_PROGRESS。"
+      },
       "current_checkpoint": "delivery_checkpoint_20261009"
     },
     {

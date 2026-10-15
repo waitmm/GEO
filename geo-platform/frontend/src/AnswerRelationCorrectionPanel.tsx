@@ -54,6 +54,7 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
   const [reprojection, setReprojection] = useState<ReprojectionTask>();
   const [form] = Form.useForm();
   const selected = data?.targets.find(row => `${row.target_type}:${row.target_id}` === selectedKey);
+  const reprojectionCompleted = reprojection?.status.startsWith("COMPLETED");
 
   async function load() {
     setBusy(true); setError("");
@@ -152,10 +153,13 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
         {saved && <Alert type="success" showIcon message={`纠错版本 ${saved.result_version} 已保存`}
           description={`操作者：${saved.actor}；保存时间：${saved.created_at}。既有策略与稿件尚未按本次纠错重算或升级。`}
           action={saved.result_hash && <Button type="primary" loading={busy} onClick={() => void reproject(saved)}>更新受影响策略</Button>} />}
-        {reprojection && <Alert type="success" showIcon message="策略已重新投影，稿件尚未重新生成"
+        {reprojection && <Alert type={reprojectionCompleted ? "success" : "info"} showIcon
+          message={reprojectionCompleted ? "策略已重新投影，稿件尚未重新生成" : reprojection.status === "QUEUED" ? "策略重投影任务已创建，稿件尚未重新生成" : "策略重投影任务处理中，稿件尚未重新生成"}
           description={<Space direction="vertical" size={0}>
-            <span>任务：{reprojection.task_id}；新策略版本：{reprojection.new_strategy_result_version || reprojection.strategy_result_version || reprojection.result_version || "等待任务生成"}；状态：{reprojection.status}</span>
-            <span>受影响稿件待更新；未受影响稿件保持不变。</span>
+            {reprojectionCompleted
+              ? <span>任务：{reprojection.task_id}；新策略版本：{reprojection.new_strategy_result_version || reprojection.strategy_result_version || reprojection.result_version || "未返回"}；状态：{reprojection.status}</span>
+              : <span>任务：{reprojection.task_id}；状态：{reprojection.status}</span>}
+            {reprojectionCompleted && <span>受影响稿件待更新；未受影响稿件保持不变。</span>}
           </Space>} />}
         {!!data.history.length && <Collapse items={data.history.slice().reverse().map(row => ({
           key: row.result_version, label: `${row.result_version} · ${row.actor} · ${row.created_at}`,

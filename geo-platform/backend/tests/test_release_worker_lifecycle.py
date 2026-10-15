@@ -20,6 +20,73 @@ def test_exclusive_worker_and_readonly_health(tmp_path):
         assert worker_status(engine)['status'] == 'RUNNING'
 
 
+def test_restart_fails_uncertain_run_retry_without_replaying_or_touching_optimization_waits(scene, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+    from app.models import BrowserMonitorRun, BrowserMonitorTask
+    from scripts import release_worker
+
+    db, optimization, _, _ = scene
+    task = db.query(BrowserMonitorTask).first()
+    run = db.query(BrowserMonitorRun).filter_by(task_id=task.id).first()
+    task.schedule_type = 'single_prompt_v2_run_retry'
+    task.status = 'running'
+    run.status = 'running'
+    run.stage = 'running'
+    db.commit()
+    preserved_runs = {
+        row.id: (row.status, row.stage, row.answer_text)
+        for row in db.query(BrowserMonitorRun).filter(
+            BrowserMonitorRun.task_id == task.id, BrowserMonitorRun.id != run.id,
+        )
+    }
+    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(release_worker, 'ReleaseSessionLocal', factory)
+    monkeypatch.setattr(release_worker, 'MonitoringTaskExecutor',
+                        lambda: pytest.fail('recovery must not replay browser work'))
+    frozen = (optimization.input_json, optimization.input_hash,
+              optimization.authorization_json, optimization.progress_json,
+              optimization.revision)
+
+    assert optimization.status == 'QUEUED'
+    release_worker.recover_owned_tasks()
+    db.expire_all()
+    assert task.status == 'failed'
+    assert (run.status, run.stage, run.error_type) == (
+        'failed', 'failed', 'worker_restart_interrupted',
+    )
+    assert '未自动重试' in run.error_message
+    assert {
+        row.id: (row.status, row.stage, row.answer_text)
+        for row in db.query(BrowserMonitorRun).filter(
+            BrowserMonitorRun.task_id == task.id, BrowserMonitorRun.id != run.id,
+        )
+    } == preserved_runs
+    assert optimization.status == 'QUEUED'
+    assert (optimization.input_json, optimization.input_hash,
+            optimization.authorization_json, optimization.progress_json,
+            optimization.revision) == frozen
+
+    task.status = 'queued'
+    run.status = 'queued'
+    run.stage = 'queued'
+    run.error_type = ''
+    run.error_message = ''
+    optimization.status = 'WAITING_AUTHORIZATION'
+    db.commit()
+    waiting = (optimization.input_json, optimization.input_hash,
+               optimization.authorization_json, optimization.progress_json,
+               optimization.revision)
+    release_worker.recover_owned_tasks()
+    db.expire_all()
+    assert (task.status, run.status, run.stage, run.error_type) == (
+        'queued', 'queued', 'queued', '',
+    )
+    assert optimization.status == 'WAITING_AUTHORIZATION'
+    assert (optimization.input_json, optimization.input_hash,
+            optimization.authorization_json, optimization.progress_json,
+            optimization.revision) == waiting
+
+
 def test_actual_process_crash_restart_and_explicit_resume_preserve_scope_and_budget(scene):
     import json
     import os

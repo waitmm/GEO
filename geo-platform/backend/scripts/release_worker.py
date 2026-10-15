@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.release_database import ReleaseSessionLocal, release_engine
 from app.core.release_worker_lifecycle import worker_ownership
 from app.models import (
+    BrowserMonitorRun,
     BrowserMonitorTask,
     SinglePromptAnalysis,
     SinglePromptCitationContributionExecution,
@@ -34,6 +35,26 @@ from app.modules.single_prompt_v2.automatic_delivery import execute_task, recove
 from app.modules.single_prompt_v2.supplemental_sources import execute_source, recover_interrupted_sources
 
 
+def recover_interrupted_run_retries(db) -> int:
+    """Fail closed after a retry worker dies; never replay an uncertain browser call."""
+    tasks = db.query(BrowserMonitorTask).filter_by(
+        schedule_type="single_prompt_v2_run_retry", status="running",
+    ).order_by(BrowserMonitorTask.id).all()
+    for task in tasks:
+        task.status = "failed"
+        for run in db.query(BrowserMonitorRun).filter(
+                BrowserMonitorRun.task_id == task.id,
+                BrowserMonitorRun.status.in_(["queued", "running"]),
+        ).all():
+            run.status = "failed"
+            run.stage = "failed"
+            run.error_type = "worker_restart_interrupted"
+            run.error_message = "发布 worker 进程中断；本次用量未知，未自动重试。"
+    if tasks:
+        db.commit()
+    return len(tasks)
+
+
 def recover_owned_tasks():
     from app.modules.single_prompt_v2.service import recover_interrupted_analyses
     from app.modules.single_prompt_v2.diagnosis import recover_interrupted_diagnoses
@@ -42,7 +63,8 @@ def recover_owned_tasks():
     from app.modules.single_prompt_v2.source_preparation import recover_interrupted_source_preparations
     db = ReleaseSessionLocal()
     try:
-        for recover in (recover_interrupted_tasks, recover_interrupted_analyses, recover_interrupted_diagnoses,
+        for recover in (recover_interrupted_run_retries, recover_interrupted_tasks,
+                        recover_interrupted_analyses, recover_interrupted_diagnoses,
                         recover_interrupted_citation_contributions, recover_interrupted_qualification_critics,
                         recover_interrupted_source_preparations, recover_interrupted_sources):
             recover(db)

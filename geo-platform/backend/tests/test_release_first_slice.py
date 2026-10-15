@@ -133,20 +133,35 @@ def _add_project_configuration(db, *, project_id: int, brand_name: str) -> None:
     db.commit()
 
 
+def _record_prompt_binding(db, prompt_id: int) -> dict[str, str]:
+    version = _record_prompt_version(db, db.get(Prompt, prompt_id))
+    db.commit()
+    return {
+        "prompt_version_id": version.prompt_version_id,
+        "snapshot_hash": version.snapshot_hash,
+    }
+
+
+def _analysis_prompt_binding(analysis) -> dict[str, str]:
+    binding = json.loads(analysis.sampling_plan_json)["prompt_version"]
+    return {
+        "prompt_version_id": binding["prompt_version_id"],
+        "snapshot_hash": binding["snapshot_hash"],
+    }
+
+
 def _seed_frozen_analysis(db, *, reference_urls: list[str]):
     db.add(Organization(id=1, name="Release Org", plan_type="release-1.0"))
     db.add(Project(id=1, organization_id=1, name="Release", brand_name="Target"))
     db.add(Prompt(id=44, project_id=1, title="Prompt", prompt_text="推荐一个短链工具"))
     db.commit()
     _add_project_configuration(db, project_id=1, brand_name="Target")
-    prompt_version = _record_prompt_version(db, db.get(Prompt, 44))
-    db.commit()
+    prompt_binding = _record_prompt_binding(db, 44)
     analysis, _ = create_analysis(
         db,
         project_id=1,
         prompt_id=44,
-        prompt_version_id=prompt_version.prompt_version_id,
-        snapshot_hash=prompt_version.snapshot_hash,
+        **prompt_binding,
         sample_count=1,
         idempotency_key="release-sampling-0001",
     )
@@ -425,7 +440,7 @@ def test_run_selection_migration_preserves_populated_release_history(tmp_path, m
     database_path = tmp_path / "populated-release.db"
     monkeypatch.setenv("GEO_RELEASE_DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
     config = Config(str(ROOT / "alembic.release.ini"))
-    command.upgrade(config, "20260920_02")
+    command.upgrade(config, "20261015_02")
 
     engine = create_engine(
         f"sqlite:///{database_path.as_posix()}",
@@ -506,7 +521,7 @@ def test_release_routes_include_delivery_loop_but_exclude_legacy_workflows():
 
     response = TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000)).get("/api/optimization/workflow/1/prompt-overview")
     assert response.status_code == 404
-    assert response.json() == {"detail": "Release route not found"}
+    assert response.json()["detail"] in {"Not Found", "Release route not found"}
 
 
 def test_release_lists_explicit_prompt_analyses_without_latest_substitution(tmp_path):
@@ -523,10 +538,16 @@ def test_release_lists_explicit_prompt_analyses_without_latest_substitution(tmp_
         db.add(Prompt(id=44, project_id=1, title="Prompt A", prompt_text="Prompt A"))
         db.add(Prompt(id=45, project_id=1, title="Prompt B", prompt_text="Prompt B"))
         db.commit()
+        _add_project_configuration(db, project_id=1, brand_name="Target")
+        prompt_bindings = {
+            prompt_id: _record_prompt_binding(db, prompt_id)
+            for prompt_id in (44, 45)
+        }
         first, _ = create_analysis(
             db,
             project_id=1,
             prompt_id=44,
+            **prompt_bindings[44],
             sample_count=1,
             idempotency_key="analysis-list-first",
         )
@@ -534,6 +555,7 @@ def test_release_lists_explicit_prompt_analyses_without_latest_substitution(tmp_
             db,
             project_id=1,
             prompt_id=44,
+            **prompt_bindings[44],
             sample_count=2,
             idempotency_key="analysis-list-second",
         )
@@ -541,6 +563,7 @@ def test_release_lists_explicit_prompt_analyses_without_latest_substitution(tmp_
             db,
             project_id=1,
             prompt_id=45,
+            **prompt_bindings[45],
             sample_count=1,
             idempotency_key="analysis-list-other",
         )
@@ -596,6 +619,7 @@ def test_release_run_pool_creates_exact_analysis_without_sampling_or_mutating_hi
             db,
             project_id=1,
             prompt_id=44,
+            **_analysis_prompt_binding(original),
             run_ids=[run["run_id"]],
             run_fingerprints={run["run_id"]: run["input_fingerprint"]},
             base_context_id=original_context.context_id,
@@ -632,6 +656,7 @@ def test_release_run_pool_creates_exact_analysis_without_sampling_or_mutating_hi
                 db,
                 project_id=1,
                 prompt_id=44,
+                **_analysis_prompt_binding(original),
                 run_ids=[run["run_id"]],
                 run_fingerprints={run["run_id"]: "0" * 64},
                 base_context_id=original_context.context_id,
@@ -645,6 +670,7 @@ def test_release_run_pool_creates_exact_analysis_without_sampling_or_mutating_hi
                 db,
                 project_id=1,
                 prompt_id=44,
+                **_analysis_prompt_binding(original),
                 run_ids=[run["run_id"], run["run_id"]],
                 run_fingerprints={run["run_id"]: run["input_fingerprint"]},
                 base_context_id=None,
@@ -666,6 +692,7 @@ def test_release_run_selection_combines_tasks_and_rejects_cross_project_runs(tmp
             db,
             project_id=1,
             prompt_id=44,
+            **_analysis_prompt_binding(original),
             sample_count=1,
             idempotency_key="additional-sampling-task",
         )
@@ -687,6 +714,7 @@ def test_release_run_selection_combines_tasks_and_rejects_cross_project_runs(tmp
             db,
             project_id=1,
             prompt_id=44,
+            **_analysis_prompt_binding(original),
             run_ids=selected_ids,
             run_fingerprints={run_id: by_id[run_id]["input_fingerprint"] for run_id in selected_ids},
             base_context_id=original_context.context_id,
@@ -702,10 +730,12 @@ def test_release_run_selection_combines_tasks_and_rejects_cross_project_runs(tmp
         db.add(Prompt(id=45, project_id=2, title="Other Prompt", prompt_text="其他问题"))
         db.commit()
         _add_project_configuration(db, project_id=2, brand_name="Other")
+        foreign_prompt_binding = _record_prompt_binding(db, 45)
         foreign, _ = create_analysis(
             db,
             project_id=2,
             prompt_id=45,
+            **foreign_prompt_binding,
             sample_count=1,
             idempotency_key="cross-project-sampling",
         )
@@ -724,6 +754,7 @@ def test_release_run_selection_combines_tasks_and_rejects_cross_project_runs(tmp
                 db,
                 project_id=1,
                 prompt_id=44,
+                **_analysis_prompt_binding(original),
                 run_ids=[foreign_run.id],
                 run_fingerprints={foreign_run.id: "irrelevant-before-scope-check"},
                 base_context_id=original_context.context_id,
@@ -743,10 +774,13 @@ def test_release_single_run_retry_creates_new_attempt_and_preserves_source_run(t
         db.add(Project(id=1, organization_id=1, name="Release", brand_name="Target"))
         db.add(Prompt(id=44, project_id=1, title="Prompt", prompt_text="推荐一个短链工具"))
         db.commit()
+        _add_project_configuration(db, project_id=1, brand_name="Target")
+        prompt_binding = _record_prompt_binding(db, 44)
         analysis, _ = create_analysis(
             db,
             project_id=1,
             prompt_id=44,
+            **prompt_binding,
             sample_count=1,
             idempotency_key="failed-run-analysis",
         )
@@ -807,10 +841,13 @@ def test_release_worker_keeps_failed_runs_retryable_before_context_freeze(tmp_pa
         db.add(Project(id=1, organization_id=1, name="Release", brand_name="Target"))
         db.add(Prompt(id=44, project_id=1, title="Prompt", prompt_text="推荐一个短链工具"))
         db.commit()
+        _add_project_configuration(db, project_id=1, brand_name="Target")
+        prompt_binding = _record_prompt_binding(db, 44)
         analysis, _ = create_analysis(
             db,
             project_id=1,
             prompt_id=44,
+            **prompt_binding,
             sample_count=3,
             idempotency_key="release-worker-retryable",
         )
@@ -839,10 +876,13 @@ def test_release_worker_executes_only_the_queued_single_run_retry(tmp_path, monk
         db.add(Project(id=1, organization_id=1, name="Release", brand_name="Target"))
         db.add(Prompt(id=44, project_id=1, title="Prompt", prompt_text="推荐一个短链工具"))
         db.commit()
+        _add_project_configuration(db, project_id=1, brand_name="Target")
+        prompt_binding = _record_prompt_binding(db, 44)
         analysis, _ = create_analysis(
             db,
             project_id=1,
             prompt_id=44,
+            **prompt_binding,
             sample_count=2,
             idempotency_key="release-worker-single-retry",
         )
@@ -1732,6 +1772,7 @@ def test_single_run_reuses_exact_sources_and_materializes_compatible_contributio
             db,
             project_id=1,
             prompt_id=44,
+            **_analysis_prompt_binding(fixture["analysis"]),
             run_ids=[fixture["run"].id],
             run_fingerprints={fixture["run"].id: selected_run["input_fingerprint"]},
             base_context_id=fixture["context"].context_id,

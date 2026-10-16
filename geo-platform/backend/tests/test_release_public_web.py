@@ -113,6 +113,67 @@ def test_transport_receipt_preserves_redirect_and_final_host(monkeypatch):
     assert [r['status'] for r in result.receipts] == [302, 200]
 
 
+def test_before_request_observes_redirect_target_before_second_connection(monkeypatch):
+    sockets = install_wire(monkeypatch, [
+        b'HTTP/1.1 302 Found\r\nLocation: https://other.example/docs\r\nContent-Length: 0\r\n\r\n',
+        b'HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\nhello',
+    ])
+    observed = []
+
+    def before_request(url, metadata):
+        observed.append((url, metadata, len(sockets)))
+
+    web.public_get('https://example.com/', before_request=before_request)
+    assert observed == [
+        ('https://example.com/', {'is_redirect': False, 'hop': 1, 'top_level_url': 'https://example.com/'}, 0),
+        ('https://other.example/docs', {'is_redirect': True, 'hop': 2, 'top_level_url': 'https://example.com/'}, 1),
+    ]
+
+
+def test_before_request_rejection_stops_before_redirect_dns_or_connection(monkeypatch, public_dns):
+    sockets = install_wire(monkeypatch, [
+        b'HTTP/1.1 302 Found\r\nLocation: https://other.example/docs\r\nContent-Length: 0\r\n\r\n',
+    ])
+
+    def before_request(url, metadata):
+        if metadata['is_redirect']:
+            raise RuntimeError('URL_BUDGET_EXHAUSTED')
+
+    with pytest.raises(RuntimeError, match='URL_BUDGET_EXHAUSTED'):
+        web.public_get('https://example.com/', before_request=before_request)
+    assert len(sockets) == 1
+    assert public_dns.call_count == 1
+
+
+def test_before_request_rejection_stops_before_initial_dns_or_connection(monkeypatch, public_dns):
+    sockets = install_wire(monkeypatch, [])
+
+    with pytest.raises(RuntimeError, match='URL_BUDGET_EXHAUSTED'):
+        web.public_get(
+            'https://example.com/',
+            before_request=lambda *_: (_ for _ in ()).throw(RuntimeError('URL_BUDGET_EXHAUSTED')),
+        )
+    assert sockets == []
+    public_dns.assert_not_called()
+
+
+def test_fetch_page_forwards_before_request_to_formal_transport(monkeypatch):
+    from app.modules.optimization import passage_service as passages
+    raw = (b'<html><title>Source</title><body>' + b'public source text ' * 20 + b'</body></html>')
+    response = web.PublicResponse(
+        'https://example.com/', 200, {'content-type': 'text/html'}, raw,
+        ({'url': 'https://example.com/', 'status': 200, 'tls_verified': True,
+          'public_address_pinned': True, 'response_body_hash': web.hashlib.sha256(raw).hexdigest(),
+          'content_type': 'text/html', 'last_modified': ''},),
+    )
+    transport = Mock(return_value=response)
+    monkeypatch.setattr(passages, 'public_get', transport)
+    callback = Mock()
+    result = passages.fetch_page('https://example.com/', before_request=callback)
+    assert result['fetch_status'] == 'SUCCESS'
+    assert transport.call_args.kwargs['before_request'] is not None
+
+
 def test_private_redirect_rejected_before_next_connection(monkeypatch, public_dns):
     public_dns.side_effect = lambda host, *a, **k: [
         (socket.AF_INET, socket.SOCK_STREAM, 6, '',

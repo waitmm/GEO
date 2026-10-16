@@ -256,7 +256,7 @@ def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int
     return results
 
 
-def fetch_page(url: str) -> dict:
+def fetch_page(url: str, *, before_request: Callable[[str, dict], None] | None = None) -> dict:
     """Fetch a URL and extract clean text."""
     normalized = _normalize_url_for_fetch(url)
     domain = domain_from_url(normalized)
@@ -265,8 +265,23 @@ def fetch_page(url: str) -> dict:
         "fetch_status": "pending", "failure_reason": "", "title": "",
         "raw_html": "", "clean_text": "", "fetch_time": datetime.utcnow(), "fetch_method": "HTTP兜底抓取",
     }
+    callback_failure: list[BaseException] = []
+
+    def guarded_before_request(request_url: str, metadata: dict) -> None:
+        if before_request is None:
+            return
+        try:
+            before_request(request_url, metadata)
+        except BaseException as exc:
+            callback_failure.append(exc)
+            raise
+
     try:
-        resp = public_get(normalized, timeout=FETCH_TIMEOUT)
+        resp = public_get(
+            normalized,
+            timeout=FETCH_TIMEOUT,
+            before_request=guarded_before_request if before_request else None,
+        )
         result["network_policy"] = "PUBLIC_DNS_PINNED_TLS_VERIFIED_V1"
         if resp.status >= 400:
             raise PublicWebError(f"PUBLIC_HTTP_{resp.status}")
@@ -293,6 +308,8 @@ def fetch_page(url: str) -> dict:
             result["failure_reason"] = "正文达到保存上限，不能声明完整页面"
         result["acquisition_receipt"] = _acquisition_receipt(result, list(resp.receipts))
     except Exception as e:
+        if callback_failure:
+            raise callback_failure[0]
         result["fetch_status"] = "FETCH_FAILED"
         result["failure_reason"] = str(e) if isinstance(e, PublicWebError) else type(e).__name__
     return result

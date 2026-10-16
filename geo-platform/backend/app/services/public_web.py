@@ -10,6 +10,7 @@ import ssl
 import time
 import zlib
 from dataclasses import dataclass
+from typing import Callable
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import certifi
@@ -138,12 +139,20 @@ class _PinnedConnection(http.client.HTTPConnection):
 
 
 def public_get(url: str, *, follow_redirects: bool = True, timeout: float = 8,
-               max_bytes: int = MAX_RESPONSE_BYTES) -> PublicResponse:
+               max_bytes: int = MAX_RESPONSE_BYTES,
+               before_request: Callable[[str, dict], None] | None = None) -> PublicResponse:
+    top_level_url = url
     current = url
     seen = set()
     receipts = []
     deadline = time.monotonic() + timeout
     for _ in range(MAX_REDIRECTS + 1):
+        if before_request:
+            before_request(current, {
+                "is_redirect": bool(receipts),
+                "hop": len(receipts) + 1,
+                "top_level_url": top_level_url,
+            })
         target = public_target(current)
         if target.url in seen:
             raise PublicWebError("REDIRECT_LOOP")
@@ -190,7 +199,6 @@ def public_get(url: str, *, follow_redirects: bool = True, timeout: float = 8,
                 if not location:
                     raise PublicWebError("REDIRECT_LOCATION_MISSING")
                 current = urljoin(target.url, location)
-                public_target(current)  # Reject an unsafe hop before returning/following it.
                 headers['location'] = current
                 if follow_redirects:
                     continue

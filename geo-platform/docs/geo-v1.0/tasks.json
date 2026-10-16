@@ -1038,9 +1038,9 @@
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "SAM-001/002既有能力已复核，SAM-003/004工程切片已完成；T05最终真实文心采样联调需要当前明确外部授权，现未调用，依赖任务不得把本地Mock当最终验收。",
+      "blocker": "SAM-001/002既有能力已复核，SAM-003/004工程切片已完成；2026-10-16 已获最多4次真实文心采样授权，但同一正式采集路径的无提交预检显示现有profile已退出登录（页面可见“登录”，chat.baidu.com重定向至wenxin.baidu.com），依授权边界在提交Prompt前停止。真实尝试0/4，T05最终真实Gate仍未满足，依赖任务不得把本地Mock当最终验收。",
       "commit": "3141a36",
-      "audit_classification": "工程契约已完成并复核；真实外部采样验收待授权",
+      "audit_classification": "工程契约已完成并复核；真实外部采样验收因登录环境失效而阻断",
       "run_retry_lineage_slice": {
         "id": "T05-M1-SMALL-01",
         "status": "DONE",
@@ -1079,10 +1079,41 @@
         "boundary": "未发起真实浏览器采集、模型调用、自动退避或外部请求；不把受限Run记为品牌未提及或有效样本。"
       },
       "external_acceptance_blocker": {
-        "status": "WAITING_EXPLICIT_AUTHORIZATION",
+        "status": "BLOCKED_LOGIN_REQUIRED",
         "required_for": "T05最终真实平台采样与限流恢复联调",
         "not_performed": true,
-        "reason": "本轮没有真实文心采样、凭证或外部请求授权；本地Mock与结构化浏览器测试不替代最终真实联调。"
+        "reason": "已取得最多4次真实采样授权；无提交预检发现现有wenxin-profile处于未登录状态，且实际入口重定向到wenxin.baidu.com。按硬边界未重新登录、未提交Prompt、未占用真实采样预算。本地Mock与结构化浏览器测试不替代最终真实联调。"
+      },
+      "live_wenxin_acceptance_20261016": {
+        "status": "BLOCKED_BEFORE_SUBMISSION",
+        "classification": "ENVIRONMENT_BLOCKER",
+        "authorized_attempt_limit": 4,
+        "actual_attempts": 0,
+        "budget_active_attempt": null,
+        "submitted_requests": 0,
+        "isolated_release_revision": "20261015_03",
+        "isolated_project_id": 1,
+        "prompt_version_id": "prompt-version-9fb35415-1d5a-4a28-9542-baa4c9f88f0d",
+        "snapshot_hash": "2cd6b496d53c4a396cd2e61f4e1c686ab899ff95232121dba04d83429dbd6204",
+        "logical_run_id": "logical-run-a2aa28b1-06e9-4dec-94ae-b6dc97bb5ec1",
+        "attempt_id": "run-attempt-147f33b4-f48a-496e-af2d-9340490a61f2",
+        "run_status": "queued",
+        "analysis_status": "QUEUED",
+        "preflight": {
+          "configured_host": "chat.baidu.com",
+          "landed_host": "wenxin.baidu.com",
+          "input_visible": true,
+          "visible_auth_markers": [
+            "登录"
+          ],
+          "visible_security_selectors": [],
+          "session_ok": false
+        },
+        "evidence_root": "backend/artifacts/acceptance/t05-live-20261016",
+        "manifest_sha256": "04d613dd485f42864b2938a4b061e5c21ccdc680ffd38e267af95f2b83992f7a",
+        "preflight_sha256": "f60294f393ebec06524a3da39fd957a482b02627474a22ac250dd92de261f360",
+        "screenshot_sha256": "de097f5f589523ff560df85bdb9bef922444cbbcc95f3631ccaea44763295c78",
+        "boundary": "未提交真实Prompt，未重新登录，未绕过验证码或身份校验，未写生产数据库，未调用其他平台，未修改正式V2主链。"
       },
       "current_checkpoint": "delivery_checkpoint_20261009"
     },

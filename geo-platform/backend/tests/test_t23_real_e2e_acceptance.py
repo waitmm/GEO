@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import copy
+import hashlib
 import json
 
 import pytest
@@ -7,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from scripts.t23_real_e2e_acceptance import (
     CONTRACT,
     _authorization,
+    _low_match_summary,
     _verify_delivery,
     validate_manifest,
 )
@@ -21,6 +24,7 @@ from app.modules.single_prompt_v2.automatic_delivery import (
     task_view,
 )
 from app.services.semantic_llm.base import SemanticLLMError
+from app.modules.single_prompt_v2.delivery_text import digest
 
 
 def manifest():
@@ -50,6 +54,20 @@ def manifest():
             "max_requests": {"E2E-01": 4, "E2E-02": 3, "E2E-03": 2}[scenario],
             "max_tokens": 300_000,
             "max_cost_cny": 10,
+            **({"low_match_evidence": {
+                "contribution_id": "contribution-low-match",
+                "result_version": "contribution-v1:low-match",
+                "result_hash": "b" * 64,
+                "selected_run_id": 2,
+                "citation_id": "citation-real-2",
+                "reference_id": 22,
+                "source_key": "source-real-2",
+                "canonical_url_hash": "c" * 64,
+                "citation_disposition": "NO_BINDING_FOUND_AFTER_SEARCH",
+                "evaluation_id": "evaluation-low-match",
+                "evaluation_hash": "d" * 64,
+                "evidence_relation": "NO_MATCH",
+            }} if scenario == "E2E-02" else {}),
         } for index, scenario in enumerate(("E2E-01", "E2E-02", "E2E-03"), 1)],
     }
 
@@ -66,6 +84,11 @@ def test_manifest_requires_one_shared_non_retrying_budget_for_all_three_scenario
     value = manifest()
     value["shared_budget"]["max_attempts"] = 2
     with pytest.raises(ValueError, match="one provider attempt"):
+        validate_manifest(value)
+
+    value = manifest()
+    value["scenarios"][1]["low_match_evidence"]["evidence_relation"] = "SUPPORTS_FULL"
+    with pytest.raises(ValueError, match="not a formal low-match"):
         validate_manifest(value)
 
     value = manifest()
@@ -100,7 +123,40 @@ def test_post_execution_gate_requires_persisted_ready_text_qa_and_hashes(scene, 
     execute_task(row.task_id, session_factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
     db.refresh(row)
 
-    result = _verify_delivery(db, row, "E2E-02", [])
+    from app.models import ReferenceSource, SinglePromptCitationContributionResult
+    contribution_ref = task_view(row)["objects"]["citation_results"][0]
+    contribution = db.query(SinglePromptCitationContributionResult).filter_by(
+        result_version=contribution_ref["result_version"]).one()
+    contribution_output = json.loads(contribution.output_json)
+    evaluation = contribution_output["evaluations"][0]
+    citation = next(item for item in contribution_output["citations"]
+        if item["citation_id"] == evaluation["citation_id"])
+    reference = db.query(ReferenceSource).filter_by(
+        id=citation["reference_id"], run_id=citation["run_id"]).one()
+    if not reference.canonical_url:
+        reference.canonical_url = "https://example.test/real-citation"
+        reference.canonical_url_hash = hashlib.sha256(reference.canonical_url.encode()).hexdigest()
+        db.commit()
+    low_match = {
+        "contribution_id": contribution.contribution_id,
+        "result_version": contribution.result_version,
+        "result_hash": contribution.output_hash,
+        "selected_run_id": citation["run_id"],
+        "citation_id": citation["citation_id"],
+        "reference_id": citation["reference_id"],
+        "source_key": citation["source_key"],
+        "canonical_url_hash": reference.canonical_url_hash,
+        "citation_disposition": citation["disposition"],
+        "evaluation_id": evaluation["evaluation_id"],
+        "evaluation_hash": digest(evaluation),
+        "evidence_relation": evaluation["evidence_relation"],
+    }
+    case = {"id": "E2E-02", "analysis_id": row.analysis_id, "context_id": row.context_id,
+        "project_id": row.project_id, "prompt_id": row.prompt_id,
+        "low_match_evidence": low_match}
+    assert _low_match_summary(db, case, json.loads(row.input_json))["evaluation_id"] == evaluation["evaluation_id"]
+
+    result = _verify_delivery(db, row, "E2E-02", [], low_match)
     assert result["result"] == "PASS"
     assert result["deliveries"][0]["segment_kinds"] == ["HEADING", "INSTRUCTION"]
     usage = task_view(row)["usage"]
@@ -110,6 +166,18 @@ def test_post_execution_gate_requires_persisted_ready_text_qa_and_hashes(scene, 
     assert 0 < usage["reserved_cost_cny"] <= 4
     assert usage["actual_tokens"] == 600
     assert usage["unsettled_requests"] == 0
+
+    forged_contribution = copy.deepcopy(contribution_output)
+    forged_contribution["bindings"].append({"citation_id": citation["citation_id"],
+        "evidence_relation": "SUPPORTS_FULL"})
+    contribution.output_json = json.dumps(forged_contribution, ensure_ascii=False)
+    contribution.output_hash = digest(forged_contribution)
+    forged_low = {**low_match, "result_hash": contribution.output_hash}
+    with db.no_autoflush:
+        with pytest.raises(ValueError, match="high-match binding cannot masquerade"):
+            _low_match_summary(db, {**case, "low_match_evidence": forged_low}, json.loads(row.input_json))
+    db.rollback()
+    db.refresh(row)
 
     delivery = task_view(row)["objects"]["deliveries"][0]
     from app.models import SinglePromptExecutionProposalResult

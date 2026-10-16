@@ -28,6 +28,8 @@ from app.models import (  # noqa: E402
     BrowserMonitorRun,
     ReferenceSource,
     SinglePromptAnalysisContext,
+    SinglePromptCitationContributionExecution,
+    SinglePromptCitationContributionResult,
     SinglePromptDiagnosisExecution,
     SinglePromptDiagnosisReview,
     SinglePromptExecutionProposal,
@@ -119,6 +121,20 @@ def validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"invalid bounded allocation for {row['id']}")
         if not 0 < float(row["max_cost_cny"]) <= 40:
             raise ValueError(f"invalid cost allocation for {row['id']}")
+        if row["id"] == "E2E-02":
+            low = row.get("low_match_evidence")
+            low_required = {"contribution_id", "result_version", "result_hash", "selected_run_id",
+                "citation_id", "reference_id", "source_key", "canonical_url_hash",
+                "citation_disposition", "evaluation_id", "evaluation_hash", "evidence_relation"}
+            if not isinstance(low, dict) or set(low) != low_required:
+                raise ValueError("E2E-02 must freeze one exact real low-match citation diagnosis")
+            if (low["selected_run_id"] not in row["run_ids"]
+                    or low["citation_disposition"] != "NO_BINDING_FOUND_AFTER_SEARCH"
+                    or low["evidence_relation"] not in {"NO_MATCH", "INSUFFICIENT_EVIDENCE"}):
+                raise ValueError("E2E-02 frozen evidence is not a formal low-match disposition")
+            for key in ("result_hash", "canonical_url_hash", "evaluation_hash"):
+                if not isinstance(low[key], str) or len(low[key]) != 64:
+                    raise ValueError(f"E2E-02 {key} must be a frozen sha256 identity")
     if sum(row["max_requests"] for row in cases) > budget["max_requests"]:
         raise ValueError("scenario request caps exceed the shared T23 allocation")
     if [row["max_requests"] for row in cases] != [4, 3, 2]:
@@ -187,6 +203,45 @@ def _source_summary(db: Session, inputs: dict[str, Any]) -> dict[str, Any] | Non
         "snapshots": valid}
 
 
+def _low_match_summary(db: Session, case: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
+    frozen = case["low_match_evidence"]
+    execution = db.query(SinglePromptCitationContributionExecution).filter_by(
+        contribution_id=frozen["contribution_id"]).one_or_none()
+    result = db.query(SinglePromptCitationContributionResult).filter_by(
+        contribution_id=frozen["contribution_id"], result_version=frozen["result_version"]).one_or_none()
+    if (not execution or not result or result.output_hash != frozen["result_hash"]
+            or digest(loads(result.output_json, {})) != result.output_hash
+            or execution.analysis_id != case["analysis_id"] or execution.context_id != case["context_id"]
+            or execution.project_id != case["project_id"] or execution.prompt_id != case["prompt_id"]
+            or execution.selected_run_id != frozen["selected_run_id"]):
+        raise ValueError("E2E-02 immutable contribution result identity/hash/scope mismatch")
+    output = loads(result.output_json, {})
+    citation = next((row for row in output.get("citations") or []
+        if row.get("citation_id") == frozen["citation_id"]), None)
+    evaluation = next((row for row in output.get("evaluations") or []
+        if row.get("evaluation_id") == frozen["evaluation_id"]), None)
+    reference = db.query(ReferenceSource).filter_by(
+        id=frozen["reference_id"], run_id=frozen["selected_run_id"]).one_or_none()
+    if (not reference or reference.canonical_url_hash != frozen["canonical_url_hash"]
+            or not reference.canonical_url.strip()):
+        raise ValueError("E2E-02 real citation identity/url hash is missing or changed")
+    shared = {"reference_id": frozen["reference_id"], "source_key": frozen["source_key"]}
+    if (not citation or citation.get("processing_status") != "DONE"
+            or citation.get("disposition") != frozen["citation_disposition"]
+            or any(citation.get(key) != value for key, value in shared.items())
+            or not evaluation or evaluation.get("processing_status") != "DONE"
+            or evaluation.get("citation_id") != frozen["citation_id"]
+            or any(evaluation.get(key) != value for key, value in shared.items())
+            or evaluation.get("evidence_relation") != frozen["evidence_relation"]
+            or digest(evaluation) != frozen["evaluation_hash"]):
+        raise ValueError("E2E-02 frozen low-match citation disposition/evaluation changed")
+    if any(row.get("citation_id") == frozen["citation_id"]
+            and row.get("evidence_relation") in {"SUPPORTS_FULL", "SUPPORTS_PARTIAL"}
+            for row in output.get("bindings") or []):
+        raise ValueError("E2E-02 high-match binding cannot masquerade as low-match evidence")
+    return {**frozen, "result_hash_valid": True, "real_citation_url": reference.canonical_url}
+
+
 def _inspect_task(db: Session, case: dict[str, Any], *, phase: str) -> dict[str, Any]:
     row = db.query(SinglePromptOptimizationTask).filter_by(task_id=case["task_id"]).one_or_none()
     if not row:
@@ -205,6 +260,7 @@ def _inspect_task(db: Session, case: dict[str, Any], *, phase: str) -> dict[str,
         raise ValueError(f"analysis context identity/hash mismatch: {case['id']}")
     runs = _real_runs(db, inputs, case["run_ids"])
     source = _source_summary(db, inputs)
+    low_match = _low_match_summary(db, case, inputs) if case["id"] == "E2E-02" else None
     truths = inputs.get("truth_snapshot") or []
     unknown = [{"truth_id": item.get("truth_id"), "capability_label": item.get("capability_label"),
         "status": item.get("product_truth_status")} for item in truths
@@ -237,7 +293,8 @@ def _inspect_task(db: Session, case: dict[str, Any], *, phase: str) -> dict[str,
         "prompt_id": row.prompt_id, "analysis_id": row.analysis_id, "context_id": row.context_id,
         "context_result_version": context.result_version, "input_hash": row.input_hash,
         "raw_output_hash": context.raw_output_hash, "status": row.status, "revision": row.revision,
-        "runs": runs, "source": source, "unknown_truths": unknown, "usage": view["usage"]}
+        "runs": runs, "source": source, "low_match_evidence": low_match,
+        "unknown_truths": unknown, "usage": view["usage"]}
     if phase == "plan":
         if row.status in TERMINAL_SUCCESS | {"RUNNING", "CANCELLED"}:
             raise ValueError(f"{case['id']} task is not authorizable: {row.status}")
@@ -245,11 +302,12 @@ def _inspect_task(db: Session, case: dict[str, Any], *, phase: str) -> dict[str,
         if authorization.get("policy") == "ALLOW_EXTERNAL" or view["usage"]["external_requests"]:
             raise ValueError(f"{case['id']} already has authorization or request usage; no reset allowed")
         return common
-    return {**common, "acceptance": _verify_delivery(db, row, case["id"], unknown)}
+    return {**common, "acceptance": _verify_delivery(db, row, case["id"], unknown, low_match)}
 
 
 def _verify_delivery(db: Session, task: SinglePromptOptimizationTask, scenario_id: str,
-                     unknown_truths: list[dict[str, Any]]) -> dict[str, Any]:
+                     unknown_truths: list[dict[str, Any]],
+                     low_match: dict[str, Any] | None = None) -> dict[str, Any]:
     view = task_view(task)
     authorization = view["authorization"]
     if task.status not in TERMINAL_SUCCESS or view["usage"]["unsettled_requests"]:
@@ -289,11 +347,27 @@ def _verify_delivery(db: Session, task: SinglePromptOptimizationTask, scenario_i
         if scenario_id == "E2E-01" and not delivery_input.get("selected_evidence"):
             raise ValueError("E2E-01 delivery did not consume attributable source evidence")
         if scenario_id == "E2E-02":
+            if not low_match:
+                raise ValueError("E2E-02 lacks frozen low-match evidence")
             modes = {row.get("kind") for row in receipt["segments"] if row.get("text", "").strip()}
             if "INSTRUCTION" not in modes:
                 raise ValueError("E2E-02 lacks a concrete exploratory action")
-            if not (output.get("limitations") or not delivery_input.get("selected_evidence")):
-                raise ValueError("E2E-02 does not preserve its low-match evidence limitation")
+            direction = output.get("direction") or delivery_input.get("strategy_direction") or {}
+            dependency = next((row for row in direction.get("dependencies") or []
+                if row.get("object_type") == "CITATION_CONTRIBUTION_SCOPE"
+                and row.get("object_id") == low_match["result_version"]), None)
+            eligibility = direction.get("eligibility_by_use") or {}
+            if (delivery_input.get("contribution_result_version") != low_match["result_version"]
+                    or delivery_input.get("contribution_result_hash") != low_match["result_hash"]
+                    or delivery_input.get("selected_evidence")
+                    or not dependency or dependency.get("state") != "LIMITED"
+                    or dependency.get("eligibility") != "OBSERVE_ONLY"
+                    or "SOURCE_GROUNDING_INCOMPLETE" not in (dependency.get("reason_codes") or [])
+                    or direction.get("observed_or_hypothesis") != "CONTENT_OPPORTUNITY_HYPOTHESIS"
+                    or eligibility.get("publication") != "VERIFY_FIRST"
+                    or not direction.get("intervention_goal")
+                    or not output.get("limitations")):
+                raise ValueError("E2E-02 does not preserve low-match limitation, hypothesis and verification conditions")
         if scenario_id == "E2E-03":
             unknown_ids = {f"truth:{row['truth_id']}" for row in unknown_truths}
             used_ids = {key for row in receipt["segments"] for key in row.get("evidence_ids") or []}

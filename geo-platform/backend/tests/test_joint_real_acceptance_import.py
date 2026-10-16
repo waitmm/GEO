@@ -7,6 +7,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from app.models import (BrowserMonitorRun, BrowserMonitorTask, Project, RunArtifact, SinglePromptAnalysisContext,
                         SinglePromptObservationComparison,
                         SinglePromptPreparedSourceSnapshot)
@@ -14,7 +16,7 @@ from app.modules.monitoring.collectors.base import CollectorResult
 from app.modules.monitoring.executor import MonitoringTaskExecutor
 from app.modules.monitoring.services import update_task_status_from_runs
 from app.modules.single_prompt_v2.service import claim_analysis, finalize_analysis
-from scripts.joint_real_acceptance import _sessions
+from scripts.joint_real_acceptance import _sessions, fetch_urls
 from test_release_first_slice import _migrated_session, _seed_frozen_analysis
 
 
@@ -34,6 +36,96 @@ def _run(*args: object) -> dict:
     )
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
+
+
+def test_fetch_urls_safely_appends_only_new_requested_urls(tmp_path):
+    urls_path = tmp_path / "urls.json"
+    output_path = tmp_path / "source-results.json"
+    budget_database = tmp_path / "url-budget.sqlite3"
+    calls = []
+
+    def fetcher(url, *, before_request):
+        calls.append(url)
+        before_request(url, {"is_redirect": False})
+        return {"fetch_status": "FETCH_FAILED", "failure_reason": "offline-test"}
+
+    _write(urls_path, ["https://example.com/one"])
+    first = fetch_urls(
+        analysis_id="analysis-1",
+        urls_path=urls_path,
+        budget_database=budget_database,
+        output_path=output_path,
+        fetcher=fetcher,
+    )
+    assert [row["requested_url"] for row in first["results"]] == ["https://example.com/one"]
+
+    _write(urls_path, ["https://example.com/two"])
+    second = fetch_urls(
+        analysis_id="analysis-1",
+        urls_path=urls_path,
+        budget_database=budget_database,
+        output_path=output_path,
+        fetcher=fetcher,
+    )
+    assert calls == ["https://example.com/one", "https://example.com/two"]
+    assert [row["requested_url"] for row in second["budget"]["attempts"]] == [
+        "https://example.com/one", "https://example.com/two",
+    ]
+    assert [row["requested_url"] for row in second["results"]] == [
+        "https://example.com/one", "https://example.com/two",
+    ]
+
+    _write(urls_path, ["https://example.com/one"])
+    with pytest.raises(ValueError, match="拒绝重复外部访问"):
+        fetch_urls(
+            analysis_id="analysis-1",
+            urls_path=urls_path,
+            budget_database=budget_database,
+            output_path=output_path,
+            fetcher=fetcher,
+        )
+    assert calls == ["https://example.com/one", "https://example.com/two"]
+
+
+@pytest.mark.parametrize("mutation", ["analysis", "contract", "limits", "retry", "pairing"])
+def test_fetch_urls_rejects_invalid_existing_output_before_fetch(tmp_path, mutation):
+    output_path = tmp_path / "source-results.json"
+    urls_path = tmp_path / "urls.json"
+    budget_database = tmp_path / "url-budget.sqlite3"
+    existing = {
+        "contract_version": "joint-real-source-results.v1",
+        "analysis_id": "analysis-1",
+        "budget": {
+            "distinct_url_limit": 20,
+            "top_level_attempt_limit": 20,
+            "automatic_retries": 0,
+            "attempts": [{"requested_url": "https://example.com/one", "attempt_no": 1, "redirect_events": []}],
+        },
+        "results": [{"requested_url": "https://example.com/one", "result": {"fetch_status": "FETCH_FAILED"}}],
+    }
+    if mutation == "analysis":
+        existing["analysis_id"] = "analysis-other"
+    elif mutation == "contract":
+        existing["contract_version"] = "forged"
+    elif mutation == "limits":
+        existing["budget"]["distinct_url_limit"] = 21
+    elif mutation == "retry":
+        existing["budget"]["automatic_retries"] = 1
+    else:
+        existing["results"][0]["requested_url"] = "https://example.com/mismatch"
+    _write(output_path, existing)
+    _write(urls_path, ["https://example.com/two"])
+    calls = []
+
+    with pytest.raises(ValueError):
+        fetch_urls(
+            analysis_id="analysis-1",
+            urls_path=urls_path,
+            budget_database=budget_database,
+            output_path=output_path,
+            fetcher=lambda *args, **kwargs: calls.append(args),
+        )
+    assert calls == []
 
 
 def test_imported_run_and_url_enter_frozen_monitor_validate_and_source_chains(tmp_path, monkeypatch):

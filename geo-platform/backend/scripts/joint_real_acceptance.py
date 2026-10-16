@@ -353,6 +353,35 @@ def _source_fetcher(source_payload: dict):
     return fetch
 
 
+def _validated_existing_source_results(output_path: Path, analysis_id: str) -> dict:
+    if not output_path.exists():
+        return {
+            "contract_version": SOURCE_RESULTS_CONTRACT,
+            "analysis_id": analysis_id,
+            "budget": {
+                "distinct_url_limit": SOURCE_DISTINCT_URL_LIMIT,
+                "top_level_attempt_limit": SOURCE_TOP_LEVEL_ATTEMPT_LIMIT,
+                "automatic_retries": 0,
+                "attempts": [],
+            },
+            "results": [],
+        }
+    existing = _read_json(output_path)
+    if existing.get("analysis_id") != analysis_id:
+        raise ValueError("既有 source-results 属于其他 analysis_id，拒绝追加")
+    # Reuse the acceptance validator, then enforce exact one-to-one ordering.
+    _source_fetcher(existing)
+    attempts = existing.get("budget", {}).get("attempts")
+    results = existing.get("results")
+    if not isinstance(attempts, list) or not isinstance(results, list):
+        raise ValueError("既有 source-results attempts/results 必须是数组")
+    attempt_urls = [row.get("requested_url") if isinstance(row, dict) else None for row in attempts]
+    result_urls = [row.get("requested_url") if isinstance(row, dict) else None for row in results]
+    if attempt_urls != result_urls:
+        raise ValueError("既有 source-results attempts/results 未一一对应")
+    return existing
+
+
 def accept(*, database: Path, manifest_path: Path, official_url: str,
            source_results_path: Path, report_path: Path) -> dict:
     from app.models import (BrowserMonitorRun, ReferenceSource, RunArtifact, SinglePromptAnalysis, SinglePromptAnalysisContext,
@@ -625,21 +654,38 @@ def fetch_urls(*, analysis_id: str, urls_path: Path, budget_database: Path,
         raise ValueError("urls JSON 必须是非空字符串数组")
     if len(urls_value) > SOURCE_TOP_LEVEL_ATTEMPT_LIMIT or len(set(urls_value)) != len(urls_value):
         raise ValueError("top-level URL 必须 distinct 且不超过 20")
-    attempts = []
-    results = []
+    output = _validated_existing_source_results(output_path, analysis_id)
+    attempts = output["budget"]["attempts"]
+    results = output["results"]
+    existing_urls = {row["requested_url"] for row in attempts}
+    known_distinct_urls = set(existing_urls)
+    for attempt in attempts:
+        known_distinct_urls.update(
+            event["target_url"] for event in attempt.get("redirect_events") or []
+        )
+    duplicate_urls = sorted(existing_urls.intersection(urls_value))
+    if duplicate_urls:
+        raise ValueError(f"requested_url 已存在，拒绝重复外部访问：{duplicate_urls}")
+    if len(attempts) + len(urls_value) > SOURCE_TOP_LEVEL_ATTEMPT_LIMIT:
+        raise ValueError("追加后 top-level attempts 将超过 20")
     for requested_url in urls_value:
         attempt_key = _begin_url_attempt(budget_database, requested_url)
         redirect_events = []
         prior_url = None
+        visited_urls = []
 
         def before_request(url: str, metadata: dict) -> None:
             nonlocal prior_url
+            if url not in known_distinct_urls and len(known_distinct_urls) >= SOURCE_DISTINCT_URL_LIMIT:
+                raise RuntimeError("distinct URL 预算已用尽")
             _reserve_url_visit(
                 budget_database,
                 attempt_key=attempt_key,
                 url=url,
                 is_redirect=bool(metadata.get("is_redirect")),
             )
+            known_distinct_urls.add(url)
+            visited_urls.append(url)
             if metadata.get("is_redirect"):
                 redirect_events.append({
                     "from_url": prior_url,
@@ -653,25 +699,19 @@ def fetch_urls(*, analysis_id: str, urls_path: Path, budget_database: Path,
         except BaseException:
             # Preserve active lock: after an unclassified crash the command must not guess whether delivery occurred.
             raise
-        _finish_url_attempt(budget_database, attempt_key)
+        if not visited_urls:
+            raise RuntimeError("fetcher 未经过 before_request 预算边界；保留 active lock")
         attempts.append({
             "requested_url": requested_url,
             "attempt_no": 1,
             "redirect_events": redirect_events,
         })
         results.append({"requested_url": requested_url, "result": result})
-    output = {
-        "contract_version": SOURCE_RESULTS_CONTRACT,
-        "analysis_id": analysis_id,
-        "budget": {
-            "distinct_url_limit": SOURCE_DISTINCT_URL_LIMIT,
-            "top_level_attempt_limit": SOURCE_TOP_LEVEL_ATTEMPT_LIMIT,
-            "automatic_retries": 0,
-            "attempts": attempts,
-        },
-        "results": results,
-    }
-    _write_json(output_path, output)
+        _source_fetcher(output)
+        # Persist the completed result before releasing the active lock. A crash
+        # cannot make the same request silently eligible for another visit.
+        _write_json(output_path, output)
+        _finish_url_attempt(budget_database, attempt_key)
     return output
 
 

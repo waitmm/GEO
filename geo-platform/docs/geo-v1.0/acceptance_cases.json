@@ -58,8 +58,8 @@
       "requirements": [
         "BRD-004"
       ],
-      "status": "PASS",
-      "evidence": "2026-10-16真实文心访客网页采样：Run success，回答281字，目标品牌未出现但保存为有效样本；25条引用完整解析，Analysis READY、Context valid=1/failed=0。backend/artifacts/acceptance/t05-live-20261016/acceptance-report.json"
+      "status": "NOT_RUN",
+      "evidence": ""
     },
     {
       "id": "AC-PRM-01",
@@ -87,8 +87,8 @@
       "requirements": [
         "PRM-004"
       ],
-      "status": "PASS",
-      "evidence": "T05 lineage定向Gate通过：显式重试追加物理Attempt、保留父Run、幂等且一个logical_run只计一个样本；真实样本attempt_no=1且预算1/4，无隐藏重试。"
+      "status": "NOT_RUN",
+      "evidence": ""
     },
     {
       "id": "AC-PRM-03",
@@ -129,8 +129,8 @@
       "requirements": [
         "SAM-001"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "2026-10-16真实文心访客网页采样：Run success，回答281字，目标品牌未出现但保存为有效样本；25条引用完整解析，Analysis READY、Context valid=1/failed=0。backend/artifacts/acceptance/t05-live-20261016/acceptance-report.json"
     },
     {
       "id": "AC-SAM-02",
@@ -146,8 +146,8 @@
       "requirements": [
         "SAM-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "T05 lineage定向Gate通过：显式重试追加物理Attempt、保留父Run、幂等且一个logical_run只计一个样本；真实样本attempt_no=1且预算1/4，无隐藏重试。"
     },
     {
       "id": "AC-SAM-03",

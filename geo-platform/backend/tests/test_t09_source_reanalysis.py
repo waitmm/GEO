@@ -15,6 +15,7 @@ from app.modules.single_prompt_v2.diagnosis import (
     create_answer_diagnosis,
 )
 from app.modules.single_prompt_v2.source_reanalysis import (
+    execute_source_reanalysis,
     execute_source_reanalysis_with_local_judges,
     plan_source_reanalysis,
     source_reanalysis_view,
@@ -194,6 +195,114 @@ def test_manual_content_reanalysis_is_exact_append_only_idempotent_and_locally_e
         assert db.query(SinglePromptDiagnosisExecution).filter_by(
             analysis_id=analysis.analysis_id
         ).count() == 2
+
+        # A later immutable source version can use the formal V2 production
+        # judges.  The executor shares one guarded client, performs no hidden
+        # retry, and persists provider usage without moving either old result.
+        latest = source_preparation.get_source_preparation_status(
+            db, preparation_id=preparation.preparation_id
+        )["sources"][0]
+        third_text = "第三版真实正文继续说明甲工具支持批量生成短链，同时保留明确适用范围。" * 2
+        third_snapshot = _submit(db, preparation.preparation_id, latest, third_text)
+        third_manifest = source_preparation.freeze_completion_manifest(
+            db, preparation_id=preparation.preparation_id, created_by="qa"
+        )
+        production_plans, production_created = plan_source_reanalysis(
+            db,
+            preparation_id=preparation.preparation_id,
+            project_id=1,
+            prompt_id=44,
+            prior_completion_manifest_id=new_manifest.manifest_id,
+            prior_completion_manifest_hash=new_manifest.payload_hash,
+            new_completion_manifest_id=third_manifest.manifest_id,
+            new_completion_manifest_hash=third_manifest.payload_hash,
+            idempotency_key="t09-source-reanalysis-production",
+            requested_by="qa",
+        )
+        assert production_created is True
+        assert len(production_plans) == 1
+
+        from app.services.semantic_llm import deepseek
+
+        network_calls = []
+
+        class ProviderResponse:
+            status_code = 200
+            text = json.dumps({
+                "choices": [{
+                    "message": {"content": json.dumps({"claims": []}, ensure_ascii=False)},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 17, "completion_tokens": 3, "total_tokens": 20},
+            }, ensure_ascii=False)
+
+            def json(self):
+                return json.loads(self.text)
+
+        class ProviderHttp:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def post(self, url, headers, json):
+                network_calls.append({"url": url, "body": json})
+                return ProviderResponse()
+
+        monkeypatch.setattr(deepseek.httpx, "Client", ProviderHttp)
+        monkeypatch.setattr(deepseek.get_settings(), "deepseek_api_key", "isolated-test-key")
+        reservations = []
+        audits = []
+        production_result = execute_source_reanalysis(
+            db,
+            reanalysis_id=production_plans[0].diagnosis_id,
+            request_guard=reservations.append,
+            response_audit_sink=audits.append,
+            max_attempts=1,
+        )
+        production_output = json.loads(production_result.output_json)
+        assert production_result.parent_result_version == result.result_version
+        assert production_output["input"]["completion_manifest_id"] == third_manifest.manifest_id
+        assert production_output["input"]["source_snapshot_ids"] == [third_snapshot.snapshot_id]
+        assert production_output["usage"]["provider"] == "deepseek"
+        assert production_output["usage"]["max_attempts"] == 1
+        assert production_output["usage"]["external_llm_calls"] == 1
+        assert production_output["usage"]["external_token_usage"] == 20
+        assert len(reservations) == len(network_calls) == len(audits) == 1
+        assert reservations[0]["attempt"] == 1
+        assert reservations[0]["provider"] == "deepseek"
+        db.refresh(production_plans[0])
+        assert production_plans[0].external_llm_calls == 1
+        assert production_plans[0].external_token_usage == 20
+        progress = json.loads(production_plans[0].progress_json)
+        assert progress["result_creation"] == "COMPLETED_EXTERNAL_V2"
+        assert "raw_provider_response" not in json.dumps(progress)
+        assert db.query(SinglePromptDiagnosisResult).filter_by(
+            diagnosis_id=diagnosis.diagnosis_id, result_version=old_result.result_version
+        ).one().output_json == old_result_json
     finally:
         db.close()
         engine.dispose()
+
+
+def test_formal_executor_requires_shared_guard_and_forbids_hidden_retry():
+    try:
+        execute_source_reanalysis(object(), reanalysis_id="r", request_guard=None)  # type: ignore[arg-type]
+        assert False, "missing guard must be rejected before touching the database"
+    except Exception as exc:
+        assert getattr(exc, "detail", {}) == {"code": "SOURCE_REANALYSIS_REQUEST_GUARD_REQUIRED"}
+
+    try:
+        execute_source_reanalysis(
+            object(),  # type: ignore[arg-type]
+            reanalysis_id="r",
+            request_guard=lambda _: None,
+            max_attempts=2,
+        )
+        assert False, "the T09 executor must never enable an implicit retry"
+    except Exception as exc:
+        assert getattr(exc, "detail", {}) == {"code": "SOURCE_REANALYSIS_SINGLE_ATTEMPT_REQUIRED"}

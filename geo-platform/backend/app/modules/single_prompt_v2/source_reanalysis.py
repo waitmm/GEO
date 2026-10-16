@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -206,15 +206,22 @@ def plan_source_reanalysis(
         answer_version = str(base_input.get("answer_result_version") or "")
         answer_hash = str(base_input.get("answer_result_hash") or "")
         answer_review_id = str(base_input.get("answer_review_id") or "")
+        # A reanalysis result keeps the original reviewed Answer version but
+        # has its own Diagnosis identity.  Resolve the immutable Answer result
+        # first instead of assuming it belongs to the immediately affected
+        # reanalysis execution; this makes later source revisions chainable
+        # without interpreting any result through ``latest``.
         answer = db.query(SinglePromptDiagnosisResult).filter_by(
-            diagnosis_id=old_execution.diagnosis_id,
             result_version=answer_version,
         ).one_or_none()
-        review = db.query(SinglePromptDiagnosisReview).filter_by(
-            diagnosis_id=old_execution.diagnosis_id,
-            review_id=answer_review_id,
-            result_version=answer_version,
-        ).one_or_none()
+        review = (
+            db.query(SinglePromptDiagnosisReview).filter_by(
+                diagnosis_id=answer.diagnosis_id,
+                review_id=answer_review_id,
+                result_version=answer_version,
+            ).one_or_none()
+            if answer else None
+        )
         executable = bool(
             answer
             and answer.output_hash == answer_hash
@@ -249,6 +256,7 @@ def plan_source_reanalysis(
             "base_downstream": downstream,
             "answer_result_version": answer_version,
             "answer_result_hash": answer_hash,
+            "answer_diagnosis_id": answer.diagnosis_id if answer else "",
             "answer_review_id": answer_review_id,
             "local_gate": "PASSED" if executable else "BLOCKED",
             "local_gate_code": "EXACT_ANSWER_REVIEW_BOUND" if executable else "EXACT_ANSWER_REVIEW_REQUIRED",
@@ -342,6 +350,84 @@ def execute_source_reanalysis_with_local_judges(
     alignment_judge: Any,
 ) -> SinglePromptDiagnosisResult:
     """Run the frozen plan only with explicitly injected offline/test judges."""
+    return _execute_source_reanalysis(
+        db,
+        reanalysis_id=reanalysis_id,
+        source_claim_judge=source_claim_judge,
+        alignment_judge=alignment_judge,
+        execution_mode="LOCAL_GATE",
+        client=None,
+        audit_events=[],
+    )
+
+
+def execute_source_reanalysis(
+    db: Session,
+    *,
+    reanalysis_id: str,
+    request_guard: Callable[[dict[str, Any]], None],
+    response_audit_sink: Callable[[dict[str, Any]], None] | None = None,
+    max_attempts: int = 1,
+) -> SinglePromptDiagnosisResult:
+    """Execute one frozen source-reanalysis plan with the formal V2 judges.
+
+    The caller owns the shared durable budget ledger.  ``request_guard`` is
+    invoked by :class:`DeepSeekClient` immediately before every possible
+    network send, including a retry.  T09 deliberately requires
+    ``max_attempts=1`` so neither this executor nor the provider client can
+    hide a retry from that ledger.
+    """
+    from app.modules.single_prompt_v2.llm_safety import V2AlignmentJudge, V2SourceClaimJudge
+    from app.services.semantic_llm.deepseek import DeepSeekClient
+
+    if request_guard is None:
+        raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_REQUEST_GUARD_REQUIRED"})
+    if max_attempts != 1:
+        raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_SINGLE_ATTEMPT_REQUIRED"})
+
+    audit_events: list[dict[str, Any]] = []
+
+    def audit_sink(event: dict[str, Any]) -> None:
+        audit_events.append({
+            "request_identity": event.get("request_identity") or {},
+            "response_source": event.get("response_source"),
+            "validation_status": event.get("validation_status"),
+            "finish_reason": event.get("finish_reason"),
+            "response_model": event.get("response_model"),
+            "raw_response_hash": event.get("raw_response_hash"),
+            "token_usage": event.get("token_usage") or {},
+            "rejection_code": event.get("rejection_code"),
+        })
+        if response_audit_sink is not None:
+            response_audit_sink(event)
+
+    client = DeepSeekClient(
+        thinking_mode="disabled",
+        max_attempts=1,
+        request_guard=request_guard,
+        response_audit_sink=audit_sink,
+    )
+    return _execute_source_reanalysis(
+        db,
+        reanalysis_id=reanalysis_id,
+        source_claim_judge=V2SourceClaimJudge(client),
+        alignment_judge=V2AlignmentJudge(client),
+        execution_mode="EXTERNAL_V2",
+        client=client,
+        audit_events=audit_events,
+    )
+
+
+def _execute_source_reanalysis(
+    db: Session,
+    *,
+    reanalysis_id: str,
+    source_claim_judge: Any,
+    alignment_judge: Any,
+    execution_mode: str,
+    client: Any | None,
+    audit_events: list[dict[str, Any]],
+) -> SinglePromptDiagnosisResult:
     from .diagnosis import (
         DIAGNOSIS_CONTRACT_VERSION,
         _build_candidate_plan_for_evidence,
@@ -371,13 +457,15 @@ def execute_source_reanalysis_with_local_judges(
         return existing
     if frozen.get("local_gate") != "PASSED":
         raise HTTPException(409, detail={"code": frozen.get("local_gate_code") or "SOURCE_REANALYSIS_GATE_BLOCKED"})
-    old_diagnosis_id = (frozen.get("base_downstream") or {}).get("diagnosis_id")
-    answer = db.query(SinglePromptDiagnosisResult).filter_by(
-        diagnosis_id=old_diagnosis_id,
+    answer_query = db.query(SinglePromptDiagnosisResult).filter_by(
         result_version=frozen.get("answer_result_version"),
-    ).one_or_none()
+    )
+    if frozen.get("answer_diagnosis_id"):
+        answer_query = answer_query.filter_by(diagnosis_id=frozen.get("answer_diagnosis_id"))
+    answer = answer_query.one_or_none()
+    answer_diagnosis_id = answer.diagnosis_id if answer else frozen.get("answer_diagnosis_id")
     review = db.query(SinglePromptDiagnosisReview).filter_by(
-        diagnosis_id=old_diagnosis_id,
+        diagnosis_id=answer_diagnosis_id,
         review_id=frozen.get("answer_review_id"),
         result_version=frozen.get("answer_result_version"),
     ).one_or_none()
@@ -406,11 +494,24 @@ def execute_source_reanalysis_with_local_judges(
     reviewed_answer = _reviewed_answer_for_evidence(answer_output, review)
     candidate_plan, _ = _build_candidate_plan_for_evidence(reviewed_answer, snapshots)
     usage = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
-    row.status = "RUNNING_LOCAL_GATE"
+    frozen_config = loads(row.contract_config_json, {})
+    if execution_mode == "EXTERNAL_V2" and (
+        frozen_config.get("model_provider") != "deepseek"
+        or frozen_config.get("model") != client.settings.deepseek_model
+    ):
+        raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_PROVIDER_MODEL_MISMATCH"})
+    row.status = "RUNNING_EXTERNAL" if execution_mode == "EXTERNAL_V2" else "RUNNING_LOCAL_GATE"
     row.blocker_code = ""
     row.blocker_detail = ""
     db.commit()
     try:
+        execution_config = frozen_config
+        if execution_mode == "EXTERNAL_V2":
+            # The frozen plan is intentionally created under CACHE_ONLY while
+            # it waits for authorization.  Supplying the durable request guard
+            # is the explicit per-execution authority to call the same frozen
+            # provider/model contract; it does not mutate the stored plan.
+            execution_config = {**execution_config, "evidence_llm_policy": "ALLOW_EXTERNAL"}
         evidence = _diagnose_evidence(
             db,
             answer_diagnosis=reviewed_answer,
@@ -418,8 +519,25 @@ def execute_source_reanalysis_with_local_judges(
             usage=usage,
             source_claim_judge=source_claim_judge,
             alignment_judge=alignment_judge,
-            config=loads(row.contract_config_json, {}),
+            config=execution_config,
         )
+        if execution_mode == "EXTERNAL_V2":
+            failed_claim_jobs = [
+                job for job in evidence.get("source_claim_jobs") or []
+                if str(job.get("status") or "").startswith("FAILED")
+                or job.get("status") == "CACHE_REJECTED_BY_V2_VALIDATION"
+            ]
+            if (
+                int(usage.get("external_llm_calls") or 0) < 1
+                or failed_claim_jobs
+                or evidence.get("source_claim_failures")
+                or evidence.get("alignment_failures")
+                or not (evidence.get("candidate_plan") or {}).get("execution_complete")
+            ):
+                raise HTTPException(
+                    409,
+                    detail={"code": "SOURCE_REANALYSIS_EXTERNAL_EVIDENCE_INCOMPLETE"},
+                )
         if (evidence.get("candidate_plan") or {}).get("plan_hash") != candidate_plan.get("plan_hash"):
             raise RuntimeError("EVIDENCE_PLAN_BINDING_MISMATCH")
         truths = _diagnose_truths(
@@ -476,6 +594,16 @@ def execute_source_reanalysis_with_local_judges(
             "evidence_plan_policy_version": candidate_plan["policy_version"],
             "source_reanalysis_input_hash": row.input_fingerprint,
         }
+        if execution_mode == "EXTERNAL_V2":
+            usage.update({
+                "provider": "deepseek",
+                "requested_model_alias": client.settings.deepseek_model,
+                "max_attempts": 1,
+                "external_llm_calls": client.external_call_count,
+                "external_token_usage": client.external_token_count,
+                "external_input_tokens": client.external_input_token_count,
+                "external_output_tokens": client.external_output_token_count,
+            })
         output = {
             "contract_version": DIAGNOSIS_CONTRACT_VERSION,
             "result_scope": "ANSWER_AND_EVIDENCE",
@@ -525,24 +653,51 @@ def execute_source_reanalysis_with_local_judges(
         )
         db.add(result)
         db.flush()
+        row.external_llm_calls = int(usage.get("external_llm_calls") or 0)
+        row.external_token_usage = int(usage.get("external_token_usage") or 0)
         row.active_result_version = result.result_version
         row.status = "READY_FOR_REVIEW"
         row.finished_at = datetime.utcnow()
         row.progress_json = _json({
             **progress,
             "stage": "SOURCE_REANALYSIS_RESULT_PUBLISHED",
-            "result_creation": "COMPLETED_LOCAL_GATE",
+            "result_creation": (
+                "COMPLETED_EXTERNAL_V2" if execution_mode == "EXTERNAL_V2" else "COMPLETED_LOCAL_GATE"
+            ),
             "result_version": result.result_version,
             "result_hash": result.output_hash,
+            "provider_audit": audit_events,
         })
         db.commit()
         db.refresh(result)
         return result
-    except Exception:
+    except Exception as exc:
         db.rollback()
         row = db.query(SinglePromptDiagnosisExecution).filter_by(diagnosis_id=reanalysis_id).one()
         row.status = "BLOCKED"
-        row.blocker_code = "SOURCE_REANALYSIS_LOCAL_GATE_FAILED"
-        row.blocker_detail = "本地重分析 Gate 失败；未覆盖旧结果，也未发起外部调用。"
+        if client is not None:
+            row.external_llm_calls = client.external_call_count
+            row.external_token_usage = client.external_token_count
+        row.blocker_code = (
+            "SOURCE_REANALYSIS_EXTERNAL_EXECUTION_FAILED"
+            if execution_mode == "EXTERNAL_V2"
+            else "SOURCE_REANALYSIS_LOCAL_GATE_FAILED"
+        )
+        row.blocker_detail = (
+            "正式重分析未形成可发布结果；旧结果保持不变，具体外部尝试以共享预算账本为准。"
+            if execution_mode == "EXTERNAL_V2"
+            else "本地重分析 Gate 失败；未覆盖旧结果，也未发起外部调用。"
+        )
+        row.progress_json = _json({
+            **progress,
+            "stage": "SOURCE_REANALYSIS_EXECUTION_BLOCKED",
+            "result_creation": "FAILED",
+            "failure_code": (
+                (exc.detail or {}).get("code")
+                if isinstance(exc, HTTPException) and isinstance(exc.detail, dict)
+                else exc.__class__.__name__
+            ),
+            "provider_audit": audit_events,
+        })
         db.commit()
         raise

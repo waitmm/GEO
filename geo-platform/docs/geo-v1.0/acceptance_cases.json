@@ -58,8 +58,8 @@
       "requirements": [
         "BRD-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "2026-10-16真实文心访客网页采样：Run success，回答281字，目标品牌未出现但保存为有效样本；25条引用完整解析，Analysis READY、Context valid=1/failed=0。backend/artifacts/acceptance/t05-live-20261016/acceptance-report.json"
     },
     {
       "id": "AC-PRM-01",
@@ -87,8 +87,8 @@
       "requirements": [
         "PRM-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "T05 lineage定向Gate通过：显式重试追加物理Attempt、保留父Run、幂等且一个logical_run只计一个样本；真实样本attempt_no=1且预算1/4，无隐藏重试。"
     },
     {
       "id": "AC-PRM-03",
@@ -151,6 +151,9 @@
     },
     {
       "id": "AC-SAM-03",
+      "automated_checks": [
+        "tests.test_release_scheduling::test_pause_cancels_only_queued_runs_and_preserves_completed_sample"
+      ],
       "module": "SAM",
       "name": "中途取消",
       "given": "任务有部分完成",
@@ -159,11 +162,14 @@
       "requirements": [
         "SAM-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "344e6e1精确验证同一3-Run任务已有1个success时，暂停后仅剩余queued Run变cancelled，成功回答及数量保持。"
     },
     {
       "id": "AC-SAM-04",
+      "automated_checks": [
+        "tests.test_observation_delivery::test_web_and_official_api_entry_conflict_is_not_comparable_but_keeps_raw_values"
+      ],
       "module": "SAM",
       "name": "入口差异",
       "given": "网页与 API 各有样本",
@@ -172,8 +178,8 @@
       "requirements": [
         "SAM-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "344e6e1精确验证browser_audit/wenxin_web_audit与wenxin_api入口并存时保留各自原始值，source_type和adapter标CONFLICT，delta为空且NOT_COMPARABLE；真实样本入口为wenxin_web_audit。"
     },
     {
       "id": "AC-SAM-05",
@@ -188,8 +194,8 @@
       "requirements": [
         "SAM-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "限流与访问阻断定向Gate通过：可信429保存rate_limited/blocked真实原因，后续Run停止，恢复需显式追加且automatic_retry=0；第三方429与正文词不误判。"
     },
     {
       "id": "AC-SRC-01",

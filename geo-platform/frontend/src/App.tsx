@@ -5912,8 +5912,8 @@ export default function App() {
               <Text>{scopedPrompt?.prompt_text}</Text>
               <Alert style={{ marginTop: 12 }} type={v2SelectedPromptVersion ? "info" : "warning"} showIcon
                 message="新建采样必须绑定明确的 Prompt 冻结版本"
-                description={<Space wrap>
-                  <Select aria-label="本次新建采样绑定的 Prompt 冻结版本" style={{ minWidth: 320 }} loading={v2PromptVersionsLoading}
+                description={<Space wrap style={{ width: "100%" }}>
+                  <Select aria-label="本次新建采样绑定的 Prompt 冻结版本" style={{ width: "100%", minWidth: 0 }} loading={v2PromptVersionsLoading}
                     value={v2SelectedPromptVersion?.prompt_version_id} placeholder="选择冻结 Prompt 版本"
                     onChange={(value) => void selectV2PromptVersion(value)}
                     options={v2PromptVersions.map((version) => ({ value: version.prompt_version_id, label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash.slice(0, 12)}` }))} />

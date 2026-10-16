@@ -71,7 +71,7 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
           prompt_version_id: selectedPromptVersion.prompt_version_id, snapshot_hash: selectedPromptVersion.snapshot_hash });
       }} style={{ marginTop: 16 }}>
       <Alert type={selectedPromptVersion ? "info" : "warning"} showIcon message="采样计划必须绑定明确的 Prompt 冻结版本"
-        description={<Space wrap><Select aria-label="每日采样计划绑定的 Prompt 冻结版本" style={{ minWidth: 320 }} loading={promptVersionsLoading}
+        description={<Space wrap style={{ width: "100%" }}><Select aria-label="每日采样计划绑定的 Prompt 冻结版本" style={{ width: "100%", minWidth: 0 }} loading={promptVersionsLoading}
           value={selectedPromptVersion?.prompt_version_id} placeholder="选择冻结 Prompt 版本" onChange={(value) => void selectPromptVersion(value)}
           options={promptVersions.filter((version) => version.status === "EFFECTIVE").map((version) => ({ value: version.prompt_version_id, label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash.slice(0, 12)}` }))} />
           {selectedPromptVersion ? <Typography.Text>将提交 V{selectedPromptVersion.version_number} · <code>{selectedPromptVersion.snapshot_hash.slice(0, 12)}</code></Typography.Text> : <Typography.Text type="secondary">只能选择当前 EFFECTIVE 冻结版本；历史版本仅可查看，不可用于新计划，也不会使用 latest。</Typography.Text>}</Space>} />

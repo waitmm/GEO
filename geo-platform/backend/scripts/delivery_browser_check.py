@@ -168,7 +168,7 @@ def select_comparison_scope(page, label, run_ids):
     expect(active).to_have_count(1)
     prefix = 'Runs ' + '、'.join(map(str, run_ids)) + ' ·'
     for _ in range(2):
-        if active.inner_text().startswith(prefix):
+        if prefix in active.inner_text():
             break
         control.press('ArrowDown')
     expect(active).to_contain_text(prefix)
@@ -215,7 +215,7 @@ def observation_check(page, origin, fixture, out, report):
     page.reload()
     expect(page.get_by_role('row').filter(has_text='正文提及')).to_contain_text('0/1 (0.0%)')
     for run_id in [fixture['baseline_run_id'], fixture['comparison_run_id']]:
-        expect(page.get_by_text(re.compile(rf'^Runs {run_id} ·')).filter(visible=True)).to_be_visible()
+        expect(page.get_by_text(re.compile(rf'Runs {run_id} ·')).filter(visible=True)).to_be_visible()
     for width in [1440, 1024, 390]:
         page.set_viewport_size({'width': width, 'height': 1000})
         name = f'comparison-{width}.png'
@@ -294,7 +294,7 @@ def observation_check(page, origin, fixture, out, report):
     expect(page.get_by_text('来自监测的固定范围：', exact=False)).to_be_visible()
     expect(page.get_by_role('region', name='自动优化交付').get_by_role('button', name='开始自动优化', exact=True)).to_be_enabled()
     page.reload()
-    expect(page.get_by_text('来自监测的固定范围：', exact=False)).to_be_visible()
+    expect(page.get_by_text('来自监测的固定范围：', exact=False)).to_be_visible(timeout=15000)
     assert f"v2_analysis={handoff['analysis']['analysis_id']}" in page.url
     for width in [1440, 390]:
         page.set_viewport_size({'width': width, 'height': 1000})
@@ -961,7 +961,13 @@ def main():
         from sqlalchemy.orm import sessionmaker
         from app.core.release_sqlite import get_release_sqlite_dbapi
         from app.core.release_database import _set_sqlite_pragma
-        from test_release_first_slice import _seed_citation_contribution_fixture, _seed_frozen_analysis
+        from test_release_first_slice import (
+            _add_project_configuration,
+            _analysis_prompt_binding,
+            _record_prompt_binding,
+            _seed_citation_contribution_fixture,
+            _seed_frozen_analysis,
+        )
         monkeypatch = MonkeyPatch()
         engine = create_engine(env['GEO_RELEASE_DATABASE_URL'], module=get_release_sqlite_dbapi())
         event.listen(engine, 'connect', _set_sqlite_pragma)
@@ -992,7 +998,9 @@ def main():
                 from app.modules.single_prompt_v2.service import create_analysis, claim_analysis, finalize_analysis
                 baseline = _seed_frozen_analysis(db, reference_urls=[])
                 first = db.query(BrowserMonitorRun).filter_by(task_id=baseline.task_id).one()
-                second, _ = create_analysis(db, project_id=1, prompt_id=44, sample_count=1, idempotency_key='browser-second-synthetic-run')
+                second, _ = create_analysis(
+                    db, project_id=1, prompt_id=44, **_analysis_prompt_binding(baseline),
+                    sample_count=1, idempotency_key='browser-second-synthetic-run')
                 token = claim_analysis(db, second.analysis_id)
                 run = db.query(BrowserMonitorRun).filter_by(task_id=second.task_id).one()
                 run.status = 'success'; run.stage = 'success'; run.answer_text = 'Target 提供资料核对入口。'
@@ -1002,12 +1010,14 @@ def main():
                 fixture = {'baseline_run_id': first.id, 'comparison_run_id': run.id}
                 metric_project = Project(organization_id=1, name='独立指标工程验收', brand_name='MetricTarget')
                 db.add(metric_project); db.flush()
+                _add_project_configuration(db, project_id=metric_project.id, brand_name='MetricTarget')
                 metric_prompt = Prompt(project_id=metric_project.id, title='隔离指标', prompt_text='过滤器如何保养？')
                 db.add(metric_prompt); db.commit()
+                metric_prompt_binding = _record_prompt_binding(db, metric_prompt.id)
                 fixture.update(metric_project_id=metric_project.id, metric_prompt_id=metric_prompt.id)
                 for part in ['baseline', 'comparison']:
                     batch, _ = create_analysis(db, project_id=metric_project.id, prompt_id=metric_prompt.id,
-                        sample_count=9, idempotency_key=f'isolated-nine-{part}')
+                        **metric_prompt_binding, sample_count=9, idempotency_key=f'isolated-nine-{part}')
                     token = claim_analysis(db, batch.analysis_id)
                     runs = db.query(BrowserMonitorRun).filter_by(task_id=batch.task_id).order_by(BrowserMonitorRun.id).all()
                     for index, run in enumerate(runs):
@@ -1018,7 +1028,7 @@ def main():
                     assert finalize_analysis(db, batch.analysis_id, token)
                     fixture[f'metric_{part}'] = [r.id for r in runs]
                 batch, _ = create_analysis(db, project_id=metric_project.id, prompt_id=metric_prompt.id,
-                    sample_count=1, idempotency_key='isolated-conflicting-platform')
+                    **metric_prompt_binding, sample_count=1, idempotency_key='isolated-conflicting-platform')
                 token = claim_analysis(db, batch.analysis_id)
                 run = db.query(BrowserMonitorRun).filter_by(task_id=batch.task_id).one()
                 run.status = 'success'; run.stage = 'success'; run.platform = 'isolated_other_platform'

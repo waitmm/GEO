@@ -209,6 +209,20 @@ def test_http_fallback_uses_same_guard_and_decodes_existing_content(monkeypatch)
     assert fetch.call_count == 2
 
 
+def test_http_fallback_rejects_long_login_wall_as_non_consumable(monkeypatch):
+    from app.modules.optimization import passage_service as passages
+    wall = '登录后继续。请先登录以查看完整内容。' * 40
+    response = web.PublicResponse(
+        'https://example.com/login', 200, {'content-type': 'text/html; charset=utf-8'},
+        f'<title>登录</title><p>{wall}</p>'.encode(),
+    )
+    monkeypatch.setattr(passages, 'public_get', lambda *args, **kwargs: response)
+    result = passages.fetch_page('https://example.com/login')
+    assert result['fetch_status'] == 'CONTENT_BLOCKED'
+    assert '登录' in result['failure_reason']
+    assert result['acquisition_receipt'] == {}
+
+
 def test_source_browser_is_ephemeral_and_closes_failed_initialization(monkeypatch):
     from app.modules.optimization import passage_service as passages
     monkeypatch.setattr(passages, '_find_browser_executable_for_fetch', lambda: None)

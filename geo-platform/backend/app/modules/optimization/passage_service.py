@@ -48,6 +48,22 @@ _SCRIPT_STYLE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNO
 _MULTI_NL = re.compile(r"\n{3,}")
 _MULTI_SP = re.compile(r"[ \t]{2,}")
 
+# A transport-successful response is not necessarily consumable source
+# content.  Keep this gate in the acquisition layer as well as the V2 source
+# preparation layer so legacy cited-source ingestion cannot publish a long
+# login/challenge page as a usable SourceDocument.
+_CONTENT_BLOCK_MARKERS = (
+    "验证码", "安全验证", "请完成验证", "人机验证", "登录后继续", "请先登录",
+    "访问过于频繁", "security verification", "access denied", "are you a robot",
+    "enable javascript and cookies to continue",
+)
+
+
+def _content_block_reason(title: str, clean_text: str) -> str:
+    sample = f"{title}\n{clean_text[:3000]}".lower()
+    marker = next((item for item in _CONTENT_BLOCK_MARKERS if item.lower() in sample), "")
+    return f"疑似验证、登录或拦截页面（marker={marker}）" if marker else ""
+
 
 def _normalize_url_for_fetch(url: str) -> str:
     """Normalize URL for fetching."""
@@ -210,10 +226,14 @@ def fetch_page_playwright(urls: list[str], progress_callback: Callable[[int, int
                         result["title"] = title
                         result["clean_text"] = clean
                         result["fetch_status"] = "SUCCESS" if len(clean) > 200 and not network["blocked"] else "PARTIAL"
-                        if len(clean) >= 200000:
+                        block_reason = _content_block_reason(title, clean)
+                        if block_reason:
+                            result["fetch_status"] = "CONTENT_BLOCKED"
+                            result["failure_reason"] = block_reason
+                        if len(clean) >= 200000 and not block_reason:
                             result["fetch_status"] = "PARTIAL"
                             result["failure_reason"] = "正文达到保存上限，不能声明完整页面"
-                        if network["blocked"]:
+                        if network["blocked"] and not block_reason:
                             result["failure_reason"] = "页面资源受限：" + ",".join(sorted(set(network["blocked"])))
                         break
                     except Exception as e:
@@ -264,7 +284,11 @@ def fetch_page(url: str) -> dict:
             result["title"] = _html.unescape(tm.group(1).strip())
         result["clean_text"] = _clean_text_from_html(html)
         result["fetch_status"] = "SUCCESS" if len(result["clean_text"]) > 100 else "PARTIAL"
-        if len(result["clean_text"]) >= 200000:
+        block_reason = _content_block_reason(result["title"], result["clean_text"])
+        if block_reason:
+            result["fetch_status"] = "CONTENT_BLOCKED"
+            result["failure_reason"] = block_reason
+        if len(result["clean_text"]) >= 200000 and not block_reason:
             result["fetch_status"] = "PARTIAL"
             result["failure_reason"] = "正文达到保存上限，不能声明完整页面"
         result["acquisition_receipt"] = _acquisition_receipt(result, list(resp.receipts))

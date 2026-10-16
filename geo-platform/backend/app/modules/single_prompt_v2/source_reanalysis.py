@@ -35,6 +35,14 @@ from .source_preparation import validate_completion_for_evidence
 
 
 CONTRACT_VERSION = "single_prompt_source_reanalysis.v1"
+ANSWER_SCOPE_FIELDS = (
+    "diagnosis_id",
+    "analysis_id",
+    "context_id",
+    "project_id",
+    "prompt_id",
+    "raw_output_hash",
+)
 
 
 def _json(value: Any) -> str:
@@ -43,6 +51,24 @@ def _json(value: Any) -> str:
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+
+
+def _diagnosis_scope(row: SinglePromptDiagnosisExecution) -> dict[str, Any]:
+    return {
+        "diagnosis_id": row.diagnosis_id,
+        "analysis_id": row.analysis_id,
+        "context_id": row.context_id,
+        "project_id": row.project_id,
+        "prompt_id": row.prompt_id,
+        "raw_output_hash": row.raw_output_hash,
+    }
+
+
+def _require_answer_scope(actual: dict[str, Any], expected: dict[str, Any]) -> None:
+    if set(actual) != set(ANSWER_SCOPE_FIELDS) or any(
+        actual.get(field) != expected.get(field) for field in ANSWER_SCOPE_FIELDS
+    ):
+        raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_ANSWER_SCOPE_MISMATCH"})
 
 
 def _source_rows(manifest: SinglePromptSourceCompletionManifest) -> dict[str, dict[str, Any]]:
@@ -214,6 +240,24 @@ def plan_source_reanalysis(
         answer = db.query(SinglePromptDiagnosisResult).filter_by(
             result_version=answer_version,
         ).one_or_none()
+        answer_execution = (
+            db.query(SinglePromptDiagnosisExecution).filter_by(
+                diagnosis_id=answer.diagnosis_id,
+            ).one_or_none()
+            if answer else None
+        )
+        expected_answer_scope = {
+            "diagnosis_id": answer.diagnosis_id if answer else "",
+            "analysis_id": current.analysis_id,
+            "context_id": current.context_id,
+            "project_id": project_id,
+            "prompt_id": prompt_id,
+            "raw_output_hash": context.raw_output_hash,
+        }
+        if answer and not answer_execution:
+            raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_ANSWER_SCOPE_MISMATCH"})
+        if answer_execution:
+            _require_answer_scope(_diagnosis_scope(answer_execution), expected_answer_scope)
         review = (
             db.query(SinglePromptDiagnosisReview).filter_by(
                 diagnosis_id=answer.diagnosis_id,
@@ -257,6 +301,7 @@ def plan_source_reanalysis(
             "answer_result_version": answer_version,
             "answer_result_hash": answer_hash,
             "answer_diagnosis_id": answer.diagnosis_id if answer else "",
+            "answer_scope": _diagnosis_scope(answer_execution) if answer_execution else {},
             "answer_review_id": answer_review_id,
             "local_gate": "PASSED" if executable else "BLOCKED",
             "local_gate_code": "EXACT_ANSWER_REVIEW_BOUND" if executable else "EXACT_ANSWER_REVIEW_REQUIRED",
@@ -457,15 +502,35 @@ def _execute_source_reanalysis(
         return existing
     if frozen.get("local_gate") != "PASSED":
         raise HTTPException(409, detail={"code": frozen.get("local_gate_code") or "SOURCE_REANALYSIS_GATE_BLOCKED"})
-    answer_query = db.query(SinglePromptDiagnosisResult).filter_by(
+    answer_scope = frozen.get("answer_scope") or {}
+    expected_answer_scope = {
+        "diagnosis_id": frozen.get("answer_diagnosis_id"),
+        "analysis_id": row.analysis_id,
+        "context_id": row.context_id,
+        "project_id": row.project_id,
+        "prompt_id": row.prompt_id,
+        "raw_output_hash": frozen.get("raw_output_hash"),
+    }
+    if (
+        row.analysis_id != frozen.get("analysis_id")
+        or row.context_id != frozen.get("context_id")
+        or row.project_id != frozen.get("project_id")
+        or row.prompt_id != frozen.get("prompt_id")
+    ):
+        raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_PLAN_SCOPE_MISMATCH"})
+    _require_answer_scope(answer_scope, expected_answer_scope)
+    answer_execution = db.query(SinglePromptDiagnosisExecution).filter_by(
+        diagnosis_id=answer_scope["diagnosis_id"],
+    ).one_or_none()
+    if not answer_execution:
+        raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_ANSWER_SCOPE_MISMATCH"})
+    _require_answer_scope(_diagnosis_scope(answer_execution), answer_scope)
+    answer = db.query(SinglePromptDiagnosisResult).filter_by(
+        diagnosis_id=answer_scope["diagnosis_id"],
         result_version=frozen.get("answer_result_version"),
-    )
-    if frozen.get("answer_diagnosis_id"):
-        answer_query = answer_query.filter_by(diagnosis_id=frozen.get("answer_diagnosis_id"))
-    answer = answer_query.one_or_none()
-    answer_diagnosis_id = answer.diagnosis_id if answer else frozen.get("answer_diagnosis_id")
+    ).one_or_none()
     review = db.query(SinglePromptDiagnosisReview).filter_by(
-        diagnosis_id=answer_diagnosis_id,
+        diagnosis_id=answer_scope["diagnosis_id"],
         review_id=frozen.get("answer_review_id"),
         result_version=frozen.get("answer_result_version"),
     ).one_or_none()
@@ -477,7 +542,14 @@ def _execute_source_reanalysis(
         or review.decision != "REVIEW_COMPLETED"
     ):
         raise HTTPException(409, detail={"code": "EXACT_ANSWER_REVIEW_REQUIRED"})
-    context = db.query(SinglePromptAnalysisContext).filter_by(context_id=row.context_id).one()
+    context = db.query(SinglePromptAnalysisContext).filter_by(
+        context_id=row.context_id,
+        analysis_id=row.analysis_id,
+        project_id=row.project_id,
+        prompt_id=row.prompt_id,
+    ).one_or_none()
+    if not context:
+        raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_PLAN_SCOPE_MISMATCH"})
     if context.raw_output_hash != frozen.get("raw_output_hash"):
         raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_RAW_INPUT_MISMATCH"})
     completion, snapshots, waiver_limitations = validate_completion_for_evidence(

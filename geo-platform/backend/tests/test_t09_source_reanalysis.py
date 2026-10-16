@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi import Response
 
-from app.models import SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
+from app.models import Prompt, SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
 from app.modules.single_prompt_v2 import source_preparation
 from app.modules.single_prompt_v2.diagnosis import (
     claim_diagnosis,
@@ -15,6 +16,8 @@ from app.modules.single_prompt_v2.diagnosis import (
     create_answer_diagnosis,
 )
 from app.modules.single_prompt_v2.source_reanalysis import (
+    _hash,
+    _require_answer_scope,
     execute_source_reanalysis,
     execute_source_reanalysis_with_local_judges,
     plan_source_reanalysis,
@@ -101,6 +104,31 @@ def test_manual_content_reanalysis_is_exact_append_only_idempotent_and_locally_e
             db, preparation_id=preparation.preparation_id, created_by="qa"
         )
 
+        # Planning must not accept a globally unique Answer result whose
+        # owning Diagnosis has drifted into another Prompt scope.
+        db.add(Prompt(id=45, project_id=1, title="Foreign Prompt", prompt_text="另一个问题"))
+        db.commit()
+        diagnosis.prompt_id = 45
+        db.commit()
+        with pytest.raises(Exception) as scope_error:
+            plan_source_reanalysis(
+                db,
+                preparation_id=preparation.preparation_id,
+                project_id=1,
+                prompt_id=44,
+                prior_completion_manifest_id=old_manifest.manifest_id,
+                prior_completion_manifest_hash=old_manifest.payload_hash,
+                new_completion_manifest_id=new_manifest.manifest_id,
+                new_completion_manifest_hash=new_manifest.payload_hash,
+                idempotency_key="t09-source-reanalysis-cross-prompt",
+                requested_by="qa",
+            )
+        assert getattr(scope_error.value, "detail", {}) == {
+            "code": "SOURCE_REANALYSIS_ANSWER_SCOPE_MISMATCH"
+        }
+        diagnosis.prompt_id = 44
+        db.commit()
+
         plans, created = plan_source_reanalysis(
             db,
             preparation_id=preparation.preparation_id,
@@ -120,6 +148,14 @@ def test_manual_content_reanalysis_is_exact_append_only_idempotent_and_locally_e
         assert view["status"] == "AWAITING_EXTERNAL_AUTHORIZATION"
         assert view["blocker_code"] == "EXTERNAL_MODEL_AUTHORIZATION_REQUIRED"
         assert view["external_usage"] == {"calls": 0, "tokens": 0}
+        assert view["input"]["answer_scope"] == {
+            "diagnosis_id": diagnosis.diagnosis_id,
+            "analysis_id": analysis.analysis_id,
+            "context_id": view["input"]["context_id"],
+            "project_id": 1,
+            "prompt_id": 44,
+            "raw_output_hash": view["input"]["raw_output_hash"],
+        }
         assert view["input"]["changed_source_keys"] == [source["source_key"]]
         assert view["input"]["changed_snapshots"] == [{
             "source_key": source["source_key"],
@@ -155,6 +191,40 @@ def test_manual_content_reanalysis_is_exact_append_only_idempotent_and_locally_e
         assert api_response.status_code == 200
         assert api_view["affected_count"] == 1
         assert api_view["reanalyses"][0]["reanalysis_id"] == plan.diagnosis_id
+
+        # Even a self-consistent rewritten plan hash cannot inject an Answer
+        # from another Project, Prompt, or Context at execution time.
+        original_progress = json.loads(plan.progress_json)
+        original_fingerprint = plan.input_fingerprint
+        for field, foreign_value in (
+            ("project_id", 2),
+            ("prompt_id", 45),
+            ("context_id", "ctx-foreign-injection"),
+        ):
+            tampered = json.loads(json.dumps(original_progress))
+            tampered["input"]["answer_scope"][field] = foreign_value
+            tampered_hash = _hash(tampered["input"])
+            tampered["input_hash"] = tampered_hash
+            plan.progress_json = json.dumps(
+                tampered, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            plan.input_fingerprint = tampered_hash
+            db.commit()
+            with pytest.raises(Exception) as execution_scope_error:
+                execute_source_reanalysis_with_local_judges(
+                    db,
+                    reanalysis_id=plan.diagnosis_id,
+                    source_claim_judge=_SourceClaimJudge(),
+                    alignment_judge=_AlignmentJudge(),
+                )
+            assert getattr(execution_scope_error.value, "detail", {}) == {
+                "code": "SOURCE_REANALYSIS_ANSWER_SCOPE_MISMATCH"
+            }
+        plan.progress_json = json.dumps(
+            original_progress, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        plan.input_fingerprint = original_fingerprint
+        db.commit()
 
         result = execute_source_reanalysis_with_local_judges(
             db,
@@ -306,3 +376,24 @@ def test_formal_executor_requires_shared_guard_and_forbids_hidden_retry():
         assert False, "the T09 executor must never enable an implicit retry"
     except Exception as exc:
         assert getattr(exc, "detail", {}) == {"code": "SOURCE_REANALYSIS_SINGLE_ATTEMPT_REQUIRED"}
+
+
+@pytest.mark.parametrize(
+    ("field", "foreign_value"),
+    (("project_id", 2), ("prompt_id", 45), ("context_id", "ctx-foreign")),
+)
+def test_answer_scope_guard_rejects_cross_scope_identity(field, foreign_value):
+    expected = {
+        "diagnosis_id": "diagnosis-1",
+        "analysis_id": "analysis-1",
+        "context_id": "context-1",
+        "project_id": 1,
+        "prompt_id": 44,
+        "raw_output_hash": "a" * 64,
+    }
+    injected = {**expected, field: foreign_value}
+    with pytest.raises(Exception) as exc:
+        _require_answer_scope(injected, expected)
+    assert getattr(exc.value, "detail", {}) == {
+        "code": "SOURCE_REANALYSIS_ANSWER_SCOPE_MISMATCH"
+    }

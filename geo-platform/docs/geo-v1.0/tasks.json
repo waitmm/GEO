@@ -1207,7 +1207,7 @@
       "milestone": "M1",
       "owner_role": "前端/后端",
       "owner_name": "Codex（全栈）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T06"
       ],
@@ -1226,6 +1226,8 @@
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
         "backend/artifacts/acceptance/browser-20261016T042219Z/report.json",
+        "backend/artifacts/acceptance/joint-live-20261016/report.json",
+        "backend/artifacts/acceptance/joint-live-20261016/browser-pass-final/report.json",
         "backend/tests/test_t07_monitor_backend_gate.py",
         "backend/tests/test_observation_delivery.py",
         "frontend/tests/monitor-observation.test.mjs"
@@ -1234,11 +1236,11 @@
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
-      "actual_end": "",
-      "blocker": "后端与前端工程Gate及离线浏览器已通过；真实多Prompt项目的范围变化浏览器验收需要新的外部采样授权，现有T05预算不转用",
-      "commit": "6193a95,e0a84bb",
-      "audit_classification": "工程实现已满足Macro/Weighted、0/N与N/A及冻结范围口径；真实多Prompt产品证据未完成",
-      "current_checkpoint": "t07_engineering_gate_20261016"
+      "actual_end": "2026-10-16",
+      "blocker": "",
+      "commit": "6193a95,e0a84bb,c3b30a9,a360fdd,dcb4b64,c8dfaad,e6216b6",
+      "audit_classification": "IMPLEMENTATION_CHANGE；两个真实冻结Prompt范围完成聚合、切换、趋势和刷新；只读浏览器Gate及独立审核PASS，未把NOT_COMPUTABLE升级为零值",
+      "current_checkpoint": "t07_joint_real_done_20261016"
     },
     {
       "id": "T08",
@@ -1308,6 +1310,8 @@
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
         "backend/artifacts/acceptance/browser-20261009T095830Z/report.json",
+        "backend/artifacts/acceptance/joint-live-20261016/report.json",
+        "backend/artifacts/acceptance/joint-live-20261016/source-results.json",
         "backend/tests/test_release_first_slice.py",
         "backend/tests/test_delivery_supplemental_sources.py"
       ],
@@ -1316,10 +1320,10 @@
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "真实来源覆盖及品牌官网获取需独立外部访问授权；本地登录墙拒绝、引用守恒与append-only快照已完成",
-      "commit": "118de20",
-      "audit_classification": "本地实现与Gate完成；真实外部来源覆盖待独立授权",
-      "current_checkpoint": "t09_local_source_gate_20261016"
+      "blocker": "真实引用正文与品牌官网补充快照已通过；AC-SRC-03仍缺补录后受影响下游重新分析及新旧结果归属验收",
+      "commit": "118de20,c3b30a9,25377fc",
+      "audit_classification": "IMPLEMENTATION_CHANGE；真实外部来源覆盖、异常拒绝、receipt、引用守恒与append-only快照已完成；不越过仍为PARTIAL的受影响项重新分析",
+      "current_checkpoint": "t09_real_sources_partial_20261016"
     },
     {
       "id": "T10",
@@ -1783,7 +1787,7 @@
       "milestone": "M3",
       "owner_role": "后端/前端",
       "owner_name": "Codex（全栈）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T05"
       ],
@@ -1803,6 +1807,8 @@
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
         "backend/artifacts/acceptance/browser-20261016T042219Z/report.json",
+        "backend/artifacts/acceptance/joint-live-20261016/report.json",
+        "backend/artifacts/acceptance/joint-live-20261016/browser-pass-final/report.json",
         "backend/tests/test_observation_delivery.py",
         "frontend/tests/observation-scope-comparison.test.mjs"
       ],
@@ -1810,11 +1816,11 @@
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
-      "actual_end": "",
-      "blocker": "真实双范围/双入口采样仍需独立授权；离线浏览器、刷新恢复、历史隔离和不可比展示已通过",
-      "commit": "1da0027,b132d5f,63bbf03",
-      "audit_classification": "release observation API与前端已接入；真实双范围条件验收未完成",
-      "current_checkpoint": "t21_browser_history_isolation_20261016"
+      "actual_end": "2026-10-16",
+      "blocker": "",
+      "commit": "1da0027,b132d5f,63bbf03,c3b30a9,a360fdd,dcb4b64,c8dfaad,e6216b6",
+      "audit_classification": "IMPLEMENTATION_CHANGE；真实Run 1/2形成两个独立冻结Context，保存ResultVersion、测量身份、限制与引用差异；API/浏览器刷新及源库零业务写入PASS，独立审核允许DONE",
+      "current_checkpoint": "t21_joint_real_done_20261016"
     },
     {
       "id": "T22",

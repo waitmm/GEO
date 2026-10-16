@@ -232,7 +232,7 @@
         "SRC-004"
       ],
       "status": "PARTIAL",
-      "evidence": "2026-10-09：test_release_public_web 的31项离线检查验证实际浏览器访问受限时不误报正文成功，HTTP兜底使用相同公网安全约束。工程使用模拟内容，无真实抓取；此用例的缺失来源下完整策略质量仍需验收，不能据此标PASS。"
+      "evidence": "2026-10-16 joint-live-20261016：8次不同顶层URL尝试、9个实际不同URL（含一次重定向）均先计账且无自动重试；真实403、404和反爬占位保留为FETCH_FAILED/PARTIAL，引用观察未删除。缺失来源下完整策略质量仍未验收，因此保持PARTIAL。"
     },
     {
       "id": "AC-SRC-03",
@@ -265,7 +265,7 @@
         "SRC-001"
       ],
       "status": "PARTIAL",
-      "evidence": "supplemental-regression-20261010/pytest.xml：87项组合通过；browser-20261010T032308Z：UI授权获取/选版/稿件/归因/编辑QA通过。获取与模型均模拟，真实集成待授权，未改原Citation Manifest或计数。"
+      "evidence": "2026-10-16 joint-live-20261016：真实腾讯官网页面经301到200取得正文、transport receipt与冻结补充快照，source_role=SUPPLEMENTAL_PUBLIC_SOURCE；原Citation计数98→98。既有组合Gate同时验证后续选择语义；不把官网正文自动升级为Claim支持。"
     },
     {
       "id": "AC-MON-01",
@@ -283,7 +283,7 @@
         "MON-002"
       ],
       "status": "PASS",
-      "evidence": "2026-10-16 T07组合Gate：后端20项、前端7项及release build通过；browser-20261016T042219Z以离线合成输入验证正式UI的0/9、1/9、覆盖与响应式展示，报告明确不代表真实采样或模型质量。"
+      "evidence": "2026-10-16 T07组合Gate：后端20项、前端7项及release build通过；joint-live-20261016/report.json 与 browser-pass-final/report.json 以真实文心Run验证两个Prompt的冻结池、0值与NOT_COMPUTABLE分离、切换/刷新及GET零业务写入；未把未评估项计零。"
     },
     {
       "id": "AC-MON-02",
@@ -301,7 +301,7 @@
         "MON-002"
       ],
       "status": "PASS",
-      "evidence": "2026-10-16 T07组合Gate：后端20项、前端7项及release build通过；browser-20261016T042219Z以离线合成输入验证0/9与N/A分开，报告明确不代表真实采样或模型质量。"
+      "evidence": "2026-10-16 T07组合Gate及 joint-live-20261016：真实Prompt池中正文提及为0/2与0/1，候选/推荐因语义未评估保持NOT_COMPUTABLE；browser-pass-final验证切换和刷新后口径不漂移。离线0/N反例仍由既有Gate覆盖。"
     },
     {
       "id": "AC-MON-03",
@@ -319,7 +319,7 @@
         "MON-003"
       ],
       "status": "PASS",
-      "evidence": "2026-10-16 T07组合Gate：Macro与Run Weighted独立口径、项目隔离、冻结范围和GET无业务写入通过；browser-20261016T042219Z为离线合成UI证据，不替代真实多Prompt产品验收。"
+      "evidence": "2026-10-16 T07组合Gate及 joint-live-20261016：两个真实Prompt的Prompt Macro与Run Weighted分别展示，Run池2/1且不重叠；browser-pass-final切换、趋势、刷新PASS，源库与运行副本业务指纹不变。"
     },
     {
       "id": "AC-MON-04",

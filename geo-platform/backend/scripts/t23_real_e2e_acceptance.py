@@ -228,6 +228,7 @@ def _low_match_summary(db: Session, case: dict[str, Any], inputs: dict[str, Any]
     shared = {"reference_id": frozen["reference_id"], "source_key": frozen["source_key"]}
     if (not citation or citation.get("processing_status") != "DONE"
             or citation.get("disposition") != frozen["citation_disposition"]
+            or citation.get("run_id") != frozen["selected_run_id"]
             or any(citation.get(key) != value for key, value in shared.items())
             or not evaluation or evaluation.get("processing_status") != "DONE"
             or evaluation.get("citation_id") != frozen["citation_id"]

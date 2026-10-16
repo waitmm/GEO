@@ -156,6 +156,21 @@ def test_post_execution_gate_requires_persisted_ready_text_qa_and_hashes(scene, 
         "low_match_evidence": low_match}
     assert _low_match_summary(db, case, json.loads(row.input_json))["evaluation_id"] == evaluation["evaluation_id"]
 
+    cross_run_contribution = copy.deepcopy(contribution_output)
+    cross_run_citation = next(item for item in cross_run_contribution["citations"]
+        if item["citation_id"] == citation["citation_id"])
+    cross_run_citation["run_id"] = citation["run_id"] + 999
+    contribution.output_json = json.dumps(cross_run_contribution, ensure_ascii=False)
+    contribution.output_hash = digest(cross_run_contribution)
+    cross_run_low = {**low_match, "result_hash": contribution.output_hash}
+    with db.no_autoflush:
+        with pytest.raises(ValueError, match="disposition/evaluation changed"):
+            _low_match_summary(db, {**case, "low_match_evidence": cross_run_low}, json.loads(row.input_json))
+    db.rollback()
+    db.refresh(row)
+    contribution = db.query(SinglePromptCitationContributionResult).filter_by(
+        result_version=contribution_ref["result_version"]).one()
+
     result = _verify_delivery(db, row, "E2E-02", [], low_match)
     assert result["result"] == "PASS"
     assert result["deliveries"][0]["segment_kinds"] == ["HEADING", "INSTRUCTION"]

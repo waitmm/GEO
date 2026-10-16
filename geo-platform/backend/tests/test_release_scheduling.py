@@ -111,6 +111,43 @@ def test_schedule_reservation_reopen_pause_and_authorization_bound(tmp_path, mon
         db.close(); engine.dispose()
 
 
+def test_pause_cancels_only_queued_runs_and_preserves_completed_sample(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    try:
+        _seed_frozen_analysis(db, reference_urls=[])
+        schedule = create_schedule(
+            db,
+            project_id=1,
+            prompt_id=44,
+            **_version_kwargs(db),
+            timezone_name='Asia/Shanghai',
+            local_time='09:00',
+            sample_count=3,
+            max_attempts=3,
+            authorization_note='offline AC-SAM-03 cancellation test',
+            now=datetime(2026, 10, 9),
+        )
+        [analysis_id] = tick(db, datetime(2026, 10, 9, 1))
+        analysis = db.query(SinglePromptAnalysis).filter_by(analysis_id=analysis_id).one()
+        runs = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).order_by(BrowserMonitorRun.id).all()
+        runs[0].status, runs[0].stage = 'success', 'success'
+        runs[0].answer_text = '已完成样本的原始回答必须保留'
+        db.commit()
+
+        pause_schedule(db, schedule, schedule.revision)
+
+        assert allow_scheduled_start(db, analysis) is False
+        db.refresh(analysis)
+        for run in runs:
+            db.refresh(run)
+        assert analysis.status == 'CANCELLED'
+        assert [run.status for run in runs] == ['success', 'cancelled', 'cancelled']
+        assert [run.stage for run in runs] == ['success', 'cancelled', 'cancelled']
+        assert runs[0].answer_text == '已完成样本的原始回答必须保留'
+    finally:
+        db.close(); engine.dispose()
+
+
 @pytest.mark.parametrize('cause', ['prompt_change', 'captcha_required', 'login_required'])
 def test_schedule_stops_when_identity_or_access_changes(tmp_path, monkeypatch, cause):
     db, engine = _migrated_session(tmp_path, monkeypatch)

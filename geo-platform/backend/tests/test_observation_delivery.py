@@ -171,6 +171,27 @@ def test_condition_conflict_blocks_delta_not_raw_values():
     assert 'platform:CONFLICT' in output['conflicts']
 
 
+def test_web_and_official_api_entry_conflict_is_not_comparable_but_keeps_raw_values():
+    browser = scope(1)
+    official_api = scope(2, answer='No brand')
+    api_run = official_api['raw']['runs'][0]
+    api_run['observed_conditions']['source_type']['value'] = 'wenxin_api'
+    api_run['observed_conditions']['adapter']['value'] = '官方API'
+
+    output = compare_scopes(browser, official_api, IDENTITY)
+    metric = output['metrics']['brand_mention_rate']
+
+    assert metric['baseline']['value'] == 1
+    assert metric['comparison']['value'] == 0
+    assert output['conditions']['baseline']['source_type'] == ['browser_audit']
+    assert output['conditions']['baseline']['adapter'] == ['wenxin_web_audit']
+    assert output['conditions']['comparison']['source_type'] == ['wenxin_api']
+    assert output['conditions']['comparison']['adapter'] == ['官方API']
+    assert {'source_type:CONFLICT', 'adapter:CONFLICT'} <= set(output['conflicts'])
+    assert metric['delta_percentage_points'] is None
+    assert metric['comparability'] == 'NOT_COMPARABLE'
+
+
 def test_zero_to_one_of_nine_is_11_points_not_100_percent_or_full_recommendation():
     before, after = scope(1), scope(10)
     before['raw']['runs'] = [scope(i, answer=f'General advice {i}')['raw']['runs'][0] for i in range(1, 10)]

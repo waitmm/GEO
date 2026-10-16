@@ -1873,7 +1873,7 @@
       "milestone": "M4",
       "owner_role": "产品/验收",
       "owner_name": "产品负责人（验收）/Codex（支持）",
-      "status": "WAITING_DEPENDENCIES",
+      "status": "BLOCKED",
       "depends_on": [
         "T19",
         "T22"
@@ -1901,9 +1901,9 @@
       "planned_end": "",
       "actual_start": "",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "T19与T22依赖已满足；三类真实E2E仍需独立授权真实业务模型调用及可审计真实场景输入，本轮联合文心/公开URL额度不得转用",
       "commit": "",
-      "audit_classification": "未验收"
+      "audit_classification": "依赖已解锁；外部授权边界阻断，未以Mock替代真实E2E"
     },
     {
       "id": "T24",

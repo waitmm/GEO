@@ -1289,7 +1289,7 @@
       "milestone": "M1",
       "owner_role": "后端",
       "owner_name": "Codex（后端）",
-      "status": "IN_PROGRESS",
+      "status": "BLOCKED",
       "depends_on": [
         "T05"
       ],
@@ -1316,17 +1316,19 @@
         "backend/artifacts/acceptance/joint-live-20261016/source-results.json",
         "backend/tests/test_release_first_slice.py",
         "backend/tests/test_delivery_supplemental_sources.py",
-        "backend/tests/test_t09_source_reanalysis.py"
+        "backend/tests/test_t09_source_reanalysis.py",
+        "backend/scripts/run_t09_source_reanalysis_live.py",
+        "backend/scripts/live_model_budget.py"
       ],
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "EXTERNAL_MODEL_AUTHORIZATION_REQUIRED：真实引用正文、异常拒绝、append-only快照及精确受影响重分析计划已通过；正式模型重分析结果与生产执行链尚未获本轮授权，AC-SRC-03保持PARTIAL",
-      "commit": "118de20,c3b30a9,25377fc,3ce1573",
-      "audit_classification": "IMPLEMENTATION_CHANGE；old/new Completion Manifest与hash、Project/Prompt/Context和受影响下游精确冻结；旧Diagnosis/Strategy/Delivery不改，生产默认等待外部授权；独立审核确认实现PASS但任务不得DONE",
-      "current_checkpoint": "t09_source_reanalysis_awaiting_external_authorization_20261016"
+      "blocker": "SEMANTIC_CONTRACT_REVIEW_REQUIRED：正式诊断尚未冻结structured transport/effective model身份，实际Answer/Source/Alignment调用身份与任务及共享账本冻结身份不一致，发送前必须拒绝；joint-live隔离范围同时缺少同一Citation身份下合法的old/new真实Snapshot/Completion Manifest对，SUPPLEMENTAL_PUBLIC_SOURCE不得冒充Citation。真实业务模型调用0/3，AC-SRC-03保持PARTIAL",
+      "commit": "118de20,c3b30a9,25377fc,3ce1573,81b7597,90efdf4",
+      "audit_classification": "IMPLEMENTATION_CHANGE完成正式执行器、共享预算、单次调用、append-only和完整Answer scope双阶段校验；SEMANTIC_RISK因transport/effective model未版本化而停止，未放宽身份Gate、未错误复用Supplemental来源、未发起外部请求",
+      "current_checkpoint": "t09_guarded_executor_ready_semantic_contract_and_real_input_blocked_20261016"
     },
     {
       "id": "T10",
@@ -1365,7 +1367,7 @@
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "T09尚未DONE（AC-SRC-03正式重分析需独立外部模型授权）；即使T08已DONE也不得提前解锁T10",
+      "blocker": "T09尚未DONE（正式诊断transport/effective model契约需版本化审核，且缺少合法old/new真实Citation正文版本）；即使T08已DONE也不得提前解锁T10",
       "commit": "",
       "audit_classification": "正式自动交接已实现；隔离模拟浏览器通过，真实集成与完整恢复验收待完成",
       "current_checkpoint": "delivery_checkpoint_20261009"
@@ -1894,16 +1896,21 @@
         "frontend/src/AutomaticOptimizePanel.tsx"
       ],
       "acceptance_evidence": [
-        "docs/geo-v1.0/implementation-map.md"
+        "docs/geo-v1.0/implementation-map.md",
+        "backend/scripts/t23_real_e2e_acceptance.py",
+        "backend/scripts/run_t23_delivery_live.py",
+        "backend/tests/test_t23_real_e2e_acceptance.py",
+        "backend/tests/test_live_model_budget.py"
       ],
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "",
       "actual_end": "",
-      "blocker": "T19与T22依赖已满足；三类真实E2E仍需独立授权真实业务模型调用及可审计真实场景输入，本轮联合文心/公开URL额度不得转用",
-      "commit": "",
-      "audit_classification": "依赖已解锁；外部授权边界阻断，未以Mock替代真实E2E"
+      "blocker": "SEMANTIC_CONTRACT_REVIEW_REQUIRED / ANSWER_TRANSPORT_IDENTITY_UNFROZEN：真实额度已授权，但Answer诊断实际effective model为deepseek-v4-flash，任务与共享账本冻结为deepseek-flash；Guard已在发送前拒绝。E2E-02还必须先形成并冻结正式低匹配Contribution结果，E2E-03必须先通过真实Answer诊断和正式入口登记显式UNKNOWN；当前真实调用0/9，不以Mock补齐",
+      "commit": "73808ce,2083754,17ea90a",
+      "audit_classification": "IMPLEMENTATION_CHANGE完成共享12次/50元账本接线、T23 4+3+2预算、三类真实输入和交付QA验收Gate；SEMANTIC_RISK按规则停止外部发送，未放宽模型身份或伪造低匹配/UNKNOWN",
+      "current_checkpoint": "t23_live_gate_ready_semantic_contract_blocked_20261016"
     },
     {
       "id": "T24",

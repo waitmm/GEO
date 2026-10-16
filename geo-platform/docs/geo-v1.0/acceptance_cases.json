@@ -250,7 +250,7 @@
         "SRC-003"
       ],
       "status": "PARTIAL",
-      "evidence": "2026-10-16：同一来源补录追加新Snapshot/Completion Manifest；新增重分析API精确绑定old/new manifest与hash并冻结受影响Diagnosis/Strategy/Delivery，离线judge验证新append-only Result且旧结果不变。生产路径保持AWAITING_EXTERNAL_AUTHORIZATION，正式模型结果尚无授权与真实证据，因此仍为PARTIAL。"
+      "evidence": "2026-10-16：同一来源补录追加新Snapshot/Completion Manifest；重分析API精确绑定old/new manifest与hash、完整Answer Project/Prompt/Analysis/Context scope及受影响Diagnosis/Strategy/Delivery，离线judge验证新append-only Result且旧结果不变。正式DeepSeek执行器、共享预算和失败不发布Gate已完成；当前正式诊断transport/effective model身份未版本化且joint-live没有合法同源old/new真实Citation正文对，发送前停止，真实调用0/3，因此仍为PARTIAL。"
     },
     {
       "id": "AC-SRC-04",

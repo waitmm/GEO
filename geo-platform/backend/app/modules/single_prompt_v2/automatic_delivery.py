@@ -1,6 +1,8 @@
 """V2-owned finite Optimize handoff using the existing computation stages."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 import hashlib
 import json
@@ -24,6 +26,25 @@ from .delivery_text import digest
 CONTRACT_VERSION = "single_prompt_automatic_delivery.v1"
 STAGES = ("SOURCES", "ANSWER", "CITATION", "STRATEGY", "TRUTH", "DRAFT", "TEXT_QA")
 TERMINAL = {"COMPLETED", "COMPLETED_WITH_LIMITATIONS", "CANCELLED"}
+_SHARED_REQUEST_GUARD: ContextVar = ContextVar("automatic_delivery_shared_request_guard", default=None)
+_SHARED_AUDIT_SINK: ContextVar = ContextVar("automatic_delivery_shared_audit_sink", default=None)
+
+
+@contextmanager
+def shared_live_budget_hooks(*, request_guard, response_audit_sink):
+    """Attach one controller-owned batch budget around every task model client.
+
+    The hooks are scoped to the synchronous worker call.  This keeps ordinary
+    workers unchanged while allowing the sole live-acceptance entry point to
+    protect Answer, Citation, Draft and Text-QA sends with one shared ledger.
+    """
+    guard_token = _SHARED_REQUEST_GUARD.set(request_guard)
+    audit_token = _SHARED_AUDIT_SINK.set(response_audit_sink)
+    try:
+        yield
+    finally:
+        _SHARED_AUDIT_SINK.reset(audit_token)
+        _SHARED_REQUEST_GUARD.reset(guard_token)
 
 
 def computation_contracts() -> dict:
@@ -349,6 +370,8 @@ def authorize_task(db: Session, row: SinglePromptOptimizationTask, *, expected_r
 def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekClient:
     inputs = loads(row.input_json, {})
     task_id = row.task_id
+    shared_guard = _SHARED_REQUEST_GUARD.get()
+    shared_audit = _SHARED_AUDIT_SINK.get()
 
     def current():
         db.expire_all()
@@ -358,54 +381,68 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
         return active
 
     def reserve(identity: dict):
-        active = current()
-        authorization = loads(active.authorization_json, {})
-        progress = loads(active.progress_json, {})
-        requests = progress.setdefault("requests", [])
-        if inputs.get("answer_relation_correction") and not inputs.get("answer_relation_delivery_regeneration"):
-            raise SemanticLLMError("ANSWER_RELATION_REPROJECTION_FORBIDS_EXTERNAL_CALL")
-        if inputs.get("answer_relation_delivery_regeneration"):
-            from .delivery_generation import GENERATION_VERSION, QA_VERSION
-            from .delivery_facts import CONTRACT as FACT_CONTRACT
-            if identity.get("prompt_version") not in {FACT_CONTRACT, GENERATION_VERSION, QA_VERSION}:
-                raise SemanticLLMError("ANSWER_RELATION_DELIVERY_REGENERATION_FORBIDS_UPSTREAM_EXTERNAL_CALL")
-        if inputs.get("truth_correction"):
-            from .delivery_generation import GENERATION_VERSION, QA_VERSION
-            allowed = {GENERATION_VERSION: 'DRAFT', QA_VERSION: 'TEXT_QA'}
-            if identity.get('prompt_version') not in allowed or progress.get('stage') != allowed[identity['prompt_version']]:
-                raise SemanticLLMError('TRUTH_REPROJECTION_FORBIDS_UPSTREAM_EXTERNAL_CALL')
-        if inputs.get("delivery_revision"):
-            from .delivery_generation import GENERATION_VERSION, QA_VERSION
-            regenerate = inputs["delivery_revision"].get("contract_version") == "delivery_text_regeneration.v1"
-            allowed = {QA_VERSION: "TEXT_QA", **({GENERATION_VERSION: "DRAFT"} if regenerate else {})}
-            if (identity.get("prompt_version") not in allowed
-                    or progress.get("stage") != allowed[identity["prompt_version"]]
-                    or any(r.get("prompt_version") == identity.get("prompt_version") for r in requests)):
-                raise SemanticLLMError("TEXT_TASK_ONLY_ONE_REQUEST_PER_ALLOWED_STAGE")
-        if any(r.get("provider_payload_hash") == identity.get("provider_payload_hash") for r in requests):
-            raise SemanticLLMError("OPTIMIZATION_INPUT_ALREADY_REQUESTED_NO_AUTOMATIC_RETRY")
-        if (identity["provider"] != inputs["provider"] or identity["requested_model_alias"] != inputs["requested_model"]
-                or (identity["structured_output_mode"] == "JSON_SCHEMA" and identity["effective_request_model"] != inputs["effective_request_model"])):
-            raise SemanticLLMError("OPTIMIZATION_MODEL_IDENTITY_CHANGED")
-        tokens = identity["input_token_upper_bound"] + identity["max_output_tokens"]
-        cost = tokens * float(authorization.get("conservative_cny_per_million_tokens") or 0) / 1_000_000
-        if (authorization.get("policy") != "ALLOW_EXTERNAL" or authorization.get("input_hash") != active.input_hash
-                or len(requests) + 1 > authorization["max_requests"]
-                or sum(r["token_ceiling"] for r in requests) + tokens > authorization["max_tokens"]
-                or sum(r["reserved_cost_cny"] for r in requests) + cost > authorization["max_cost_cny"]):
-            error = SemanticLLMError("OPTIMIZATION_EXTERNAL_BUDGET_EXHAUSTED")
-            error.code = "EXTERNAL_BUDGET_EXHAUSTED"
-            raise error
-        requests.append({**identity, "request_id": f"{task_id}:{len(requests) + 1}", "stage": progress["stage"],
-            "token_ceiling": tokens, "reserved_cost_cny": cost, "status": "RESERVED"})
-        changed = db.execute(update(SinglePromptOptimizationTask).where(SinglePromptOptimizationTask.id == active.id,
-            SinglePromptOptimizationTask.revision == active.revision, SinglePromptOptimizationTask.status == "RUNNING"
-        ).values(progress_json=encode(progress), revision=active.revision + 1))
-        db.commit()
-        if changed.rowcount != 1:
-            raise SemanticLLMError("OPTIMIZATION_REQUEST_RESERVATION_CONFLICT")
+        if shared_guard is not None:
+            shared_guard(identity)
+        try:
+            active = current()
+            authorization = loads(active.authorization_json, {})
+            progress = loads(active.progress_json, {})
+            requests = progress.setdefault("requests", [])
+            if inputs.get("answer_relation_correction") and not inputs.get("answer_relation_delivery_regeneration"):
+                raise SemanticLLMError("ANSWER_RELATION_REPROJECTION_FORBIDS_EXTERNAL_CALL")
+            if inputs.get("answer_relation_delivery_regeneration"):
+                from .delivery_generation import GENERATION_VERSION, QA_VERSION
+                from .delivery_facts import CONTRACT as FACT_CONTRACT
+                if identity.get("prompt_version") not in {FACT_CONTRACT, GENERATION_VERSION, QA_VERSION}:
+                    raise SemanticLLMError("ANSWER_RELATION_DELIVERY_REGENERATION_FORBIDS_UPSTREAM_EXTERNAL_CALL")
+            if inputs.get("truth_correction"):
+                from .delivery_generation import GENERATION_VERSION, QA_VERSION
+                allowed = {GENERATION_VERSION: 'DRAFT', QA_VERSION: 'TEXT_QA'}
+                if identity.get('prompt_version') not in allowed or progress.get('stage') != allowed[identity['prompt_version']]:
+                    raise SemanticLLMError('TRUTH_REPROJECTION_FORBIDS_UPSTREAM_EXTERNAL_CALL')
+            if inputs.get("delivery_revision"):
+                from .delivery_generation import GENERATION_VERSION, QA_VERSION
+                regenerate = inputs["delivery_revision"].get("contract_version") == "delivery_text_regeneration.v1"
+                allowed = {QA_VERSION: "TEXT_QA", **({GENERATION_VERSION: "DRAFT"} if regenerate else {})}
+                if (identity.get("prompt_version") not in allowed
+                        or progress.get("stage") != allowed[identity["prompt_version"]]
+                        or any(r.get("prompt_version") == identity.get("prompt_version") for r in requests)):
+                    raise SemanticLLMError("TEXT_TASK_ONLY_ONE_REQUEST_PER_ALLOWED_STAGE")
+            if any(r.get("provider_payload_hash") == identity.get("provider_payload_hash") for r in requests):
+                raise SemanticLLMError("OPTIMIZATION_INPUT_ALREADY_REQUESTED_NO_AUTOMATIC_RETRY")
+            if (identity["provider"] != inputs["provider"] or identity["requested_model_alias"] != inputs["requested_model"]
+                    or (identity["structured_output_mode"] == "JSON_SCHEMA" and identity["effective_request_model"] != inputs["effective_request_model"])):
+                raise SemanticLLMError("OPTIMIZATION_MODEL_IDENTITY_CHANGED")
+            tokens = identity["input_token_upper_bound"] + identity["max_output_tokens"]
+            cost = tokens * float(authorization.get("conservative_cny_per_million_tokens") or 0) / 1_000_000
+            if (authorization.get("policy") != "ALLOW_EXTERNAL" or authorization.get("input_hash") != active.input_hash
+                    or len(requests) + 1 > authorization["max_requests"]
+                    or sum(r["token_ceiling"] for r in requests) + tokens > authorization["max_tokens"]
+                    or sum(r["reserved_cost_cny"] for r in requests) + cost > authorization["max_cost_cny"]):
+                error = SemanticLLMError("OPTIMIZATION_EXTERNAL_BUDGET_EXHAUSTED")
+                error.code = "EXTERNAL_BUDGET_EXHAUSTED"
+                raise error
+            requests.append({**identity, "request_id": f"{task_id}:{len(requests) + 1}", "stage": progress["stage"],
+                "token_ceiling": tokens, "reserved_cost_cny": cost, "status": "RESERVED"})
+            changed = db.execute(update(SinglePromptOptimizationTask).where(SinglePromptOptimizationTask.id == active.id,
+                SinglePromptOptimizationTask.revision == active.revision, SinglePromptOptimizationTask.status == "RUNNING"
+            ).values(progress_json=encode(progress), revision=active.revision + 1))
+            db.commit()
+            if changed.rowcount != 1:
+                raise SemanticLLMError("OPTIMIZATION_REQUEST_RESERVATION_CONFLICT")
+        except Exception as exc:
+            if shared_audit is not None:
+                shared_audit({"request_identity": identity, "validation_status": "LOCAL_GUARD_REJECTED",
+                    "rejection_code": str(getattr(exc, "code", "LOCAL_TASK_GUARD_REJECTED")),
+                    "token_usage": {}})
+            raise
 
     def audit(payload: dict):
+        # Settle the controller ledger before any local artifact/database write.
+        # A provider response must remain counted even if local evidence storage
+        # subsequently fails; cache events have no shared reservation and are ignored.
+        if shared_audit is not None:
+            shared_audit(payload)
         root = Path(get_settings().evidence_artifact_dir).resolve() / "automatic-delivery" / task_id
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         body = encode({"task_id": task_id, "input_hash": row.input_hash, **payload})

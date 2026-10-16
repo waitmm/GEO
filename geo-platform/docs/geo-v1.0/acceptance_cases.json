@@ -270,7 +270,9 @@
     {
       "id": "AC-MON-01",
       "automated_checks": [
-        "tests.test_observation_delivery::test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option"
+        "tests.test_observation_delivery::test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option",
+        "tests.test_t07_monitor_backend_gate::test_project_monitor_separates_aggregates_na_and_scope_without_get_writes",
+        "frontend/tests/monitor-observation.test.mjs"
       ],
       "module": "MON",
       "name": "分母与缺失",
@@ -281,12 +283,14 @@
         "MON-002"
       ],
       "status": "PASS",
-      "evidence": "2026-10-09 isolated deterministic measurement acceptance: 49 focused tests passed; independent expected numerator/denominator and unknown assertions in test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option. Browser152756Z separately verifies formal measurement/comparison display and 0/9 vs1/9. No real platform/model quality assertion."
+      "evidence": "2026-10-16 T07组合Gate：后端20项、前端7项及release build通过；browser-20261016T042219Z以离线合成输入验证正式UI的0/9、1/9、覆盖与响应式展示，报告明确不代表真实采样或模型质量。"
     },
     {
       "id": "AC-MON-02",
       "automated_checks": [
-        "tests.test_observation_delivery::test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option"
+        "tests.test_observation_delivery::test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option",
+        "tests.test_t07_monitor_backend_gate::test_project_monitor_separates_aggregates_na_and_scope_without_get_writes",
+        "frontend/tests/monitor-observation.test.mjs"
       ],
       "module": "MON",
       "name": "全零观察",
@@ -297,12 +301,14 @@
         "MON-002"
       ],
       "status": "PASS",
-      "evidence": "2026-10-09 isolated deterministic measurement acceptance: 49 focused tests passed; independent expected numerator/denominator and unknown assertions in test_nine_run_metrics_use_only_evaluated_denominator_and_recommendation_is_option. Browser152756Z separately verifies formal measurement/comparison display and 0/9 vs1/9. No real platform/model quality assertion."
+      "evidence": "2026-10-16 T07组合Gate：后端20项、前端7项及release build通过；browser-20261016T042219Z以离线合成输入验证0/9与N/A分开，报告明确不代表真实采样或模型质量。"
     },
     {
       "id": "AC-MON-03",
       "automated_checks": [
-        "tests.test_observation_delivery::test_macro_and_weighted_average_use_independent_expected_counts_and_unknown_is_not_zero"
+        "tests.test_observation_delivery::test_macro_and_weighted_average_use_independent_expected_counts_and_unknown_is_not_zero",
+        "tests.test_t07_monitor_backend_gate::test_project_monitor_separates_aggregates_na_and_scope_without_get_writes",
+        "frontend/tests/monitor-observation.test.mjs"
       ],
       "module": "MON",
       "name": "宏平均",
@@ -313,7 +319,7 @@
         "MON-003"
       ],
       "status": "PASS",
-      "evidence": "2026-10-09 isolated deterministic measurement acceptance: 49 focused tests passed; independent expected numerator/denominator and unknown assertions in test_macro_and_weighted_average_use_independent_expected_counts_and_unknown_is_not_zero. Browser152756Z separately verifies formal measurement/comparison display and 0/9 vs1/9. No real platform/model quality assertion."
+      "evidence": "2026-10-16 T07组合Gate：Macro与Run Weighted独立口径、项目隔离、冻结范围和GET无业务写入通过；browser-20261016T042219Z为离线合成UI证据，不替代真实多Prompt产品验收。"
     },
     {
       "id": "AC-MON-04",
@@ -329,7 +335,7 @@
         "MON-004"
       ],
       "status": "PASS",
-      "evidence": "Isolated formal UI browser-20261009T151229Z/report.json: exact Monitor scope -> new immutable Analysis -> Optimize entry, refresh same ID/hash, no external work. API tests reject stale identity/config and preserve exclusions/idempotency. This is software handoff acceptance, not real model quality."
+      "evidence": "Isolated formal UI browser-20261016T042219Z/report.json: exact Monitor scope -> new immutable Analysis -> Optimize entry, refresh same ID/hash, no external work. API tests reject stale identity/config and preserve exclusions/idempotency. This is software handoff acceptance, not real model quality."
     },
     {
       "id": "AC-MON-05",
@@ -345,7 +351,7 @@
         "MON-001"
       ],
       "status": "PASS",
-      "evidence": "2026-10-09 isolated deterministic measurement acceptance: 49 focused tests passed; independent expected numerator/denominator and unknown assertions in test_mention_option_and_recommendation_are_three_distinct_counts. Browser152756Z separately verifies formal measurement/comparison display and 0/9 vs1/9. No real platform/model quality assertion."
+      "evidence": "2026-10-16组合回归保留Mention/Option/Recommendation独立口径；browser-20261016T042219Z为离线合成UI证据，不代表真实平台或模型质量。"
     },
     {
       "id": "AC-OPT-01",

@@ -1,7 +1,7 @@
 import hashlib
 from pathlib import Path
 
-from scripts.delivery_browser_check import _file_hashes, _joint_readonly_args
+from scripts.delivery_browser_check import _copy_sqlite_artifact, _file_hashes, _joint_readonly_args
 
 
 def test_joint_readonly_requires_explicit_frozen_ids(tmp_path: Path):
@@ -19,3 +19,28 @@ def test_joint_readonly_requires_explicit_frozen_ids(tmp_path: Path):
     assert (args.project_id, args.t07_prompt_id, args.t07_other_prompt_id, args.t21_prompt_id) == (7, 41, 42, 43)
     assert args.comparison_id == "comparison-fixed-v1"
     assert _file_hashes(database)[str(database)] == hashlib.sha256(b"isolated fixture bytes").hexdigest()
+
+
+def test_joint_readonly_copies_database_and_existing_sidecars_without_opening_source(tmp_path: Path):
+    source = tmp_path / "joint-release.db"
+    source.write_bytes(b"main")
+    Path(f"{source}-wal").write_bytes(b"wal")
+    Path(f"{source}-shm").write_bytes(b"shm")
+    before = _file_hashes(source)
+
+    copied = _copy_sqlite_artifact(source, tmp_path / "runtime-release.db")
+
+    assert copied.read_bytes() == b"main"
+    assert Path(f"{copied}-wal").read_bytes() == b"wal"
+    assert Path(f"{copied}-shm").read_bytes() == b"shm"
+    assert _file_hashes(source) == before
+
+
+def test_joint_readonly_opens_antd_prompt_with_visible_selector():
+    source = (Path(__file__).parents[1] / "scripts" / "delivery_browser_check.py").read_text()
+
+    assert 'page.locator(".prompt-select .ant-select-selector")' in source
+    assert 'expect(prompt_control).to_have_attribute("aria-expanded", "true")' in source
+    assert '"monitor-switch-refresh.png"' in source
+    assert '"saved-comparison-refresh.png"' in source
+    assert "prompt_control.click()" not in source

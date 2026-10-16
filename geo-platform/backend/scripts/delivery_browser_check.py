@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import re
 import subprocess
@@ -33,6 +34,16 @@ def _file_hashes(database: Path) -> dict[str, str | None]:
         else:
             hashes[str(path)] = None
     return hashes
+
+
+def _copy_sqlite_artifact(source: Path, destination: Path) -> Path:
+    """Copy the SQLite main file and any WAL sidecars without opening source."""
+    shutil.copyfile(source, destination)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{source}{suffix}")
+        if sidecar.exists():
+            shutil.copyfile(sidecar, Path(f"{destination}{suffix}"))
+    return destination
 
 
 def _joint_readonly_args(argv: list[str]) -> argparse.Namespace:
@@ -79,7 +90,13 @@ def joint_readonly_browser_check(args: argparse.Namespace) -> None:
         "joint-readonly-browser-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    before = _file_hashes(database)
+    source_before = _file_hashes(database)
+    # SQLite's WAL setup may legitimately create sidecars.  It must happen to
+    # this disposable copy, never to the evidence source supplied by the joint
+    # run.  Copy both sidecars as a coherent SQLite artifact where they exist.
+    runtime_database = _copy_sqlite_artifact(database, out / "runtime-release.db")
+    from scripts.release_upgrade_check import business_fingerprint
+    runtime_business_before = business_fingerprint(runtime_database)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -87,14 +104,15 @@ def joint_readonly_browser_check(args: argparse.Namespace) -> None:
     # No access config means release access is explicitly LOCAL_ONLY.  The
     # worker is never launched, and browser routing rejects every non-loopback
     # resource before it can leave the browser.
-    env = {**os.environ, "GEO_RELEASE_DATABASE_URL": f"sqlite:///{database}", "MONITORING_WORKER": "0"}
+    env = {**os.environ, "GEO_RELEASE_DATABASE_URL": f"sqlite:///{runtime_database}", "MONITORING_WORKER": "0"}
     # A caller's invitation config could require an unavailable credential and
     # is outside this local-only acceptance scope.
     env.pop("GEO_RELEASE_ACCESS_CONFIG", None)
     report = {"scope": "JOINT_ISOLATED_READ_ONLY_BROWSER", "database": str(database),
+              "runtime_database": str(runtime_database),
               "project_id": args.project_id, "t07_prompt_ids": [args.t07_prompt_id, args.t07_other_prompt_id],
               "t21_prompt_id": args.t21_prompt_id, "comparison_id": args.comparison_id,
-              "external_calls": 0, "methods": [], "status": "FAIL", "usage": "UNKNOWN"}
+              "external_calls": 0, "methods": [], "screenshots": [], "status": "FAIL", "usage": "UNKNOWN"}
     log = (out / "api.log").open("w")
     server = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.release_main:app", "--host", "127.0.0.1", "--port", str(port)],
                               cwd=ROOT / "backend", env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -150,7 +168,14 @@ def joint_readonly_browser_check(args: argparse.Namespace) -> None:
             expect(page.get_by_text("趋势按各日期各自冻结的 Run 范围展示；范围或 Prompt 版本不同的记录不会被静默合并为同一口径。", exact=True)).to_be_visible()
             expect(page.get_by_text(f"累计采样尝试 {monitor_a['pool_count']} 条", exact=False)).to_be_visible()
             prompt_control = page.get_by_role("combobox", name="当前问题", exact=True)
-            prompt_control.click()
+            expect(prompt_control).to_be_visible()
+            # Ant Design puts the accessible combobox input beneath a visual
+            # selector.  Open that visible selector rather than forcing a
+            # click through the selection-item overlay.
+            prompt_selector = page.locator(".prompt-select .ant-select-selector")
+            expect(prompt_selector).to_be_visible()
+            prompt_selector.click()
+            expect(prompt_control).to_have_attribute("aria-expanded", "true")
             page.get_by_text(f"#{args.t07_other_prompt_id} {monitor_b['prompt']['text']}", exact=True).filter(visible=True).click()
             expect(page).to_have_url(re.compile(rf"v2_prompt={args.t07_other_prompt_id}(?:&|$)"))
             expect(page.get_by_text(f"累计采样尝试 {monitor_b['pool_count']} 条", exact=False)).to_be_visible()
@@ -158,6 +183,9 @@ def joint_readonly_browser_check(args: argparse.Namespace) -> None:
             page.reload(wait_until="networkidle")
             expect(page).to_have_url(re.compile(rf"v2_prompt={args.t07_other_prompt_id}(?:&|$)"))
             expect(page.get_by_text(f"累计采样尝试 {monitor_b['pool_count']} 条", exact=False)).to_be_visible()
+            monitor_screenshot = "monitor-switch-refresh.png"
+            page.screenshot(path=str(out / monitor_screenshot), full_page=True)
+            report["screenshots"].append(monitor_screenshot)
 
             compare_url = (f"{origin}/?release_view=releaseCompare&v2_project={args.project_id}"
                            f"&v2_prompt={args.t21_prompt_id}&observation_result={quote(args.comparison_id, safe='')}")
@@ -173,6 +201,9 @@ def joint_readonly_browser_check(args: argparse.Namespace) -> None:
             expect(page).to_have_url(re.compile(re.escape("observation_result=" + quote(args.comparison_id, safe=""))))
             expect(page.get_by_role("region", name="本结果测量身份")).to_contain_text(identity.get("canonical_brand_name", ""))
             expect(page.get_by_role("region", name="固定范围身份")).to_contain_text(comparison["input"]["baseline"]["context_id"])
+            comparison_screenshot = "saved-comparison-refresh.png"
+            page.screenshot(path=str(out / comparison_screenshot), full_page=True)
+            report["screenshots"].append(comparison_screenshot)
             if page_errors:
                 raise RuntimeError("Browser page errors: " + "; ".join(page_errors))
             if any(item["method"] != "GET" or not item["url"].startswith(origin + "/") for item in requests):
@@ -192,15 +223,23 @@ def joint_readonly_browser_check(args: argparse.Namespace) -> None:
             except subprocess.TimeoutExpired:
                 server.kill(); server.wait(timeout=10)
         log.close()
-        after = _file_hashes(database)
-        report["database_hash_before"] = before
-        report["database_hash_after"] = after
-        report["database_unchanged"] = before == after
-        if before != after:
-            report["status"] = "FAIL_DATABASE_CHANGED"
+        source_after = _file_hashes(database)
+        runtime_business_after = business_fingerprint(runtime_database)
+        report["source_database_hash_before"] = source_before
+        report["source_database_hash_after"] = source_after
+        report["source_database_unchanged"] = source_before == source_after
+        report["runtime_business_fingerprint_before"] = runtime_business_before
+        report["runtime_business_fingerprint_after"] = runtime_business_after
+        report["runtime_business_tables_unchanged"] = runtime_business_before == runtime_business_after
+        if source_before != source_after:
+            report["status"] = "FAIL_SOURCE_DATABASE_CHANGED"
+        if runtime_business_before != runtime_business_after:
+            report["status"] = "FAIL_RUNTIME_BUSINESS_DATA_CHANGED"
         (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    if not report["database_unchanged"]:
-        raise RuntimeError(f"Read-only acceptance changed database bytes; inspect {out / 'report.json'}")
+    if not report["source_database_unchanged"]:
+        raise RuntimeError(f"Read-only acceptance changed source database bytes; inspect {out / 'report.json'}")
+    if not report["runtime_business_tables_unchanged"]:
+        raise RuntimeError(f"Read-only acceptance changed runtime business data; inspect {out / 'report.json'}")
     if report["status"] != "PASS_T07_T21_READ_ONLY":
         raise RuntimeError(f"Joint browser acceptance did not pass; inspect {out / 'report.json'}")
     print(json.dumps(report, ensure_ascii=False))

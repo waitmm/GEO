@@ -1,4 +1,12 @@
-"""Offline browser acceptance against a freshly migrated, isolated release DB."""
+"""Offline browser acceptance against a freshly migrated, isolated release DB.
+
+``--joint-readonly`` is deliberately separate from the synthetic fixture modes
+below.  It opens an already populated *isolated* release database and only
+exercises GET routes in a loopback browser.  It is intended for the joint T07
+/ T21 handoff, not for creating test data or re-running a comparison.
+"""
+import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +22,188 @@ from urllib.parse import quote
 from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _file_hashes(database: Path) -> dict[str, str | None]:
+    """Return stable fingerprints without opening or changing the database."""
+    hashes: dict[str, str | None] = {}
+    for path in (database, Path(f"{database}-wal"), Path(f"{database}-shm")):
+        if path.exists():
+            hashes[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+        else:
+            hashes[str(path)] = None
+    return hashes
+
+
+def _joint_readonly_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Read-only localhost browser acceptance for an isolated joint release DB.")
+    parser.add_argument("--joint-readonly", action="store_true")
+    parser.add_argument("--database", required=True, type=Path,
+                        help="Existing isolated release SQLite database; never migrated or seeded.")
+    parser.add_argument("--project-id", required=True, type=int)
+    parser.add_argument("--t07-prompt-id", required=True, type=int,
+                        help="First populated Prompt used for Monitor switching.")
+    parser.add_argument("--t07-other-prompt-id", required=True, type=int,
+                        help="Second populated Prompt in the same project.")
+    parser.add_argument("--t21-prompt-id", required=True, type=int,
+                        help="Prompt that owns --comparison-id.")
+    parser.add_argument("--comparison-id", required=True,
+                        help="Saved observation comparison result_version, not a latest lookup.")
+    parser.add_argument("--artifact-dir", type=Path,
+                        help="Optional writable directory for the read-only evidence report.")
+    return parser.parse_args(argv)
+
+
+def _local_json(opener, url: str):
+    with opener.open(url, timeout=10) as response:
+        if response.status != 200:
+            raise RuntimeError(f"Unexpected read status {response.status}: {url}")
+        return json.loads(response.read().decode("utf-8"))
+
+
+def joint_readonly_browser_check(args: argparse.Namespace) -> None:
+    """Validate saved T07/T21 UI state without permitting a durable write."""
+    database = args.database.expanduser().resolve()
+    if not database.is_file():
+        raise RuntimeError(f"Joint release database does not exist: {database}")
+    if len({args.t07_prompt_id, args.t07_other_prompt_id}) != 2:
+        raise RuntimeError("T07 browser switching requires two distinct Prompt IDs")
+    if args.project_id < 1 or args.t21_prompt_id < 1:
+        raise RuntimeError("Project and Prompt IDs must be positive")
+    if not (ROOT / "frontend/dist/index.html").is_file():
+        raise RuntimeError("Release frontend is not built; run `cd frontend && npm run build` first")
+
+    from datetime import datetime, timezone
+    out = args.artifact_dir or ROOT / "backend/artifacts/acceptance" / (
+        "joint-readonly-browser-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    out = out.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    before = _file_hashes(database)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    origin = f"http://127.0.0.1:{port}"
+    # No access config means release access is explicitly LOCAL_ONLY.  The
+    # worker is never launched, and browser routing rejects every non-loopback
+    # resource before it can leave the browser.
+    env = {**os.environ, "GEO_RELEASE_DATABASE_URL": f"sqlite:///{database}", "MONITORING_WORKER": "0"}
+    # A caller's invitation config could require an unavailable credential and
+    # is outside this local-only acceptance scope.
+    env.pop("GEO_RELEASE_ACCESS_CONFIG", None)
+    report = {"scope": "JOINT_ISOLATED_READ_ONLY_BROWSER", "database": str(database),
+              "project_id": args.project_id, "t07_prompt_ids": [args.t07_prompt_id, args.t07_other_prompt_id],
+              "t21_prompt_id": args.t21_prompt_id, "comparison_id": args.comparison_id,
+              "external_calls": 0, "methods": [], "status": "FAIL", "usage": "UNKNOWN"}
+    log = (out / "api.log").open("w")
+    server = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.release_main:app", "--host", "127.0.0.1", "--port", str(port)],
+                              cwd=ROOT / "backend", env=env, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        opener = build_opener(ProxyHandler({}))
+        for _ in range(120):
+            if server.poll() is not None:
+                raise RuntimeError("Joint release API exited; inspect api.log")
+            try:
+                _local_json(opener, origin + "/api/health")
+                break
+            except OSError:
+                time.sleep(.25)
+        else:
+            raise RuntimeError("Joint release API not ready")
+
+        prefix = f"/api/v2/projects/{args.project_id}/prompts/"
+        monitor_a = _local_json(opener, origin + prefix + f"{args.t07_prompt_id}/monitor")
+        monitor_b = _local_json(opener, origin + prefix + f"{args.t07_other_prompt_id}/monitor")
+        comparison = _local_json(opener, origin + prefix + f"{args.t21_prompt_id}/observation-comparisons/{args.comparison_id}")
+        if monitor_a["prompt"]["id"] != args.t07_prompt_id or monitor_b["prompt"]["id"] != args.t07_other_prompt_id:
+            raise RuntimeError("T07 Prompt ownership mismatch in supplied DB")
+        runs_a = {row["run_id"] for row in monitor_a["runs"]}
+        runs_b = {row["run_id"] for row in monitor_b["runs"]}
+        if runs_a & runs_b:
+            raise RuntimeError("T07 supplied Prompt pools overlap; cannot prove Prompt isolation")
+        if comparison["result_version"] != args.comparison_id:
+            raise RuntimeError("T21 comparison identity mismatch")
+        if not comparison.get("input", {}).get("baseline") or not comparison["input"].get("comparison"):
+            raise RuntimeError("T21 saved comparison lacks its two fixed scope identities")
+
+        with sync_playwright() as playwright, ExitStack() as cleanup:
+            browser = playwright.chromium.launch(headless=True, channel="chrome")
+            context = browser.new_context(viewport={"width": 1440, "height": 1000})
+            cleanup.callback(browser.close)
+            requests: list[dict[str, str]] = []
+            def only_local_get(route):
+                request = route.request
+                requests.append({"method": request.method, "url": request.url})
+                if request.method != "GET" or not request.url.startswith(origin + "/"):
+                    route.abort()
+                else:
+                    route.continue_()
+            context.route("**/*", only_local_get)
+            page = context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+
+            def monitor_url(prompt_id: int) -> str:
+                return f"{origin}/?release_view=releaseMonitor&v2_project={args.project_id}&v2_prompt={prompt_id}"
+            page.goto(monitor_url(args.t07_prompt_id), wait_until="networkidle")
+            expect(page.get_by_text("按日期观察（UTC）", exact=True)).to_be_visible()
+            expect(page.get_by_text("趋势按各日期各自冻结的 Run 范围展示；范围或 Prompt 版本不同的记录不会被静默合并为同一口径。", exact=True)).to_be_visible()
+            expect(page.get_by_text(f"累计采样尝试 {monitor_a['pool_count']} 条", exact=False)).to_be_visible()
+            prompt_control = page.get_by_role("combobox", name="当前问题", exact=True)
+            prompt_control.click()
+            page.get_by_text(f"#{args.t07_other_prompt_id} {monitor_b['prompt']['text']}", exact=True).filter(visible=True).click()
+            expect(page).to_have_url(re.compile(rf"v2_prompt={args.t07_other_prompt_id}(?:&|$)"))
+            expect(page.get_by_text(f"累计采样尝试 {monitor_b['pool_count']} 条", exact=False)).to_be_visible()
+            expect(page.get_by_text("按日期观察（UTC）", exact=True)).to_be_visible()
+            page.reload(wait_until="networkidle")
+            expect(page).to_have_url(re.compile(rf"v2_prompt={args.t07_other_prompt_id}(?:&|$)"))
+            expect(page.get_by_text(f"累计采样尝试 {monitor_b['pool_count']} 条", exact=False)).to_be_visible()
+
+            compare_url = (f"{origin}/?release_view=releaseCompare&v2_project={args.project_id}"
+                           f"&v2_prompt={args.t21_prompt_id}&observation_result={quote(args.comparison_id, safe='')}")
+            page.goto(compare_url, wait_until="networkidle")
+            identity = comparison["input"].get("identity", {})
+            expect(page.get_by_role("region", name="本结果测量身份")).to_contain_text(identity.get("canonical_brand_name", ""))
+            fixed = page.get_by_role("region", name="固定范围身份")
+            expect(fixed).to_contain_text(comparison["input"]["baseline"]["context_id"])
+            expect(fixed).to_contain_text(comparison["input"]["comparison"]["context_id"])
+            expect(page.get_by_text("当前展示的是保存时的测量身份；项目配置更新不会改写此结果。", exact=True)).to_be_visible()
+            expect(page.get_by_role("combobox", name="历史比较", exact=True)).to_have_value(args.comparison_id)
+            page.reload(wait_until="networkidle")
+            expect(page).to_have_url(re.compile(re.escape("observation_result=" + quote(args.comparison_id, safe=""))))
+            expect(page.get_by_role("region", name="本结果测量身份")).to_contain_text(identity.get("canonical_brand_name", ""))
+            expect(page.get_by_role("region", name="固定范围身份")).to_contain_text(comparison["input"]["baseline"]["context_id"])
+            if page_errors:
+                raise RuntimeError("Browser page errors: " + "; ".join(page_errors))
+            if any(item["method"] != "GET" or not item["url"].startswith(origin + "/") for item in requests):
+                raise RuntimeError("Browser attempted a non-GET or non-localhost request")
+            report.update(status="PASS_T07_T21_READ_ONLY", t07={
+                "prompt_a_pool_count": monitor_a["pool_count"], "prompt_b_pool_count": monitor_b["pool_count"],
+                "run_pool_overlap": False, "switch_refresh_preserved": True, "trend_visible": True},
+                t21={"result_version": comparison["result_version"], "output_hash": comparison["output_hash"],
+                     "baseline_context_id": comparison["input"]["baseline"]["context_id"],
+                     "comparison_context_id": comparison["input"]["comparison"]["context_id"],
+                     "refresh_preserved": True, "saved_identity_visible": True}, methods=sorted({r["method"] for r in requests}))
+    finally:
+        if server.poll() is None:
+            server.terminate()
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.kill(); server.wait(timeout=10)
+        log.close()
+        after = _file_hashes(database)
+        report["database_hash_before"] = before
+        report["database_hash_after"] = after
+        report["database_unchanged"] = before == after
+        if before != after:
+            report["status"] = "FAIL_DATABASE_CHANGED"
+        (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report["database_unchanged"]:
+        raise RuntimeError(f"Read-only acceptance changed database bytes; inspect {out / 'report.json'}")
+    if report["status"] != "PASS_T07_T21_READ_ONLY":
+        raise RuntimeError(f"Joint browser acceptance did not pass; inspect {out / 'report.json'}")
+    print(json.dumps(report, ensure_ascii=False))
 
 
 def saved_detail_failure_check(page, report, expected_body):
@@ -941,6 +1131,9 @@ def truth_correction_check(page, origin, fixture, Session, monkeypatch, out, rep
 
 
 def main():
+    if "--joint-readonly" in sys.argv:
+        joint_readonly_browser_check(_joint_readonly_args(sys.argv[1:]))
+        return
     from datetime import datetime, timezone
     out = ROOT / 'backend/artifacts/acceptance' / ('browser-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
     out.mkdir(parents=True)

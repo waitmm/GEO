@@ -9,6 +9,14 @@ import { SupplementalSources } from "./SupplementalSources";
 const names: Record<string, string> = { brand_mention_rate: "正文提及", brand_option_rate: "列为选项", brand_recommendation_rate: "明确推荐", target_brand_official_reference_rate: "官方来源引用", published_url_reference_rate: "目标 URL 引用" };
 const ratio = (m: any) => m?.value == null ? "不可计算" : `${m.hit_count}/${m.evaluable_count} (${(m.value * 100).toFixed(1)}%)`;
 const coverage = (m: any) => `${m.evaluable_count} / ${m.valid_raw_count} / ${m.planned_count}`;
+const comparisonObservation = (output: any) => {
+  const metric = output?.metrics?.brand_mention_rate;
+  if (!metric?.baseline || !metric?.comparison) return "本轮结果只保留已保存的固定范围；未评估样本不按零计入。";
+  const before = ratio(metric.baseline);
+  const after = ratio(metric.comparison);
+  const delta = metric.delta_percentage_points == null ? "不可比/不可计算" : `${metric.delta_percentage_points} 个百分点`;
+  return `正文提及本轮观察：基线 ${before}；对照 ${after}；变化 ${delta}。`;
+};
 const runStates: Record<string, string> = { success: "采样成功", partial_success: "部分成功", failed: "采样失败", blocked: "采样受阻", cancelled: "未执行" };
 const unknownReasons: Record<string, string> = {
   BRAND_ALIAS_AMBIGUOUS: "只出现别名，尚不能确定是否指向目标品牌",
@@ -265,6 +273,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
           const label = ({ platform: "采样平台", source_type: "采样来源类型", adapter: "采集器", original_query: "问题原文", collection_mode: "采样模式" } as Record<string, string>)[field] || "采样条件";
           return `${label}${state === "CONFLICT" ? "不一致" : "未知或不完整"}`;
         }).join("、")}` : "未知条件及未计算语义不按零结果处理。"} />
+        {mode === "compare" && <Alert aria-label="本轮观察限制" style={{ marginTop: 12 }} type="info" showIcon message="本轮计数与限制" description={`${comparisonObservation(output)} 小样本和单轮变化不能自动判定策略有效，也不会自动晋升为策略规则；请结合后续独立观察、条件与人工结论。`} />}
         {mode === "monitor" && <>
           <Typography.Title level={5}>按日期观察（UTC）</Typography.Title>
           <Typography.Paragraph type="secondary">趋势按各日期各自冻结的 Run 范围展示；范围或 Prompt 版本不同的记录不会被静默合并为同一口径。</Typography.Paragraph>

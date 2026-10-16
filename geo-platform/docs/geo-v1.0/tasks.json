@@ -1248,7 +1248,7 @@
       "milestone": "M1",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T07"
       ],
@@ -1269,17 +1269,19 @@
         "docs/geo-v1.0/implementation-map.md",
         "backend/artifacts/acceptance/browser-20261009T095830Z/report.json",
         "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
-        "backend/tests/test_observation_delivery.py"
+        "backend/tests/test_observation_delivery.py",
+        "backend/tests/test_t08_opportunity_handoff.py",
+        "backend/artifacts/acceptance/t08-opportunity-20261016-integrated/report.json"
       ],
       "estimate": "2人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
-      "actual_end": "",
-      "blocker": "精确范围交接、配置变化拒绝、幂等和首屏入口已通过隔离API/浏览器；整个产品真实外部集成仍待授权，未据此标记整体完成。",
-      "commit": "",
-      "audit_classification": "需修复",
-      "current_checkpoint": "monitor_exact_scope_20261009"
+      "actual_end": "2026-10-16",
+      "blocker": "",
+      "commit": "5227839",
+      "audit_classification": "IMPLEMENTATION_CHANGE；固定Project/Prompt/PromptVersion/配置版本/Run范围与hash，陈旧范围409、同范围幂等；不隐式采样或启动Optimize，无伪精确综合评分；独立审核PASS",
+      "current_checkpoint": "t08_exact_opportunity_handoff_done_20261016"
     },
     {
       "id": "T09",
@@ -1313,17 +1315,18 @@
         "backend/artifacts/acceptance/joint-live-20261016/report.json",
         "backend/artifacts/acceptance/joint-live-20261016/source-results.json",
         "backend/tests/test_release_first_slice.py",
-        "backend/tests/test_delivery_supplemental_sources.py"
+        "backend/tests/test_delivery_supplemental_sources.py",
+        "backend/tests/test_t09_source_reanalysis.py"
       ],
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "真实引用正文与品牌官网补充快照已通过；AC-SRC-03仍缺补录后受影响下游重新分析及新旧结果归属验收",
-      "commit": "118de20,c3b30a9,25377fc",
-      "audit_classification": "IMPLEMENTATION_CHANGE；真实外部来源覆盖、异常拒绝、receipt、引用守恒与append-only快照已完成；不越过仍为PARTIAL的受影响项重新分析",
-      "current_checkpoint": "t09_real_sources_partial_20261016"
+      "blocker": "EXTERNAL_MODEL_AUTHORIZATION_REQUIRED：真实引用正文、异常拒绝、append-only快照及精确受影响重分析计划已通过；正式模型重分析结果与生产执行链尚未获本轮授权，AC-SRC-03保持PARTIAL",
+      "commit": "118de20,c3b30a9,25377fc,3ce1573",
+      "audit_classification": "IMPLEMENTATION_CHANGE；old/new Completion Manifest与hash、Project/Prompt/Context和受影响下游精确冻结；旧Diagnosis/Strategy/Delivery不改，生产默认等待外部授权；独立审核确认实现PASS但任务不得DONE",
+      "current_checkpoint": "t09_source_reanalysis_awaiting_external_authorization_20261016"
     },
     {
       "id": "T10",
@@ -1331,7 +1334,7 @@
       "milestone": "M2",
       "owner_role": "后端",
       "owner_name": "Codex（后端）",
-      "status": "IN_PROGRESS",
+      "status": "WAITING_DEPENDENCIES",
       "depends_on": [
         "T02",
         "T08",
@@ -1362,7 +1365,7 @@
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "T09尚未DONE（AC-SRC-03正式重分析需独立外部模型授权）；即使T08已DONE也不得提前解锁T10",
       "commit": "",
       "audit_classification": "正式自动交接已实现；隔离模拟浏览器通过，真实集成与完整恢复验收待完成",
       "current_checkpoint": "delivery_checkpoint_20261009"
@@ -1698,7 +1701,7 @@
       "milestone": "M2",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T13",
         "T18"
@@ -1740,10 +1743,10 @@
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
-      "actual_end": "",
-      "blocker": "正文编辑、单项事实纠错/局部更新及方案内资产核查独立版本已隔离验证，非全部T19完成；关系、答案归属、完整资产盘点、多方向业务验证及真实模型质量尚未完成。",
-      "commit": "",
-      "audit_classification": "需修复"
+      "actual_end": "2026-10-15",
+      "blocker": "",
+      "commit": "8da441c,bdebd14,a655f2f,4840973",
+      "audit_classification": "IMPLEMENTATION_CHANGE；答案/证据关系纠错、受影响策略重投影、受影响稿件局部再生成及状态反馈已按append-only和冻结版本边界完成"
     },
     {
       "id": "T20",
@@ -1828,7 +1831,7 @@
       "milestone": "M3",
       "owner_role": "全栈",
       "owner_name": "Codex（全栈）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T21",
         "T07"
@@ -1850,17 +1853,19 @@
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
         "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
-        "backend/tests/test_observation_delivery.py"
+        "backend/tests/test_observation_delivery.py",
+        "frontend/tests/t22-validate-report.test.mjs",
+        "backend/artifacts/acceptance/t22-validate-browser-20261016-integrated/report.json"
       ],
       "estimate": "5人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
-      "actual_end": "",
-      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
-      "commit": "",
-      "audit_classification": "需接入 release 且需修复",
-      "current_checkpoint": "monitor_exact_scope_20261009"
+      "actual_end": "2026-10-16",
+      "blocker": "",
+      "commit": "c2d0052",
+      "audit_classification": "IMPLEMENTATION_CHANGE；固定真实双范围结果在Chrome中恢复与刷新，计数/百分点、URL集合、负向/无变化、NOT_COMPUTABLE及小样本非因果限制完整；GET只读和独立审核PASS",
+      "current_checkpoint": "t22_saved_validate_report_done_20261016"
     },
     {
       "id": "T23",

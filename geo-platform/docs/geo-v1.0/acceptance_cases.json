@@ -106,7 +106,8 @@
     {
       "id": "AC-PRM-04",
       "automated_checks": [
-        "tests.test_observation_delivery::test_opportunity_uses_intent_and_does_not_turn_unknown_into_brand_gap"
+        "tests.test_observation_delivery::test_opportunity_uses_intent_and_does_not_turn_unknown_into_brand_gap",
+        "tests.test_t08_opportunity_handoff::test_concept_and_instruction_zero_recommendation_are_not_high_opportunities"
       ],
       "module": "PRM",
       "name": "意图适用",
@@ -116,8 +117,8 @@
       "requirements": [
         "PRM-003"
       ],
-      "status": "PARTIAL",
-      "evidence": "PARTIAL: test_concept_intent_without_brand_recommendation_is_not_recommendation_gap passes; complete opportunity UI pending."
+      "status": "PASS",
+      "evidence": "2026-10-16 T08：概念解释与操作说明在推荐率为零时保持OBSERVE，score=null并给出解释性reason codes；隔离真实HTTP Gate固定完整范围且无外部调用，独立审核PASS。"
     },
     {
       "id": "AC-SAM-01",
@@ -237,7 +238,8 @@
     {
       "id": "AC-SRC-03",
       "automated_checks": [
-        "tests.test_release_first_slice::test_new_manual_content_creates_new_snapshot_and_manifest_without_mutating_history"
+        "tests.test_release_first_slice::test_new_manual_content_creates_new_snapshot_and_manifest_without_mutating_history",
+        "tests.test_t09_source_reanalysis::test_manual_content_reanalysis_is_exact_append_only_idempotent_and_locally_executable"
       ],
       "module": "SRC",
       "name": "补录正文",
@@ -248,7 +250,7 @@
         "SRC-003"
       ],
       "status": "PARTIAL",
-      "evidence": "test_new_manual_content_creates_new_snapshot_and_manifest_without_mutating_history 已验证同一来源补录新正文会追加新 Snapshot 与 Completion Manifest，旧正文、hash、artifact 和 manifest 均可追溯；受影响下游结果重新分析尚未完成真实验收，因此不标 PASS。"
+      "evidence": "2026-10-16：同一来源补录追加新Snapshot/Completion Manifest；新增重分析API精确绑定old/new manifest与hash并冻结受影响Diagnosis/Strategy/Delivery，离线judge验证新append-only Result且旧结果不变。生产路径保持AWAITING_EXTERNAL_AUTHORIZATION，正式模型结果尚无授权与真实证据，因此仍为PARTIAL。"
     },
     {
       "id": "AC-SRC-04",
@@ -324,7 +326,8 @@
     {
       "id": "AC-MON-04",
       "automated_checks": [
-        "tests.test_observation_delivery::test_monitor_handoff_freezes_scope_rejects_stale_and_replays_without_new_runs"
+        "tests.test_observation_delivery::test_monitor_handoff_freezes_scope_rejects_stale_and_replays_without_new_runs",
+        "tests.test_t08_opportunity_handoff::test_monitor_handoff_freezes_full_identity_and_only_creates_one_analysis"
       ],
       "module": "MON",
       "name": "机会跳转",
@@ -335,7 +338,7 @@
         "MON-004"
       ],
       "status": "PASS",
-      "evidence": "Isolated formal UI browser-20261016T042219Z/report.json: exact Monitor scope -> new immutable Analysis -> Optimize entry, refresh same ID/hash, no external work. API tests reject stale identity/config and preserve exclusions/idempotency. This is software handoff acceptance, not real model quality."
+      "evidence": "2026-10-16 T08 integrated Gate：Project/Prompt/PromptVersion/配置版本/Run scope/raw hash全部固定；陈旧范围409、创建201、幂等200，Analysis 3→4而Run 3→3、Optimize task 0→0，源库hash不变，外部调用0；独立审核PASS。"
     },
     {
       "id": "AC-MON-05",
@@ -844,7 +847,8 @@
     {
       "id": "AC-VAL-01",
       "automated_checks": [
-        "tests.test_observation_delivery::test_zero_to_one_of_nine_is_11_points_not_100_percent_or_full_recommendation"
+        "tests.test_observation_delivery::test_zero_to_one_of_nine_is_11_points_not_100_percent_or_full_recommendation",
+        "frontend/tests/t22-validate-report.test.mjs"
       ],
       "module": "VAL",
       "name": "小样本增加",
@@ -855,7 +859,7 @@
         "VAL-003"
       ],
       "status": "PASS",
-      "evidence": "browser-20261009T152756Z/report.json: formal UI 0/9->1/9=11.1111pp, exact saved result and no causal claim,1440/1024/390; isolated synthetic inputs only. Independent backend test_zero_to_one_of_nine_is_11_points_not_100_percent_or_full_recommendation passed."
+      "evidence": "browser-20261009T152756Z已验证0/9→1/9=11.1111pp；2026-10-16 T22 integrated Chrome Gate读取真实固定双范围保存结果，显式展示命中数/分母/百分点、小样本单轮非因果和不自动晋升规则，刷新身份不漂移。"
     },
     {
       "id": "AC-VAL-02",
@@ -887,14 +891,15 @@
       "requirements": [
         "VAL-004"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "2026-10-16 joint-live与T22 integrated Chrome Gate：真实固定双范围保留首次观察、持续观察和对照未再观察URL集合（6/25/0），原始Run引用可展开；明确不证明首次收录或生成因果，采集不完整时不判新增/消失。"
     },
     {
       "id": "AC-VAL-04",
       "automated_checks": [
         "tests.test_observation_delivery::test_compare_without_publication_uses_independent_denominators_and_url_sets",
-        "tests.test_observation_delivery::test_formal_api_context_and_comparison_persist_without_reviews"
+        "tests.test_observation_delivery::test_formal_api_context_and_comparison_persist_without_reviews",
+        "frontend/tests/t22-validate-report.test.mjs"
       ],
       "module": "VAL",
       "name": "负向记录",
@@ -905,7 +910,7 @@
         "VAL-005"
       ],
       "status": "PASS",
-      "evidence": "browser-20261009T151229Z/report.json and negative-comparison.png: independent isolated scopes yield -100pp, saved as another immutable comparison, same after refresh; formal API retains both positive and negative versions. Synthetic software acceptance, not a real chronological campaign effect."
+      "evidence": "browser-20261009T151229Z及negative-comparison.png保留-100pp历史；2026-10-16 T22 integrated Chrome Gate恢复真实固定无变化结果，刷新后仍为同一result_version，并明确小样本不自动判有效或晋升规则。"
     },
     {
       "id": "AC-VAL-05",

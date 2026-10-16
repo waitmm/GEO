@@ -1151,7 +1151,7 @@
       "milestone": "M1",
       "owner_role": "分析/后端",
       "owner_name": "Codex（分析/后端）",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "depends_on": [
         "T05"
       ],
@@ -1171,18 +1171,35 @@
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
+        "backend/artifacts/acceptance/browser-20261016T042219Z/report.json",
+        "backend/artifacts/acceptance/t05-live-20261016/acceptance-report.json",
+        "backend/tests/test_t06_t05_live_recovery_gate.py",
+        "backend/tests/test_t06_live_metrics_gate.py",
         "backend/tests/test_observation_delivery.py"
       ],
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
-      "actual_end": "",
-      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
-      "commit": "",
-      "audit_classification": "需接入",
-      "current_checkpoint": "monitor_exact_scope_20261009"
+      "actual_end": "2026-10-16",
+      "blocker": "",
+      "commit": "50061d2,63bbf03",
+      "audit_classification": "正式DoD、真实T05隔离样本恢复、冻结指标版本与本地浏览器组合验收通过；真实模型语义质量留待质量/E2E验收",
+      "t06_acceptance_20261016": {
+        "status": "PASS",
+        "classification": "IMPLEMENTATION_CHANGE_ACCEPTANCE",
+        "evidence_root": "backend/artifacts/acceptance/t05-live-20261016",
+        "database_sha256": "fbe7b45e4f1c714979d79c65200fb1725c7df9e58e51b563700c6c9728df91b3",
+        "manifest_sha256": "04d613dd485f42864b2938a4b061e5c21ccdc680ffd38e267af95f2b83992f7a",
+        "acceptance_report_sha256": "4c720585c1ed30775127c79620b74b7aed6acd721e30a28dccee38007b437cb0",
+        "browser_report_sha256": "447413f392d55b78cc2d058d77d3706c5074d27a116ce0629acc2e423f2d3515",
+        "real_evidence_gate": "1 passed",
+        "combined_backend_gate": "39 passed",
+        "frontend_gate": "8 passed and release build passed",
+        "browser_gate": "PASS_SCOPED_SYNTHETIC_OBSERVATION_NOT_REAL_SAMPLING",
+        "boundary": "真实T05隔离数据库仅以immutable只读方式打开并复制后注入崩溃；原数据库哈希不变。浏览器Gate无外部调用；真实模型语义质量不在T06正式DoD内，留待质量/E2E。"
+      },
+      "current_checkpoint": "t06_done_20261016"
     },
     {
       "id": "T07",
@@ -1288,17 +1305,19 @@
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json"
+        "backend/artifacts/acceptance/browser-20261009T095830Z/report.json",
+        "backend/tests/test_release_first_slice.py",
+        "backend/tests/test_delivery_supplemental_sources.py"
       ],
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "",
-      "commit": "",
-      "audit_classification": "可直接复用核心，需补范围",
-      "current_checkpoint": "delivery_checkpoint_20261009"
+      "blocker": "真实来源覆盖及品牌官网获取需独立外部访问授权；本地登录墙拒绝、引用守恒与append-only快照已完成",
+      "commit": "118de20",
+      "audit_classification": "本地实现与Gate完成；真实外部来源覆盖待独立授权",
+      "current_checkpoint": "t09_local_source_gate_20261016"
     },
     {
       "id": "T10",
@@ -1781,18 +1800,19 @@
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
-        "backend/tests/test_observation_delivery.py"
+        "backend/artifacts/acceptance/browser-20261016T042219Z/report.json",
+        "backend/tests/test_observation_delivery.py",
+        "frontend/tests/observation-scope-comparison.test.mjs"
       ],
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
-      "commit": "",
-      "audit_classification": "需接入 release 且需修复",
-      "current_checkpoint": "monitor_exact_scope_20261009"
+      "blocker": "真实双范围/双入口采样仍需独立授权；离线浏览器、刷新恢复、历史隔离和不可比展示已通过",
+      "commit": "1da0027,b132d5f,63bbf03",
+      "audit_classification": "release observation API与前端已接入；真实双范围条件验收未完成",
+      "current_checkpoint": "t21_browser_history_isolation_20261016"
     },
     {
       "id": "T22",

@@ -200,6 +200,7 @@
     {
       "id": "AC-SRC-01",
       "automated_checks": [
+        "tests.test_release_first_slice::test_auto_fetch_success_login_wall_preserves_citation_without_snapshot",
         "tests.test_release_first_slice::test_blocked_content_and_all_waived_scope_never_become_evidence_ready"
       ],
       "module": "SRC",
@@ -210,8 +211,8 @@
       "requirements": [
         "SRC-002"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PASS",
+      "evidence": "2026-10-16 Batch12 本地故障注入 Gate：抓取器即使返回 SUCCESS 和足够长正文，只要内容是登录墙，来源处置仍为 CONTENT_BLOCKED/MANUAL_REQUIRED，不创建 Snapshot 或 passages；原 Citation Manifest、occurrence 与 reference observations 完整保留。人工补录入口对相同异常内容同样拒绝。"
     },
     {
       "id": "AC-SRC-02",
@@ -246,8 +247,8 @@
       "requirements": [
         "SRC-003"
       ],
-      "status": "NOT_RUN",
-      "evidence": ""
+      "status": "PARTIAL",
+      "evidence": "test_new_manual_content_creates_new_snapshot_and_manifest_without_mutating_history 已验证同一来源补录新正文会追加新 Snapshot 与 Completion Manifest，旧正文、hash、artifact 和 manifest 均可追溯；受影响下游结果重新分析尚未完成真实验收，因此不标 PASS。"
     },
     {
       "id": "AC-SRC-04",

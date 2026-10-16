@@ -1021,6 +1021,58 @@ def test_auto_fetch_creates_v2_snapshot_and_leaves_failures_for_manual_resolutio
         engine.dispose()
 
 
+def test_auto_fetch_success_login_wall_preserves_citation_without_snapshot(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        analysis = _seed_frozen_analysis(db, reference_urls=["https://example.com/login-wall"])
+        preparation, initial = _create_preparation(db, analysis)
+        observed = initial["sources"][0]
+        assert observed["occurrence_count"] == 1
+        assert len(observed["reference_observations"]) == 1
+        source_preparation.queue_auto_fetch(
+            db,
+            preparation_id=preparation.preparation_id,
+            project_id=1,
+            prompt_id=44,
+        )
+
+        summary = source_preparation.execute_auto_fetch(
+            preparation.preparation_id,
+            session_factory=factory,
+            fetcher=lambda urls: [{
+                "canonical_url": urls[0],
+                "fetch_status": "SUCCESS",
+                "failure_reason": "",
+                "title": "登录后继续",
+                "clean_text": "请先登录后继续查看完整内容，登录可同步历史记录。" * 30,
+            }],
+        )
+
+        assert summary == {"requested": 1, "ready": 0, "manual_required": 1}
+        db.expire_all()
+        status = source_preparation.get_source_preparation_status(
+            db, preparation_id=preparation.preparation_id
+        )
+        blocked = status["sources"][0]
+        assert status["citation_manifest"]["occurrence_count"] == 1
+        assert status["conservation"] == {
+            "required_unique_sources": 1,
+            "terminal": 0,
+            "nonterminal": 1,
+            "by_state": {"MANUAL_REQUIRED": 1},
+            "conserved": True,
+        }
+        assert blocked["reference_observations"] == observed["reference_observations"]
+        assert blocked["failure"]["code"] == "CONTENT_BLOCKED"
+        assert blocked["snapshot"] is None
+        assert db.query(source_preparation.SinglePromptPreparedSourceSnapshot).count() == 0
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_auto_fetch_never_waives_and_interrupted_fetch_requires_explicit_resolution(tmp_path, monkeypatch):
     _configure_artifacts(monkeypatch, tmp_path)
     db, engine = _session(tmp_path)

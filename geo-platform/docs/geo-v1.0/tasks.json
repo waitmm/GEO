@@ -1225,18 +1225,20 @@
       ],
       "acceptance_evidence": [
         "docs/geo-v1.0/implementation-map.md",
-        "backend/artifacts/acceptance/browser-20261009T152756Z/report.json",
-        "backend/tests/test_observation_delivery.py"
+        "backend/artifacts/acceptance/browser-20261016T042219Z/report.json",
+        "backend/tests/test_t07_monitor_backend_gate.py",
+        "backend/tests/test_observation_delivery.py",
+        "frontend/tests/monitor-observation.test.mjs"
       ],
       "estimate": "5人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "完整浏览器、运行恢复和真实集成验收尚未完成；工程测试不替代产品验收",
-      "commit": "",
-      "audit_classification": "需接入",
-      "current_checkpoint": "monitor_exact_scope_20261009"
+      "blocker": "后端与前端工程Gate及离线浏览器已通过；真实多Prompt项目的范围变化浏览器验收需要新的外部采样授权，现有T05预算不转用",
+      "commit": "6193a95,e0a84bb",
+      "audit_classification": "工程实现已满足Macro/Weighted、0/N与N/A及冻结范围口径；真实多Prompt产品证据未完成",
+      "current_checkpoint": "t07_engineering_gate_20261016"
     },
     {
       "id": "T08",

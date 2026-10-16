@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.core.release_database import ReleaseSessionLocal, get_release_db, read_only_release_session
@@ -126,6 +127,17 @@ from app.modules.single_prompt_v2.source_preparation import (
 
 router = APIRouter(prefix="/api/v2/single-prompt", tags=["single-prompt-v2-release"])
 get_db = get_release_db
+
+
+class SourceReanalysisCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: int = Field(gt=0)
+    prompt_id: int = Field(gt=0)
+    prior_completion_manifest_id: str = Field(min_length=1, max_length=80)
+    prior_completion_manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    new_completion_manifest_id: str = Field(min_length=1, max_length=80)
+    new_completion_manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    idempotency_key: str = Field(min_length=8, max_length=80)
 
 
 def get_task_read_db(db: Session = Depends(get_db)):
@@ -734,6 +746,37 @@ def complete_source_preparation(preparation_id: str, payload: SinglePromptSource
     _require_preparation_scope(get_source_preparation_status(db, preparation_id=preparation_id), payload.project_id, payload.prompt_id)
     freeze_completion_manifest(db, preparation_id=preparation_id, created_by=actor)
     return get_source_preparation_status(db, preparation_id=preparation_id)
+
+
+@router.post("/source-preparations/{preparation_id}/reanalyses", status_code=201)
+def plan_prepared_source_reanalysis(
+    preparation_id: str,
+    payload: SourceReanalysisCreate,
+    response: Response,
+    actor: str = Depends(authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    from .source_reanalysis import plan_source_reanalysis, source_reanalysis_view
+
+    _require_preparation_scope(
+        get_source_preparation_status(db, preparation_id=preparation_id),
+        payload.project_id,
+        payload.prompt_id,
+    )
+    rows, created = plan_source_reanalysis(
+        db,
+        preparation_id=preparation_id,
+        requested_by=actor,
+        **payload.model_dump(),
+    )
+    if not created:
+        response.status_code = 200
+    return {
+        "contract_version": "single_prompt_source_reanalysis.v1",
+        "created": created,
+        "affected_count": len(rows),
+        "reanalyses": [source_reanalysis_view(row) for row in rows],
+    }
 
 
 @router.post("/analyses/{analysis_id}/answer-diagnoses", status_code=202)

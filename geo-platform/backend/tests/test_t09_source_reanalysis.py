@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from fastapi import Response
+
+from app.models import SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
+from app.modules.single_prompt_v2 import source_preparation
+from app.modules.single_prompt_v2.diagnosis import (
+    claim_diagnosis,
+    complete_diagnosis_review,
+    compute_answer_diagnosis,
+    continue_evidence_diagnosis,
+    create_answer_diagnosis,
+)
+from app.modules.single_prompt_v2.source_reanalysis import (
+    execute_source_reanalysis_with_local_judges,
+    plan_source_reanalysis,
+    source_reanalysis_view,
+)
+from app.modules.single_prompt_v2.release_api import SourceReanalysisCreate, plan_prepared_source_reanalysis
+from test_release_first_slice import (
+    _AlignmentJudge,
+    _AnswerJudge,
+    _SourceClaimJudge,
+    _configure_artifacts,
+    _create_preparation,
+    _seed_frozen_analysis,
+    _session,
+    _submit,
+)
+
+
+def test_manual_content_reanalysis_is_exact_append_only_idempotent_and_locally_executable(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    try:
+        analysis = _seed_frozen_analysis(db, reference_urls=["https://example.com/only"])
+        preparation, status = _create_preparation(db, analysis)
+        source = status["sources"][0]
+        old_text = "旧版真实正文明确说明甲工具支持批量生成短链，并保留完整上下文与适用边界。" * 2
+        old_snapshot = _submit(db, preparation.preparation_id, source, old_text)
+        old_manifest = source_preparation.freeze_completion_manifest(
+            db, preparation_id=preparation.preparation_id, created_by="qa"
+        )
+        citation = source_preparation.get_source_preparation_status(
+            db, preparation_id=preparation.preparation_id
+        )["citation_manifest"]
+
+        diagnosis, _ = create_answer_diagnosis(
+            db,
+            analysis_id=analysis.analysis_id,
+            project_id=1,
+            prompt_id=44,
+            citation_manifest_id=citation["manifest_id"],
+            citation_manifest_hash=citation["payload_hash"],
+            answer_llm_policy="ALLOW_EXTERNAL",
+            idempotency_key="t09-answer-diagnosis",
+        )
+        answer = compute_answer_diagnosis(
+            db, diagnosis, claim_diagnosis(db, diagnosis.diagnosis_id), answer_judge=_AnswerJudge()
+        )
+        review = complete_diagnosis_review(
+            db,
+            diagnosis_id=diagnosis.diagnosis_id,
+            result_version=answer.result_version,
+            result_hash=answer.output_hash,
+            reviewable_set_hash=answer.reviewable_set_hash,
+            reviewer="qa",
+            note="固定 Answer Review",
+            decisions=[],
+        )
+        old_result = continue_evidence_diagnosis(
+            db,
+            analysis_id=analysis.analysis_id,
+            diagnosis_id=diagnosis.diagnosis_id,
+            project_id=1,
+            prompt_id=44,
+            answer_result_version=answer.result_version,
+            answer_result_hash=answer.output_hash,
+            answer_review_id=review.review_id,
+            citation_manifest_id=citation["manifest_id"],
+            citation_manifest_hash=citation["payload_hash"],
+            completion_manifest_id=old_manifest.manifest_id,
+            completion_manifest_hash=old_manifest.payload_hash,
+            evidence_llm_policy="ALLOW_EXTERNAL",
+            source_claim_judge=_SourceClaimJudge(),
+            alignment_judge=_AlignmentJudge(),
+        )
+        old_result_json = old_result.output_json
+        old_active_result = diagnosis.active_result_version
+
+        refreshed = source_preparation.get_source_preparation_status(
+            db, preparation_id=preparation.preparation_id
+        )["sources"][0]
+        new_text = "新版真实正文修正为甲工具支持批量生成短链，并补充新的限制条件和适用上下文。" * 2
+        new_snapshot = _submit(db, preparation.preparation_id, refreshed, new_text)
+        new_manifest = source_preparation.freeze_completion_manifest(
+            db, preparation_id=preparation.preparation_id, created_by="qa"
+        )
+
+        plans, created = plan_source_reanalysis(
+            db,
+            preparation_id=preparation.preparation_id,
+            project_id=1,
+            prompt_id=44,
+            prior_completion_manifest_id=old_manifest.manifest_id,
+            prior_completion_manifest_hash=old_manifest.payload_hash,
+            new_completion_manifest_id=new_manifest.manifest_id,
+            new_completion_manifest_hash=new_manifest.payload_hash,
+            idempotency_key="t09-source-reanalysis",
+            requested_by="qa",
+        )
+        assert created is True
+        assert len(plans) == 1
+        plan = plans[0]
+        view = source_reanalysis_view(plan)
+        assert view["status"] == "AWAITING_EXTERNAL_AUTHORIZATION"
+        assert view["blocker_code"] == "EXTERNAL_MODEL_AUTHORIZATION_REQUIRED"
+        assert view["external_usage"] == {"calls": 0, "tokens": 0}
+        assert view["input"]["changed_source_keys"] == [source["source_key"]]
+        assert view["input"]["changed_snapshots"] == [{
+            "source_key": source["source_key"],
+            "prior_snapshot_id": old_snapshot.snapshot_id,
+            "prior_content_hash": old_snapshot.content_hash,
+            "new_snapshot_id": new_snapshot.snapshot_id,
+            "new_content_hash": new_snapshot.content_hash,
+        }]
+
+        db.refresh(diagnosis)
+        db.refresh(old_result)
+        assert diagnosis.active_result_version == old_active_result
+        assert old_result.output_json == old_result_json
+        assert Path(old_snapshot.artifact_path).read_text(encoding="utf-8") == old_text
+        assert Path(new_snapshot.artifact_path).read_text(encoding="utf-8") == new_text
+
+        api_response = Response(status_code=201)
+        api_view = plan_prepared_source_reanalysis(
+            preparation.preparation_id,
+            SourceReanalysisCreate(
+                project_id=1,
+                prompt_id=44,
+                prior_completion_manifest_id=old_manifest.manifest_id,
+                prior_completion_manifest_hash=old_manifest.payload_hash,
+                new_completion_manifest_id=new_manifest.manifest_id,
+                new_completion_manifest_hash=new_manifest.payload_hash,
+                idempotency_key="t09-source-reanalysis",
+            ),
+            api_response,
+            actor="qa",
+            db=db,
+        )
+        assert api_response.status_code == 200
+        assert api_view["affected_count"] == 1
+        assert api_view["reanalyses"][0]["reanalysis_id"] == plan.diagnosis_id
+
+        result = execute_source_reanalysis_with_local_judges(
+            db,
+            reanalysis_id=plan.diagnosis_id,
+            source_claim_judge=_SourceClaimJudge(),
+            alignment_judge=_AlignmentJudge(),
+        )
+        output = json.loads(result.output_json)
+        assert result.parent_result_version == old_result.result_version
+        assert output["input"]["prior_completion_manifest_id"] == old_manifest.manifest_id
+        assert output["input"]["completion_manifest_id"] == new_manifest.manifest_id
+        assert output["input"]["source_snapshot_ids"] == [new_snapshot.snapshot_id]
+        assert output["usage"]["external_llm_calls"] == 0
+        assert db.query(SinglePromptDiagnosisResult).filter_by(
+            diagnosis_id=diagnosis.diagnosis_id, result_version=old_result.result_version
+        ).one().output_json == old_result_json
+
+        repeated, repeated_created = plan_source_reanalysis(
+            db,
+            preparation_id=preparation.preparation_id,
+            project_id=1,
+            prompt_id=44,
+            prior_completion_manifest_id=old_manifest.manifest_id,
+            prior_completion_manifest_hash=old_manifest.payload_hash,
+            new_completion_manifest_id=new_manifest.manifest_id,
+            new_completion_manifest_hash=new_manifest.payload_hash,
+            idempotency_key="t09-source-reanalysis",
+            requested_by="qa",
+        )
+        assert repeated_created is False
+        assert [row.diagnosis_id for row in repeated] == [plan.diagnosis_id]
+        assert execute_source_reanalysis_with_local_judges(
+            db,
+            reanalysis_id=plan.diagnosis_id,
+            source_claim_judge=_SourceClaimJudge(),
+            alignment_judge=_AlignmentJudge(),
+        ).result_version == result.result_version
+        assert db.query(SinglePromptDiagnosisExecution).filter_by(
+            analysis_id=analysis.analysis_id
+        ).count() == 2
+    finally:
+        db.close()
+        engine.dispose()

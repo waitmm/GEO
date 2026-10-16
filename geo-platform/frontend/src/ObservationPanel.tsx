@@ -267,8 +267,10 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
         }).join("、")}` : "未知条件及未计算语义不按零结果处理。"} />
         {mode === "monitor" && <>
           <Typography.Title level={5}>按日期观察（UTC）</Typography.Title>
+          <Typography.Paragraph type="secondary">趋势按各日期各自冻结的 Run 范围展示；范围或 Prompt 版本不同的记录不会被静默合并为同一口径。</Typography.Paragraph>
           <Table size="small" rowKey="date" scroll={{ x: 650 }} pagination={false} dataSource={output.trend?.points || []} columns={[
             { title: "日期", dataIndex: "date" }, { title: "样本数", render: (_, row: any) => row.run_ids.length },
+            { title: "固定范围", render: (_, row: any) => row.run_ids?.length ? `Run ${row.run_ids.join("、")}` : "未提供 Run 范围" },
             { title: "提及", render: (_, row: any) => ratio(row.metrics.brand_mention_rate) },
             { title: "候选", render: (_, row: any) => ratio(row.metrics.brand_option_rate) },
             { title: "推荐", render: (_, row: any) => ratio(row.metrics.brand_recommendation_rate) },

@@ -48,6 +48,15 @@ def test_joint_readonly_opens_antd_prompt_with_visible_selector():
     assert "prompt_control.click()" not in source
 
 
+def test_joint_readonly_reads_visible_antd_history_selection():
+    source = (Path(__file__).parents[1] / "scripts" / "delivery_browser_check.py").read_text()
+
+    assert 'history_control = page.get_by_role("combobox", name="历史比较", exact=True)' in source
+    assert 'expect(history_selection).to_contain_text(args.comparison_id)' in source
+    assert '.locator(".ant-select-selection-item")).to_contain_text(args.comparison_id)' in source
+    assert 'name="历史比较", exact=True)).to_have_value' not in source
+
+
 def test_direct_script_invocation_exposes_backend_scripts_package():
     backend = Path(__file__).parents[1]
     script = backend / "scripts" / "delivery_browser_check.py"

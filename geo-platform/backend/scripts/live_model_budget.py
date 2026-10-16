@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,8 +87,12 @@ def initialize(
         or total_cost_limit_cny != 50.0
         or task_request_limits != {"T09": 3, "T23": 9}
         or sum(task_request_limits.values()) != total_request_limit
+        or set(task_cost_limits_cny) != {"T09", "T23"}
         or any(value <= 0 for value in task_cost_limits_cny.values())
         or sum(task_cost_limits_cny.values()) > total_cost_limit_cny
+        or not math.isfinite(total_cost_limit_cny)
+        or not math.isfinite(conservative_cny_per_million_tokens)
+        or any(not math.isfinite(value) for value in task_cost_limits_cny.values())
         or conservative_cny_per_million_tokens < 10.0
         or not pricing_source.strip()
         or not pricing_checked_at.strip()
@@ -104,6 +109,7 @@ def initialize(
         "pricing_checked_at": pricing_checked_at,
         "automatic_retries": 0,
         "provider": "deepseek",
+        "requested_model_alias": "deepseek-v4-flash",
         "effective_request_model": "deepseek-flash",
     }
     encoded = _canonical(config)
@@ -145,13 +151,30 @@ def reserve(path: Path, *, task_scope: str, request_id: str, identity: dict[str,
         config = _load_config(connection)
         if task_scope not in config["task_request_limits"]:
             raise BudgetDenied("TASK_SCOPE_NOT_AUTHORIZED")
-        if identity.get("provider") != "deepseek" or identity.get("effective_request_model") != "deepseek-flash":
+        if (
+            identity.get("provider") != config["provider"]
+            or identity.get("requested_model_alias") != config["requested_model_alias"]
+            or identity.get("effective_request_model") != config["effective_request_model"]
+        ):
             raise BudgetDenied("PROVIDER_OR_MODEL_NOT_AUTHORIZED")
         if int(identity.get("attempt") or 0) != 1:
             raise BudgetDenied("AUTOMATIC_RETRY_FORBIDDEN")
         payload_hash = str(identity.get("provider_payload_hash") or "")
         input_hash = str(identity.get("input_hash") or "")
-        token_ceiling = int(identity.get("input_token_upper_bound") or 0) + int(identity.get("max_output_tokens") or 0)
+        raw_input_ceiling = identity.get("input_token_upper_bound")
+        raw_output_ceiling = identity.get("max_output_tokens")
+        if (
+            not isinstance(raw_input_ceiling, int)
+            or isinstance(raw_input_ceiling, bool)
+            or not isinstance(raw_output_ceiling, int)
+            or isinstance(raw_output_ceiling, bool)
+            or raw_input_ceiling < 0
+            or raw_output_ceiling <= 0
+            or raw_input_ceiling > 2_000_000
+            or raw_output_ceiling > 2_000_000
+        ):
+            raise BudgetDenied("TOKEN_CEILING_INVALID")
+        token_ceiling = raw_input_ceiling + raw_output_ceiling
         if not request_id.strip() or len(payload_hash) != 64 or len(input_hash) != 64 or token_ceiling <= 0:
             raise BudgetDenied("REQUEST_IDENTITY_INCOMPLETE")
         if connection.execute("SELECT 1 FROM model_requests WHERE status='RESERVED'").fetchone():
@@ -167,6 +190,8 @@ def reserve(path: Path, *, task_scope: str, request_id: str, identity: dict[str,
         counted = [row for row in rows if row["status"] in COUNTED_STATUSES]
         task_counted = [row for row in counted if row["task_scope"] == task_scope]
         cost = round(token_ceiling * float(config["conservative_cny_per_million_tokens"]) / 1_000_000, 6)
+        if not math.isfinite(cost) or cost <= 0:
+            raise BudgetDenied("RESERVED_COST_INVALID")
         if len(counted) + 1 > int(config["total_request_limit"]):
             raise BudgetDenied("GLOBAL_REQUEST_LIMIT_EXHAUSTED")
         if len(task_counted) + 1 > int(config["task_request_limits"][task_scope]):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,12 @@ def test_live_budget_rejects_retry_duplicate_model_and_config_drift(tmp_path):
     wrong = {**_identity(2), "effective_request_model": "deepseek-v4-pro"}
     with pytest.raises(BudgetDenied, match="PROVIDER_OR_MODEL_NOT_AUTHORIZED"):
         reserve(ledger, task_scope="T09", request_id="wrong-model", identity=wrong)
+    wrong_alias = {**_identity(9), "requested_model_alias": "deepseek-v4-pro"}
+    with pytest.raises(BudgetDenied, match="PROVIDER_OR_MODEL_NOT_AUTHORIZED"):
+        reserve(ledger, task_scope="T09", request_id="wrong-alias", identity=wrong_alias)
+    negative = {**_identity(10), "input_token_upper_bound": -1}
+    with pytest.raises(BudgetDenied, match="TOKEN_CEILING_INVALID"):
+        reserve(ledger, task_scope="T09", request_id="negative", identity=negative)
 
     reserve(ledger, task_scope="T23", request_id="same", identity=_identity(3))
     finish(ledger, request_id="same", status="DELIVERY_UNKNOWN", outcome={})
@@ -71,12 +78,53 @@ def test_live_budget_rejects_retry_duplicate_model_and_config_drift(tmp_path):
             pricing_source="official",
             pricing_checked_at="2026-10-16",
         )
+    with pytest.raises(BudgetDenied, match="AUTHORIZED_BATCH_CONFIG_MISMATCH"):
+        initialize(
+            tmp_path / "nan.sqlite3",
+            conservative_cny_per_million_tokens=float("nan"),
+            pricing_source="official",
+            pricing_checked_at="2026-10-16",
+        )
 
 
 def test_live_budget_enforces_global_cost_before_insert(tmp_path):
     ledger = tmp_path / "budget.sqlite3"
     _init(ledger)
-    expensive = _identity(1, tokens=4_100_000)
+    expensive = _identity(1, tokens=1_100_000)
     with pytest.raises(BudgetDenied, match="TASK_COST_LIMIT_EXHAUSTED"):
         reserve(ledger, task_scope="T09", request_id="too-expensive", identity=expensive)
     assert summary(ledger)["used_requests"] == 0
+
+
+def test_live_budget_exhausts_exact_t09_t23_and_global_caps(tmp_path):
+    ledger = tmp_path / "budget.sqlite3"
+    _init(ledger)
+    ordinal = 1
+    for task, limit in (("T09", 3), ("T23", 9)):
+        for task_ordinal in range(limit):
+            request_id = f"{task.lower()}-{task_ordinal + 1}"
+            reserve(ledger, task_scope=task, request_id=request_id, identity=_identity(ordinal, tokens=10_000))
+            finish(ledger, request_id=request_id, status="FINISHED", outcome={})
+            ordinal += 1
+    report = summary(ledger)
+    assert report["used_requests"] == 12
+    assert report["by_task"] == {"T09": 3, "T23": 9}
+    with pytest.raises(BudgetDenied, match="GLOBAL_REQUEST_LIMIT_EXHAUSTED|TASK_REQUEST_LIMIT_EXHAUSTED"):
+        reserve(ledger, task_scope="T23", request_id="thirteenth", identity=_identity(ordinal, tokens=10_000))
+
+
+def test_live_budget_allows_only_one_concurrent_reservation(tmp_path):
+    ledger = tmp_path / "budget.sqlite3"
+    _init(ledger)
+
+    def attempt(index: int) -> str:
+        try:
+            reserve(ledger, task_scope="T23", request_id=f"concurrent-{index}", identity=_identity(index))
+            return "RESERVED"
+        except BudgetDenied as error:
+            return str(error)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(attempt, (1, 2)))
+    assert outcomes.count("RESERVED") == 1
+    assert outcomes.count("ANOTHER_REQUEST_IS_ALREADY_RESERVED") == 1

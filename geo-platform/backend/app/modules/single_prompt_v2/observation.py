@@ -50,6 +50,14 @@ def measure_scope(scope: dict, identity: dict, target_url: str = '') -> dict:
     frozen_identity = {**identity, 'identity_snapshot_hash': _hash(identity)}
     output = measure_frozen_runs(raw=scope['raw'], identity=frozen_identity,
                                  answer_diagnosis=scope['semantics'], published_url=target_url)
+    frozen_config = ((scope['raw'].get('sampling_plan') or {}).get('project_configuration') or {})
+    version_keys = ('configuration_version_id', 'version_number', 'snapshot_hash')
+    output['metric_version'] = output['contract_version']
+    output['brand_config_version'] = (
+        {key: frozen_config[key] for key in version_keys}
+        if all(frozen_config.get(key) not in (None, '') for key in version_keys)
+        else None
+    )
     output['input'] = scope['ref']
     output['failed_run_ids'] = [r['run_id'] for r in scope['raw'].get('runs', []) if r.get('status') not in {'success', 'partial_success'} or not str(r.get('answer_text') or '').strip()]
     output['runs'] = scope['raw'].get('runs', [])

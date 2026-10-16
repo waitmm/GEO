@@ -11,6 +11,7 @@ from test_automatic_delivery import scene, simulated_delivery_transport
 from test_delivery_official_facts import frozen_material, approved, BROWSER_CLAIM
 from app.models import (Project, SinglePromptCitationManifest, SinglePromptExecutionProposalResult,
     SupplementalSourceAcquisition, TargetBrandCapabilityTruth)
+from app.api.release_catalog import _record_project_configuration
 from app.modules.single_prompt_v2.supplemental_sources import (
     queue_source, execute_source, source_view, frozen_sources, recover_interrupted_sources,
 )
@@ -131,6 +132,7 @@ def test_existing_worker_routes_supplemental_and_contract_change_stops_before_fe
 def test_extra_official_source_reaches_draft_without_entering_citation_scope(scene, monkeypatch):
     db, _, args, _ = scene
     db.get(Project, 1).website_url = 'https://example.com'
+    _record_project_configuration(db, db.get(Project, 1))
     db.commit()
     row = queue(db)
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)

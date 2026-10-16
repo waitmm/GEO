@@ -94,7 +94,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       else {
         setScopes(first || []); setHistory(second || []); setPool(current); setOverview(aggregate);
         const selected = new URLSearchParams(window.location.search).get("observation_result");
-        if (selected && mode === "compare") {
+        if (selected && mode === "compare" && promptId !== null) {
           const saved = (second || []).find((r: any) => r.result_version === selected);
           if (saved) restoreComparison(saved);
           else {

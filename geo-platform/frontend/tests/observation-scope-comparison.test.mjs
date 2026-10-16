@@ -29,6 +29,14 @@ test('T21 changing a scope never leaves an old history selection to be restored 
   assert.match(source, /指定的历史比较不存在或不属于当前问题，未替换为其他范围。/);
 });
 
+test('T21 preserves the saved comparison URL until a concrete Prompt history has loaded', async () => {
+  const source = await readFile(panel, 'utf8');
+
+  assert.match(source, /if \(selected && mode === "compare" && promptId !== null\)/);
+  assert.match(source, /promptId \? \[request<any\[]>\(`\$\{base\}\/observation-scopes/);
+  assert.match(source, /request<any\[]>\(`\$\{base\}\/observation-comparisons/);
+});
+
 test('T21 displays incompatibility instead of presenting an unsupported effect conclusion', async () => {
   const source = await readFile(panel, 'utf8');
 

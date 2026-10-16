@@ -1,5 +1,7 @@
 import hashlib
 from pathlib import Path
+import subprocess
+import sys
 
 from scripts.delivery_browser_check import _copy_sqlite_artifact, _file_hashes, _joint_readonly_args
 
@@ -44,3 +46,18 @@ def test_joint_readonly_opens_antd_prompt_with_visible_selector():
     assert '"monitor-switch-refresh.png"' in source
     assert '"saved-comparison-refresh.png"' in source
     assert "prompt_control.click()" not in source
+
+
+def test_direct_script_invocation_exposes_backend_scripts_package():
+    backend = Path(__file__).parents[1]
+    script = backend / "scripts" / "delivery_browser_check.py"
+    probe = (
+        "import runpy; "
+        f"runpy.run_path({str(script)!r}); "
+        "from scripts.release_upgrade_check import business_fingerprint; "
+        "assert callable(business_fingerprint)"
+    )
+
+    completed = subprocess.run([sys.executable, "-c", probe], cwd=backend, text=True, capture_output=True)
+
+    assert completed.returncode == 0, completed.stderr

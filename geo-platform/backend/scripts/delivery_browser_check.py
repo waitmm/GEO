@@ -23,6 +23,11 @@ from urllib.parse import quote
 from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[2]
+# Direct invocation sets sys.path to backend/scripts, but the joint gate also
+# reuses the existing scripts.release_upgrade_check read-only fingerprint.
+# Keep the backend package root available without relying on caller cwd.
+if str(ROOT / "backend") not in sys.path:
+    sys.path.insert(0, str(ROOT / "backend"))
 
 
 def _file_hashes(database: Path) -> dict[str, str | None]:

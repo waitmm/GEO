@@ -102,18 +102,19 @@ def opportunity_hint(intent: str, metrics: dict) -> dict:
     mention = metrics['brand_mention_rate']
     option = metrics['brand_option_rate']
     if not mention['evaluable_count']:
-        state, label, reason = 'NEEDS_DATA', '先积累样本', '当前没有有效回答，不能判断品牌缺席。'
+        state, label, reason, reason_codes = 'NEEDS_DATA', '先积累样本', '当前没有有效回答，不能判断品牌缺席。', ['NO_EVALUABLE_ANSWER']
     elif intent not in {'supplier_recommendation', 'category_awareness', 'usage_instruction'}:
-        state, label, reason = 'UNKNOWN_INTENT', '保留问题目标未知', '本范围没有明确的问题意图，不能按当前配置补写旧范围的优化目标。'
+        state, label, reason, reason_codes = 'UNKNOWN_INTENT', '保留问题目标未知', '本范围没有明确的问题意图，不能按当前配置补写旧范围的优化目标。', ['INTENT_UNKNOWN']
     elif intent != 'supplier_recommendation':
-        state, label, reason = 'OBSERVE', '观察内容需求', '概念或操作类问题不以推荐品牌为默认目标；可分析解释、步骤和条件是否充分。'
+        state, label, reason, reason_codes = 'OBSERVE', '观察内容需求', '概念或操作类问题不以推荐品牌为默认目标；可分析解释、步骤和条件是否充分。', ['RECOMMENDATION_NOT_TARGET_OBJECTIVE', 'CONTENT_QUALITY_REVIEW_AVAILABLE']
     elif not option['evaluable_count']:
-        state, label, reason = 'NEEDS_ANALYSIS', '先分析候选行为', '已有有效回答，但候选判断尚未计算；不能把正文提及当作推荐。'
+        state, label, reason, reason_codes = 'NEEDS_ANALYSIS', '先分析候选行为', '已有有效回答，但候选判断尚未计算；不能把正文提及当作推荐。', ['OPTION_SEMANTIC_NOT_EVALUATED']
     elif option['hit_count'] == 0:
-        state, label, reason = 'INVESTIGATE', '建议分析选择缺口', '已评估范围未将品牌列为选项；需要结合理由与来源判断具体行动，不能直接归因。'
+        state, label, reason, reason_codes = 'INVESTIGATE', '建议分析选择缺口', '已评估范围未将品牌列为选项；需要结合理由与来源判断具体行动，不能直接归因。', ['TARGET_NOT_OBSERVED_AS_OPTION']
     else:
-        state, label, reason = 'OBSERVE', '继续观察', '已评估范围中品牌出现为选项，继续检查覆盖和变化，不自动判定优化成功。'
-    return {'state': state, 'label': label, 'reason': reason, 'intent_type': intent,
+        state, label, reason, reason_codes = 'OBSERVE', '继续观察', '已评估范围中品牌出现为选项，继续检查覆盖和变化，不自动判定优化成功。', ['TARGET_OBSERVED_AS_OPTION']
+    return {'state': state, 'label': label, 'reason': reason, 'opportunity_reason_codes': reason_codes,
+        'score': None, 'intent_type': intent,
         'evaluated_run_ids': option['evaluable_run_ids'] if intent == 'supplier_recommendation' else mention['evaluable_run_ids'],
         'limitation': '仅针对当前选定范围的导航建议，不是策略结论；主动分析入口始终保留。'}
 

@@ -13,7 +13,8 @@ from .observation import fixed_scope, measure_scope, create_observation_comparis
 from . import scheduling
 from app.models import SinglePromptSamplingSchedule
 from .service import (_snapshot_run_rows, _hash, _run_input_fingerprint, create_analysis_from_runs,
-    get_analysis_status, prompt_version_binding_for_runs, VALID_RUN_STATUSES)
+    get_analysis_status, prompt_version_binding_for_runs, VALID_RUN_STATUSES,
+    _current_analysis_configuration)
 from urllib.parse import urlsplit
 
 router = APIRouter(prefix='/api/v2', tags=['monitor-validate'])
@@ -60,6 +61,7 @@ def current_monitor(project_id: int, prompt_id: int, db: Session = Depends(get_r
     selection = {'project_id': project_id, 'prompt_id': prompt_id,
         'observed_run_ids': [r.id for r in matching],
         'raw_output_hash': result['input']['raw_output_hash'], 'identity_hash': _hash(identity),
+        'project_configuration': _current_analysis_configuration(db, project_id),
         'prompt_configuration': {'text': prompt.prompt_text, 'intent_type': prompt.intent_type, 'group': prompt.prompt_group},
         'run_fingerprints': {str(r['run_id']): _run_input_fingerprint(r) for r in raw['runs']
             if r['status'] in VALID_RUN_STATUSES and str(r.get('answer_text') or '').strip()}}

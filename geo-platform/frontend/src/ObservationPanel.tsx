@@ -70,6 +70,13 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     setRightAnswer(saved.input.comparison.answer_result_version || undefined);
     setTarget(saved.input.target_url || "");
   }
+  function clearComparisonSelection() {
+    setResult(undefined);
+    if (mode !== "compare") return;
+    const params = new URLSearchParams(window.location.search);
+    params.delete("observation_result");
+    window.history.replaceState(null, "", params.toString() ? `?${params}` : window.location.pathname);
+  }
   useEffect(() => {
     const epoch = ++generation.current;
     const controller = new AbortController();
@@ -87,7 +94,14 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       else {
         setScopes(first || []); setHistory(second || []); setPool(current); setOverview(aggregate);
         const selected = new URLSearchParams(window.location.search).get("observation_result");
-        if (selected && mode === "compare") restoreComparison((second || []).find((r: any) => r.result_version === selected));
+        if (selected && mode === "compare") {
+          const saved = (second || []).find((r: any) => r.result_version === selected);
+          if (saved) restoreComparison(saved);
+          else {
+            clearComparisonSelection();
+            setError("指定的历史比较不存在或不属于当前问题，未替换为其他范围。");
+          }
+        }
       }
     }).catch(e => { if (!controller.signal.aborted) setError(e.message); }).finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => { if (generation.current === epoch) generation.current++; controller.abort(); };
@@ -145,7 +159,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     } catch (e) { if (epoch === generation.current) setError((e as Error).message); }
     finally { if (epoch === generation.current) setOpeningPrompt(undefined); }
   }
-  const options = scopes.map(s => ({ value: s.context_id, label: `Runs ${(s.run_scope.run_ids || []).join("、")} · ${s.created_at}` }));
+  const options = scopes.map(s => ({ value: s.context_id, label: `范围 ${s.context_id} · Runs ${(s.run_scope.run_ids || []).join("、")} · ${s.created_at}` }));
   const monitorAnalysisBindingReason = (selection: any) => {
     const status = selection?.prompt_version?.binding_status;
     if (status === "LEGACY_UNBOUND") return "这些历史回答未绑定 Prompt 冻结版本，不能用当前或 latest Prompt 替代建立分析。";
@@ -155,10 +169,11 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
   const output = result?.output || result || (mode === "monitor" && pool?.runs?.length ? pool : undefined);
   const measuredIdentity = result?.input?.identity || output?.identity;
   const measuredTarget = result?.input?.target_url ?? output?.target_url;
+  const comparisonInput = mode === "compare" ? result?.input : undefined;
   const rows = Object.entries(output?.metrics || {}).map(([key, value]) => ({ key, name: names[key] || key, data: value as any }));
   const choose = (label: string, value: string | undefined, change: (v: string) => void, answer: string | undefined, answerChange: (v: string | undefined) => void) => <Space direction="vertical" style={{ width: "100%" }}>
-    <label>{label}</label><Select aria-label={label} style={{ width: "100%" }} placeholder="选择明确的样本范围" value={value} options={options} onChange={v => { change(v); answerChange(undefined); setResult(undefined); }} />
-    <Select aria-label={`${label}回答版本`} allowClear style={{ width: "100%" }} placeholder="可选：已保存的回答语义版本" value={answer} onChange={v => { answerChange(v); setResult(undefined); }}
+    <label>{label}</label><Select aria-label={label} style={{ width: "100%" }} placeholder="选择明确的样本范围" value={value} options={options} onChange={v => { change(v); answerChange(undefined); clearComparisonSelection(); }} />
+    <Select aria-label={`${label}回答版本`} allowClear style={{ width: "100%" }} placeholder="可选：已保存的回答语义版本" value={answer} onChange={v => { answerChange(v); clearComparisonSelection(); }}
       options={(scopes.find(s => s.context_id === value)?.answer_results || []).map((r: any) => ({ value: r.result_version, label: r.result_version }))} />
   </Space>;
   return <section className="observation-panel">
@@ -212,8 +227,9 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       {promptId && <Space direction="vertical" size={16} style={{ width: "100%" }}>
         {choose(mode === "monitor" ? "观察范围" : "基线范围", left, setLeft, leftAnswer, setLeftAnswer)}
         {mode === "compare" && choose("对照范围", right, setRight, rightAnswer, setRightAnswer)}
-        <label>目标页面 URL（可选，不要求已发布）<Input value={target} onChange={e => { setTarget(e.target.value); setResult(undefined); }} /></label>
+        <label>目标页面 URL（可选，不要求已发布）<Input value={target} onChange={e => { setTarget(e.target.value); clearComparisonSelection(); }} /></label>
         <Button type="primary" icon={<BarChart3 size={16} />} loading={busy} disabled={!left || (mode === "compare" && (!right || right === left))} onClick={run}>{mode === "monitor" ? "查看指标" : "生成变化比较"}</Button>
+        {mode === "compare" && <Alert type="info" showIcon message="历史结果隔离" description="选择历史比较只恢复该结果保存时的基线、对照和回答版本；修改任一范围或目标页面会退出该历史结果，不会用新范围覆盖它。" />}
         {mode === "compare" && <Select aria-label="历史比较" style={{ width: "100%" }} placeholder="查看已保存的比较" value={result?.result_version} onChange={id => {
           restoreComparison(history.find(x => x.result_version === id)); const params = new URLSearchParams(window.location.search); params.set("observation_result", id); window.history.replaceState(null, "", `?${params}`);
         }} options={history.map(r => ({ value: r.result_version, label: `${r.created_at} · ${r.result_version}` }))} />}
@@ -224,6 +240,11 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
           <Typography.Paragraph style={{ margin: "4px 0" }}>别名：{measuredIdentity.accepted_aliases?.join("、") || "未设置"}；官方域名：{measuredIdentity.official_domains?.join("、") || "未设置，官方引用不可计算"}</Typography.Paragraph>
           {measuredTarget && <Typography.Paragraph>目标页面：{measuredTarget}</Typography.Paragraph>}
           {mode === "compare" && <Typography.Paragraph type="secondary">当前展示的是保存时的测量身份；项目配置更新不会改写此结果。</Typography.Paragraph>}
+        </section>}
+        {comparisonInput && <section aria-label="固定范围身份" style={{ marginTop: 12, overflowWrap: "anywhere" }}>
+          <Typography.Text strong>固定范围身份（保存比较）</Typography.Text>
+          <Typography.Paragraph style={{ margin: "4px 0" }}>基线：{comparisonInput.baseline?.context_id || "未提供"} · 回答版本：{comparisonInput.baseline?.answer_result_version || "未绑定"} · 原始哈希：{comparisonInput.baseline?.raw_output_hash || "未提供"}</Typography.Paragraph>
+          <Typography.Paragraph style={{ margin: "4px 0" }}>对照：{comparisonInput.comparison?.context_id || "未提供"} · 回答版本：{comparisonInput.comparison?.answer_result_version || "未绑定"} · 原始哈希：{comparisonInput.comparison?.raw_output_hash || "未提供"}</Typography.Paragraph>
         </section>}
         {mode === "monitor" && output.opportunity && <Alert style={{ marginTop: 16 }} type="info" message={output.opportunity.label} description={output.opportunity.reason} />}
         <Table style={{ marginTop: 24 }} rowKey="key" pagination={false} scroll={{ x: 650 }} dataSource={rows} columns={[

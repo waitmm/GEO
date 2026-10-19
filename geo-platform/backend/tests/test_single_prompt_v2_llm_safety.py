@@ -47,6 +47,22 @@ def _session(tmp_path):
     return sessionmaker(bind=engine)(), engine
 
 
+def _v1_cache_identity(client, *, system, payload, response_schema, prompt_version, schema_version,
+                       max_tokens=4096):
+    contract = deepseek.derive_deepseek_call_contract(
+        system_prompt=system, response_schema=response_schema, prompt_version=prompt_version,
+        schema_version=schema_version, requested_model_alias=client.settings.deepseek_model,
+        thinking_mode="disabled", max_tokens=max_tokens, structured_output_mode="JSON_SCHEMA",
+        transport_version=deepseek.DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
+        endpoint_base_url=client.settings.deepseek_base_url,
+    )
+    return contract["effective_request_model"], deepseek._canonical_hash({
+        "cache_identity_version": deepseek.DERIVED_MODEL_CACHE_IDENTITY_VERSION,
+        "call_identity_hash": contract["call_identity_hash"],
+        "input_scope_hash": deepseek._canonical_hash(payload),
+    })
+
+
 @pytest.mark.parametrize(
     ("validator", "payload"),
     [
@@ -262,9 +278,9 @@ def test_production_answer_prompt_schema_and_non_empty_example_share_the_runtime
 @pytest.mark.parametrize(
     ("content", "finish_reason", "message"),
     [
-        ("", "stop", "空白响应"),
-        ("{} trailing", "stop", "不是完整 JSON"),
-        (json.dumps(VALID_EMPTY_ANSWER, ensure_ascii=False), "length", "长度限制"),
+        ("", "completed", "空白响应"),
+        ("{} trailing", "completed", "不是完整 JSON"),
+        (json.dumps(VALID_EMPTY_ANSWER, ensure_ascii=False), "incomplete", "未完整完成"),
     ],
 )
 def test_strict_client_rejects_blank_non_full_json_and_truncation(monkeypatch, content, finish_reason, message):
@@ -275,8 +291,9 @@ def test_strict_client_rejects_blank_non_full_json_and_truncation(monkeypatch, c
         @staticmethod
         def json():
             return {
-                "choices": [{"finish_reason": finish_reason, "message": {"content": content}}],
-                "usage": {"total_tokens": 3},
+                "model": "deepseek-flash", "status": finish_reason,
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": content}]}],
+                "usage": {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
             }
 
     class FakeHttpClient:
@@ -305,6 +322,8 @@ def test_strict_client_rejects_blank_non_full_json_and_truncation(monkeypatch, c
             schema_version="v2-test-schema",
             strict_json=True,
             response_validator=admit_answer_response,
+            structured_output_mode="JSON_SCHEMA",
+            transport_version=deepseek.DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
         )
     assert rejected.value.audit["response_length"] == len(content)
     assert len(rejected.value.audit["response_excerpt"]) <= 240
@@ -325,8 +344,9 @@ def test_opt_in_response_audit_preserves_complete_accepted_and_rejected_payloads
 
         def json(self):
             return {
-                "choices": [{"finish_reason": "stop", "message": {"content": self.content}}],
-                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+                "model": "deepseek-flash", "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": self.content}]}],
+                "usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
             }
 
     class FakeHttpClient:
@@ -359,6 +379,8 @@ def test_opt_in_response_audit_preserves_complete_accepted_and_rejected_payloads
         schema_version="v2-test-schema",
         strict_json=True,
         response_validator=admit_answer_response,
+        structured_output_mode="JSON_SCHEMA",
+        transport_version=deepseek.DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
     )
     assert accepted == VALID_EMPTY_ANSWER
     assert audit[0]["validation_status"] == "ACCEPTED"
@@ -374,6 +396,8 @@ def test_opt_in_response_audit_preserves_complete_accepted_and_rejected_payloads
             schema_version="v2-test-schema",
             strict_json=True,
             response_validator=admit_answer_response,
+            structured_output_mode="JSON_SCHEMA",
+            transport_version=deepseek.DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
         )
     assert audit[1]["validation_status"] == "REJECTED"
     assert audit[1]["structured_response_text"] == json.dumps(
@@ -390,6 +414,7 @@ def test_v1_default_keeps_legacy_json_extraction_without_v2_validator(monkeypatc
         @staticmethod
         def json():
             return {
+                "model": "deepseek-v4-flash",
                 "choices": [{"finish_reason": "stop", "message": {"content": 'prefix {"legacy": true} suffix'}}],
                 "usage": {"total_tokens": 2},
             }
@@ -424,12 +449,12 @@ def test_invalid_cache_is_rejected_without_external_fallback_and_valid_cache_is_
     db, engine = _session(tmp_path)
     try:
         client = deepseek.DeepSeekClient(thinking_mode="disabled", max_attempts=1)
-        model = client.settings.deepseek_model
         system = "Return JSON."
         payload = {"untrusted_input": "x"}
         prompt_version = "v2-cache-test"
         schema_version = "v2-cache-schema"
-        input_hash = deepseek._input_hash(system, payload, prompt_version, schema_version, "disabled")
+        model, input_hash = _v1_cache_identity(client, system=system, payload=payload,
+            response_schema=AnswerSemanticResponse, prompt_version=prompt_version, schema_version=schema_version)
         db.add(LLMCallCache(
             provider="deepseek",
             model=model,
@@ -457,6 +482,8 @@ def test_invalid_cache_is_rejected_without_external_fallback_and_valid_cache_is_
                 db=db,
                 strict_json=True,
                 response_validator=admit_answer_response,
+                structured_output_mode="JSON_SCHEMA",
+                transport_version=deepseek.DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
             )
         assert rejected.value.audit["response_source"] == "LLM_CALL_CACHE"
         assert _llm_failure(rejected.value)["status"] == "CACHE_REJECTED_BY_V2_VALIDATION"
@@ -484,6 +511,8 @@ def test_invalid_cache_is_rejected_without_external_fallback_and_valid_cache_is_
             db=db,
             strict_json=True,
             response_validator=admit_answer_response,
+            structured_output_mode="JSON_SCHEMA",
+            transport_version=deepseek.DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
         ) == VALID_EMPTY_ANSWER
         assert second_client.external_call_count == 0
     finally:
@@ -495,15 +524,10 @@ def test_legacy_string_criterion_cache_is_rejected_without_external_fallback(tmp
     db, engine = _session(tmp_path)
     try:
         client = deepseek.DeepSeekClient(thinking_mode="disabled", max_attempts=1)
-        model = client.settings.deepseek_model
         payload = {"untrusted_input": "选择工具时应关注稳定性。"}
-        input_hash = deepseek._input_hash(
-            V2_ANSWER_SYSTEM,
-            payload,
-            V2_ANSWER_PROMPT_VERSION,
-            V2_ANSWER_SCHEMA_VERSION,
-            "disabled",
-        )
+        model, input_hash = _v1_cache_identity(client, system=V2_ANSWER_SYSTEM, payload=payload,
+            response_schema=AnswerSemanticResponse, prompt_version=V2_ANSWER_PROMPT_VERSION,
+            schema_version=V2_ANSWER_SCHEMA_VERSION)
         cached = {
             "events": [],
             "selection_criteria": ["稳定性"],
@@ -536,6 +560,8 @@ def test_legacy_string_criterion_cache_is_rejected_without_external_fallback(tmp
                 db=db,
                 strict_json=True,
                 response_validator=admit_answer_response,
+                structured_output_mode="JSON_SCHEMA",
+                transport_version=deepseek.DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
             )
         assert rejected.value.code == "FAILED_SCHEMA"
         assert rejected.value.audit["response_source"] == "LLM_CALL_CACHE"
@@ -555,8 +581,9 @@ def test_invalid_external_payload_is_not_written_to_success_cache(tmp_path, monk
             @staticmethod
             def json():
                 return {
-                    "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
-                    "usage": {"total_tokens": 4},
+                    "model": "deepseek-flash", "status": "completed",
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "{}"}]}],
+                    "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
                 }
 
         class FakeHttpClient:
@@ -586,6 +613,8 @@ def test_invalid_external_payload_is_not_written_to_success_cache(tmp_path, monk
                 db=db,
                 strict_json=True,
                 response_validator=admit_answer_response,
+                structured_output_mode="JSON_SCHEMA",
+                transport_version=deepseek.DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
             )
         assert client.external_call_count == 1
         assert db.query(LLMCallCache).count() == 0
@@ -618,8 +647,10 @@ def test_schema_valid_but_fake_span_is_rejected_before_success_cache_write(tmp_p
             @staticmethod
             def json():
                 return {
-                    "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(response, ensure_ascii=False)}}],
-                    "usage": {"total_tokens": 9},
+                    "model": "deepseek-flash", "status": "completed",
+                    "output": [{"type": "message", "content": [{"type": "output_text",
+                        "text": json.dumps(response, ensure_ascii=False)}]}],
+                    "usage": {"input_tokens": 6, "output_tokens": 3, "total_tokens": 9},
                 }
 
         class FakeHttpClient:

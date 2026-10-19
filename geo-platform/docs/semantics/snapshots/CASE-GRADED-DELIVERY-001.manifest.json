@@ -1,0 +1,223 @@
+{
+  "snapshot_schema_version": "1.0.0",
+  "case_id": "CASE-GRADED-DELIVERY-001",
+  "snapshot_id": "CASE-GRADED-DELIVERY-001@2026-10-19",
+  "contract_under_review": "SC-GRADED-DELIVERY-001@1.0.0",
+  "captured_at": "2026-10-19T16:00:00+08:00",
+  "repository": {
+    "git_head": "478cb2c4f0341fe1349360d71b646e8677cf9395",
+    "worktree_dirty": true,
+    "note": "The real E1 member binds an isolated acceptance database. Other members are deterministic contract fixtures and are not real E2E acceptance evidence."
+  },
+  "real_e1": {
+    "fixture_kind": "REAL_ISOLATED_ACCEPTANCE_INPUT",
+    "replayability_status": "EXACT_LOCAL_DB_AND_CACHE_ARTIFACT_REQUIRED",
+    "database": {
+      "path": "/private/tmp/geo-t23-live-preflight-20261019-r3/t23-acceptance.sqlite3",
+      "sha256": "0380e0e5499aee98b54adaa58adf9b87c13d8b47fc79899d8ff83945622e37c0"
+    },
+    "task_id": "optimize-3ca74641-940b-40d5-9f0b-1442936ab00e",
+    "project_id": 1,
+    "prompt_id": 1,
+    "analysis_id": "6e19e229-ece8-4cf9-b078-588eb6b8d014",
+    "context_id": "ctx-f9d68558-1ad5-4e25-b8ee-d730f74d0b33",
+    "fixed_run_ids": [2],
+    "task_input_hash": "df4120613e3e5441717a1e5c9d17714e75213c224baf9feaaa3ac4d11cca556e",
+    "raw_result_version": "raw-v1:12961a016dd2ab5d",
+    "raw_output_hash": "12961a016dd2ab5d8ad93f67bd06b37a4efaf580fd9d911bff04cd05c5f7185f",
+    "answer_result_version": "diag-v1:2669d8a695ef5998",
+    "answer_result_hash": "2669d8a695ef599884ddbadc32abbaca2ecef3603b7734b041777a4e36f6cc97",
+    "citation_manifest_id": "citation-manifest-05a95da5-66c9-4bc8-a2ab-e72846d13369",
+    "citation_manifest_hash": "84a6dba08f29e8c1c75fcd0100983b80c74e3ab9f5dea24f3862e6ac358d79ac",
+    "completion_manifest_id": "source-completion-cfaeac24-a23f-44e8-9e48-1bfb0706b2de",
+    "completion_manifest_hash": "05029cd215864f04b7c0647ac7c3855f08d7a1fd8e0d8435bf9eaeb74d0eb7e4",
+    "contribution_id": "citation-contribution-065c2c99-fe05-4b09-b341-d0253655e925",
+    "contribution_result_version": "contribution-v1:c35c6395b4c7b174",
+    "contribution_result_hash": "fb2fbcc1d594831ae4a222f912f56360ed5aa6de9b562e6c409b386a474e5182",
+    "strategy_id": "strategy-36285f0d-98cb-4bd8-bce2-0c5a9baf7cb7",
+    "strategy_result_version": "strategy-v1:17c9d949e5755eed",
+    "strategy_result_hash": "17c9d949e5755eedd6134a476a5d693d152164729b267ad6b478b73cadb0c9b7",
+    "proposal_id": "execution-proposal-3babd9e7-77d2-48a1-9719-c509059247ea",
+    "proposal_result_version": "execution-v1:1ab600f733724a87",
+    "proposal_result_hash": "1ab600f733724a875c798341238d06c4b4d72f6ee80c61f216216915bc8a7a04",
+    "rejected_cache_artifact": {
+      "path": "artifacts/evidence/automatic-delivery/optimize-3ca74641-940b-40d5-9f0b-1442936ab00e/47fd3a8741264d808ec0a79777c696b1.json",
+      "sha256": "5ff0251760f10f816b80a000433c5552797672d1fef159f8069ed55c08da00ef"
+    },
+    "observed_old_projection": {
+      "citation_count": 31,
+      "evaluation_count": 0,
+      "binding_count": 0,
+      "selected_evidence_count": 0,
+      "task_status": "BLOCKED",
+      "blocker_code": "FAILED_PARSE"
+    },
+    "safe_replay_expectation": {
+      "evaluation_count": 10,
+      "supporting_binding_count": 4,
+      "external_calls": 0,
+      "e2e_01_pass": false,
+      "note": "The replay proves the parser compatibility fix only. E1 still requires a new append-only UI task, exact planned/admitted qualification, Draft and QA."
+    }
+  },
+  "contract_fixtures": [
+    {
+      "fixture_id": "GRADED-L1-NORMAL",
+      "fixture_kind": "SYNTHETIC_CONTRACT_FIXTURE_NOT_REAL_ACCEPTANCE",
+      "identity": {
+        "qualification_id": "fixture-qualification-l1",
+        "qualification_version": "delivery-qualification-v1:l1",
+        "qualification_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "analysis_id": "fixture-analysis-l1",
+        "context_id": "fixture-context-l1",
+        "run_ids": [101],
+        "strategy_result_version": "fixture-strategy-l1-v1",
+        "strategy_result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "direction_id": "fixture-direction-l1",
+        "proposal_id": "fixture-proposal-l1",
+        "contribution_partition_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "truth_partition_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "block_allowlist_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "allowlists": {
+        "evidence_ids": ["fixture-evidence-l1"],
+        "truth_ids": ["fixture-truth-l1"],
+        "block_ids": ["fixture-block-source-l1", "fixture-block-target-l1", "fixture-block-instruction-l1"]
+      },
+      "grounded_blocks": [
+        {
+          "block_id": "fixture-block-source-l1",
+          "kind": "SOURCE_STATEMENT",
+          "evidence_ids": ["fixture-evidence-l1"]
+        },
+        {
+          "block_id": "fixture-block-target-l1",
+          "kind": "TARGET_STATEMENT",
+          "evidence_ids": ["truth:fixture-truth-l1"]
+        },
+        {
+          "block_id": "fixture-block-instruction-l1",
+          "kind": "INSTRUCTION",
+          "evidence_ids": []
+        }
+      ],
+      "plan": {
+        "plan_id": "fixture-plan-l1",
+        "plan_version": "delivery-qualification-plan-v1:l1",
+        "plan_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "qualification_id": "fixture-qualification-l1",
+        "qualification_version": "delivery-qualification-v1:l1",
+        "qualification_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "planned_delivery_level": "L1_FULLY_GROUNDED",
+        "product_outcome": "NONE"
+      },
+      "result": {
+        "result_id": "fixture-result-l1",
+        "result_version": "delivery-qualification-result-v1:l1",
+        "result_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+        "plan_id": "fixture-plan-l1",
+        "plan_version": "delivery-qualification-plan-v1:l1",
+        "plan_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "qualification_id": "fixture-qualification-l1",
+        "qualification_version": "delivery-qualification-v1:l1",
+        "qualification_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "admitted_delivery_level": "L1_FULLY_GROUNDED",
+        "qa_status": "READY",
+        "workflow_terminal_state": "COMPLETED",
+        "product_outcome": "CONTENT_DELIVERED"
+      },
+      "e2e_01_pass": false,
+      "note": "This proves the deterministic L1 contract only. E1 still requires real source, real UI and formal E2E gates."
+    },
+    {
+      "fixture_id": "GRADED-L2-PARTIAL-UNKNOWN",
+      "fixture_kind": "SYNTHETIC_CONTRACT_FIXTURE_NOT_REAL_ACCEPTANCE",
+      "identity": {
+        "analysis_id": "fixture-analysis-l2",
+        "context_id": "fixture-context-l2",
+        "run_ids": [201],
+        "strategy_result_version": "fixture-strategy-l2-v1",
+        "strategy_result_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "direction_id": "fixture-direction-l2",
+        "proposal_id": "fixture-proposal-l2",
+        "contribution_partition_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "truth_partition_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "block_allowlist_hash": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "facts": {
+        "consumable_evidence_ids": ["fixture-evidence-supported"],
+        "unknown_truth_ids": ["fixture-truth-unknown"],
+        "permitted_block_kinds": ["SOURCE_STATEMENT", "INSTRUCTION"]
+      },
+      "expected_planned_level": "L2_PARTIALLY_GROUNDED",
+      "expected_admitted_level": "L2_PARTIALLY_GROUNDED",
+      "e2e_03_pass": false,
+      "note": "A real UNKNOWN plus usable subset is still required for E2E-03."
+    },
+    {
+      "fixture_id": "GRADED-L3-LOW-EVIDENCE",
+      "fixture_kind": "SYNTHETIC_CONTRACT_FIXTURE_NOT_REAL_ACCEPTANCE",
+      "identity": {
+        "analysis_id": "fixture-analysis-l3",
+        "context_id": "fixture-context-l3",
+        "run_ids": [301],
+        "strategy_result_version": "fixture-strategy-l3-v1",
+        "strategy_result_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+        "direction_id": "fixture-direction-l3",
+        "proposal_id": "fixture-proposal-l3",
+        "contribution_partition_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+        "truth_partition_hash": "7777777777777777777777777777777777777777777777777777777777777777",
+        "block_allowlist_hash": "8888888888888888888888888888888888888888888888888888888888888888"
+      },
+      "facts": {
+        "consumable_evidence_ids": [],
+        "formal_low_match_relation": "NO_MATCH",
+        "permitted_block_kinds": ["INSTRUCTION"]
+      },
+      "expected_planned_level": "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS",
+      "expected_admitted_level": "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS",
+      "e2e_02_pass": false,
+      "note": "The fixture checks semantics only. E2E-02 needs a real same-Run low-match result and real browser delivery."
+    },
+    {
+      "fixture_id": "GRADED-L4-NO-CONSUMABLE-ANSWER",
+      "fixture_kind": "SYNTHETIC_CONTRACT_FIXTURE_NOT_REAL_ACCEPTANCE",
+      "identity": {
+        "analysis_id": "fixture-analysis-l4",
+        "context_id": "fixture-context-l4",
+        "run_ids": [401],
+        "raw_output_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "facts": {
+        "valid_compute_run_ids": [],
+        "missing_objects": ["CONSUMABLE_ANSWER"],
+        "external_calls": 0
+      },
+      "expected_workflow_terminal_state": "COMPLETED_WITH_LIMITATIONS",
+      "expected_product_outcome": "RECOVERY_REQUIRED",
+      "expected_planned_level": "L4_RECOVERY_PACKAGE",
+      "downstream_content_delivery_dependency_satisfied": false
+    },
+    {
+      "fixture_id": "GRADED-MIXED-DIRECTIONS",
+      "fixture_kind": "SYNTHETIC_CONTRACT_FIXTURE_NOT_REAL_ACCEPTANCE",
+      "direction_levels": {
+        "fixture-direction-grounded": "L1_FULLY_GROUNDED",
+        "fixture-direction-action": "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS"
+      },
+      "expected_task_aggregate": {
+        "highest_level": "L1_FULLY_GROUNDED",
+        "lowest_level": "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS",
+        "all_directions_l1": false,
+        "e2e_01_pass": false
+      }
+    }
+  ],
+  "forbidden_assertions": [
+    "A lower delivery level upgrades Evidence, Product Truth or public claim eligibility.",
+    "One L1 direction upgrades every task direction to L1.",
+    "L4 satisfies a Draft, QA or content-delivery dependency.",
+    "A synthetic contract fixture is real E2E acceptance evidence.",
+    "An old BLOCKED task is retroactively reclassified as L4."
+  ]
+}

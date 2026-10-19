@@ -782,6 +782,46 @@ supersedes: null
 last_verified_at: 2026-09-29
 ```
 
+### SC-GRADED-DELIVERY-001 Evidence-Graded Product Delivery
+
+```yaml
+contract_id: SC-GRADED-DELIVERY-001
+contract_name: Evidence-Graded Product Delivery
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: NOT_IMPLEMENTED
+definition: Exact, identity-safe inputs produce an immutable pre-request DeliveryQualificationPlan and an append-only admitted Result. Evidence quality selects L1-L4 delivery form; identity, permission, version and fact-grounding integrity remain hard blockers.
+allowed_inferences:
+  - Fully grounded selected blocks may form L1 content.
+  - Independently supported blocks may form L2 while unsupported parts are deleted or kept as explicit verification work.
+  - Valid inputs with no consumable fact evidence may form L3 instruction-only action, research and verification content.
+  - Integrity-valid but unusable or missing analytic input may form an L4 recovery package with zero model calls.
+forbidden_inferences:
+  - A lower delivery level upgrades Evidence, Product Truth, public-claim or publication eligibility.
+  - UNKNOWN, failed or unevaluated input becomes a fact.
+  - L4 masks identity, permission, version or scope failure, or unlocks content-delivery dependencies.
+  - Synthetic graded-delivery fixtures pass a real E1/E2/E3 scenario.
+unknown_behavior: Preserve UNKNOWN and excluded members; convert only their known limitations into verification or recovery actions.
+step_boundary: Qualification inside the existing Optimize -> Strategy -> Execution -> QA chain; no second chain or new product step.
+source_references:
+  - docs/semantics/rfcs/RFC-GRADED-DELIVERY-001.md
+  - docs/semantics/approvals/RFC-GRADED-DELIVERY-001.definition-freeze.md
+observed_implementation_refs:
+  - backend/app/modules/single_prompt_v2/qualification.py
+  - backend/app/modules/single_prompt_v2/automatic_delivery.py
+  - backend/app/modules/single_prompt_v2/execution.py
+  - backend/app/modules/single_prompt_v2/delivery_generation.py
+enforcement_refs:
+  - docs/semantics/snapshots/CASE-GRADED-DELIVERY-001.manifest.json
+approved_by: Product Owner
+approved_at: 2026-10-19
+approval_reference: docs/semantics/approvals/RFC-GRADED-DELIVERY-001.definition-freeze.md
+golden_case_ids: [CASE-GRADED-DELIVERY-001, GRADED-L1-NORMAL, GRADED-L2-PARTIAL-UNKNOWN, GRADED-L3-LOW-EVIDENCE, GRADED-L4-NO-CONSUMABLE-ANSWER, GRADED-MIXED-DIRECTIONS]
+effective_from: 2026-10-19
+supersedes: null
+last_verified_at: 2026-10-19
+```
+
 ## 3. Definition Freeze Queue
 
 `SC-RUNTIME-001@0.1.0` 已由 Product Owner 在独立 Review 005 通过后正式

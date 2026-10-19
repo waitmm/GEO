@@ -82,7 +82,8 @@ def _bounded_date(value: str) -> str:
     return value
 
 
-def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = False) -> dict[str, Any]:
+def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = False,
+                      allow_unprepared_e2e03: bool = False) -> dict[str, Any]:
     if value.get("contract_version") != CONTRACT:
         raise ValueError("unsupported T23 manifest contract")
     source_hash = value.get("source_database_sha256")
@@ -166,6 +167,18 @@ def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = F
             for key in ("result_hash", "canonical_url_hash", "evaluation_hash"):
                 if not isinstance(low[key], str) or len(low[key]) != 64:
                     raise ValueError(f"E2E-02 {key} must be a frozen sha256 identity")
+        if row["id"] == "E2E-03":
+            pending = row.get("task_pending_truth") is True
+            if pending and not allow_unprepared_e2e03:
+                raise ValueError("E2E-03 cannot be planned before its formal UNKNOWN truth is frozen")
+            if pending:
+                unknown = row.get("unknown_prepare_input")
+                if (not isinstance(unknown, dict)
+                        or set(unknown) != {"signal_selector", "source_reference", "note", "reviewed_by"}
+                        or unknown.get("signal_selector") != "UNIQUE_TARGET_BRAND_CAPABILITY"
+                        or not all(str(unknown.get(key) or "").strip()
+                                   for key in ("source_reference", "note", "reviewed_by"))):
+                    raise ValueError("E2E-03 pending task requires a bounded formal UNKNOWN prepare input")
     if sum(row["max_requests"] for row in cases) > budget["max_requests"]:
         raise ValueError("scenario request caps exceed the shared T23 allocation")
     if [row["max_requests"] for row in cases] != [4, 3, 2]:

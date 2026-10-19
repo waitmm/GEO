@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -24,15 +25,16 @@ sys.path.insert(0, str(ROOT))
 
 from app.core.release_sqlite import get_release_sqlite_dbapi  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
-from app.models import (SinglePromptCitationContributionExecution,
+from app.models import (SinglePromptAnalysisContext, SinglePromptCitationContributionExecution,
     SinglePromptCitationContributionResult, SinglePromptDiagnosisResult,
-    SinglePromptOptimizationTask, ReferenceSource)  # noqa: E402
+    SinglePromptOptimizationTask, ReferenceSource, TargetBrandCapabilityTruth)  # noqa: E402
 from app.services.semantic_llm.base import SemanticLLMError  # noqa: E402
 from app.services.semantic_llm.deepseek import (  # noqa: E402
     DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION, DeepSeekClient, derive_deepseek_call_contract,
 )
 from app.modules.single_prompt_v2.automatic_delivery import (  # noqa: E402
     authorize_task,
+    create_task,
     execute_task,
     shared_live_budget_hooks,
 )
@@ -53,8 +55,10 @@ from app.modules.single_prompt_v2.citation_contribution import (  # noqa: E402
 )
 from app.modules.single_prompt_v2.delivery_text import digest  # noqa: E402
 from app.modules.single_prompt_v2.diagnosis import (  # noqa: E402
-    claim_diagnosis, compute_answer_diagnosis, create_answer_diagnosis,
+    _split_target_capability_candidates, claim_diagnosis, compute_answer_diagnosis,
+    create_answer_diagnosis, record_target_brand_truth,
 )
+from app.modules.single_prompt_v2.truth_corrections import project_truths  # noqa: E402
 from app.modules.single_prompt_v2.llm_safety import V2AnswerSemanticJudge  # noqa: E402
 from app.services.serialization import loads  # noqa: E402
 from app.services.url_identity import build_url_identity  # noqa: E402
@@ -369,9 +373,65 @@ def _freeze_manifest_value(manifest: dict[str, Any], low: dict[str, Any], databa
     return validate_manifest(frozen)
 
 
+def _freeze_e2e03_unknown(db, manifest: dict[str, Any], diagnosis,
+                          answer_result) -> dict[str, Any]:
+    """Create the E2E-03 task only after a formal Answer exposes one exact signal."""
+    case = next(row for row in manifest["scenarios"] if row["id"] == "E2E-03")
+    if not case.get("task_pending_truth"):
+        return case
+    prepare = case["unknown_prepare_input"]
+    output = loads(answer_result.output_json, {})
+    brand = (output.get("input") or {}).get("brand_snapshot") or {}
+    target_names = {str(value).strip() for value in
+        [brand.get("brand_name"), *(brand.get("aliases") or [])] if str(value or "").strip()}
+    candidates: list[tuple[str, str]] = []
+    for event in (output.get("answer_diagnosis") or {}).get("events") or []:
+        if str(event.get("entity_text") or "").strip() not in target_names:
+            continue
+        for reason in event.get("reasons") or []:
+            signal_id = str(reason.get("reason_id") or "").strip()
+            grounded = str(reason.get("effective_grounded_text") or reason.get("reason_span") or "").strip()
+            for label in _split_target_capability_candidates(grounded):
+                if signal_id and (signal_id, label) not in candidates:
+                    candidates.append((signal_id, label))
+    if len(candidates) != 1:
+        raise ValueError(
+            "E2E-03_UNKNOWN_SIGNAL_REVIEW_REQUIRED: expected one exact target-brand capability signal, "
+            f"found {len(candidates)}")
+    signal_id, label = candidates[0]
+    key = re.sub(r"[\s\W_]+", "", label.lower())
+    truth = db.query(TargetBrandCapabilityTruth).filter_by(
+        project_id=case["project_id"], capability_key=key).one_or_none()
+    if truth:
+        if (truth.capability_label != label or truth.product_truth_status != "UNKNOWN"
+                or truth.source_reference != prepare["source_reference"]
+                or truth.reviewed_by != prepare["reviewed_by"]):
+            raise ValueError("E2E-03 existing capability truth does not match the frozen prepare input")
+    else:
+        current_truths = project_truths(db, case["project_id"])
+        record_target_brand_truth(db, analysis_id=diagnosis.analysis_id,
+            diagnosis_id=diagnosis.diagnosis_id, result_version=answer_result.result_version,
+            project_id=diagnosis.project_id, prompt_id=diagnosis.prompt_id,
+            result_hash=answer_result.output_hash, frozen_truth_set_hash=diagnosis.truth_set_hash,
+            expected_project_truth_set_hash=digest(current_truths), capability_label=label,
+            product_truth_status="UNKNOWN", source_reference=prepare["source_reference"],
+            note=prepare["note"], reviewed_by=prepare["reviewed_by"], source_signal_id=signal_id)
+    context = db.query(SinglePromptAnalysisContext).filter_by(
+        analysis_id=case["analysis_id"], context_id=case["context_id"],
+        project_id=case["project_id"], prompt_id=case["prompt_id"]).one()
+    task, _ = create_task(db, analysis_id=case["analysis_id"], project_id=case["project_id"],
+        prompt_id=case["prompt_id"], raw_output_hash=context.raw_output_hash,
+        idempotency_key=f"{manifest['shared_budget']['budget_id']}:E2E-03")
+    case["task_id"] = task.task_id
+    case["input_hash"] = task.input_hash
+    case.pop("task_pending_truth", None)
+    return case
+
+
 def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
                        frozen_manifest_path: Path, report_path: Path) -> dict[str, Any]:
-    manifest = validate_manifest(_read_json(manifest_path), allow_unprepared_e2e02=True)
+    manifest = validate_manifest(_read_json(manifest_path), allow_unprepared_e2e02=True,
+        allow_unprepared_e2e03=True)
     case = next(row for row in manifest["scenarios"] if row["id"] == "E2E-02")
     if case.get("low_match_evidence"):
         if _sha256_file(database) != manifest["source_database_sha256"]:
@@ -595,6 +655,14 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
             manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
             budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
             answer=diagnosis, answer_result=answer_result, contribution=execution))
+        e2e03 = _freeze_e2e03_unknown(db, manifest, diagnosis, answer_result)
+        e2e03_payload = _checkpoint_payload(
+            manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+            budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+            answer=diagnosis, answer_result=answer_result, contribution=execution)
+        e2e03_payload["e2e03_task_id"] = e2e03["task_id"]
+        e2e03_payload["e2e03_input_hash"] = e2e03["input_hash"]
+        _append_checkpoint(checkpoint_dir, "E2E03_UNKNOWN_FROZEN", e2e03_payload)
     except Exception as exc:
         prepare_failure = exc
         durable_failure_payload = _checkpoint_payload(

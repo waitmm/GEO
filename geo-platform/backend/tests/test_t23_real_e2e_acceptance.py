@@ -23,6 +23,7 @@ from scripts.run_t23_delivery_live import (
     _checkpoint_events,
     _execute_planned_scenarios,
     _extract_low_match,
+    _freeze_e2e03_unknown,
     _freeze_manifest_value,
     _hooks,
     _write_initial_database_snapshot,
@@ -151,6 +152,45 @@ def test_manifest_requires_one_shared_non_retrying_budget_for_all_three_scenario
     with pytest.raises(ValueError, match=r"1 prepare \+ 2 execute"):
         validate_manifest(value)
 
+
+def test_pending_e2e03_is_prepare_only_and_requires_bounded_unknown_input():
+    value = manifest()
+    value["scenarios"][2].update({
+        "task_id": "PENDING_AFTER_FORMAL_UNKNOWN",
+        "input_hash": "0" * 64,
+        "task_pending_truth": True,
+        "unknown_prepare_input": {
+            "signal_selector": "UNIQUE_TARGET_BRAND_CAPABILITY",
+            "source_reference": "isolated acceptance",
+            "note": "unknown until independently verified",
+            "reviewed_by": "acceptance-controller",
+        },
+    })
+    with pytest.raises(ValueError, match="cannot be planned"):
+        validate_manifest(value)
+    assert validate_manifest(value, allow_unprepared_e2e03=True) is value
+    value["scenarios"][2]["unknown_prepare_input"]["signal_selector"] = "FIRST_REASON"
+    with pytest.raises(ValueError, match="bounded formal UNKNOWN"):
+        validate_manifest(value, allow_unprepared_e2e03=True)
+
+
+def test_pending_e2e03_refuses_to_invent_a_missing_answer_signal():
+    value = manifest()
+    value["scenarios"][2].update({
+        "task_pending_truth": True,
+        "unknown_prepare_input": {
+            "signal_selector": "UNIQUE_TARGET_BRAND_CAPABILITY",
+            "source_reference": "isolated acceptance",
+            "note": "unknown until independently verified",
+            "reviewed_by": "acceptance-controller",
+        },
+    })
+    result = SimpleNamespace(output_json=json.dumps({
+        "input": {"brand_snapshot": {"brand_name": "Target", "aliases": []}},
+        "answer_diagnosis": {"events": []},
+    }))
+    with pytest.raises(ValueError, match="E2E-03_UNKNOWN_SIGNAL_REVIEW_REQUIRED"):
+        _freeze_e2e03_unknown(None, value, SimpleNamespace(), result)
 
 def test_initial_database_snapshot_uses_sqlite_backup_and_includes_wal(tmp_path):
     database = tmp_path / "wal-source.sqlite3"

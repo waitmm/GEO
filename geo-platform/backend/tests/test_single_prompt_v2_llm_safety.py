@@ -329,6 +329,48 @@ def test_strict_client_rejects_blank_non_full_json_and_truncation(monkeypatch, c
     assert len(rejected.value.audit["response_excerpt"]) <= 240
 
 
+def test_opt_in_wrapper_recovery_still_applies_strict_schema(monkeypatch):
+    responses = [
+        "explanation\n" + json.dumps(VALID_EMPTY_ANSWER, ensure_ascii=False) + "\nend",
+        "explanation\n" + json.dumps({**VALID_EMPTY_ANSWER, "unknown": True}, ensure_ascii=False),
+    ]
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "model": "deepseek-flash", "status": "completed",
+                "output": [{"type": "message", "content": [
+                    {"type": "output_text", "text": responses.pop(0)},
+                ]}],
+                "usage": {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json): return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(thinking_mode="disabled", max_attempts=1)
+    client.settings.deepseek_api_key = "test-key"
+    kwargs = dict(
+        system_prompt="Return JSON.", user_payload={"untrusted_input": "x"},
+        response_schema=AnswerSemanticResponse, prompt_version="wrapper-recovery-p1",
+        schema_version="wrapper-recovery-s1", strict_json=True,
+        response_validator=admit_answer_response, structured_output_mode="JSON_SCHEMA",
+        transport_version=deepseek.DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
+        allow_json_wrapper_recovery=True,
+    )
+    assert client.structured_generate_sync(**kwargs) == VALID_EMPTY_ANSWER
+    with pytest.raises(SemanticLLMError, match="严格 Schema"):
+        client.structured_generate_sync(**kwargs)
+
+
 def test_opt_in_response_audit_preserves_complete_accepted_and_rejected_payloads(monkeypatch):
     responses = [
         json.dumps(VALID_EMPTY_ANSWER, ensure_ascii=False),

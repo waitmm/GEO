@@ -49,6 +49,7 @@ class DeepSeekDecisionClient:
             model="deepseek-flash", prompt_version="geo-agent-loop.v1",
             schema_version="geo.agent.decision.v1", max_tokens=max_tokens, db=db,
             strict_json=True, structured_output_mode="JSON_SCHEMA",
+            allow_json_wrapper_recovery=True,
             response_validator=lambda value: AgentDecision.model_validate(value).model_dump(mode="json"),
         )
         return output, {
@@ -100,9 +101,11 @@ read_brand_context、read_product_truth、read_monitor_metrics、save_working_no
 
 
 def _model_payload(scope: dict[str, Any], history: list[dict[str, Any]], turn: int,
-                   validation_feedback: list[dict[str, str]] | None = None) -> dict[str, Any]:
+                   validation_feedback: list[dict[str, str]] | None = None,
+                   execution_identity: str = "") -> dict[str, Any]:
     return {
         "contract_version": "geo.agent.loop-input.v1", "turn": turn,
+        "execution_identity": execution_identity,
         "frozen_scope_summary": {
             "identity": scope["identity"], "prompt": scope["prompt"],
             "monitor_metrics": scope["monitor_metrics"],
@@ -313,7 +316,8 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
                 raise RuntimeError("AGENT_TOKEN_BUDGET_EXHAUSTED")
             raw_decision, usage = active_client.decide(
                 db=db, system_prompt=_system_prompt(loads(run.agent_execution_json, {})),
-                user_payload=_model_payload(scope, history, turn, validation_feedback),
+                user_payload=_model_payload(scope, history, turn, validation_feedback,
+                                            execution_identity=run.agent_execution_hash),
                 max_tokens=min(8192, remaining_tokens),
             )
             decision = AgentDecision.model_validate(raw_decision)

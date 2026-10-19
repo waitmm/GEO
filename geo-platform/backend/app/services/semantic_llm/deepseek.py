@@ -48,6 +48,7 @@ def derive_deepseek_call_contract(
     schema_version: str, requested_model_alias: str, thinking_mode: str | None,
     max_tokens: int, structured_output_mode: StructuredOutputMode | None,
     transport_version: str = "", endpoint_base_url: str | None = None,
+    allow_json_wrapper_recovery: bool = False,
 ) -> dict[str, Any]:
     """Return the complete immutable identity of one derived model call kind."""
     mode = structured_output_mode or "JSON_OBJECT_FALLBACK"
@@ -83,6 +84,8 @@ def derive_deepseek_call_contract(
             "temperature": 0.0,
             "max_output_tokens": effective_max_tokens,
             "thinking_mode": thinking_mode,
+            **({"json_wrapper_recovery": "EXTRACT_THEN_STRICT_VALIDATE"}
+               if allow_json_wrapper_recovery else {}),
         },
         "input_scope_contract": "canonical_user_payload_sha256.v1",
         "cache_identity_version": DERIVED_MODEL_CACHE_IDENTITY_VERSION,
@@ -172,6 +175,7 @@ class DeepSeekClient(SemanticLLMClient):
         response_validator: Callable[[Any], dict[str, Any]] | None = None,
         structured_output_mode: StructuredOutputMode | None = None,
         transport_version: str = "",
+        allow_json_wrapper_recovery: bool = False,
     ) -> dict[str, Any]:
         self._assert_budget(db)
 
@@ -207,6 +211,7 @@ class DeepSeekClient(SemanticLLMClient):
             requested_model_alias=requested_model_alias, thinking_mode=self.thinking_mode,
             max_tokens=effective_max_tokens, structured_output_mode=structured_output_mode,
             transport_version=transport_version, endpoint_base_url=self.settings.deepseek_base_url,
+            allow_json_wrapper_recovery=allow_json_wrapper_recovery,
         )
         if self.frozen_call_contracts is not None:
             frozen = self.frozen_call_contracts.get(prompt_version)
@@ -438,16 +443,24 @@ class DeepSeekClient(SemanticLLMClient):
                 try:
                     parsed = json.loads(content)
                 except json.JSONDecodeError:
-                    if strict_json:
+                    if strict_json and not allow_json_wrapper_recovery:
                         raise _response_error(
                             "模型响应不是完整 JSON",
                             source="EXTERNAL_LLM",
                             content=content,
                             finish_reason=finish_reason,
                         )
-                    # 推理模型偶发在 JSON 前后附带文本，提取第一个完整 JSON 对象容错
+                    # Optional Agent-only recovery still passes the same strict
+                    # Pydantic validator below.  It does not accept incomplete
+                    # responses, unknown fields, or invalid evidence contracts.
                     parsed = _extract_json_object(content)
                     if parsed is None:
+                        if strict_json:
+                            raise _response_error(
+                                "模型响应不是完整 JSON 且无法恢复",
+                                source="EXTERNAL_LLM", content=content,
+                                finish_reason=finish_reason,
+                            )
                         message = choice.get("message") or {}
                         reasoning = message.get("reasoning_content") or ""
                         raise SemanticLLMError(
@@ -500,6 +513,8 @@ class DeepSeekClient(SemanticLLMClient):
                         "raw_provider_response": response_data,
                         "raw_http_response": response_text if response_data is None else None,
                         "structured_response_text": content,
+                        "response_excerpt": _audit_excerpt(content),
+                        "response_length": len(content),
                         "raw_response_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                         "token_usage": usage,
                         "rejection_code": str(getattr(e, "code", "SEMANTIC_LLM_ERROR")),

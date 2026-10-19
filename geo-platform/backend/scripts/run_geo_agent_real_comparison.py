@@ -124,7 +124,12 @@ def _baseline(db, symbols: dict[str, Any]) -> dict[str, Any]:
     return {"chain": verified, "result": baseline_output}
 
 
-def _preflight(database: Path, ledger: Path, output: Path) -> dict[str, Any]:
+def _run_key(attempt: int) -> str:
+    return ("real-comparison-p1-p1-r1-20261019" if attempt == 0
+            else f"real-comparison-p1-p1-r1-20261019-repair-{attempt}")
+
+
+def _preflight(database: Path, ledger: Path, output: Path, *, attempt: int) -> dict[str, Any]:
     symbols = _imports(database)
     db = symbols["ReleaseSessionLocal"]()
     try:
@@ -134,7 +139,8 @@ def _preflight(database: Path, ledger: Path, output: Path) -> dict[str, Any]:
             context_id=CONTEXT_ID, citation_manifest_id=CITATION_ID,
             citation_manifest_hash=CITATION_HASH, completion_manifest_id=COMPLETION_ID,
             completion_manifest_hash=COMPLETION_HASH,
-            idempotency_key="real-comparison-p1-p1-r1-20261019", requested_by="authorized-operator",
+            idempotency_key=_run_key(attempt), requested_by="authorized-operator",
+            regenerate_nonce=(f"manual-repair-{attempt}" if attempt else None),
             budget={"max_model_calls": 6, "max_tool_calls": 12, "max_total_tokens": 100_000,
                     "max_elapsed_seconds": 300, "max_repairs": 1, "max_cost_cny": 5.0},
         )
@@ -167,10 +173,13 @@ def _preflight(database: Path, ledger: Path, output: Path) -> dict[str, Any]:
             ledger, batch_id=BATCH_ID, pricing_checked_at=PRICING_CHECKED_AT,
         )
         budget = symbols["summary"](ledger)
-        if budget["used_requests"] != 0 or budget["in_flight"] != 0:
+        if budget["in_flight"] != 0:
+            raise RuntimeError("SHARED_LEDGER_HAS_IN_FLIGHT_REQUEST")
+        if attempt == 0 and budget["used_requests"] != 0:
             raise RuntimeError("SHARED_LEDGER_NOT_PRISTINE")
         report = {
             "status": "READY_FOR_ONE_REAL_AGENT_RUN",
+            "manual_attempt": attempt,
             "external_calls": 0,
             "database": str(database.resolve()),
             "ledger": str(ledger.resolve()),
@@ -200,19 +209,21 @@ def _preflight(database: Path, ledger: Path, output: Path) -> dict[str, Any]:
         db.close()
 
 
-def _execute(database: Path, ledger: Path, output: Path) -> dict[str, Any]:
+def _execute(database: Path, ledger: Path, output: Path, *, attempt: int) -> dict[str, Any]:
     symbols = _imports(database)
     settings = symbols["get_settings"]()
     if not settings.deepseek_api_key:
         raise RuntimeError("DEEPSEEK_API_KEY_NOT_CONFIGURED")
     state = symbols["summary"](ledger)
-    if state["used_requests"] != 0 or state["in_flight"] != 0:
+    if state["in_flight"] != 0:
+        raise RuntimeError("SHARED_LEDGER_HAS_IN_FLIGHT_REQUEST")
+    if attempt == 0 and state["used_requests"] != 0:
         raise RuntimeError("SHARED_LEDGER_NOT_PRISTINE")
     db = symbols["ReleaseSessionLocal"]()
     try:
         row = db.query(symbols["AgentExperimentRun"]).filter_by(
             project_id=PROJECT_ID, prompt_id=PROMPT_ID,
-            idempotency_key="real-comparison-p1-p1-r1-20261019",
+            idempotency_key=_run_key(attempt),
         ).one()
         if row.status != "QUEUED" or row.input_scope_hash != EXPECTED_SCOPE_HASH:
             raise RuntimeError(f"AGENT_NOT_EXECUTABLE:{row.status}")
@@ -238,6 +249,7 @@ def _execute(database: Path, ledger: Path, output: Path) -> dict[str, Any]:
             raise RuntimeError("UNEXPECTED_WORKFLOW_MODEL_CALL")
         report = {
             "status": "FIRST_REAL_PAIR_FINISHED_AND_STOPPED",
+            "manual_attempt": attempt,
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "elapsed_seconds": round(elapsed, 3),
             "agent": agent,
@@ -257,9 +269,11 @@ def main() -> None:
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--attempt", type=int, default=0, choices=range(0, 3))
     args = parser.parse_args()
-    result = (_preflight(args.database, args.ledger, args.output)
-              if args.mode == "prepare" else _execute(args.database, args.ledger, args.output))
+    result = (_preflight(args.database, args.ledger, args.output, attempt=args.attempt)
+              if args.mode == "prepare" else _execute(
+                  args.database, args.ledger, args.output, attempt=args.attempt))
     # Never print model content or credentials to the terminal.  The complete
     # comparison is written mode 0600 to the requested artifact path.
     print(_canonical({

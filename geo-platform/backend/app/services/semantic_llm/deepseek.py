@@ -38,6 +38,89 @@ DERIVED_MODEL_CALL_IDENTITY_VERSION = "derived_model_call_identity.v1"
 DERIVED_MODEL_CACHE_IDENTITY_VERSION = "derived_model_call_cache.v1"
 
 
+def _provider_protocol_error(message: str, code: str) -> SemanticLLMError:
+    error = SemanticLLMError(message)
+    error.code = code
+    return error
+
+
+def _responses_output_candidate(
+    data: dict[str, Any], *, expected_function_name: str,
+) -> tuple[str, dict[str, Any] | None, str]:
+    """Extract one unambiguous decision from a Responses API envelope."""
+    output = data.get("output")
+    if not isinstance(output, list) or "choices" in data:
+        raise _provider_protocol_error(
+            "Provider 响应 envelope 与冻结 Responses transport 不一致",
+            "PROVIDER_TRANSPORT_IDENTITY_MISMATCH",
+        )
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for item in output:
+        if not isinstance(item, dict):
+            raise _provider_protocol_error(
+                "Responses output item 不是对象", "PROVIDER_OUTPUT_ITEM_INVALID",
+            )
+        item_type = item.get("type")
+        if item_type == "reasoning":
+            continue
+        if item_type == "message":
+            content = item.get("content")
+            if not isinstance(content, list) or not content:
+                raise _provider_protocol_error(
+                    "Responses message 缺少 content", "PROVIDER_MESSAGE_CONTENT_INVALID",
+                )
+            text_parts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "output_text" \
+                        or not isinstance(part.get("text"), str):
+                    raise _provider_protocol_error(
+                        "Responses message 包含不支持的 content 类型",
+                        "PROVIDER_MESSAGE_CONTENT_INVALID",
+                    )
+                text_parts.append(part["text"])
+            candidates.append(("MESSAGE_OUTPUT_TEXT", {"text": "".join(text_parts)}))
+            continue
+        if item_type == "function_call":
+            candidates.append(("FUNCTION_CALL", item))
+            continue
+        raise _provider_protocol_error(
+            f"Responses output 包含不支持的类型: {item_type}",
+            "PROVIDER_OUTPUT_ITEM_UNSUPPORTED",
+        )
+    if len(candidates) != 1:
+        raise _provider_protocol_error(
+            "Responses 响应必须包含且只能包含一个明确决策",
+            "PROVIDER_DECISION_CANDIDATE_AMBIGUOUS",
+        )
+    output_kind, candidate = candidates[0]
+    if output_kind == "MESSAGE_OUTPUT_TEXT":
+        return str(candidate["text"]), None, output_kind
+    if candidate.get("name") != expected_function_name:
+        raise _provider_protocol_error(
+            "Responses function_call 名称与冻结响应 Schema 不一致",
+            "PROVIDER_FUNCTION_NAME_MISMATCH",
+        )
+    arguments = candidate.get("arguments")
+    if not isinstance(arguments, str):
+        raise _provider_protocol_error(
+            "Responses function_call arguments 不是 JSON 字符串",
+            "PROVIDER_FUNCTION_ARGUMENTS_INVALID",
+        )
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError as exc:
+        raise _provider_protocol_error(
+            "Responses function_call arguments 不是完整 JSON",
+            "PROVIDER_FUNCTION_ARGUMENTS_INVALID",
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise _provider_protocol_error(
+            "Responses function_call arguments 顶层必须为对象",
+            "PROVIDER_FUNCTION_ARGUMENTS_INVALID",
+        )
+    return arguments, parsed, output_kind
+
+
 def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -369,6 +452,8 @@ class DeepSeekClient(SemanticLLMClient):
             content = ""
             finish_reason = "unknown"
             usage: dict[str, Any] = {}
+            provider_candidate: dict[str, Any] | None = None
+            provider_output_kind = ""
             audit_recorded = False
             try:
                 self._external_calls += 1
@@ -392,18 +477,20 @@ class DeepSeekClient(SemanticLLMClient):
                     error = SemanticLLMError("DeepSeek response.model 与冻结 effective request model 不一致")
                     error.code = "PROVIDER_MODEL_IDENTITY_MISMATCH"
                     raise error
+                usage = data.get("usage") or {}
+                prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+                completion_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+                total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
+                self._external_tokens += total_tokens
+                self._external_input_tokens += prompt_tokens
+                self._external_output_tokens += completion_tokens
                 if structured_output_mode == "JSON_SCHEMA":
                     finish_reason = str(data.get("status") or "unknown")
-                    if not isinstance(data.get("output"), list) or "choices" in data:
-                        error = SemanticLLMError("Provider 响应 envelope 与冻结 Responses transport 不一致")
-                        error.code = "PROVIDER_TRANSPORT_IDENTITY_MISMATCH"
-                        raise error
-                    content = "".join(
-                        str(part.get("text") or "")
-                        for item in data.get("output") or []
-                        if item.get("type") == "message"
-                        for part in item.get("content") or []
-                        if part.get("type") == "output_text"
+                    content, provider_candidate, provider_output_kind = _responses_output_candidate(
+                        data,
+                        expected_function_name=re.sub(
+                            r"[^a-zA-Z0-9_-]", "_", response_schema.__name__,
+                        ),
                     )
                     choice: dict[str, Any] = {}
                 else:
@@ -414,13 +501,6 @@ class DeepSeekClient(SemanticLLMClient):
                     choice = (data.get("choices") or [{}])[0]
                     finish_reason = str(choice.get("finish_reason") or "unknown")
                     content = choice.get("message", {}).get("content", "")
-                usage = data.get("usage") or {}
-                prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-                completion_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-                total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
-                self._external_tokens += total_tokens
-                self._external_input_tokens += prompt_tokens
-                self._external_output_tokens += completion_tokens
                 if strict_json and finish_reason == "length":
                     raise _response_error(
                         "模型响应因长度限制被截断",
@@ -446,22 +526,19 @@ class DeepSeekClient(SemanticLLMClient):
                         content=content,
                         finish_reason=finish_reason,
                     )
-                try:
-                    parsed = json.loads(content)
-                except json.JSONDecodeError:
-                    if strict_json and not allow_json_wrapper_recovery:
-                        raise _response_error(
-                            "模型响应不是完整 JSON",
-                            source="EXTERNAL_LLM",
-                            content=content,
-                            finish_reason=finish_reason,
-                        )
-                    # Optional Agent-only recovery still passes the same strict
-                    # Pydantic validator below.  It does not accept incomplete
-                    # responses, unknown fields, or invalid evidence contracts.
-                    parsed = _extract_json_object(content)
-                    if parsed is None and non_json_response_recovery is not None:
-                        parsed = non_json_response_recovery(content)
+                if provider_candidate is not None:
+                    parsed = provider_candidate
+                else:
+                    try:
+                        parsed = json.loads(content)
+                    except json.JSONDecodeError:
+                        # A protocol-specific adapter receives the complete text.
+                        # Agent callers disable generic nested-object extraction,
+                        # which could confuse tool arguments with the decision.
+                        parsed = (non_json_response_recovery(content)
+                                  if non_json_response_recovery is not None else None)
+                        if parsed is None and allow_json_wrapper_recovery:
+                            parsed = _extract_json_object(content)
                     if parsed is None:
                         if strict_json:
                             raise _response_error(
@@ -496,6 +573,7 @@ class DeepSeekClient(SemanticLLMClient):
                     "response_model": response_model,
                     "response_transport_kind": call_contract["transport_kind"],
                     "response_transport_version": call_contract["transport_version"],
+                    "provider_output_kind": provider_output_kind,
                     "raw_provider_response": response_data,
                     "structured_response": parsed,
                     "raw_response_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
@@ -509,6 +587,10 @@ class DeepSeekClient(SemanticLLMClient):
                 break  # 成功拿到可解析结果
             except SemanticLLMError as e:
                 if not audit_recorded:
+                    audited_response_text = content or (
+                        json.dumps(response_data, ensure_ascii=False, sort_keys=True)
+                        if response_data is not None else response_text
+                    )
                     self._record_response_audit({
                         "request_identity": {
                             **request_identity,
@@ -518,12 +600,16 @@ class DeepSeekClient(SemanticLLMClient):
                         "response_source": "EXTERNAL_LLM",
                         "validation_status": "REJECTED",
                         "finish_reason": finish_reason,
+                        "response_model": response_model if response_data is not None else "",
+                        "provider_output_kind": provider_output_kind,
                         "raw_provider_response": response_data,
                         "raw_http_response": response_text if response_data is None else None,
                         "structured_response_text": content,
                         "response_excerpt": _audit_excerpt(content),
-                        "response_length": len(content),
-                        "raw_response_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        "response_length": len(audited_response_text),
+                        "raw_response_hash": hashlib.sha256(
+                            audited_response_text.encode("utf-8")
+                        ).hexdigest(),
                         "token_usage": usage,
                         "rejection_code": str(getattr(e, "code", "SEMANTIC_LLM_ERROR")),
                         "rejection_reason": str(e),

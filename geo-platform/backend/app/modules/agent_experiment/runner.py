@@ -29,7 +29,7 @@ class DecisionClient(Protocol):
                max_tokens: int) -> tuple[dict[str, Any], dict[str, Any]]: ...
 
 
-DSML_RECOVERY_CONTRACT = "geo.agent.deepseek-dsml-single-tool.v1"
+DSML_RECOVERY_CONTRACT = "geo.agent.deepseek-dsml-agent-decision.v2"
 FINALIZATION_RESERVED_CALLS = 2
 MAX_CONSECUTIVE_NO_PROGRESS = 2
 MAX_HISTORY_ENTRIES = 12
@@ -44,19 +44,28 @@ _DSML_PARAMETER = re.compile(
 
 
 def _recover_agent_dsml_tool_call(content: str) -> dict[str, Any] | None:
-    """Adapt exactly one DeepSeek DSML invocation into the Agent schema."""
+    """Adapt exactly one complete DSML invocation into the Agent schema."""
     match = _DSML_CALL.fullmatch(content)
-    if not match or match.group("tool") not in TOOL_NAMES:
+    if not match:
+        if "<｜｜DSML｜｜" in content:
+            error = SemanticLLMError("DeepSeek DSML 决策不完整或包含多个调用")
+            error.code = "FAILED_PARSE"
+            raise error
         return None
+    invoke_name = match.group("tool")
     raw_parameters = match.group("parameters")
     arguments: dict[str, Any] = {}
     cursor = 0
     for parameter in _DSML_PARAMETER.finditer(raw_parameters):
         if raw_parameters[cursor:parameter.start()].strip():
-            return None
+            error = SemanticLLMError("DeepSeek DSML 参数之间存在未知内容")
+            error.code = "FAILED_PARSE"
+            raise error
         name = parameter.group("name")
         if name in arguments:
-            return None
+            error = SemanticLLMError("DeepSeek DSML 参数重复")
+            error.code = "FAILED_PARSE"
+            raise error
         raw_value = parameter.group("value").strip()
         try:
             value = json.loads(raw_value)
@@ -65,7 +74,46 @@ def _recover_agent_dsml_tool_call(content: str) -> dict[str, Any] | None:
         arguments[name] = value
         cursor = parameter.end()
     if raw_parameters[cursor:].strip():
-        return None
+        error = SemanticLLMError("DeepSeek DSML 参数尾部存在未知内容")
+        error.code = "FAILED_PARSE"
+        raise error
+    if invoke_name == "AgentDecision":
+        allowed = {"action_type", "reasoning", "tool_name", "arguments", "artifact", "stop_reason"}
+        unknown = sorted(set(arguments) - allowed)
+        if unknown:
+            error = SemanticLLMError(f"AgentDecision DSML 包含未知字段: {unknown}")
+            error.code = "FAILED_PARSE"
+            raise error
+        for name in ("arguments", "artifact"):
+            if name not in arguments:
+                continue
+            raw_value = arguments[name]
+            if not isinstance(raw_value, str):
+                continue
+            try:
+                arguments[name] = json.loads(raw_value)
+            except json.JSONDecodeError as exc:
+                error = SemanticLLMError(f"AgentDecision DSML 的 {name} 不是完整 JSON")
+                error.code = "FAILED_PARSE"
+                raise error from exc
+        for name in ("tool_name", "artifact", "stop_reason"):
+            if isinstance(arguments.get(name), str) and arguments[name] in {"null", "None", ""}:
+                arguments[name] = None
+        try:
+            decision = AgentDecision.model_validate(arguments)
+        except Exception as exc:
+            error = SemanticLLMError("AgentDecision DSML 未通过严格 Schema 校验")
+            error.code = "FAILED_PARSE"
+            raise error from exc
+        if decision.action_type == "TOOL_CALL" and decision.tool_name not in TOOL_NAMES:
+            error = SemanticLLMError("AgentDecision DSML 请求了未知工具")
+            error.code = "FAILED_PARSE"
+            raise error
+        return decision.model_dump(mode="json")
+    if invoke_name not in TOOL_NAMES:
+        error = SemanticLLMError("DeepSeek DSML 请求了未知工具")
+        error.code = "FAILED_PARSE"
+        raise error
     return {
         "action_type": "TOOL_CALL",
         "reasoning": "DeepSeek emitted one explicit DSML white-list tool invocation.",
@@ -81,6 +129,7 @@ class DeepSeekDecisionClient:
                  response_audit_sink=None):
         self.audit: list[dict[str, Any]] = []
         self.conservative_cny_per_million_tokens = conservative_cny_per_million_tokens
+        self.response_audit_sink_configured = response_audit_sink is not None
         def audit(event: dict[str, Any]) -> None:
             self.audit.append(event)
             if response_audit_sink is not None:
@@ -97,7 +146,7 @@ class DeepSeekDecisionClient:
             model="deepseek-flash", prompt_version="geo-agent-loop.v2",
             schema_version="geo.agent.decision.v1", max_tokens=max_tokens, db=db,
             strict_json=True, structured_output_mode="JSON_SCHEMA",
-            allow_json_wrapper_recovery=True,
+            allow_json_wrapper_recovery=False,
             non_json_response_recovery=_recover_agent_dsml_tool_call,
             recovery_contract_version=DSML_RECOVERY_CONTRACT,
             response_validator=lambda value: AgentDecision.model_validate(value).model_dump(mode="json"),
@@ -110,6 +159,10 @@ class DeepSeekDecisionClient:
                          * self.conservative_cny_per_million_tokens),
             "response_source": (self.audit[-1].get("response_source") if self.audit else "UNKNOWN"),
             "request_identity": (self.audit[-1].get("request_identity") if self.audit else {}),
+            "accounting_persisted": bool(
+                self.response_audit_sink_configured and self.audit
+                and self.audit[-1].get("response_source") == "EXTERNAL_LLM"
+            ),
         }
 
 
@@ -370,6 +423,7 @@ def _request_guard(db: Session, run: AgentExperimentRun, *, shared_budget_hooks=
             run.progress_json = _canonical({**loads(run.progress_json, {}),
                                             "external_request_state": "RESERVED_IN_FLIGHT",
                                             "external_request_identity_hash": digest(request),
+                                            "external_request_input_hash": request.get("input_hash"),
                                             "external_request_reserved_tokens": next_tokens,
                                             "external_request_reserved_cost_cny": round(next_cost, 8)})
             run.revision += 1
@@ -394,7 +448,9 @@ def _settle_local_reservation(run: AgentExperimentRun, usage: dict[str, Any]) ->
         raise RuntimeError("AGENT_EXTERNAL_RESERVATION_NOT_ACTIVE")
     reserved_tokens = int(progress.get("external_request_reserved_tokens", 0))
     reserved_cost = float(progress.get("external_request_reserved_cost_cny", 0.0))
-    actual_tokens = int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+    input_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)))
+    output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)))
+    actual_tokens = int(usage.get("total_tokens", input_tokens + output_tokens))
     unit_price = float(authorization.get("conservative_cny_per_million_tokens", 0.0))
     actual_cost = actual_tokens * unit_price / 1_000_000
     if reserved_tokens <= 0 or actual_tokens < 0 or actual_tokens > reserved_tokens:
@@ -412,6 +468,83 @@ def _settle_local_reservation(run: AgentExperimentRun, usage: dict[str, Any]) ->
         "external_request_actual_tokens": actual_tokens,
         "external_request_actual_cost_cny": round(actual_cost, 8),
     })
+
+
+def _complete_provider_usage(event: dict[str, Any]) -> dict[str, int]:
+    usage = event.get("token_usage") or {}
+    input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+    output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+    total_tokens = usage.get("total_tokens")
+    values = (input_tokens, output_tokens, total_tokens)
+    if not all(isinstance(value, int) and not isinstance(value, bool) and value >= 0
+               for value in values):
+        raise RuntimeError("AGENT_PROVIDER_USAGE_INCOMPLETE")
+    if input_tokens + output_tokens > total_tokens:
+        raise RuntimeError("AGENT_PROVIDER_USAGE_INVALID")
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens,
+            "total_tokens": total_tokens}
+
+
+def _account_external_response(db: Session, run: AgentExperimentRun, event: dict[str, Any]) -> None:
+    """Persist request accounting before AgentDecision parsing can fail."""
+    if event.get("response_source") != "EXTERNAL_LLM":
+        return
+    identity = event.get("request_identity") or {}
+    input_hash = str(identity.get("input_hash") or "")
+    if not input_hash:
+        raise RuntimeError("AGENT_RESPONSE_REQUEST_IDENTITY_MISSING")
+    db.refresh(run)
+    progress = loads(run.progress_json, {})
+    accounted = list(progress.get("accounted_external_request_input_hashes") or [])
+    if input_hash in accounted:
+        return
+    if progress.get("external_request_input_hash") != input_hash:
+        raise RuntimeError("AGENT_RESPONSE_RESERVATION_IDENTITY_MISMATCH")
+    validation_status = str(event.get("validation_status") or "")
+    if validation_status == "TRANSPORT_FAILED":
+        reserved_cost = float(progress.get("external_request_reserved_cost_cny", 0.0))
+        run.model_call_count += 1
+        run.cost_cny += reserved_cost
+        run.progress_json = _canonical({
+            **progress,
+            "external_request_state": "DELIVERY_UNKNOWN",
+            "accounted_external_request_input_hashes": [*accounted, input_hash],
+        })
+        usage: dict[str, int] = {}
+    elif validation_status in {"ACCEPTED", "REJECTED"}:
+        usage = _complete_provider_usage(event)
+        _settle_local_reservation(run, usage)
+        progress = loads(run.progress_json, {})
+        authorization = loads(run.authorization_json, {})
+        unit_price = float(authorization.get("conservative_cny_per_million_tokens", 0.0))
+        run.model_call_count += 1
+        run.input_tokens += usage["input_tokens"]
+        run.output_tokens += usage["output_tokens"]
+        run.cost_cny += usage["total_tokens"] * unit_price / 1_000_000
+        run.progress_json = _canonical({
+            **progress,
+            "accounted_external_request_input_hashes": [*accounted, input_hash],
+        })
+    else:
+        raise RuntimeError("AGENT_RESPONSE_AUDIT_STATUS_INVALID")
+    run.revision += 1
+    db.commit()
+    _append_event(db, run, "MODEL_REQUEST_ACCOUNTED", {
+        "request_input_hash": input_hash,
+        "validation_status": validation_status,
+        "usage": usage,
+        "response_model": event.get("response_model"),
+        "raw_response_hash": event.get("raw_response_hash"),
+        "rejection_code": event.get("rejection_code"),
+        "local_external_request_state": loads(run.progress_json, {}).get("external_request_state"),
+    })
+
+
+def _response_audit_sink(db: Session, run: AgentExperimentRun, shared_budget_hooks):
+    def sink(event: dict[str, Any]) -> None:
+        shared_budget_hooks.audit_sink(event)
+        _account_external_response(db, run, event)
+    return sink
 
 
 def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | None = None,
@@ -445,7 +578,10 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
             request_guard=_request_guard(db, run, shared_budget_hooks=shared_budget_hooks),
             conservative_cny_per_million_tokens=float(
                 authorization.get("conservative_cny_per_million_tokens", 0.0)),
-            response_audit_sink=(shared_budget_hooks.audit_sink if shared_budget_hooks is not None else None),
+            response_audit_sink=(
+                _response_audit_sink(db, run, shared_budget_hooks)
+                if shared_budget_hooks is not None else None
+            ),
         )
         budget = loads(run.budget_json, {})
         prior = db.query(AgentCheckpoint).filter_by(agent_run_id=run.run_id).order_by(
@@ -498,12 +634,14 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
             )
             decision = AgentDecision.model_validate(raw_decision)
             if (authorization.get("mode") == "EXTERNAL_ALLOWED"
-                    and usage.get("response_source") != "LLM_CALL_CACHE"):
+                    and usage.get("response_source") != "LLM_CALL_CACHE"
+                    and not usage.get("accounting_persisted")):
                 _settle_local_reservation(run, usage)
-            run.model_call_count += 1
-            run.input_tokens += int(usage.get("input_tokens", 0))
-            run.output_tokens += int(usage.get("output_tokens", 0))
-            run.cost_cny += float(usage.get("cost_cny", 0.0))
+            if not usage.get("accounting_persisted"):
+                run.model_call_count += 1
+                run.input_tokens += int(usage.get("input_tokens", 0))
+                run.output_tokens += int(usage.get("output_tokens", 0))
+                run.cost_cny += float(usage.get("cost_cny", 0.0))
             db.commit()
             _append_event(db, run, "MODEL_DECISION", {
                 "turn": turn, "action_type": decision.action_type, "reasoning": decision.reasoning,

@@ -6,6 +6,7 @@ import pytest
 from app.services.semantic_llm import deepseek
 from app.services.semantic_llm.base import SemanticLLMError
 from app.modules.agent_experiment.contracts import AgentDecision
+from app.modules.agent_experiment.runner import _recover_agent_dsml_tool_call
 
 
 def test_explicit_thinking_mode_changes_cache_identity_without_changing_legacy_identity():
@@ -173,3 +174,104 @@ def test_responses_request_serializes_agent_history_and_observation_catalog(monk
     assert len(bodies) == 1
     assert json.loads(bodies[0]["input"]) == payload
     assert bodies[0]["max_output_tokens"] == 2048
+    assert bodies[0]["text"]["format"]["type"] == "json_schema"
+    assert bodies[0]["text"]["format"]["name"] == "AgentDecision"
+
+
+def test_responses_native_function_call_yields_one_complete_decision():
+    decision = {
+        "action_type": "TOOL_CALL", "reasoning": "读取冻结回答",
+        "tool_name": "read_answer", "arguments": {"run_id": "1"},
+        "artifact": None, "stop_reason": None,
+    }
+    content, candidate, output_kind = deepseek._responses_output_candidate({
+        "output": [
+            {"type": "reasoning", "summary": []},
+            {"type": "function_call", "name": "AgentDecision",
+             "arguments": json.dumps(decision, ensure_ascii=False)},
+        ],
+    }, expected_function_name="AgentDecision")
+    assert output_kind == "FUNCTION_CALL"
+    assert json.loads(content) == decision
+    assert AgentDecision.model_validate(candidate).model_dump(mode="json") == decision
+
+
+@pytest.mark.parametrize("output", [
+    [
+        {"type": "message", "content": [{"type": "output_text", "text": "{}"}]},
+        {"type": "function_call", "name": "AgentDecision", "arguments": "{}"},
+    ],
+    [
+        {"type": "function_call", "name": "AgentDecision", "arguments": "{}"},
+        {"type": "function_call", "name": "AgentDecision", "arguments": "{}"},
+    ],
+    [{"type": "custom_tool_call", "name": "AgentDecision", "input": "{}"}],
+])
+def test_responses_rejects_ambiguous_or_unsupported_decision_outputs(output):
+    with pytest.raises(SemanticLLMError):
+        deepseek._responses_output_candidate(
+            {"output": output}, expected_function_name="AgentDecision",
+        )
+
+
+def test_responses_function_call_rejects_wrong_name_and_incomplete_arguments():
+    with pytest.raises(SemanticLLMError):
+        deepseek._responses_output_candidate({
+            "output": [{"type": "function_call", "name": "read_answer",
+                        "arguments": '{"run_id":"1"}'}],
+        }, expected_function_name="AgentDecision")
+    with pytest.raises(SemanticLLMError):
+        deepseek._responses_output_candidate({
+            "output": [{"type": "function_call", "name": "AgentDecision",
+                        "arguments": '{"action_type":"TOOL_CALL"'}],
+        }, expected_function_name="AgentDecision")
+
+
+def test_agent_pipeline_recovers_complete_dsml_without_extracting_nested_arguments(monkeypatch):
+    wrapped = (
+        '<｜｜DSML｜｜ calls> <｜｜DSML｜｜ invoke name="AgentDecision"> '
+        '<｜｜DSML｜｜ parameter name="action_type">TOOL_CALL</｜｜DSML｜｜ parameter> '
+        '<｜｜DSML｜｜ parameter name="reasoning">读取冻结回答</｜｜DSML｜｜ parameter> '
+        '<｜｜DSML｜｜ parameter name="tool_name">read_answer</｜｜DSML｜｜ parameter> '
+        '<｜｜DSML｜｜ parameter name="arguments">{"run_id":"1"}</｜｜DSML｜｜ parameter> '
+        '<｜｜DSML｜｜ parameter name="artifact">null</｜｜DSML｜｜ parameter> '
+        '<｜｜DSML｜｜ parameter name="stop_reason">null</｜｜DSML｜｜ parameter> '
+        '</｜｜DSML｜｜ invoke> </｜｜DSML｜｜ calls>'
+    )
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "model": "deepseek-flash", "status": "completed",
+                "output": [{"type": "message", "content": [
+                    {"type": "output_text", "text": wrapped},
+                ]}],
+                "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json): return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(max_attempts=1)
+    monkeypatch.setattr(client.settings, "deepseek_api_key", "test-key")
+    output = client.structured_generate_sync(
+        system_prompt="Return one AgentDecision.", user_payload={"scope": "frozen"},
+        response_schema=AgentDecision, model="deepseek-flash",
+        prompt_version="geo-agent-loop.v2", schema_version="geo.agent.decision.v1",
+        max_tokens=2048, strict_json=True, structured_output_mode="JSON_SCHEMA",
+        allow_json_wrapper_recovery=False,
+        non_json_response_recovery=_recover_agent_dsml_tool_call,
+        recovery_contract_version="geo.agent.deepseek-dsml-agent-decision.v2",
+        response_validator=lambda value: AgentDecision.model_validate(value).model_dump(mode="json"),
+    )
+    assert output["action_type"] == "TOOL_CALL"
+    assert output["tool_name"] == "read_answer"
+    assert output["arguments"] == {"run_id": "1"}

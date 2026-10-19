@@ -183,3 +183,10 @@ request, and then stopped fail-closed when the fourth response did not validate 
 `AgentDecision`. No Agent result version was created and comparison quality remains
 `NOT_MEASURABLE`. The authoritative shared ledger records four requests and 26,579 actual
 tokens for this retry; no further request or scenario was started.
+
+The subsequent zero-call response-protocol and accounting repair is recorded in
+`docs/geo-agent-v1/PROTOCOL_REPAIR_ACCEPTANCE_2026-10-20.md`. It removes arbitrary nested-JSON
+recovery from the Agent path, strictly adapts one complete DSML `AgentDecision` or documented
+Responses output item, and records provider usage before business parsing. The historical
+Agent Run projection is reconciled to the unchanged shared ledger with append-only correction
+events. Offline regression passes, but no new provider request or GEO result was produced.

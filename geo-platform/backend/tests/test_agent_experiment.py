@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
-    AgentEvent,
+    AgentCheckpoint, AgentEvent,
     AgentExperimentRun,
     AgentResultVersion,
     BrowserMonitorRun,
@@ -24,7 +24,8 @@ from release_test_client import TestClient
 from app.modules.agent_experiment.contracts import AgentArtifact
 from app.modules.agent_experiment.grading import validate_and_grade
 from app.modules.agent_experiment.runner import (
-    _recover_agent_dsml_tool_call, _request_guard, _settle_local_reservation, execute_agent_run,
+    _model_payload, _recover_agent_dsml_tool_call, _request_guard, _settle_local_reservation,
+    execute_agent_run,
 )
 from app.modules.agent_experiment.service import (
     authorize_agent_run, cancel_agent_run, create_agent_run, get_agent_run,
@@ -48,9 +49,11 @@ class ScriptedClient:
     def __init__(self, decisions):
         self.decisions = list(decisions)
         self.calls = 0
+        self.payloads = []
 
-    def decide(self, **_kwargs):
+    def decide(self, **kwargs):
         self.calls += 1
+        self.payloads.append(kwargs)
         return self.decisions.pop(0), {
             "input_tokens": 20, "output_tokens": 10, "cost_cny": 0.01,
             "response_source": "TEST_SCRIPT", "request_identity": {"provider": "test"},
@@ -167,6 +170,142 @@ def test_true_agent_loop_chooses_tools_then_persists_independent_l2_result(tmp_p
     assert db.query(AgentEvent).filter_by(agent_run_id=run.run_id, event_type="TOOL_RESULT").count() == 2
     assert not db.execute(text("SELECT COUNT(*) FROM single_prompt_strategy_results")).scalar_one()
     assert not db.execute(text("SELECT COUNT(*) FROM single_prompt_execution_proposal_results")).scalar_one()
+
+
+def test_stateless_requests_replay_full_tool_result_and_explicit_observation_catalog(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = _create_from_fixture(db, fixture, key="agent-context-replay-0001")
+    client = ScriptedClient([
+        {"action_type": "TOOL_CALL", "reasoning": "先看范围", "tool_name": "get_scope_summary",
+         "arguments": {}, "artifact": None, "stop_reason": None},
+        {"action_type": "TOOL_CALL", "reasoning": "重复确认范围", "tool_name": "get_scope_summary",
+         "arguments": {}, "artifact": None, "stop_reason": None},
+        {"action_type": "STOP", "reasoning": "测试结束", "tool_name": None,
+         "arguments": None, "artifact": None, "stop_reason": "离线连续性测试结束"},
+    ])
+    execute_agent_run(run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False), client=client)
+    second = client.payloads[1]["user_payload"]
+    assert second["contract_version"] == "geo.agent.loop-input.v2"
+    assert second["tool_history"][0]["tool_result"]["data"]["monitor_metrics"]
+    assert second["observation_catalog"][0]["tool_name"] == "get_scope_summary"
+    assert second["observation_catalog"][0]["status"] == "AVAILABLE"
+    assert second["context_integrity"]["observation_summaries_complete"] is True
+    db.expire_all()
+    stored = db.query(AgentExperimentRun).filter_by(run_id=run.run_id).one()
+    assert stored.tool_call_count == 1
+    assert db.query(AgentEvent).filter_by(
+        agent_run_id=run.run_id, event_type="TOOL_RESULT_REUSED").count() == 1
+    manifests = db.query(AgentEvent).filter_by(
+        agent_run_id=run.run_id, event_type="MODEL_INPUT_CONTEXT").order_by(AgentEvent.sequence_number).all()
+    assert len(manifests) == 3
+    assert loads(manifests[1].payload_json, {})["observation_catalog"][0]["status"] == "AVAILABLE"
+
+
+def test_checkpoint_resume_replays_observation_catalog(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = _create_from_fixture(db, fixture, key="agent-context-checkpoint-0001")
+    observation = ToolRegistry(db, run).call("get_scope_summary", {})
+    decision = {"action_type": "TOOL_CALL", "reasoning": "先看范围",
+                "tool_name": "get_scope_summary", "arguments": {}, "stop_reason": None}
+    state = {"turn": 1, "history": [{"turn": 1, "decision": decision,
+                                      "tool_result": observation}],
+             "observations": [observation], "repair_count": 0, "consecutive_no_progress": 0}
+    state_json = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    db.add(AgentCheckpoint(
+        checkpoint_id=f"agent-checkpoint-{uuid4()}", agent_run_id=run.run_id,
+        sequence_number=1, state_json=state_json, state_hash=digest(state),
+    ))
+    run.model_call_count = 1
+    db.commit()
+    client = ScriptedClient([
+        {"action_type": "STOP", "reasoning": "恢复信息完整", "tool_name": None,
+         "arguments": None, "artifact": None, "stop_reason": "离线恢复测试结束"},
+    ])
+    execute_agent_run(run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False), client=client)
+    payload = client.payloads[0]["user_payload"]
+    assert payload["turn"] == 2
+    assert payload["tool_history"][0]["tool_result"]["observation_id"] == observation["observation_id"]
+    assert payload["observation_catalog"][0]["observation_key"] == observation["observation_key"]
+
+
+def test_finalization_reserves_last_two_calls_and_rejects_exploration(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
+        context_id=fixture["context"].context_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        idempotency_key="agent-finalization-0001", requested_by="qa",
+        budget={"max_model_calls": 4},
+    )
+    answer = loads(run.input_scope_json, {})["runs"][0]["answer_text"]
+    client = ScriptedClient([
+        {"action_type": "TOOL_CALL", "reasoning": "读取回答", "tool_name": "read_answer",
+         "arguments": {"run_id": str(fixture["run"].id), "start": 0, "end": len(answer)},
+         "artifact": None, "stop_reason": None},
+        {"action_type": "TOOL_CALL", "reasoning": "读取引用", "tool_name": "list_citations",
+         "arguments": {"run_id": str(fixture["run"].id)}, "artifact": None, "stop_reason": None},
+        {"action_type": "TOOL_CALL", "reasoning": "继续探索", "tool_name": "get_scope_summary",
+         "arguments": {}, "artifact": None, "stop_reason": None},
+        {"action_type": "STOP", "reasoning": "不编造", "tool_name": None,
+         "arguments": None, "artifact": None, "stop_reason": "证据不足，安全停止"},
+    ])
+    execute_agent_run(run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False), client=client)
+    db.expire_all()
+    stored = db.query(AgentExperimentRun).filter_by(run_id=run.run_id).one()
+    assert stored.status == "NEEDS_INPUT" and stored.model_call_count == 4
+    assert stored.tool_call_count == 2
+    assert client.payloads[2]["user_payload"]["execution_phase"] == "FINALIZATION"
+    assert client.payloads[3]["user_payload"]["server_validation_feedback"][0]["code"] == (
+        "FINALIZATION_TOOL_CALL_NOT_ALLOWED"
+    )
+    assert db.query(AgentEvent).filter_by(
+        agent_run_id=run.run_id, event_type="TOOL_CALL_REJECTED_FINALIZATION").count() == 1
+
+
+def test_observation_keys_normalize_same_call_and_keep_ranges_distinct(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = _create_from_fixture(db, fixture, key="agent-observation-key-0001")
+    registry = ToolRegistry(db, run)
+    answer = loads(run.input_scope_json, {})["runs"][0]["answer_text"]
+    first = registry.call("read_answer", {"run_id": fixture["run"].id, "start": 0,
+                                           "end": min(10, len(answer))})
+    same = registry.call("read_answer", {"end": min(10, len(answer)), "start": 0,
+                                          "run_id": str(fixture["run"].id)})
+    different = registry.call("read_answer", {"run_id": str(fixture["run"].id),
+                                               "start": 1, "end": min(11, len(answer))})
+    assert first["observation_key"] == same["observation_key"]
+    assert first["observation_key"] != different["observation_key"]
+
+
+def test_context_overflow_keeps_complete_observation_summaries():
+    scope = {
+        "identity": {"project_id": 1}, "prompt": {"text": "x"}, "monitor_metrics": {},
+        "source_snapshots": [], "product_truth": {"set_hash": "truth"},
+        "brand_context": {"mode": "EMPTY"},
+    }
+    observations = [
+        {"observation_id": f"obs-{index}", "observation_key": f"key-{index}",
+         "tool_name": "get_scope_summary", "arguments": {}, "data": {"index": index}}
+        for index in range(15)
+    ]
+    history = [{"turn": index + 1, "decision": {"action_type": "TOOL_CALL",
+                "tool_name": "get_scope_summary"}, "tool_result": observation}
+               for index, observation in enumerate(observations)]
+    payload = _model_payload(
+        scope, history, observations, 16, max_model_calls=20, finalization=False,
+        consecutive_no_progress=0,
+    )
+    assert len(payload["tool_history"]) == 12
+    assert payload["context_integrity"]["history_truncated"] is True
+    assert len(payload["observation_catalog"]) == 15
+    assert payload["context_integrity"]["observation_summaries_complete"] is True
 
 
 def test_no_source_still_delivers_complete_l3_instruction_only_artifact(tmp_path, monkeypatch):

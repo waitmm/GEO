@@ -22,7 +22,7 @@ from app.services.serialization import loads
 from .scope import freeze_scope
 
 
-DEFAULT_BUDGET = {"max_model_calls": 6, "max_tool_calls": 12, "max_total_tokens": 32_000,
+DEFAULT_BUDGET = {"max_model_calls": 10, "max_tool_calls": 12, "max_total_tokens": 100_000,
                   "max_elapsed_seconds": 300, "max_repairs": 1, "max_cost_cny": 5.0}
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "PARTIAL", "NEEDS_INPUT", "BLOCKED", "FAILED", "CANCELLED"})
 
@@ -44,11 +44,14 @@ def _instruction_bundle() -> dict[str, Any]:
 
 def _execution_profile(*, regenerate_nonce: str | None = None) -> dict[str, Any]:
     return {
-        "contract_version": "geo.agent.execution.v1",
+        "contract_version": "geo.agent.execution.v2",
         "decision_contract": "MODEL_CHOOSES_TOOL_OR_FINAL_EACH_TURN",
         "model_profile": {"provider": "deepseek", "model": "deepseek-flash", "mode": "CACHE_ONLY",
                           "response_recovery": "EXTRACT_THEN_STRICT_VALIDATE",
-                          "tool_transport_adapter": "geo.agent.deepseek-dsml-single-tool.v1"},
+                          "tool_transport_adapter": "geo.agent.deepseek-dsml-single-tool.v1",
+                          "stateless_context_replay": "geo.agent.loop-input.v2",
+                          "observation_deduplication": "geo.agent.observation-key.v1",
+                          "finalization_reserved_calls": 2},
         "instructions": _instruction_bundle(),
         "tool_allowlist": ["get_scope_summary", "list_runs", "read_answer", "list_citations", "read_source",
                            "read_brand_context", "read_product_truth", "read_monitor_metrics", "save_working_note"],
@@ -78,7 +81,7 @@ def create_agent_run(
 
     execution = _execution_profile(regenerate_nonce=regenerate_nonce)
     effective_budget = {**DEFAULT_BUDGET, **(budget or {})}
-    for key, upper in (("max_model_calls", 12), ("max_tool_calls", 30), ("max_total_tokens", 100_000),
+    for key, upper in (("max_model_calls", 12), ("max_tool_calls", 30), ("max_total_tokens", 300_000),
                        ("max_elapsed_seconds", 900), ("max_repairs", 2)):
         value = effective_budget.get(key)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > upper:

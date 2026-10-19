@@ -5,6 +5,7 @@ import pytest
 
 from app.services.semantic_llm import deepseek
 from app.services.semantic_llm.base import SemanticLLMError
+from app.modules.agent_experiment.contracts import AgentDecision
 
 
 def test_explicit_thinking_mode_changes_cache_identity_without_changing_legacy_identity():
@@ -115,3 +116,60 @@ def test_request_guard_denial_precedes_network_and_retry(monkeypatch):
     assert reservations[0]['input_token_upper_bound'] > len('Return JSON.')
     assert reservations[0]['max_output_tokens'] == 4096
     assert 'isolated-secret' not in json.dumps(reservations)
+
+
+def test_responses_request_serializes_agent_history_and_observation_catalog(monkeypatch):
+    bodies = []
+    decision = {
+        "action_type": "STOP", "reasoning": "offline transport assertion",
+        "tool_name": None, "arguments": None, "artifact": None,
+        "stop_reason": "offline transport assertion complete",
+    }
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "model": "deepseek-flash", "status": "completed",
+                "output": [{"type": "message", "content": [
+                    {"type": "output_text", "text": json.dumps(decision, ensure_ascii=False)},
+                ]}],
+                "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers, json):
+            bodies.append(json)
+            return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(max_attempts=1)
+    monkeypatch.setattr(client.settings, "deepseek_api_key", "test-key")
+    payload = {
+        "contract_version": "geo.agent.loop-input.v2",
+        "tool_history": [{"turn": 1, "tool_result": {"observation_id": "obs-1",
+                            "data": {"valid_answer_count": 1}}}],
+        "observation_catalog": [{"observation_id": "obs-1", "status": "AVAILABLE"}],
+    }
+    output = client.structured_generate_sync(
+        system_prompt="Return one AgentDecision.", user_payload=payload,
+        response_schema=AgentDecision, model="deepseek-flash",
+        prompt_version="geo-agent-loop.v2", schema_version="geo.agent.decision.v1",
+        max_tokens=2048, strict_json=True, structured_output_mode="JSON_SCHEMA",
+    )
+    assert output == decision
+    assert len(bodies) == 1
+    assert json.loads(bodies[0]["input"]) == payload
+    assert bodies[0]["max_output_tokens"] == 2048

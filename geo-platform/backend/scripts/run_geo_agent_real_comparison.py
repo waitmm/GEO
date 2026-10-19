@@ -33,6 +33,10 @@ BASELINE_RESULT_VERSION = "execution-v7:c2dc55b0d25749c7"
 BASELINE_RESULT_HASH = "c2dc55b0d25749c712c4076260f2a1039c021e76ce8569df839ab04d842e9081"
 PRICING_CHECKED_AT = "2026-10-19"
 BATCH_ID = "geo-agent-workflow-comparison-p1-p1-r1-20261019"
+CONTEXT_REPAIR_ATTEMPT = 3
+EXPECTED_PRIOR_REQUESTS = 13
+EXPECTED_PRIOR_TOKENS = 79_741
+EXPECTED_PRIOR_COST_CNY = 0.79741
 
 
 def _canonical(value: Any) -> str:
@@ -125,8 +129,21 @@ def _baseline(db, symbols: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_key(attempt: int) -> str:
+    if attempt == CONTEXT_REPAIR_ATTEMPT:
+        # The first zero-call preflight for this attempt intentionally remains
+        # as a BLOCKED audit row: it was executed outside the repository's
+        # relative monitoring-artifact root and failed Run revalidation.
+        return "real-comparison-p1-p1-r1-20261019-repair-3-artifact-root"
     return ("real-comparison-p1-p1-r1-20261019" if attempt == 0
             else f"real-comparison-p1-p1-r1-20261019-repair-{attempt}")
+
+
+def _attempt_budget(attempt: int) -> dict[str, Any]:
+    if attempt == CONTEXT_REPAIR_ATTEMPT:
+        return {"max_model_calls": 10, "max_tool_calls": 12, "max_total_tokens": 300_000,
+                "max_elapsed_seconds": 300, "max_repairs": 1, "max_cost_cny": 3.0}
+    return {"max_model_calls": 6, "max_tool_calls": 12, "max_total_tokens": 100_000,
+            "max_elapsed_seconds": 300, "max_repairs": 1, "max_cost_cny": 5.0}
 
 
 def _preflight(database: Path, ledger: Path, output: Path, *, attempt: int) -> dict[str, Any]:
@@ -141,8 +158,7 @@ def _preflight(database: Path, ledger: Path, output: Path, *, attempt: int) -> d
             completion_manifest_hash=COMPLETION_HASH,
             idempotency_key=_run_key(attempt), requested_by="authorized-operator",
             regenerate_nonce=(f"manual-repair-{attempt}" if attempt else None),
-            budget={"max_model_calls": 6, "max_tool_calls": 12, "max_total_tokens": 100_000,
-                    "max_elapsed_seconds": 300, "max_repairs": 1, "max_cost_cny": 5.0},
+            budget=_attempt_budget(attempt),
         )
         if row.input_scope_hash != EXPECTED_SCOPE_HASH:
             raise RuntimeError("AGENT_SCOPE_HASH_MISMATCH")
@@ -160,9 +176,12 @@ def _preflight(database: Path, ledger: Path, output: Path, *, attempt: int) -> d
             db = symbols["ReleaseSessionLocal"]()
             row = db.query(symbols["AgentExperimentRun"]).filter_by(run_id=row.run_id).one()
         if row.status == "WAITING_AUTHORIZATION":
+            authorized = _attempt_budget(attempt)
             row = symbols["authorize_agent_run"](
                 db, run_id=row.run_id, project_id=PROJECT_ID, prompt_id=PROMPT_ID,
-                revision=row.revision, max_requests=6, max_total_tokens=100_000, max_cost_cny=1.0,
+                revision=row.revision, max_requests=authorized["max_model_calls"],
+                max_total_tokens=authorized["max_total_tokens"],
+                max_cost_cny=authorized["max_cost_cny"],
                 conservative_cny_per_million_tokens=10.0,
                 pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
                 pricing_checked_at=PRICING_CHECKED_AT, authorized_by="explicit-user-authorization-20261019",
@@ -177,6 +196,12 @@ def _preflight(database: Path, ledger: Path, output: Path, *, attempt: int) -> d
             raise RuntimeError("SHARED_LEDGER_HAS_IN_FLIGHT_REQUEST")
         if attempt == 0 and budget["used_requests"] != 0:
             raise RuntimeError("SHARED_LEDGER_NOT_PRISTINE")
+        if attempt == CONTEXT_REPAIR_ATTEMPT and (
+            budget["used_requests"] != EXPECTED_PRIOR_REQUESTS
+            or budget["used_tokens"] != EXPECTED_PRIOR_TOKENS
+            or abs(float(budget["used_cost_cny"]) - EXPECTED_PRIOR_COST_CNY) > 1e-8
+        ):
+            raise RuntimeError("SHARED_LEDGER_PRIOR_USAGE_MISMATCH")
         report = {
             "status": "READY_FOR_ONE_REAL_AGENT_RUN",
             "manual_attempt": attempt,
@@ -188,6 +213,12 @@ def _preflight(database: Path, ledger: Path, output: Path, *, attempt: int) -> d
             ),
             "baseline": baseline,
             "shared_budget": budget,
+            "authorized_sub_budget": {
+                "max_requests": 10 if attempt == CONTEXT_REPAIR_ATTEMPT else 6,
+                "max_tokens": 300_000 if attempt == CONTEXT_REPAIR_ATTEMPT else 100_000,
+                "max_cost_cny": 3.0 if attempt == CONTEXT_REPAIR_ATTEMPT else 1.0,
+                "automatic_retries": 0,
+            },
             "pairing": {
                 "project_id": PROJECT_ID, "prompt_id": PROMPT_ID, "run_ids": [1],
                 "analysis_id": ANALYSIS_ID, "context_id": CONTEXT_ID,
@@ -219,6 +250,12 @@ def _execute(database: Path, ledger: Path, output: Path, *, attempt: int) -> dic
         raise RuntimeError("SHARED_LEDGER_HAS_IN_FLIGHT_REQUEST")
     if attempt == 0 and state["used_requests"] != 0:
         raise RuntimeError("SHARED_LEDGER_NOT_PRISTINE")
+    if attempt == CONTEXT_REPAIR_ATTEMPT and (
+        state["used_requests"] != EXPECTED_PRIOR_REQUESTS
+        or state["used_tokens"] != EXPECTED_PRIOR_TOKENS
+        or abs(float(state["used_cost_cny"]) - EXPECTED_PRIOR_COST_CNY) > 1e-8
+    ):
+        raise RuntimeError("SHARED_LEDGER_PRIOR_USAGE_MISMATCH")
     db = symbols["ReleaseSessionLocal"]()
     try:
         row = db.query(symbols["AgentExperimentRun"]).filter_by(
@@ -255,6 +292,11 @@ def _execute(database: Path, ledger: Path, output: Path, *, attempt: int) -> dic
             "agent": agent,
             "workflow_baseline": baseline,
             "shared_budget": budget,
+            "shared_budget_delta": {
+                "requests": budget["used_requests"] - state["used_requests"],
+                "tokens": budget["used_tokens"] - state["used_tokens"],
+                "cost_cny": round(float(budget["used_cost_cny"]) - float(state["used_cost_cny"]), 8),
+            },
             "stopped_before_second_scenario": True,
         }
         _write_json(output, report)
@@ -269,7 +311,7 @@ def main() -> None:
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--attempt", type=int, default=0, choices=range(0, 3))
+    parser.add_argument("--attempt", type=int, default=0, choices=range(0, 4))
     args = parser.parse_args()
     result = (_preflight(args.database, args.ledger, args.output, attempt=args.attempt)
               if args.mode == "prepare" else _execute(

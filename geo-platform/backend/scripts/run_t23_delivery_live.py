@@ -54,6 +54,7 @@ from app.modules.single_prompt_v2.citation_contribution import (  # noqa: E402
     execute_citation_contribution,
 )
 from app.modules.single_prompt_v2.delivery_text import digest  # noqa: E402
+from app.modules.single_prompt_v2.coverage import compute_coverage  # noqa: E402
 from app.modules.single_prompt_v2.diagnosis import (  # noqa: E402
     _split_target_capability_candidates, claim_diagnosis, compute_answer_diagnosis,
     create_answer_diagnosis, record_target_brand_truth,
@@ -62,6 +63,16 @@ from app.modules.single_prompt_v2.truth_corrections import project_truths  # noq
 from app.modules.single_prompt_v2.llm_safety import V2AnswerSemanticJudge  # noqa: E402
 from app.services.serialization import loads  # noqa: E402
 from app.services.url_identity import build_url_identity  # noqa: E402
+
+
+def _require_prepared_answer_admission(*, raw_output: dict[str, Any],
+                                       answer_output: dict[str, Any], selected_run_id: int) -> dict[str, Any]:
+    coverage = compute_coverage(raw_output, answer_output.get("answer_diagnosis") or {})
+    if selected_run_id not in coverage.get("valid_compute_run_ids", []):
+        raise ValueError(
+            "ANSWER_PREPARE_NOT_MACHINE_ADMITTED: persisted Answer is not consumable for the frozen Run; "
+            f"actual_failure={selected_run_id in coverage.get('actual_failure_run_ids', [])}")
+    return coverage
 
 
 def _assert_ledger(manifest: dict[str, Any], state: dict[str, Any], *, include_prepare: bool = False,
@@ -568,6 +579,12 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
                 raise
         if digest(loads(answer_result.output_json, {})) != answer_result.output_hash:
             raise ValueError("E2E-01 prepared Answer result hash drifted")
+        answer_context = db.query(SinglePromptAnalysisContext).filter_by(
+            analysis_id=answer_case["analysis_id"], context_id=answer_case["context_id"],
+            project_id=answer_case["project_id"], prompt_id=answer_case["prompt_id"]).one()
+        _require_prepared_answer_admission(raw_output=loads(answer_context.raw_output_json, {}),
+            answer_output=loads(answer_result.output_json, {}),
+            selected_run_id=answer_prepare["selected_run_id"])
         _append_checkpoint(checkpoint_dir, "ANSWER_RESULT", _checkpoint_payload(
             manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
             budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,

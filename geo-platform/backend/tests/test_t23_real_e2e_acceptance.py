@@ -27,6 +27,7 @@ from scripts.run_t23_delivery_live import (
     _freeze_e2e03_unknown,
     _freeze_manifest_value,
     _hooks,
+    _require_prepared_answer_admission,
     _write_initial_database_snapshot,
     execute,
     prepare_and_freeze,
@@ -202,6 +203,18 @@ def test_pending_e2e03_refuses_to_invent_a_missing_answer_signal():
         SimpleNamespace(one_or_none=lambda: object())))
     with pytest.raises(ValueError, match="E2E-03_UNKNOWN_SIGNAL_REVIEW_REQUIRED"):
         _freeze_e2e03_unknown(db, value, SimpleNamespace(project_id=1), result)
+
+
+def test_prepare_refuses_persisted_failed_answer_before_contribution_plan():
+    answer = "real frozen provider answer"
+    raw = {"runs": [{"run_id": 2, "status": "success", "answer_text": answer}]}
+    output = {"answer_diagnosis": {"answer_jobs": [{
+        "answer_hash": hashlib.sha256(answer.encode()).hexdigest(), "run_ids": [2],
+        "status": "FAILED", "result_source": "UNKNOWN",
+        "error": "provider configuration unavailable",
+    }]}}
+    with pytest.raises(ValueError, match="ANSWER_PREPARE_NOT_MACHINE_ADMITTED.*actual_failure=True"):
+        _require_prepared_answer_admission(raw_output=raw, answer_output=output, selected_run_id=2)
 
 
 def test_unknown_truth_provenance_allows_same_project_cross_prompt_and_rejects_drift():

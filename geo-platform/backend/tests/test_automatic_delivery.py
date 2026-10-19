@@ -13,6 +13,7 @@ from app.api.release_catalog import _record_project_configuration
 from app.models import Project, SinglePromptAnalysis, SinglePromptAnalysisContext, SinglePromptDiagnosisReview, SinglePromptOptimizationTask
 from app.modules.single_prompt_v2.automatic_delivery import (
     _draft_evidence_qualification,
+    _validate_delivery_result,
     authorize_task, cancel_task, create_task, encode, scoped_client, task_view, execute_task,
     recover_interrupted_tasks, require_task, resume_task,
 )
@@ -56,16 +57,53 @@ def identity(row):
 
 
 def test_draft_evidence_gate_does_not_erase_independent_truth_only_use():
-    row = SimpleNamespace(analysis_id='analysis-1', context_id='context-1', project_id=1, prompt_id=2)
+    row = SimpleNamespace(task_id='task-1', input_hash='f' * 64,
+        analysis_id='analysis-1', context_id='context-1', project_id=1, prompt_id=2)
     direction = {"direction_id": "direction-truth", "direction_type": "MECHANISM",
-        "truth_ids": [7], "evidence_relation_ids": [], "dependencies": [{
+        "truth_ids": [7], "reason_run_ids": [7], "evidence_relation_ids": [], "dependencies": [{
             "object_type": "CITATION_CONTRIBUTION_SCOPE", "object_id": "contribution-v1:x",
             "required_for": ["STRATEGY_DIRECTION"], "state": "LIMITED"}]}
-    result = _draft_evidence_qualification(row=row, fixed={}, strategy_id='strategy-1',
+    delivery = {"identity": {"analysis_id": "analysis-1", "context_id": "context-1",
+        "project_id": 1, "prompt_id": 2, "strategy_id": "strategy-1",
+        "strategy_result_version": "strategy-v1:x", "strategy_result_hash": "a" * 64,
+        "answer_result_version": "answer-v1:x", "answer_result_hash": "b" * 64},
+        "strategy_direction": direction, "answers": [{"run_id": 7}], "selected_evidence": [],
+        "answer_result_version": "answer-v1:x", "answer_result_hash": "b" * 64,
+        "truths": [{"product_truth_id": 7, "public_use_eligibility": "CONSUMABLE"}]}
+    base_output = {"proposal_id": "proposal-1", "direction": direction,
+        "input_identity": delivery["identity"], "delivery_input": delivery,
+        "evidence_processing_audit": {"selected_binding_ids": []}}
+    result = _draft_evidence_qualification(row=row, fixed={"run_ids": [7]}, strategy_id='strategy-1',
         strategy_result_version='strategy-v1:x', strategy_result_hash='a' * 64,
-        direction=direction, base_output={"delivery_input": {"selected_evidence": []}})
+        direction=direction, base_output=base_output, proposal_id="proposal-1",
+        proposal_result_version="execution-v1:x", proposal_result_hash=digest(base_output))
     assert result['status'] == 'NOT_APPLICABLE'
     assert result['code'] == 'DRAFT_SOURCE_EVIDENCE_NOT_REQUIRED'
+    assert result['requirements'] == {'identity_and_frozen_scope_match': True}
+    assert result['qualification_plan']
+
+
+def test_non_citation_direction_rejects_foreign_identity_without_plan():
+    row = SimpleNamespace(task_id='task-1', input_hash='f' * 64,
+        analysis_id='analysis-1', context_id='context-1', project_id=1, prompt_id=2)
+    direction = {"direction_id": "direction-truth", "reason_run_ids": [7],
+        "evidence_relation_ids": [], "dependencies": []}
+    delivery = {"identity": {"analysis_id": "foreign-analysis", "context_id": "context-1",
+        "project_id": 1, "prompt_id": 2, "strategy_id": "strategy-1",
+        "strategy_result_version": "strategy-v1:x", "strategy_result_hash": "a" * 64,
+        "answer_result_version": "answer-v1:x", "answer_result_hash": "b" * 64},
+        "strategy_direction": direction, "answers": [{"run_id": 7}], "selected_evidence": [],
+        "answer_result_version": "answer-v1:x", "answer_result_hash": "b" * 64, "truths": []}
+    base_output = {"proposal_id": "proposal-1", "direction": direction,
+        "input_identity": delivery["identity"], "delivery_input": delivery,
+        "evidence_processing_audit": {"selected_binding_ids": []}}
+    result = _draft_evidence_qualification(row=row, fixed={"run_ids": [7]}, strategy_id='strategy-1',
+        strategy_result_version='strategy-v1:x', strategy_result_hash='a' * 64,
+        direction=direction, base_output=base_output, proposal_id="proposal-1",
+        proposal_result_version="execution-v1:x", proposal_result_hash=digest(base_output))
+    assert result['status'] == 'BLOCKED'
+    assert result['gaps'] == ['DELIVERY_IDENTITY_OR_FROZEN_SCOPE_MISMATCH']
+    assert 'qualification_plan' not in result
 
 
 def test_creation_is_idempotent_and_never_confers_external_or_review_authority(scene):

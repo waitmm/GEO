@@ -324,7 +324,30 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
     }
     source_input = fixed.get("source_input") or {}
     source_manifest = delivery.get("source_manifest") or {}
+    fixed_run_ids = sorted(int(value) for value in fixed.get("run_ids") or [])
+    delivery_run_ids = sorted(int(item["run_id"]) for item in delivery.get("answers") or []
+        if item.get("run_id") is not None)
+    direction_run_ids = sorted(int(value) for value in direction.get("reason_run_ids") or [])
+    expected_delivery_run_ids = fixed_run_ids if source_evidence_required else direction_run_ids
+    common_integrity = (
+        bool(getattr(row, "task_id", ""))
+        and bool(getattr(row, "input_hash", ""))
+        and all(identity.get(key) == value for key, value in expected_identity.items())
+        and bool(proposal_id and proposal_result_version and proposal_result_hash)
+        and base_output.get("proposal_id") == proposal_id
+        and digest(base_output) == proposal_result_hash
+        and base_output.get("input_identity") == identity
+        and base_output.get("direction") == direction
+        and delivery.get("strategy_direction") == direction
+        and delivery.get("answer_result_version") == identity.get("answer_result_version")
+        and delivery.get("answer_result_hash") == identity.get("answer_result_hash")
+        and bool(fixed_run_ids and expected_delivery_run_ids)
+        and len(delivery_run_ids) == len(set(delivery_run_ids))
+        and delivery_run_ids == expected_delivery_run_ids
+        and (not direction_run_ids or set(direction_run_ids).issubset(fixed_run_ids))
+    )
     requirements = {
+        "identity_and_frozen_scope_match": common_integrity,
         "evaluated": bool(selected) and all(
             item.get("binding_id")
             and item.get("evidence_relation") in {"SUPPORTS_FULL", "SUPPORTS_PARTIAL"}
@@ -332,8 +355,7 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
             for item in selected
         ),
         "scope_and_version_match": (
-            all(identity.get(key) == value for key, value in expected_identity.items())
-            and (not source_input or all(source_manifest.get(key) == value for key, value in source_input.items()))
+            (not source_input or all(source_manifest.get(key) == value for key, value in source_input.items()))
             and bool(dependency_versions)
             and (
                 sorted(contribution_versions) == sorted(dependency_versions)
@@ -352,22 +374,30 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
         "action_only_mode": bool(selected) or delivery.get("content_mode") == "RESEARCH_GUIDE_NOT_FACTUAL_ANSWER",
     }
     gap_actions = {
+        "identity_and_frozen_scope_match": ("DELIVERY_IDENTITY_OR_FROZEN_SCOPE_MISMATCH", "重新从当前任务固定的 Project、Prompt、Analysis、Context、Run、Strategy 与 Proposal 精确版本创建稿件请求。"),
         "evaluated": ("EVIDENCE_NOT_EVALUATED_OR_SUPPORTED", "检查失败/未评估 Citation，修复 Schema、正文或回指问题后对固定版本重新评估。"),
         "scope_and_version_match": ("EVIDENCE_SCOPE_OR_VERSION_MISMATCH", "重新从当前 Project、Prompt、Run 和冻结来源版本生成策略，不要沿用其他范围或 latest 结果。"),
         "strategy_references_all": ("STRATEGY_EVIDENCE_NOT_BOUND", "重新生成当前固定输入的 Strategy，使其明确引用全部稿件 Evidence binding。"),
         "draft_allowlist_match": ("DRAFT_EVIDENCE_ALLOWLIST_INVALID", "重新创建当前策略方向的稿件输入，确保 Draft 只可使用冻结 Evidence allowlist。"),
         "action_only_mode": ("DRAFT_DELIVERY_MODE_INVALID", "无事实证据时只能使用冻结的研究与行动稿模式，不能生成事实陈述。"),
     }
-    applicable = requirements if selected else {
-        key: value for key, value in requirements.items() if key != "evaluated"
-    }
+    citation_requirements = {key: value for key, value in requirements.items()
+        if key != "identity_and_frozen_scope_match"}
+    applicable = ({"identity_and_frozen_scope_match": common_integrity, **citation_requirements}
+        if selected else {"identity_and_frozen_scope_match": common_integrity,
+            **{key: value for key, value in citation_requirements.items() if key != "evaluated"}})
+    if not source_evidence_required:
+        applicable = {"identity_and_frozen_scope_match": common_integrity}
     failed = [key for key, passed in applicable.items() if not passed]
     if not source_evidence_required:
         response = {
-            "status": "NOT_APPLICABLE", "code": "DRAFT_SOURCE_EVIDENCE_NOT_REQUIRED",
+            "status": "NOT_APPLICABLE" if not failed else "BLOCKED",
+            "code": "DRAFT_SOURCE_EVIDENCE_NOT_REQUIRED" if not failed else "DRAFT_IDENTITY_NOT_QUALIFIED",
             "direction_id": str(direction.get("direction_id") or direction.get("strategy_id") or ""),
             "evidence_count": len(selected), "evidence_ids": evidence_ids,
-            "binding_ids": binding_ids, "requirements": {}, "gaps": [], "next_actions": [],
+            "binding_ids": binding_ids, "requirements": applicable,
+            "gaps": [gap_actions[key][0] for key in failed],
+            "next_actions": [gap_actions[key][1] for key in failed],
         }
     else:
         response = {
@@ -393,6 +423,21 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
             delivery_input=delivery, evidence_binding_ids=binding_ids,
         )
     return response
+
+
+def _validate_delivery_result(plan: dict, result: dict) -> None:
+    """Reject a mutated or cross-plan result before it becomes task state."""
+    from .graded_delivery import validate_seal
+    validate_seal(result, prefix="result")
+    expected = {
+        "plan_id": plan.get("plan_id"),
+        "plan_version": plan.get("plan_version"),
+        "plan_hash": plan.get("plan_hash"),
+        "qualification_version": (plan.get("qualification") or {}).get("qualification_version"),
+        "qualification_hash": (plan.get("qualification") or {}).get("qualification_hash"),
+    }
+    if any(result.get(key) != value for key, value in expected.items()):
+        raise ValueError("DELIVERY_RESULT_PLAN_IDENTITY_MISMATCH")
 
 
 def create_task(db: Session, *, analysis_id: str, project_id: int, prompt_id: int,
@@ -916,8 +961,12 @@ def execute_task(task_id: str, *, session_factory) -> None:
                 qualification_plan=plan)
             payload = loads(delivered.output_json, {})
             qualification_result = payload.get("delivery_qualification_result")
-            if not qualification_result or qualification_result.get("plan_hash") != plan["plan_hash"]:
+            if not qualification_result:
                 raise HTTPException(409, "稿件结果缺少与请求前计划精确绑定的分级资格结果")
+            try:
+                _validate_delivery_result(plan, qualification_result)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(409, f"稿件分级资格结果身份或 hash 不匹配：{exc}") from exc
             qualification_results = [row for row in qualification_results if row.get("result_id") != qualification_result["result_id"]]
             qualification_results.append(qualification_result)
             from .graded_delivery import aggregate_results

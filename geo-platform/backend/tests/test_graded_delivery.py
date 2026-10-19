@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.modules.single_prompt_v2.delivery_generation import admit_draft, finish_draft, generation_input, segments_of
-from app.modules.single_prompt_v2.automatic_delivery import _draft_evidence_qualification
-from app.modules.single_prompt_v2.delivery_text import text_digest
+from app.modules.single_prompt_v2.automatic_delivery import _draft_evidence_qualification, _validate_delivery_result
+from app.modules.single_prompt_v2.delivery_text import digest, text_digest
 from app.modules.single_prompt_v2.graded_delivery import (
     L1, L2, L3, L4, aggregate_results, build_l4_recovery, build_plan, validate_seal,
 )
@@ -76,6 +76,29 @@ def test_l3_admits_only_instruction_and_binds_append_only_result_to_plan():
     assert result["plan_hash"] == plan["plan_hash"]
     assert result["admitted_delivery_level"] == L3
     assert result["product_outcome"] == "CONTENT_DELIVERED"
+    _validate_delivery_result(plan, result)
+    bad_hash = copy.deepcopy(result)
+    bad_hash["result_hash"] = "0" * 64
+    with pytest.raises(ValueError, match="RESULT_HASH_MISMATCH"):
+        _validate_delivery_result(plan, bad_hash)
+    foreign = copy.deepcopy(result)
+    foreign.pop("result_version")
+    foreign.pop("result_hash")
+    foreign["plan_id"] = "delivery-plan:foreign"
+    foreign_hash = digest(foreign)
+    foreign["result_version"] = f"result-v1:{foreign_hash[:16]}"
+    foreign["result_hash"] = foreign_hash
+    with pytest.raises(ValueError, match="DELIVERY_RESULT_PLAN_IDENTITY_MISMATCH"):
+        _validate_delivery_result(plan, foreign)
+    foreign_qualification = copy.deepcopy(result)
+    foreign_qualification.pop("result_version")
+    foreign_qualification.pop("result_hash")
+    foreign_qualification["qualification_hash"] = "f" * 64
+    foreign_hash = digest(foreign_qualification)
+    foreign_qualification["result_version"] = f"result-v1:{foreign_hash[:16]}"
+    foreign_qualification["result_hash"] = foreign_hash
+    with pytest.raises(ValueError, match="DELIVERY_RESULT_PLAN_IDENTITY_MISMATCH"):
+        _validate_delivery_result(plan, foreign_qualification)
     illegal = copy.deepcopy(draft)
     illegal["sections"][0]["blocks"][0].update(kind="SOURCE_STATEMENT", evidence_ids=["invented"])
     with pytest.raises(ValueError, match="L3_FACT_CLAIM_FORBIDDEN"):
@@ -116,5 +139,5 @@ def test_integrity_failure_is_blocked_without_creating_plan_or_result():
             "evidence_processing_audit": {"selected_binding_ids": []}},
         proposal_id="proposal-x", proposal_result_version="execution-v1", proposal_result_hash="c" * 64)
     assert gate["status"] == "BLOCKED"
-    assert "EVIDENCE_SCOPE_OR_VERSION_MISMATCH" in gate["gaps"]
+    assert "DELIVERY_IDENTITY_OR_FROZEN_SCOPE_MISMATCH" in gate["gaps"]
     assert "qualification_plan" not in gate

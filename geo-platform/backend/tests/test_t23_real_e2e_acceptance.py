@@ -27,6 +27,7 @@ from scripts.run_t23_delivery_live import (
     _freeze_e2e03_unknown,
     _freeze_manifest_value,
     _hooks,
+    _prepare_e3_answer,
     _require_prepared_answer_admission,
     _write_initial_database_snapshot,
     execute,
@@ -652,6 +653,78 @@ def test_execute_reports_plan_failure_and_runs_later_scenarios(scene, monkeypatc
     assert report["status"] == "BLOCKED" and report["exit_code"] == 2
     assert [item["status"] for item in report["scenarios"]] == ["BLOCKED", "PASS", "PASS"]
     assert len(calls) == 2
+
+
+def test_partial_manifest_blocks_e2_without_authorization_and_runs_e1_e3(scene, monkeypatch):
+    import scripts.run_t23_delivery_live as runner
+
+    db, row, _, _ = scene
+    value = manifest()
+    blocker = {"code": "NO_FORMAL_LOW_MATCH", "detail": "accepted result had no low match",
+        "contribution_id": "contribution-real", "result_version": "contribution-v1:real",
+        "result_hash": "a" * 64, "selected_run_id": 1,
+        "consumed_requests": 1, "forfeited_execute_requests": 2,
+        "ledger_request_id": "T23:E2E-02:prepare:contribution-real:payload",
+        "reserved_cost_cny": 0.25}
+    value["scenarios"][1]["scenario_blocker"] = blocker
+    value["scenarios"][1]["execute_max_requests"] = 0
+    value["scenarios"][1].pop("low_match_evidence")
+    value["scenarios"][2].update(max_requests=3, prepare_max_requests=1,
+        execute_max_requests=2, answer_prepare_input={"citation_manifest_id": "citation-e3",
+            "citation_manifest_hash": "b" * 64, "selected_run_id": 3})
+    assert validate_manifest(value) is value
+
+    rows = {case["task_id"]: SimpleNamespace(task_id=case["task_id"])
+        for case in value["scenarios"]}
+    db.query = lambda *_: SimpleNamespace(filter_by=lambda **kwargs:
+        SimpleNamespace(one=lambda: rows[kwargs["task_id"]]))
+    inspected = []
+    authorized = []
+    executed = []
+    monkeypatch.setattr(runner, "_inspect_task", lambda _db, case, phase:
+        inspected.append(case["id"]) or {"revision": 1, "input_hash": case["input_hash"]})
+    monkeypatch.setattr(runner, "authorize_task", lambda _db, task, **kwargs:
+        authorized.append(task.task_id))
+    monkeypatch.setattr(runner, "_hooks", lambda *args, **kwargs:
+        (lambda value: None, lambda value: None, lambda exc: None))
+    monkeypatch.setattr(runner, "execute_task", lambda task_id, **kwargs: executed.append(task_id))
+
+    results = _execute_planned_scenarios(db, None, value, Path("unused-ledger"))
+    assert [item["status"] for item in results] == ["PASS", "BLOCKED", "PASS"]
+    assert inspected == ["E2E-01", "E2E-01", "E2E-03", "E2E-03"]
+    assert authorized == executed == ["task-E2E-01", "task-E2E-03"]
+
+
+def test_e3_own_answer_prepare_freezes_identity_and_uses_one_guarded_request(
+        scene, monkeypatch, tmp_path):
+    db, row, _, _ = scene
+    inputs = json.loads(row.input_json)
+    value = manifest()
+    e3 = value["scenarios"][2]
+    e3.update(project_id=row.project_id, prompt_id=row.prompt_id,
+        analysis_id=row.analysis_id, context_id=row.context_id,
+        run_ids=inputs["run_ids"], task_pending_truth=True)
+    e3["unknown_prepare_input"] = {"signal_selector": "UNIQUE_TARGET_BRAND_CAPABILITY",
+        "source_reference": "isolated acceptance", "note": "verify independently",
+        "reviewed_by": "acceptance-controller"}
+    database = Path(str(db.get_bind().url.database))
+    ledger = tmp_path / "model-budget-v2.sqlite3"
+    initialize(ledger, pricing_source=value["shared_budget"]["pricing_source"],
+        pricing_checked_at=value["shared_budget"]["pricing_checked_at"])
+    simulated_delivery_transport(monkeypatch)
+
+    diagnosis, result = _prepare_e3_answer(db=db, manifest=value, ledger=ledger,
+        checkpoint_dir=tmp_path / "checkpoints", manifest_sha="f" * 64,
+        database=database, e1_answer=SimpleNamespace(result_version="e1-result"),
+        contribution=SimpleNamespace(contribution_id="e2-contribution", plan_hash="a" * 64))
+
+    assert diagnosis.analysis_id == row.analysis_id and result.output_hash
+    assert e3["prepare_max_requests"] == 1 and e3["execute_max_requests"] == 2
+    assert e3["answer_prepare_input"]["selected_run_id"] == inputs["run_ids"][0]
+    state = summary(ledger)
+    assert state["by_task"]["T23"] == 1
+    assert [event["stage"] for event in _checkpoint_events(tmp_path / "checkpoints")] == [
+        "E3_ANSWER_READY_TO_SEND", "E3_ANSWER_RESULT"]
 
 
 def test_prepare_resume_blocks_counted_contribution_without_repeating_send(scene, monkeypatch, tmp_path):

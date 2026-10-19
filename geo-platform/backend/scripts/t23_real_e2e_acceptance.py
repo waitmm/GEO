@@ -136,8 +136,10 @@ def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = F
                     or len(answer_prepare["citation_manifest_hash"]) != 64):
                 raise ValueError("E2E-01 must freeze exact formal Answer prepare inputs")
         if row["id"] == "E2E-02":
-            if (row.get("prepare_max_requests") != 1 or row.get("execute_max_requests") != 2
-                    or row["prepare_max_requests"] + row["execute_max_requests"] != row["max_requests"]):
+            blocker = row.get("scenario_blocker")
+            if (row.get("prepare_max_requests") != 1
+                    or (row.get("execute_max_requests") != (0 if blocker else 2))
+                    or (not blocker and row["prepare_max_requests"] + row["execute_max_requests"] != row["max_requests"])):
                 raise ValueError("E2E-02 must freeze the 1 prepare + 2 execute request allocation")
             prepare = row.get("prepare_input")
             prepare_required = {"answer_result_version", "answer_result_hash", "citation_manifest_id",
@@ -155,6 +157,24 @@ def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = F
                 if not isinstance(prepare[key], str) or len(prepare[key]) != 64:
                     raise ValueError(f"E2E-02 prepare {key} must be sha256")
             low = row.get("low_match_evidence")
+            if blocker is not None:
+                required_blocker = {"code", "detail", "contribution_id", "result_version",
+                    "result_hash", "selected_run_id", "consumed_requests",
+                    "forfeited_execute_requests", "ledger_request_id", "reserved_cost_cny"}
+                if (set(blocker) != required_blocker
+                        or blocker["code"] != "NO_FORMAL_LOW_MATCH"
+                        or blocker["consumed_requests"] != 1
+                        or blocker["forfeited_execute_requests"] != 2
+                        or not str(blocker["ledger_request_id"]).startswith("T23:E2E-02:prepare:")
+                        or float(blocker["reserved_cost_cny"]) < 0
+                        or row.get("execute_max_requests") != 0
+                        or blocker["selected_run_id"] not in row["run_ids"]
+                        or not isinstance(blocker["result_hash"], str)
+                        or len(blocker["result_hash"]) != 64):
+                    raise ValueError("E2E-02 partial blocker identity is incomplete")
+                if low is not None:
+                    raise ValueError("E2E-02 cannot freeze both low-match evidence and a blocker")
+                continue
             low_required = {"contribution_id", "result_version", "result_hash", "selected_run_id",
                 "citation_id", "reference_id", "source_key", "canonical_url_hash",
                 "citation_disposition", "evaluation_id", "evaluation_hash", "evidence_relation"}
@@ -171,6 +191,21 @@ def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = F
                     raise ValueError(f"E2E-02 {key} must be a frozen sha256 identity")
         if row["id"] == "E2E-03":
             pending = row.get("task_pending_truth") is True
+            blocker = row.get("scenario_blocker")
+            if blocker is not None:
+                required_blocker = {"code", "detail", "source_diagnosis_id",
+                    "source_result_version", "source_result_hash", "source_signal_count",
+                    "consumed_requests", "ledger_request_id", "reserved_cost_cny"}
+                if (set(blocker) != required_blocker
+                        or blocker["code"] != "NO_FORMAL_UNKNOWN_SIGNAL"
+                        or blocker["source_signal_count"] != 0
+                        or blocker["consumed_requests"] != 1
+                        or not str(blocker["ledger_request_id"]).startswith("T23:E2E-03:prepare-answer:")
+                        or float(blocker["reserved_cost_cny"]) < 0
+                        or not isinstance(blocker["source_result_hash"], str)
+                        or len(blocker["source_result_hash"]) != 64):
+                    raise ValueError("E2E-03 partial blocker identity is incomplete")
+                continue
             if pending and not allow_unprepared_e2e03:
                 raise ValueError("E2E-03 cannot be planned before its formal UNKNOWN truth is frozen")
             if pending:
@@ -195,9 +230,20 @@ def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = F
                         or not isinstance(evidence["source_result_hash"], str)
                         or len(evidence["source_result_hash"]) != 64):
                     raise ValueError("E2E-03 must freeze exact project-level UNKNOWN truth provenance")
-    if sum(row["max_requests"] for row in cases) > budget["max_requests"]:
+            if not pending and row.get("prepare_max_requests") == 1:
+                answer_prepare = row.get("answer_prepare_input")
+                if (row.get("execute_max_requests") != 2 or row["max_requests"] != 3
+                        or not isinstance(answer_prepare, dict)
+                        or set(answer_prepare) != {"citation_manifest_id", "citation_manifest_hash", "selected_run_id"}
+                        or answer_prepare["selected_run_id"] not in row["run_ids"]
+                        or len(str(answer_prepare["citation_manifest_hash"])) != 64):
+                    raise ValueError("E2E-03 partial continuation must freeze its own 1+2 Answer/execute allocation")
+    partial = cases[1].get("scenario_blocker") is not None
+    allocated = (cases[0]["max_requests"] + cases[1]["scenario_blocker"]["consumed_requests"]
+        + cases[2]["max_requests"]) if partial else sum(row["max_requests"] for row in cases)
+    if allocated > budget["max_requests"]:
         raise ValueError("scenario request caps exceed the shared T23 allocation")
-    if [row["max_requests"] for row in cases] != [4, 3, 2]:
+    if ([row["max_requests"] for row in cases] != ([4, 3, 3] if partial else [4, 3, 2])):
         raise ValueError("T23 request plan must preserve the frozen 4+3+2 staged allocation")
     if (cases[0]["analysis_id"] != cases[1]["analysis_id"]
             or cases[0]["context_id"] != cases[1]["context_id"]
@@ -513,12 +559,21 @@ def run(*, database: Path, manifest_path: Path, output: Path, phase: str) -> dic
         raise ValueError("source database hash changed after scenario freeze")
     db, engine = _readonly_session(database)
     try:
-        inspected = [_inspect_task(db, case, phase=phase) for case in manifest["scenarios"]]
+        inspected = []
+        for case in manifest["scenarios"]:
+            if case.get("scenario_blocker"):
+                inspected.append({"id": case["id"], "task_id": case["task_id"],
+                    "status": "BLOCKED", "scenario_blocker": case["scenario_blocker"],
+                    "usage": {"external_requests": case["scenario_blocker"]["consumed_requests"],
+                        "reserved_cost_cny": case["scenario_blocker"]["reserved_cost_cny"]}})
+            else:
+                inspected.append(_inspect_task(db, case, phase=phase))
     finally:
         db.close()
         engine.dispose()
     report: dict[str, Any] = {"contract_version": CONTRACT, "phase": phase,
-        "generated_at": datetime.now(timezone.utc).isoformat(), "status": "PASS",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "BLOCKED" if any(row.get("status") == "BLOCKED" for row in inspected) else "PASS",
         "database": str(database.resolve()), "database_sha256": database_hash,
         "manifest": str(manifest_path.resolve()), "manifest_sha256": _sha256_file(manifest_path),
         "shared_budget": manifest["shared_budget"], "scenarios": inspected,
@@ -526,7 +581,8 @@ def run(*, database: Path, manifest_path: Path, output: Path, phase: str) -> dic
     if phase == "plan":
         report["authorization_plan"] = [{"scenario_id": case["id"], "task_id": case["task_id"],
             "payload": _authorization(case, state, manifest["shared_budget"])}
-            for case, state in zip(manifest["scenarios"], inspected, strict=True)]
+            for case, state in zip(manifest["scenarios"], inspected, strict=True)
+            if not case.get("scenario_blocker")]
         report["allocated_requests"] = sum(row["payload"]["max_requests"] for row in report["authorization_plan"])
         report["allocated_cost_cny"] = round(sum(float(row["payload"]["max_cost_cny"])
             for row in report["authorization_plan"]), 6)

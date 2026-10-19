@@ -25,7 +25,8 @@ sys.path.insert(0, str(ROOT))
 
 from app.core.release_sqlite import get_release_sqlite_dbapi  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
-from app.models import (SinglePromptAnalysisContext, SinglePromptCitationContributionExecution,
+from app.models import (SinglePromptAnalysisContext, SinglePromptCitationManifest,
+    SinglePromptCitationContributionExecution,
     SinglePromptCitationContributionResult, SinglePromptDiagnosisResult,
     SinglePromptOptimizationTask, ReferenceSource, TargetBrandCapabilityTruth)  # noqa: E402
 from app.services.semantic_llm.base import SemanticLLMError  # noqa: E402
@@ -60,6 +61,7 @@ from app.modules.single_prompt_v2.diagnosis import (  # noqa: E402
     create_answer_diagnosis, record_target_brand_truth,
 )
 from app.modules.single_prompt_v2.truth_corrections import project_truths  # noqa: E402
+from app.modules.single_prompt_v2.source_preparation import create_source_preparation  # noqa: E402
 from app.modules.single_prompt_v2.llm_safety import V2AnswerSemanticJudge  # noqa: E402
 from app.services.serialization import loads  # noqa: E402
 from app.services.url_identity import build_url_identity  # noqa: E402
@@ -374,12 +376,21 @@ def _checkpoint_payload(*, manifest_sha256: str, initial_database_sha256: str,
     }
 
 
-def _freeze_manifest_value(manifest: dict[str, Any], low: dict[str, Any], database_hash: str) -> dict[str, Any]:
+def _freeze_manifest_value(manifest: dict[str, Any], low: dict[str, Any] | None,
+                           database_hash: str,
+                           e2e02_blocker: dict[str, Any] | None = None) -> dict[str, Any]:
     frozen = json.loads(json.dumps(manifest))
     case = next(row for row in frozen["scenarios"] if row["id"] == "E2E-02")
+    if e2e02_blocker:
+        case["scenario_blocker"] = e2e02_blocker
+        case["execute_max_requests"] = 0
+        case.pop("low_match_evidence", None)
+    elif low is None:
+        raise ValueError("E2E-02 freeze requires low-match evidence or an immutable blocker")
     if case.get("low_match_evidence") not in (None, low):
         raise ValueError("E2E-02 repeated prepare produced different immutable low-match evidence")
-    case["low_match_evidence"] = low
+    if low is not None:
+        case["low_match_evidence"] = low
     frozen["source_database_sha256"] = database_hash
     return validate_manifest(frozen)
 
@@ -452,6 +463,108 @@ def _freeze_e2e03_unknown(db, manifest: dict[str, Any], diagnosis,
         "target_prompt_id": case["prompt_id"], "target_analysis_id": case["analysis_id"],
     }
     return case
+
+
+def _counted_request(ledger: Path, prefix: str) -> dict[str, Any]:
+    rows = _ledger_requests(summary(ledger), prefix)
+    if len(rows) != 1 or rows[0].get("status") != "FINISHED":
+        raise ValueError("partial continuation requires one exact settled ledger request")
+    return rows[0]
+
+
+def _e2e02_no_low_match_blocker(execution, result, ledger: Path) -> dict[str, Any]:
+    request = _counted_request(ledger, f"T23:E2E-02:prepare:{execution.contribution_id}:")
+    return {"code": "NO_FORMAL_LOW_MATCH",
+        "detail": "The accepted Contribution result contains no formal low-match disposition; no retry or substitute sample is allowed.",
+        "contribution_id": execution.contribution_id, "result_version": result.result_version,
+        "result_hash": result.output_hash, "selected_run_id": execution.selected_run_id,
+        "consumed_requests": 1, "forfeited_execute_requests": 2,
+        "ledger_request_id": request["request_id"],
+        "reserved_cost_cny": float(request["reserved_cost_cny"])}
+
+
+def _e2e03_no_signal_blocker(diagnosis, answer_result, ledger: Path) -> dict[str, Any]:
+    request = _counted_request(ledger, f"T23:E2E-03:prepare-answer:{diagnosis.diagnosis_id}:")
+    return {"code": "NO_FORMAL_UNKNOWN_SIGNAL",
+        "detail": "The accepted Answer contains no target-brand capability signal; UNKNOWN truth cannot be invented.",
+        "source_diagnosis_id": diagnosis.diagnosis_id,
+        "source_result_version": answer_result.result_version,
+        "source_result_hash": answer_result.output_hash, "source_signal_count": 0,
+        "consumed_requests": 1, "ledger_request_id": request["request_id"],
+        "reserved_cost_cny": float(request["reserved_cost_cny"])}
+
+
+def _prepare_e3_answer(*, db, manifest: dict[str, Any], ledger: Path,
+                       checkpoint_dir: Path, manifest_sha: str, database: Path,
+                       e1_answer, contribution):
+    case = next(row for row in manifest["scenarios"] if row["id"] == "E2E-03")
+    preparation, _ = create_source_preparation(db, analysis_id=case["analysis_id"],
+        project_id=case["project_id"], prompt_id=case["prompt_id"],
+        idempotency_key=f"{manifest['shared_budget']['budget_id']}:E2E-03:answer-sources",
+        created_by="t23-acceptance-controller")
+    citation = db.query(SinglePromptCitationManifest).filter_by(
+        manifest_id=preparation.citation_manifest_id).one()
+    case.update(max_requests=3, prepare_max_requests=1, execute_max_requests=2,
+        answer_prepare_input={"citation_manifest_id": citation.manifest_id,
+            "citation_manifest_hash": citation.payload_hash,
+            "selected_run_id": case["run_ids"][0]})
+    diagnosis, _ = create_answer_diagnosis(db, analysis_id=case["analysis_id"],
+        project_id=case["project_id"], prompt_id=case["prompt_id"],
+        citation_manifest_id=citation.manifest_id, citation_manifest_hash=citation.payload_hash,
+        answer_llm_policy="ALLOW_EXTERNAL",
+        idempotency_key=f"{manifest['shared_budget']['budget_id']}:E2E-03:prepare-answer")
+    result = db.query(SinglePromptDiagnosisResult).filter_by(
+        diagnosis_id=diagnosis.diagnosis_id, result_version=diagnosis.active_result_version).one_or_none()
+    if not result:
+        prefix = f"T23:E2E-03:prepare-answer:{diagnosis.diagnosis_id}:"
+        if _ledger_requests(summary(ledger), prefix):
+            raise ValueError("PREPARE_RESUME_BLOCKED_COUNTED_WITHOUT_E3_ANSWER_RESULT")
+        if diagnosis.status == "QUEUED":
+            token = claim_diagnosis(db, diagnosis.diagnosis_id)
+        elif diagnosis.status == "RUNNING":
+            latest = _checkpoint_events(checkpoint_dir)[-1]
+            token = str(latest.get("answer_attempt_token") or "")
+            if (latest.get("stage") != "E3_ANSWER_READY_TO_SEND"
+                    or latest.get("answer_diagnosis_id") != diagnosis.diagnosis_id
+                    or not token or token != diagnosis.active_attempt_token):
+                raise ValueError("E2E-03 Answer prepare checkpoint token drifted")
+        else:
+            raise ValueError(f"E2E-03 Answer prepare is not safely resumable: {diagnosis.status}")
+        payload = _checkpoint_payload(manifest_sha256=manifest_sha,
+            initial_database_sha256=manifest["source_database_sha256"],
+            budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+            answer=diagnosis, contribution=contribution)
+        payload["e1_answer_result_version"] = e1_answer.result_version
+        payload["e3_answer_prepare_input"] = case["answer_prepare_input"]
+        _append_checkpoint(checkpoint_dir, "E3_ANSWER_READY_TO_SEND", payload)
+        request_guard, audit_sink, settle_unknown = _hooks(
+            ledger, scenario_id="E2E-03", task_id=f"prepare-answer:{diagnosis.diagnosis_id}")
+        config = loads(diagnosis.contract_config_json, {})
+        client = DeepSeekClient(thinking_mode="disabled", max_attempts=1,
+            request_guard=request_guard, response_audit_sink=audit_sink,
+            frozen_call_contracts=config.get("derived_model_call_contracts"))
+        try:
+            result = compute_answer_diagnosis(db, diagnosis, token,
+                answer_judge=V2AnswerSemanticJudge(client))
+        except Exception as exc:
+            settle_unknown(exc)
+            db.rollback()
+            raise
+    if digest(loads(result.output_json, {})) != result.output_hash:
+        raise ValueError("E2E-03 prepared Answer result hash drifted")
+    context = db.query(SinglePromptAnalysisContext).filter_by(
+        analysis_id=case["analysis_id"], context_id=case["context_id"],
+        project_id=case["project_id"], prompt_id=case["prompt_id"]).one()
+    _require_prepared_answer_admission(raw_output=loads(context.raw_output_json, {}),
+        answer_output=loads(result.output_json, {}), selected_run_id=case["run_ids"][0])
+    payload = _checkpoint_payload(manifest_sha256=manifest_sha,
+        initial_database_sha256=manifest["source_database_sha256"],
+        budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+        answer=diagnosis, answer_result=result, contribution=contribution)
+    payload["e1_answer_result_version"] = e1_answer.result_version
+    payload["e3_answer_prepare_input"] = case["answer_prepare_input"]
+    _append_checkpoint(checkpoint_dir, "E3_ANSWER_RESULT", payload)
+    return diagnosis, result
 
 
 def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
@@ -609,9 +722,16 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
             raise ValueError("E2E-02 formal Contribution plan exceeds the frozen token allocation")
         existing = db.query(SinglePromptCitationContributionResult).filter_by(
             contribution_id=execution.contribution_id, result_version=execution.active_result_version).one_or_none()
+        e2e02_blocker = None
         if existing:
             try:
                 low = _extract_low_match(db, case, execution, existing)
+            except ValueError as exc:
+                if str(exc) == "E2E-02 prepare produced no formal low-match result":
+                    low = None
+                    e2e02_blocker = _e2e02_no_low_match_blocker(execution, existing, ledger)
+                else:
+                    raise
             except Exception:
                 _append_checkpoint(checkpoint_dir, "CONTRIBUTION_BLOCKED", _checkpoint_payload(
                     manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
@@ -676,6 +796,12 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
                 raise ValueError(f"E2E-02 prepare did not persist a formal result: {execution.status}")
             try:
                 low = _extract_low_match(db, case, execution, result)
+            except ValueError as exc:
+                if str(exc) == "E2E-02 prepare produced no formal low-match result":
+                    low = None
+                    e2e02_blocker = _e2e02_no_low_match_blocker(execution, result, ledger)
+                else:
+                    raise
             except Exception:
                 _append_checkpoint(checkpoint_dir, "CONTRIBUTION_BLOCKED", _checkpoint_payload(
                     manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
@@ -687,13 +813,32 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
             manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
             budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
             answer=diagnosis, answer_result=answer_result, contribution=execution))
-        e2e03 = _freeze_e2e03_unknown(db, manifest, diagnosis, answer_result)
+        try:
+            e2e03 = _freeze_e2e03_unknown(db, manifest, diagnosis, answer_result)
+        except ValueError as exc:
+            if not str(exc).startswith("E2E-03_UNKNOWN_SIGNAL_REVIEW_REQUIRED: expected one exact target-brand capability signal, found 0"):
+                raise
+            if not e2e02_blocker:
+                raise
+            e3_diagnosis, e3_answer_result = _prepare_e3_answer(db=db, manifest=manifest,
+                ledger=ledger, checkpoint_dir=checkpoint_dir, manifest_sha=manifest_sha,
+                database=database, e1_answer=answer_result, contribution=execution)
+            try:
+                e2e03 = _freeze_e2e03_unknown(db, manifest, e3_diagnosis, e3_answer_result)
+            except ValueError as e3_exc:
+                if not str(e3_exc).startswith("E2E-03_UNKNOWN_SIGNAL_REVIEW_REQUIRED: expected one exact target-brand capability signal, found 0"):
+                    raise
+                e2e03 = next(row for row in manifest["scenarios"] if row["id"] == "E2E-03")
+                e2e03["scenario_blocker"] = _e2e03_no_signal_blocker(
+                    e3_diagnosis, e3_answer_result, ledger)
         e2e03_payload = _checkpoint_payload(
             manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
             budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
             answer=diagnosis, answer_result=answer_result, contribution=execution)
         e2e03_payload["e2e03_task_id"] = e2e03["task_id"]
         e2e03_payload["e2e03_input_hash"] = e2e03["input_hash"]
+        e2e03_payload["e2e02_scenario_blocker"] = e2e02_blocker
+        e2e03_payload["e2e03_scenario_blocker"] = e2e03.get("scenario_blocker")
         _append_checkpoint(checkpoint_dir, "E2E03_UNKNOWN_FROZEN", e2e03_payload)
     except Exception as exc:
         prepare_failure = exc
@@ -725,11 +870,16 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
         budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
         answer=diagnosis, answer_result=answer_result, contribution=execution)
     final_checkpoint["low_match_evidence"] = low
+    final_checkpoint["e2e02_scenario_blocker"] = e2e02_blocker
+    final_checkpoint["e2e03_scenario_blocker"] = e2e03.get("scenario_blocker")
     _append_checkpoint(checkpoint_dir, "READY_TO_FREEZE", final_checkpoint)
-    frozen = _freeze_manifest_value(manifest, low, _sha256_file(database))
+    frozen = _freeze_manifest_value(manifest, low, _sha256_file(database), e2e02_blocker)
     _write_frozen_manifest(frozen_manifest_path, frozen)
-    report = {"status": "PASS", "phase": "prepare-freeze", "scenario_id": "E2E-02",
+    partial = bool(e2e02_blocker or e2e03.get("scenario_blocker"))
+    report = {"status": "PARTIAL_READY" if partial else "PASS", "phase": "prepare-freeze", "scenario_id": "E2E-02",
         "low_match_evidence": low, "source_database_sha256": frozen["source_database_sha256"],
+        "scenario_blockers": {row["id"]: row["scenario_blocker"] for row in frozen["scenarios"]
+            if row.get("scenario_blocker")},
         "budget_before": before, "budget_after": summary(ledger),
         "frozen_manifest": str(frozen_manifest_path.resolve())}
     _write_evidence(report_path, report)
@@ -740,6 +890,10 @@ def _execute_planned_scenarios(db, Session, manifest: dict[str, Any], ledger: Pa
     results: list[dict[str, Any]] = []
     for case in manifest["scenarios"]:
         settle_unknown = None
+        if case.get("scenario_blocker"):
+            results.append({"scenario_id": case["id"], "status": "BLOCKED",
+                "scenario_blocker": case["scenario_blocker"]})
+            continue
         try:
             state = _inspect_task(db, case, phase="plan")
             row = db.query(SinglePromptOptimizationTask).filter_by(task_id=case["task_id"]).one()

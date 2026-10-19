@@ -27,7 +27,7 @@ from app.services.semantic_llm.deepseek import (
     resolve_deepseek_request_model,
 )
 from .context_provider import select_context
-from .delivery_text import digest
+from .delivery_text import digest, text_digest
 
 
 CONTRACT_VERSION = "single_prompt_automatic_delivery.v1"
@@ -305,6 +305,10 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
     strategy_binding_ids = [str(value) for value in direction.get("evidence_relation_ids") or [] if value]
     audit_binding_ids = [str(value) for value in
         ((base_output.get("evidence_processing_audit") or {}).get("selected_binding_ids") or []) if value]
+    truths = delivery.get("truths") or []
+    truth_ids = [str(item.get("product_truth_id")) for item in truths
+        if item.get("product_truth_id") is not None]
+    strategy_truth_ids = [str(value) for value in direction.get("truth_ids") or []]
     identity = delivery.get("identity") or {}
     dependencies = [item for item in direction.get("dependencies") or []
         if item.get("object_type") == "CITATION_CONTRIBUTION_SCOPE"]
@@ -346,12 +350,33 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
         and delivery_run_ids == expected_delivery_run_ids
         and (not direction_run_ids or set(direction_run_ids).issubset(fixed_run_ids))
     )
+    if truths:
+        from .diagnosis import _truth_statement_eligibility
+    truth_allowlist_match = (
+        len(truth_ids) == len(set(truth_ids))
+        and set(truth_ids) == set(strategy_truth_ids)
+        and all(
+            item.get("public_use_eligibility") == "CONSUMABLE"
+            and isinstance(item.get("truth_snapshot"), dict)
+            and digest(item["truth_snapshot"]) == item.get("truth_snapshot_hash")
+            and str(item["truth_snapshot"].get("truth_id")) == str(item.get("product_truth_id"))
+            and item["truth_snapshot"].get("truth_source") == "MANUAL_CONFIRMED"
+            and _truth_statement_eligibility(
+                capability_label=item["truth_snapshot"].get("capability_label") or "",
+                product_truth_status=item["truth_snapshot"].get("product_truth_status") or "",
+                source_reference=item["truth_snapshot"].get("source_reference") or "",
+            )["status"] == "ELIGIBLE"
+            for item in truths
+        )
+    )
     requirements = {
         "identity_and_frozen_scope_match": common_integrity,
+        "truth_allowlist_match": truth_allowlist_match,
         "evaluated": bool(selected) and all(
             item.get("binding_id")
             and item.get("evidence_relation") in {"SUPPORTS_FULL", "SUPPORTS_PARTIAL"}
             and item.get("snapshot_id") and item.get("passage_id") and item.get("passage_hash")
+            and text_digest(str(item.get("passage_text") or "")) == item.get("passage_hash")
             for item in selected
         ),
         "scope_and_version_match": (
@@ -375,19 +400,24 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
     }
     gap_actions = {
         "identity_and_frozen_scope_match": ("DELIVERY_IDENTITY_OR_FROZEN_SCOPE_MISMATCH", "重新从当前任务固定的 Project、Prompt、Analysis、Context、Run、Strategy 与 Proposal 精确版本创建稿件请求。"),
+        "truth_allowlist_match": ("DRAFT_TRUTH_ALLOWLIST_INVALID", "重新从当前固定 Strategy 生成稿件输入；不得加入其他方向、历史版本或未验证的产品事实。"),
         "evaluated": ("EVIDENCE_NOT_EVALUATED_OR_SUPPORTED", "检查失败/未评估 Citation，修复 Schema、正文或回指问题后对固定版本重新评估。"),
         "scope_and_version_match": ("EVIDENCE_SCOPE_OR_VERSION_MISMATCH", "重新从当前 Project、Prompt、Run 和冻结来源版本生成策略，不要沿用其他范围或 latest 结果。"),
         "strategy_references_all": ("STRATEGY_EVIDENCE_NOT_BOUND", "重新生成当前固定输入的 Strategy，使其明确引用全部稿件 Evidence binding。"),
         "draft_allowlist_match": ("DRAFT_EVIDENCE_ALLOWLIST_INVALID", "重新创建当前策略方向的稿件输入，确保 Draft 只可使用冻结 Evidence allowlist。"),
         "action_only_mode": ("DRAFT_DELIVERY_MODE_INVALID", "无事实证据时只能使用冻结的研究与行动稿模式，不能生成事实陈述。"),
     }
+    base_requirements = {key: requirements[key] for key in (
+        "identity_and_frozen_scope_match", "truth_allowlist_match")}
     citation_requirements = {key: value for key, value in requirements.items()
-        if key != "identity_and_frozen_scope_match"}
-    applicable = ({"identity_and_frozen_scope_match": common_integrity, **citation_requirements}
-        if selected else {"identity_and_frozen_scope_match": common_integrity,
+        if key not in base_requirements}
+    citation_material_present = bool(selected or strategy_binding_ids or audit_binding_ids)
+    applicable = ({**base_requirements, **citation_requirements}
+        if selected else {**base_requirements,
             **{key: value for key, value in citation_requirements.items() if key != "evaluated"}})
     if not source_evidence_required:
-        applicable = {"identity_and_frozen_scope_match": common_integrity}
+        applicable = ({**base_requirements, **citation_requirements}
+            if citation_material_present else base_requirements)
     failed = [key for key, passed in applicable.items() if not passed]
     if not source_evidence_required:
         response = {

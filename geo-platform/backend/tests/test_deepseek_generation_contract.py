@@ -34,6 +34,7 @@ def test_disabled_thinking_is_sent_and_failed_http_attempts_are_counted(monkeypa
         @staticmethod
         def json():
             return {
+                "model": "deepseek-v4-flash",
                 "choices": [{
                     "finish_reason": "length",
                     "message": {"content": "", "reasoning_content": "reasoning"},

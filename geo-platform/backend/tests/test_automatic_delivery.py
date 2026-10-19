@@ -42,10 +42,15 @@ def authorize(db, row):
 
 def identity(row):
     inputs = json.loads(row.input_json)
+    transport = inputs['model_call_transport_identity']
     return dict(provider=inputs['provider'], requested_model_alias=inputs['requested_model'],
         effective_request_model=inputs['effective_request_model'], structured_output_mode='JSON_SCHEMA',
-        input_token_upper_bound=500, max_output_tokens=500, input_hash='test-request',
-        provider_payload_hash='test-payload')
+        derived_call_identity_contract_version=transport['contract_version'],
+        cache_identity_version=transport['cache_identity_version'], endpoint=transport['endpoint'],
+        endpoint_path=transport['endpoint_path'], transport_kind=transport['transport_kind'],
+        transport_version=transport['transport_version'], call_identity_hash='1' * 64,
+        input_scope_hash='2' * 64, input_token_upper_bound=500, max_output_tokens=500,
+        input_hash='test-request', provider_payload_hash='test-payload')
 
 
 def test_creation_is_idempotent_and_never_confers_external_or_review_authority(scene):

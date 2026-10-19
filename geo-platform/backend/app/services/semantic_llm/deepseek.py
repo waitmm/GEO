@@ -33,6 +33,61 @@ logger = logging.getLogger("semantic_llm.deepseek")
 
 StructuredOutputMode = Literal["JSON_SCHEMA", "STRICT_TOOL", "JSON_OBJECT_FALLBACK"]
 DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION = "semantic_llm.deepseek.responses_json_schema.v2"
+DEEPSEEK_CHAT_JSON_TRANSPORT_VERSION = "semantic_llm.deepseek.chat_json_object.v1"
+DERIVED_MODEL_CALL_IDENTITY_VERSION = "derived_model_call_identity.v1"
+DERIVED_MODEL_CACHE_IDENTITY_VERSION = "derived_model_call_cache.v1"
+
+
+def _canonical_hash(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def derive_deepseek_call_contract(
+    *, system_prompt: str, response_schema: type, prompt_version: str,
+    schema_version: str, requested_model_alias: str, thinking_mode: str | None,
+    max_tokens: int, structured_output_mode: StructuredOutputMode | None,
+    transport_version: str = "", endpoint_base_url: str | None = None,
+) -> dict[str, Any]:
+    """Return the complete immutable identity of one derived model call kind."""
+    mode = structured_output_mode or "JSON_OBJECT_FALLBACK"
+    effective_model = resolve_deepseek_request_model(requested_model_alias, structured_output_mode)
+    effective_max_tokens = max(max_tokens, 2048)
+    if mode == "JSON_SCHEMA":
+        if not hasattr(response_schema, "model_json_schema"):
+            raise ValueError("JSON_SCHEMA 模式要求 Pydantic typed response model")
+        schema_hash = _canonical_hash(response_schema.model_json_schema(mode="validation"))
+        transport = transport_version or DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION
+        endpoint_path = "/responses"
+        transport_kind = "RESPONSES_JSON_SCHEMA"
+    else:
+        schema_hash = ""
+        transport = transport_version or DEEPSEEK_CHAT_JSON_TRANSPORT_VERSION
+        endpoint_path = "/chat/completions"
+        transport_kind = "CHAT_COMPLETIONS_JSON_OBJECT"
+    base = (endpoint_base_url or get_settings().deepseek_base_url).rstrip("/")
+    body = {
+        "contract_version": DERIVED_MODEL_CALL_IDENTITY_VERSION,
+        "provider": "deepseek",
+        "endpoint": f"{base}{endpoint_path}",
+        "endpoint_path": endpoint_path,
+        "requested_model_alias": requested_model_alias,
+        "effective_request_model": effective_model,
+        "transport_kind": transport_kind,
+        "transport_version": transport,
+        "prompt_version": prompt_version,
+        "prompt_hash": hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(),
+        "schema_version": schema_version,
+        "provider_schema_hash": schema_hash,
+        "generation_parameters": {
+            "temperature": 0.0,
+            "max_output_tokens": effective_max_tokens,
+            "thinking_mode": thinking_mode,
+        },
+        "input_scope_contract": "canonical_user_payload_sha256.v1",
+        "cache_identity_version": DERIVED_MODEL_CACHE_IDENTITY_VERSION,
+    }
+    return {**body, "call_identity_hash": _canonical_hash(body)}
 
 
 def resolve_deepseek_request_model(
@@ -59,6 +114,7 @@ class DeepSeekClient(SemanticLLMClient):
         cache_only: bool = False,
         response_audit_sink: Callable[[dict[str, Any]], None] | None = None,
         request_guard: Callable[[dict[str, Any]], None] | None = None,
+        frozen_call_contracts: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         if thinking_mode not in {None, "enabled", "disabled"}:
             raise ValueError("thinking_mode 必须是 enabled、disabled 或 None")
@@ -70,6 +126,7 @@ class DeepSeekClient(SemanticLLMClient):
         self.cache_only = cache_only
         self.response_audit_sink = response_audit_sink
         self.request_guard = request_guard
+        self.frozen_call_contracts = frozen_call_contracts
         self._calls = 0
         self._tokens = 0
         self._external_calls = 0
@@ -144,18 +201,29 @@ class DeepSeekClient(SemanticLLMClient):
                 transport_version = DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION
         elif structured_output_mode == "STRICT_TOOL":
             raise ValueError("STRICT_TOOL 尚未接入；不得静默降级 transport")
-        input_key = _input_hash(
-            system_prompt,
-            user_payload,
-            prompt_version,
-            schema_version,
-            self.thinking_mode,
-            structured_output_mode,
-            provider_schema_hash,
-            transport_version,
-            requested_model_alias,
-            effective_request_model,
+        call_contract = derive_deepseek_call_contract(
+            system_prompt=system_prompt, response_schema=response_schema,
+            prompt_version=prompt_version, schema_version=schema_version,
+            requested_model_alias=requested_model_alias, thinking_mode=self.thinking_mode,
+            max_tokens=effective_max_tokens, structured_output_mode=structured_output_mode,
+            transport_version=transport_version, endpoint_base_url=self.settings.deepseek_base_url,
         )
+        if self.frozen_call_contracts is not None:
+            frozen = self.frozen_call_contracts.get(prompt_version)
+            if frozen is None:
+                error = SemanticLLMError("冻结任务没有登记当前派生模型调用身份")
+                error.code = "DERIVED_MODEL_CALL_IDENTITY_LEGACY_UNBOUND"
+                raise error
+            if frozen != call_contract:
+                error = SemanticLLMError("当前派生模型调用身份与冻结任务不一致")
+                error.code = "DERIVED_MODEL_CALL_IDENTITY_DRIFT"
+                raise error
+        input_scope_hash = _canonical_hash(user_payload)
+        input_key = _canonical_hash({
+            "cache_identity_version": DERIVED_MODEL_CACHE_IDENTITY_VERSION,
+            "call_identity_hash": call_contract["call_identity_hash"],
+            "input_scope_hash": input_scope_hash,
+        })
         request_identity = {
             "provider": self.provider,
             "requested_model_alias": requested_model_alias,
@@ -165,7 +233,18 @@ class DeepSeekClient(SemanticLLMClient):
             "input_hash": input_key,
             "structured_output_mode": structured_output_mode or "JSON_OBJECT_FALLBACK",
             "provider_schema_hash": provider_schema_hash,
-            "transport_version": transport_version,
+            "transport_version": call_contract["transport_version"],
+            "derived_call_identity_contract_version": DERIVED_MODEL_CALL_IDENTITY_VERSION,
+            "call_identity_hash": call_contract["call_identity_hash"],
+            "endpoint": call_contract["endpoint"],
+            "endpoint_path": call_contract["endpoint_path"],
+            "transport_kind": call_contract["transport_kind"],
+            "prompt_hash": call_contract["prompt_hash"],
+            "generation_parameters": call_contract["generation_parameters"],
+            "generation_parameters_hash": _canonical_hash(call_contract["generation_parameters"]),
+            "input_scope_contract": call_contract["input_scope_contract"],
+            "input_scope_hash": input_scope_hash,
+            "cache_identity_version": DERIVED_MODEL_CACHE_IDENTITY_VERSION,
         }
 
         # cache hit
@@ -294,17 +373,19 @@ class DeepSeekClient(SemanticLLMClient):
                 data = resp.json()
                 response_data = data
                 response_model = str(data.get("model") or "")
+                if not response_model:
+                    error = SemanticLLMError("DeepSeek 未返回 response.model，不能推断 effective model")
+                    error.code = "PROVIDER_MODEL_IDENTITY_MISSING"
+                    raise error
+                if response_model != effective_request_model:
+                    error = SemanticLLMError("DeepSeek response.model 与冻结 effective request model 不一致")
+                    error.code = "PROVIDER_MODEL_IDENTITY_MISMATCH"
+                    raise error
                 if structured_output_mode == "JSON_SCHEMA":
                     finish_reason = str(data.get("status") or "unknown")
-                    if not response_model:
-                        error = SemanticLLMError("DeepSeek Responses API 未返回 response.model")
-                        error.code = "PROVIDER_MODEL_IDENTITY_MISSING"
-                        raise error
-                    if response_model != effective_request_model:
-                        error = SemanticLLMError(
-                            "DeepSeek response.model 与冻结 effective request model 不一致"
-                        )
-                        error.code = "PROVIDER_MODEL_IDENTITY_MISMATCH"
+                    if not isinstance(data.get("output"), list) or "choices" in data:
+                        error = SemanticLLMError("Provider 响应 envelope 与冻结 Responses transport 不一致")
+                        error.code = "PROVIDER_TRANSPORT_IDENTITY_MISMATCH"
                         raise error
                     content = "".join(
                         str(part.get("text") or "")
@@ -315,6 +396,10 @@ class DeepSeekClient(SemanticLLMClient):
                     )
                     choice: dict[str, Any] = {}
                 else:
+                    if not isinstance(data.get("choices"), list) or "output" in data:
+                        error = SemanticLLMError("Provider 响应 envelope 与冻结 Chat transport 不一致")
+                        error.code = "PROVIDER_TRANSPORT_IDENTITY_MISMATCH"
+                        raise error
                     choice = (data.get("choices") or [{}])[0]
                     finish_reason = str(choice.get("finish_reason") or "unknown")
                     content = choice.get("message", {}).get("content", "")
@@ -388,6 +473,8 @@ class DeepSeekClient(SemanticLLMClient):
                     "validation_status": "ACCEPTED",
                     "finish_reason": finish_reason,
                     "response_model": response_model,
+                    "response_transport_kind": call_contract["transport_kind"],
+                    "response_transport_version": call_contract["transport_version"],
                     "raw_provider_response": response_data,
                     "structured_response": parsed,
                     "raw_response_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),

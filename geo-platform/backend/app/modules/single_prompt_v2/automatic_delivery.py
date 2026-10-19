@@ -18,7 +18,14 @@ from app.core.config import get_settings
 from app.models import (Project, ProjectConfigurationVersion, SinglePromptAnalysisContext, SinglePromptOptimizationTask)
 from app.services.serialization import loads
 from app.services.semantic_llm.base import SemanticLLMError
-from app.services.semantic_llm.deepseek import DeepSeekClient, resolve_deepseek_request_model
+from app.services.semantic_llm.deepseek import (
+    DERIVED_MODEL_CACHE_IDENTITY_VERSION,
+    DERIVED_MODEL_CALL_IDENTITY_VERSION,
+    DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
+    DeepSeekClient,
+    derive_deepseek_call_contract,
+    resolve_deepseek_request_model,
+)
 from .context_provider import select_context
 from .delivery_text import digest
 
@@ -61,6 +68,38 @@ def computation_contracts() -> dict:
         "text_qa": QA_VERSION, "qualification": QUALIFICATION_CONTRACT_VERSION,
         "official_fact": FACT_CONTRACT, "official_claim_prompt": V2_SOURCE_CLAIM_PROMPT_VERSION,
         "official_claim_schema": V2_SOURCE_CLAIM_SCHEMA_VERSION}
+
+
+def _automatic_call_contracts() -> dict:
+    """Freeze every model-call kind reachable from an automatic task."""
+    from .citation_contribution import (
+        CITATION_CONTRIBUTION_PROMPT_VERSION, CITATION_CONTRIBUTION_SCHEMA_VERSION,
+        CitationContributionResponse, build_citation_contribution_system_prompt,
+    )
+    from .delivery_facts import CHECK_PROMPT, CONTRACT as FACT_CONTRACT, FactChecks
+    from .delivery_generation import (
+        DraftResponse, GENERATION_VERSION, MAX_OUTPUT_TOKENS, QA_PROMPT, QA_VERSION,
+        TextQAResponse, WRITER_PROMPT,
+    )
+    settings = get_settings()
+    answer = computation_contracts()["answer"]["derived_model_call_contracts"]
+    extra = (
+        (CITATION_CONTRIBUTION_PROMPT_VERSION, CITATION_CONTRIBUTION_SCHEMA_VERSION,
+         build_citation_contribution_system_prompt(), CitationContributionResponse, 4096),
+        (FACT_CONTRACT, FACT_CONTRACT, CHECK_PROMPT, FactChecks, 6000),
+        (GENERATION_VERSION, GENERATION_VERSION, WRITER_PROMPT, DraftResponse, MAX_OUTPUT_TOKENS),
+        (QA_VERSION, QA_VERSION, QA_PROMPT, TextQAResponse, MAX_OUTPUT_TOKENS),
+    )
+    return {**answer, **{
+        prompt_version: derive_deepseek_call_contract(
+            system_prompt=prompt, response_schema=schema, prompt_version=prompt_version,
+            schema_version=schema_version, requested_model_alias=settings.deepseek_model,
+            thinking_mode="disabled", max_tokens=max_tokens, structured_output_mode="JSON_SCHEMA",
+            transport_version=DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
+            endpoint_base_url=settings.deepseek_base_url,
+        )
+        for prompt_version, schema_version, prompt, schema, max_tokens in extra
+    }}
 
 
 def _validated_project_configuration(
@@ -125,7 +164,11 @@ def configuration_snapshot(db: Session, project_id: int, prompt_text: str, conte
     configuration_version, project_snapshot = _current_project_configuration(db, project_id)
     from .truth_corrections import project_truths
     model = get_settings().deepseek_model
-    return {"computation_contracts": computation_contracts(),
+    contracts = computation_contracts()
+    automatic_calls = _automatic_call_contracts()
+    answer_calls = contracts["answer"]["derived_model_call_contracts"]
+    answer_call = answer_calls[contracts["answer"]["answer_semantic_prompt_version"]]
+    return {"computation_contracts": contracts, "derived_model_call_contracts": automatic_calls,
         "project_configuration_version": configuration_version,
         "brand": {"project_id": project_id, "brand_name": project_snapshot["brand_name"],
             "brand_aliases": project_snapshot["brand_aliases"], "website_url": project_snapshot["website_url"],
@@ -133,7 +176,11 @@ def configuration_snapshot(db: Session, project_id: int, prompt_text: str, conte
         "truth_snapshot": project_truths(db, project_id),
         "brand_context": select_context(db, project_id=project_id, context_version_id=context_version_id, query=prompt_text),
         "provider": "deepseek", "requested_model": model,
-        "effective_request_model": resolve_deepseek_request_model(model, "JSON_SCHEMA")}
+        "effective_request_model": resolve_deepseek_request_model(model, "JSON_SCHEMA"),
+        "model_call_transport_identity": {key: answer_call[key] for key in (
+            "contract_version", "endpoint", "endpoint_path", "transport_kind", "transport_version",
+            "cache_identity_version",
+        )}}
 
 
 def checkpoint(db: Session, row: SinglePromptOptimizationTask, *, stage: str | None = None,
@@ -411,8 +458,20 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
             if any(r.get("provider_payload_hash") == identity.get("provider_payload_hash") for r in requests):
                 raise SemanticLLMError("OPTIMIZATION_INPUT_ALREADY_REQUESTED_NO_AUTOMATIC_RETRY")
             if (identity["provider"] != inputs["provider"] or identity["requested_model_alias"] != inputs["requested_model"]
-                    or (identity["structured_output_mode"] == "JSON_SCHEMA" and identity["effective_request_model"] != inputs["effective_request_model"])):
+                    or identity["effective_request_model"] != inputs["effective_request_model"]):
                 raise SemanticLLMError("OPTIMIZATION_MODEL_IDENTITY_CHANGED")
+            frozen_transport = inputs.get("model_call_transport_identity")
+            if not isinstance(frozen_transport, dict):
+                raise SemanticLLMError("DERIVED_MODEL_CALL_IDENTITY_LEGACY_UNBOUND")
+            if (identity.get("derived_call_identity_contract_version") != DERIVED_MODEL_CALL_IDENTITY_VERSION
+                    or identity.get("cache_identity_version") != DERIVED_MODEL_CACHE_IDENTITY_VERSION
+                    or any(identity.get(key) != frozen_transport.get(key) for key in (
+                        "endpoint", "endpoint_path", "transport_kind", "transport_version"))
+                    or not isinstance(identity.get("call_identity_hash"), str)
+                    or len(identity["call_identity_hash"]) != 64
+                    or not isinstance(identity.get("input_scope_hash"), str)
+                    or len(identity["input_scope_hash"]) != 64):
+                raise SemanticLLMError("DERIVED_MODEL_CALL_IDENTITY_DRIFT")
             tokens = identity["input_token_upper_bound"] + identity["max_output_tokens"]
             cost = tokens * float(authorization.get("conservative_cny_per_million_tokens") or 0) / 1_000_000
             if (authorization.get("policy") != "ALLOW_EXTERNAL" or authorization.get("input_hash") != active.input_hash
@@ -485,7 +544,8 @@ def scoped_client(db: Session, row: SinglePromptOptimizationTask) -> DeepSeekCli
     )
     return DeepSeekClient(thinking_mode="disabled", max_attempts=1,
         cache_only=upstream_reprojection or loads(row.authorization_json, {}).get("policy") != "ALLOW_EXTERNAL",
-        request_guard=reserve, response_audit_sink=audit)
+        request_guard=reserve, response_audit_sink=audit,
+        frozen_call_contracts=inputs.get("derived_model_call_contracts"))
 
 
 def execute_task(task_id: str, *, session_factory) -> None:

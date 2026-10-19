@@ -18,6 +18,9 @@ from typing import Any
 
 
 CONTRACT_VERSION = "geo-v1-live-model-budget.v1"
+DERIVED_MODEL_CALL_IDENTITY_VERSION = "derived_model_call_identity.v1"
+DERIVED_MODEL_CACHE_IDENTITY_VERSION = "derived_model_call_cache.v1"
+DEEPSEEK_RESPONSES_TRANSPORT_VERSION = "semantic_llm.deepseek.responses_json_schema.v2"
 COUNTED_STATUSES = {"RESERVED", "FINISHED", "FAILED", "TIMEOUT", "DELIVERY_UNKNOWN"}
 FINAL_STATUSES = COUNTED_STATUSES - {"RESERVED"}
 
@@ -157,6 +160,22 @@ def reserve(path: Path, *, task_scope: str, request_id: str, identity: dict[str,
             or identity.get("effective_request_model") != config["effective_request_model"]
         ):
             raise BudgetDenied("PROVIDER_OR_MODEL_NOT_AUTHORIZED")
+        if not identity.get("derived_call_identity_contract_version"):
+            raise BudgetDenied("DERIVED_MODEL_CALL_IDENTITY_LEGACY_UNBOUND")
+        if (
+            identity.get("derived_call_identity_contract_version") != DERIVED_MODEL_CALL_IDENTITY_VERSION
+            or identity.get("cache_identity_version") != DERIVED_MODEL_CACHE_IDENTITY_VERSION
+            or identity.get("endpoint") != "https://api.deepseek.com/responses"
+            or identity.get("endpoint_path") != "/responses"
+            or identity.get("transport_kind") != "RESPONSES_JSON_SCHEMA"
+            or identity.get("transport_version") != DEEPSEEK_RESPONSES_TRANSPORT_VERSION
+        ):
+            raise BudgetDenied("DERIVED_MODEL_CALL_IDENTITY_NOT_AUTHORIZED")
+        for field in ("call_identity_hash", "input_scope_hash"):
+            value = identity.get(field)
+            if (not isinstance(value, str) or len(value) != 64
+                    or any(character not in "0123456789abcdef" for character in value)):
+                raise BudgetDenied("DERIVED_MODEL_CALL_IDENTITY_INCOMPLETE")
         if int(identity.get("attempt") or 0) != 1:
             raise BudgetDenied("AUTOMATIC_RETRY_FORBIDDEN")
         payload_hash = str(identity.get("provider_payload_hash") or "")

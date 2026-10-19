@@ -13,6 +13,14 @@ def _identity(index: int, *, attempt: int = 1, tokens: int = 100_000) -> dict:
         "provider": "deepseek",
         "requested_model_alias": "deepseek-v4-flash",
         "effective_request_model": "deepseek-flash",
+        "derived_call_identity_contract_version": "derived_model_call_identity.v1",
+        "cache_identity_version": "derived_model_call_cache.v1",
+        "endpoint": "https://api.deepseek.com/responses",
+        "endpoint_path": "/responses",
+        "transport_kind": "RESPONSES_JSON_SCHEMA",
+        "transport_version": "semantic_llm.deepseek.responses_json_schema.v2",
+        "call_identity_hash": f"{index + 200:064x}",
+        "input_scope_hash": f"{index + 300:064x}",
         "provider_payload_hash": f"{index:064x}",
         "input_hash": f"{index + 100:064x}",
         "input_token_upper_bound": tokens - 4096,
@@ -66,6 +74,17 @@ def test_live_budget_rejects_retry_duplicate_model_and_config_drift(tmp_path):
     negative = {**_identity(10), "input_token_upper_bound": -1}
     with pytest.raises(BudgetDenied, match="TOKEN_CEILING_INVALID"):
         reserve(ledger, task_scope="T09", request_id="negative", identity=negative)
+
+    legacy = _identity(11)
+    legacy.pop("derived_call_identity_contract_version")
+    with pytest.raises(BudgetDenied, match="DERIVED_MODEL_CALL_IDENTITY_LEGACY_UNBOUND"):
+        reserve(ledger, task_scope="T23", request_id="legacy", identity=legacy)
+    drift = {**_identity(12), "transport_version": "semantic_llm.deepseek.responses_json_schema.v999"}
+    with pytest.raises(BudgetDenied, match="DERIVED_MODEL_CALL_IDENTITY_NOT_AUTHORIZED"):
+        reserve(ledger, task_scope="T23", request_id="transport-drift", identity=drift)
+    incomplete = {**_identity(13), "call_identity_hash": "not-a-hash"}
+    with pytest.raises(BudgetDenied, match="DERIVED_MODEL_CALL_IDENTITY_INCOMPLETE"):
+        reserve(ledger, task_scope="T23", request_id="incomplete", identity=incomplete)
 
     reserve(ledger, task_scope="T23", request_id="same", identity=_identity(3))
     finish(ledger, request_id="same", status="DELIVERY_UNKNOWN", outcome={})

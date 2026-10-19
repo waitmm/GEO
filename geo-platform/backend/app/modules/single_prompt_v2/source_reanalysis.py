@@ -479,6 +479,7 @@ def _execute_source_reanalysis(
         _diagnose_evidence,
         _diagnose_truths,
         _limitations,
+        _require_derived_model_call_contracts,
         _reviewable_set,
         _reviewed_answer_for_evidence,
         _snapshot_reads,
@@ -567,11 +568,14 @@ def _execute_source_reanalysis(
     candidate_plan, _ = _build_candidate_plan_for_evidence(reviewed_answer, snapshots)
     usage = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
     frozen_config = loads(row.contract_config_json, {})
+    frozen_call_contracts = _require_derived_model_call_contracts(frozen_config)
     if execution_mode == "EXTERNAL_V2" and (
         frozen_config.get("model_provider") != "deepseek"
         or frozen_config.get("model") != client.settings.deepseek_model
     ):
         raise HTTPException(409, detail={"code": "SOURCE_REANALYSIS_PROVIDER_MODEL_MISMATCH"})
+    if execution_mode == "EXTERNAL_V2":
+        client.frozen_call_contracts = frozen_call_contracts
     row.status = "RUNNING_EXTERNAL" if execution_mode == "EXTERNAL_V2" else "RUNNING_LOCAL_GATE"
     row.blocker_code = ""
     row.blocker_detail = ""

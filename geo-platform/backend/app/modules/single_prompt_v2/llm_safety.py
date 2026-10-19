@@ -18,7 +18,7 @@ from app.modules.optimization.answer_semantic import ANSWER_SEMANTIC_SYSTEM, loc
 from app.modules.optimization.evidence_alignment import ALIGNMENT_SYSTEM
 from app.modules.optimization.source_claim import SOURCE_CLAIM_SYSTEM
 from app.services.semantic_llm.base import SemanticLLMError
-from app.services.semantic_llm.deepseek import DeepSeekClient
+from app.services.semantic_llm.deepseek import DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION, DeepSeekClient
 
 
 V2_ADMISSION_CONTRACT_VERSION = "single_prompt_v2_llm_admission.v4_item_isolation"
@@ -479,6 +479,8 @@ class V2AnswerSemanticJudge:
             max_tokens=4096,
             db=db,
             strict_json=True,
+            structured_output_mode="JSON_SCHEMA",
+            transport_version=DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
             response_validator=lambda payload: admit_answer_for_input(payload, answer_text),
         )
 
@@ -503,6 +505,8 @@ class V2SourceClaimJudge:
             max_tokens=4096,
             db=db,
             strict_json=True,
+            structured_output_mode="JSON_SCHEMA",
+            transport_version=DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
             # The envelope/schema is atomic. Grounding and semantic admission are
             # evaluated per claim by the V2 diagnosis projector so one bad span
             # cannot erase independent valid claims from an otherwise valid response.
@@ -530,6 +534,8 @@ class V2AlignmentJudge:
             max_tokens=2048,
             db=db,
             strict_json=True,
+            structured_output_mode="JSON_SCHEMA",
+            transport_version=DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
             response_validator=lambda payload: admit_alignment_for_input(payload, reason_span, source_span),
         )
 

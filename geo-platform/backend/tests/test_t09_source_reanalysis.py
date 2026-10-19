@@ -299,11 +299,13 @@ def test_manual_content_reanalysis_is_exact_append_only_idempotent_and_locally_e
         class ProviderResponse:
             status_code = 200
             text = json.dumps({
-                "choices": [{
-                    "message": {"content": json.dumps({"claims": []}, ensure_ascii=False)},
-                    "finish_reason": "stop",
-                }],
-                "usage": {"prompt_tokens": 17, "completion_tokens": 3, "total_tokens": 20},
+                "model": "deepseek-flash",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{
+                    "type": "output_text",
+                    "text": json.dumps({"claims": []}, ensure_ascii=False),
+                }]}],
+                "usage": {"input_tokens": 17, "output_tokens": 3, "total_tokens": 20},
             }, ensure_ascii=False)
 
             def json(self):

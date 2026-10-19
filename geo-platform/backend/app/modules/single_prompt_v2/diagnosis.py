@@ -55,8 +55,11 @@ from app.modules.single_prompt_v2.llm_safety import (
     V2_SOURCE_CLAIM_SYSTEM,
     V2AlignmentJudge,
     V2AnswerSemanticJudge,
+    AlignmentResponse,
+    AnswerSemanticResponse,
     V2ResponseAdmissionError,
     V2SourceClaimJudge,
+    SourceClaimResponse,
     admit_alignment_response,
     admit_answer_for_input,
     admit_source_claim_response,
@@ -78,7 +81,12 @@ from app.modules.single_prompt_v2.evidence_plan import (
 )
 from app.modules.single_prompt_v2.source_preparation import validate_completion_for_evidence
 from app.services.semantic_llm.base import SemanticLLMError
-from app.services.semantic_llm.deepseek import DeepSeekClient
+from app.services.semantic_llm.deepseek import (
+    DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
+    DERIVED_MODEL_CALL_IDENTITY_VERSION,
+    DeepSeekClient,
+    derive_deepseek_call_contract,
+)
 from app.services.url_identity import canonicalize_url
 from app.services.serialization import dumps, loads
 
@@ -573,6 +581,22 @@ def _contract_config(
     citation_manifest_hash: str = "",
 ) -> dict[str, Any]:
     settings = get_settings()
+    derived_calls = {
+        prompt_version: derive_deepseek_call_contract(
+            system_prompt=system_prompt, response_schema=response_schema,
+            prompt_version=prompt_version, schema_version=schema_version,
+            requested_model_alias=settings.deepseek_model,
+            thinking_mode=V2_LLM_THINKING_MODE, max_tokens=max_tokens,
+            structured_output_mode="JSON_SCHEMA",
+            transport_version=DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION,
+            endpoint_base_url=settings.deepseek_base_url,
+        )
+        for prompt_version, schema_version, system_prompt, response_schema, max_tokens in (
+            (V2_ANSWER_PROMPT_VERSION, V2_ANSWER_SCHEMA_VERSION, V2_ANSWER_SYSTEM, AnswerSemanticResponse, 4096),
+            (V2_SOURCE_CLAIM_PROMPT_VERSION, V2_SOURCE_CLAIM_SCHEMA_VERSION, V2_SOURCE_CLAIM_SYSTEM, SourceClaimResponse, 4096),
+            (V2_ALIGNMENT_PROMPT_VERSION, V2_ALIGNMENT_SCHEMA_VERSION, V2_ALIGNMENT_SYSTEM, AlignmentResponse, 2048),
+        )
+    }
     return {
         "diagnosis_contract": DIAGNOSIS_CONTRACT_VERSION,
         "llm_admission_contract_version": V2_ADMISSION_CONTRACT_VERSION,
@@ -594,6 +618,8 @@ def _contract_config(
         "model": settings.deepseek_model,
         "llm_thinking_mode": V2_LLM_THINKING_MODE,
         "llm_max_attempts": 1,
+        "derived_model_call_identity_version": DERIVED_MODEL_CALL_IDENTITY_VERSION,
+        "derived_model_call_contracts": derived_calls,
         "source_snapshot_policy": source_snapshot_policy,
         "evidence_llm_policy": evidence_llm_policy,
         "diagnosis_mode": diagnosis_mode,
@@ -604,6 +630,28 @@ def _contract_config(
         "evidence_fallback_replacements_per_reason": EVIDENCE_FALLBACK_REPLACEMENTS_PER_REASON,
         "alignment_claims_per_source_reason": 3,
     }
+
+
+def _require_derived_model_call_contracts(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    contracts = config.get("derived_model_call_contracts")
+    if (config.get("derived_model_call_identity_version") != DERIVED_MODEL_CALL_IDENTITY_VERSION
+            or not isinstance(contracts, dict) or not contracts):
+        error = SemanticLLMError("历史任务没有冻结完整派生模型调用身份")
+        error.code = "DERIVED_MODEL_CALL_IDENTITY_LEGACY_UNBOUND"
+        raise error
+    expected = _contract_config(
+        source_snapshot_policy=str(config.get("source_snapshot_policy") or "REUSE_OR_FETCH"),
+        evidence_llm_policy=str(config.get("evidence_llm_policy") or "ALLOW_EXTERNAL"),
+        diagnosis_mode=str(config.get("diagnosis_mode") or "LEGACY_BUNDLED"),
+        answer_llm_policy=str(config.get("answer_llm_policy") or "ALLOW_EXTERNAL"),
+        citation_manifest_id=str(config.get("citation_manifest_id") or ""),
+        citation_manifest_hash=str(config.get("citation_manifest_hash") or ""),
+    )["derived_model_call_contracts"]
+    if contracts != expected:
+        error = SemanticLLMError("派生模型调用 provider/model/transport/prompt/schema/generation 身份已漂移")
+        error.code = "DERIVED_MODEL_CALL_IDENTITY_DRIFT"
+        raise error
+    return contracts
 
 
 def create_diagnosis(
@@ -2779,6 +2827,7 @@ def compute_answer_diagnosis(
     brand = loads(execution.brand_snapshot_json, {})
     truths = loads(execution.truth_snapshot_json, [])
     config = loads(execution.contract_config_json, {})
+    frozen_call_contracts = _require_derived_model_call_contracts(config)
     if config.get("diagnosis_mode") != "ANSWER_ONLY":
         raise RuntimeError("当前执行不是 Answer-only 诊断")
     citation = db.query(SinglePromptCitationManifest).filter_by(
@@ -2798,6 +2847,7 @@ def compute_answer_diagnosis(
             thinking_mode=V2_LLM_THINKING_MODE,
             max_attempts=int(config.get("llm_max_attempts") or 1),
             cache_only=config.get("answer_llm_policy") != "ALLOW_EXTERNAL",
+            frozen_call_contracts=frozen_call_contracts,
         ))
     _set_progress(db, execution, "ANSWER_SEMANTIC", 0, 1, "识别推荐对象、理由和市场标准")
     answer = _diagnose_answers(
@@ -2910,21 +2960,25 @@ def compute_diagnosis(
     brand = loads(execution.brand_snapshot_json, {})
     truths = loads(execution.truth_snapshot_json, [])
     config = loads(execution.contract_config_json, {})
+    frozen_call_contracts = _require_derived_model_call_contracts(config)
     usage = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
     if answer_judge is None:
         answer_judge = V2AnswerSemanticJudge(DeepSeekClient(
             thinking_mode=V2_LLM_THINKING_MODE,
             max_attempts=int(config.get("llm_max_attempts") or 1),
+            frozen_call_contracts=frozen_call_contracts,
         ))
     if source_claim_judge is None:
         source_claim_judge = V2SourceClaimJudge(DeepSeekClient(
             thinking_mode=V2_LLM_THINKING_MODE,
             max_attempts=int(config.get("llm_max_attempts") or 1),
+            frozen_call_contracts=frozen_call_contracts,
         ))
     if alignment_judge is None:
         alignment_judge = V2AlignmentJudge(DeepSeekClient(
             thinking_mode=V2_LLM_THINKING_MODE,
             max_attempts=int(config.get("llm_max_attempts") or 1),
+            frozen_call_contracts=frozen_call_contracts,
         ))
 
     _set_progress(db, execution, "ANSWER_SEMANTIC", 0, 1, "识别推荐对象与理由")
@@ -3241,6 +3295,7 @@ def continue_evidence_diagnosis(
     brand = loads(execution.brand_snapshot_json, {})
     truths = loads(execution.truth_snapshot_json, [])
     config = loads(execution.contract_config_json, {})
+    frozen_call_contracts = _require_derived_model_call_contracts(config)
     config = {**config, "evidence_llm_policy": evidence_llm_policy}
     reviewed_answer = _reviewed_answer_for_evidence(answer_output, review)
     usage = {"external_llm_calls": 0, "llm_cache_hits": 0, "external_token_usage": 0}
@@ -3249,12 +3304,14 @@ def continue_evidence_diagnosis(
             thinking_mode=V2_LLM_THINKING_MODE,
             max_attempts=1,
             cache_only=evidence_llm_policy != "ALLOW_EXTERNAL",
+            frozen_call_contracts=frozen_call_contracts,
         ))
     if alignment_judge is None:
         alignment_judge = V2AlignmentJudge(DeepSeekClient(
             thinking_mode=V2_LLM_THINKING_MODE,
             max_attempts=1,
             cache_only=evidence_llm_policy != "ALLOW_EXTERNAL",
+            frozen_call_contracts=frozen_call_contracts,
         ))
     execution.status = "EVIDENCE_RUNNING"
     execution.progress_json = _canonical_json({

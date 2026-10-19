@@ -19,9 +19,13 @@ from scripts.t23_real_e2e_acceptance import (
 from scripts.live_model_budget import finish, initialize, reserve, summary
 from scripts.run_t23_delivery_live import (
     _assert_ledger,
+    _checkpoint_dir,
+    _checkpoint_events,
+    _execute_planned_scenarios,
     _extract_low_match,
     _freeze_manifest_value,
     _hooks,
+    _write_initial_database_snapshot,
     prepare_and_freeze,
 )
 from test_automatic_delivery import identity, scene, simulated_delivery_transport
@@ -33,6 +37,7 @@ from app.modules.single_prompt_v2.automatic_delivery import (
     task_view,
 )
 from app.services.semantic_llm.base import SemanticLLMError
+from app.core.release_sqlite import get_release_sqlite_dbapi
 from app.modules.single_prompt_v2.delivery_text import digest
 from app.services.url_identity import build_url_identity
 from app.models import SinglePromptCitationContributionExecution
@@ -144,6 +149,25 @@ def test_manifest_requires_one_shared_non_retrying_budget_for_all_three_scenario
     value["scenarios"][1]["execute_max_requests"] = 3
     with pytest.raises(ValueError, match=r"1 prepare \+ 2 execute"):
         validate_manifest(value)
+
+
+def test_initial_database_snapshot_uses_sqlite_backup_and_includes_wal(tmp_path):
+    database = tmp_path / "wal-source.sqlite3"
+    writer = sqlite3.connect(database)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("CREATE TABLE evidence(id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+    writer.commit()
+    writer.execute("INSERT INTO evidence(value) VALUES('durable-wal-row')")
+    writer.commit()
+    assert Path(f"{database}-wal").exists()
+
+    snapshot = _write_initial_database_snapshot(database, tmp_path / "checkpoints")
+
+    copied = sqlite3.connect(snapshot)
+    assert copied.execute("SELECT value FROM evidence").fetchone()[0] == "durable-wal-row"
+    copied.close()
+    writer.close()
 
 
 def test_authorization_payload_is_exact_task_revision_and_controller_allocation():
@@ -402,9 +426,39 @@ def test_prepare_freeze_uses_formal_answer_and_contribution_with_one_shared_ledg
     ledger = tmp_path / "model-budget-v2.sqlite3"
     initialize(ledger, pricing_source=value["shared_budget"]["pricing_source"],
         pricing_checked_at=value["shared_budget"]["pricing_checked_at"])
-    simulated_delivery_transport(monkeypatch)
+    calls = simulated_delivery_transport(monkeypatch)
 
     frozen_path = tmp_path / "t23-frozen.json"
+    import scripts.run_t23_delivery_live as runner
+    real_claim = runner.claim_diagnosis
+    def crash_after_claim(*args, **kwargs):
+        token = real_claim(*args, **kwargs)
+        assert token
+        raise KeyboardInterrupt("simulated process loss after claim and before provider send")
+    monkeypatch.setattr(runner, "claim_diagnosis", crash_after_claim)
+    with pytest.raises(KeyboardInterrupt, match="after claim"):
+        prepare_and_freeze(database=database, ledger=ledger, manifest_path=input_manifest,
+            frozen_manifest_path=frozen_path, report_path=tmp_path / "crashed-report.json")
+    assert calls == []
+    assert summary(ledger)["used_requests"] == 0
+    assert [row["stage"] for row in _checkpoint_events(_checkpoint_dir(frozen_path))] == ["INITIAL"]
+    monkeypatch.setattr(runner, "claim_diagnosis", real_claim)
+
+    connection = get_release_sqlite_dbapi().connect(str(database))
+    original_project_name = connection.execute(
+        "SELECT name FROM projects WHERE id=?", (row.project_id,)).fetchone()[0]
+    connection.execute("UPDATE projects SET name=? WHERE id=?",
+        (f"{original_project_name}-unrelated-drift", row.project_id))
+    connection.commit()
+    connection.close()
+    with pytest.raises(ValueError, match="unrelated database drift in projects"):
+        prepare_and_freeze(database=database, ledger=ledger, manifest_path=input_manifest,
+            frozen_manifest_path=frozen_path, report_path=tmp_path / "drift-report.json")
+    connection = get_release_sqlite_dbapi().connect(str(database))
+    connection.execute("UPDATE projects SET name=? WHERE id=?", (original_project_name, row.project_id))
+    connection.commit()
+    connection.close()
+
     report = prepare_and_freeze(database=database, ledger=ledger, manifest_path=input_manifest,
         frozen_manifest_path=frozen_path, report_path=tmp_path / "prepare-report.json")
     assert report["status"] == "PASS"
@@ -412,11 +466,126 @@ def test_prepare_freeze_uses_formal_answer_and_contribution_with_one_shared_ledg
     assert frozen["scenarios"][1]["low_match_evidence"]["selected_run_id"] == run_id
     assert frozen["source_database_sha256"] == hashlib.sha256(database.read_bytes()).hexdigest()
     assert summary(ledger)["used_requests"] == 2
+    checkpoints = _checkpoint_events(_checkpoint_dir(frozen_path))
+    assert checkpoints[0]["stage"] == "INITIAL"
+    assert "PRE_SEND_DATABASE_RECOVERED" in {row["stage"] for row in checkpoints}
+    assert checkpoints[-1]["stage"] == "READY_TO_FREEZE"
+    assert checkpoints[-1]["answer_result_hash"]
+    assert checkpoints[-1]["contribution_id"]
+    assert {row["status"] for row in checkpoints[-1]["ledger_requests"]} == {"FINISHED"}
+    assert all(row["original_manifest_sha256"] == checkpoints[0]["original_manifest_sha256"]
+        for row in checkpoints)
 
     second_path = tmp_path / "t23-frozen-repeat.json"
     repeated = prepare_and_freeze(database=database, ledger=ledger, manifest_path=frozen_path,
         frozen_manifest_path=second_path, report_path=tmp_path / "prepare-repeat-report.json")
     assert repeated["low_match_evidence"] == report["low_match_evidence"]
+    assert summary(ledger)["used_requests"] == 2
+
+
+def test_execute_continues_independent_scenarios_and_aggregates_blocked(monkeypatch, tmp_path):
+    import scripts.run_t23_delivery_live as runner
+
+    rows = {case["task_id"]: SimpleNamespace(task_id=case["task_id"]) for case in manifest()["scenarios"]}
+    class Query:
+        def __init__(self): self.task_id = ""
+        def filter_by(self, **values): self.task_id = values["task_id"]; return self
+        def one(self): return rows[self.task_id]
+    class DB:
+        def __init__(self): self.rollbacks = 0
+        def query(self, _model): return Query()
+        def expire_all(self): pass
+        def rollback(self): self.rollbacks += 1
+    db = DB()
+    calls = []
+    monkeypatch.setattr(runner, "authorize_task", lambda db, row, **payload: None)
+    monkeypatch.setattr(runner, "_hooks", lambda *args, **kwargs: (lambda value: None,
+        lambda value: None, lambda exc: None))
+    def fake_execute(task_id, **kwargs):
+        calls.append(task_id)
+        if task_id == "task-E2E-01":
+            raise RuntimeError("scenario one failed")
+    monkeypatch.setattr(runner, "execute_task", fake_execute)
+    monkeypatch.setattr(runner, "_inspect_task", lambda db, case, phase: {"revision": 1,
+        "input_hash": case["input_hash"], "verified": case["id"]})
+    value = manifest()
+    planned = [{"revision": 1, "input_hash": case["input_hash"]} for case in value["scenarios"]]
+
+    results = _execute_planned_scenarios(db, object, value, tmp_path / "unused.sqlite3", planned)
+
+    assert calls == ["task-E2E-01", "task-E2E-02", "task-E2E-03"]
+    assert [row["status"] for row in results] == ["BLOCKED", "PASS", "PASS"]
+    assert db.rollbacks == 1
+
+
+def test_prepare_resume_blocks_counted_contribution_without_repeating_send(scene, monkeypatch, tmp_path):
+    from app.models import ReferenceSource, SinglePromptCitationManifest, SinglePromptSourceCompletionManifest
+
+    db, row, _, _ = scene
+    citation = db.query(SinglePromptCitationManifest).filter_by(analysis_id=row.analysis_id).one()
+    completion = db.query(SinglePromptSourceCompletionManifest).filter_by(
+        analysis_id=row.analysis_id, context_id=row.context_id).one()
+    run_id = json.loads(row.input_json)["run_ids"][0]
+    for reference in db.query(ReferenceSource).filter_by(run_id=run_id).all():
+        reference.canonical_url = reference.canonical_url or "https://example.test/real-citation"
+        reference.canonical_url_hash = build_url_identity(reference.canonical_url).canonical_url_hash
+    database = Path(str(db.get_bind().url.database))
+    db.commit()
+    db.close()
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    connection.close()
+
+    value = manifest()
+    for case in value["scenarios"][:2]:
+        case.update(task_id=row.task_id, project_id=row.project_id, prompt_id=row.prompt_id,
+            analysis_id=row.analysis_id, context_id=row.context_id, input_hash=row.input_hash,
+            run_ids=[run_id])
+    value["scenarios"][0]["answer_prepare_input"] = {"citation_manifest_id": citation.manifest_id,
+        "citation_manifest_hash": citation.payload_hash, "selected_run_id": run_id}
+    value["scenarios"][1]["prepare_input"] = {"citation_manifest_id": citation.manifest_id,
+        "citation_manifest_hash": citation.payload_hash, "completion_manifest_id": completion.manifest_id,
+        "completion_manifest_hash": completion.payload_hash, "selected_run_id": run_id}
+    value["scenarios"][1].pop("low_match_evidence")
+    value["source_database_sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
+    input_manifest = tmp_path / "t23-prepare-failure.json"
+    input_manifest.write_text(json.dumps(value), encoding="utf-8")
+    ledger = tmp_path / "model-budget-v2.sqlite3"
+    initialize(ledger, pricing_source=value["shared_budget"]["pricing_source"],
+        pricing_checked_at=value["shared_budget"]["pricing_checked_at"])
+    sends = []
+    def fail_contribution(payload):
+        sends.append(payload)
+        if "frozen_candidate_pairs" in payload:
+            raise TimeoutError("simulated unknown delivery")
+    simulated_delivery_transport(monkeypatch, on_request=fail_contribution)
+    import scripts.run_t23_delivery_live as runner
+    def provider_send_without_persisting_result(_contribution_id, *, session_factory, judge):
+        judge.judge(
+            [{"answer_unit_id": "answer-1", "raw_text": "测试答案", "primary_type": "OTHER",
+              "semantic_facets": []}],
+            [{"passage_id": "passage-1", "text": "测试来源"}],
+            [{"answer_unit_id": "answer-1", "passage_id": "passage-1"}],
+        )
+    monkeypatch.setattr(runner, "execute_citation_contribution", provider_send_without_persisting_result)
+    frozen_path = tmp_path / "never-frozen.json"
+
+    with pytest.raises(Exception) as first_failure:
+        prepare_and_freeze(database=database, ledger=ledger, manifest_path=input_manifest,
+            frozen_manifest_path=frozen_path, report_path=tmp_path / "failure-report.json")
+    assert len(sends) == 2
+    state = summary(ledger)
+    assert state["used_requests"] == 2
+    assert state["requests"][-1]["status"] in {"TIMEOUT", "DELIVERY_UNKNOWN", "FAILED"}
+    checkpoints = _checkpoint_events(_checkpoint_dir(frozen_path))
+    assert checkpoints[-1]["stage"] == "PREPARE_BLOCKED_DURABLE", str(first_failure.value)
+    assert checkpoints[-1]["answer_result_hash"]
+    assert checkpoints[-1]["contribution_id"]
+
+    with pytest.raises(ValueError, match="PREPARE_RESUME_BLOCKED_COUNTED_WITHOUT_CONTRIBUTION_RESULT"):
+        prepare_and_freeze(database=database, ledger=ledger, manifest_path=input_manifest,
+            frozen_manifest_path=frozen_path, report_path=tmp_path / "resume-report.json")
+    assert len(sends) == 2
     assert summary(ledger)["used_requests"] == 2
 
 

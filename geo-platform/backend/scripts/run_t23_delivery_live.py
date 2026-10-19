@@ -8,7 +8,9 @@ Answer/Citation/Draft/Text-QA provider send in the shared reserve/finish guard.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -58,7 +60,8 @@ from app.services.serialization import loads  # noqa: E402
 from app.services.url_identity import build_url_identity  # noqa: E402
 
 
-def _assert_ledger(manifest: dict[str, Any], state: dict[str, Any], *, include_prepare: bool = False) -> None:
+def _assert_ledger(manifest: dict[str, Any], state: dict[str, Any], *, include_prepare: bool = False,
+                   consumed_prepare_requests: int = 0) -> None:
     config = state.get("config") or {}
     budget = manifest["shared_budget"]
     expected = {
@@ -83,7 +86,8 @@ def _assert_ledger(manifest: dict[str, Any], state: dict[str, Any], *, include_p
     used_total = int(state.get("used_requests") or 0)
     allocated_requests = sum(row.get("execute_max_requests", row["max_requests"]) for row in allocations)
     if include_prepare:
-        allocated_requests += sum(row.get("prepare_max_requests", 0) for row in allocations)
+        allocated_requests += max(0,
+            sum(row.get("prepare_max_requests", 0) for row in allocations) - consumed_prepare_requests)
     allocated_cost = sum(float(row["max_cost_cny"]) for row in allocations)
     used_t23_cost = sum(float(row["reserved_cost_cny"]) for row in state.get("requests") or []
         if row.get("task_scope") == "T23")
@@ -191,6 +195,163 @@ def _write_frozen_manifest(path: Path, manifest: dict[str, Any]) -> None:
         stream.write(encoded)
 
 
+def _database_state(database: Path) -> dict[str, str]:
+    """Bind a checkpoint to both the SQLite main file and durable WAL."""
+    files = {"database_sha256": _sha256_file(database)}
+    wal = Path(f"{database}-wal")
+    files["wal_sha256"] = _sha256_file(wal) if wal.exists() else ""
+    encoded = json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
+    return {**files, "database_state_hash": hashlib.sha256(encoded).hexdigest()}
+
+
+def _checkpoint_dir(frozen_manifest_path: Path) -> Path:
+    return frozen_manifest_path.parent / f".{frozen_manifest_path.name}.prepare-checkpoints"
+
+
+def _initial_database_snapshot(directory: Path) -> Path:
+    return directory / "initial-database.sqlite3"
+
+
+def _write_initial_database_snapshot(database: Path, directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    target = _initial_database_snapshot(directory)
+    if target.exists():
+        raise ValueError("initial database snapshot exists without its immutable checkpoint")
+    try:
+        with target.open("xb"):
+            pass
+    except FileExistsError:
+        raise ValueError("initial database snapshot was created concurrently")
+    source = get_release_sqlite_dbapi().connect(str(database.resolve()))
+    destination = get_release_sqlite_dbapi().connect(str(target.resolve()))
+    try:
+        source.backup(destination)
+    except Exception:
+        destination.close()
+        source.close()
+        target.unlink(missing_ok=True)
+        raise
+    else:
+        destination.close()
+        source.close()
+    with target.open("rb") as stream:
+        os.fsync(stream.fileno())
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return target
+
+
+def _table_rows(connection, table: str) -> list[tuple[Any, ...]]:
+    escaped = table.replace('"', '""')
+    return [tuple(row) for row in connection.execute(f'SELECT * FROM "{escaped}" ORDER BY rowid')]
+
+
+def _validate_pre_send_database_recovery(database: Path, snapshot: Path,
+                                         manifest: dict[str, Any]) -> dict[str, Any]:
+    """Accept only the fixed Answer create/claim delta before any send."""
+    adapter = get_release_sqlite_dbapi()
+    current = adapter.connect(str(database.resolve()))
+    baseline = adapter.connect(str(snapshot.resolve()))
+    current.row_factory = adapter.Row
+    baseline.row_factory = adapter.Row
+    table = "single_prompt_diagnosis_executions"
+    try:
+        tables = [row[0] for row in baseline.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        current_tables = [row[0] for row in current.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        if current_tables != tables:
+            raise ValueError("prepare recovery database schema drifted")
+        for name in tables:
+            if name != table and _table_rows(current, name) != _table_rows(baseline, name):
+                raise ValueError(f"prepare recovery found unrelated database drift in {name}")
+        budget_id = manifest["shared_budget"]["budget_id"]
+        key = f"{budget_id}:E2E-01:prepare-answer"
+        base_other = [tuple(row) for row in baseline.execute(
+            f'SELECT * FROM "{table}" WHERE idempotency_key != ? ORDER BY rowid', (key,))]
+        current_other = [tuple(row) for row in current.execute(
+            f'SELECT * FROM "{table}" WHERE idempotency_key != ? ORDER BY rowid', (key,))]
+        if current_other != base_other:
+            raise ValueError("prepare recovery found unrelated diagnosis drift")
+        row = current.execute(f'SELECT * FROM "{table}" WHERE idempotency_key=?', (key,)).fetchone()
+        if not row:
+            raise ValueError("prepare recovery database drift has no harness-owned Answer diagnosis")
+        answer_case = next(item for item in manifest["scenarios"] if item["id"] == "E2E-01")
+        config = loads(row["contract_config_json"], {})
+        if (row["analysis_id"] != answer_case["analysis_id"]
+                or row["project_id"] != answer_case["project_id"]
+                or row["prompt_id"] != answer_case["prompt_id"]
+                or row["status"] not in {"QUEUED", "RUNNING"}
+                or int(row["attempt_count"] or 0) not in {0, 1}
+                or int(row["external_llm_calls"] or 0) != 0
+                or row["active_result_version"]
+                or config.get("diagnosis_mode") != "ANSWER_ONLY"
+                or config.get("citation_manifest_id") != answer_case["answer_prepare_input"]["citation_manifest_id"]
+                or config.get("citation_manifest_hash") != answer_case["answer_prepare_input"]["citation_manifest_hash"]):
+            raise ValueError("prepare recovery harness-owned Answer diagnosis drifted")
+        return {"diagnosis_id": row["diagnosis_id"], "status": row["status"],
+            "active_attempt_token": row["active_attempt_token"]}
+    finally:
+        current.close()
+        baseline.close()
+
+
+def _checkpoint_events(directory: Path) -> list[dict[str, Any]]:
+    if not directory.exists():
+        return []
+    return [_read_json(path) for path in sorted(directory.glob("*.json"))]
+
+
+def _append_checkpoint(directory: Path, stage: str, payload: dict[str, Any]) -> dict[str, Any]:
+    directory.mkdir(parents=True, exist_ok=True)
+    body = {"contract_version": "t23-prepare-checkpoint.v1", "stage": stage, **payload}
+    prior = _checkpoint_events(directory)
+    if prior and prior[-1] == body:
+        return body
+    encoded = json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    path = directory / f"{len(prior):03d}-{stage}.json"
+    try:
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError as exc:
+        raise ValueError("prepare checkpoint sequence is not append-only") from exc
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return body
+
+
+def _ledger_requests(state: dict[str, Any], request_prefix: str) -> list[dict[str, Any]]:
+    return [row for row in state.get("requests") or []
+        if str(row.get("request_id") or "").startswith(request_prefix)]
+
+
+def _checkpoint_payload(*, manifest_sha256: str, initial_database_sha256: str,
+                        budget_id: str, database: Path, ledger: Path,
+                        answer=None, answer_result=None, contribution=None) -> dict[str, Any]:
+    return {
+        "original_manifest_sha256": manifest_sha256,
+        "initial_database_sha256": initial_database_sha256,
+        "budget_id": budget_id,
+        "answer_diagnosis_id": getattr(answer, "diagnosis_id", None),
+        "answer_attempt_token": getattr(answer, "active_attempt_token", None),
+        "answer_result_version": getattr(answer_result, "result_version", None),
+        "answer_result_hash": getattr(answer_result, "output_hash", None),
+        "contribution_id": getattr(contribution, "contribution_id", None),
+        "contribution_plan_hash": getattr(contribution, "plan_hash", None),
+        "ledger_requests": [{"request_id": row["request_id"], "status": row["status"]}
+            for row in summary(ledger).get("requests") or []],
+        **_database_state(database),
+    }
+
+
 def _freeze_manifest_value(manifest: dict[str, Any], low: dict[str, Any], database_hash: str) -> dict[str, Any]:
     frozen = json.loads(json.dumps(manifest))
     case = next(row for row in frozen["scenarios"] if row["id"] == "E2E-02")
@@ -204,19 +365,75 @@ def _freeze_manifest_value(manifest: dict[str, Any], low: dict[str, Any], databa
 def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
                        frozen_manifest_path: Path, report_path: Path) -> dict[str, Any]:
     manifest = validate_manifest(_read_json(manifest_path), allow_unprepared_e2e02=True)
-    if _sha256_file(database) != manifest["source_database_sha256"]:
-        raise ValueError("isolated database changed before E2E-02 prepare")
     case = next(row for row in manifest["scenarios"] if row["id"] == "E2E-02")
+    if case.get("low_match_evidence"):
+        if _sha256_file(database) != manifest["source_database_sha256"]:
+            raise ValueError("isolated database changed after T23 prepare freeze")
+        before = summary(ledger)
+        _assert_ledger(manifest, before)
+        _write_frozen_manifest(frozen_manifest_path, manifest)
+        report = {"status": "PASS", "phase": "prepare-freeze", "scenario_id": "E2E-02",
+            "low_match_evidence": case["low_match_evidence"],
+            "source_database_sha256": manifest["source_database_sha256"],
+            "budget_before": before, "budget_after": before,
+            "frozen_manifest": str(frozen_manifest_path.resolve()), "idempotent_replay": True}
+        _write_evidence(report_path, report)
+        return report
+
+    manifest_sha = _sha256_file(manifest_path)
+    checkpoint_dir = _checkpoint_dir(frozen_manifest_path)
+    checkpoints = _checkpoint_events(checkpoint_dir)
+    if checkpoints:
+        first, latest = checkpoints[0], checkpoints[-1]
+        if (first.get("original_manifest_sha256") != manifest_sha
+                or first.get("initial_database_sha256") != manifest["source_database_sha256"]
+                or first.get("budget_id") != manifest["shared_budget"]["budget_id"]):
+            raise ValueError("prepare checkpoint does not belong to the frozen manifest/budget")
+        initial_snapshot = _initial_database_snapshot(checkpoint_dir)
+        if (not initial_snapshot.is_file()
+                or _sha256_file(initial_snapshot) != first.get("initial_database_snapshot_sha256")):
+            raise ValueError("immutable initial database snapshot is missing or drifted")
+        if latest.get("database_state_hash") != _database_state(database)["database_state_hash"]:
+            ledger_state = summary(ledger)
+            relevant = [row for row in ledger_state.get("requests") or []
+                if str(row.get("request_id") or "").startswith(("T23:E2E-01:prepare-answer:",
+                    "T23:E2E-02:prepare:"))]
+            if relevant:
+                raise ValueError("isolated database changed after a counted prepare request")
+            recovered = _validate_pre_send_database_recovery(
+                database, initial_snapshot, manifest)
+            payload = _checkpoint_payload(
+                manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+                budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger)
+            payload["recovered_answer"] = recovered
+            payload["answer_diagnosis_id"] = recovered["diagnosis_id"]
+            payload["answer_attempt_token"] = recovered["active_attempt_token"]
+            _append_checkpoint(checkpoint_dir, "PRE_SEND_DATABASE_RECOVERED", payload)
+    else:
+        if _sha256_file(database) != manifest["source_database_sha256"]:
+            raise ValueError("isolated database changed before E2E-02 prepare")
+        snapshot = _write_initial_database_snapshot(database, checkpoint_dir)
+        initial_payload = _checkpoint_payload(
+            manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+            budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger)
+        initial_payload["initial_database_snapshot_sha256"] = _sha256_file(snapshot)
+        _append_checkpoint(checkpoint_dir, "INITIAL", initial_payload)
     before = summary(ledger)
     # A fresh prepare must leave room for all 9 requests.  A replay of an
     # already-frozen manifest is read/idempotency verification only, so it
     # must not demand the two already-consumed prepare reservations again.
     prepared_manifest = json.loads(json.dumps(manifest))
-    _assert_ledger(prepared_manifest, before, include_prepare=not bool(case.get("low_match_evidence")))
+    consumed_prepare = len([row for row in before.get("requests") or []
+        if str(row.get("request_id") or "").startswith(("T23:E2E-01:prepare-answer:",
+            "T23:E2E-02:prepare:"))])
+    _assert_ledger(prepared_manifest, before, include_prepare=True,
+        consumed_prepare_requests=consumed_prepare)
     engine = create_engine(f"sqlite:///{database.resolve()}", module=get_release_sqlite_dbapi(),
         connect_args={"check_same_thread": False, "timeout": 30})
     Session = sessionmaker(bind=engine, expire_on_commit=False)
     db = Session()
+    prepare_failure = None
+    durable_failure_payload = None
     try:
         answer_case = next(row for row in manifest["scenarios"] if row["id"] == "E2E-01")
         answer_prepare = answer_case["answer_prepare_input"]
@@ -230,11 +447,26 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
         answer_result = db.query(SinglePromptDiagnosisResult).filter_by(
             diagnosis_id=diagnosis.diagnosis_id, result_version=diagnosis.active_result_version).one_or_none()
         if not answer_result:
-            if diagnosis.status != "QUEUED":
+            answer_prefix = f"T23:E2E-01:prepare-answer:{diagnosis.diagnosis_id}:"
+            counted = _ledger_requests(summary(ledger), answer_prefix)
+            if counted:
+                raise ValueError("PREPARE_RESUME_BLOCKED_COUNTED_WITHOUT_ANSWER_RESULT")
+            latest = _checkpoint_events(checkpoint_dir)[-1]
+            if diagnosis.status == "RUNNING" and latest.get("answer_diagnosis_id") == diagnosis.diagnosis_id:
+                token = str(latest.get("answer_attempt_token") or "")
+                if not token or token != diagnosis.active_attempt_token:
+                    raise ValueError("E2E-01 Answer prepare checkpoint token drifted")
+            elif diagnosis.status == "QUEUED":
+                token = claim_diagnosis(db, diagnosis.diagnosis_id)
+            else:
                 raise ValueError(f"E2E-01 Answer prepare is not safely resumable: {diagnosis.status}")
-            token = claim_diagnosis(db, diagnosis.diagnosis_id)
             if not token:
                 raise ValueError("E2E-01 Answer prepare could not acquire its formal execution")
+            db.refresh(diagnosis)
+            _append_checkpoint(checkpoint_dir, "ANSWER_READY_TO_SEND", _checkpoint_payload(
+                manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+                budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+                answer=diagnosis))
             request_guard, audit_sink, settle_unknown = _hooks(
                 ledger, scenario_id="E2E-01", task_id=f"prepare-answer:{diagnosis.diagnosis_id}")
             config = loads(diagnosis.contract_config_json, {})
@@ -246,9 +478,18 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
                     answer_judge=V2AnswerSemanticJudge(client))
             except Exception as exc:
                 settle_unknown(exc)
+                db.rollback()
+                _append_checkpoint(checkpoint_dir, "ANSWER_BLOCKED", _checkpoint_payload(
+                    manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+                    budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+                    answer=diagnosis))
                 raise
         if digest(loads(answer_result.output_json, {})) != answer_result.output_hash:
             raise ValueError("E2E-01 prepared Answer result hash drifted")
+        _append_checkpoint(checkpoint_dir, "ANSWER_RESULT", _checkpoint_payload(
+            manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+            budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+            answer=diagnosis, answer_result=answer_result))
         prepare = case["prepare_input"]
         prepare["answer_result_version"] = answer_result.result_version
         prepare["answer_result_hash"] = answer_result.output_hash
@@ -270,8 +511,18 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
         existing = db.query(SinglePromptCitationContributionResult).filter_by(
             contribution_id=execution.contribution_id, result_version=execution.active_result_version).one_or_none()
         if existing:
-            low = _extract_low_match(db, case, execution, existing)
+            try:
+                low = _extract_low_match(db, case, execution, existing)
+            except Exception:
+                _append_checkpoint(checkpoint_dir, "CONTRIBUTION_BLOCKED", _checkpoint_payload(
+                    manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+                    budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+                    answer=diagnosis, answer_result=answer_result, contribution=execution))
+                raise
         else:
+            contribution_prefix = f"T23:E2E-02:prepare:{execution.contribution_id}:"
+            if _ledger_requests(summary(ledger), contribution_prefix):
+                raise ValueError("PREPARE_RESUME_BLOCKED_COUNTED_WITHOUT_CONTRIBUTION_RESULT")
             if execution.status == "AWAITING_EXTERNAL_AUTHORIZATION":
                 call_plan = plan["call_plan"]
                 authorize_citation_contribution(db, contribution_id=execution.contribution_id,
@@ -283,6 +534,11 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
                     pricing_basis=str(call_plan["pricing_basis"]), authorized_by=manifest["shared_budget"]["authorized_by"])
             elif execution.status != "QUEUED":
                 raise ValueError(f"E2E-02 prepare is not safely resumable: {execution.status}")
+            db.refresh(execution)
+            _append_checkpoint(checkpoint_dir, "CONTRIBUTION_READY_TO_SEND", _checkpoint_payload(
+                manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+                budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+                answer=diagnosis, answer_result=answer_result, contribution=execution))
             request_guard, audit_sink, settle_unknown = _hooks(
                 ledger, scenario_id="E2E-02", task_id=f"prepare:{execution.contribution_id}")
             settings = get_settings()
@@ -299,25 +555,70 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
                 execute_citation_contribution(execution.contribution_id, session_factory=Session, judge=judge)
             except Exception as exc:
                 settle_unknown(exc)
+                db.rollback()
+                _append_checkpoint(checkpoint_dir, "CONTRIBUTION_BLOCKED", _checkpoint_payload(
+                    manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+                    budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+                    answer=diagnosis, answer_result=answer_result, contribution=execution))
                 raise
             db.expire_all()
             execution = db.query(SinglePromptCitationContributionExecution).filter_by(
                 contribution_id=execution.contribution_id).one()
             result = db.query(SinglePromptCitationContributionResult).filter_by(
                 contribution_id=execution.contribution_id, result_version=execution.active_result_version).one_or_none()
+            if any(row.get("status") == "RESERVED" for row in
+                    _ledger_requests(summary(ledger), contribution_prefix)):
+                settle_unknown(RuntimeError("Contribution returned without settling provider delivery"))
             if not result:
+                _append_checkpoint(checkpoint_dir, "CONTRIBUTION_BLOCKED", _checkpoint_payload(
+                    manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+                    budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+                    answer=diagnosis, answer_result=answer_result, contribution=execution))
                 raise ValueError(f"E2E-02 prepare did not persist a formal result: {execution.status}")
-            low = _extract_low_match(db, case, execution, result)
+            try:
+                low = _extract_low_match(db, case, execution, result)
+            except Exception:
+                _append_checkpoint(checkpoint_dir, "CONTRIBUTION_BLOCKED", _checkpoint_payload(
+                    manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+                    budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+                    answer=diagnosis, answer_result=answer_result, contribution=execution))
+                raise
         db.commit()
+        _append_checkpoint(checkpoint_dir, "CONTRIBUTION_RESULT", _checkpoint_payload(
+            manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+            budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+            answer=diagnosis, answer_result=answer_result, contribution=execution))
+    except Exception as exc:
+        prepare_failure = exc
+        durable_failure_payload = _checkpoint_payload(
+            manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+            budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+            answer=locals().get("diagnosis"), answer_result=locals().get("answer_result"),
+            contribution=locals().get("execution"))
     finally:
         db.close()
         engine.dispose()
+    if prepare_failure is not None:
+        durable_failure_payload.update(_database_state(database))
+        durable_failure_payload["ledger_requests"] = [
+            {"request_id": row["request_id"], "status": row["status"]}
+            for row in summary(ledger).get("requests") or []]
+        durable_failure_payload["error_type"] = prepare_failure.__class__.__name__
+        durable_failure_payload["error"] = str(prepare_failure)[:500]
+        _append_checkpoint(checkpoint_dir, "PREPARE_BLOCKED_DURABLE", durable_failure_payload)
+        raise prepare_failure
     # Force WAL content into the isolated database before freezing its new hash.
     connection = get_release_sqlite_dbapi().connect(str(database.resolve()))
     try:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
         connection.close()
+    final_checkpoint = _checkpoint_payload(
+        manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
+        budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
+        answer=diagnosis, answer_result=answer_result, contribution=execution)
+    final_checkpoint["low_match_evidence"] = low
+    _append_checkpoint(checkpoint_dir, "READY_TO_FREEZE", final_checkpoint)
     frozen = _freeze_manifest_value(manifest, low, _sha256_file(database))
     _write_frozen_manifest(frozen_manifest_path, frozen)
     report = {"status": "PASS", "phase": "prepare-freeze", "scenario_id": "E2E-02",
@@ -326,6 +627,31 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
         "frozen_manifest": str(frozen_manifest_path.resolve())}
     _write_evidence(report_path, report)
     return report
+
+
+def _execute_planned_scenarios(db, Session, manifest: dict[str, Any], ledger: Path,
+                               planned: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for case, state in zip(manifest["scenarios"], planned, strict=True):
+        settle_unknown = None
+        try:
+            row = db.query(SinglePromptOptimizationTask).filter_by(task_id=case["task_id"]).one()
+            payload = _authorization(case, state, manifest["shared_budget"])
+            authorize_task(db, row, **payload)
+            request_guard, audit_sink, settle_unknown = _hooks(
+                ledger, scenario_id=case["id"], task_id=row.task_id)
+            with shared_live_budget_hooks(request_guard=request_guard, response_audit_sink=audit_sink):
+                execute_task(row.task_id, session_factory=Session)
+            db.expire_all()
+            verified = _inspect_task(db, case, phase="verify")
+            results.append({"scenario_id": case["id"], "status": "PASS", "evidence": verified})
+        except Exception as exc:
+            if settle_unknown is not None:
+                settle_unknown(exc)
+            db.rollback()
+            results.append({"scenario_id": case["id"], "status": "BLOCKED",
+                "error_type": exc.__class__.__name__, "error": str(exc)[:500]})
+    return results
 
 
 def execute(*, database: Path, ledger: Path, manifest_path: Path, report_path: Path) -> dict[str, Any]:
@@ -352,25 +678,14 @@ def execute(*, database: Path, ledger: Path, manifest_path: Path, report_path: P
     try:
         # Validate every scenario before granting the first task any authority.
         planned = [_inspect_task(db, case, phase="plan") for case in manifest["scenarios"]]
-        for case, state in zip(manifest["scenarios"], planned, strict=True):
-            row = db.query(SinglePromptOptimizationTask).filter_by(task_id=case["task_id"]).one()
-            payload = _authorization(case, state, manifest["shared_budget"])
-            authorize_task(db, row, **payload)
-            request_guard, audit_sink, settle_unknown = _hooks(
-                ledger, scenario_id=case["id"], task_id=row.task_id)
-            try:
-                with shared_live_budget_hooks(request_guard=request_guard, response_audit_sink=audit_sink):
-                    execute_task(row.task_id, session_factory=Session)
-            except Exception as exc:
-                settle_unknown(exc)
-                raise
-            db.expire_all()
-            results.append(_inspect_task(db, case, phase="verify"))
-        report = {"status": "PASS", "contract_version": manifest["contract_version"],
+        results = _execute_planned_scenarios(db, Session, manifest, ledger, planned)
+        blocked = [row for row in results if row["status"] != "PASS"]
+        report = {"status": "BLOCKED" if blocked else "PASS",
+            "contract_version": manifest["contract_version"],
             "database": str(database.resolve()), "manifest_sha256": _sha256_file(manifest_path),
             "scenarios": results, "budget_before": before_budget, "budget_after": summary(ledger),
             "external_requests_by_harness": 0}
-        exit_code = 0
+        exit_code = 2 if blocked else 0
     except Exception as exc:
         db.rollback()
         report = {"status": "BLOCKED", "contract_version": manifest["contract_version"],

@@ -6691,3 +6691,26 @@ review_queue = READY
   localhost:5173 also loaded successfully. No JavaScript errors, failed HTTP responses,
   or non-GET requests were recorded in those browser checks.
 - No schema, business result, raw data, model call, review, publication or retest change.
+
+## 2026-10-19 Evidence-Graded Delivery Cutover
+
+- Implemented frozen `SC-GRADED-DELIVERY-001@1.0.0` inside the existing
+  Optimize -> Strategy -> Execution -> QA chain. Qualification, Plan and admitted
+  Result are append-only sealed objects; L1-L3 use the existing Draft/QA worker and
+  L4 is a zero-call recovery package outside current content deliveries.
+- Hard integrity remains independent from delivery quality. Project, Prompt,
+  Analysis, Context, fixed Run scope, Strategy, Proposal, Answer, Evidence,
+  Binding and Truth provenance failures are `BLOCKED` before a Plan is created.
+  Optional Evidence or Truth is still validated when supplied.
+- Added the release UI projection for L1-L4 without inferring a level from counts,
+  task status or historical failures. L1 is explicitly described as complete fact
+  attribution, not complete Citation coverage or an E1 pass.
+- Final gates: 93 focused backend tests, 11 frontend contract tests and the release
+  build passed. Isolated Chrome exercised the formal Optimize UI, L3 Draft/QA,
+  exact historical-result refresh and responsive layouts with zero external calls.
+- Independent Luna review returned PASS and `geo_supervisor` returned GO after two
+  admission defects were corrected. No existing Answer, Citation, Contribution,
+  Strategy, Delivery or historical task was rewritten.
+- The historical real E1 task remains `BLOCKED / FAILED_PARSE`. A read-only cached
+  replay found 10 evaluations (4 `SUPPORTS_PARTIAL`) and therefore supports an L2
+  hypothesis only; it is not a new formal task, a real Draft/QA run or an E1 pass.

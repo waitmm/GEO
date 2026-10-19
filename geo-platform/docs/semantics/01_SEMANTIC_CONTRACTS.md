@@ -789,7 +789,7 @@ contract_id: SC-GRADED-DELIVERY-001
 contract_name: Evidence-Graded Product Delivery
 contract_version: 1.0.0
 maturity: FROZEN
-implementation_status: NOT_IMPLEMENTED
+implementation_status: PRODUCTION
 definition: Exact, identity-safe inputs produce an immutable pre-request DeliveryQualificationPlan and an append-only admitted Result. Evidence quality selects L1-L4 delivery form; identity, permission, version and fact-grounding integrity remain hard blockers.
 allowed_inferences:
   - Fully grounded selected blocks may form L1 content.
@@ -807,10 +807,12 @@ source_references:
   - docs/semantics/rfcs/RFC-GRADED-DELIVERY-001.md
   - docs/semantics/approvals/RFC-GRADED-DELIVERY-001.definition-freeze.md
 observed_implementation_refs:
-  - backend/app/modules/single_prompt_v2/qualification.py
+  - backend/app/modules/single_prompt_v2/graded_delivery.py
   - backend/app/modules/single_prompt_v2/automatic_delivery.py
   - backend/app/modules/single_prompt_v2/execution.py
   - backend/app/modules/single_prompt_v2/delivery_generation.py
+  - frontend/src/DeliveryQualificationCard.tsx
+  - frontend/src/deliveryQualification.ts
 enforcement_refs:
   - docs/semantics/snapshots/CASE-GRADED-DELIVERY-001.manifest.json
 approved_by: Product Owner

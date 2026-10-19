@@ -4,7 +4,7 @@
 rfc_id: RFC-GRADED-DELIVERY-001
 status: APPROVED
 semantic_maturity: FROZEN
-implementation_status: NOT_IMPLEMENTED
+implementation_status: IMPLEMENTED
 authors: [Codex]
 created_at: 2026-10-19
 definition_approved_by: Product Owner

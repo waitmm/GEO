@@ -175,3 +175,11 @@ failure inside the restricted command environment, while the same interpreter re
 DeepSeek API through DNS, TCP, verified TLS and unauthenticated HTTP when network access was
 explicitly enabled. No application code, experiment state or budget reservation was changed,
 and no paid retry was started.
+
+The separately authorized network-enabled retry is recorded in
+`docs/geo-agent-v1/REAL_RUN_NETWORK_RETRY_2026-10-19.md`. It reached DeepSeek, made three
+accepted non-repeating tool decisions with complete prior observations in each subsequent
+request, and then stopped fail-closed when the fourth response did not validate as an
+`AgentDecision`. No Agent result version was created and comparison quality remains
+`NOT_MEASURABLE`. The authoritative shared ledger records four requests and 26,579 actual
+tokens for this retry; no further request or scenario was started.

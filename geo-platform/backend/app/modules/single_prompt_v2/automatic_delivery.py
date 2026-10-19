@@ -361,6 +361,8 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
             and digest(item["truth_snapshot"]) == item.get("truth_snapshot_hash")
             and str(item["truth_snapshot"].get("truth_id")) == str(item.get("product_truth_id"))
             and item["truth_snapshot"].get("truth_source") == "MANUAL_CONFIRMED"
+            and item.get("capability_label") == item["truth_snapshot"].get("capability_label")
+            and item.get("source_reference") == item["truth_snapshot"].get("source_reference")
             and _truth_statement_eligibility(
                 capability_label=item["truth_snapshot"].get("capability_label") or "",
                 product_truth_status=item["truth_snapshot"].get("product_truth_status") or "",

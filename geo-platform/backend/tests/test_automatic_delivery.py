@@ -73,6 +73,8 @@ def test_draft_evidence_gate_does_not_erase_independent_truth_only_use():
         "strategy_direction": direction, "answers": [{"run_id": 7}], "selected_evidence": [],
         "answer_result_version": "answer-v1:x", "answer_result_hash": "b" * 64,
         "truths": [{"product_truth_id": 7, "public_use_eligibility": "CONSUMABLE",
+            "capability_label": truth_snapshot["capability_label"],
+            "source_reference": truth_snapshot["source_reference"],
             "truth_snapshot": truth_snapshot, "truth_snapshot_hash": digest(truth_snapshot)}]}
     base_output = {"proposal_id": "proposal-1", "direction": direction,
         "input_identity": delivery["identity"], "delivery_input": delivery,
@@ -86,6 +88,46 @@ def test_draft_evidence_gate_does_not_erase_independent_truth_only_use():
     assert result['requirements'] == {'identity_and_frozen_scope_match': True,
         'truth_allowlist_match': True}
     assert result['qualification_plan']
+
+
+@pytest.mark.parametrize(('field', 'value'), [
+    ('capability_label', None),
+    ('capability_label', '篡改后的能力'),
+    ('source_reference', None),
+    ('source_reference', 'https://foreign.example/history'),
+])
+def test_non_citation_truth_provenance_mismatch_blocks_without_plan(field, value):
+    row = SimpleNamespace(task_id='task-1', input_hash='f' * 64,
+        analysis_id='analysis-1', context_id='context-1', project_id=1, prompt_id=2)
+    direction = {"direction_id": "direction-truth", "direction_type": "MECHANISM",
+        "truth_ids": [7], "reason_run_ids": [7], "evidence_relation_ids": [], "dependencies": []}
+    truth_snapshot = {"truth_id": 7, "capability_label": "提供公开帮助文档",
+        "product_truth_status": "TRUE", "truth_source": "MANUAL_CONFIRMED",
+        "source_reference": "https://example.com/help"}
+    truth = {"product_truth_id": 7, "public_use_eligibility": "CONSUMABLE",
+        "capability_label": truth_snapshot["capability_label"],
+        "source_reference": truth_snapshot["source_reference"],
+        "truth_snapshot": truth_snapshot, "truth_snapshot_hash": digest(truth_snapshot)}
+    truth[field] = value
+    identity = {"analysis_id": "analysis-1", "context_id": "context-1",
+        "project_id": 1, "prompt_id": 2, "strategy_id": "strategy-1",
+        "strategy_result_version": "strategy-v1:x", "strategy_result_hash": "a" * 64,
+        "answer_result_version": "answer-v1:x", "answer_result_hash": "b" * 64}
+    delivery = {"identity": identity, "strategy_direction": direction,
+        "answers": [{"run_id": 7}], "selected_evidence": [],
+        "answer_result_version": "answer-v1:x", "answer_result_hash": "b" * 64,
+        "truths": [truth]}
+    base_output = {"proposal_id": "proposal-1", "direction": direction,
+        "input_identity": identity, "delivery_input": delivery,
+        "evidence_processing_audit": {"selected_binding_ids": []}}
+    result = _draft_evidence_qualification(row=row, fixed={"run_ids": [7]},
+        strategy_id='strategy-1', strategy_result_version='strategy-v1:x',
+        strategy_result_hash='a' * 64, direction=direction, base_output=base_output,
+        proposal_id="proposal-1", proposal_result_version="execution-v1:x",
+        proposal_result_hash=digest(base_output))
+    assert result['status'] == 'BLOCKED'
+    assert result['gaps'] == ['DRAFT_TRUTH_ALLOWLIST_INVALID']
+    assert 'qualification_plan' not in result
 
 
 def test_non_citation_direction_rejects_foreign_identity_without_plan():

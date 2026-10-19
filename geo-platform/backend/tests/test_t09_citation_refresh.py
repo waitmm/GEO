@@ -236,6 +236,111 @@ def test_scope_drift_after_plan_blocks_before_fetch(tmp_path, monkeypatch):
         engine.dispose()
 
 
+def test_url_preflight_blocks_and_repeat_does_not_fetch(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        _, preparation, _, snapshot, completion = _seed_ready(db)
+        row, _ = sources.request_citation_refresh(db, **_request(preparation, snapshot, completion))
+        original_public_url = sources._is_fetchable_public_url
+        original_scope = sources._require_refresh_scope
+
+        def verified_scope(*args, **kwargs):
+            sources._is_fetchable_public_url = original_public_url
+            try:
+                return original_scope(*args, **kwargs)
+            finally:
+                sources._is_fetchable_public_url = lambda _: False
+
+        monkeypatch.setattr(sources, "_require_refresh_scope", verified_scope)
+        monkeypatch.setattr(sources, "_is_fetchable_public_url", lambda _: False)
+        fetcher = lambda _: pytest.fail("URL preflight must block before fetch")
+        result = sources.execute_citation_refresh(row.refresh_id, session_factory=factory, fetcher=fetcher)
+        assert result["status"] == "BLOCKED"
+        assert result["failure_code"] == "CITATION_REFRESH_URL_NOT_FETCHABLE"
+        assert result["outcome"] == {"request_sent": False}
+        repeated = sources.execute_citation_refresh(row.refresh_id, session_factory=factory, fetcher=fetcher)
+        assert repeated["status"] == "BLOCKED"
+        db.expire_all()
+        assert db.query(SinglePromptCitationRefresh).one().status == "BLOCKED"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_freeze_exception_rolls_back_and_repeat_does_not_fetch(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        _, preparation, _, snapshot, completion = _seed_ready(db)
+        row, _ = sources.request_citation_refresh(db, **_request(preparation, snapshot, completion))
+        calls = []
+
+        def fetcher(urls):
+            calls.append(urls)
+            return [_fetch_result(SECOND_TEXT, FIRST_AT + timedelta(hours=4))]
+
+        def fail_freeze(*args, **kwargs):
+            raise RuntimeError("injected freeze failure")
+
+        monkeypatch.setattr(sources, "freeze_completion_manifest", fail_freeze)
+        result = sources.execute_citation_refresh(row.refresh_id, session_factory=factory, fetcher=fetcher)
+        assert result["status"] == "BLOCKED"
+        assert result["failure_code"] == "CITATION_REFRESH_PERSISTENCE_CONFLICT"
+        assert result["outcome"]["request_sent"] is True
+        assert result["outcome"]["exception_type"] == "RuntimeError"
+        assert calls == [[URL]]
+        db.expire_all()
+        assert db.query(SinglePromptPreparedSourceSnapshot).count() == 1
+        assert db.query(SinglePromptSourceCompletionManifest).count() == 1
+        repeated = sources.execute_citation_refresh(
+            row.refresh_id, session_factory=factory, fetcher=lambda _: pytest.fail("duplicate send")
+        )
+        assert repeated["status"] == "BLOCKED"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_manifest_version_conflict_reports_committed_materialization(tmp_path, monkeypatch):
+    _configure_artifacts(monkeypatch, tmp_path)
+    db, engine = _session(tmp_path)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        _, preparation, _, snapshot, completion = _seed_ready(db)
+        row, _ = sources.request_citation_refresh(db, **_request(preparation, snapshot, completion))
+        original_freeze = sources.freeze_completion_manifest
+
+        def committed_wrong_version(*args, **kwargs):
+            committed = original_freeze(*args, **kwargs)
+            committed.version_number = 99
+            return committed
+
+        monkeypatch.setattr(sources, "freeze_completion_manifest", committed_wrong_version)
+        result = sources.execute_citation_refresh(
+            row.refresh_id,
+            session_factory=factory,
+            fetcher=lambda _: [_fetch_result(SECOND_TEXT, FIRST_AT + timedelta(hours=5))],
+        )
+        assert result["status"] == "BLOCKED"
+        assert result["failure_code"] == "CITATION_REFRESH_MANIFEST_VERSION_MISMATCH"
+        assert result["outcome"]["materialization_committed"] is True
+        assert result["result_snapshot_id"]
+        assert result["result_completion_manifest_id"]
+        db.expire_all()
+        assert db.query(SinglePromptPreparedSourceSnapshot).count() == 2
+        assert db.query(SinglePromptSourceCompletionManifest).count() == 2
+        repeated = sources.execute_citation_refresh(
+            row.refresh_id, session_factory=factory, fetcher=lambda _: pytest.fail("duplicate send")
+        )
+        assert repeated["status"] == "BLOCKED"
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_http_uses_authenticated_actor_and_persists_mock_refresh(tmp_path, monkeypatch):
     _configure_artifacts(monkeypatch, tmp_path)
     db, engine = _session(tmp_path)

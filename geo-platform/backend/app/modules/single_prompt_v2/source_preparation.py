@@ -829,6 +829,99 @@ def _finish_citation_refresh(
     return row
 
 
+def _settle_citation_refresh_exception(
+    *,
+    session_factory: Callable[[], Session],
+    refresh_id: str,
+    outcome: dict[str, Any],
+    status: str,
+    failure_code: str,
+    exc: Exception,
+) -> dict[str, Any]:
+    """Make a claimed refresh terminal in a fresh transaction.
+
+    ``freeze_completion_manifest`` owns a commit because it is also a public
+    product operation.  Consequently an exception immediately after that call
+    can leave the new immutable Snapshot/Manifest committed while the refresh
+    row is still RUNNING.  Re-open the attempt after rolling back the failed
+    unit of work, report any already-committed materialization, and never send
+    the request again.
+    """
+    failure_db = session_factory()
+    try:
+        row = failure_db.query(SinglePromptCitationRefresh).filter_by(
+            refresh_id=refresh_id
+        ).one_or_none()
+        if not row:
+            raise HTTPException(404, detail={"code": "CITATION_REFRESH_NOT_FOUND"})
+        if row.status != "RUNNING":
+            return citation_refresh_view(row)
+
+        settled_outcome = dict(outcome)
+        settled_outcome["exception_type"] = exc.__class__.__name__
+        fetched_hash = str(settled_outcome.get("fetched_content_hash") or "")
+        if fetched_hash:
+            snapshot = (
+                failure_db.query(SinglePromptPreparedSourceSnapshot)
+                .filter_by(
+                    preparation_id=row.preparation_id,
+                    source_key=row.source_key,
+                    canonical_url=row.canonical_url,
+                    content_hash=fetched_hash,
+                    submitted_by=f"AUTO_REFRESH:{row.requested_by}",
+                )
+                .order_by(SinglePromptPreparedSourceSnapshot.id.desc())
+                .first()
+            )
+            preparation = failure_db.query(SinglePromptSourcePreparation).filter_by(
+                preparation_id=row.preparation_id
+            ).one_or_none()
+            completion = (
+                failure_db.query(SinglePromptSourceCompletionManifest).filter_by(
+                    manifest_id=preparation.current_completion_manifest_id
+                ).one_or_none()
+                if preparation and preparation.current_completion_manifest_id
+                else None
+            )
+            completion_payload = loads(completion.payload_json, {}) if completion else {}
+            bound = next(
+                (
+                    item for item in completion_payload.get("sources") or []
+                    if item.get("source_key") == row.source_key
+                ),
+                None,
+            )
+            if (
+                snapshot
+                and completion
+                and bound
+                and bound.get("snapshot_id") == snapshot.snapshot_id
+                and bound.get("content_hash") == snapshot.content_hash
+            ):
+                row.result_snapshot_id = snapshot.snapshot_id
+                row.result_completion_manifest_id = completion.manifest_id
+                row.result_completion_manifest_hash = completion.payload_hash
+                settled_outcome.update({
+                    "materialization_committed": True,
+                    "result_snapshot_id": snapshot.snapshot_id,
+                    "result_snapshot_hash": snapshot.content_hash,
+                    "result_completion_manifest_id": completion.manifest_id,
+                    "result_completion_manifest_hash": completion.payload_hash,
+                    "result_completion_version": completion.version_number,
+                })
+
+        return citation_refresh_view(_finish_citation_refresh(
+            failure_db,
+            row,
+            status=status,
+            outcome=settled_outcome,
+            failure_code=failure_code,
+            failure_detail=str(exc),
+        ))
+    finally:
+        failure_db.close()
+
+
 def execute_citation_refresh(
     refresh_id: str,
     *,
@@ -836,6 +929,8 @@ def execute_citation_refresh(
     fetcher: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     db = session_factory()
+    outcome: dict[str, Any] = {"request_sent": False}
+    stage = "CLAIM"
     try:
         claimed = db.query(SinglePromptCitationRefresh).filter_by(
             refresh_id=refresh_id, status="PENDING"
@@ -846,6 +941,7 @@ def execute_citation_refresh(
             raise HTTPException(404, detail={"code": "CITATION_REFRESH_NOT_FOUND"})
         if claimed != 1:
             return citation_refresh_view(row)
+        stage = "SCOPE"
         try:
             _, _, _, _ = _require_refresh_scope(db, row)
         except HTTPException as exc:
@@ -854,6 +950,15 @@ def execute_citation_refresh(
                 failure_code=str((exc.detail or {}).get("code") if isinstance(exc.detail, dict) else "CITATION_REFRESH_SCOPE_CHANGED"),
                 failure_detail=str(exc.detail),
             ))
+        stage = "URL_PREFLIGHT"
+        if not _is_fetchable_public_url(row.canonical_url):
+            return citation_refresh_view(_finish_citation_refresh(
+                db, row, status="BLOCKED", outcome=outcome,
+                failure_code="CITATION_REFRESH_URL_NOT_FETCHABLE",
+                failure_detail="固定 Citation URL 不满足公开网页抓取安全边界",
+            ))
+        stage = "FETCH"
+        outcome["request_sent"] = True
         try:
             results = (fetcher or fetch_page_playwright)([row.canonical_url])
             result = results[0] if len(results) == 1 else {}
@@ -865,12 +970,11 @@ def execute_citation_refresh(
         fetch_status = str(result.get("fetch_status") or "FETCH_FAILED").upper()
         text = str(result.get("clean_text") or "").strip()
         receipt = result.get("acquisition_receipt") or {}
-        outcome = {
-            "request_sent": True,
+        outcome.update({
             "fetch_status": fetch_status,
             "failure_reason": str(result.get("failure_reason") or "")[:2000],
             "acquisition_receipt": receipt,
-        }
+        })
         if fetch_status != "SUCCESS" or len(text) < 50:
             return citation_refresh_view(_finish_citation_refresh(
                 db, row, status="FAILED", outcome=outcome,
@@ -901,6 +1005,8 @@ def execute_citation_refresh(
                 failure_code="SOURCE_ACQUISITION_RECEIPT_INVALID",
                 failure_detail="刷新结果缺少与固定 Citation URL 和正文 hash 一致的获取记录",
             ))
+        outcome["fetched_content_hash"] = _text_hash(text)
+        stage = "SCOPE_RECHECK"
         try:
             preparation, disposition, base_snapshot, base_completion = _require_refresh_scope(db, row)
         except HTTPException as exc:
@@ -915,6 +1021,7 @@ def execute_citation_refresh(
                 failure_code="NO_CONTENT_CHANGE",
                 failure_detail="真实采集已记录，但正文 hash 未变化，未创建伪造的新正文版本",
             ))
+        stage = "PERSIST"
         snapshot = _snapshot_from_content(
             db,
             preparation=preparation,
@@ -948,7 +1055,32 @@ def execute_citation_refresh(
             "result_completion_manifest_hash": completion.payload_hash,
             "result_completion_version": completion.version_number,
         })
+        stage = "FINALIZE"
         return citation_refresh_view(_finish_citation_refresh(db, row, status="SUCCEEDED", outcome=outcome))
+    except Exception as exc:
+        db.rollback()
+        detail = exc.detail if isinstance(exc, HTTPException) else None
+        detail_code = str(detail.get("code") or "") if isinstance(detail, dict) else ""
+        if isinstance(exc, HTTPException):
+            status = "BLOCKED"
+            failure_code = detail_code or "CITATION_REFRESH_SCOPE_CHANGED"
+        elif isinstance(exc, IntegrityError) or stage in {"PERSIST", "FINALIZE"}:
+            status = "BLOCKED"
+            failure_code = "CITATION_REFRESH_PERSISTENCE_CONFLICT"
+        elif stage == "FETCH":
+            status = "FAILED"
+            failure_code = "CITATION_REFRESH_FETCH_FAILED"
+        else:
+            status = "FAILED"
+            failure_code = "CITATION_REFRESH_INTERNAL_FAILURE"
+        return _settle_citation_refresh_exception(
+            session_factory=session_factory,
+            refresh_id=refresh_id,
+            outcome=outcome,
+            status=status,
+            failure_code=failure_code,
+            exc=exc,
+        )
     finally:
         db.close()
 

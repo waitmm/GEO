@@ -1320,17 +1320,18 @@
         "backend/tests/test_t09_citation_refresh.py",
         "backend/scripts/run_t09_source_reanalysis_live.py",
         "backend/scripts/live_model_budget.py",
-        "docs/semantics/rfcs/RFC-DERIVED-MODEL-CALL-IDENTITY-001.md"
+        "docs/semantics/rfcs/RFC-DERIVED-MODEL-CALL-IDENTITY-001.md",
+        "docs/geo-v1.0/live-acceptance-t09-t23-2026-10-19.md"
       ],
       "estimate": "3人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "模型调用身份冲突已由derived_model_call_identity.v1关闭并经独立监督审核PASS；当前仅缺同一正式Citation身份的第二份独立真实正文Snapshot/Completion Manifest。既有证据只有source-snapshot-c1652a96-70f4-4c50-bb3d-faadc955200c，SUPPLEMENTAL_PUBLIC_SOURCE不得冒充更新版；新增同URL公开网页访问不在当前授权内。真实业务模型调用0/3，AC-SRC-03保持PARTIAL",
+      "blocker": "同一正式Citation已按授权完成一次独立真实刷新：HTTP 200、无重试，新增append-only Snapshot source-snapshot-d76d7c68-ed76-4525-9fd7-564b5a7d1828 与 Completion Manifest source-completion-25545091-dea2-49e2-a8ef-f846e2d76b27，正文hash真实变化，原v1不变，专项23 passed。隔离刷新库仍缺同范围已完成且已审核的Diagnosis/Result/Review，无法合法启动正式重分析；不得用未审核T23结果或Mock补齐。T09模型调用0/3，保持BLOCKED",
       "commit": "118de20,c3b30a9,25377fc,3ce1573,81b7597,90efdf4,2e32d42,076942c,ecc69af",
-      "audit_classification": "SEMANTIC_CHANGE（用户授权的技术身份契约补全）冻结派生模型调用provider/endpoint/requested与effective model/transport/schema/prompt/参数/scope/cache身份并隔离LEGACY_UNBOUND；IMPLEMENTATION_CHANGE新增同Citation受控refresh、append-only及异常终态收敛。监督审核PASS；未抓取新网页、未发模型请求",
-      "current_checkpoint": "t09_identity_resolved_same_citation_second_snapshot_external_access_blocked_20261019"
+      "audit_classification": "SEMANTIC_CHANGE（用户授权的技术身份契约补全）冻结派生模型调用身份并隔离LEGACY_UNBOUND；IMPLEMENTATION_CHANGE完成同Citation受控refresh、append-only及异常终态收敛。真实URL访问1/1和专项Gate通过；独立监督确认缺少合法已审核重分析基线时必须继续BLOCKED",
+      "current_checkpoint": "t09_same_citation_refresh_passed_reviewed_downstream_base_blocked_20261019"
     },
     {
       "id": "T10",
@@ -1369,7 +1370,7 @@
       "planned_end": "",
       "actual_start": "2026-10-09",
       "actual_end": "",
-      "blocker": "T09尚未DONE（正式诊断transport/effective model契约需版本化审核，且缺少合法old/new真实Citation正文版本）；即使T08已DONE也不得提前解锁T10",
+      "blocker": "T09尚未DONE：同Citation真实old/new正文已具备，但正式重分析仍缺同范围已完成且已审核的下游基线；即使T08已DONE也不得提前解锁T10",
       "commit": "",
       "audit_classification": "正式自动交接已实现；隔离模拟浏览器通过，真实集成与完整恢复验收待完成",
       "current_checkpoint": "delivery_checkpoint_20261009"
@@ -1903,17 +1904,18 @@
         "backend/scripts/t23_real_e2e_acceptance.py",
         "backend/scripts/run_t23_delivery_live.py",
         "backend/tests/test_t23_real_e2e_acceptance.py",
-        "backend/tests/test_live_model_budget.py"
+        "backend/tests/test_live_model_budget.py",
+        "docs/geo-v1.0/live-acceptance-t09-t23-2026-10-19.md"
       ],
       "estimate": "4人日",
       "planned_start": "",
       "planned_end": "",
       "actual_start": "",
       "actual_end": "",
-      "blocker": "调用身份契约、分阶段prepare、append-only/fsync检查点、失败恢复、独立场景继续及E3项目级UNKNOWN来源冻结均已通过监督审核；隔离DB/manifest与E1/E2正式任务已准备，ledger仍为0/12、T23 0/9、CNY0。真实prepare命令在进程创建前被执行环境审批层拒绝：需要明确授权将该隔离验收Project/Prompt/Run/派生内容发送给DeepSeek并可能产生费用；没有请求送出。E2E-01/02/03仍未完成真实验收，不以本地Gate替代",
-      "commit": "73808ce,2083754,17ea90a,e06b972,2c00875,7736456,2061b80,726859c",
-      "audit_classification": "IMPLEMENTATION_CHANGE完成版本化调用身份接线、T23共享9次分阶段预算、可恢复prepare、场景隔离、隔离输入CLI及UNKNOWN完整lineage冻结；独立监督最终GO，本地组合Gate PASS。外部执行因环境要求更具体的数据传输授权而停止，未绕过、未发送、未计费",
-      "current_checkpoint": "t23_ready_to_send_prepare_external_data_transfer_approval_blocked_20261019"
+      "blocker": "真实DeepSeek验收已在隔离Project 1执行并由共享ledger结算：T23 4/9、全局4/12、12607 Token、保守预留CNY0.77292，实际账单UNKNOWN。E2E-01 Answer prepare通过但Draft因INVALID_DRAFT_EVIDENCE被严格拒绝，冻结链selected_evidence为空，继续请求仍无法通过正式Gate；E2E-02真实Contribution为SUPPORTS_PARTIAL/RELATED_ONLY而非low-match，冻结NO_FORMAL_LOW_MATCH且禁止重试；E2E-03真实Answer无目标品牌能力信号，冻结NO_FORMAL_UNKNOWN_SIGNAL且未伪造UNKNOWN。三类均有真实可审计结果但未满足definition_of_done，保持BLOCKED，不解锁T24",
+      "commit": "73808ce,2083754,17ea90a,e06b972,2c00875,7736456,2061b80,726859c,beabee1,76194c1,3e563f6,04a9b08",
+      "audit_classification": "IMPLEMENTATION_CHANGE完成版本化调用身份、共享预算、append-only pre-send恢复、场景级blocker和独立继续；真实请求均使用冻结DeepSeek Responses身份且无自动重试。独立监督确认Provider语义输出未满足正式场景，不是transport/parser缺陷；fail-closed正确，禁止以重试、换样本或ID重解释伪造PASS",
+      "current_checkpoint": "t23_live_three_scenarios_truthfully_blocked_4_of_9_20261019"
     },
     {
       "id": "T24",
@@ -1943,7 +1945,7 @@
       "planned_end": "",
       "actual_start": "",
       "actual_end": "",
-      "blocker": "",
+      "blocker": "T23真实三场景验收未满足正式Gate，依赖未完成；不得因已有真实请求或局部工程PASS提前解锁",
       "commit": "",
       "audit_classification": "未验收"
     },

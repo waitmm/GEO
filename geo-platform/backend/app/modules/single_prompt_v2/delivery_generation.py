@@ -12,9 +12,9 @@ from .delivery_text import digest, text_digest
 
 
 LEGACY_GENERATION_VERSION = "single_prompt_delivery_generation.v2_qualified_truth"
-GENERATION_VERSION = "single_prompt_delivery_generation.v3_official_attested"
+GENERATION_VERSION = "single_prompt_delivery_generation.v4_graded_delivery"
 LEGACY_QA_VERSION = "single_prompt_delivery_judgment.v1"
-QA_VERSION = "single_prompt_delivery_judgment.v2_official_attested"
+QA_VERSION = "single_prompt_delivery_judgment.v3_graded_delivery"
 MAX_OUTPUT_TOKENS = 6000
 
 
@@ -123,6 +123,8 @@ def generation_input(frozen: dict, official_facts: dict | None = None, *, genera
         raise ValueError("DUPLICATE_DELIVERY_EVIDENCE")
     return {"contract_version": generation_version, "delivery_input_hash": digest(frozen),
         **({"official_fact_receipt": copy.deepcopy(official_facts)} if official_facts is not None else {}),
+        **({"delivery_qualification_plan": copy.deepcopy(frozen["delivery_qualification_plan"])}
+           if frozen.get("delivery_qualification_plan") else {}),
         "question": frozen["prompt_text"], "intent": (frozen.get("prompt_configuration") or {}).get("intent_type", "UNKNOWN"),
         "brand_name": frozen["brand"]["brand_name"], "public_evidence": evidence,
         "answer_topics": copy.deepcopy(frozen.get("question_topics") or []),
@@ -133,11 +135,15 @@ def generation_input(frozen: dict, official_facts: dict | None = None, *, genera
 def admit_draft(value, inputs: dict) -> dict:
     parsed = DraftResponse.model_validate(value).model_dump()
     evidence = {row["evidence_id"]: row for row in inputs["public_evidence"]}
+    plan = inputs.get("delivery_qualification_plan") or {}
+    action_only = plan.get("planned_delivery_level") == "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS"
     for section in parsed["sections"]:
         if not section["heading"].strip():
             raise ValueError("EMPTY_HEADING")
         for block in section["blocks"]:
             ids = block["evidence_ids"]
+            if action_only and (block["kind"] != "INSTRUCTION" or ids):
+                raise ValueError("L3_FACT_CLAIM_FORBIDDEN")
             if not block["text"].strip() or len(set(ids)) != len(ids) or any(key not in evidence for key in ids):
                 raise ValueError("INVALID_DRAFT_EVIDENCE")
             if block["kind"] != "INSTRUCTION" and not ids:
@@ -253,7 +259,7 @@ def finish_draft(draft: dict, qa: dict, inputs: dict) -> dict:
             if row["evidence_ids"]:
                 body.extend(["", "来源：" + "；".join(evidence[key]["url"] for key in row["evidence_ids"])])
     text = "\n".join(body)
-    return {"contract_version": inputs['contract_version'], "title": title, "body_markdown": text,
+    receipt = {"contract_version": inputs['contract_version'], "title": title, "body_markdown": text,
         **({"official_facts": copy.deepcopy(inputs['official_fact_receipt'])} if 'official_fact_receipt' in inputs else {}),
         "content_hash": text_digest(text), "delivery_input_hash": inputs["delivery_input_hash"],
         "segments": repaired, "original_draft": draft,
@@ -261,6 +267,12 @@ def finish_draft(draft: dict, qa: dict, inputs: dict) -> dict:
             "method": "MODEL_TEXT_CHECK_AND_DETERMINISTIC_BOUNDARIES", "checks": admitted["checks"],
             "findings": findings, "repairs": repairs, "checked_content_hash": text_digest(text),
             "limitations": ["机器 QA 不是独立事实认证", "归因来源不证明来源自身真实", "未授权目标品牌事实不会成为公开声明", "没有证明生成影响或发布效果"]}}
+    if inputs.get("delivery_qualification_plan"):
+        from .graded_delivery import build_result
+        receipt["delivery_qualification_result"] = build_result(
+            inputs["delivery_qualification_plan"], receipt,
+        )
+    return receipt
 
 
 def _repair_matches(segment: dict, after: str, evidence: dict) -> bool:

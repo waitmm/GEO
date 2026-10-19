@@ -483,7 +483,7 @@ def test_stage_restart_preserves_exact_objects_budget_and_cached_draft(scene, mo
     assert len(calls) == 4 and db.query(SinglePromptDiagnosisReview).count() == 0
 
 
-def test_unavailable_source_blocks_draft_before_request_and_preserves_inputs(scene, monkeypatch):
+def test_unavailable_source_delivers_l3_action_only_and_preserves_inputs(scene, monkeypatch):
     from sqlalchemy.orm import sessionmaker
     from app.models import SinglePromptSourceDisposition, SinglePromptSourceCompletionManifest, SinglePromptExecutionProposalResult, SinglePromptCitationManifest
     db, row, _, _ = scene
@@ -504,22 +504,29 @@ def test_unavailable_source_blocks_draft_before_request_and_preserves_inputs(sce
     execute_task(row.task_id, session_factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
     db.refresh(row); db.refresh(source)
     view = task_view(row)
-    assert row.status == 'BLOCKED', (row.blocker_code, row.blocker_detail)
-    assert row.blocker_code == 'DRAFT_EVIDENCE_NOT_QUALIFIED'
+    assert row.status == 'COMPLETED_WITH_LIMITATIONS', (row.blocker_code, row.blocker_detail)
     assert source.state == 'MANUAL_REQUIRED' and source.active_snapshot_id is None
     assert {s.id: s.state for s in db.query(SinglePromptSourceDisposition).all()} == {**original_states, source.id: 'MANUAL_REQUIRED'}
-    assert len(calls) == 1 and not any('frozen_candidate_pairs' in p for p in calls)
-    assert not any('public_evidence' in p or 'segments' in p for p in calls)
-    assert view['usage']['external_requests'] == 1
+    assert len(calls) == 3 and not any('frozen_candidate_pairs' in p for p in calls)
+    draft_request = next(p for p in calls if 'public_evidence' in p)
+    assert draft_request['public_evidence'] == []
+    assert draft_request['delivery_qualification_plan']['planned_delivery_level'] == 'L3_ACTIONABLE_WITHOUT_FACT_CLAIMS'
+    assert view['usage']['external_requests'] == 3
     assert view['objects']['citation_results'] == []
     assert any(limit['code'] == 'CITATION_NOT_EVALUATED' for limit in view['limitations'])
     completion = db.query(SinglePromptSourceCompletionManifest).filter_by(manifest_id=view['objects']['completion_manifest_id']).one()
     assert completion.status != 'FROZEN'
     gate = view['objects']['draft_eligibility']
-    assert gate['status'] == 'BLOCKED' and gate['evidence_count'] == 0
-    assert gate['requirements']['non_empty'] is False
-    assert 'NO_ELIGIBLE_EVIDENCE' in gate['gaps']
-    assert gate['next_actions'] and view['objects'].get('deliveries') is None
+    assert gate['status'] == 'QUALIFIED_CONSTRAINED' and gate['evidence_count'] == 0
+    assert gate['requirements']['action_only_mode'] is True
+    assert gate['gaps'] == []
+    assert view['objects']['deliveries']
+    plan = view['objects']['delivery_qualification_plans'][0]
+    result = view['objects']['delivery_qualification_results'][0]
+    assert result['plan_hash'] == plan['plan_hash']
+    assert result['admitted_delivery_level'] == 'L3_ACTIONABLE_WITHOUT_FACT_CLAIMS'
+    assert result['product_outcome'] == 'CONTENT_DELIVERED'
+    assert view['objects']['delivery_outcome']['all_directions_l1'] is False
     db.refresh(context); db.refresh(citation)
     assert context.raw_output_json == original_raw and citation.payload_json == original_citation
     assert db.query(SinglePromptDiagnosisReview).count() == 0

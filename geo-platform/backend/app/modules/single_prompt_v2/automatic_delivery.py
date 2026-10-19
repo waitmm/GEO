@@ -60,12 +60,15 @@ def computation_contracts() -> dict:
     from .delivery_generation import GENERATION_VERSION, QA_VERSION
     from .qualification import QUALIFICATION_CONTRACT_VERSION
     from .delivery_facts import CONTRACT as FACT_CONTRACT
+    from .graded_delivery import PLAN_CONTRACT_VERSION, RESULT_CONTRACT_VERSION
     from .llm_safety import V2_SOURCE_CLAIM_PROMPT_VERSION, V2_SOURCE_CLAIM_SCHEMA_VERSION
     return {"answer": _contract_config(diagnosis_mode="ANSWER_ONLY", source_snapshot_policy="SOURCE_PREPARATION_ONLY",
         answer_llm_policy="CACHE_ONLY", evidence_llm_policy="CACHE_ONLY"),
         "citation_contract": CITATION_CONTRIBUTION_CONTRACT_VERSION, "citation_prompt": CITATION_CONTRIBUTION_PROMPT_VERSION,
         "citation_schema": CITATION_CONTRIBUTION_SCHEMA_VERSION, "generation": GENERATION_VERSION,
         "text_qa": QA_VERSION, "qualification": QUALIFICATION_CONTRACT_VERSION,
+        "delivery_qualification_plan": PLAN_CONTRACT_VERSION,
+        "delivery_qualification_result": RESULT_CONTRACT_VERSION,
         "official_fact": FACT_CONTRACT, "official_claim_prompt": V2_SOURCE_CLAIM_PROMPT_VERSION,
         "official_claim_schema": V2_SOURCE_CLAIM_SCHEMA_VERSION}
 
@@ -285,7 +288,9 @@ def require_task(db: Session, task_id: str, project_id: int, prompt_id: int) -> 
 def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: dict,
                                   strategy_id: str, strategy_result_version: str,
                                   strategy_result_hash: str, direction: dict,
-                                  base_output: dict) -> dict:
+                                  base_output: dict, proposal_id: str = "",
+                                  proposal_result_version: str = "",
+                                  proposal_result_hash: str = "") -> dict:
     """Prove an automatic Draft request has one exact, strategy-owned allowlist.
 
     Execution freezes and validates the immutable source/Answer/Strategy lineage.
@@ -320,7 +325,6 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
     source_input = fixed.get("source_input") or {}
     source_manifest = delivery.get("source_manifest") or {}
     requirements = {
-        "non_empty": bool(selected),
         "evaluated": bool(selected) and all(
             item.get("binding_id")
             and item.get("evidence_relation") in {"SUPPORTS_FULL", "SUPPORTS_PARTIAL"}
@@ -331,42 +335,64 @@ def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: d
             all(identity.get(key) == value for key, value in expected_identity.items())
             and (not source_input or all(source_manifest.get(key) == value for key, value in source_input.items()))
             and bool(dependency_versions)
-            and sorted(contribution_versions) == sorted(dependency_versions)
+            and (
+                sorted(contribution_versions) == sorted(dependency_versions)
+                or (not contribution_versions and dependency_versions == ["UNAVAILABLE"])
+            )
         ),
         "strategy_references_all": (
-            bool(binding_ids) and len(binding_ids) == len(set(binding_ids))
+            len(binding_ids) == len(set(binding_ids))
             and set(binding_ids) == set(strategy_binding_ids)
         ),
         "draft_allowlist_match": (
-            bool(evidence_ids) and all(evidence_ids)
+            all(evidence_ids)
             and len(evidence_ids) == len(set(evidence_ids))
             and set(binding_ids) == set(audit_binding_ids)
         ),
+        "action_only_mode": bool(selected) or delivery.get("content_mode") == "RESEARCH_GUIDE_NOT_FACTUAL_ANSWER",
     }
     gap_actions = {
-        "non_empty": ("NO_ELIGIBLE_EVIDENCE", "先完成来源正文取得与 Citation Contribution 评估，形成至少一条可回指的支持关系。"),
         "evaluated": ("EVIDENCE_NOT_EVALUATED_OR_SUPPORTED", "检查失败/未评估 Citation，修复 Schema、正文或回指问题后对固定版本重新评估。"),
         "scope_and_version_match": ("EVIDENCE_SCOPE_OR_VERSION_MISMATCH", "重新从当前 Project、Prompt、Run 和冻结来源版本生成策略，不要沿用其他范围或 latest 结果。"),
         "strategy_references_all": ("STRATEGY_EVIDENCE_NOT_BOUND", "重新生成当前固定输入的 Strategy，使其明确引用全部稿件 Evidence binding。"),
         "draft_allowlist_match": ("DRAFT_EVIDENCE_ALLOWLIST_INVALID", "重新创建当前策略方向的稿件输入，确保 Draft 只可使用冻结 Evidence allowlist。"),
+        "action_only_mode": ("DRAFT_DELIVERY_MODE_INVALID", "无事实证据时只能使用冻结的研究与行动稿模式，不能生成事实陈述。"),
     }
-    failed = [key for key, passed in requirements.items() if not passed]
+    applicable = requirements if selected else {
+        key: value for key, value in requirements.items() if key != "evaluated"
+    }
+    failed = [key for key, passed in applicable.items() if not passed]
     if not source_evidence_required:
-        return {
+        response = {
             "status": "NOT_APPLICABLE", "code": "DRAFT_SOURCE_EVIDENCE_NOT_REQUIRED",
             "direction_id": str(direction.get("direction_id") or direction.get("strategy_id") or ""),
             "evidence_count": len(selected), "evidence_ids": evidence_ids,
             "binding_ids": binding_ids, "requirements": {}, "gaps": [], "next_actions": [],
         }
-    return {
-        "status": "QUALIFIED" if not failed else "BLOCKED",
+    else:
+        response = {
+        "status": ("QUALIFIED" if selected else "QUALIFIED_CONSTRAINED") if not failed else "BLOCKED",
         "code": "DRAFT_EVIDENCE_QUALIFIED" if not failed else "DRAFT_EVIDENCE_NOT_QUALIFIED",
         "direction_id": str(direction.get("direction_id") or direction.get("strategy_id") or ""),
         "evidence_count": len(selected), "evidence_ids": evidence_ids,
-        "binding_ids": binding_ids, "requirements": requirements,
+        "binding_ids": binding_ids, "requirements": applicable,
         "gaps": [gap_actions[key][0] for key in failed],
         "next_actions": [gap_actions[key][1] for key in failed],
     }
+    if response["status"] != "BLOCKED":
+        from .graded_delivery import build_plan
+        response["qualification_plan"] = build_plan(
+            task_id=getattr(row, "task_id", "test-task"), task_input_hash=getattr(row, "input_hash", "test-input"),
+            analysis_id=row.analysis_id, context_id=row.context_id,
+            project_id=row.project_id, prompt_id=row.prompt_id,
+            fixed_run_ids=fixed.get("run_ids") or [], proposal_id=proposal_id,
+            proposal_result_version=proposal_result_version,
+            proposal_result_hash=proposal_result_hash,
+            strategy_id=strategy_id, strategy_result_version=strategy_result_version,
+            strategy_result_hash=strategy_result_hash, direction=direction,
+            delivery_input=delivery, evidence_binding_ids=binding_ids,
+        )
+    return response
 
 
 def create_task(db: Session, *, analysis_id: str, project_id: int, prompt_id: int,
@@ -749,6 +775,26 @@ def execute_task(task_id: str, *, session_factory) -> None:
                     detail='原回答缺少合格兼容缓存，本次纠错不授权重新调用回答模型；旧结果保留。')
                 return
             pending_authority = bool(coverage["pending_external_authorization_run_ids"])
+            requests = (loads(row.progress_json, {}).get("requests") or [])
+            if not pending_authority and not requests:
+                from .graded_delivery import aggregate_results, build_l4_recovery
+                plan, recovery = build_l4_recovery(
+                    task_id=row.task_id, task_input_hash=row.input_hash,
+                    analysis_id=row.analysis_id, context_id=row.context_id,
+                    project_id=row.project_id, prompt_id=row.prompt_id,
+                    fixed_run_ids=fixed.get("run_ids") or [], raw_output_hash=fixed["raw_output_hash"],
+                    missing_objects=["CONSUMABLE_ANSWER"],
+                    reasons=["当前固定范围没有可消费的 Answer 语义输入。"],
+                    recovery_actions=["检查采样失败和无效回答原因。", "取得新的合法回答后创建新 Analysis，再启动 Optimize。"],
+                )
+                checkpoint(db, row, stage="COMPLETE", objects={
+                    "delivery_qualification_plans": [plan],
+                    "delivery_qualification_results": [],
+                    "recovery_delivery": recovery,
+                    "delivery_outcome": aggregate_results([recovery]),
+                }, status="COMPLETED_WITH_LIMITATIONS",
+                    detail="当前固定范围没有可消费回答；已生成零外调恢复交付，不进入策略、稿件或 QA。")
+                return
             checkpoint(db, row, status="WAITING_AUTHORIZATION" if policy == "CACHE_ONLY" else "BLOCKED",
                 code="ANSWER_AUTHORIZATION_INSUFFICIENT" if pending_authority else "NO_CONSUMABLE_ANSWER",
                 detail="回答请求未发出：需要核实授权或剩余预算，不会自动扩大额度。" if pending_authority else "没有合格回答；待授权、失败与合法零事件保持分别记录。")
@@ -809,6 +855,8 @@ def execute_task(task_id: str, *, session_factory) -> None:
 
         checkpoint(db, row, stage="DRAFT")
         drafts = []
+        qualification_plans = list(objects.get("delivery_qualification_plans") or [])
+        qualification_results = list(objects.get("delivery_qualification_results") or [])
         directions = loads(strategy_result.output_json, {})['directions']
         if fixed.get('truth_correction'):
             from .truth_corrections import affected_directions
@@ -839,29 +887,50 @@ def execute_task(task_id: str, *, session_factory) -> None:
                 strategy_result_version=strategy_result.result_version,
                 strategy_result_hash=strategy_result.output_hash,
                 direction=direction, base_output=base_output,
+                proposal_id=proposal.proposal_id,
+                proposal_result_version=base.result_version,
+                proposal_result_hash=base.output_hash,
             )
             checkpoint(db, row, objects={"draft_eligibility": draft_eligibility})
             if draft_eligibility["status"] == "BLOCKED":
+                from .graded_delivery import aggregate_results
+                blocked_outcome = aggregate_results(qualification_results)
+                blocked_outcome["product_outcome"] = "NONE"
                 checkpoint(db, row, limitations=[{
                     "code": draft_eligibility["code"],
                     "direction_id": draft_eligibility["direction_id"],
                     "gaps": draft_eligibility["gaps"],
                     "next_actions": draft_eligibility["next_actions"],
-                }], status="BLOCKED", code=draft_eligibility["code"],
+                }], objects={"delivery_outcome": blocked_outcome},
+                    status="BLOCKED", code=draft_eligibility["code"],
                     detail="稿件请求未发出：当前策略缺少同范围、已评估且可回指的 Evidence。请按任务中的补证动作完成来源正文、Contribution 评估与策略引用。")
                 return
+            plan = draft_eligibility["qualification_plan"]
+            qualification_plans = [row for row in qualification_plans if row.get("plan_id") != plan["plan_id"]]
+            qualification_plans.append(plan)
+            checkpoint(db, row, objects={"delivery_qualification_plans": qualification_plans})
             delivered, _ = generate_complete_execution_deliverable(db, proposal_id=proposal.proposal_id,
                 base_result_version=base.result_version, base_result_hash=base.output_hash,
                 reviewable_set_hash=base.reviewable_set_hash, generation_client=scoped_client(db, row),
-                generation_progress=lambda stage: checkpoint(db, row, stage=stage))
+                generation_progress=lambda stage: checkpoint(db, row, stage=stage),
+                qualification_plan=plan)
             payload = loads(delivered.output_json, {})
+            qualification_result = payload.get("delivery_qualification_result")
+            if not qualification_result or qualification_result.get("plan_hash") != plan["plan_hash"]:
+                raise HTTPException(409, "稿件结果缺少与请求前计划精确绑定的分级资格结果")
+            qualification_results = [row for row in qualification_results if row.get("result_id") != qualification_result["result_id"]]
+            qualification_results.append(qualification_result)
             drafts.append({"proposal_id": proposal.proposal_id, "result_version": delivered.result_version,
                 "result_hash": delivered.output_hash, "content_delivery_status": payload["validation"]["content_delivery_status"]})
-            checkpoint(db, row, objects={"deliveries": drafts})
+            from .graded_delivery import aggregate_results
+            checkpoint(db, row, objects={"deliveries": drafts,
+                "delivery_qualification_results": qualification_results,
+                "delivery_outcome": aggregate_results(qualification_results)})
         if not drafts or any(d["content_delivery_status"] != "READY" for d in drafts):
             checkpoint(db, row, status="BLOCKED", code="TEXT_QA_NO_DELIVERABLE", detail="正文未通过实际检查；保留问题与修改记录，不包装成完成。")
         else:
-            limited = bool(limits or completion.status != "FROZEN" or len(coverage["valid_compute_run_ids"]) != len(fixed["run_ids"]))
+            limited = bool(limits or completion.status != "FROZEN" or len(coverage["valid_compute_run_ids"]) != len(fixed["run_ids"])
+                or any(row.get("admitted_delivery_level") != "L1_FULLY_GROUNDED" for row in qualification_results))
             checkpoint(db, row, stage="COMPLETE", status="COMPLETED_WITH_LIMITATIONS" if limited else "COMPLETED")
     except Exception as exc:
         db.rollback()
@@ -870,7 +939,12 @@ def execute_task(task_id: str, *, session_factory) -> None:
             if row.status == "RUNNING":
                 code = str(getattr(exc, "code", "") or "OPTIMIZATION_STAGE_FAILED")
                 waiting = code in {"CACHE_MISS", "EXTERNAL_BUDGET_EXHAUSTED"}
-                checkpoint(db, row, status="WAITING_AUTHORIZATION" if waiting else "BLOCKED", code=code,
+                current_objects = (loads(row.progress_json, {}).get("objects") or {})
+                outcome = dict(current_objects.get("delivery_outcome") or {})
+                if outcome:
+                    outcome["product_outcome"] = "NONE"
+                checkpoint(db, row, objects={"delivery_outcome": outcome} if outcome else None,
+                    status="WAITING_AUTHORIZATION" if waiting else "BLOCKED", code=code,
                     detail=str(exc.detail if isinstance(exc, HTTPException) else exc)[:1000])
         else:
             raise

@@ -569,6 +569,10 @@ def _freeze_delivery_input(
         "truths": copy.deepcopy(snapshot.get("truths") or []),
         "historical_failures": _evidence_failure_audit(contribution),
         "question_topics": _question_topics(raw, snapshot["direction"].get("reason_run_ids") or []),
+        **({
+            "content_mode": "RESEARCH_GUIDE_NOT_FACTUAL_ANSWER",
+            "limitations": ["NO_CONSUMABLE_FACT_EVIDENCE", "ANSWER_TOPICS_ARE_NOT_VERIFIED_FACTS"],
+        } if not selected else {}),
     }
 
 
@@ -940,6 +944,8 @@ def _attach_generated_delivery(output: dict, receipt: dict, snapshot: dict) -> d
     output["title_candidates"] = [{"title_id": "GENERATED_TITLE", "title": receipt["title"], "truth_ids": []}]
     output["selection"].update(title=receipt["title"], section_order=[row["section_id"] for row in sections])
     output["automatic_qa"] = copy.deepcopy(receipt["qa"])
+    if receipt.get("delivery_qualification_result"):
+        output["delivery_qualification_result"] = copy.deepcopy(receipt["delivery_qualification_result"])
     output["repair_history"] = copy.deepcopy(receipt["qa"]["repairs"])
     output["validation"] = validate_execution_output(output, snapshot)
     return output
@@ -1350,6 +1356,7 @@ def generate_complete_execution_deliverable(
     revision_identity: dict | None = None,
     regeneration_identity: dict | None = None,
     allow_frozen_strategy: bool = False,
+    qualification_plan: dict | None = None,
 ) -> tuple[SinglePromptExecutionProposalResult, bool]:
     proposal = db.query(SinglePromptExecutionProposal).filter_by(proposal_id=proposal_id).one_or_none()
     text_task = submitted_draft is not None or regeneration_identity is not None
@@ -1403,6 +1410,20 @@ def generate_complete_execution_deliverable(
             raise HTTPException(409, detail="已保存稿件输入 hash 不匹配")
     else:
         frozen = _freeze_delivery_input(db, snapshot, prior_result=base)
+    if qualification_plan is not None:
+        from .graded_delivery import validate_seal
+        validate_seal(qualification_plan, prefix="plan")
+        validate_seal(qualification_plan["qualification"], prefix="qualification")
+        identity = qualification_plan["qualification"]
+        if (
+            identity.get("proposal_id") != proposal_id
+            or identity.get("proposal_result_version") != base_result_version
+            or identity.get("proposal_result_hash") != base_result_hash
+            or identity.get("direction_id") != str(snapshot["direction"].get("direction_id") or snapshot["direction"].get("strategy_id") or "")
+        ):
+            raise HTTPException(409, "交付资格计划与执行方案身份不匹配")
+        frozen = copy.deepcopy(frozen)
+        frozen["delivery_qualification_plan"] = copy.deepcopy(qualification_plan)
     snapshot["delivery_input"] = copy.deepcopy(frozen)
     snapshot["delivery_input_hash"] = digest(frozen)
     if text_task:

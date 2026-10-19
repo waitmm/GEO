@@ -282,6 +282,93 @@ def require_task(db: Session, task_id: str, project_id: int, prompt_id: int) -> 
     return row
 
 
+def _draft_evidence_qualification(*, row: SinglePromptOptimizationTask, fixed: dict,
+                                  strategy_id: str, strategy_result_version: str,
+                                  strategy_result_hash: str, direction: dict,
+                                  base_output: dict) -> dict:
+    """Prove an automatic Draft request has one exact, strategy-owned allowlist.
+
+    Execution freezes and validates the immutable source/Answer/Strategy lineage.
+    This final request gate makes that qualification explicit before a model
+    budget can be reserved.  It does not upgrade missing evidence into advice.
+    """
+    delivery = base_output.get("delivery_input") or {}
+    selected = [item for item in delivery.get("selected_evidence") or []
+        if item.get("material_use") != "ATTRIBUTED_BRAND_PAGE_OBSERVATION_NOT_TRUTH"]
+    binding_ids = [str(item.get("binding_id") or "") for item in selected]
+    evidence_ids = [str(item.get("section_id") or "") for item in selected]
+    strategy_binding_ids = [str(value) for value in direction.get("evidence_relation_ids") or [] if value]
+    audit_binding_ids = [str(value) for value in
+        ((base_output.get("evidence_processing_audit") or {}).get("selected_binding_ids") or []) if value]
+    identity = delivery.get("identity") or {}
+    dependencies = [item for item in direction.get("dependencies") or []
+        if item.get("object_type") == "CITATION_CONTRIBUTION_SCOPE"]
+    source_evidence_required = any(
+        "EXECUTION_DRAFT" in (item.get("required_for") or []) for item in dependencies
+    )
+    contribution_parts = delivery.get("contribution_results") or []
+    contribution_versions = ([str(item.get("result_version") or "") for item in contribution_parts]
+        if contribution_parts else [delivery.get("contribution_result_version")]
+        if delivery.get("contribution_result_version") else [])
+    dependency_versions = [str(item.get("object_id") or "") for item in dependencies]
+    expected_identity = {
+        "analysis_id": row.analysis_id, "context_id": row.context_id,
+        "project_id": row.project_id, "prompt_id": row.prompt_id,
+        "strategy_id": strategy_id, "strategy_result_version": strategy_result_version,
+        "strategy_result_hash": strategy_result_hash,
+    }
+    source_input = fixed.get("source_input") or {}
+    source_manifest = delivery.get("source_manifest") or {}
+    requirements = {
+        "non_empty": bool(selected),
+        "evaluated": bool(selected) and all(
+            item.get("binding_id")
+            and item.get("evidence_relation") in {"SUPPORTS_FULL", "SUPPORTS_PARTIAL"}
+            and item.get("snapshot_id") and item.get("passage_id") and item.get("passage_hash")
+            for item in selected
+        ),
+        "scope_and_version_match": (
+            all(identity.get(key) == value for key, value in expected_identity.items())
+            and (not source_input or all(source_manifest.get(key) == value for key, value in source_input.items()))
+            and bool(dependency_versions)
+            and sorted(contribution_versions) == sorted(dependency_versions)
+        ),
+        "strategy_references_all": (
+            bool(binding_ids) and len(binding_ids) == len(set(binding_ids))
+            and set(binding_ids) == set(strategy_binding_ids)
+        ),
+        "draft_allowlist_match": (
+            bool(evidence_ids) and all(evidence_ids)
+            and len(evidence_ids) == len(set(evidence_ids))
+            and set(binding_ids) == set(audit_binding_ids)
+        ),
+    }
+    gap_actions = {
+        "non_empty": ("NO_ELIGIBLE_EVIDENCE", "先完成来源正文取得与 Citation Contribution 评估，形成至少一条可回指的支持关系。"),
+        "evaluated": ("EVIDENCE_NOT_EVALUATED_OR_SUPPORTED", "检查失败/未评估 Citation，修复 Schema、正文或回指问题后对固定版本重新评估。"),
+        "scope_and_version_match": ("EVIDENCE_SCOPE_OR_VERSION_MISMATCH", "重新从当前 Project、Prompt、Run 和冻结来源版本生成策略，不要沿用其他范围或 latest 结果。"),
+        "strategy_references_all": ("STRATEGY_EVIDENCE_NOT_BOUND", "重新生成当前固定输入的 Strategy，使其明确引用全部稿件 Evidence binding。"),
+        "draft_allowlist_match": ("DRAFT_EVIDENCE_ALLOWLIST_INVALID", "重新创建当前策略方向的稿件输入，确保 Draft 只可使用冻结 Evidence allowlist。"),
+    }
+    failed = [key for key, passed in requirements.items() if not passed]
+    if not source_evidence_required:
+        return {
+            "status": "NOT_APPLICABLE", "code": "DRAFT_SOURCE_EVIDENCE_NOT_REQUIRED",
+            "direction_id": str(direction.get("direction_id") or direction.get("strategy_id") or ""),
+            "evidence_count": len(selected), "evidence_ids": evidence_ids,
+            "binding_ids": binding_ids, "requirements": {}, "gaps": [], "next_actions": [],
+        }
+    return {
+        "status": "QUALIFIED" if not failed else "BLOCKED",
+        "code": "DRAFT_EVIDENCE_QUALIFIED" if not failed else "DRAFT_EVIDENCE_NOT_QUALIFIED",
+        "direction_id": str(direction.get("direction_id") or direction.get("strategy_id") or ""),
+        "evidence_count": len(selected), "evidence_ids": evidence_ids,
+        "binding_ids": binding_ids, "requirements": requirements,
+        "gaps": [gap_actions[key][0] for key in failed],
+        "next_actions": [gap_actions[key][1] for key in failed],
+    }
+
+
 def create_task(db: Session, *, analysis_id: str, project_id: int, prompt_id: int,
                 raw_output_hash: str, idempotency_key: str, brand_context_version_id: str | None = None,
                 source_fetch_authorized: bool = False, completion_manifest_id: str | None = None,
@@ -744,6 +831,25 @@ def execute_task(task_id: str, *, session_factory) -> None:
                     for s in fixed.get('supplemental_sources') or []])
             checkpoint(db, row, objects={"draft_in_progress": {"proposal_id": proposal.proposal_id,
                 "result_version": base.result_version, "result_hash": base.output_hash}})
+            base_output = loads(base.output_json, {})
+            if digest(base_output) != base.output_hash:
+                raise HTTPException(409, "稿件请求前的执行方案结果 hash 不匹配")
+            draft_eligibility = _draft_evidence_qualification(
+                row=row, fixed=fixed, strategy_id=strategy.strategy_id,
+                strategy_result_version=strategy_result.result_version,
+                strategy_result_hash=strategy_result.output_hash,
+                direction=direction, base_output=base_output,
+            )
+            checkpoint(db, row, objects={"draft_eligibility": draft_eligibility})
+            if draft_eligibility["status"] == "BLOCKED":
+                checkpoint(db, row, limitations=[{
+                    "code": draft_eligibility["code"],
+                    "direction_id": draft_eligibility["direction_id"],
+                    "gaps": draft_eligibility["gaps"],
+                    "next_actions": draft_eligibility["next_actions"],
+                }], status="BLOCKED", code=draft_eligibility["code"],
+                    detail="稿件请求未发出：当前策略缺少同范围、已评估且可回指的 Evidence。请按任务中的补证动作完成来源正文、Contribution 评估与策略引用。")
+                return
             delivered, _ = generate_complete_execution_deliverable(db, proposal_id=proposal.proposal_id,
                 base_result_version=base.result_version, base_result_hash=base.output_hash,
                 reviewable_set_hash=base.reviewable_set_hash, generation_client=scoped_client(db, row),

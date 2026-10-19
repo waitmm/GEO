@@ -641,11 +641,55 @@ class CitationContributionJudge:
         ]
         allowed_pairs = {item["candidate_pair_index"]: item for item in frozen_pairs}
 
+        def normalize_redundant_identity_echoes(payload: Any) -> Any:
+            """Remove only frozen-ID echoes after proving they match their indexes.
+
+            Some structured-output providers may echo the business IDs that were
+            intentionally omitted from the response schema.  The indexes remain
+            authoritative.  Exact echoes add no semantic input, so they can be
+            discarded only after an equality check against the frozen pair.  Any
+            other extra field remains subject to the strict typed-schema reject.
+            """
+            if not isinstance(payload, dict) or not isinstance(payload.get("evaluations"), list):
+                return payload
+            normalized = dict(payload)
+            evaluations = []
+            for raw in payload["evaluations"]:
+                if not isinstance(raw, dict):
+                    evaluations.append(raw)
+                    continue
+                item = dict(raw)
+                echoed = {key: item.get(key) for key in ("answer_unit_id", "passage_id") if key in item}
+                if echoed:
+                    pair_index = item.get("candidate_pair_index")
+                    expected = allowed_pairs.get(pair_index) if isinstance(pair_index, int) and not isinstance(pair_index, bool) else None
+                    if expected is None:
+                        error = SemanticLLMError("Citation Contribution 回显业务 ID 时引用了未知 candidate_pair_index")
+                        error.code = "FAILED_UNKNOWN_PAIR"
+                        raise error
+                    unit = unit_by_index[expected["answer_unit_index"]]
+                    passage = passage_by_index[expected["passage_index"]]
+                    expected_echoes = {
+                        "answer_unit_id": unit["answer_unit_id"],
+                        "passage_id": passage["passage_id"],
+                    }
+                    if any(value != expected_echoes[key] for key, value in echoed.items()):
+                        error = SemanticLLMError("Citation Contribution 回显业务 ID 与冻结索引身份不一致")
+                        error.code = "FAILED_UNKNOWN_PAIR"
+                        raise error
+                    item.pop("answer_unit_id", None)
+                    item.pop("passage_id", None)
+                evaluations.append(item)
+            normalized["evaluations"] = evaluations
+            return normalized
+
         def validate(payload: Any) -> dict[str, Any]:
             if payload is None or payload == {}:
                 raise SemanticLLMError("Citation Contribution 响应为空")
             try:
-                admitted = CitationContributionResponse.model_validate(payload).model_dump(mode="json")
+                admitted = CitationContributionResponse.model_validate(
+                    normalize_redundant_identity_echoes(payload)
+                ).model_dump(mode="json")
             except ValidationError as exc:
                 error = SemanticLLMError(f"Citation Contribution 响应未通过严格 Schema: {exc}")
                 error.code = "FAILED_SCHEMA"

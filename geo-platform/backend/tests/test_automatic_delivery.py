@@ -3,6 +3,7 @@ from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -11,6 +12,7 @@ from test_release_first_slice import _migrated_session, _seed_citation_contribut
 from app.api.release_catalog import _record_project_configuration
 from app.models import Project, SinglePromptAnalysis, SinglePromptAnalysisContext, SinglePromptDiagnosisReview, SinglePromptOptimizationTask
 from app.modules.single_prompt_v2.automatic_delivery import (
+    _draft_evidence_qualification,
     authorize_task, cancel_task, create_task, encode, scoped_client, task_view, execute_task,
     recover_interrupted_tasks, require_task, resume_task,
 )
@@ -51,6 +53,19 @@ def identity(row):
         transport_version=transport['transport_version'], call_identity_hash='1' * 64,
         input_scope_hash='2' * 64, input_token_upper_bound=500, max_output_tokens=500,
         input_hash='test-request', provider_payload_hash='test-payload')
+
+
+def test_draft_evidence_gate_does_not_erase_independent_truth_only_use():
+    row = SimpleNamespace(analysis_id='analysis-1', context_id='context-1', project_id=1, prompt_id=2)
+    direction = {"direction_id": "direction-truth", "direction_type": "MECHANISM",
+        "truth_ids": [7], "evidence_relation_ids": [], "dependencies": [{
+            "object_type": "CITATION_CONTRIBUTION_SCOPE", "object_id": "contribution-v1:x",
+            "required_for": ["STRATEGY_DIRECTION"], "state": "LIMITED"}]}
+    result = _draft_evidence_qualification(row=row, fixed={}, strategy_id='strategy-1',
+        strategy_result_version='strategy-v1:x', strategy_result_hash='a' * 64,
+        direction=direction, base_output={"delivery_input": {"selected_evidence": []}})
+    assert result['status'] == 'NOT_APPLICABLE'
+    assert result['code'] == 'DRAFT_SOURCE_EVIDENCE_NOT_REQUIRED'
 
 
 def test_creation_is_idempotent_and_never_confers_external_or_review_authority(scene):
@@ -329,10 +344,19 @@ def simulated_delivery_transport(monkeypatch, on_request=None, qa_response=None,
                 response = draft_response(payload) if draft_response else {'sections': [{'heading': '选用工具前的核对顺序', 'blocks': [{'kind': 'INSTRUCTION',
                     'text': '先列出需要处理的链接数量和使用场景，再向服务方核对当前限制；以实际说明为准，不把答案中的工具名称当成能力保证。', 'evidence_ids': []}]}]}
             elif 'frozen_candidate_pairs' in payload:
-                response = citation_response(payload) if citation_response else {'evaluations': [{**pair, 'answer_span': None, 'source_span': None,
-                    'correspondence_mode': 'NO_CORRESPONDENCE', 'evidence_relation': 'NO_MATCH',
-                    'rationale': '已逐项检查该固定候选，模拟结果为没有内容对应。'}
-                    for pair in payload['frozen_candidate_pairs']], 'no_binding_reason': None}
+                if citation_response:
+                    response = citation_response(payload)
+                else:
+                    response = {'evaluations': [], 'no_binding_reason': None}
+                    for index, pair in enumerate(payload['frozen_candidate_pairs']):
+                        supported = index == 0
+                        response['evaluations'].append({**pair,
+                            'answer_span': payload['untrusted_answer_units'][pair['answer_unit_index']]['raw_text'] if supported else None,
+                            'source_span': payload['untrusted_source_passages'][pair['passage_index']]['text'] if supported else None,
+                            'correspondence_mode': 'FAITHFUL_PARAPHRASE' if supported else 'NO_CORRESPONDENCE',
+                            'evidence_relation': 'SUPPORTS_PARTIAL' if supported else 'NO_MATCH',
+                            'rationale': ('固定回答与来源片段形成受限支持。' if supported
+                                else '已逐项检查该固定候选，模拟结果为没有内容对应。')})
             else:
                 response = answer_response(payload) if answer_response else {'events': [], 'selection_criteria': [], 'unresolved_items': []}
             content = codec.dumps(response, ensure_ascii=False)
@@ -380,12 +404,19 @@ def test_worker_real_stage_wiring_with_simulated_transport_not_real_llm(scene, m
     contribution = json.loads(db.query(SinglePromptCitationContributionResult).filter_by(result_version=reference['result_version']).one().output_json)
     assert sum(c['processing_status'] == 'DONE' for c in contribution['citations']) == 1, [c.get('failure_detail') for c in contribution['citations']]
     assert sum(c['processing_status'] == 'FAILED' for c in contribution['citations']) == 0
-    assert contribution['bindings'] == []
+    assert contribution['bindings']
     assert len(contribution['evaluations']) == len(next(c['frozen_candidate_pairs'] for c in calls if 'frozen_candidate_pairs' in c))
     assert db.query(SinglePromptDiagnosisReview).count() == 0
+    gate = view['objects']['draft_eligibility']
+    assert gate['status'] == 'QUALIFIED' and gate['evidence_count'] >= 1
+    assert all(gate['requirements'].values())
     delivery = view['objects']['deliveries'][0]
     saved = db.query(SinglePromptExecutionProposalResult).filter_by(result_version=delivery['result_version']).one()
-    assert json.loads(saved.output_json)['validation']['content_delivery_status'] == 'READY'
+    saved_output = json.loads(saved.output_json)
+    assert saved_output['validation']['content_delivery_status'] == 'READY'
+    selected = saved_output['delivery_input']['selected_evidence']
+    assert selected and {item['binding_id'] for item in selected} == set(gate['binding_ids'])
+    assert set(saved_output['direction']['evidence_relation_ids']) == set(gate['binding_ids'])
     execute_task(row.task_id, session_factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
     assert len(calls) == 4
 
@@ -452,7 +483,7 @@ def test_stage_restart_preserves_exact_objects_budget_and_cached_draft(scene, mo
     assert len(calls) == 4 and db.query(SinglePromptDiagnosisReview).count() == 0
 
 
-def test_unavailable_source_keeps_citation_and_delivers_without_waive_or_fetch(scene, monkeypatch):
+def test_unavailable_source_blocks_draft_before_request_and_preserves_inputs(scene, monkeypatch):
     from sqlalchemy.orm import sessionmaker
     from app.models import SinglePromptSourceDisposition, SinglePromptSourceCompletionManifest, SinglePromptExecutionProposalResult, SinglePromptCitationManifest
     db, row, _, _ = scene
@@ -473,19 +504,22 @@ def test_unavailable_source_keeps_citation_and_delivers_without_waive_or_fetch(s
     execute_task(row.task_id, session_factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
     db.refresh(row); db.refresh(source)
     view = task_view(row)
-    assert row.status == 'COMPLETED_WITH_LIMITATIONS', (row.blocker_code, row.blocker_detail)
+    assert row.status == 'BLOCKED', (row.blocker_code, row.blocker_detail)
+    assert row.blocker_code == 'DRAFT_EVIDENCE_NOT_QUALIFIED'
     assert source.state == 'MANUAL_REQUIRED' and source.active_snapshot_id is None
     assert {s.id: s.state for s in db.query(SinglePromptSourceDisposition).all()} == {**original_states, source.id: 'MANUAL_REQUIRED'}
-    assert len(calls) == 3 and not any('frozen_candidate_pairs' in p for p in calls)
+    assert len(calls) == 1 and not any('frozen_candidate_pairs' in p for p in calls)
+    assert not any('public_evidence' in p or 'segments' in p for p in calls)
+    assert view['usage']['external_requests'] == 1
     assert view['objects']['citation_results'] == []
     assert any(limit['code'] == 'CITATION_NOT_EVALUATED' for limit in view['limitations'])
     completion = db.query(SinglePromptSourceCompletionManifest).filter_by(manifest_id=view['objects']['completion_manifest_id']).one()
     assert completion.status != 'FROZEN'
-    result = db.query(SinglePromptExecutionProposalResult).filter_by(result_version=view['objects']['deliveries'][0]['result_version']).one()
-    output = json.loads(result.output_json)
-    assert output['publication_draft']['body_markdown']
-    assert output['delivery_input']['selected_evidence'] == []
-    assert output['automatic_qa']['status'] == 'READY'
+    gate = view['objects']['draft_eligibility']
+    assert gate['status'] == 'BLOCKED' and gate['evidence_count'] == 0
+    assert gate['requirements']['non_empty'] is False
+    assert 'NO_ELIGIBLE_EVIDENCE' in gate['gaps']
+    assert gate['next_actions'] and view['objects'].get('deliveries') is None
     db.refresh(context); db.refresh(citation)
     assert context.raw_output_json == original_raw and citation.payload_json == original_citation
     assert db.query(SinglePromptDiagnosisReview).count() == 0

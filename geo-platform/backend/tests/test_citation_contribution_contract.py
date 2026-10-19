@@ -130,6 +130,35 @@ def test_dynamic_gate_maps_frozen_indexes_and_rejects_semantic_span_sentinels():
         CitationContributionJudge(StaticClient(negative)).judge([unit], [passage], [pair])
 
 
+def test_dynamic_gate_accepts_only_exact_redundant_identity_echoes():
+    unit = {"answer_unit_id": "au-frozen", "raw_text": "支持批量生成短链",
+        "context_heading": "", "primary_type": "FACT", "semantic_facets": []}
+    passage = {"passage_id": "psg-frozen", "text": "支持批量生成短链。"}
+    pair = {"answer_unit_id": "au-frozen", "passage_id": "psg-frozen"}
+
+    class StaticClient:
+        def __init__(self, payload): self.payload = payload
+        def structured_generate_sync(self, **kwargs):
+            return kwargs["response_validator"](self.payload)
+
+    echoed = _valid_response()
+    echoed["evaluations"][0].update(answer_unit_id="au-frozen", passage_id="psg-frozen")
+    admitted = CitationContributionJudge(StaticClient(echoed)).judge([unit], [passage], [pair])
+    assert admitted["evaluations"][0]["answer_unit_id"] == "au-frozen"
+    assert admitted["evaluations"][0]["passage_id"] == "psg-frozen"
+
+    for key, value in [("answer_unit_id", "au-other"), ("passage_id", "psg-other")]:
+        mismatched = json.loads(json.dumps(echoed))
+        mismatched["evaluations"][0][key] = value
+        with pytest.raises(Exception, match="回显业务 ID 与冻结索引身份不一致"):
+            CitationContributionJudge(StaticClient(mismatched)).judge([unit], [passage], [pair])
+
+    unknown = json.loads(json.dumps(echoed))
+    unknown["evaluations"][0]["unexpected_identity"] = "must-still-fail"
+    with pytest.raises(Exception, match="严格 Schema"):
+        CitationContributionJudge(StaticClient(unknown)).judge([unit], [passage], [pair])
+
+
 def test_deepseek_json_schema_mode_sends_provider_schema_via_responses_api(monkeypatch):
     captured: dict = {}
     raw = _valid_response()

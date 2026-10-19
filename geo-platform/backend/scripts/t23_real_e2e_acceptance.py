@@ -82,7 +82,7 @@ def _bounded_date(value: str) -> str:
     return value
 
 
-def validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
+def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = False) -> dict[str, Any]:
     if value.get("contract_version") != CONTRACT:
         raise ValueError("unsupported T23 manifest contract")
     source_hash = value.get("source_database_sha256")
@@ -121,11 +121,42 @@ def validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"invalid bounded allocation for {row['id']}")
         if not 0 < float(row["max_cost_cny"]) <= 40:
             raise ValueError(f"invalid cost allocation for {row['id']}")
+        if row["id"] == "E2E-01":
+            if (row.get("prepare_max_requests") != 1 or row.get("execute_max_requests") != 3
+                    or row["prepare_max_requests"] + row["execute_max_requests"] != row["max_requests"]):
+                raise ValueError("E2E-01 must freeze the 1 Answer prepare + 3 execute request allocation")
+            answer_prepare = row.get("answer_prepare_input")
+            if (not isinstance(answer_prepare, dict)
+                    or set(answer_prepare) != {"citation_manifest_id", "citation_manifest_hash", "selected_run_id"}
+                    or answer_prepare["selected_run_id"] not in row["run_ids"]
+                    or not isinstance(answer_prepare["citation_manifest_hash"], str)
+                    or len(answer_prepare["citation_manifest_hash"]) != 64):
+                raise ValueError("E2E-01 must freeze exact formal Answer prepare inputs")
         if row["id"] == "E2E-02":
+            if (row.get("prepare_max_requests") != 1 or row.get("execute_max_requests") != 2
+                    or row["prepare_max_requests"] + row["execute_max_requests"] != row["max_requests"]):
+                raise ValueError("E2E-02 must freeze the 1 prepare + 2 execute request allocation")
+            prepare = row.get("prepare_input")
+            prepare_required = {"answer_result_version", "answer_result_hash", "citation_manifest_id",
+                "citation_manifest_hash", "completion_manifest_id", "completion_manifest_hash",
+                "selected_run_id"}
+            if not isinstance(prepare, dict) or set(prepare) != prepare_required:
+                if not allow_unprepared_e2e02 or not isinstance(prepare, dict) or set(prepare) != (
+                        prepare_required - {"answer_result_version", "answer_result_hash"}):
+                    raise ValueError("E2E-02 must freeze exact formal Contribution prepare inputs")
+            if prepare["selected_run_id"] not in row["run_ids"]:
+                raise ValueError("E2E-02 prepare Run is outside the frozen scenario scope")
+            for key in ("answer_result_hash", "citation_manifest_hash", "completion_manifest_hash"):
+                if allow_unprepared_e2e02 and key == "answer_result_hash" and key not in prepare:
+                    continue
+                if not isinstance(prepare[key], str) or len(prepare[key]) != 64:
+                    raise ValueError(f"E2E-02 prepare {key} must be sha256")
             low = row.get("low_match_evidence")
             low_required = {"contribution_id", "result_version", "result_hash", "selected_run_id",
                 "citation_id", "reference_id", "source_key", "canonical_url_hash",
                 "citation_disposition", "evaluation_id", "evaluation_hash", "evidence_relation"}
+            if allow_unprepared_e2e02 and low is None:
+                continue
             if not isinstance(low, dict) or set(low) != low_required:
                 raise ValueError("E2E-02 must freeze one exact real low-match citation diagnosis")
             if (low["selected_run_id"] not in row["run_ids"]
@@ -139,6 +170,14 @@ def validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("scenario request caps exceed the shared T23 allocation")
     if [row["max_requests"] for row in cases] != [4, 3, 2]:
         raise ValueError("T23 request plan must preserve the frozen 4+3+2 staged allocation")
+    if (cases[0]["analysis_id"] != cases[1]["analysis_id"]
+            or cases[0]["context_id"] != cases[1]["context_id"]
+            or cases[0]["project_id"] != cases[1]["project_id"]
+            or cases[0]["prompt_id"] != cases[1]["prompt_id"]
+            or cases[0]["run_ids"] != cases[1]["run_ids"]):
+        raise ValueError("E2E-01 Answer prepare and E2E-02 Contribution must share one frozen Analysis/Run scope")
+    if len(cases[0]["run_ids"]) != 1:
+        raise ValueError("E2E-01/E2E-02 staged prepare requires one exact frozen Run")
     if sum(float(row["max_cost_cny"]) for row in cases) > float(budget["max_cost_cny"]):
         raise ValueError("scenario cost caps exceed the shared T23 allocation")
     return value
@@ -380,8 +419,9 @@ def _verify_delivery(db: Session, task: SinglePromptOptimizationTask, scenario_i
 
 
 def _authorization(case: dict[str, Any], inspected: dict[str, Any], budget: dict[str, Any]) -> dict[str, Any]:
+    request_cap = case.get("execute_max_requests", case["max_requests"])
     return {"expected_revision": inspected["revision"], "input_hash": inspected["input_hash"],
-        "max_requests": case["max_requests"], "max_tokens": case["max_tokens"],
+        "max_requests": request_cap, "max_tokens": case["max_tokens"],
         "max_cost_cny": case["max_cost_cny"],
         "conservative_cny_per_million_tokens": budget["conservative_cny_per_million_tokens"],
         "pricing_source": budget["pricing_source"], "pricing_checked_at": budget["pricing_checked_at"],

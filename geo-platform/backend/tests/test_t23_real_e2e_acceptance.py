@@ -2,6 +2,9 @@ from datetime import datetime, timezone
 import copy
 import hashlib
 import json
+import sqlite3
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.orm import sessionmaker
@@ -13,8 +16,14 @@ from scripts.t23_real_e2e_acceptance import (
     _verify_delivery,
     validate_manifest,
 )
-from scripts.live_model_budget import initialize, summary
-from scripts.run_t23_delivery_live import _hooks
+from scripts.live_model_budget import finish, initialize, reserve, summary
+from scripts.run_t23_delivery_live import (
+    _assert_ledger,
+    _extract_low_match,
+    _freeze_manifest_value,
+    _hooks,
+    prepare_and_freeze,
+)
 from test_automatic_delivery import identity, scene, simulated_delivery_transport
 from app.modules.single_prompt_v2.automatic_delivery import (
     authorize_task,
@@ -25,6 +34,8 @@ from app.modules.single_prompt_v2.automatic_delivery import (
 )
 from app.services.semantic_llm.base import SemanticLLMError
 from app.modules.single_prompt_v2.delivery_text import digest
+from app.services.url_identity import build_url_identity
+from app.models import SinglePromptCitationContributionExecution
 
 
 def manifest():
@@ -46,19 +57,41 @@ def manifest():
             "id": scenario,
             "task_id": f"task-{scenario}",
             "project_id": 1,
-            "prompt_id": index,
-            "analysis_id": f"analysis-{index}",
-            "context_id": f"context-{index}",
+            "prompt_id": 1 if scenario == "E2E-02" else index,
+            "analysis_id": f"analysis-{1 if scenario == 'E2E-02' else index}",
+            "context_id": f"context-{1 if scenario == 'E2E-02' else index}",
             "input_hash": str(index) * 64,
-            "run_ids": [index],
+            "run_ids": [1 if scenario == "E2E-02" else index],
             "max_requests": {"E2E-01": 4, "E2E-02": 3, "E2E-03": 2}[scenario],
             "max_tokens": 300_000,
             "max_cost_cny": 10,
+            **({
+                "prepare_max_requests": 1,
+                "execute_max_requests": 3,
+                "answer_prepare_input": {
+                    "citation_manifest_id": "citation-manifest-e2e01",
+                    "citation_manifest_hash": "7" * 64,
+                    "selected_run_id": 1,
+                },
+            } if scenario == "E2E-01" else {}),
+            **({
+                "prepare_max_requests": 1,
+                "execute_max_requests": 2,
+                "prepare_input": {
+                    "answer_result_version": "diagnosis-v1:answer",
+                    "answer_result_hash": "e" * 64,
+                    "citation_manifest_id": "citation-manifest-e2e02",
+                    "citation_manifest_hash": "f" * 64,
+                    "completion_manifest_id": "completion-manifest-e2e02",
+                    "completion_manifest_hash": "1" * 64,
+                    "selected_run_id": 1,
+                },
+            } if scenario == "E2E-02" else {}),
             **({"low_match_evidence": {
                 "contribution_id": "contribution-low-match",
                 "result_version": "contribution-v1:low-match",
                 "result_hash": "b" * 64,
-                "selected_run_id": 2,
+                "selected_run_id": 1,
                 "citation_id": "citation-real-2",
                 "reference_id": 22,
                 "source_key": "source-real-2",
@@ -96,6 +129,22 @@ def test_manifest_requires_one_shared_non_retrying_budget_for_all_three_scenario
     with pytest.raises(ValueError, match="exactly once"):
         validate_manifest(value)
 
+    value = manifest()
+    del value["scenarios"][1]["low_match_evidence"]
+    with pytest.raises(ValueError, match="freeze one exact real low-match"):
+        validate_manifest(value)
+
+    del value["scenarios"][1]["prepare_input"]["answer_result_version"]
+    del value["scenarios"][1]["prepare_input"]["answer_result_hash"]
+    assert validate_manifest(value, allow_unprepared_e2e02=True) is value
+    with pytest.raises(ValueError, match="exact formal Contribution prepare inputs"):
+        validate_manifest(value)
+
+    value = manifest()
+    value["scenarios"][1]["execute_max_requests"] = 3
+    with pytest.raises(ValueError, match=r"1 prepare \+ 2 execute"):
+        validate_manifest(value)
+
 
 def test_authorization_payload_is_exact_task_revision_and_controller_allocation():
     value = manifest()
@@ -103,7 +152,7 @@ def test_authorization_payload_is_exact_task_revision_and_controller_allocation(
     assert payload == {
         "expected_revision": 7,
         "input_hash": "f" * 64,
-        "max_requests": 4,
+        "max_requests": 3,
         "max_tokens": 300_000,
         "max_cost_cny": 10,
         "conservative_cny_per_million_tokens": 10,
@@ -111,6 +160,8 @@ def test_authorization_payload_is_exact_task_revision_and_controller_allocation(
         "pricing_checked_at": datetime.now(timezone.utc).date().isoformat(),
         "authorized_by": "acceptance-controller",
     }
+    e2e02 = _authorization(value["scenarios"][1], {"revision": 8, "input_hash": "e" * 64}, value["shared_budget"])
+    assert e2e02["max_requests"] == 2
 
 
 def test_post_execution_gate_requires_persisted_ready_text_qa_and_hashes(scene, monkeypatch, tmp_path):
@@ -135,7 +186,7 @@ def test_post_execution_gate_requires_persisted_ready_text_qa_and_hashes(scene, 
         id=citation["reference_id"], run_id=citation["run_id"]).one()
     if not reference.canonical_url:
         reference.canonical_url = "https://example.test/real-citation"
-        reference.canonical_url_hash = hashlib.sha256(reference.canonical_url.encode()).hexdigest()
+        reference.canonical_url_hash = build_url_identity(reference.canonical_url).canonical_url_hash
         db.commit()
     low_match = {
         "contribution_id": contribution.contribution_id,
@@ -153,8 +204,29 @@ def test_post_execution_gate_requires_persisted_ready_text_qa_and_hashes(scene, 
     }
     case = {"id": "E2E-02", "analysis_id": row.analysis_id, "context_id": row.context_id,
         "project_id": row.project_id, "prompt_id": row.prompt_id,
+        "prepare_input": {"selected_run_id": citation["run_id"]},
         "low_match_evidence": low_match}
     assert _low_match_summary(db, case, json.loads(row.input_json))["evaluation_id"] == evaluation["evaluation_id"]
+    contribution_execution = db.query(SinglePromptCitationContributionExecution).filter_by(
+        contribution_id=contribution.contribution_id).one()
+    assert _extract_low_match(db, case, contribution_execution, contribution) == low_match
+
+    high_match = copy.deepcopy(contribution_output)
+    high_match["evaluations"][0]["evidence_relation"] = "SUPPORTS_FULL"
+    high_result = SimpleNamespace(output_json=json.dumps(high_match), output_hash=digest(high_match))
+    with pytest.raises(ValueError, match="no formal low-match"):
+        _extract_low_match(db, case, contribution_execution, high_result)
+
+    wrong_run = copy.deepcopy(contribution_output)
+    next(item for item in wrong_run["citations"]
+        if item["citation_id"] == evaluation["citation_id"])["run_id"] += 999
+    wrong_run_result = SimpleNamespace(output_json=json.dumps(wrong_run), output_hash=digest(wrong_run))
+    with pytest.raises(ValueError, match="no formal low-match"):
+        _extract_low_match(db, case, contribution_execution, wrong_run_result)
+
+    drifted_result = SimpleNamespace(output_json=contribution.output_json, output_hash="0" * 64)
+    with pytest.raises(ValueError, match="identity/hash drifted"):
+        _extract_low_match(db, case, contribution_execution, drifted_result)
 
     cross_run_contribution = copy.deepcopy(contribution_output)
     cross_run_citation = next(item for item in cross_run_contribution["citations"]
@@ -250,6 +322,102 @@ def test_shared_ledger_reservation_is_finished_when_local_task_guard_rejects(sce
     assert state["used_requests"] == 1
     assert state["by_task"]["T23"] == 1
     assert state["requests"][0]["status"] == "FAILED"
+
+
+def test_prepare_budget_is_counted_once_and_execute_only_receives_remaining_allocation(scene, tmp_path):
+    _, row, _, _ = scene
+    ledger = tmp_path / "model-budget-v2.sqlite3"
+    value = manifest()
+    initialize(ledger, pricing_source=value["shared_budget"]["pricing_source"],
+        pricing_checked_at=value["shared_budget"]["pricing_checked_at"])
+    _assert_ledger(value, summary(ledger), include_prepare=True)
+    request_guard, _audit_sink, settle_unknown = _hooks(
+        ledger, scenario_id="E2E-02", task_id=f"prepare:{row.task_id}")
+    request = {**identity(row), "input_hash": "a" * 64,
+        "provider_payload_hash": "b" * 64, "attempt": 1}
+    request_guard(request)
+    settle_unknown(TimeoutError("provider delivery unknown"))
+    state = summary(ledger)
+    assert state["used_requests"] == 1
+    assert state["requests"][0]["status"] == "DELIVERY_UNKNOWN"
+    _assert_ledger(value, state)
+    with pytest.raises(ValueError, match="remaining shared request budget"):
+        _assert_ledger(value, state, include_prepare=True)
+    assert _authorization(value["scenarios"][1], {"revision": 1, "input_hash": "a" * 64},
+        value["shared_budget"])["max_requests"] == 2
+
+
+def test_repeated_prepare_freeze_is_idempotent_but_identity_drift_is_rejected():
+    value = manifest()
+    case = value["scenarios"][1]
+    low = case.pop("low_match_evidence")
+    first = _freeze_manifest_value(value, low, "9" * 64)
+    second = _freeze_manifest_value(first, low, "9" * 64)
+    assert second == first
+    with pytest.raises(ValueError, match="different immutable low-match"):
+        _freeze_manifest_value(first, {**low, "evaluation_hash": "8" * 64}, "9" * 64)
+
+
+def test_prepare_freeze_uses_formal_answer_and_contribution_with_one_shared_ledger(
+        scene, monkeypatch, tmp_path):
+    from app.models import ReferenceSource, SinglePromptCitationManifest, SinglePromptSourceCompletionManifest
+
+    db, row, _, _ = scene
+    citation = db.query(SinglePromptCitationManifest).filter_by(analysis_id=row.analysis_id).one()
+    completion = db.query(SinglePromptSourceCompletionManifest).filter_by(
+        analysis_id=row.analysis_id, context_id=row.context_id).one()
+    inputs = json.loads(row.input_json)
+    run_id = inputs["run_ids"][0]
+    for reference in db.query(ReferenceSource).filter_by(run_id=run_id).all():
+        reference.canonical_url = reference.canonical_url or "https://example.test/real-citation"
+        reference.canonical_url_hash = build_url_identity(reference.canonical_url).canonical_url_hash
+    database = Path(str(db.get_bind().url.database))
+    db.commit()
+    db.close()
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    connection.close()
+
+    value = manifest()
+    for case in value["scenarios"][:2]:
+        case.update(task_id=row.task_id, project_id=row.project_id, prompt_id=row.prompt_id,
+            analysis_id=row.analysis_id, context_id=row.context_id, input_hash=row.input_hash,
+            run_ids=[run_id])
+    value["scenarios"][0]["answer_prepare_input"] = {
+        "citation_manifest_id": citation.manifest_id,
+        "citation_manifest_hash": citation.payload_hash,
+        "selected_run_id": run_id,
+    }
+    value["scenarios"][1]["prepare_input"] = {
+        "citation_manifest_id": citation.manifest_id,
+        "citation_manifest_hash": citation.payload_hash,
+        "completion_manifest_id": completion.manifest_id,
+        "completion_manifest_hash": completion.payload_hash,
+        "selected_run_id": run_id,
+    }
+    value["scenarios"][1].pop("low_match_evidence")
+    value["source_database_sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
+    input_manifest = tmp_path / "t23-prepare.json"
+    input_manifest.write_text(json.dumps(value), encoding="utf-8")
+    ledger = tmp_path / "model-budget-v2.sqlite3"
+    initialize(ledger, pricing_source=value["shared_budget"]["pricing_source"],
+        pricing_checked_at=value["shared_budget"]["pricing_checked_at"])
+    simulated_delivery_transport(monkeypatch)
+
+    frozen_path = tmp_path / "t23-frozen.json"
+    report = prepare_and_freeze(database=database, ledger=ledger, manifest_path=input_manifest,
+        frozen_manifest_path=frozen_path, report_path=tmp_path / "prepare-report.json")
+    assert report["status"] == "PASS"
+    frozen = validate_manifest(json.loads(frozen_path.read_text()))
+    assert frozen["scenarios"][1]["low_match_evidence"]["selected_run_id"] == run_id
+    assert frozen["source_database_sha256"] == hashlib.sha256(database.read_bytes()).hexdigest()
+    assert summary(ledger)["used_requests"] == 2
+
+    second_path = tmp_path / "t23-frozen-repeat.json"
+    repeated = prepare_and_freeze(database=database, ledger=ledger, manifest_path=frozen_path,
+        frozen_manifest_path=second_path, report_path=tmp_path / "prepare-repeat-report.json")
+    assert repeated["low_match_evidence"] == report["low_match_evidence"]
+    assert summary(ledger)["used_requests"] == 2
 
 
 def test_shared_guard_refuses_unfrozen_answer_transport_identity(scene, tmp_path):

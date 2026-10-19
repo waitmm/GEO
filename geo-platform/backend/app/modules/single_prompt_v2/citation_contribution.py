@@ -2208,10 +2208,12 @@ def execute_citation_contribution(
                 response_audit_sink=response_audit_sink,
             )
         )
-        if automatic_task_id:
+        if isinstance(active_judge, CitationContributionJudge) and (
+                automatic_task_id or active_judge.client.response_audit_sink is not response_audit_sink):
             parent_sink = active_judge.client.response_audit_sink
             def owned_audit(payload):
-                parent_sink(payload)
+                if parent_sink is not None:
+                    parent_sink(payload)
                 response_audit_sink(payload)
             active_judge.client.response_audit_sink = owned_audit
         snapshot_by_id = {row.snapshot_id: row for row in fixed["snapshots"]}

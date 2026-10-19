@@ -13,6 +13,7 @@ import { downloadManuscript } from "./manuscriptExport";
 import { readOptimizationSelection, resolveOptimizationSelection } from "./optimizationSelection";
 import { optimizationStatus as statusLabel } from './optimizationStatus';
 import { draftEligibility, draftRequestBlocked } from "./draftEvidenceGate";
+import { DeliveryQualificationCard } from "./DeliveryQualificationCard";
 import type { OptimizationSelection } from "./optimizationSelection";
 
 type Task = {
@@ -205,6 +206,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
         <Steps size="small" responsive current={task.stage === "COMPLETE" ? stages.length : Math.max(0, stages.findIndex(s => s.key === task.stage))} items={stages.map(s => ({ title: s.title }))} style={{ margin: "20px 0" }} />
         {task.blocker_detail && <Alert type="warning" showIcon message={statusLabel(task)} description={task.blocker_detail} />}
         <EvidenceReadiness task={task} />
+        <DeliveryQualificationCard objects={task.objects} />
         <Descriptions size="small" column={{ xs: 1, md: 3 }}>
           <Descriptions.Item label="固定样本">{task.scope.map(r => `Run #${r}`).join("、")}</Descriptions.Item>
           <Descriptions.Item label="本任务冻结资料">{task.brand_context_label}；额外公开资料 {task.supplemental_source_count} 份</Descriptions.Item>

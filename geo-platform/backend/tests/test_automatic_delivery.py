@@ -19,6 +19,7 @@ from app.modules.single_prompt_v2.automatic_delivery import (
 )
 from app.modules.single_prompt_v2.delivery_text import digest, text_digest
 from app.services.semantic_llm.base import SemanticLLMError
+from app.services.shared_model_budget import SharedBudgetHooks, initialize as initialize_shared_budget, summary as shared_budget_summary
 
 
 @pytest.fixture
@@ -54,6 +55,36 @@ def identity(row):
         transport_version=transport['transport_version'], call_identity_hash='1' * 64,
         input_scope_hash='2' * 64, input_token_upper_bound=500, max_output_tokens=500,
         input_hash='test-request', provider_payload_hash='test-payload')
+
+
+def test_workflow_external_guard_uses_same_controller_ledger(scene):
+    from app.modules.single_prompt_v2.automatic_delivery import shared_live_budget_hooks
+
+    db, row, _, tmp_path = scene
+    authorize_task(db, row, expected_revision=row.revision, input_hash=row.input_hash,
+        max_requests=1, max_tokens=1000, max_cost_cny=0.01,
+        conservative_cny_per_million_tokens=10,
+        pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+        pricing_checked_at="2026-10-19", authorized_by="test")
+    row.status = "RUNNING"
+    row.progress_json = encode({"stage": "ANSWER", "requests": []})
+    db.commit()
+    request = identity(row)
+    request.update(input_hash="a" * 64, provider_payload_hash="b" * 64, attempt=1)
+    ledger = tmp_path / "shared-budget.sqlite3"
+    initialize_shared_budget(ledger, batch_id="agent-workflow-comparison-20261019",
+                             pricing_checked_at="2026-10-19")
+    hooks = SharedBudgetHooks(ledger, lane="WORKFLOW_BASELINE", operation_id=row.task_id)
+    with shared_live_budget_hooks(request_guard=hooks.request_guard,
+                                  response_audit_sink=hooks.audit_sink):
+        client = scoped_client(db, row)
+        client.request_guard(request)
+        client.response_audit_sink({"request_identity": request, "response_source": "EXTERNAL_LLM",
+            "validation_status": "ACCEPTED",
+            "token_usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}})
+    state = shared_budget_summary(ledger)
+    assert state["by_lane"]["WORKFLOW_BASELINE"] == 1
+    assert state["used_tokens"] == 150
 
 
 def test_draft_evidence_gate_does_not_erase_independent_truth_only_use():

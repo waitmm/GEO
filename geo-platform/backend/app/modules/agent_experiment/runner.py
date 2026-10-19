@@ -29,11 +29,16 @@ class DecisionClient(Protocol):
 
 
 class DeepSeekDecisionClient:
-    def __init__(self, *, cache_only: bool, request_guard, conservative_cny_per_million_tokens: float = 0.0):
+    def __init__(self, *, cache_only: bool, request_guard, conservative_cny_per_million_tokens: float = 0.0,
+                 response_audit_sink=None):
         self.audit: list[dict[str, Any]] = []
         self.conservative_cny_per_million_tokens = conservative_cny_per_million_tokens
+        def audit(event: dict[str, Any]) -> None:
+            self.audit.append(event)
+            if response_audit_sink is not None:
+                response_audit_sink(event)
         self.client = DeepSeekClient(cache_only=cache_only, max_attempts=1,
-                                     response_audit_sink=self.audit.append, request_guard=request_guard)
+                                     response_audit_sink=audit, request_guard=request_guard)
 
     def decide(self, *, db: Session, system_prompt: str, user_payload: dict[str, Any],
                max_tokens: int) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -41,7 +46,7 @@ class DeepSeekDecisionClient:
         before_out = self.client.external_output_token_count
         output = self.client.structured_generate_sync(
             system_prompt=system_prompt, user_payload=user_payload, response_schema=AgentDecision,
-            model="deepseek-v4-flash", prompt_version="geo-agent-loop.v1",
+            model="deepseek-flash", prompt_version="geo-agent-loop.v1",
             schema_version="geo.agent.decision.v1", max_tokens=max_tokens, db=db,
             strict_json=True, structured_output_mode="JSON_SCHEMA",
             response_validator=lambda value: AgentDecision.model_validate(value).model_dump(mode="json"),
@@ -164,46 +169,59 @@ def _save_l4_recovery(db: Session, run: AgentExperimentRun, scope: dict[str, Any
     _save_result(db, run, result, validation, eligibility, status="NEEDS_INPUT")
 
 
-def _request_guard(db: Session, run: AgentExperimentRun):
+def _request_guard(db: Session, run: AgentExperimentRun, *, shared_budget_hooks=None):
     def guard(request: dict[str, Any]) -> None:
+        if shared_budget_hooks is not None:
+            shared_budget_hooks.request_guard(request)
         authorization = loads(run.authorization_json, {})
-        if authorization.get("mode") != "EXTERNAL_ALLOWED":
-            error = SemanticLLMError("Agent 外部模型调用未授权")
-            error.code = "EXTERNAL_MODEL_NOT_AUTHORIZED"
-            raise error
-        budget = loads(run.budget_json, {})
-        reserved_requests = int(authorization.get("reserved_requests", 0))
-        reserved_tokens = int(authorization.get("reserved_tokens", 0))
-        reserved_cost = float(authorization.get("reserved_cost_cny", 0.0))
-        next_tokens = int(request.get("input_token_upper_bound", 0)) + int(request.get("max_output_tokens", 0))
-        unit_price = float(authorization.get("conservative_cny_per_million_tokens", 0.0))
-        next_cost = next_tokens / 1_000_000 * unit_price
-        if (run.model_call_count >= int(budget.get("max_model_calls", 0))
-                or reserved_requests + 1 > int(authorization.get("max_requests", 0))):
-            error = SemanticLLMError("Agent 模型调用预算已用尽")
-            error.code = "AGENT_MODEL_CALL_BUDGET_EXHAUSTED"
-            raise error
-        if (reserved_tokens + next_tokens > int(authorization.get("max_total_tokens", 0))
-                or reserved_tokens + next_tokens > int(budget.get("max_total_tokens", 0))):
-            error = SemanticLLMError("Agent Token 预留预算不足")
-            error.code = "AGENT_TOKEN_BUDGET_EXHAUSTED"
-            raise error
-        if reserved_cost + next_cost > float(authorization.get("max_cost_cny", 0)):
-            error = SemanticLLMError("Agent 人民币硬预算不足")
-            error.code = "AGENT_COST_BUDGET_EXHAUSTED"
-            raise error
-        run.authorization_json = _canonical({**authorization, "reserved_requests": reserved_requests + 1,
-                                             "reserved_tokens": reserved_tokens + next_tokens,
-                                             "reserved_cost_cny": round(reserved_cost + next_cost, 8)})
-        run.progress_json = _canonical({**loads(run.progress_json, {}),
-                                        "external_request_state": "RESERVED_IN_FLIGHT",
-                                        "external_request_identity_hash": digest(request)})
-        run.revision += 1
-        db.commit()
+        try:
+            if authorization.get("mode") != "EXTERNAL_ALLOWED":
+                error = SemanticLLMError("Agent 外部模型调用未授权")
+                error.code = "EXTERNAL_MODEL_NOT_AUTHORIZED"
+                raise error
+            budget = loads(run.budget_json, {})
+            reserved_requests = int(authorization.get("reserved_requests", 0))
+            reserved_tokens = int(authorization.get("reserved_tokens", 0))
+            reserved_cost = float(authorization.get("reserved_cost_cny", 0.0))
+            next_tokens = int(request.get("input_token_upper_bound", 0)) + int(request.get("max_output_tokens", 0))
+            unit_price = float(authorization.get("conservative_cny_per_million_tokens", 0.0))
+            next_cost = next_tokens / 1_000_000 * unit_price
+            if (run.model_call_count >= int(budget.get("max_model_calls", 0))
+                    or reserved_requests + 1 > int(authorization.get("max_requests", 0))):
+                error = SemanticLLMError("Agent 模型调用预算已用尽")
+                error.code = "AGENT_MODEL_CALL_BUDGET_EXHAUSTED"
+                raise error
+            if (reserved_tokens + next_tokens > int(authorization.get("max_total_tokens", 0))
+                    or reserved_tokens + next_tokens > int(budget.get("max_total_tokens", 0))):
+                error = SemanticLLMError("Agent Token 预留预算不足")
+                error.code = "AGENT_TOKEN_BUDGET_EXHAUSTED"
+                raise error
+            if reserved_cost + next_cost > float(authorization.get("max_cost_cny", 0)):
+                error = SemanticLLMError("Agent 人民币硬预算不足")
+                error.code = "AGENT_COST_BUDGET_EXHAUSTED"
+                raise error
+            run.authorization_json = _canonical({**authorization, "reserved_requests": reserved_requests + 1,
+                                                 "reserved_tokens": reserved_tokens + next_tokens,
+                                                 "reserved_cost_cny": round(reserved_cost + next_cost, 8)})
+            run.progress_json = _canonical({**loads(run.progress_json, {}),
+                                            "external_request_state": "RESERVED_IN_FLIGHT",
+                                            "external_request_identity_hash": digest(request)})
+            run.revision += 1
+            db.commit()
+        except Exception as exc:
+            if shared_budget_hooks is not None:
+                shared_budget_hooks.audit_sink({
+                    "request_identity": request,
+                    "validation_status": "LOCAL_GUARD_REJECTED",
+                    "rejection_code": str(getattr(exc, "code", "LOCAL_AGENT_GUARD_REJECTED")),
+                    "token_usage": {},
+                })
+            raise
     return guard
 
 
-def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | None = None) -> None:
+def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | None = None,
+                      shared_budget_hooks=None) -> None:
     db: Session = session_factory()
     try:
         run = db.query(AgentExperimentRun).filter_by(run_id=run_id).one_or_none()
@@ -219,10 +237,21 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
             return
 
         authorization = loads(run.authorization_json, {})
+        if authorization.get("mode") == "EXTERNAL_ALLOWED" and shared_budget_hooks is None:
+            error = SemanticLLMError("Agent 真实模型运行缺少共享批次预算守卫")
+            error.code = "SHARED_BUDGET_GUARD_REQUIRED"
+            raise error
+        if (shared_budget_hooks is not None
+                and getattr(shared_budget_hooks, "lane", None) != "AGENT_EXPERIMENT"):
+            error = SemanticLLMError("Agent 共享预算守卫 lane 不匹配")
+            error.code = "SHARED_BUDGET_LANE_MISMATCH"
+            raise error
         active_client = client or DeepSeekDecisionClient(
-            cache_only=authorization.get("mode") != "EXTERNAL_ALLOWED", request_guard=_request_guard(db, run),
+            cache_only=authorization.get("mode") != "EXTERNAL_ALLOWED",
+            request_guard=_request_guard(db, run, shared_budget_hooks=shared_budget_hooks),
             conservative_cny_per_million_tokens=float(
                 authorization.get("conservative_cny_per_million_tokens", 0.0)),
+            response_audit_sink=(shared_budget_hooks.audit_sink if shared_budget_hooks is not None else None),
         )
         budget = loads(run.budget_json, {})
         prior = db.query(AgentCheckpoint).filter_by(agent_run_id=run.run_id).order_by(
@@ -318,6 +347,8 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
                                   "repair_count": repairs})
         raise RuntimeError("AGENT_MODEL_CALL_BUDGET_EXHAUSTED")
     except SemanticLLMError as exc:
+        if shared_budget_hooks is not None:
+            shared_budget_hooks.settle_unknown(exc)
         db.rollback()
         run = db.query(AgentExperimentRun).filter_by(run_id=run_id).one_or_none()
         if run and run.status == "RUNNING":
@@ -330,6 +361,8 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
             db.commit()
             _append_event(db, run, "MODEL_BLOCKED", {"code": code, "detail": str(exc)})
     except Exception as exc:
+        if shared_budget_hooks is not None:
+            shared_budget_hooks.settle_unknown(exc)
         db.rollback()
         run = db.query(AgentExperimentRun).filter_by(run_id=run_id).one_or_none()
         if run and run.status == "RUNNING":

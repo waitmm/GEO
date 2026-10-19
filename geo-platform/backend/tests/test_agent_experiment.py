@@ -28,10 +28,12 @@ from app.modules.agent_experiment.service import (
     authorize_agent_run, cancel_agent_run, create_agent_run, get_agent_run,
 )
 from app.modules.agent_experiment.tools import ToolRegistry
+from app.modules.agent_experiment.scope import _matches_frozen_run
 from app.modules.single_prompt_v2.delivery_text import digest
 from app.modules.single_prompt_v2.service import _snapshot_run_rows
 from app.services.serialization import loads
 from app.services.semantic_llm.base import SemanticLLMError
+from app.services.shared_model_budget import SharedBudgetHooks, initialize as initialize_shared_budget, summary as shared_budget_summary
 from test_release_first_slice import (
     _migrated_session,
     _seed_citation_contribution_fixture,
@@ -352,6 +354,72 @@ def test_external_authorization_reserves_request_token_and_cost_before_transport
     with pytest.raises(SemanticLLMError) as error:
         guard({"input_token_upper_bound": 1, "max_output_tokens": 2048})
     assert getattr(error.value, "code") == "AGENT_MODEL_CALL_BUDGET_EXHAUSTED"
+
+
+def test_agent_external_guard_uses_controller_shared_ledger(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    row, _ = _create_from_fixture(db, fixture, key="agent-shared-budget-0001")
+    row.status = "WAITING_AUTHORIZATION"; db.commit()
+    row = authorize_agent_run(
+        db, run_id=row.run_id, project_id=1, prompt_id=44, revision=row.revision,
+        max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
+        conservative_cny_per_million_tokens=10.0,
+        pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+        pricing_checked_at="2026-10-19", authorized_by="qa",
+    )
+    ledger = tmp_path / "shared-budget.sqlite3"
+    initialize_shared_budget(ledger, batch_id="agent-workflow-comparison-20261019",
+                             pricing_checked_at="2026-10-19")
+    hooks = SharedBudgetHooks(ledger, lane="AGENT_EXPERIMENT", operation_id=row.run_id)
+    request = {
+        "provider": "deepseek", "requested_model_alias": "deepseek-flash",
+        "effective_request_model": "deepseek-flash",
+        "endpoint": "https://api.deepseek.com/responses", "endpoint_path": "/responses",
+        "transport_kind": "RESPONSES_JSON_SCHEMA", "attempt": 1,
+        "input_token_upper_bound": 1000, "max_output_tokens": 2000,
+        "input_hash": "a" * 64, "provider_payload_hash": "b" * 64,
+    }
+    _request_guard(db, row, shared_budget_hooks=hooks)(request)
+    hooks.audit_sink({"request_identity": request, "response_source": "EXTERNAL_LLM",
+                      "validation_status": "ACCEPTED",
+                      "token_usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                                      "total_tokens": 150}})
+    state = shared_budget_summary(ledger)
+    assert state["by_lane"]["AGENT_EXPERIMENT"] == 1
+    assert state["used_tokens"] == 150
+
+
+def test_external_agent_execution_without_shared_guard_fails_before_model(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    row, _ = _create_from_fixture(db, fixture, key="agent-unmetered-denied-0001")
+    row.status = "WAITING_AUTHORIZATION"; db.commit()
+    row = authorize_agent_run(
+        db, run_id=row.run_id, project_id=1, prompt_id=44, revision=row.revision,
+        max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
+        conservative_cny_per_million_tokens=10.0,
+        pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+        pricing_checked_at="2026-10-19", authorized_by="qa",
+    )
+    client = ScriptedClient([])
+    execute_agent_run(row.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False),
+                      client=client)
+    db.expire_all()
+    stored = db.query(AgentExperimentRun).filter_by(run_id=row.run_id).one()
+    assert stored.status == "FAILED"
+    assert stored.blocker_code == "SHARED_BUDGET_GUARD_REQUIRED"
+    assert client.calls == 0
+
+
+def test_historical_scope_ignores_only_additive_live_run_lineage():
+    frozen = {"run_id": 1, "status": "success", "answer_text": "frozen"}
+    assert _matches_frozen_run(frozen, {
+        **frozen, "attempt_id": "attempt-added-later", "attempt_no": 1,
+        "logical_run_id": "logical-added-later", "retry_of_run_id": None,
+    })
+    assert not _matches_frozen_run(frozen, {**frozen, "answer_text": "changed"})
+    assert not _matches_frozen_run(frozen, {"run_id": 1, "status": "success"})
 
 
 def test_idempotent_retry_reuses_run_and_explicit_regenerate_preserves_old_version(tmp_path, monkeypatch):

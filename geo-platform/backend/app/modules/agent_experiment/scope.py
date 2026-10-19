@@ -36,6 +36,19 @@ def _conflict(code: str, message: str) -> None:
     raise HTTPException(status_code=409, detail={"code": code, "message": message})
 
 
+def _matches_frozen_run(frozen: dict[str, Any], live: dict[str, Any]) -> bool:
+    """Compare at the immutable snapshot's schema version.
+
+    Later migrations may add live Run fields, but can neither remove nor change
+    a field that the historical snapshot actually froze.
+    """
+    if not set(frozen).issubset(live):
+        return False
+    return _run_input_fingerprint(frozen) == _run_input_fingerprint(
+        {key: live[key] for key in frozen}
+    )
+
+
 def _exact_citation_manifest(
     db: Session, *, analysis: SinglePromptAnalysis, context: SinglePromptAnalysisContext,
     manifest_id: str | None, manifest_hash: str | None,
@@ -121,7 +134,14 @@ def freeze_scope(
     for frozen, live in zip(runs, live_snapshots):
         if int(frozen["run_id"]) != int(live["run_id"]):
             _conflict("RUN_SNAPSHOT_ORDER_MISMATCH", "Run 快照顺序变化")
-        if _run_input_fingerprint(frozen) != _run_input_fingerprint(live):
+        # Historical immutable contexts cannot contain additive runtime fields
+        # introduced by later migrations (for example physical-attempt lineage).
+        # Revalidate every field owned by that frozen schema while ignoring only
+        # fields absent from the historical snapshot.  Missing or changed frozen
+        # fields still fail closed.
+        if not set(frozen).issubset(live):
+            _conflict("RUN_SNAPSHOT_SCHEMA_MISMATCH", f"Run {frozen['run_id']} 缺少冻结字段")
+        if not _matches_frozen_run(frozen, live):
             _conflict("RUN_SNAPSHOT_DRIFT", f"Run {frozen['run_id']} 已偏离冻结快照")
         expected = expected_fingerprints.get(str(frozen["run_id"]), expected_fingerprints.get(int(frozen["run_id"])))
         if expected and _run_input_fingerprint(frozen) != expected:

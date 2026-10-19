@@ -46,7 +46,7 @@ def _execution_profile(*, regenerate_nonce: str | None = None) -> dict[str, Any]
     return {
         "contract_version": "geo.agent.execution.v1",
         "decision_contract": "MODEL_CHOOSES_TOOL_OR_FINAL_EACH_TURN",
-        "model_profile": {"provider": "deepseek", "model": "deepseek-v4-flash", "mode": "CACHE_ONLY"},
+        "model_profile": {"provider": "deepseek", "model": "deepseek-flash", "mode": "CACHE_ONLY"},
         "instructions": _instruction_bundle(),
         "tool_allowlist": ["get_scope_summary", "list_runs", "read_answer", "list_citations", "read_source",
                            "read_brand_context", "read_product_truth", "read_monitor_metrics", "save_working_note"],

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime
 from typing import Any, Protocol
@@ -17,7 +18,7 @@ from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import DeepSeekClient
 from app.services.serialization import loads
 
-from .contracts import AgentArtifact, AgentDecision
+from .contracts import AgentArtifact, AgentDecision, TOOL_NAMES
 from .grading import validate_and_grade
 from .scope import revalidate_frozen_scope
 from .tools import ToolRegistry
@@ -26,6 +27,50 @@ from .tools import ToolRegistry
 class DecisionClient(Protocol):
     def decide(self, *, db: Session, system_prompt: str, user_payload: dict[str, Any],
                max_tokens: int) -> tuple[dict[str, Any], dict[str, Any]]: ...
+
+
+DSML_RECOVERY_CONTRACT = "geo.agent.deepseek-dsml-single-tool.v1"
+_DSML_CALL = re.compile(
+    r'^\s*<｜｜DSML｜｜ calls>\s*<｜｜DSML｜｜ invoke name="(?P<tool>[^"]+)">'
+    r'(?P<parameters>.*?)</｜｜DSML｜｜ invoke>\s*</｜｜DSML｜｜ calls>\s*$', re.DOTALL,
+)
+_DSML_PARAMETER = re.compile(
+    r'<｜｜DSML｜｜ parameter name="(?P<name>[^"]+)"(?:\s+[^>]*)?>'
+    r'(?P<value>.*?)</｜｜DSML｜｜ parameter>', re.DOTALL,
+)
+
+
+def _recover_agent_dsml_tool_call(content: str) -> dict[str, Any] | None:
+    """Adapt exactly one DeepSeek DSML invocation into the Agent schema."""
+    match = _DSML_CALL.fullmatch(content)
+    if not match or match.group("tool") not in TOOL_NAMES:
+        return None
+    raw_parameters = match.group("parameters")
+    arguments: dict[str, Any] = {}
+    cursor = 0
+    for parameter in _DSML_PARAMETER.finditer(raw_parameters):
+        if raw_parameters[cursor:parameter.start()].strip():
+            return None
+        name = parameter.group("name")
+        if name in arguments:
+            return None
+        raw_value = parameter.group("value").strip()
+        try:
+            value = json.loads(raw_value)
+        except json.JSONDecodeError:
+            value = raw_value
+        arguments[name] = value
+        cursor = parameter.end()
+    if raw_parameters[cursor:].strip():
+        return None
+    return {
+        "action_type": "TOOL_CALL",
+        "reasoning": "DeepSeek emitted one explicit DSML white-list tool invocation.",
+        "tool_name": match.group("tool"),
+        "arguments": arguments,
+        "artifact": None,
+        "stop_reason": None,
+    }
 
 
 class DeepSeekDecisionClient:
@@ -50,6 +95,8 @@ class DeepSeekDecisionClient:
             schema_version="geo.agent.decision.v1", max_tokens=max_tokens, db=db,
             strict_json=True, structured_output_mode="JSON_SCHEMA",
             allow_json_wrapper_recovery=True,
+            non_json_response_recovery=_recover_agent_dsml_tool_call,
+            recovery_contract_version=DSML_RECOVERY_CONTRACT,
             response_validator=lambda value: AgentDecision.model_validate(value).model_dump(mode="json"),
         )
         return output, {

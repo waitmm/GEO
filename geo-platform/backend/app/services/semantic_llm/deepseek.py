@@ -49,6 +49,7 @@ def derive_deepseek_call_contract(
     max_tokens: int, structured_output_mode: StructuredOutputMode | None,
     transport_version: str = "", endpoint_base_url: str | None = None,
     allow_json_wrapper_recovery: bool = False,
+    recovery_contract_version: str = "",
 ) -> dict[str, Any]:
     """Return the complete immutable identity of one derived model call kind."""
     mode = structured_output_mode or "JSON_OBJECT_FALLBACK"
@@ -86,6 +87,8 @@ def derive_deepseek_call_contract(
             "thinking_mode": thinking_mode,
             **({"json_wrapper_recovery": "EXTRACT_THEN_STRICT_VALIDATE"}
                if allow_json_wrapper_recovery else {}),
+            **({"non_json_recovery_contract": recovery_contract_version}
+               if recovery_contract_version else {}),
         },
         "input_scope_contract": "canonical_user_payload_sha256.v1",
         "cache_identity_version": DERIVED_MODEL_CACHE_IDENTITY_VERSION,
@@ -176,6 +179,8 @@ class DeepSeekClient(SemanticLLMClient):
         structured_output_mode: StructuredOutputMode | None = None,
         transport_version: str = "",
         allow_json_wrapper_recovery: bool = False,
+        non_json_response_recovery: Callable[[str], dict[str, Any] | None] | None = None,
+        recovery_contract_version: str = "",
     ) -> dict[str, Any]:
         self._assert_budget(db)
 
@@ -212,6 +217,7 @@ class DeepSeekClient(SemanticLLMClient):
             max_tokens=effective_max_tokens, structured_output_mode=structured_output_mode,
             transport_version=transport_version, endpoint_base_url=self.settings.deepseek_base_url,
             allow_json_wrapper_recovery=allow_json_wrapper_recovery,
+            recovery_contract_version=recovery_contract_version,
         )
         if self.frozen_call_contracts is not None:
             frozen = self.frozen_call_contracts.get(prompt_version)
@@ -454,6 +460,8 @@ class DeepSeekClient(SemanticLLMClient):
                     # Pydantic validator below.  It does not accept incomplete
                     # responses, unknown fields, or invalid evidence contracts.
                     parsed = _extract_json_object(content)
+                    if parsed is None and non_json_response_recovery is not None:
+                        parsed = non_json_response_recovery(content)
                     if parsed is None:
                         if strict_json:
                             raise _response_error(

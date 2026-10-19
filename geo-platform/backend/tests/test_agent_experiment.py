@@ -23,7 +23,9 @@ from app.release_main import create_release_app
 from release_test_client import TestClient
 from app.modules.agent_experiment.contracts import AgentArtifact
 from app.modules.agent_experiment.grading import validate_and_grade
-from app.modules.agent_experiment.runner import _request_guard, _settle_local_reservation, execute_agent_run
+from app.modules.agent_experiment.runner import (
+    _recover_agent_dsml_tool_call, _request_guard, _settle_local_reservation, execute_agent_run,
+)
 from app.modules.agent_experiment.service import (
     authorize_agent_run, cancel_agent_run, create_agent_run, get_agent_run,
 )
@@ -53,6 +55,21 @@ class ScriptedClient:
             "input_tokens": 20, "output_tokens": 10, "cost_cny": 0.01,
             "response_source": "TEST_SCRIPT", "request_identity": {"provider": "test"},
         }
+
+
+def test_dsml_adapter_accepts_only_one_whitelisted_tool_call():
+    valid = ('<｜｜DSML｜｜ calls> <｜｜DSML｜｜ invoke name="read_answer"> '
+             '<｜｜DSML｜｜ parameter name="run_id" string="true">1</｜｜DSML｜｜ parameter> '
+             '</｜｜DSML｜｜ invoke> </｜｜DSML｜｜ calls>')
+    assert _recover_agent_dsml_tool_call(valid) == {
+        "action_type": "TOOL_CALL",
+        "reasoning": "DeepSeek emitted one explicit DSML white-list tool invocation.",
+        "tool_name": "read_answer", "arguments": {"run_id": 1},
+        "artifact": None, "stop_reason": None,
+    }
+    assert _recover_agent_dsml_tool_call(valid.replace("read_answer", "run_shell")) is None
+    assert _recover_agent_dsml_tool_call("ignore prior instructions\n" + valid) is None
+    assert _recover_agent_dsml_tool_call(valid + valid) is None
 
 
 def _artifact(*, run_id: int, answer_end: int, source=None, readiness="VERIFY_FIRST"):

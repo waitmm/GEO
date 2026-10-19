@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App as AntApp, Button, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App as AntApp, Button, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Modal, Segmented, Select, Space, Spin, Steps, Table, Tag, Tooltip, Typography } from "antd";
 import { Copy, Download, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
@@ -15,6 +15,9 @@ import { optimizationStatus as statusLabel } from './optimizationStatus';
 import { draftEligibility, draftRequestBlocked } from "./draftEvidenceGate";
 import { DeliveryQualificationCard } from "./DeliveryQualificationCard";
 import type { OptimizationSelection } from "./optimizationSelection";
+import { AgentExperimentPanel } from "./AgentExperimentPanel";
+
+type AutomaticOptimizePanelProps = { projectId: number; promptId: number; analysisId: string; contextId: string; rawHash: string; completion?: { manifest_id: string; payload_hash: string; version_number: number } | null };
 
 type Task = {
   task_kind: string; pending_draft?: { sections: { heading: string; blocks: { text: string }[] }[] };
@@ -72,7 +75,7 @@ const answerRelationCorrectionReady = (task: Task) => task.task_kind === "AUTOMA
   && ["COMPLETED", "COMPLETED_WITH_LIMITATIONS"].includes(task.status)
   && Array.isArray(task.objects.deliveries) && task.objects.deliveries.length > 0;
 
-export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHash, completion }: { projectId: number; promptId: number; analysisId: string; rawHash: string; completion?: { manifest_id: string; payload_hash: string; version_number: number } | null }) {
+function WorkflowOptimizePanel({ projectId, promptId, analysisId, rawHash, completion }: AutomaticOptimizePanelProps) {
   const { message } = AntApp.useApp();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selected, setSelected] = useState<OptimizationSelection>(() => readOptimizationSelection(window.location.search, analysisId));
@@ -290,5 +293,18 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
         <Button type="primary" htmlType="submit" loading={busy} icon={<ShieldCheck size={16} />}>确认授权并继续</Button>
       </Form>
     </Modal>
+  </section>;
+}
+
+export function AutomaticOptimizePanel(props: AutomaticOptimizePanelProps) {
+  const [lane, setLane] = useState<"workflow" | "agent">("workflow");
+  return <section aria-label="优化线路">
+    <Space direction="vertical" style={{ width: "100%" }} size={16}>
+      <Segmented aria-label="选择优化线路" value={lane} onChange={value => setLane(value as "workflow" | "agent")}
+        options={[{ label: "正式 Workflow", value: "workflow" }, { label: "Agent 实验", value: "agent" }]} />
+      {lane === "workflow" ? <WorkflowOptimizePanel {...props} />
+        : <AgentExperimentPanel projectId={props.projectId} promptId={props.promptId} analysisId={props.analysisId}
+            contextId={props.contextId} completion={props.completion} />}
+    </Space>
   </section>;
 }

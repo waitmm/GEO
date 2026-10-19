@@ -14,6 +14,7 @@ from app.core.release_worker_lifecycle import worker_status
 from app.core.release_access import install_access, require_project_access
 from app.modules.single_prompt_v2.release_api import router as single_prompt_router
 from app.modules.single_prompt_v2.observation_api import router as observation_router
+from app.modules.agent_experiment.api import router as agent_experiment_router
 from app.release_schema import validate_release_database
 
 
@@ -49,7 +50,7 @@ def create_release_app(*, validate_on_startup: bool = True) -> FastAPI:
     def private_robots():
         return "User-agent: *\nDisallow: /\n"
 
-    for router in (catalog_router, single_prompt_router, observation_router):
+    for router in (catalog_router, single_prompt_router, observation_router, agent_experiment_router):
         app.include_router(router, dependencies=[Depends(require_project_access)])
 
     frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"

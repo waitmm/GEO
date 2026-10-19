@@ -5935,7 +5935,7 @@ export default function App() {
                   ? `Run ${v2Analysis.origin_monitor_scope.excluded_run_ids.join("、")} 无可分析正文，未进入分析，也未被当作零结果。`
                   : undefined} />}
               <AutomaticOptimizePanel key={`${projectId}:${activePromptId}:${v2Analysis.analysis.analysis_id}`}
-                projectId={projectId} promptId={activePromptId} analysisId={v2Analysis.analysis.analysis_id} rawHash={v2Analysis.raw_output_hash}
+                projectId={projectId} promptId={activePromptId} analysisId={v2Analysis.analysis.analysis_id} contextId={v2Analysis.context_id} rawHash={v2Analysis.raw_output_hash}
                 completion={v2SourcePreparation?.completion_manifest} />
             </>}
             <details className="v2-advanced-details" key={`run-pool:${v2Analysis?.analysis.analysis_id || 'unselected'}`} open={!v2Analysis}>

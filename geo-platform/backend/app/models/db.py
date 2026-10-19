@@ -380,6 +380,110 @@ class SinglePromptOptimizationTask(Base, TimestampMixin):
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class AgentExperimentRun(Base):
+    """Isolated execution envelope for the shadow GEO Agent lane."""
+
+    __tablename__ = "agent_experiment_runs"
+    __table_args__ = (
+        UniqueConstraint("project_id", "idempotency_key", name="uq_agent_experiment_request"),
+        UniqueConstraint("project_id", "input_scope_hash", "agent_execution_hash",
+                         name="uq_agent_experiment_exact_execution"),
+        Index("ix_agent_experiment_scope", "analysis_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analysis_contexts.context_id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    requested_by: Mapped[str] = mapped_column(String(120))
+    input_scope_json: Mapped[str] = mapped_column(Text)
+    input_scope_hash: Mapped[str] = mapped_column(String(64), index=True)
+    agent_execution_json: Mapped[str] = mapped_column(Text)
+    agent_execution_hash: Mapped[str] = mapped_column(String(64), index=True)
+    qualification_hash: Mapped[str] = mapped_column(String(64), index=True)
+    authorization_json: Mapped[str] = mapped_column(Text, default="{}")
+    budget_json: Mapped[str] = mapped_column(Text)
+    progress_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(48), default="QUEUED", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    blocker_code: Mapped[str] = mapped_column(String(80), default="")
+    blocker_detail: Mapped[str] = mapped_column(Text, default="")
+    model_call_count: Mapped[int] = mapped_column(Integer, default=0)
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost_cny: Mapped[float] = mapped_column(Float, default=0.0)
+    cancel_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AgentEvent(Base):
+    __tablename__ = "agent_events"
+    __table_args__ = (
+        UniqueConstraint("agent_run_id", "sequence_number", name="uq_agent_event_sequence"),
+        Index("ix_agent_event_run", "agent_run_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_experiment_runs.run_id"), index=True)
+    sequence_number: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentCheckpoint(Base):
+    __tablename__ = "agent_checkpoints"
+    __table_args__ = (
+        UniqueConstraint("agent_run_id", "sequence_number", name="uq_agent_checkpoint_sequence"),
+        Index("ix_agent_checkpoint_run", "agent_run_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    checkpoint_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_experiment_runs.run_id"), index=True)
+    sequence_number: Mapped[int] = mapped_column(Integer)
+    state_json: Mapped[str] = mapped_column(Text)
+    state_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentResultVersion(Base):
+    """Append-only Agent output, separate from every formal V2 result table."""
+
+    __tablename__ = "agent_result_versions"
+    __table_args__ = (
+        UniqueConstraint("agent_run_id", "version_number", name="uq_agent_result_version"),
+        Index("ix_agent_result_run", "agent_run_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    result_version: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_experiment_runs.run_id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    input_scope_hash: Mapped[str] = mapped_column(String(64))
+    agent_execution_hash: Mapped[str] = mapped_column(String(64))
+    qualification_hash: Mapped[str] = mapped_column(String(64))
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    result_hash: Mapped[str] = mapped_column(String(64))
+    plan_result_binding_json: Mapped[str] = mapped_column(Text)
+    evidence_grade: Mapped[str] = mapped_column(String(48), index=True)
+    public_claim_eligibility: Mapped[str] = mapped_column(String(40))
+    publication_eligibility: Mapped[str] = mapped_column(String(40))
+    result_json: Mapped[str] = mapped_column(Text)
+    deliverable_markdown: Mapped[str] = mapped_column(Text, default="")
+    validation_report_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SinglePromptAnalysisContext(Base):
     __tablename__ = "single_prompt_analysis_contexts"
 

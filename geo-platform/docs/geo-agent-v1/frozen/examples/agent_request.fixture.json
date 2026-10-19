@@ -1,0 +1,17 @@
+{
+  "_fixture_only": true,
+  "project_id": "test-project-id",
+  "prompt_id": "test-prompt-id",
+  "run_ids": ["test-run-id-1", "test-run-id-2"],
+  "analysis_mode": "RAW_FIRST",
+  "context_version_id": "EMPTY",
+  "model_profile_id": "test-approved-model-profile",
+  "budget": {
+    "max_model_calls": 20,
+    "max_tool_calls": 50,
+    "max_total_tokens": 100000,
+    "max_elapsed_seconds": 900,
+    "max_cost": null
+  },
+  "regenerate": false
+}

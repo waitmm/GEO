@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internal.example.invalid/contracts/geo-agent-result-v1.schema.json",
+  "title": "GEO Agent Experiment V1 Candidate Artifact",
+  "description": "Model-facing candidate result only. Server attaches and checks immutable input identity, output hash, Truth-use qualification and actual citations. Not a V2 formal ResultVersion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "summary", "observations", "diagnosis", "actions", "deliverables", "qa_self_check", "validation_plan", "limitations"],
+  "properties": {
+    "schema_version": {"const": "geo.agent.result.v1"},
+    "summary": {"type": "string", "minLength": 1},
+    "observations": {"type": "array", "items": {"$ref": "#/$defs/assertion"}},
+    "diagnosis": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/assertion"}},
+    "actions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/action"}},
+    "deliverables": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/deliverable"}},
+    "qa_self_check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["checked", "identified_issues", "suggested_repairs"],
+      "properties": {
+        "checked": {"type": "array", "items": {"type": "string"}},
+        "identified_issues": {"type": "array", "items": {"type": "string"}},
+        "suggested_repairs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "validation_plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["questions", "metrics", "comparison_prerequisites", "non_causality_note"],
+      "properties": {
+        "questions": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "metrics": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "comparison_prerequisites": {"type": "array", "items": {"type": "string"}},
+        "non_causality_note": {"type": "string", "minLength": 1}
+      }
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "evidence_ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["answer_span", "citation_occurrence", "source_passage", "truth_fact", "knowledge_passage", "tool_observation"]},
+        "run_id": {"type": "string"},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 1},
+        "citation_occurrence_id": {"type": "string"},
+        "snapshot_id": {"type": "string"},
+        "passage_id": {"type": "string"},
+        "truth_fact_id": {"type": "string"},
+        "truth_version_id": {"type": "string"},
+        "knowledge_version_id": {"type": "string"},
+        "knowledge_passage_id": {"type": "string"},
+        "observation_id": {"type": "string"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "answer_span"}}}, "then": {"required": ["run_id", "start", "end"]}},
+        {"if": {"properties": {"kind": {"const": "citation_occurrence"}}}, "then": {"required": ["citation_occurrence_id"]}},
+        {"if": {"properties": {"kind": {"const": "source_passage"}}}, "then": {"required": ["snapshot_id", "passage_id"]}},
+        {"if": {"properties": {"kind": {"const": "truth_fact"}}}, "then": {"required": ["truth_fact_id", "truth_version_id"]}},
+        {"if": {"properties": {"kind": {"const": "knowledge_passage"}}}, "then": {"required": ["knowledge_version_id", "knowledge_passage_id"]}},
+        {"if": {"properties": {"kind": {"const": "tool_observation"}}}, "then": {"required": ["observation_id"]}}
+      ]
+    },
+    "assertion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["statement", "classification", "reasoning", "evidence_refs"],
+      "properties": {
+        "statement": {"type": "string", "minLength": 1},
+        "classification": {"enum": ["OBSERVED", "VERIFIED_FACT", "INFERENCE", "HYPOTHESIS", "UNKNOWN"]},
+        "reasoning": {"type": "string"},
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/evidence_ref"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"classification": {"enum": ["OBSERVED", "VERIFIED_FACT"]}}}, "then": {"properties": {"evidence_refs": {"minItems": 1}}}}
+      ]
+    },
+    "action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "priority", "what", "why", "channel", "channel_role", "readiness", "required_asset", "next_step", "evidence_refs"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "priority": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+        "what": {"type": "string", "minLength": 1},
+        "why": {"type": "string", "minLength": 1},
+        "channel": {"type": "string", "minLength": 1},
+        "channel_role": {"enum": ["PRIMARY", "SECONDARY", "EXPERIMENTAL", "OBSERVE", "UNDETERMINED"]},
+        "readiness": {"enum": ["READY", "VERIFY_FIRST", "EXPERIMENTAL"]},
+        "required_asset": {"type": "string", "minLength": 1},
+        "next_step": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/evidence_ref"}}
+      }
+    },
+    "deliverable": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "action_ids", "asset_type", "title", "body_markdown", "editorial_notes"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "action_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "asset_type": {"enum": ["HELP_DOC", "WEB_PAGE_UPDATE", "FAQ", "ARTICLE", "COMPARISON_GUIDE", "OTHER"]},
+        "title": {"type": "string", "minLength": 1},
+        "body_markdown": {"type": "string", "minLength": 1},
+        "editorial_notes": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

@@ -1,5 +1,21 @@
 # 09 Product Iteration Log
 
+## 2026-10-19 GEO Agent Parallel Experiment V1
+
+Optimize now retains its formal Workflow as the default lane and exposes an independent
+Agent experiment lane for the same frozen Analysis/Context and explicit Run set. The Agent
+may choose a different sequence of read-only evidence tools on each model turn, but the
+server—not the model—owns identity, cost ceilings, evidence admission, result hashes and
+publication eligibility. Agent history and drafts are append-only experimental records and
+cannot approve or replace formal V2 objects.
+
+The product deliberately degrades useful output by evidence condition: bounded L2 where an
+authoritative frozen pointer was actually read, instruction-only L3 for valid low-evidence
+answers, and deterministic zero-model-call L4 recovery when no valid answer exists. Identity
+failure remains BLOCKED with no Plan or Result. Real provider quality and Workflow-vs-Agent
+winner claims remain blocked until the owner supplies a new experiment-specific authorization,
+request/token/CNY limits and current pricing evidence.
+
 ## 2026-10-09 Continuous Product Delivery Boundary
 
 Monitor opportunity now transfers its exact observed scope through an explicit POST, retaining selected and excluded Run IDs, input fingerprints and frozen configuration. Same scope reuses the analysis; changed scope is rejected rather than silently refreshed. This does not start sampling or model calls. Optimize moves its existing task/results ahead of the collapsed Run pool and technical audit, preserving the same state authority and historical deep links. The change implements the approved primary-action-first UI, not a new workflow.

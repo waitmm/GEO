@@ -1,0 +1,60 @@
+{
+  "schema_version": "geo.agent.result.v1",
+  "summary": "测试夹具：以下只用于验证格式和后端引用检查，绝非真实 GEO 调查结论。",
+  "observations": [
+    {
+      "statement": "测试回答中出现了一个关于操作步骤的段落。",
+      "classification": "OBSERVED",
+      "reasoning": "仅依据隔离测试 Run 的原始答案片段。",
+      "evidence_refs": [
+        {"kind": "answer_span", "run_id": "test-run-id-1", "start": 0, "end": 15}
+      ]
+    }
+  ],
+  "diagnosis": [
+    {
+      "statement": "可能有机会把步骤解释组织得更清晰；需要核实站点已有内容。",
+      "classification": "HYPOTHESIS",
+      "reasoning": "这一点只是对测试回答的内容改进设想，并不表示已证明品牌缺席原因。",
+      "evidence_refs": []
+    }
+  ],
+  "actions": [
+    {
+      "id": "fixture-action-1",
+      "priority": "MEDIUM",
+      "what": "准备一份通用的操作步骤解释稿",
+      "why": "便于测试内容交付与 QA 链路",
+      "channel": "待核实的帮助文档渠道",
+      "channel_role": "EXPERIMENTAL",
+      "readiness": "EXPERIMENTAL",
+      "required_asset": "帮助文档草稿",
+      "next_step": "校验正文适用条件，并由编辑检查是否有真实发布位置",
+      "evidence_refs": [
+        {"kind": "answer_span", "run_id": "test-run-id-1", "start": 0, "end": 15}
+      ]
+    }
+  ],
+  "deliverables": [
+    {
+      "id": "fixture-deliverable-1",
+      "action_ids": ["fixture-action-1"],
+      "asset_type": "HELP_DOC",
+      "title": "测试帮助文档：如何核对操作步骤",
+      "body_markdown": "# 如何核对操作步骤\n\n首先确认自己要完成的任务和所处场景。然后逐项检查必备条件，遇到不确定的操作应以产品的实际说明为准。完成后再核验实际结果。本文为隔离测试内容，不作为真实产品操作指南。",
+      "editorial_notes": ["测试用正文，不得直接对外发布。"]
+    }
+  ],
+  "qa_self_check": {
+    "checked": ["测试文件标明非真实业务结论", "未宣称未知的品牌功能"],
+    "identified_issues": [],
+    "suggested_repairs": []
+  },
+  "validation_plan": {
+    "questions": ["后续真实观测是否能显示回答中操作说明内容的变化？"],
+    "metrics": ["已获准的 Monitor 回答内容观察"],
+    "comparison_prerequisites": ["相同 Prompt/平台/采样方法和明确的前后 Run 范围"],
+    "non_causality_note": "任何变化只能描述为观察差异，不能自动归因于该草稿。"
+  },
+  "limitations": ["全部输入均为隔离测试夹具，并非实际采样或效果证据。"]
+}

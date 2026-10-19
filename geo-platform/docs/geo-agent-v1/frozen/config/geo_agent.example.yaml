@@ -1,0 +1,42 @@
+# 示例配置：需按真实仓库现有配置系统映射，不得把本文件当作已有实现。
+# 默认关闭外部调用；不包含 API Key。
+geo_agent_experiment:
+  enabled: false
+  default_mode: RAW_FIRST
+  # existing approved model profile, NOT a new provider to be automatically installed
+  model_profile: use_existing_approved_profile
+  external_model_calls_enabled: false
+  external_source_fetch_enabled: false
+  new_platform_sampling_enabled: false
+  allow_external_publish: false
+  # true: require a valid, explicit project-level authorization and budget for each task
+  require_authorized_budget: true
+  limits:
+    max_model_calls: 20
+    max_tool_calls: 50
+    max_total_tokens: 100000
+    max_elapsed_seconds: 900
+    max_repair_rounds: 2
+    # No default billable limit is authorized by this example. Set in a trusted
+    # request only after project approval; null must reject real paid execution.
+    max_cost: null
+  allowed_tools:
+    - get_scope_summary
+    - list_runs
+    - read_answer
+    - list_citations
+    - read_source
+    - read_brand_context
+    - read_product_truth
+    - read_monitor_metrics
+    - save_working_note
+  verification:
+    verify_scope_hash: true
+    verify_citation_and_passage_refs: true
+    verify_brand_truth_eligibility: true
+    no_formal_v2_result_writes: true
+    zero_external_calls_on_identity_failure: true
+  logging:
+    redact_secrets: true
+    preserve_event_references: true
+    raw_full_pages_in_trace: false

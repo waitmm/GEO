@@ -1,4 +1,8 @@
 from app.models.db import (
+    AgentCheckpoint,
+    AgentEvent,
+    AgentExperimentRun,
+    AgentResultVersion,
     AnswerCitation,
     AnswerClaim,
     AnswerDecisionBinding,
@@ -98,6 +102,10 @@ from app.models.db import (
 )
 
 __all__ = [
+    "AgentCheckpoint",
+    "AgentEvent",
+    "AgentExperimentRun",
+    "AgentResultVersion",
     "AnswerCitation",
     "AnswerClaim",
     "AnswerDecisionBinding",

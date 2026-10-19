@@ -1,0 +1,22 @@
+{
+  "ledger": "GEO-AGT",
+  "version": "1.0",
+  "updated_at": "2026-10-19",
+  "baseline": "codex/geo-integration@d715964",
+  "semantic_classification": "SEMANTIC_RISK / EXPERIMENT_SHADOW_ONLY",
+  "external_authority": "NOT_GRANTED",
+  "tasks": [
+    {"id": "GEO-AGT-01", "title": "Freeze exact input and pre-model hard gates", "status": "DONE", "implementation": ["backend/app/modules/agent_experiment/scope.py", "backend/app/modules/agent_experiment/service.py"]},
+    {"id": "GEO-AGT-02", "title": "Read-only scoped tool adapters", "status": "DONE", "implementation": ["backend/app/modules/agent_experiment/tools.py"]},
+    {"id": "GEO-AGT-03", "title": "Model-decided bounded loop and checkpoints", "status": "DONE", "implementation": ["backend/app/modules/agent_experiment/runner.py", "backend/app/modules/agent_experiment/contracts.py"]},
+    {"id": "GEO-AGT-04", "title": "Independent append-only persistence", "status": "DONE", "implementation": ["backend/app/models/db.py", "backend/alembic_release/versions/20261019_02_agent_experiment.py"]},
+    {"id": "GEO-AGT-05", "title": "Server validation and graded delivery", "status": "DONE", "implementation": ["backend/app/modules/agent_experiment/grading.py"]},
+    {"id": "GEO-AGT-06", "title": "API and existing worker integration", "status": "DONE", "implementation": ["backend/app/modules/agent_experiment/api.py", "backend/scripts/release_worker.py"]},
+    {"id": "GEO-AGT-07", "title": "Optimize UI lane, trace, result, copy/export", "status": "DONE", "implementation": ["frontend/src/AgentExperimentPanel.tsx", "frontend/src/AutomaticOptimizePanel.tsx"]},
+    {"id": "GEO-AGT-08", "title": "Same-frozen-input Workflow comparison", "status": "DONE", "implementation": ["backend/app/modules/agent_experiment/service.py", "frontend/src/AgentExperimentPanel.tsx"]},
+    {"id": "GEO-AGT-09", "title": "Offline/API/DB/browser/formal regression", "status": "DONE_WITH_RECORDED_LIMITS", "evidence": "docs/geo-agent-v1/ACCEPTANCE_2026-10-19.md"},
+    {"id": "GEO-AGT-10", "title": "Authorized real model quality and cost comparison", "status": "BLOCKED", "blocker": "No experiment-specific authorization or budget was granted; old T23 authority is not reusable."},
+    {"id": "GEO-AGT-P1-01", "title": "Supplemental web acquisition tool", "status": "OUT_P1"},
+    {"id": "GEO-AGT-P1-02", "title": "Two-window post-publication retest", "status": "OUT_P1"}
+  ]
+}

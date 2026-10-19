@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 import sys
 import time
@@ -12,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.release_database import ReleaseSessionLocal, release_engine
 from app.core.release_worker_lifecycle import worker_ownership
 from app.models import (
+    AgentCheckpoint,
+    AgentExperimentRun,
     BrowserMonitorRun,
     BrowserMonitorTask,
     SinglePromptAnalysis,
@@ -30,9 +33,36 @@ from app.modules.single_prompt_v2.qualification_critic import execute_qualificat
 from app.modules.single_prompt_v2.service import execute_analysis
 from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_STATUS, execute_auto_fetch
 from app.release_schema import validate_release_database
+from app.services.serialization import loads
 from app.modules.single_prompt_v2.scheduling import tick, allow_scheduled_start
 from app.modules.single_prompt_v2.automatic_delivery import execute_task, recover_interrupted_tasks
 from app.modules.single_prompt_v2.supplemental_sources import execute_source, recover_interrupted_sources
+from app.modules.agent_experiment.runner import execute_agent_run
+
+
+def recover_interrupted_agent_runs(db) -> int:
+    rows = db.query(AgentExperimentRun).filter_by(status="RUNNING").order_by(AgentExperimentRun.id).all()
+    for row in rows:
+        checkpoint = db.query(AgentCheckpoint).filter_by(agent_run_id=row.run_id).first()
+        progress = loads(row.progress_json, {})
+        if progress.get("external_request_state") == "RESERVED_IN_FLIGHT":
+            row.status = "FAILED"
+            row.blocker_code = "AGENT_EXTERNAL_USAGE_UNCERTAIN"
+            row.blocker_detail = "worker 在已预留外部请求期间中断；用量未知，不自动重试"
+            row.finished_at = datetime.utcnow()
+        elif checkpoint and not row.cancel_requested_at:
+            row.status = "QUEUED"
+            row.blocker_code = ""
+            row.blocker_detail = ""
+        else:
+            row.status = "CANCELLED" if row.cancel_requested_at else "FAILED"
+            row.blocker_code = "AGENT_WORKER_INTERRUPTED_NO_CHECKPOINT" if not row.cancel_requested_at else ""
+            row.blocker_detail = "worker 中断且没有可恢复 checkpoint" if not row.cancel_requested_at else ""
+            row.finished_at = datetime.utcnow()
+        row.revision += 1
+    if rows:
+        db.commit()
+    return len(rows)
 
 
 def recover_interrupted_run_retries(db) -> int:
@@ -64,6 +94,7 @@ def recover_owned_tasks():
     db = ReleaseSessionLocal()
     try:
         for recover in (recover_interrupted_run_retries, recover_interrupted_tasks,
+                        recover_interrupted_agent_runs,
                         recover_interrupted_analyses, recover_interrupted_diagnoses,
                         recover_interrupted_citation_contributions, recover_interrupted_qualification_critics,
                         recover_interrupted_source_preparations, recover_interrupted_sources):
@@ -89,6 +120,7 @@ def run_once() -> str | None:
             .first()
         )
         optimization = db.query(SinglePromptOptimizationTask).filter_by(status="QUEUED").order_by(SinglePromptOptimizationTask.id).first()
+        agent_experiment = db.query(AgentExperimentRun).filter_by(status="QUEUED").order_by(AgentExperimentRun.id).first()
         supplemental = db.query(SupplementalSourceAcquisition).filter_by(status="QUEUED").order_by(SupplementalSourceAcquisition.id).first()
         if retry_task:
             identity = retry_task.id
@@ -103,6 +135,9 @@ def run_once() -> str | None:
         elif optimization:
             identity = optimization.task_id
             work_type = "automatic_optimize"
+        elif agent_experiment:
+            identity = agent_experiment.run_id
+            work_type = "agent_experiment"
         elif supplemental:
             identity = supplemental.source_id
             work_type = "supplemental_source"
@@ -156,6 +191,9 @@ def run_once() -> str | None:
     if work_type == "automatic_optimize":
         execute_task(identity, session_factory=ReleaseSessionLocal)
         return f"automatic_optimize:{identity}"
+    if work_type == "agent_experiment":
+        execute_agent_run(identity, session_factory=ReleaseSessionLocal)
+        return f"agent_experiment:{identity}"
     if work_type == "run_retry":
         db = ReleaseSessionLocal()
         executor = MonitoringTaskExecutor()

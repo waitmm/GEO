@@ -494,6 +494,50 @@ def _e2e03_no_signal_blocker(diagnosis, answer_result, ledger: Path) -> dict[str
         "reserved_cost_cny": float(request["reserved_cost_cny"])}
 
 
+def _e3_pre_send_failure_provenance(*, diagnosis, result, selected_run_id: int,
+                                    ledger: Path) -> dict[str, Any]:
+    """Prove an old E3 result failed before cache/provider delivery.
+
+    This is deliberately narrower than a generic failed diagnosis.  It only
+    admits the historical local configuration failure observed before either
+    a cache response or provider request could exist.
+    """
+    output = loads(result.output_json, {})
+    jobs = (output.get("answer_diagnosis") or {}).get("answer_jobs") or []
+    job = jobs[0] if len(jobs) == 1 else {}
+    audit = job.get("audit") or {}
+    request_prefix = f"T23:E2E-03:prepare-answer:{diagnosis.diagnosis_id}:"
+    expected_error = "DEEPSEEK_API_KEY 未配置。请在 backend/.env 设置（代码与日志禁止输出该值）。"
+    if (diagnosis.status != "READY_FOR_REVIEW"
+            or diagnosis.active_result_version != result.result_version
+            or int(diagnosis.external_llm_calls or 0) != 0
+            or int(diagnosis.llm_cache_hits or 0) != 0
+            or _ledger_requests(summary(ledger), request_prefix)
+            or digest(output) != result.output_hash
+            or job.get("status") != "FAILED"
+            or job.get("run_ids") != [selected_run_id]
+            or job.get("result_source") != "UNKNOWN"
+            or audit.get("response_source") != "UNKNOWN"
+            or str(audit.get("raw_response_hash") or "")
+            or job.get("error") != expected_error):
+        raise ValueError("E2E-03_PRE_SEND_FAILURE_PROVENANCE_NOT_PROVEN")
+    return {
+        "contract_version": "t23-e3-pre-send-failure.v1",
+        "supersedes_diagnosis_id": diagnosis.diagnosis_id,
+        "superseded_result_version": result.result_version,
+        "superseded_result_hash": result.output_hash,
+        "selected_run_id": selected_run_id,
+        "external_llm_calls": 0,
+        "llm_cache_hits": 0,
+        "ledger_request_count": 0,
+        "job_status": "FAILED",
+        "result_source": "UNKNOWN",
+        "response_source": "UNKNOWN",
+        "raw_response_hash": "",
+        "error": expected_error,
+    }
+
+
 def _prepare_e3_answer(*, db, manifest: dict[str, Any], ledger: Path,
                        checkpoint_dir: Path, manifest_sha: str, database: Path,
                        e1_answer, contribution):
@@ -515,6 +559,33 @@ def _prepare_e3_answer(*, db, manifest: dict[str, Any], ledger: Path,
         idempotency_key=f"{manifest['shared_budget']['budget_id']}:E2E-03:prepare-answer")
     result = db.query(SinglePromptDiagnosisResult).filter_by(
         diagnosis_id=diagnosis.diagnosis_id, result_version=diagnosis.active_result_version).one_or_none()
+    if result:
+        context = db.query(SinglePromptAnalysisContext).filter_by(
+            analysis_id=case["analysis_id"], context_id=case["context_id"],
+            project_id=case["project_id"], prompt_id=case["prompt_id"]).one()
+        try:
+            _require_prepared_answer_admission(raw_output=loads(context.raw_output_json, {}),
+                answer_output=loads(result.output_json, {}), selected_run_id=case["run_ids"][0])
+        except ValueError:
+            old_diagnosis = diagnosis
+            recovery = _e3_pre_send_failure_provenance(diagnosis=old_diagnosis,
+                result=result, selected_run_id=case["run_ids"][0], ledger=ledger)
+            recovery_key = (f"{manifest['shared_budget']['budget_id']}:E2E-03:"
+                f"pre-send-recovery-v1:{old_diagnosis.diagnosis_id}")
+            diagnosis, _ = create_answer_diagnosis(db, analysis_id=case["analysis_id"],
+                project_id=case["project_id"], prompt_id=case["prompt_id"],
+                citation_manifest_id=citation.manifest_id,
+                citation_manifest_hash=citation.payload_hash,
+                answer_llm_policy="ALLOW_EXTERNAL", idempotency_key=recovery_key)
+            if (loads(diagnosis.contract_config_json, {})
+                    != loads(old_diagnosis.contract_config_json, {})):
+                raise ValueError("E2E-03 superseding Answer call identity drifted")
+            recovery["superseding_diagnosis_id"] = diagnosis.diagnosis_id
+            recovery["superseding_idempotency_key"] = recovery_key
+            case["answer_prepare_recovery"] = recovery
+            result = db.query(SinglePromptDiagnosisResult).filter_by(
+                diagnosis_id=diagnosis.diagnosis_id,
+                result_version=diagnosis.active_result_version).one_or_none()
     if not result:
         prefix = f"T23:E2E-03:prepare-answer:{diagnosis.diagnosis_id}:"
         if _ledger_requests(summary(ledger), prefix):
@@ -536,6 +607,7 @@ def _prepare_e3_answer(*, db, manifest: dict[str, Any], ledger: Path,
             answer=diagnosis, contribution=contribution)
         payload["e1_answer_result_version"] = e1_answer.result_version
         payload["e3_answer_prepare_input"] = case["answer_prepare_input"]
+        payload["e3_answer_prepare_recovery"] = case.get("answer_prepare_recovery")
         _append_checkpoint(checkpoint_dir, "E3_ANSWER_READY_TO_SEND", payload)
         request_guard, audit_sink, settle_unknown = _hooks(
             ledger, scenario_id="E2E-03", task_id=f"prepare-answer:{diagnosis.diagnosis_id}")
@@ -563,6 +635,7 @@ def _prepare_e3_answer(*, db, manifest: dict[str, Any], ledger: Path,
         answer=diagnosis, answer_result=result, contribution=contribution)
     payload["e1_answer_result_version"] = e1_answer.result_version
     payload["e3_answer_prepare_input"] = case["answer_prepare_input"]
+    payload["e3_answer_prepare_recovery"] = case.get("answer_prepare_recovery")
     _append_checkpoint(checkpoint_dir, "E3_ANSWER_RESULT", payload)
     return diagnosis, result
 
@@ -842,6 +915,7 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
             answer=diagnosis, answer_result=answer_result, contribution=execution)
         e2e03_payload["e2e03_task_id"] = e2e03.get("task_id")
         e2e03_payload["e2e03_input_hash"] = e2e03.get("input_hash")
+        e2e03_payload["e3_answer_prepare_recovery"] = e2e03.get("answer_prepare_recovery")
         e2e03_payload["e2e02_scenario_blocker"] = e2e02_blocker
         e2e03_payload["e2e03_scenario_blocker"] = e2e03.get("scenario_blocker")
         _append_checkpoint(checkpoint_dir, "E2E03_UNKNOWN_FROZEN", e2e03_payload)
@@ -877,6 +951,7 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
     final_checkpoint["low_match_evidence"] = low
     final_checkpoint["e2e02_scenario_blocker"] = e2e02_blocker
     final_checkpoint["e2e03_scenario_blocker"] = e2e03.get("scenario_blocker")
+    final_checkpoint["e3_answer_prepare_recovery"] = e2e03.get("answer_prepare_recovery")
     _append_checkpoint(checkpoint_dir, "READY_TO_FREEZE", final_checkpoint)
     frozen = _freeze_manifest_value(manifest, low, _sha256_file(database), e2e02_blocker)
     _write_frozen_manifest(frozen_manifest_path, frozen)

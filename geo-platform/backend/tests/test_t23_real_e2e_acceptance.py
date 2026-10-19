@@ -23,6 +23,7 @@ from scripts.run_t23_delivery_live import (
     _checkpoint_dir,
     _checkpoint_events,
     _execute_planned_scenarios,
+    _e3_pre_send_failure_provenance,
     _extract_low_match,
     _freeze_e2e03_unknown,
     _freeze_manifest_value,
@@ -46,6 +47,7 @@ from app.core.release_sqlite import get_release_sqlite_dbapi
 from app.modules.single_prompt_v2.delivery_text import digest
 from app.services.url_identity import build_url_identity
 from app.models import SinglePromptCitationContributionExecution
+from app.models import SinglePromptAnalysisContext, SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
 
 
 def manifest():
@@ -727,6 +729,134 @@ def test_e3_own_answer_prepare_freezes_identity_and_uses_one_guarded_request(
         "E3_ANSWER_READY_TO_SEND", "E3_ANSWER_RESULT"]
 
 
+def test_e3_pre_send_recovery_creates_one_new_execution_and_is_idempotent(
+        scene, monkeypatch, tmp_path):
+    import scripts.run_t23_delivery_live as runner
+
+    db, row, _, _ = scene
+    inputs = json.loads(row.input_json)
+    run_id = inputs["run_ids"][0]
+    value = manifest()
+    e3 = value["scenarios"][2]
+    e3.update(project_id=row.project_id, prompt_id=row.prompt_id,
+        analysis_id=row.analysis_id, context_id=row.context_id,
+        run_ids=[run_id], task_pending_truth=True)
+    e3["unknown_prepare_input"] = {"signal_selector": "UNIQUE_TARGET_BRAND_CAPABILITY",
+        "source_reference": "isolated acceptance", "note": "verify independently",
+        "reviewed_by": "acceptance-controller"}
+    context = db.query(SinglePromptAnalysisContext).filter_by(context_id=row.context_id).one()
+    raw = json.loads(context.raw_output_json)
+    frozen_run = next(item for item in raw["runs"] if item["run_id"] == run_id)
+    preparation, _ = runner.create_source_preparation(db, analysis_id=row.analysis_id,
+        project_id=row.project_id, prompt_id=row.prompt_id,
+        idempotency_key=f"{value['shared_budget']['budget_id']}:E2E-03:answer-sources",
+        created_by="t23-acceptance-controller")
+    citation = db.query(runner.SinglePromptCitationManifest).filter_by(
+        manifest_id=preparation.citation_manifest_id).one()
+    old, _ = runner.create_answer_diagnosis(db, analysis_id=row.analysis_id,
+        project_id=row.project_id, prompt_id=row.prompt_id,
+        citation_manifest_id=citation.manifest_id, citation_manifest_hash=citation.payload_hash,
+        answer_llm_policy="ALLOW_EXTERNAL",
+        idempotency_key=f"{value['shared_budget']['budget_id']}:E2E-03:prepare-answer")
+    failure = "DEEPSEEK_API_KEY 未配置。请在 backend/.env 设置（代码与日志禁止输出该值）。"
+    output = {"answer_diagnosis": {"answer_jobs": [{
+        "answer_hash": hashlib.sha256(frozen_run["answer_text"].encode()).hexdigest(),
+        "run_ids": [run_id], "status": "FAILED", "result_source": "UNKNOWN",
+        "error": failure, "audit": {"response_source": "UNKNOWN",
+            "raw_response_hash": "", "finish_reason": "unknown",
+            "response_excerpt": "", "response_length": 0, "validation_errors": []},
+        "semantic_input_hash": "f" * 64}], "events": []}}
+    old_result = SinglePromptDiagnosisResult(result_version="diag-v1:pre-send-failed",
+        diagnosis_id=old.diagnosis_id, version_number=1, parent_result_version=None,
+        output_json=json.dumps(output), output_hash=digest(output),
+        reviewable_set_hash=digest([]), limitations_json="[]", stats_json="{}")
+    old.status = "READY_FOR_REVIEW"
+    old.active_result_version = old_result.result_version
+    old.external_llm_calls = 0
+    old.llm_cache_hits = 0
+    db.add(old_result)
+    db.commit()
+    ledger = tmp_path / "model-budget-v2.sqlite3"
+    initialize(ledger, pricing_source=value["shared_budget"]["pricing_source"],
+        pricing_checked_at=value["shared_budget"]["pricing_checked_at"])
+    claimed = []
+
+    class StopBeforeSend(Exception):
+        pass
+
+    def stop_before_send(_db, diagnosis_id):
+        claimed.append(diagnosis_id)
+        raise StopBeforeSend
+
+    monkeypatch.setattr(runner, "claim_diagnosis", stop_before_send)
+    kwargs = dict(db=db, manifest=value, ledger=ledger,
+        checkpoint_dir=tmp_path / "checkpoints", manifest_sha="f" * 64,
+        database=Path(str(db.get_bind().url.database)),
+        e1_answer=SimpleNamespace(result_version="e1-result"),
+        contribution=SimpleNamespace(contribution_id="e2", plan_hash="a" * 64))
+    for _ in range(2):
+        with pytest.raises(StopBeforeSend):
+            _prepare_e3_answer(**kwargs)
+
+    replacements = db.query(SinglePromptDiagnosisExecution).filter(
+        SinglePromptDiagnosisExecution.analysis_id == row.analysis_id,
+        SinglePromptDiagnosisExecution.idempotency_key.like("%:pre-send-recovery-v1:%")).all()
+    db.refresh(old)
+    assert len(replacements) == 1 and claimed == [replacements[0].diagnosis_id] * 2
+    assert old.status == "READY_FOR_REVIEW" and old.active_result_version == old_result.result_version
+    assert db.query(SinglePromptDiagnosisResult).filter_by(
+        diagnosis_id=old.diagnosis_id).count() == 1
+    assert e3["answer_prepare_recovery"]["supersedes_diagnosis_id"] == old.diagnosis_id
+    assert e3["answer_prepare_recovery"]["superseding_diagnosis_id"] == replacements[0].diagnosis_id
+    assert summary(ledger)["used_requests"] == 0
+
+
+def test_e3_pre_send_recovery_rejects_any_delivery_or_non_configuration_failure(
+        monkeypatch, tmp_path):
+    import scripts.run_t23_delivery_live as runner
+
+    ledger = tmp_path / "model-budget-v2.sqlite3"
+    value = manifest()
+    initialize(ledger, pricing_source=value["shared_budget"]["pricing_source"],
+        pricing_checked_at=value["shared_budget"]["pricing_checked_at"])
+    failure = "DEEPSEEK_API_KEY 未配置。请在 backend/.env 设置（代码与日志禁止输出该值）。"
+
+    def evidence(**overrides):
+        audit = {"response_source": "UNKNOWN", "raw_response_hash": ""}
+        audit.update(overrides.pop("audit", {}))
+        job = {"status": "FAILED", "run_ids": [3], "result_source": "UNKNOWN",
+            "error": failure, "audit": audit}
+        job.update(overrides.pop("job", {}))
+        output = {"answer_diagnosis": {"answer_jobs": [job]}}
+        diagnosis = SimpleNamespace(diagnosis_id="old-e3", status="READY_FOR_REVIEW",
+            active_result_version="diag-v1:old", external_llm_calls=0, llm_cache_hits=0)
+        for key, item in overrides.items():
+            setattr(diagnosis, key, item)
+        result = SimpleNamespace(result_version="diag-v1:old", output_json=json.dumps(output),
+            output_hash=digest(output))
+        return diagnosis, result
+
+    diagnosis, result = evidence()
+    assert _e3_pre_send_failure_provenance(diagnosis=diagnosis, result=result,
+        selected_run_id=3, ledger=ledger)["ledger_request_count"] == 0
+    rejected = [
+        evidence(external_llm_calls=1),
+        evidence(llm_cache_hits=1),
+        evidence(audit={"response_source": "PROVIDER"}),
+        evidence(audit={"raw_response_hash": "a" * 64}),
+        evidence(job={"error": "provider timeout"}),
+    ]
+    for bad_diagnosis, bad_result in rejected:
+        with pytest.raises(ValueError, match="PROVENANCE_NOT_PROVEN"):
+            _e3_pre_send_failure_provenance(diagnosis=bad_diagnosis, result=bad_result,
+                selected_run_id=3, ledger=ledger)
+    monkeypatch.setattr(runner, "summary", lambda _ledger: {"requests": [{
+        "request_id": "T23:E2E-03:prepare-answer:old-e3:sent", "status": "FINISHED"}]})
+    with pytest.raises(ValueError, match="PROVENANCE_NOT_PROVEN"):
+        _e3_pre_send_failure_provenance(diagnosis=diagnosis, result=result,
+            selected_run_id=3, ledger=ledger)
+
+
 def test_prepare_freezes_auditable_e3_no_signal_blocker_without_task_or_retry(
         scene, monkeypatch, tmp_path):
     from app.models import ReferenceSource, SinglePromptCitationManifest, SinglePromptSourceCompletionManifest
@@ -791,7 +921,20 @@ def test_prepare_freezes_auditable_e3_no_signal_blocker_without_task_or_retry(
         case = next(item for item in manifest["scenarios"] if item["id"] == "E2E-03")
         case.update(max_requests=3, prepare_max_requests=1, execute_max_requests=2,
             answer_prepare_input={"citation_manifest_id": "citation-e3",
-                "citation_manifest_hash": "b" * 64, "selected_run_id": run_id})
+                "citation_manifest_hash": "b" * 64, "selected_run_id": run_id},
+            answer_prepare_recovery={
+                "contract_version": "t23-e3-pre-send-failure.v1",
+                "supersedes_diagnosis_id": "diagnosis-e3-old",
+                "superseded_result_version": "diagnosis-v1:e3-old",
+                "superseded_result_hash": "e" * 64, "selected_run_id": run_id,
+                "external_llm_calls": 0, "llm_cache_hits": 0, "ledger_request_count": 0,
+                "job_status": "FAILED", "result_source": "UNKNOWN",
+                "response_source": "UNKNOWN", "raw_response_hash": "",
+                "error": "DEEPSEEK_API_KEY 未配置。请在 backend/.env 设置（代码与日志禁止输出该值）。",
+                "superseding_diagnosis_id": "diagnosis-e3-no-signal",
+                "superseding_idempotency_key":
+                    f"{manifest['shared_budget']['budget_id']}:E2E-03:pre-send-recovery-v1:diagnosis-e3-old",
+            })
         diagnosis = SimpleNamespace(diagnosis_id="diagnosis-e3-no-signal",
             project_id=row.project_id, prompt_id=row.prompt_id, analysis_id=row.analysis_id)
         output = {"input": {"brand_snapshot": {"brand_name": "Target", "aliases": []}},
@@ -820,12 +963,14 @@ def test_prepare_freezes_auditable_e3_no_signal_blocker_without_task_or_retry(
     assert report["scenario_blockers"]["E2E-02"]["code"] == "NO_FORMAL_LOW_MATCH"
     assert report["scenario_blockers"]["E2E-03"]["code"] == "NO_FORMAL_UNKNOWN_SIGNAL"
     assert "task_id" not in frozen_e3 and "input_hash" not in frozen_e3
+    assert frozen_e3["answer_prepare_recovery"]["ledger_request_count"] == 0
     assert summary(ledger)["used_requests"] == 3
     assert len([item for item in summary(ledger)["requests"]
         if item["request_id"].startswith("T23:E2E-03:prepare-answer:")]) == 1
     checkpoint = _checkpoint_events(_checkpoint_dir(frozen_path))[-2]
     assert checkpoint["stage"] == "E2E03_UNKNOWN_FROZEN"
     assert checkpoint["e2e03_task_id"] is None and checkpoint["e2e03_input_hash"] is None
+    assert checkpoint["e3_answer_prepare_recovery"]["supersedes_diagnosis_id"] == "diagnosis-e3-old"
 
     calls = []
     fake_db = SimpleNamespace()

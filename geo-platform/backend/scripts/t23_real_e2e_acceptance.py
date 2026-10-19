@@ -197,6 +197,33 @@ def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = F
         if row["id"] == "E2E-03":
             pending = row.get("task_pending_truth") is True
             blocker = row.get("scenario_blocker")
+            recovery = row.get("answer_prepare_recovery")
+            if recovery is not None:
+                recovery_required = {"contract_version", "supersedes_diagnosis_id",
+                    "superseded_result_version", "superseded_result_hash", "selected_run_id",
+                    "external_llm_calls", "llm_cache_hits", "ledger_request_count",
+                    "job_status", "result_source", "response_source", "raw_response_hash",
+                    "error", "superseding_diagnosis_id", "superseding_idempotency_key"}
+                if (not isinstance(recovery, dict) or set(recovery) != recovery_required
+                        or recovery["contract_version"] != "t23-e3-pre-send-failure.v1"
+                        or recovery["selected_run_id"] not in row["run_ids"]
+                        or any(recovery[key] != 0 for key in
+                               ("external_llm_calls", "llm_cache_hits", "ledger_request_count"))
+                        or recovery["job_status"] != "FAILED"
+                        or recovery["result_source"] != "UNKNOWN"
+                        or recovery["response_source"] != "UNKNOWN"
+                        or recovery["raw_response_hash"] != ""
+                        or recovery["error"] != "DEEPSEEK_API_KEY 未配置。请在 backend/.env 设置（代码与日志禁止输出该值）。"
+                        or recovery["supersedes_diagnosis_id"] == recovery["superseding_diagnosis_id"]
+                        or recovery["superseding_idempotency_key"] !=
+                            (f"{budget['budget_id']}:E2E-03:pre-send-recovery-v1:"
+                             f"{recovery['supersedes_diagnosis_id']}")
+                        or not all(str(recovery[key] or "").strip() for key in
+                            ("supersedes_diagnosis_id", "superseded_result_version",
+                             "superseding_diagnosis_id", "superseding_idempotency_key"))
+                        or not isinstance(recovery["superseded_result_hash"], str)
+                        or len(recovery["superseded_result_hash"]) != 64):
+                    raise ValueError("E2E-03 pre-send failure provenance is incomplete")
             if blocker is not None:
                 required_blocker = {"code", "detail", "source_diagnosis_id",
                     "source_result_version", "source_result_hash", "source_signal_count",

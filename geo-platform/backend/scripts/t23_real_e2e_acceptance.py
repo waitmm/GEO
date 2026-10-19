@@ -109,13 +109,18 @@ def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = F
     cases = value.get("scenarios")
     if not isinstance(cases, list) or [row.get("id") for row in cases] != list(SCENARIOS):
         raise ValueError("scenarios must contain E2E-01, E2E-02 and E2E-03 exactly once, in order")
-    required = {"id", "task_id", "project_id", "prompt_id", "analysis_id", "context_id",
-                "input_hash", "run_ids", "max_requests", "max_tokens", "max_cost_cny"}
+    required = {"id", "project_id", "prompt_id", "analysis_id", "context_id",
+                "run_ids", "max_requests", "max_tokens", "max_cost_cny"}
     for row in cases:
         if not isinstance(row, dict) or not required.issubset(row):
             raise ValueError(f"incomplete scenario identity: {row!r}")
-        if (not isinstance(row["task_id"], str) or not row["task_id"]
-                or not isinstance(row["input_hash"], str) or len(row["input_hash"]) != 64
+        no_task_blocker = (row["id"] == "E2E-03"
+            and (row.get("scenario_blocker") or {}).get("code") == "NO_FORMAL_UNKNOWN_SIGNAL")
+        if no_task_blocker:
+            if "task_id" in row or "input_hash" in row:
+                raise ValueError("E2E-03 no-signal blocker cannot claim a task identity")
+        elif (not isinstance(row.get("task_id"), str) or not row.get("task_id")
+                or not isinstance(row.get("input_hash"), str) or len(row.get("input_hash")) != 64
                 or any(c not in "0123456789abcdef" for c in row["input_hash"])):
             raise ValueError(f"invalid task/input identity for {row['id']}")
         if not isinstance(row["run_ids"], list) or not row["run_ids"]:
@@ -203,7 +208,12 @@ def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = F
                         or not str(blocker["ledger_request_id"]).startswith("T23:E2E-03:prepare-answer:")
                         or float(blocker["reserved_cost_cny"]) < 0
                         or not isinstance(blocker["source_result_hash"], str)
-                        or len(blocker["source_result_hash"]) != 64):
+                        or len(blocker["source_result_hash"]) != 64
+                        or not pending
+                        or row.get("unknown_truth_evidence") is not None
+                        or row.get("prepare_max_requests") != 1
+                        or row.get("execute_max_requests") != 2
+                        or row.get("max_requests") != 3):
                     raise ValueError("E2E-03 partial blocker identity is incomplete")
                 continue
             if pending and not allow_unprepared_e2e03:
@@ -562,7 +572,7 @@ def run(*, database: Path, manifest_path: Path, output: Path, phase: str) -> dic
         inspected = []
         for case in manifest["scenarios"]:
             if case.get("scenario_blocker"):
-                inspected.append({"id": case["id"], "task_id": case["task_id"],
+                inspected.append({"id": case["id"], "task_id": case.get("task_id"),
                     "status": "BLOCKED", "scenario_blocker": case["scenario_blocker"],
                     "usage": {"external_requests": case["scenario_blocker"]["consumed_requests"],
                         "reserved_cost_cny": case["scenario_blocker"]["reserved_cost_cny"]}})

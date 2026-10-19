@@ -831,12 +831,17 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
                 e2e03 = next(row for row in manifest["scenarios"] if row["id"] == "E2E-03")
                 e2e03["scenario_blocker"] = _e2e03_no_signal_blocker(
                     e3_diagnosis, e3_answer_result, ledger)
+                # No formal signal means no truth and therefore no task exists.
+                # Do not freeze the prepare-manifest placeholders as if they
+                # identified an executable product object.
+                e2e03.pop("task_id", None)
+                e2e03.pop("input_hash", None)
         e2e03_payload = _checkpoint_payload(
             manifest_sha256=manifest_sha, initial_database_sha256=manifest["source_database_sha256"],
             budget_id=manifest["shared_budget"]["budget_id"], database=database, ledger=ledger,
             answer=diagnosis, answer_result=answer_result, contribution=execution)
-        e2e03_payload["e2e03_task_id"] = e2e03["task_id"]
-        e2e03_payload["e2e03_input_hash"] = e2e03["input_hash"]
+        e2e03_payload["e2e03_task_id"] = e2e03.get("task_id")
+        e2e03_payload["e2e03_input_hash"] = e2e03.get("input_hash")
         e2e03_payload["e2e02_scenario_blocker"] = e2e02_blocker
         e2e03_payload["e2e03_scenario_blocker"] = e2e03.get("scenario_blocker")
         _append_checkpoint(checkpoint_dir, "E2E03_UNKNOWN_FROZEN", e2e03_payload)

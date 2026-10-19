@@ -727,6 +727,124 @@ def test_e3_own_answer_prepare_freezes_identity_and_uses_one_guarded_request(
         "E3_ANSWER_READY_TO_SEND", "E3_ANSWER_RESULT"]
 
 
+def test_prepare_freezes_auditable_e3_no_signal_blocker_without_task_or_retry(
+        scene, monkeypatch, tmp_path):
+    from app.models import ReferenceSource, SinglePromptCitationManifest, SinglePromptSourceCompletionManifest
+    import scripts.run_t23_delivery_live as runner
+
+    db, row, _, _ = scene
+    citation = db.query(SinglePromptCitationManifest).filter_by(analysis_id=row.analysis_id).one()
+    completion = db.query(SinglePromptSourceCompletionManifest).filter_by(
+        analysis_id=row.analysis_id, context_id=row.context_id).one()
+    inputs = json.loads(row.input_json)
+    run_id = inputs["run_ids"][0]
+    for reference in db.query(ReferenceSource).filter_by(run_id=run_id).all():
+        reference.canonical_url = reference.canonical_url or "https://example.test/real-citation"
+        reference.canonical_url_hash = build_url_identity(reference.canonical_url).canonical_url_hash
+    database = Path(str(db.get_bind().url.database))
+    db.commit()
+    db.close()
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    connection.close()
+
+    value = manifest()
+    for case in value["scenarios"][:2]:
+        case.update(task_id=row.task_id, project_id=row.project_id, prompt_id=row.prompt_id,
+            analysis_id=row.analysis_id, context_id=row.context_id, input_hash=row.input_hash,
+            run_ids=[run_id])
+    value["scenarios"][0]["answer_prepare_input"] = {
+        "citation_manifest_id": citation.manifest_id,
+        "citation_manifest_hash": citation.payload_hash,
+        "selected_run_id": run_id,
+    }
+    value["scenarios"][1]["prepare_input"] = {
+        "citation_manifest_id": citation.manifest_id,
+        "citation_manifest_hash": citation.payload_hash,
+        "completion_manifest_id": completion.manifest_id,
+        "completion_manifest_hash": completion.payload_hash,
+        "selected_run_id": run_id,
+    }
+    value["scenarios"][1].pop("low_match_evidence")
+    e3 = value["scenarios"][2]
+    e3.update(project_id=row.project_id, prompt_id=row.prompt_id,
+        analysis_id=row.analysis_id, context_id=row.context_id, run_ids=[run_id],
+        task_pending_truth=True,
+        unknown_prepare_input={"signal_selector": "UNIQUE_TARGET_BRAND_CAPABILITY",
+            "source_reference": "isolated acceptance", "note": "verify independently",
+            "reviewed_by": "acceptance-controller"})
+    e3.pop("unknown_truth_evidence")
+    value["source_database_sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
+    input_manifest = tmp_path / "t23-no-e3-signal.json"
+    input_manifest.write_text(json.dumps(value), encoding="utf-8")
+    ledger = tmp_path / "model-budget-v2.sqlite3"
+    initialize(ledger, pricing_source=value["shared_budget"]["pricing_source"],
+        pricing_checked_at=value["shared_budget"]["pricing_checked_at"])
+    simulated_delivery_transport(monkeypatch)
+    monkeypatch.setattr(runner, "_extract_low_match", lambda *_:
+        (_ for _ in ()).throw(ValueError("E2E-02 prepare produced no formal low-match result")))
+    monkeypatch.setattr(runner, "_freeze_e2e03_unknown", lambda *_:
+        (_ for _ in ()).throw(ValueError(
+            "E2E-03_UNKNOWN_SIGNAL_REVIEW_REQUIRED: expected one exact target-brand capability signal, found 0")))
+
+    def prepare_e3_without_signal(*, manifest, ledger, **_kwargs):
+        case = next(item for item in manifest["scenarios"] if item["id"] == "E2E-03")
+        case.update(max_requests=3, prepare_max_requests=1, execute_max_requests=2,
+            answer_prepare_input={"citation_manifest_id": "citation-e3",
+                "citation_manifest_hash": "b" * 64, "selected_run_id": run_id})
+        diagnosis = SimpleNamespace(diagnosis_id="diagnosis-e3-no-signal",
+            project_id=row.project_id, prompt_id=row.prompt_id, analysis_id=row.analysis_id)
+        output = {"input": {"brand_snapshot": {"brand_name": "Target", "aliases": []}},
+            "answer_diagnosis": {"events": []}}
+        result = SimpleNamespace(result_version="diagnosis-v1:e3-no-signal",
+            output_json=json.dumps(output), output_hash=digest(output))
+        guard, audit, _ = _hooks(ledger, scenario_id="E2E-03",
+            task_id=f"prepare-answer:{diagnosis.diagnosis_id}")
+        identity_value = {**identity(row), "input_hash": "c" * 64,
+            "provider_payload_hash": "d" * 64, "attempt": 1}
+        guard(identity_value)
+        audit({"request_identity": identity_value, "validation_status": "ACCEPTED",
+            "response_source": "PROVIDER", "response_model": "deepseek-flash"})
+        return diagnosis, result
+
+    monkeypatch.setattr(runner, "_prepare_e3_answer", prepare_e3_without_signal)
+    frozen_path = tmp_path / "t23-partial-no-e3.json"
+    report_path = tmp_path / "t23-partial-no-e3-report.json"
+    report = prepare_and_freeze(database=database, ledger=ledger,
+        manifest_path=input_manifest, frozen_manifest_path=frozen_path,
+        report_path=report_path)
+
+    frozen = validate_manifest(json.loads(frozen_path.read_text()))
+    frozen_e3 = frozen["scenarios"][2]
+    assert report["status"] == "PARTIAL_READY"
+    assert report["scenario_blockers"]["E2E-02"]["code"] == "NO_FORMAL_LOW_MATCH"
+    assert report["scenario_blockers"]["E2E-03"]["code"] == "NO_FORMAL_UNKNOWN_SIGNAL"
+    assert "task_id" not in frozen_e3 and "input_hash" not in frozen_e3
+    assert summary(ledger)["used_requests"] == 3
+    assert len([item for item in summary(ledger)["requests"]
+        if item["request_id"].startswith("T23:E2E-03:prepare-answer:")]) == 1
+    checkpoint = _checkpoint_events(_checkpoint_dir(frozen_path))[-2]
+    assert checkpoint["stage"] == "E2E03_UNKNOWN_FROZEN"
+    assert checkpoint["e2e03_task_id"] is None and checkpoint["e2e03_input_hash"] is None
+
+    calls = []
+    fake_db = SimpleNamespace()
+    monkeypatch.setattr(runner, "_inspect_task", lambda _db, case, phase:
+        {"revision": 1, "input_hash": case["input_hash"]})
+    fake_db.query = lambda *_: SimpleNamespace(filter_by=lambda **kwargs:
+        SimpleNamespace(one=lambda: SimpleNamespace(task_id=kwargs["task_id"])))
+    fake_db.expire_all = lambda: None
+    fake_db.rollback = lambda: None
+    monkeypatch.setattr(runner, "authorize_task", lambda _db, task, **kwargs:
+        calls.append(("authorize", task.task_id)))
+    monkeypatch.setattr(runner, "execute_task", lambda task_id, **kwargs:
+        calls.append(("execute", task_id)))
+    results = _execute_planned_scenarios(fake_db, None, frozen, ledger)
+    assert [item["status"] for item in results] == ["PASS", "BLOCKED", "BLOCKED"]
+    assert all(task_id == frozen["scenarios"][0]["task_id"] for _, task_id in calls)
+    assert summary(ledger)["used_requests"] == 3
+
+
 def test_prepare_resume_blocks_counted_contribution_without_repeating_send(scene, monkeypatch, tmp_path):
     from app.models import ReferenceSource, SinglePromptCitationManifest, SinglePromptSourceCompletionManifest
 

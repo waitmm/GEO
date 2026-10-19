@@ -12,6 +12,7 @@ import { ManuscriptPreview } from "./ManuscriptPreview";
 import { downloadManuscript } from "./manuscriptExport";
 import { readOptimizationSelection, resolveOptimizationSelection } from "./optimizationSelection";
 import { optimizationStatus as statusLabel } from './optimizationStatus';
+import { draftEligibility, draftRequestBlocked } from "./draftEvidenceGate";
 import type { OptimizationSelection } from "./optimizationSelection";
 
 type Task = {
@@ -25,21 +26,6 @@ type Task = {
 };
 const stages = [{ key: "SOURCES", title: "正文准备" }, { key: "ANSWER", title: "回答分析" }, { key: "CITATION", title: "引用分析" }, { key: "STRATEGY", title: "优化建议" }, { key: "TRUTH", title: "品牌资料核实" }, { key: "DRAFT", title: "具体稿件" }, { key: "TEXT_QA", title: "文本检查" }];
 const assetNames: Record<string, string> = { HELP_DOC: "帮助文档", FEATURE_PAGE: "功能说明页", PRODUCT_PAGE: "产品页", ARTICLE: "文章", VIDEO: "视频稿" };
-
-type DraftEligibility = {
-  status?: string; code?: string; direction_id?: string; evidence_ids?: string[];
-  requirements?: Record<string, boolean>; gaps?: string[]; next_actions?: string[];
-};
-
-function draftEligibility(task: Task): DraftEligibility | undefined {
-  const value = task.objects?.draft_eligibility;
-  return value && typeof value === "object" && !Array.isArray(value) ? value as DraftEligibility : undefined;
-}
-
-function draftRequestBlocked(task: Task, eligibility = draftEligibility(task)) {
-  return eligibility?.status === "BLOCKED"
-    || ["DRAFT_EVIDENCE_NOT_QUALIFIED", "INVALID_DRAFT_EVIDENCE"].includes(eligibility?.code || task.blocker_code || "");
-}
 
 const draftGapLabels: Record<string, string> = {
   NO_ELIGIBLE_EVIDENCE: "策略尚未引用可用于正文的证据",

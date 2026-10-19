@@ -1,0 +1,112 @@
+{
+  "contract": "geo-agent-network-diagnostic.v1",
+  "date": "2026-10-19",
+  "safety": {
+    "authorization_header_sent": false,
+    "model_inference_requested": false,
+    "post_responses_called": false,
+    "tls_verification_disabled": false
+  },
+  "runtime": {
+    "api_key_configured": true,
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "https://api.deepseek.com/responses",
+    "httpx_version": "0.28.1",
+    "python_executable": "/Users/bmwqr/Desktop/python/GEO/geo-platform/backend/.venv/bin/python",
+    "python_version": "3.14.3",
+    "timeout_seconds": 120
+  },
+  "environment": {
+    "ca_bundle_environment_present": false,
+    "certifi_bundle_exists": true,
+    "openssl_default_cafile_exists": false,
+    "openssl_default_capath_exists": false,
+    "proxy_environment_present": false
+  },
+  "restricted_execution": {
+    "dns": {
+      "elapsed_ms": 9.47,
+      "error_chain": [
+        {
+          "message": "[Errno 8] nodename nor servname provided, or not known",
+          "module": "socket",
+          "type": "gaierror"
+        }
+      ],
+      "ok": false
+    },
+    "httpx_trust_env_false": {
+      "elapsed_ms": 55.92,
+      "error_chain": [
+        "httpx.ConnectError",
+        "httpcore.ConnectError",
+        "socket.gaierror:[Errno 8]"
+      ],
+      "ok": false
+    },
+    "httpx_trust_env_true": {
+      "elapsed_ms": 259.43,
+      "error_chain": [
+        "httpx.ConnectError",
+        "httpcore.ConnectError",
+        "socket.gaierror:[Errno 8]"
+      ],
+      "ok": false
+    },
+    "tcp": {
+      "blocked_by": "DNS",
+      "ok": false
+    },
+    "tls": {
+      "blocked_by": "DNS",
+      "ok": false
+    }
+  },
+  "network_enabled_execution": {
+    "dns": {
+      "address_count": 2,
+      "address_families": [
+        "IPv4"
+      ],
+      "elapsed_ms": 24.67,
+      "ok": true
+    },
+    "httpx_get_models_without_auth": {
+      "authorization_sent": false,
+      "elapsed_ms": 1036.61,
+      "ok": true,
+      "status_code": 401
+    },
+    "httpx_head_root_trust_env_false": {
+      "elapsed_ms": 471.27,
+      "ok": true,
+      "status_code": 401
+    },
+    "httpx_head_root_trust_env_true": {
+      "elapsed_ms": 1602.61,
+      "ok": true,
+      "status_code": 401
+    },
+    "tcp": {
+      "elapsed_ms": 9.93,
+      "ok": true,
+      "port": 443
+    },
+    "tls": {
+      "certificate_issuer_present": true,
+      "certificate_not_after": "2026-12-01T23:59:59Z",
+      "certificate_subject_present": true,
+      "cipher": "TLS_AES_256_GCM_SHA384",
+      "elapsed_ms": 368.67,
+      "ok": true,
+      "version": "TLSv1.3"
+    }
+  },
+  "conclusion": {
+    "application_change_required": false,
+    "failure_stage": "DNS_RESOLUTION",
+    "root_cause": "RESTRICTED_EXECUTION_NETWORK_POLICY",
+    "safe_to_attempt_paid_request": false,
+    "why_not_safe_to_attempt": "A further real-model request requires separate explicit authorization."
+  }
+}

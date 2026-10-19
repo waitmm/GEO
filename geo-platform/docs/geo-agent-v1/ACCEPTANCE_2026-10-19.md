@@ -168,3 +168,10 @@ implemented and tested, but the authorized provider attempt ended in an unknown-
 transport failure. A further external request requires a new explicit authorization; the
 unknown reservation must remain occupied. Until a complete Agent result exists, real
 quality/cost superiority is `NOT_MEASURABLE`, not failed and not passed.
+
+The subsequent zero-cost network investigation is recorded in
+`docs/geo-agent-v1/NETWORK_DIAGNOSTIC_2026-10-19.md`. It reproduced the `ConnectError` as a DNS
+failure inside the restricted command environment, while the same interpreter reached the
+DeepSeek API through DNS, TCP, verified TLS and unauthenticated HTTP when network access was
+explicitly enabled. No application code, experiment state or budget reservation was changed,
+and no paid retry was started.

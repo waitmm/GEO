@@ -205,7 +205,9 @@ def _request_guard(db: Session, run: AgentExperimentRun, *, shared_budget_hooks=
                                                  "reserved_cost_cny": round(reserved_cost + next_cost, 8)})
             run.progress_json = _canonical({**loads(run.progress_json, {}),
                                             "external_request_state": "RESERVED_IN_FLIGHT",
-                                            "external_request_identity_hash": digest(request)})
+                                            "external_request_identity_hash": digest(request),
+                                            "external_request_reserved_tokens": next_tokens,
+                                            "external_request_reserved_cost_cny": round(next_cost, 8)})
             run.revision += 1
             db.commit()
         except Exception as exc:
@@ -218,6 +220,34 @@ def _request_guard(db: Session, run: AgentExperimentRun, *, shared_budget_hooks=
                 })
             raise
     return guard
+
+
+def _settle_local_reservation(run: AgentExperimentRun, usage: dict[str, Any]) -> None:
+    """Replace one definite response's worst-case hold with provider usage."""
+    progress = loads(run.progress_json, {})
+    authorization = loads(run.authorization_json, {})
+    if progress.get("external_request_state") != "RESERVED_IN_FLIGHT":
+        raise RuntimeError("AGENT_EXTERNAL_RESERVATION_NOT_ACTIVE")
+    reserved_tokens = int(progress.get("external_request_reserved_tokens", 0))
+    reserved_cost = float(progress.get("external_request_reserved_cost_cny", 0.0))
+    actual_tokens = int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+    unit_price = float(authorization.get("conservative_cny_per_million_tokens", 0.0))
+    actual_cost = actual_tokens * unit_price / 1_000_000
+    if reserved_tokens <= 0 or actual_tokens < 0 or actual_tokens > reserved_tokens:
+        raise RuntimeError("AGENT_ACTUAL_USAGE_INVALID")
+    authorization["reserved_tokens"] = (
+        int(authorization.get("reserved_tokens", 0)) - reserved_tokens + actual_tokens
+    )
+    authorization["reserved_cost_cny"] = round(
+        float(authorization.get("reserved_cost_cny", 0.0)) - reserved_cost + actual_cost, 8
+    )
+    run.authorization_json = _canonical(authorization)
+    run.progress_json = _canonical({
+        **progress,
+        "external_request_state": "SETTLED",
+        "external_request_actual_tokens": actual_tokens,
+        "external_request_actual_cost_cny": round(actual_cost, 8),
+    })
 
 
 def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | None = None,
@@ -287,8 +317,9 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
                 max_tokens=min(8192, remaining_tokens),
             )
             decision = AgentDecision.model_validate(raw_decision)
-            run.progress_json = _canonical({**loads(run.progress_json, {}),
-                                            "external_request_state": "SETTLED"})
+            if (authorization.get("mode") == "EXTERNAL_ALLOWED"
+                    and usage.get("response_source") != "LLM_CALL_CACHE"):
+                _settle_local_reservation(run, usage)
             run.model_call_count += 1
             run.input_tokens += int(usage.get("input_tokens", 0))
             run.output_tokens += int(usage.get("output_tokens", 0))

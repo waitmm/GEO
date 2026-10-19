@@ -23,7 +23,7 @@ from app.release_main import create_release_app
 from release_test_client import TestClient
 from app.modules.agent_experiment.contracts import AgentArtifact
 from app.modules.agent_experiment.grading import validate_and_grade
-from app.modules.agent_experiment.runner import _request_guard, execute_agent_run
+from app.modules.agent_experiment.runner import _request_guard, _settle_local_reservation, execute_agent_run
 from app.modules.agent_experiment.service import (
     authorize_agent_run, cancel_agent_run, create_agent_run, get_agent_run,
 )
@@ -351,6 +351,12 @@ def test_external_authorization_reserves_request_token_and_cost_before_transport
     assert authorization["reserved_tokens"] == 3000
     assert authorization["reserved_cost_cny"] == pytest.approx(0.03)
     assert loads(row.progress_json, {})["external_request_state"] == "RESERVED_IN_FLIGHT"
+    _settle_local_reservation(row, {"input_tokens": 100, "output_tokens": 50})
+    db.commit(); db.refresh(row)
+    settled = loads(row.authorization_json, {})
+    assert settled["reserved_tokens"] == 150
+    assert settled["reserved_cost_cny"] == pytest.approx(0.0015)
+    assert loads(row.progress_json, {})["external_request_state"] == "SETTLED"
     with pytest.raises(SemanticLLMError) as error:
         guard({"input_token_upper_bound": 1, "max_output_tokens": 2048})
     assert getattr(error.value, "code") == "AGENT_MODEL_CALL_BUDGET_EXHAUSTED"

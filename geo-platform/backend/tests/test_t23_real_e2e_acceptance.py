@@ -26,6 +26,7 @@ from scripts.run_t23_delivery_live import (
     _freeze_manifest_value,
     _hooks,
     _write_initial_database_snapshot,
+    execute,
     prepare_and_freeze,
 )
 from test_automatic_delivery import identity, scene, simulated_delivery_transport
@@ -509,13 +510,55 @@ def test_execute_continues_independent_scenarios_and_aggregates_blocked(monkeypa
     monkeypatch.setattr(runner, "_inspect_task", lambda db, case, phase: {"revision": 1,
         "input_hash": case["input_hash"], "verified": case["id"]})
     value = manifest()
-    planned = [{"revision": 1, "input_hash": case["input_hash"]} for case in value["scenarios"]]
 
-    results = _execute_planned_scenarios(db, object, value, tmp_path / "unused.sqlite3", planned)
+    results = _execute_planned_scenarios(db, object, value, tmp_path / "unused.sqlite3")
 
     assert calls == ["task-E2E-01", "task-E2E-02", "task-E2E-03"]
     assert [row["status"] for row in results] == ["BLOCKED", "PASS", "PASS"]
     assert db.rollbacks == 1
+
+
+def test_execute_reports_plan_failure_and_runs_later_scenarios(scene, monkeypatch, tmp_path):
+    import scripts.run_t23_delivery_live as runner
+
+    db, row, _, _ = scene
+    database = Path(str(db.get_bind().url.database))
+    db.commit()
+    db.close()
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    connection.close()
+    value = manifest()
+    for case in value["scenarios"]:
+        case.update(task_id=row.task_id, project_id=row.project_id, prompt_id=row.prompt_id,
+            analysis_id=row.analysis_id, context_id=row.context_id, input_hash=row.input_hash,
+            run_ids=[json.loads(row.input_json)["run_ids"][0]])
+    value["scenarios"][0]["answer_prepare_input"]["selected_run_id"] = value["scenarios"][0]["run_ids"][0]
+    value["scenarios"][1]["prepare_input"]["selected_run_id"] = value["scenarios"][1]["run_ids"][0]
+    value["scenarios"][1]["low_match_evidence"]["selected_run_id"] = value["scenarios"][1]["run_ids"][0]
+    value["source_database_sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
+    manifest_path = tmp_path / "frozen-execute.json"
+    manifest_path.write_text(json.dumps(value), encoding="utf-8")
+    ledger = tmp_path / "model-budget-v2.sqlite3"
+    initialize(ledger, pricing_source=value["shared_budget"]["pricing_source"],
+        pricing_checked_at=value["shared_budget"]["pricing_checked_at"])
+    calls = []
+    def inspect(_db, case, phase):
+        if phase == "plan" and case["id"] == "E2E-01":
+            raise ValueError("scenario plan rejected")
+        return {"revision": 1, "input_hash": case["input_hash"], "verified": case["id"]}
+    monkeypatch.setattr(runner, "_inspect_task", inspect)
+    monkeypatch.setattr(runner, "authorize_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_hooks", lambda *args, **kwargs: (lambda value: None,
+        lambda value: None, lambda exc: None))
+    monkeypatch.setattr(runner, "execute_task", lambda task_id, **kwargs: calls.append(task_id))
+
+    report = execute(database=database, ledger=ledger, manifest_path=manifest_path,
+        report_path=tmp_path / "execute-report.json")
+
+    assert report["status"] == "BLOCKED" and report["exit_code"] == 2
+    assert [item["status"] for item in report["scenarios"]] == ["BLOCKED", "PASS", "PASS"]
+    assert len(calls) == 2
 
 
 def test_prepare_resume_blocks_counted_contribution_without_repeating_send(scene, monkeypatch, tmp_path):

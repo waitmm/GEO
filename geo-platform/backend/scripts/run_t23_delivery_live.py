@@ -193,6 +193,13 @@ def _write_frozen_manifest(path: Path, manifest: dict[str, Any]) -> None:
         return
     with path.open("x", encoding="utf-8") as stream:
         stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _database_state(database: Path) -> dict[str, str]:
@@ -629,12 +636,12 @@ def prepare_and_freeze(*, database: Path, ledger: Path, manifest_path: Path,
     return report
 
 
-def _execute_planned_scenarios(db, Session, manifest: dict[str, Any], ledger: Path,
-                               planned: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _execute_planned_scenarios(db, Session, manifest: dict[str, Any], ledger: Path) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for case, state in zip(manifest["scenarios"], planned, strict=True):
+    for case in manifest["scenarios"]:
         settle_unknown = None
         try:
+            state = _inspect_task(db, case, phase="plan")
             row = db.query(SinglePromptOptimizationTask).filter_by(task_id=case["task_id"]).one()
             payload = _authorization(case, state, manifest["shared_budget"])
             authorize_task(db, row, **payload)
@@ -676,9 +683,7 @@ def execute(*, database: Path, ledger: Path, manifest_path: Path, report_path: P
     db = Session()
     results: list[dict[str, Any]] = []
     try:
-        # Validate every scenario before granting the first task any authority.
-        planned = [_inspect_task(db, case, phase="plan") for case in manifest["scenarios"]]
-        results = _execute_planned_scenarios(db, Session, manifest, ledger, planned)
+        results = _execute_planned_scenarios(db, Session, manifest, ledger)
         blocked = [row for row in results if row["status"] != "PASS"]
         report = {"status": "BLOCKED" if blocked else "PASS",
             "contract_version": manifest["contract_version"],

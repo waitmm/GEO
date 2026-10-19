@@ -167,7 +167,7 @@ export function readDeliveryQualification(objects: Record<string, unknown> | und
 }
 
 export const deliveryLevelLabel: Record<DeliveryLevel, string> = {
-  L1_FULLY_GROUNDED: "L1 完整证据交付",
+  L1_FULLY_GROUNDED: "L1 事实块已完整归属",
   L2_PARTIALLY_GROUNDED: "L2 受约束交付",
   L3_ACTIONABLE_WITHOUT_FACT_CLAIMS: "L3 行动交付",
   L4_RECOVERY_PACKAGE: "L4 恢复交付",

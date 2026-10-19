@@ -64,11 +64,12 @@ test('formal Optimize UI renders all four levels conservatively and keeps histor
     readFile(new URL('../src/optimizationSelection.ts', import.meta.url), 'utf8'),
   ]);
   assert.match(panel, /<DeliveryQualificationCard objects=\{task\.objects\}/);
-  for (const text of ['L1 完整证据交付', 'L2 受约束交付', 'L3 行动交付', 'L4 恢复交付']) {
+  for (const text of ['L1 事实块已完整归属', 'L2 受约束交付', 'L3 行动交付', 'L4 恢复交付']) {
     assert.match(helper, new RegExp(text));
   }
   assert.match(card, /不声明品牌能力、平台规则、数字效果或 Citation 支持/);
   assert.match(card, /不会生成 Draft\/QA 成功结果，也不会解锁内容交付依赖/);
+  assert.match(card, /不代表 Citation 覆盖完整，也不代表专项 E1\/E2E-01 已通过/);
   assert.match(selection, /optimization_task/);
   assert.match(selection, /v2_execution_result/);
 });

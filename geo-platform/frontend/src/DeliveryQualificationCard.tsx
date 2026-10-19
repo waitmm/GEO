@@ -3,7 +3,7 @@ import { deliveryLevelLabel, listText, readDeliveryQualification, type Qualifica
 
 function planDescription(plan: QualificationPlan) {
   const level = plan.planned_delivery_level;
-  if (level === "L1_FULLY_GROUNDED") return "仅固定且可消费的证据/品牌事实可支撑正文事实表述。";
+  if (level === "L1_FULLY_GROUNDED") return "本方向正文事实块均已归属固定且可消费的证据/品牌事实。";
   if (level === "L2_PARTIALLY_GROUNDED") return "仅独立支持的内容可作事实表述；其余内容必须删除或作为待核验事项。";
   if (level === "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS") return "仅提供行动、研究与核验内容，不声明品牌能力、平台规则、数字效果或 Citation 支持。";
   return "不生成正文或 QA 成功结果；仅提供恢复动作，且不会解锁内容交付依赖。";
@@ -12,7 +12,7 @@ function planDescription(plan: QualificationPlan) {
 function resultDescription(result: QualificationResult) {
   if (result.admitted_delivery_level === "REJECTED") return "本次输出未被接纳；不会将失败正文降级后保留。";
   if (result.product_outcome !== "CONTENT_DELIVERED") return "尚未形成已接纳的内容交付。";
-  return result.admitted_delivery_level === "L1_FULLY_GROUNDED" ? "已接纳为完整证据交付。"
+  return result.admitted_delivery_level === "L1_FULLY_GROUNDED" ? "已接纳为事实块已完整归属的交付。"
     : result.admitted_delivery_level === "L2_PARTIALLY_GROUNDED" ? "已接纳为受约束交付；请逐项查看待核验内容。"
       : "已接纳为行动交付；不包含可当作事实使用的内容。";
 }
@@ -24,6 +24,9 @@ function PlanView({ plan, result }: { plan: QualificationPlan; result?: Qualific
     <Space wrap><Tag color={plan.planned_delivery_level === "L1_FULLY_GROUNDED" ? "green" : plan.planned_delivery_level === "L4_RECOVERY_PACKAGE" ? "orange" : "blue"}>{label}</Tag>
       <Typography.Text type="secondary">固定计划 {plan.plan_version}</Typography.Text></Space>
     <Typography.Paragraph style={{ margin: "8px 0" }}>{planDescription(plan)}</Typography.Paragraph>
+    {plan.planned_delivery_level === "L1_FULLY_GROUNDED" && <Alert type="info" showIcon style={{ marginBottom: 8 }}
+      message="本方向事实块已完整归属"
+      description="不代表 Citation 覆盖完整，也不代表专项 E1/E2E-01 已通过；专项验收仍要求真实 Citation、同 Run Binding、正式 UI 与 QA 等完整证据。" />}
     <Descriptions size="small" column={{ xs: 1, md: 2 }}>
       <Descriptions.Item label="事实使用边界">{plan.public_claim_eligibility || "未返回"}</Descriptions.Item>
       <Descriptions.Item label="发布边界">{plan.publication_eligibility || "未返回"}</Descriptions.Item>
@@ -63,7 +66,7 @@ export function DeliveryQualificationCard({ objects }: { objects?: Record<string
   const resultFor = (plan: QualificationPlan) => state.results.find(result => result.plan_id === plan.plan_id);
   return <Collapse style={{ marginTop: 12 }} items={[{
     key: "delivery-qualification", label: `冻结交付分级（${state.plans.length} 个方向）`, children: <Space direction="vertical" style={{ width: "100%" }} size={16}>
-      <Typography.Paragraph type="secondary">交付等级仅来自固定资格计划与实际接纳结果；L2/L3 不表示 L1 Evidence 或专项 E1/E2/E3 验收通过。</Typography.Paragraph>
+      <Typography.Paragraph type="secondary">交付等级仅来自固定资格计划与实际接纳结果；L1 不代表 Citation 覆盖完整或 E1/E2E-01 已通过，L2/L3 也不表示专项 E1/E2/E3 验收通过。</Typography.Paragraph>
       {state.plans.map(plan => <PlanView key={plan.plan_id} plan={plan} result={resultFor(plan)} />)}
       {!state.results.length && <Empty description="资格计划已固定，尚未形成实际接纳结果" />}
     </Space>,

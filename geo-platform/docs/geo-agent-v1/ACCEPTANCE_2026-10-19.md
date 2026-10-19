@@ -120,6 +120,42 @@ Post-run targeted regression command:
 `env PYTHONPATH=backend .../backend/.venv/bin/pytest -q backend/tests/test_shared_model_budget.py backend/tests/test_agent_experiment.py backend/tests/test_automatic_delivery.py backend/tests/test_deepseek_generation_contract.py backend/tests/test_derived_model_call_identity.py`
 resulted in `62 passed`.
 
+## Context-continuity repair and authorized rerun
+
+The owner authorized one further run on the same exact frozen input, with a subordinate
+ceiling of CNY 3, 300,000 tokens and 10 requests inside the original shared ledger. Inspection
+confirmed that each prior implementation request already serialized recent decision and tool
+result history into the stateless Responses `input`; the failure was therefore not total loss
+of history. The model lacked an explicit progress inventory, normalized observation identity
+and finalization phase.
+
+The local repair added an audited `MODEL_INPUT_CONTEXT` manifest for every request, an
+observation catalog with full recent tool results, checkpoint-safe summary replay, normalized
+scope/tool/argument observation keys, duplicate-result reuse without re-executing the tool,
+two-call finalization reservation, and safe rejection of exploration calls during
+finalization. It did not add tools or GEO analysis steps. Offline transport tests inspect the
+actual `/responses` body and prove that history and the observation catalog are serialized
+into `input`; checkpoint, truncation, duplicate, finalization, budget and formal-lane tests
+also pass.
+
+The zero-call preflight first produced one preserved `BLOCKED / RUN_SNAPSHOT_DRIFT` row
+because it was started outside the repository-relative monitoring artifact root, so two
+semantic-region artifacts could not be projected. Running the new independent preflight from
+the existing artifact root restored the exact frozen scope hash
+`69a86f8ecdc574e5a7631d6982270e1a25e29485937df4c17d2205ed99a7b2c7` without copying,
+refetching or changing evidence. It verified the prior ledger exactly at 13 requests, 79,741
+tokens and CNY 0.79741 and created run
+`agent-run-50a60949-2e4e-41d1-b486-7abd2016e7b2`.
+
+The one authorized external execution then failed before any provider response with
+`ConnectError`. Automatic retries remained zero. It produced no model decision, tool call or
+Agent result, so real cross-turn continuity and delivery quality remain untested. The shared
+guard conservatively retained this request as `DELIVERY_UNKNOWN`: one request, a 31,172-token
+ceiling and CNY 0.31172. Provider usage and actual charge are unknown and must not be reported
+as consumed tokens or billed cost. The cumulative conservative ledger is now 14 requests,
+110,913 accounted tokens and CNY 1.10913, with one unknown reservation and no in-flight
+request. No retry or second scenario was started.
+
 ## Known limits and next exact task
 
 L1 is intentionally not admitted by the P0 raw-first Agent path: a source snapshot alone is
@@ -127,8 +163,8 @@ not enough to invent a fully grounded formal binding. P0 can admit conservative 
 always leaves publication at `VERIFY_FIRST`; future L1 support must consume an actually
 qualified per-block Evidence/Truth partition without exposing formal Strategy or Draft.
 
-The next decision is not to expand tools or scenarios. If the owner authorizes another paid
-attempt, first change and test only the run-local turn policy so a model that has already read
-the answer and citation list has room to synthesize a result, while preventing repeated
-idempotent observations from consuming the whole run. Until a complete Agent result exists,
-real quality/cost superiority is `NOT_MEASURABLE`, not failed and not passed.
+The next decision is not to expand tools or scenarios. The progress and finalization repair is
+implemented and tested, but the authorized provider attempt ended in an unknown-delivery
+transport failure. A further external request requires a new explicit authorization; the
+unknown reservation must remain occupied. Until a complete Agent result exists, real
+quality/cost superiority is `NOT_MEASURABLE`, not failed and not passed.

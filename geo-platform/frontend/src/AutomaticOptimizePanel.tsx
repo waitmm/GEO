@@ -19,12 +19,68 @@ type Task = {
   task_id: string; revision: number; status: string; stage: string; input_hash: string;
   brand_context_label: string; supplemental_source_count: number;
   scope: number[]; provider: string; requested_model: string; effective_request_model: string;
-  blocker_detail: string; authorization: { policy: string; max_cost_cny: number };
+  blocker_code?: string; blocker_detail: string; authorization: { policy: string; max_cost_cny: number };
   objects: Record<string, any>; limitations: any[];
   usage: { external_requests: number; cache_hits: number; reserved_tokens: number; reserved_cost_cny: number; actual_tokens: number; unsettled_requests: number };
 };
 const stages = [{ key: "SOURCES", title: "正文准备" }, { key: "ANSWER", title: "回答分析" }, { key: "CITATION", title: "引用分析" }, { key: "STRATEGY", title: "优化建议" }, { key: "TRUTH", title: "品牌资料核实" }, { key: "DRAFT", title: "具体稿件" }, { key: "TEXT_QA", title: "文本检查" }];
 const assetNames: Record<string, string> = { HELP_DOC: "帮助文档", FEATURE_PAGE: "功能说明页", PRODUCT_PAGE: "产品页", ARTICLE: "文章", VIDEO: "视频稿" };
+
+type DraftEligibility = {
+  status?: string; code?: string; direction_id?: string; evidence_ids?: string[];
+  requirements?: Record<string, boolean>; gaps?: string[]; next_actions?: string[];
+};
+
+function draftEligibility(task: Task): DraftEligibility | undefined {
+  const value = task.objects?.draft_eligibility;
+  return value && typeof value === "object" && !Array.isArray(value) ? value as DraftEligibility : undefined;
+}
+
+function draftRequestBlocked(task: Task, eligibility = draftEligibility(task)) {
+  return eligibility?.status === "BLOCKED"
+    || ["DRAFT_EVIDENCE_NOT_QUALIFIED", "INVALID_DRAFT_EVIDENCE"].includes(eligibility?.code || task.blocker_code || "");
+}
+
+const draftGapLabels: Record<string, string> = {
+  NO_ELIGIBLE_EVIDENCE: "策略尚未引用可用于正文的证据",
+  EVIDENCE_NOT_EVALUATED_OR_SUPPORTED: "正文证据尚未完成有效评估或不支持当前表述",
+  EVIDENCE_SCOPE_OR_VERSION_MISMATCH: "证据与当前固定范围或版本不匹配",
+  STRATEGY_EVIDENCE_NOT_BOUND: "策略没有绑定当前允许的正文证据",
+  DRAFT_EVIDENCE_ALLOWLIST_INVALID: "正文只能使用当前策略允许的证据",
+};
+
+function draftGapLabel(value: string) {
+  return draftGapLabels[value] || (/[\u4e00-\u9fff]/.test(value) ? value : `证据条件未满足（${value}）`);
+}
+
+function limitationLabel(limitation: any) {
+  if (limitation?.code === "DRAFT_EVIDENCE_NOT_QUALIFIED") return "正文生成尚不具备合格证据条件；请查看上方的待补齐和下一步。";
+  const prefix = Number.isInteger(limitation?.run_id) ? `Run #${limitation.run_id}：` : "";
+  return prefix + (limitation?.code === "CITATION_PARTIAL_EVALUATION" ? "部分引用未完成判断，不能当作不支持" : "当前引用资料未完成有效评估");
+}
+
+function EvidenceReadiness({ task }: { task: Task }) {
+  const eligibility = draftEligibility(task);
+  const blocked = draftRequestBlocked(task, eligibility);
+  if (!eligibility && !blocked) return null;
+  const gaps = Array.isArray(eligibility?.gaps) ? eligibility.gaps : [];
+  const actions = Array.isArray(eligibility?.next_actions) ? eligibility.next_actions : [];
+  const evidenceIds = Array.isArray(eligibility?.evidence_ids) ? eligibility.evidence_ids : [];
+  return <Alert style={{ marginTop: 12 }} type="warning" showIcon
+    message={blocked ? "正文生成已因证据准入停止" : "正文证据准备状态"}
+    description={<Space direction="vertical" size={6} style={{ width: "100%" }}>
+      {blocked && <span>未发送新的模型请求，尚未生成稿件。请先完成下列证据缺口，不要恢复本任务来重复提交必败生成。</span>}
+      {eligibility && <>
+        <span>当前准入状态：{eligibility.status || "待核对"}{eligibility.direction_id ? `；策略方向：${eligibility.direction_id}` : ""}</span>
+        {evidenceIds.length > 0 && <span>当前校验集合：{evidenceIds.join("、")}</span>}
+        {eligibility.requirements && <span>准入条件：正文证据非空、已评估、范围与版本一致、策略已引用、正文仅使用允许的证据。</span>}
+      </>}
+      {!eligibility && <span>该历史任务未返回结构化证据缺口；保留原始失败记录，不能据此推断证据数量或准入状态。</span>}
+      {gaps.length > 0 && <div><Typography.Text strong>待补齐：</Typography.Text><ul style={{ margin: "4px 0 0", paddingLeft: 20 }}>{gaps.map((gap, index) => <li key={`${gap}-${index}`}>{draftGapLabel(gap)}</li>)}</ul></div>}
+      {actions.length > 0 && <div><Typography.Text strong>下一步：</Typography.Text><ul style={{ margin: "4px 0 0", paddingLeft: 20 }}>{actions.map((action, index) => <li key={`${action}-${index}`}>{action}</li>)}</ul></div>}
+    </Space>} />;
+}
+
 const answerRelationCorrectionReady = (task: Task) => task.task_kind === "AUTOMATIC_OPTIMIZE"
   && ["COMPLETED", "COMPLETED_WITH_LIMITATIONS"].includes(task.status)
   && Array.isArray(task.objects.deliveries) && task.objects.deliveries.length > 0;
@@ -133,6 +189,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
     return `${window.location.pathname}?${params}#v2-execution`;
   }
   const active = task && ["QUEUED", "RUNNING"].includes(task.status);
+  const draftBlocked = task ? draftRequestBlocked(task) : false;
   return <section className="automatic-optimize" aria-label="自动优化交付">
     <Space wrap style={{ justifyContent: "space-between", width: "100%" }}><Typography.Title level={4}>自动优化交付</Typography.Title>
       <Tooltip title="刷新任务"><Button aria-label="刷新自动优化任务" icon={<RefreshCw size={16} />} disabled={busy} onClick={() => void refresh()} /></Tooltip></Space>
@@ -161,6 +218,7 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
         {task.objects.truth_reprojection && <Button onClick={() => selectTask(task.objects.truth_reprojection.parent_task_id)}>查看原任务与历史稿件</Button>}
         <Steps size="small" responsive current={task.stage === "COMPLETE" ? stages.length : Math.max(0, stages.findIndex(s => s.key === task.stage))} items={stages.map(s => ({ title: s.title }))} style={{ margin: "20px 0" }} />
         {task.blocker_detail && <Alert type="warning" showIcon message={statusLabel(task)} description={task.blocker_detail} />}
+        <EvidenceReadiness task={task} />
         <Descriptions size="small" column={{ xs: 1, md: 3 }}>
           <Descriptions.Item label="固定样本">{task.scope.map(r => `Run #${r}`).join("、")}</Descriptions.Item>
           <Descriptions.Item label="本任务冻结资料">{task.brand_context_label}；额外公开资料 {task.supplemental_source_count} 份</Descriptions.Item>
@@ -176,11 +234,11 @@ export function AutomaticOptimizePanel({ projectId, promptId, analysisId, rawHas
             onQueued={saved => { if (!alive.current) return; ++sequence.current; selectTask(saved.task_id); setTasks(old => [saved, ...old.filter(t => t.task_id !== saved.task_id)]); void refresh(); }} />}
           {answerRelationCorrectionReady(task) && <AnswerRelationCorrectionPanel
             key={`answer-relation:${task.task_id}`} taskId={task.task_id} projectId={projectId} promptId={promptId} />}
-          {task.authorization.policy === "CACHE_ONLY" && !active && !task.status.startsWith("COMPLETED") && task.status !== "CANCELLED" && <Button icon={<ShieldCheck size={16} />} onClick={() => setAuthOpen(true)}>授权本任务模型调用</Button>}
-          {["INTERRUPTED", "BLOCKED"].includes(task.status) && <Button disabled={!!task.usage.unsettled_requests} loading={busy} icon={<Play size={16} />} onClick={() => void mutate("resume")}>恢复未完成步骤</Button>}
+          {task.authorization.policy === "CACHE_ONLY" && !active && !task.status.startsWith("COMPLETED") && task.status !== "CANCELLED" && <Button disabled={draftBlocked} icon={<ShieldCheck size={16} />} onClick={() => setAuthOpen(true)}>{draftBlocked ? "证据不足，不能授权生成" : "授权本任务模型调用"}</Button>}
+          {["INTERRUPTED", "BLOCKED"].includes(task.status) && <Button disabled={!!task.usage.unsettled_requests || draftBlocked} loading={busy} icon={<Play size={16} />} onClick={() => void mutate("resume")}>{draftBlocked ? "证据不足，不能恢复生成" : "恢复未完成步骤"}</Button>}
           {!task.status.startsWith("COMPLETED") && task.status !== "CANCELLED" && <Button danger icon={<Square size={16} />} loading={busy} onClick={() => void mutate("cancel")}>停止后续步骤</Button>}
         </Space>
-        {!!task.limitations.length && <Collapse style={{ marginTop: 12 }} items={[{ key: "limits", label: `分析限制（${task.limitations.length}）`, children: <ul>{task.limitations.map((l, i) => <li key={i}>Run #{l.run_id}：{l.code === "CITATION_PARTIAL_EVALUATION" ? "部分引用未完成判断，不能当作不支持" : "当前引用资料未完成有效评估"}</li>)}</ul> }]} />}
+        {!!task.limitations.length && <Collapse style={{ marginTop: 12 }} items={[{ key: "limits", label: `分析限制（${task.limitations.length}）`, children: <ul>{task.limitations.map((l, i) => <li key={i}>{limitationLabel(l)}</li>)}</ul> }]} />}
         {task.pending_draft && <Collapse items={[{ key: "submitted", label: "本次提交的修改原文（不继承旧稿资格）", children: task.pending_draft.sections.map((s, i) => <section key={i}>
           <Typography.Title level={5}>{s.heading}</Typography.Title>{s.blocks.map((b, j) => <Typography.Paragraph key={j} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{b.text}</Typography.Paragraph>)}
         </section>) }]} />}

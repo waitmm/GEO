@@ -551,6 +551,60 @@ class SinglePromptSourceCompletionManifest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class SinglePromptCitationRefresh(Base):
+    """One guarded physical refresh attempt for an existing Citation snapshot."""
+
+    __tablename__ = "single_prompt_citation_refreshes"
+    __table_args__ = (
+        UniqueConstraint(
+            "preparation_id", "idempotency_key",
+            name="uq_single_prompt_citation_refresh_idempotency",
+        ),
+        Index("ix_single_prompt_citation_refresh_scope", "preparation_id", "source_key", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    refresh_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    preparation_id: Mapped[str] = mapped_column(
+        ForeignKey("single_prompt_source_preparations.preparation_id"), index=True
+    )
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("single_prompt_analyses.analysis_id"), index=True)
+    context_id: Mapped[str] = mapped_column(
+        ForeignKey("single_prompt_analysis_contexts.context_id"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    citation_manifest_id: Mapped[str] = mapped_column(
+        ForeignKey("single_prompt_citation_manifests.manifest_id"), index=True
+    )
+    citation_manifest_hash: Mapped[str] = mapped_column(String(64))
+    source_key: Mapped[str] = mapped_column(String(64), index=True)
+    canonical_url: Mapped[str] = mapped_column(String(1200))
+    base_completion_manifest_id: Mapped[str] = mapped_column(
+        ForeignKey("single_prompt_source_completion_manifests.manifest_id"), index=True
+    )
+    base_completion_version: Mapped[int] = mapped_column(Integer)
+    base_completion_manifest_hash: Mapped[str] = mapped_column(String(64))
+    base_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("single_prompt_prepared_source_snapshots.snapshot_id"), index=True
+    )
+    base_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    requested_by: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(40), default="PENDING", index=True)
+    outcome_json: Mapped[str] = mapped_column(Text, default="{}")
+    outcome_hash: Mapped[str] = mapped_column(String(64), default="")
+    result_snapshot_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    result_completion_manifest_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    result_completion_manifest_hash: Mapped[str] = mapped_column(String(64), default="")
+    failure_code: Mapped[str] = mapped_column(String(80), default="")
+    failure_detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class SinglePromptDiagnosisExecution(Base):
     __tablename__ = "single_prompt_diagnosis_executions"
     __table_args__ = (

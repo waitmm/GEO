@@ -28,6 +28,7 @@ from app.models import (
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
     SinglePromptCitationManifest,
+    SinglePromptCitationRefresh,
     SinglePromptPreparedSourceSnapshot,
     SinglePromptSourceCompletionManifest,
     SinglePromptSourceDisposition,
@@ -44,6 +45,7 @@ URL_IDENTITY_VERSION = "single_prompt_source_identity.v1"
 SOURCE_PREPARATION_CONTRACT_VERSION = "single_prompt_source_preparation.v2_explicit_partial"
 SOURCE_CONTENT_GATE_VERSION = "single_prompt_source_content_gate.v3_auto_then_manual"
 PASSAGE_SPLIT_VERSION = "single_prompt_passage_split.v1"
+CITATION_REFRESH_CONTRACT_VERSION = "single_prompt_citation_refresh.v1"
 
 
 class _TransportDocument(BaseModel):
@@ -602,6 +604,362 @@ def execute_auto_fetch(
     finally:
         db.close()
     return {"requested": len(requests), "ready": ready, "manual_required": manual_required}
+
+
+def _refresh_input(row: SinglePromptCitationRefresh) -> dict[str, Any]:
+    return {
+        "contract_version": CITATION_REFRESH_CONTRACT_VERSION,
+        "preparation_id": row.preparation_id,
+        "analysis_id": row.analysis_id,
+        "context_id": row.context_id,
+        "project_id": row.project_id,
+        "prompt_id": row.prompt_id,
+        "citation_manifest_id": row.citation_manifest_id,
+        "citation_manifest_hash": row.citation_manifest_hash,
+        "source_key": row.source_key,
+        "canonical_url": row.canonical_url,
+        "base_completion_manifest_id": row.base_completion_manifest_id,
+        "base_completion_version": row.base_completion_version,
+        "base_completion_manifest_hash": row.base_completion_manifest_hash,
+        "base_snapshot_id": row.base_snapshot_id,
+        "base_snapshot_hash": row.base_snapshot_hash,
+        "idempotency_key": row.idempotency_key,
+        "requested_by": row.requested_by,
+    }
+
+
+def citation_refresh_view(row: SinglePromptCitationRefresh) -> dict[str, Any]:
+    return {
+        "contract_version": CITATION_REFRESH_CONTRACT_VERSION,
+        "refresh_id": row.refresh_id,
+        "status": row.status,
+        "input": _refresh_input(row),
+        "input_hash": row.input_hash,
+        "requested_by": row.requested_by,
+        "outcome": loads(row.outcome_json, {}),
+        "outcome_hash": row.outcome_hash,
+        "result_snapshot_id": row.result_snapshot_id,
+        "result_completion_manifest_id": row.result_completion_manifest_id,
+        "result_completion_manifest_hash": row.result_completion_manifest_hash,
+        "failure_code": row.failure_code,
+        "failure_detail": row.failure_detail,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+    }
+
+
+def _require_refresh_scope(db: Session, row: SinglePromptCitationRefresh) -> tuple[
+    SinglePromptSourcePreparation,
+    SinglePromptSourceDisposition,
+    SinglePromptPreparedSourceSnapshot,
+    SinglePromptSourceCompletionManifest,
+]:
+    preparation = db.query(SinglePromptSourcePreparation).filter_by(
+        preparation_id=row.preparation_id,
+        analysis_id=row.analysis_id,
+        context_id=row.context_id,
+        project_id=row.project_id,
+        prompt_id=row.prompt_id,
+        citation_manifest_id=row.citation_manifest_id,
+        citation_manifest_hash=row.citation_manifest_hash,
+        current_completion_manifest_id=row.base_completion_manifest_id,
+    ).one_or_none()
+    citation = db.query(SinglePromptCitationManifest).filter_by(
+        manifest_id=row.citation_manifest_id,
+        analysis_id=row.analysis_id,
+        context_id=row.context_id,
+        project_id=row.project_id,
+        prompt_id=row.prompt_id,
+        payload_hash=row.citation_manifest_hash,
+    ).one_or_none()
+    completion = db.query(SinglePromptSourceCompletionManifest).filter_by(
+        manifest_id=row.base_completion_manifest_id,
+        preparation_id=row.preparation_id,
+        analysis_id=row.analysis_id,
+        context_id=row.context_id,
+        citation_manifest_id=row.citation_manifest_id,
+        citation_manifest_hash=row.citation_manifest_hash,
+        version_number=row.base_completion_version,
+        payload_hash=row.base_completion_manifest_hash,
+    ).one_or_none()
+    disposition = db.query(SinglePromptSourceDisposition).filter_by(
+        preparation_id=row.preparation_id,
+        source_key=row.source_key,
+        canonical_url=row.canonical_url,
+        state=READY_STATE,
+        active_snapshot_id=row.base_snapshot_id,
+    ).one_or_none()
+    snapshot = db.query(SinglePromptPreparedSourceSnapshot).filter_by(
+        snapshot_id=row.base_snapshot_id,
+        preparation_id=row.preparation_id,
+        context_id=row.context_id,
+        citation_manifest_id=row.citation_manifest_id,
+        source_key=row.source_key,
+        canonical_url=row.canonical_url,
+        content_hash=row.base_snapshot_hash,
+    ).one_or_none()
+    if not all((preparation, citation, completion, disposition, snapshot)):
+        raise HTTPException(409, detail={"code": "CITATION_REFRESH_SCOPE_CHANGED"})
+    citation_payload = loads(citation.payload_json, {})
+    if _hash(citation_payload) != citation.payload_hash:
+        raise HTTPException(409, detail={"code": "CITATION_REFRESH_CITATION_MANIFEST_TAMPERED"})
+    citation_sources = {
+        (str(item.get("source_key") or ""), str(item.get("canonical_url") or ""))
+        for item in citation_payload.get("sources") or []
+    }
+    if (row.source_key, row.canonical_url) not in citation_sources:
+        raise HTTPException(409, detail={"code": "CITATION_REFRESH_NOT_CITATION_SOURCE"})
+    completion_payload = loads(completion.payload_json, {})
+    if _hash(completion_payload) != completion.payload_hash:
+        raise HTTPException(409, detail={"code": "CITATION_REFRESH_COMPLETION_MANIFEST_TAMPERED"})
+    completion_rows = {
+        str(item.get("source_key") or ""): item
+        for item in completion_payload.get("sources") or []
+    }
+    bound = completion_rows.get(row.source_key) or {}
+    if (
+        bound.get("disposition") != READY_STATE
+        or bound.get("snapshot_id") != row.base_snapshot_id
+        or bound.get("content_hash") != row.base_snapshot_hash
+    ):
+        raise HTTPException(409, detail={"code": "CITATION_REFRESH_COMPLETION_BINDING_CHANGED"})
+    _verify_snapshot(snapshot)
+    return preparation, disposition, snapshot, completion
+
+
+def request_citation_refresh(
+    db: Session,
+    *,
+    preparation_id: str,
+    analysis_id: str,
+    context_id: str,
+    project_id: int,
+    prompt_id: int,
+    citation_manifest_id: str,
+    citation_manifest_hash: str,
+    source_key: str,
+    canonical_url: str,
+    base_completion_manifest_id: str,
+    base_completion_version: int,
+    base_completion_manifest_hash: str,
+    base_snapshot_id: str,
+    base_snapshot_hash: str,
+    idempotency_key: str,
+    requested_by: str,
+) -> tuple[SinglePromptCitationRefresh, bool]:
+    if not requested_by.strip():
+        raise HTTPException(422, detail={"code": "CITATION_REFRESH_ACTOR_REQUIRED"})
+    values = {
+        "contract_version": CITATION_REFRESH_CONTRACT_VERSION,
+        "preparation_id": preparation_id,
+        "analysis_id": analysis_id,
+        "context_id": context_id,
+        "project_id": project_id,
+        "prompt_id": prompt_id,
+        "citation_manifest_id": citation_manifest_id,
+        "citation_manifest_hash": citation_manifest_hash,
+        "source_key": source_key,
+        "canonical_url": canonical_url,
+        "base_completion_manifest_id": base_completion_manifest_id,
+        "base_completion_version": base_completion_version,
+        "base_completion_manifest_hash": base_completion_manifest_hash,
+        "base_snapshot_id": base_snapshot_id,
+        "base_snapshot_hash": base_snapshot_hash,
+        "idempotency_key": idempotency_key,
+        "requested_by": requested_by.strip(),
+    }
+    input_hash = _hash(values)
+    existing = db.query(SinglePromptCitationRefresh).filter_by(
+        preparation_id=preparation_id, idempotency_key=idempotency_key
+    ).one_or_none()
+    if existing:
+        if existing.input_hash != input_hash:
+            raise HTTPException(409, detail={"code": "CITATION_REFRESH_IDEMPOTENCY_CONFLICT"})
+        return existing, False
+    row = SinglePromptCitationRefresh(
+        refresh_id=f"citation-refresh-{uuid4()}",
+        input_hash=input_hash,
+        status="PENDING",
+        outcome_json="{}",
+        outcome_hash="",
+        result_completion_manifest_hash="",
+        failure_code="",
+        failure_detail="",
+        **{key: value for key, value in values.items() if key != "contract_version"},
+    )
+    db.add(row)
+    try:
+        db.flush()
+        _require_refresh_scope(db, row)
+    except Exception:
+        db.rollback()
+        raise
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent = db.query(SinglePromptCitationRefresh).filter_by(
+            preparation_id=preparation_id, idempotency_key=idempotency_key
+        ).one()
+        if concurrent.input_hash != input_hash:
+            raise HTTPException(409, detail={"code": "CITATION_REFRESH_IDEMPOTENCY_CONFLICT"})
+        return concurrent, False
+    db.refresh(row)
+    return row, True
+
+
+def _finish_citation_refresh(
+    db: Session,
+    row: SinglePromptCitationRefresh,
+    *,
+    status: str,
+    outcome: dict[str, Any],
+    failure_code: str = "",
+    failure_detail: str = "",
+) -> SinglePromptCitationRefresh:
+    row.status = status
+    row.outcome_json = _canonical_json(outcome)
+    row.outcome_hash = _hash(outcome)
+    row.failure_code = failure_code
+    row.failure_detail = failure_detail[:2000]
+    row.finished_at = datetime.utcnow()
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def execute_citation_refresh(
+    refresh_id: str,
+    *,
+    session_factory: Callable[[], Session],
+    fetcher: Callable[..., list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    db = session_factory()
+    try:
+        claimed = db.query(SinglePromptCitationRefresh).filter_by(
+            refresh_id=refresh_id, status="PENDING"
+        ).update({"status": "RUNNING", "started_at": datetime.utcnow()}, synchronize_session=False)
+        db.commit()
+        row = db.query(SinglePromptCitationRefresh).filter_by(refresh_id=refresh_id).one_or_none()
+        if not row:
+            raise HTTPException(404, detail={"code": "CITATION_REFRESH_NOT_FOUND"})
+        if claimed != 1:
+            return citation_refresh_view(row)
+        try:
+            _, _, _, _ = _require_refresh_scope(db, row)
+        except HTTPException as exc:
+            return citation_refresh_view(_finish_citation_refresh(
+                db, row, status="BLOCKED", outcome={"request_sent": False},
+                failure_code=str((exc.detail or {}).get("code") if isinstance(exc.detail, dict) else "CITATION_REFRESH_SCOPE_CHANGED"),
+                failure_detail=str(exc.detail),
+            ))
+        try:
+            results = (fetcher or fetch_page_playwright)([row.canonical_url])
+            result = results[0] if len(results) == 1 else {}
+        except Exception as exc:
+            return citation_refresh_view(_finish_citation_refresh(
+                db, row, status="FAILED", outcome={"request_sent": True, "fetch_status": "FETCH_FAILED"},
+                failure_code="CITATION_REFRESH_FETCH_FAILED", failure_detail=str(exc),
+            ))
+        fetch_status = str(result.get("fetch_status") or "FETCH_FAILED").upper()
+        text = str(result.get("clean_text") or "").strip()
+        receipt = result.get("acquisition_receipt") or {}
+        outcome = {
+            "request_sent": True,
+            "fetch_status": fetch_status,
+            "failure_reason": str(result.get("failure_reason") or "")[:2000],
+            "acquisition_receipt": receipt,
+        }
+        if fetch_status != "SUCCESS" or len(text) < 50:
+            return citation_refresh_view(_finish_citation_refresh(
+                db, row, status="FAILED", outcome=outcome,
+                failure_code=(fetch_status if fetch_status != "SUCCESS" else "CONTENT_TOO_SHORT"),
+                failure_detail=outcome["failure_reason"] or "刷新未取得合格正文",
+            ))
+        block_reason = _content_block_reason(str(result.get("title") or ""), text)
+        if block_reason:
+            return citation_refresh_view(_finish_citation_refresh(
+                db, row, status="FAILED", outcome=outcome,
+                failure_code="CONTENT_BLOCKED", failure_detail=block_reason,
+            ))
+        if not receipt:
+            return citation_refresh_view(_finish_citation_refresh(
+                db, row, status="FAILED", outcome=outcome,
+                failure_code="SOURCE_ACQUISITION_RECEIPT_INVALID",
+                failure_detail="刷新结果没有真实获取记录",
+            ))
+        try:
+            acquired_at = datetime.fromisoformat(str(receipt.get("acquired_at") or ""))
+            _validate_acquisition_receipt(
+                receipt, text_hash=_text_hash(text), source_url=row.canonical_url,
+                acquired_at=acquired_at, method="AUTO_FETCH",
+            )
+        except (ValueError, TypeError):
+            return citation_refresh_view(_finish_citation_refresh(
+                db, row, status="FAILED", outcome=outcome,
+                failure_code="SOURCE_ACQUISITION_RECEIPT_INVALID",
+                failure_detail="刷新结果缺少与固定 Citation URL 和正文 hash 一致的获取记录",
+            ))
+        try:
+            preparation, disposition, base_snapshot, base_completion = _require_refresh_scope(db, row)
+        except HTTPException as exc:
+            return citation_refresh_view(_finish_citation_refresh(
+                db, row, status="BLOCKED", outcome=outcome,
+                failure_code=str((exc.detail or {}).get("code") if isinstance(exc.detail, dict) else "CITATION_REFRESH_SCOPE_CHANGED"),
+                failure_detail=str(exc.detail),
+            ))
+        if _text_hash(text) == base_snapshot.content_hash:
+            return citation_refresh_view(_finish_citation_refresh(
+                db, row, status="NO_CONTENT_CHANGE", outcome=outcome,
+                failure_code="NO_CONTENT_CHANGE",
+                failure_detail="真实采集已记录，但正文 hash 未变化，未创建伪造的新正文版本",
+            ))
+        snapshot = _snapshot_from_content(
+            db,
+            preparation=preparation,
+            disposition=disposition,
+            title=str(result.get("title") or ""),
+            clean_text=text,
+            coverage_scope="FULL_PAGE",
+            acquisition_method="AUTO_FETCH",
+            submitted_by=f"AUTO_REFRESH:{row.requested_by}",
+            acquired_at=acquired_at,
+            acquisition_receipt=receipt,
+        )
+        _refresh_preparation_status(db, preparation)
+        db.flush()
+        completion = freeze_completion_manifest(
+            db,
+            preparation_id=row.preparation_id,
+            created_by=row.requested_by,
+            allow_partial=base_completion.status == "PARTIAL",
+        )
+        if completion.version_number != row.base_completion_version + 1:
+            raise HTTPException(409, detail={"code": "CITATION_REFRESH_MANIFEST_VERSION_MISMATCH"})
+        row = db.query(SinglePromptCitationRefresh).filter_by(refresh_id=refresh_id).one()
+        row.result_snapshot_id = snapshot.snapshot_id
+        row.result_completion_manifest_id = completion.manifest_id
+        row.result_completion_manifest_hash = completion.payload_hash
+        outcome.update({
+            "result_snapshot_id": snapshot.snapshot_id,
+            "result_snapshot_hash": snapshot.content_hash,
+            "result_completion_manifest_id": completion.manifest_id,
+            "result_completion_manifest_hash": completion.payload_hash,
+            "result_completion_version": completion.version_number,
+        })
+        return citation_refresh_view(_finish_citation_refresh(db, row, status="SUCCEEDED", outcome=outcome))
+    finally:
+        db.close()
+
+
+def get_citation_refresh(db: Session, *, refresh_id: str, project_id: int, prompt_id: int) -> dict[str, Any]:
+    row = db.query(SinglePromptCitationRefresh).filter_by(
+        refresh_id=refresh_id, project_id=project_id, prompt_id=prompt_id
+    ).one_or_none()
+    if not row:
+        raise HTTPException(404, detail={"code": "CITATION_REFRESH_NOT_FOUND"})
+    return citation_refresh_view(row)
 
 
 def submit_manual_content(

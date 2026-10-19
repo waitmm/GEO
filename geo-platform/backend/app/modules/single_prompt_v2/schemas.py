@@ -245,6 +245,25 @@ class SinglePromptSourceCompletionCreate(BaseModel):
     created_by: str = Field(min_length=1, max_length=120)
 
 
+class SinglePromptCitationRefreshCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_id: int = Field(gt=0)
+    prompt_id: int = Field(gt=0)
+    analysis_id: str = Field(min_length=1, max_length=64)
+    context_id: str = Field(min_length=1, max_length=80)
+    citation_manifest_id: str = Field(min_length=1, max_length=80)
+    citation_manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_key: str = Field(pattern=r"^[a-f0-9]{64}$")
+    canonical_url: str = Field(min_length=1, max_length=1200)
+    base_completion_manifest_id: str = Field(min_length=1, max_length=80)
+    base_completion_version: int = Field(ge=1)
+    base_completion_manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    base_snapshot_id: str = Field(min_length=1, max_length=80)
+    base_snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
 class SinglePromptAnswerDiagnosisCreate(BaseModel):
     project_id: int
     prompt_id: int

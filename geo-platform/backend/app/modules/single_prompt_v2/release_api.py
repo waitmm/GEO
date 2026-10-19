@@ -60,6 +60,7 @@ from app.modules.single_prompt_v2.schemas import (
     SinglePromptCitationContributionPlanCreate,
     SinglePromptCitationContributionReuseCreate,
     SinglePromptCitationContributionReviewCreate,
+    SinglePromptCitationRefreshCreate,
     SinglePromptQualificationCriticCreate,
     SinglePromptQualificationCriticGoldReviewCreate,
     SinglePromptQualificationCriticSupplementalCreate,
@@ -114,11 +115,15 @@ from app.modules.single_prompt_v2.qualification_critic_gold import (
     complete_critic_gold_review,
 )
 from app.modules.single_prompt_v2.source_preparation import (
+    citation_refresh_view,
     create_source_preparation,
+    execute_citation_refresh,
     freeze_completion_manifest,
     get_source_preparation_for_analysis,
     get_source_preparation_status,
+    get_citation_refresh,
     queue_auto_fetch,
+    request_citation_refresh,
     reuse_completed_sources,
     submit_manual_content,
     waive_source,
@@ -746,6 +751,42 @@ def complete_source_preparation(preparation_id: str, payload: SinglePromptSource
     _require_preparation_scope(get_source_preparation_status(db, preparation_id=preparation_id), payload.project_id, payload.prompt_id)
     freeze_completion_manifest(db, preparation_id=preparation_id, created_by=actor)
     return get_source_preparation_status(db, preparation_id=preparation_id)
+
+
+@router.post("/source-preparations/{preparation_id}/citation-refreshes", status_code=202)
+def start_citation_refresh(
+    preparation_id: str,
+    payload: SinglePromptCitationRefreshCreate,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    actor: str = Depends(authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    row, created = request_citation_refresh(
+        db,
+        preparation_id=preparation_id,
+        requested_by=actor,
+        **payload.model_dump(),
+    )
+    if created:
+        background_tasks.add_task(
+            execute_citation_refresh,
+            row.refresh_id,
+            session_factory=ReleaseSessionLocal,
+        )
+    else:
+        response.status_code = 200
+    return citation_refresh_view(row)
+
+
+@router.get("/citation-refreshes/{refresh_id}")
+def read_citation_refresh(
+    refresh_id: str,
+    project_id: int,
+    prompt_id: int,
+    db: Session = Depends(get_task_read_db),
+) -> dict:
+    return get_citation_refresh(db, refresh_id=refresh_id, project_id=project_id, prompt_id=prompt_id)
 
 
 @router.post("/source-preparations/{preparation_id}/reanalyses", status_code=201)

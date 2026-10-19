@@ -396,6 +396,7 @@ def test_release_migration_is_explicit_allowlisted_and_runtime_version_is_checke
     assert "single_prompt_citation_contribution_executions" in status["tables"]
     assert "single_prompt_citation_contribution_results" in status["tables"]
     assert "single_prompt_citation_contribution_reviews" in status["tables"]
+    assert "single_prompt_citation_refreshes" in status["tables"]
     assert "single_prompt_execution_proposals" in status["tables"]
     assert "single_prompt_execution_proposal_results" in status["tables"]
     assert "single_prompt_execution_confirmations" in status["tables"]

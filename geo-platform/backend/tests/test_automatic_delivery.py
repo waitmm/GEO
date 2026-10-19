@@ -500,6 +500,8 @@ def test_multi_run_task_preserves_each_contribution_version_and_never_reads_late
     first = db.query(BrowserMonitorRun).one()
     second = BrowserMonitorRun(**{c.name: getattr(first, c.name) for c in first.__table__.columns
         if c.name not in {'id', 'created_at', 'updated_at'}})
+    second.logical_run_id = f"{first.logical_run_id}-second"
+    second.attempt_id = f"{first.attempt_id}-second"
     db.add(second)
     db.flush()
     for reference in db.query(ReferenceSource).filter_by(run_id=first.id).all():

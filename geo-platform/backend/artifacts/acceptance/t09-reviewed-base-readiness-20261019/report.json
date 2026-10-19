@@ -48,10 +48,12 @@
   ],
   "scope": {
     "analysis_id": "6e19e229-ece8-4cf9-b078-588eb6b8d014",
+    "citation_manifest_hash": "84a6dba08f29e8c1c75fcd0100983b80c74e3ab9f5dea24f3862e6ac358d79ac",
     "citation_manifest_id": "citation-manifest-05a95da5-66c9-4bc8-a2ab-e72846d13369",
     "context_id": "ctx-f9d68558-1ad5-4e25-b8ee-d730f74d0b33",
     "project_id": 1,
     "prompt_id": 1,
+    "preparation_id": "source-prep-ba081165-b946-4aed-8c0e-256173fa1585",
     "raw_output_hash": "12961a016dd2ab5d8ad93f67bd06b37a4efaf580fd9d911bff04cd05c5f7185f"
   },
   "safety": {

@@ -413,7 +413,11 @@ def _readiness_connection(*, include_base: bool, include_review: bool = False) -
         );
         CREATE TABLE single_prompt_source_completion_manifests (
           manifest_id TEXT, preparation_id TEXT, analysis_id TEXT, context_id TEXT,
-          citation_manifest_id TEXT, version_number INTEGER, payload_json TEXT, payload_hash TEXT
+          citation_manifest_id TEXT, citation_manifest_hash TEXT, version_number INTEGER,
+          payload_json TEXT, payload_hash TEXT
+        );
+        CREATE TABLE single_prompt_citation_manifests (
+          manifest_id TEXT, analysis_id TEXT, context_id TEXT, payload_json TEXT, payload_hash TEXT
         );
         CREATE TABLE single_prompt_diagnosis_executions (
           diagnosis_id TEXT, analysis_id TEXT, context_id TEXT, project_id INTEGER,
@@ -441,7 +445,15 @@ def _readiness_connection(*, include_base: bool, include_review: bool = False) -
     }
     from scripts.check_t09_source_reanalysis_readiness import _canonical, _hash as readiness_hash
 
+    citation_payload = {"sources": [{"source_key": "source-1"}]}
+    citation_hash = readiness_hash(citation_payload)
+    connection.execute(
+        "INSERT INTO single_prompt_citation_manifests VALUES (?,?,?,?,?)",
+        ("citation-1", "analysis-1", "ctx-1", _canonical(citation_payload), citation_hash),
+    )
+
     inputs = {
+        "preparation_id": "prep-1",
         "project_id": 1,
         "prompt_id": 44,
         "prior_manifest_id": "manifest-old",
@@ -454,9 +466,9 @@ def _readiness_connection(*, include_base: bool, include_review: bool = False) -
         (inputs["new_manifest_id"], 2, new_payload),
     ):
         connection.execute(
-            "INSERT INTO single_prompt_source_completion_manifests VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO single_prompt_source_completion_manifests VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                manifest_id, "prep-1", "analysis-1", "ctx-1", "citation-1", version,
+                manifest_id, "prep-1", "analysis-1", "ctx-1", "citation-1", citation_hash, version,
                 _canonical(payload), readiness_hash(payload),
             ),
         )
@@ -545,3 +557,27 @@ def test_t09_readiness_requires_exact_review_then_accepts_eligible_base():
     assert ready["observed_counts"]["eligible_reviewed_downstream_bases"] == 1
     assert ready["missing_objects"] == []
     assert ready["required_actions"] == []
+
+
+def test_t09_readiness_rejects_cross_preparation_manifest():
+    connection, inputs = _readiness_connection(include_base=False)
+    try:
+        inputs["preparation_id"] = "prep-foreign"
+        with pytest.raises(ValueError, match="SOURCE_COMPLETION_MANIFEST_INPUT_MISMATCH"):
+            assess_readiness(connection, **inputs)
+    finally:
+        connection.close()
+
+
+def test_t09_readiness_rejects_citation_manifest_hash_drift():
+    connection, inputs = _readiness_connection(include_base=False)
+    try:
+        connection.execute(
+            """UPDATE single_prompt_source_completion_manifests
+               SET citation_manifest_hash = 'citation-hash-foreign'"""
+        )
+        connection.commit()
+        with pytest.raises(ValueError, match="CITATION_MANIFEST_INPUT_MISMATCH"):
+            assess_readiness(connection, **inputs)
+    finally:
+        connection.close()

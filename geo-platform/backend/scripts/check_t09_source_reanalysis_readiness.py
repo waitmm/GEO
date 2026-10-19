@@ -36,12 +36,17 @@ def _one(connection: sqlite3.Connection, query: str, values: tuple[Any, ...]) ->
     return connection.execute(query, values).fetchone()
 
 
-def _manifest(connection: sqlite3.Connection, manifest_id: str, payload_hash: str) -> sqlite3.Row:
+def _manifest(
+    connection: sqlite3.Connection,
+    manifest_id: str,
+    payload_hash: str,
+    preparation_id: str,
+) -> sqlite3.Row:
     row = _one(
         connection,
         """SELECT * FROM single_prompt_source_completion_manifests
-           WHERE manifest_id = ? AND payload_hash = ?""",
-        (manifest_id, payload_hash),
+           WHERE manifest_id = ? AND payload_hash = ? AND preparation_id = ?""",
+        (manifest_id, payload_hash, preparation_id),
     )
     if row is None:
         raise ValueError(f"SOURCE_COMPLETION_MANIFEST_INPUT_MISMATCH:{manifest_id}")
@@ -59,6 +64,7 @@ def _source_rows(row: sqlite3.Row) -> dict[str, dict[str, Any]]:
 def assess_readiness(
     connection: sqlite3.Connection,
     *,
+    preparation_id: str,
     project_id: int,
     prompt_id: int,
     prior_manifest_id: str,
@@ -68,13 +74,33 @@ def assess_readiness(
 ) -> dict[str, Any]:
     """Return a deterministic, read-only readiness/hand-off report."""
     connection.row_factory = sqlite3.Row
-    prior = _manifest(connection, prior_manifest_id, prior_manifest_hash)
-    current = _manifest(connection, new_manifest_id, new_manifest_hash)
-    lineage_fields = ("preparation_id", "analysis_id", "context_id", "citation_manifest_id")
+    prior = _manifest(connection, prior_manifest_id, prior_manifest_hash, preparation_id)
+    current = _manifest(connection, new_manifest_id, new_manifest_hash, preparation_id)
+    lineage_fields = (
+        "preparation_id",
+        "analysis_id",
+        "context_id",
+        "citation_manifest_id",
+        "citation_manifest_hash",
+    )
     if any(prior[field] != current[field] for field in lineage_fields) or (
         current["version_number"] <= prior["version_number"]
     ):
         raise ValueError("SOURCE_REANALYSIS_LINEAGE_MISMATCH")
+    citation = _one(
+        connection,
+        "SELECT * FROM single_prompt_citation_manifests WHERE manifest_id = ?",
+        (current["citation_manifest_id"],),
+    )
+    if (
+        citation is None
+        or citation["analysis_id"] != current["analysis_id"]
+        or citation["context_id"] != current["context_id"]
+        or citation["payload_hash"] != current["citation_manifest_hash"]
+    ):
+        raise ValueError("CITATION_MANIFEST_INPUT_MISMATCH")
+    if _hash(json.loads(citation["payload_json"])) != citation["payload_hash"]:
+        raise ValueError("SOURCE_MANIFEST_CONTENT_HASH_MISMATCH")
     context = _one(
         connection,
         """SELECT * FROM single_prompt_analysis_contexts
@@ -230,12 +256,14 @@ def assess_readiness(
             "provider_client_loaded": False,
         },
         "scope": {
+            "preparation_id": preparation_id,
             "project_id": project_id,
             "prompt_id": prompt_id,
             "analysis_id": current["analysis_id"],
             "context_id": current["context_id"],
             "raw_output_hash": context["raw_output_hash"],
             "citation_manifest_id": current["citation_manifest_id"],
+            "citation_manifest_hash": current["citation_manifest_hash"],
         },
         "source_lineage": {
             "prior_completion_manifest_id": prior_manifest_id,
@@ -273,6 +301,7 @@ def assess_readiness(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--preparation-id", required=True)
     parser.add_argument("--project-id", type=int, required=True)
     parser.add_argument("--prompt-id", type=int, required=True)
     parser.add_argument("--prior-manifest-id", required=True)
@@ -288,6 +317,7 @@ def main() -> int:
     try:
         report = assess_readiness(
             connection,
+            preparation_id=args.preparation_id,
             project_id=args.project_id,
             prompt_id=args.prompt_id,
             prior_manifest_id=args.prior_manifest_id,

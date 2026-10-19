@@ -8,14 +8,17 @@ Baseline: `codex/geo-integration@d715964`
 
 DB revision: `20261019_02`
 
-Authority boundary: no real model, new sampling, public fetch or publication authorized.
+Initial authority boundary: no real model, new sampling, public fetch or publication authorized.
+The later controlled comparison addendum below supersedes only the real-model restriction;
+new sampling, public fetch, publication and formal-lane writes remained prohibited.
 
 ## Outcome
 
 The P0 engineering lane is implemented and accepted for offline isolated use. It is not a
-claim that Agent output quality beats Workflow. The real provider comparison is `BLOCKED`
-until a new explicit authorization records provider/model, request limit, token limit, CNY
-hard cap, conservative price, price source and check date.
+claim that Agent output quality beats Workflow. A later explicit authorization supplied the
+provider/model, request limit, token limit, CNY hard cap, conservative price, price source
+and check date. The first controlled real-model experiment was executed and failed before
+producing an Agent result; quality equivalence therefore remains unproven.
 
 Formal V2 tables are read-only to this lane. Agent writes are limited to four new tables;
 database triggers protect frozen run identity and make events, checkpoints and results
@@ -64,13 +67,58 @@ adopted the frozen full enum; the assertion was updated, not weakened.
 
 ## Cost and comparison boundary
 
-- Real provider/model calls: 0; real sampling/fetch/publication calls: 0; real spend: CNY 0.
+- The original offline P0 acceptance used 0 real provider/model calls and CNY 0.
 - Scripted Agent fixture usage is synthetic and must not be treated as billing. The browser
   fixture displays CNY 0.0200 solely to verify cost rendering.
 - One offline Agent result ID is in the browser report. Its hashes are stored in the isolated
   database and exposed by the read-only result endpoint.
 - A fair Workflow result was not fabricated. The comparison view reports an empty or blocked
   baseline unless a formal task has the exact same Run set and raw-output hash.
+
+## Controlled real-model comparison addendum
+
+The owner subsequently authorized one isolated `deepseek-flash` comparison batch with a
+shared ceiling of CNY 30, 3,000,000 tokens and 36 requests. The controller used one durable
+SQLite ledger for Agent and Workflow lanes, single concurrency, no automatic retries, atomic
+worst-case reservation and actual-usage settlement. Pricing was checked on 2026-10-19 and the
+ledger conservatively accounts every token at CNY 10 per million.
+
+The exact frozen comparison scope was Project 1 / Prompt 1 / Run 1, Analysis
+`925ef2dc-605f-467d-a025-52033a574d92`, Context
+`ctx-5407fb2f-acd5-41ac-8ac7-41713a08a5aa`, raw output hash
+`11dca9e4438bdecf66a86472f2e8a498f6f7067c3bcc4f9f3cfd381d2c9ebccb` and run scope hash
+`80126c460f0da4f588acab4dfe07f0a904ba86171be93ccbb8d81c97eeda4e67`.
+The formal Workflow baseline was reused because its Diagnosis, Citation Contribution,
+Strategy and Execution hashes all validated against this scope. No new Workflow request was
+made and the formal database was not written.
+
+Three manual Agent executions were retained under different run identities; these were not
+transport retries. The first exposed wrapped non-JSON output, the second exposed a DeepSeek
+DSML tool-call form, and bounded strict adapters were added with offline tests after each
+failure. The final execution autonomously called `get_scope_summary`, `list_runs`,
+`get_scope_summary`, `read_answer`, `get_scope_summary`, and `list_citations`. It correctly
+observed one valid answer, 19 citations and zero target-brand mentions, but spent three of six
+turns rereading the scope summary and then stopped at the run-local six-model-call ceiling.
+It persisted `FAILED / AGENT_MODEL_CALL_BUDGET_EXHAUSTED`, produced no
+`AgentResultVersion`, and therefore did not produce diagnosis, strategy, article or QA output.
+
+Batch settlement is complete: 13 Agent requests, 77,011 input tokens, 2,730 output tokens,
+79,741 total tokens, 45.982 seconds across the three executions, zero Workflow requests and
+zero in-flight/unknown reservations. The conservative ledger charge is CNY 0.79741. Applying
+the documented peak cache-miss input price and output price to recorded usage gives CNY
+0.175862; the provider invoice was not independently queried. Remaining ceilings are CNY
+29.20259, 2,920,259 tokens and 23 requests.
+
+This is a valid real-runtime failure, not a completed quality comparison. The trace proves
+that the model can choose allowed tools and use frozen observations, but the Agent delivered
+nothing scoreable while the existing Workflow baseline contains an actionable discovery
+diagnosis, a complete evidence-limited article and passing deterministic text QA. Stability,
+draft quality and cost per successful Agent deliverable remain `NOT_MEASURABLE`. No second
+Prompt/scenario was attempted.
+
+Post-run targeted regression command:
+`env PYTHONPATH=backend .../backend/.venv/bin/pytest -q backend/tests/test_shared_model_budget.py backend/tests/test_agent_experiment.py backend/tests/test_automatic_delivery.py backend/tests/test_deepseek_generation_contract.py backend/tests/test_derived_model_call_identity.py`
+resulted in `62 passed`.
 
 ## Known limits and next exact task
 
@@ -79,8 +127,8 @@ not enough to invent a fully grounded formal binding. P0 can admit conservative 
 always leaves publication at `VERIFY_FIRST`; future L1 support must consume an actually
 qualified per-block Evidence/Truth partition without exposing formal Strategy or Draft.
 
-After the owner supplies experiment-specific authority, run one minimal non-cache DeepSeek
-experiment on a frozen evidence-rich Prompt and one semantically different low-evidence
-Prompt, record actual tokens/CNY, then perform blind scoring against only an exact-input
-Workflow baseline. Until then, real quality/cost superiority is `BLOCKED`, not failed and not
-passed.
+The next decision is not to expand tools or scenarios. If the owner authorizes another paid
+attempt, first change and test only the run-local turn policy so a model that has already read
+the answer and citation list has room to synthesize a result, while preventing repeated
+idempotent observations from consuming the whole run. Until a complete Agent result exists,
+real quality/cost superiority is `NOT_MEASURABLE`, not failed and not passed.

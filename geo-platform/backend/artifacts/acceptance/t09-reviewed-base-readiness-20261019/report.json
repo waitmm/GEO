@@ -1,0 +1,76 @@
+{
+  "eligible_bases": [],
+  "external_model_calls": 0,
+  "gate_code": "T09_REVIEWED_DOWNSTREAM_BASE_REQUIRED",
+  "inspection": {
+    "database": "/private/tmp/geo-t09-refresh-live-20261019/t09-refresh.sqlite3",
+    "database_mode": "READ_ONLY",
+    "database_sha256": "3b72430cc255cb5c07f1f518ede0434218205c12b352acb2f77ddd6b7d8aca2b"
+  },
+  "missing_objects": [
+    {
+      "object": "SinglePromptDiagnosisExecution",
+      "required_scope": "exact analysis/context/project/prompt/raw_output_hash"
+    },
+    {
+      "object": "SinglePromptDiagnosisResult",
+      "required_scope": "completed Answer result in the exact Diagnosis scope"
+    },
+    {
+      "object": "SinglePromptDiagnosisReview",
+      "required_scope": "REVIEW_COMPLETED for the exact Answer result/hash/reviewable-set"
+    },
+    {
+      "object": "SinglePromptDiagnosisResult",
+      "required_scope": "Evidence result bound to the prior Completion Manifest and changed prior Snapshot"
+    }
+  ],
+  "observed_counts": {
+    "eligible_reviewed_downstream_bases": 0,
+    "exact_scope_diagnosis_executions": 0,
+    "exact_scope_diagnosis_results": 0
+  },
+  "rejected_bases": [],
+  "root_cause_classification": "MISSING_FORMAL_OBJECTS_NOT_SELECTOR_DEFECT",
+  "required_actions": [
+    {
+      "action": "在上述固定范围创建并完成 Answer Diagnosis Result；不得复用其他 Prompt/Context 的结果。",
+      "actor": "SYSTEM"
+    },
+    {
+      "action": "通过正式审核入口审核该精确 Answer Result/Hash/Reviewable Set；检查器不得代签或创建 Review。",
+      "actor": "AUTHORIZED_HUMAN_REVIEWER"
+    },
+    {
+      "action": "使用该精确 Review 和 prior Completion Manifest 完成 Evidence Result，再重新运行本检查。",
+      "actor": "SYSTEM"
+    }
+  ],
+  "scope": {
+    "analysis_id": "6e19e229-ece8-4cf9-b078-588eb6b8d014",
+    "citation_manifest_id": "citation-manifest-05a95da5-66c9-4bc8-a2ab-e72846d13369",
+    "context_id": "ctx-f9d68558-1ad5-4e25-b8ee-d730f74d0b33",
+    "project_id": 1,
+    "prompt_id": 1,
+    "raw_output_hash": "12961a016dd2ab5d8ad93f67bd06b37a4efaf580fd9d911bff04cd05c5f7185f"
+  },
+  "safety": {
+    "database_writes": 0,
+    "provider_client_loaded": false,
+    "reviews_created": 0
+  },
+  "source_lineage": {
+    "changed_prior_snapshot_ids": [
+      "source-snapshot-c1652a96-70f4-4c50-bb3d-faadc955200c"
+    ],
+    "changed_source_keys": [
+      "72caaa6407a8e00a35a34c0a68a58d41522d9952fee59568aada33f110d08b90"
+    ],
+    "new_completion_manifest_hash": "513fdea8abfc09d996d2fc9150caf968e2df0753f81ca92f2173cac67737d8dd",
+    "new_completion_manifest_id": "source-completion-25545091-dea2-49e2-a8ef-f846e2d76b27",
+    "prior_completion_manifest_hash": "05029cd215864f04b7c0647ac7c3855f08d7a1fd8e0d8435bf9eaeb74d0eb7e4",
+    "prior_completion_manifest_id": "source-completion-cfaeac24-a23f-44e8-9e48-1bfb0706b2de"
+  },
+  "status": "BLOCKED",
+  "t09_status": "BLOCKED"
+}

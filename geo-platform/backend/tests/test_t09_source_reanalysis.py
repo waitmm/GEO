@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from app.modules.single_prompt_v2.source_reanalysis import (
     source_reanalysis_view,
 )
 from app.modules.single_prompt_v2.release_api import SourceReanalysisCreate, plan_prepared_source_reanalysis
+from scripts.check_t09_source_reanalysis_readiness import assess_readiness
 from test_release_first_slice import (
     _AlignmentJudge,
     _AnswerJudge,
@@ -399,3 +401,147 @@ def test_answer_scope_guard_rejects_cross_scope_identity(field, foreign_value):
     assert getattr(exc.value, "detail", {}) == {
         "code": "SOURCE_REANALYSIS_ANSWER_SCOPE_MISMATCH"
     }
+
+
+def _readiness_connection(*, include_base: bool, include_review: bool = False) -> tuple[sqlite3.Connection, dict]:
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE single_prompt_analysis_contexts (
+          context_id TEXT, analysis_id TEXT, project_id INTEGER, prompt_id INTEGER,
+          raw_output_hash TEXT
+        );
+        CREATE TABLE single_prompt_source_completion_manifests (
+          manifest_id TEXT, preparation_id TEXT, analysis_id TEXT, context_id TEXT,
+          citation_manifest_id TEXT, version_number INTEGER, payload_json TEXT, payload_hash TEXT
+        );
+        CREATE TABLE single_prompt_diagnosis_executions (
+          diagnosis_id TEXT, analysis_id TEXT, context_id TEXT, project_id INTEGER,
+          prompt_id INTEGER, raw_output_hash TEXT
+        );
+        CREATE TABLE single_prompt_diagnosis_results (
+          diagnosis_id TEXT, result_version TEXT, output_json TEXT, output_hash TEXT,
+          reviewable_set_hash TEXT
+        );
+        CREATE TABLE single_prompt_diagnosis_reviews (
+          diagnosis_id TEXT, review_id TEXT, result_version TEXT, result_hash TEXT,
+          reviewable_set_hash TEXT, decision TEXT
+        );
+        """
+    )
+    connection.execute(
+        "INSERT INTO single_prompt_analysis_contexts VALUES (?,?,?,?,?)",
+        ("ctx-1", "analysis-1", 1, 44, "raw-hash"),
+    )
+    old_payload = {
+        "sources": [{"source_key": "source-1", "snapshot_id": "snapshot-old", "content_hash": "old"}]
+    }
+    new_payload = {
+        "sources": [{"source_key": "source-1", "snapshot_id": "snapshot-new", "content_hash": "new"}]
+    }
+    from scripts.check_t09_source_reanalysis_readiness import _canonical, _hash as readiness_hash
+
+    inputs = {
+        "project_id": 1,
+        "prompt_id": 44,
+        "prior_manifest_id": "manifest-old",
+        "prior_manifest_hash": readiness_hash(old_payload),
+        "new_manifest_id": "manifest-new",
+        "new_manifest_hash": readiness_hash(new_payload),
+    }
+    for manifest_id, version, payload in (
+        (inputs["prior_manifest_id"], 1, old_payload),
+        (inputs["new_manifest_id"], 2, new_payload),
+    ):
+        connection.execute(
+            "INSERT INTO single_prompt_source_completion_manifests VALUES (?,?,?,?,?,?,?,?)",
+            (
+                manifest_id, "prep-1", "analysis-1", "ctx-1", "citation-1", version,
+                _canonical(payload), readiness_hash(payload),
+            ),
+        )
+    if include_base:
+        connection.execute(
+            "INSERT INTO single_prompt_diagnosis_executions VALUES (?,?,?,?,?,?)",
+            ("diagnosis-1", "analysis-1", "ctx-1", 1, 44, "raw-hash"),
+        )
+        answer_output = {"answer_diagnosis": {"events": []}}
+        answer_hash = readiness_hash(answer_output)
+        connection.execute(
+            "INSERT INTO single_prompt_diagnosis_results VALUES (?,?,?,?,?)",
+            ("diagnosis-1", "answer-v1", _canonical(answer_output), answer_hash, "reviewable-1"),
+        )
+        evidence_output = {"input": {
+            "completion_manifest_id": "manifest-old",
+            "source_snapshot_ids": ["snapshot-old"],
+            "answer_result_version": "answer-v1",
+            "answer_result_hash": answer_hash,
+            "answer_review_id": "review-1",
+        }}
+        connection.execute(
+            "INSERT INTO single_prompt_diagnosis_results VALUES (?,?,?,?,?)",
+            ("diagnosis-1", "evidence-v1", _canonical(evidence_output), readiness_hash(evidence_output), "reviewable-2"),
+        )
+        if include_review:
+            connection.execute(
+                "INSERT INTO single_prompt_diagnosis_reviews VALUES (?,?,?,?,?,?)",
+                ("diagnosis-1", "review-1", "answer-v1", answer_hash, "reviewable-1", "REVIEW_COMPLETED"),
+            )
+    connection.commit()
+    return connection, inputs
+
+
+def test_t09_readiness_reports_exact_missing_objects_without_creating_review():
+    connection, inputs = _readiness_connection(include_base=False)
+    try:
+        report = assess_readiness(connection, **inputs)
+    finally:
+        connection.close()
+    assert report["status"] == "BLOCKED"
+    assert report["t09_status"] == "BLOCKED"
+    assert report["gate_code"] == "T09_REVIEWED_DOWNSTREAM_BASE_REQUIRED"
+    assert report["root_cause_classification"] == "MISSING_FORMAL_OBJECTS_NOT_SELECTOR_DEFECT"
+    assert report["external_model_calls"] == 0
+    assert report["safety"] == {
+        "database_writes": 0,
+        "reviews_created": 0,
+        "provider_client_loaded": False,
+    }
+    assert report["observed_counts"] == {
+        "exact_scope_diagnosis_executions": 0,
+        "exact_scope_diagnosis_results": 0,
+        "eligible_reviewed_downstream_bases": 0,
+    }
+    assert {item["object"] for item in report["missing_objects"]} == {
+        "SinglePromptDiagnosisExecution",
+        "SinglePromptDiagnosisResult",
+        "SinglePromptDiagnosisReview",
+    }
+    assert [item["actor"] for item in report["required_actions"]] == [
+        "SYSTEM", "AUTHORIZED_HUMAN_REVIEWER", "SYSTEM"
+    ]
+
+
+def test_t09_readiness_requires_exact_review_then_accepts_eligible_base():
+    connection, inputs = _readiness_connection(include_base=True, include_review=False)
+    try:
+        blocked = assess_readiness(connection, **inputs)
+        assert blocked["status"] == "BLOCKED"
+        assert blocked["rejected_bases"][0]["reason"] == "EXACT_ANSWER_REVIEW_NOT_FOUND"
+        answer_hash = connection.execute(
+            "SELECT output_hash FROM single_prompt_diagnosis_results WHERE result_version='answer-v1'"
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO single_prompt_diagnosis_reviews VALUES (?,?,?,?,?,?)",
+            ("diagnosis-1", "review-1", "answer-v1", answer_hash, "reviewable-1", "REVIEW_COMPLETED"),
+        )
+        connection.commit()
+        ready = assess_readiness(connection, **inputs)
+    finally:
+        connection.close()
+    assert ready["status"] == "READY"
+    assert ready["t09_status"] == "READY_FOR_REANALYSIS_PLANNING"
+    assert ready["external_model_calls"] == 0
+    assert ready["observed_counts"]["eligible_reviewed_downstream_bases"] == 1
+    assert ready["missing_objects"] == []
+    assert ready["required_actions"] == []

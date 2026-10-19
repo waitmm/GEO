@@ -93,6 +93,8 @@ def prepare(*, source_database: Path, database: Path, ledger: Path, manifest_pat
         second, _ = create_task(db, analysis_id=shared.analysis_id, project_id=shared.project_id,
             prompt_id=shared.prompt_id, raw_output_hash=shared.raw_output_hash,
             idempotency_key="t23-live-acceptance-20261019:E2E-02")
+        # Make the formal task commits explicit before checkpointing the DB file.
+        db.commit()
         connection = get_release_sqlite_dbapi().connect(str(database.resolve()))
         try:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")

@@ -380,6 +380,13 @@ def _freeze_e2e03_unknown(db, manifest: dict[str, Any], diagnosis,
     if not case.get("task_pending_truth"):
         return case
     prepare = case["unknown_prepare_input"]
+    if diagnosis.project_id != case["project_id"]:
+        raise ValueError("E2E-03 UNKNOWN source diagnosis cannot cross Project scope")
+    target_context = db.query(SinglePromptAnalysisContext).filter_by(
+        analysis_id=case["analysis_id"], context_id=case["context_id"],
+        project_id=case["project_id"], prompt_id=case["prompt_id"]).one_or_none()
+    if not target_context:
+        raise ValueError("E2E-03 target Analysis/Context/Prompt identity drifted")
     output = loads(answer_result.output_json, {})
     brand = (output.get("input") or {}).get("brand_snapshot") or {}
     target_names = {str(value).strip() for value in
@@ -402,6 +409,7 @@ def _freeze_e2e03_unknown(db, manifest: dict[str, Any], diagnosis,
     key = re.sub(r"[\s\W_]+", "", label.lower())
     truth = db.query(TargetBrandCapabilityTruth).filter_by(
         project_id=case["project_id"], capability_key=key).one_or_none()
+    recorded = None
     if truth:
         if (truth.capability_label != label or truth.product_truth_status != "UNKNOWN"
                 or truth.source_reference != prepare["source_reference"]
@@ -409,22 +417,29 @@ def _freeze_e2e03_unknown(db, manifest: dict[str, Any], diagnosis,
             raise ValueError("E2E-03 existing capability truth does not match the frozen prepare input")
     else:
         current_truths = project_truths(db, case["project_id"])
-        record_target_brand_truth(db, analysis_id=diagnosis.analysis_id,
+        recorded = record_target_brand_truth(db, analysis_id=diagnosis.analysis_id,
             diagnosis_id=diagnosis.diagnosis_id, result_version=answer_result.result_version,
             project_id=diagnosis.project_id, prompt_id=diagnosis.prompt_id,
             result_hash=answer_result.output_hash, frozen_truth_set_hash=diagnosis.truth_set_hash,
             expected_project_truth_set_hash=digest(current_truths), capability_label=label,
             product_truth_status="UNKNOWN", source_reference=prepare["source_reference"],
             note=prepare["note"], reviewed_by=prepare["reviewed_by"], source_signal_id=signal_id)
-    context = db.query(SinglePromptAnalysisContext).filter_by(
-        analysis_id=case["analysis_id"], context_id=case["context_id"],
-        project_id=case["project_id"], prompt_id=case["prompt_id"]).one()
     task, _ = create_task(db, analysis_id=case["analysis_id"], project_id=case["project_id"],
-        prompt_id=case["prompt_id"], raw_output_hash=context.raw_output_hash,
+        prompt_id=case["prompt_id"], raw_output_hash=target_context.raw_output_hash,
         idempotency_key=f"{manifest['shared_budget']['budget_id']}:E2E-03")
     case["task_id"] = task.task_id
     case["input_hash"] = task.input_hash
     case.pop("task_pending_truth", None)
+    truth_id = int(truth.id if truth is not None else recorded["truth"]["truth_id"])
+    case["unknown_truth_evidence"] = {
+        "truth_id": truth_id,
+        "project_id": case["project_id"], "capability_label": label,
+        "product_truth_status": "UNKNOWN", "source_diagnosis_id": diagnosis.diagnosis_id,
+        "source_result_version": answer_result.result_version,
+        "source_result_hash": answer_result.output_hash, "source_signal_id": signal_id,
+        "source_prompt_id": diagnosis.prompt_id, "source_analysis_id": diagnosis.analysis_id,
+        "target_prompt_id": case["prompt_id"], "target_analysis_id": case["analysis_id"],
+    }
     return case
 
 

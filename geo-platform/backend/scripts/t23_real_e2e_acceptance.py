@@ -31,6 +31,7 @@ from app.models import (  # noqa: E402
     SinglePromptCitationContributionExecution,
     SinglePromptCitationContributionResult,
     SinglePromptDiagnosisExecution,
+    SinglePromptDiagnosisResult,
     SinglePromptDiagnosisReview,
     SinglePromptExecutionProposal,
     SinglePromptExecutionProposalResult,
@@ -39,6 +40,7 @@ from app.models import (  # noqa: E402
     SinglePromptSourceCompletionManifest,
     SinglePromptStrategyExecution,
     SinglePromptStrategyReview,
+    TargetBrandCapabilityTruth,
 )
 from app.modules.single_prompt_v2.automatic_delivery import task_view  # noqa: E402
 from app.modules.single_prompt_v2.delivery_text import digest, text_digest  # noqa: E402
@@ -179,6 +181,20 @@ def validate_manifest(value: dict[str, Any], *, allow_unprepared_e2e02: bool = F
                         or not all(str(unknown.get(key) or "").strip()
                                    for key in ("source_reference", "note", "reviewed_by"))):
                     raise ValueError("E2E-03 pending task requires a bounded formal UNKNOWN prepare input")
+            else:
+                evidence = row.get("unknown_truth_evidence")
+                required_evidence = {"truth_id", "project_id", "capability_label",
+                    "product_truth_status", "source_diagnosis_id", "source_result_version",
+                    "source_result_hash", "source_signal_id", "source_prompt_id",
+                    "source_analysis_id", "target_prompt_id", "target_analysis_id"}
+                if (not isinstance(evidence, dict) or set(evidence) != required_evidence
+                        or evidence["product_truth_status"] != "UNKNOWN"
+                        or evidence["project_id"] != row["project_id"]
+                        or evidence["target_prompt_id"] != row["prompt_id"]
+                        or evidence["target_analysis_id"] != row["analysis_id"]
+                        or not isinstance(evidence["source_result_hash"], str)
+                        or len(evidence["source_result_hash"]) != 64):
+                    raise ValueError("E2E-03 must freeze exact project-level UNKNOWN truth provenance")
     if sum(row["max_requests"] for row in cases) > budget["max_requests"]:
         raise ValueError("scenario request caps exceed the shared T23 allocation")
     if [row["max_requests"] for row in cases] != [4, 3, 2]:
@@ -295,6 +311,33 @@ def _low_match_summary(db: Session, case: dict[str, Any], inputs: dict[str, Any]
     return {**frozen, "result_hash_valid": True, "real_citation_url": reference.canonical_url}
 
 
+def _validate_unknown_truth_provenance(*, case: dict[str, Any], task,
+                                       frozen_truth: dict[str, Any] | None, truth,
+                                       source_execution, source_result) -> None:
+    evidence = case["unknown_truth_evidence"]
+    source_output = loads(source_result.output_json, {}) if source_result else {}
+    source_signals = {
+        str(reason.get("reason_id") or "")
+        for event in (source_output.get("answer_diagnosis") or {}).get("events") or []
+        for reason in event.get("reasons") or []
+    }
+    if (not frozen_truth or not truth or not source_execution or not source_result
+            or task.project_id != case["project_id"] or task.prompt_id != evidence["target_prompt_id"]
+            or task.analysis_id != evidence["target_analysis_id"]
+            or truth.project_id != task.project_id
+            or truth.product_truth_status != "UNKNOWN"
+            or truth.capability_label != evidence["capability_label"]
+            or frozen_truth.get("product_truth_status") != "UNKNOWN"
+            or frozen_truth.get("capability_label") != evidence["capability_label"]
+            or source_execution.project_id != task.project_id
+            or source_execution.prompt_id != evidence["source_prompt_id"]
+            or source_execution.analysis_id != evidence["source_analysis_id"]
+            or source_result.output_hash != evidence["source_result_hash"]
+            or digest(source_output) != source_result.output_hash
+            or evidence["source_signal_id"] not in source_signals):
+        raise ValueError("E2E-03 frozen UNKNOWN truth provenance drifted or crossed Project scope")
+
+
 def _inspect_task(db: Session, case: dict[str, Any], *, phase: str) -> dict[str, Any]:
     row = db.query(SinglePromptOptimizationTask).filter_by(task_id=case["task_id"]).one_or_none()
     if not row:
@@ -340,6 +383,18 @@ def _inspect_task(db: Session, case: dict[str, Any], *, phase: str) -> dict[str,
         raise ValueError("E2E-02 requires real observed citations before semantic low-match evaluation")
     if case["id"] == "E2E-03" and not unknown:
         raise ValueError("E2E-03 requires an explicit frozen UNKNOWN capability fact")
+    if case["id"] == "E2E-03":
+        evidence = case["unknown_truth_evidence"]
+        frozen_truth = next((item for item in truths
+            if item.get("truth_id") == evidence["truth_id"]), None)
+        truth = db.query(TargetBrandCapabilityTruth).filter_by(id=evidence["truth_id"]).one_or_none()
+        source_execution = db.query(SinglePromptDiagnosisExecution).filter_by(
+            diagnosis_id=evidence["source_diagnosis_id"]).one_or_none()
+        source_result = db.query(SinglePromptDiagnosisResult).filter_by(
+            diagnosis_id=evidence["source_diagnosis_id"],
+            result_version=evidence["source_result_version"]).one_or_none()
+        _validate_unknown_truth_provenance(case=case, task=row, frozen_truth=frozen_truth,
+            truth=truth, source_execution=source_execution, source_result=source_result)
 
     view = task_view(row)
     common = {"id": case["id"], "task_id": row.task_id, "project_id": row.project_id,

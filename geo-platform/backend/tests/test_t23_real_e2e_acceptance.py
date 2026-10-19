@@ -13,6 +13,7 @@ from scripts.t23_real_e2e_acceptance import (
     CONTRACT,
     _authorization,
     _low_match_summary,
+    _validate_unknown_truth_provenance,
     _verify_delivery,
     validate_manifest,
 )
@@ -108,6 +109,14 @@ def manifest():
                 "evaluation_hash": "d" * 64,
                 "evidence_relation": "NO_MATCH",
             }} if scenario == "E2E-02" else {}),
+            **({"unknown_truth_evidence": {
+                "truth_id": 7, "project_id": 1, "capability_label": "支持离线备份",
+                "product_truth_status": "UNKNOWN", "source_diagnosis_id": "diagnosis-answer",
+                "source_result_version": "diagnosis-v1:answer", "source_result_hash": "6" * 64,
+                "source_signal_id": "reason-target", "source_prompt_id": 1,
+                "source_analysis_id": "analysis-1", "target_prompt_id": 3,
+                "target_analysis_id": "analysis-3",
+            }} if scenario == "E2E-03" else {}),
         } for index, scenario in enumerate(("E2E-01", "E2E-02", "E2E-03"), 1)],
     }
 
@@ -189,8 +198,36 @@ def test_pending_e2e03_refuses_to_invent_a_missing_answer_signal():
         "input": {"brand_snapshot": {"brand_name": "Target", "aliases": []}},
         "answer_diagnosis": {"events": []},
     }))
+    db = SimpleNamespace(query=lambda *_: SimpleNamespace(filter_by=lambda **_:
+        SimpleNamespace(one_or_none=lambda: object())))
     with pytest.raises(ValueError, match="E2E-03_UNKNOWN_SIGNAL_REVIEW_REQUIRED"):
-        _freeze_e2e03_unknown(None, value, SimpleNamespace(), result)
+        _freeze_e2e03_unknown(db, value, SimpleNamespace(project_id=1), result)
+
+
+def test_unknown_truth_provenance_allows_same_project_cross_prompt_and_rejects_drift():
+    case = manifest()["scenarios"][2]
+    output = {"answer_diagnosis": {"events": [{"reasons": [
+        {"reason_id": case["unknown_truth_evidence"]["source_signal_id"]}]}]}}
+    source_result = SimpleNamespace(output_json=json.dumps(output), output_hash=digest(output))
+    case["unknown_truth_evidence"]["source_result_hash"] = source_result.output_hash
+    task = SimpleNamespace(project_id=1, prompt_id=3, analysis_id="analysis-3")
+    truth = SimpleNamespace(project_id=1, product_truth_status="UNKNOWN",
+        capability_label="支持离线备份")
+    source = SimpleNamespace(project_id=1, prompt_id=1, analysis_id="analysis-1")
+    frozen = {"truth_id": 7, "product_truth_status": "UNKNOWN",
+        "capability_label": "支持离线备份"}
+
+    _validate_unknown_truth_provenance(case=case, task=task, frozen_truth=frozen,
+        truth=truth, source_execution=source, source_result=source_result)
+
+    with pytest.raises(ValueError, match="crossed Project"):
+        _validate_unknown_truth_provenance(case=case, task=task, frozen_truth=frozen,
+            truth=truth, source_execution=SimpleNamespace(project_id=2, prompt_id=1,
+                analysis_id="analysis-1"), source_result=source_result)
+    case["unknown_truth_evidence"]["source_result_hash"] = "0" * 64
+    with pytest.raises(ValueError, match="provenance drifted"):
+        _validate_unknown_truth_provenance(case=case, task=task, frozen_truth=frozen,
+            truth=truth, source_execution=source, source_result=source_result)
 
 def test_initial_database_snapshot_uses_sqlite_backup_and_includes_wal(tmp_path):
     database = tmp_path / "wal-source.sqlite3"
@@ -573,6 +610,9 @@ def test_execute_reports_plan_failure_and_runs_later_scenarios(scene, monkeypatc
         case.update(task_id=row.task_id, project_id=row.project_id, prompt_id=row.prompt_id,
             analysis_id=row.analysis_id, context_id=row.context_id, input_hash=row.input_hash,
             run_ids=[json.loads(row.input_json)["run_ids"][0]])
+    value["scenarios"][2]["unknown_truth_evidence"].update(
+        project_id=row.project_id, target_prompt_id=row.prompt_id,
+        target_analysis_id=row.analysis_id)
     value["scenarios"][0]["answer_prepare_input"]["selected_run_id"] = value["scenarios"][0]["run_ids"][0]
     value["scenarios"][1]["prepare_input"]["selected_run_id"] = value["scenarios"][1]["run_ids"][0]
     value["scenarios"][1]["low_match_evidence"]["selected_run_id"] = value["scenarios"][1]["run_ids"][0]

@@ -78,6 +78,13 @@ def build_plan(
         ) if value
     ]
     has_fact_material = bool(evidence_ids or truth_ids)
+    # A pre-request plan is conservative: selected partial support can never be
+    # promoted to fully grounded merely because no separate limitation exists.
+    # Consumable truths are verified by generation_input before they can be
+    # used; every selected citation must itself be full for L1.
+    all_fact_material_fully_grounded = all(
+        row.get("evidence_relation") == "SUPPORTS_FULL" for row in selected
+    )
     if not has_fact_material:
         level = L3
         evidence_qualification = (
@@ -90,7 +97,11 @@ def build_plan(
         public_claim = "NOT_CONSUMABLE"
         publication = "VERIFY_FIRST"
     else:
-        partial = bool(limitations or direction.get("limiting_dependencies"))
+        partial = bool(
+            limitations
+            or direction.get("limiting_dependencies")
+            or not all_fact_material_fully_grounded
+        )
         level = L2 if partial else L1
         evidence_qualification = (
             "PARTIALLY_GROUNDED_FOR_SELECTED_BLOCKS"

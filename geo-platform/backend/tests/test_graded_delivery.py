@@ -11,13 +11,13 @@ from app.modules.single_prompt_v2.graded_delivery import (
 )
 
 
-def plan_input(*, evidence=True, limited=False):
+def plan_input(*, evidence=True, limited=False, evidence_relation="SUPPORTS_FULL"):
     selected = []
     binding_ids = []
     if evidence:
         text = "资料说明：操作前需要核对适用条件。"
         selected = [{"section_id": "evidence:1", "binding_id": "binding:1",
-            "evidence_relation": "SUPPORTS_PARTIAL", "snapshot_id": "snapshot:1",
+            "evidence_relation": evidence_relation, "snapshot_id": "snapshot:1",
             "passage_id": "passage:1", "passage_text": text, "passage_hash": text_digest(text),
             "title": "公开资料", "url": "https://example.com/source"}]
         binding_ids = ["binding:1"]
@@ -44,10 +44,12 @@ def pass_qa(draft):
 
 def test_plans_are_sealed_and_levels_do_not_change_evidence_identity():
     l1, _ = plan_input()
-    l2, _ = plan_input(limited=True)
+    l2_partial, _ = plan_input(evidence_relation="SUPPORTS_PARTIAL")
+    l2_limited, _ = plan_input(limited=True)
     l3, _ = plan_input(evidence=False)
-    assert [l1["planned_delivery_level"], l2["planned_delivery_level"], l3["planned_delivery_level"]] == [L1, L2, L3]
-    for plan in (l1, l2, l3):
+    assert [l1["planned_delivery_level"], l2_partial["planned_delivery_level"],
+        l2_limited["planned_delivery_level"], l3["planned_delivery_level"]] == [L1, L2, L2, L3]
+    for plan in (l1, l2_partial, l2_limited, l3):
         validate_seal(plan, prefix="plan")
         validate_seal(plan["qualification"], prefix="qualification")
         assert plan["product_outcome"] == "NONE"
@@ -69,6 +71,8 @@ def test_l3_admits_only_instruction_and_binds_append_only_result_to_plan():
         "text": "先检查公开资料与当前适用条件，再记录待补证项。", "evidence_ids": []}]}]}
     receipt = finish_draft(draft, pass_qa(draft), inputs)
     result = receipt["delivery_qualification_result"]
+    assert receipt["title"] == "核验与行动建议"
+    assert receipt["segments"][0]["text"] == "核验与行动步骤"
     assert result["plan_hash"] == plan["plan_hash"]
     assert result["admitted_delivery_level"] == L3
     assert result["product_outcome"] == "CONTENT_DELIVERED"

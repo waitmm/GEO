@@ -140,6 +140,10 @@ def admit_draft(value, inputs: dict) -> dict:
     for section in parsed["sections"]:
         if not section["heading"].strip():
             raise ValueError("EMPTY_HEADING")
+        if action_only:
+            # Section headings are model-authored text too.  Do not rely on
+            # model QA alone to notice a factual claim hidden in a heading.
+            section["heading"] = "核验与行动步骤"
         for block in section["blocks"]:
             ids = block["evidence_ids"]
             if action_only and (block["kind"] != "INSTRUCTION" or ids):
@@ -243,7 +247,9 @@ def finish_draft(draft: dict, qa: dict, inputs: dict) -> dict:
                     "recheck_method": "EXACT_ATTRIBUTED_SOURCE" if after and segment["kind"] == "SOURCE_STATEMENT" else "REMOVE_UNSUPPORTED_ASSERTION"})
         repaired.append({**segment, "text": after})
     useful = [row for row in repaired if row["kind"] != "HEADING" and row["text"].strip()]
-    title = f"{inputs['question']}：理解与行动"
+    action_only = ((inputs.get("delivery_qualification_plan") or {}).get("planned_delivery_level")
+        == "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS")
+    title = "核验与行动建议" if action_only else f"{inputs['question']}：理解与行动"
     body = [f"# {title}"]
     for index, row in enumerate(repaired):
         if row["kind"] == "HEADING":

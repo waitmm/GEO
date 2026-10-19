@@ -920,9 +920,18 @@ def execute_task(task_id: str, *, session_factory) -> None:
                 raise HTTPException(409, "稿件结果缺少与请求前计划精确绑定的分级资格结果")
             qualification_results = [row for row in qualification_results if row.get("result_id") != qualification_result["result_id"]]
             qualification_results.append(qualification_result)
+            from .graded_delivery import aggregate_results
+            if qualification_result.get("admitted_delivery_level") == "REJECTED":
+                rejected_outcome = aggregate_results(qualification_results)
+                rejected_outcome["product_outcome"] = "NONE"
+                checkpoint(db, row, objects={"deliveries": drafts,
+                    "delivery_qualification_results": qualification_results,
+                    "delivery_outcome": rejected_outcome},
+                    status="BLOCKED", code="DELIVERY_QUALIFICATION_REJECTED",
+                    detail="正文未通过分级交付资格；原始生成结果保留用于审计，但未成为当前可交付正文。")
+                return
             drafts.append({"proposal_id": proposal.proposal_id, "result_version": delivered.result_version,
                 "result_hash": delivered.output_hash, "content_delivery_status": payload["validation"]["content_delivery_status"]})
-            from .graded_delivery import aggregate_results
             checkpoint(db, row, objects={"deliveries": drafts,
                 "delivery_qualification_results": qualification_results,
                 "delivery_outcome": aggregate_results(qualification_results)})

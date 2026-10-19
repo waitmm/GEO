@@ -532,6 +532,36 @@ def test_unavailable_source_delivers_l3_action_only_and_preserves_inputs(scene, 
     assert db.query(SinglePromptDiagnosisReview).count() == 0
 
 
+def test_rejected_qualification_is_audited_but_never_current_delivery(scene, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+    from app.models import SinglePromptExecutionProposalResult
+    db, row, _, _ = scene
+    authorize_task(db, row, expected_revision=row.revision, input_hash=row.input_hash,
+        max_requests=4, max_tokens=400000, max_cost_cny=4,
+        conservative_cny_per_million_tokens=10, pricing_source='isolated-rejected-delivery',
+        pricing_checked_at=datetime.utcnow().date().isoformat(), authorized_by='isolated-test')
+
+    def reject_every_segment(payload):
+        return {'checks': [{'segment_id': segment['segment_id'], 'verdict': 'UNSUPPORTED',
+            'rationale': '测试中拒绝全部正文。'} for segment in payload['segments']]}
+
+    calls = simulated_delivery_transport(monkeypatch, qa_response=reject_every_segment)
+    execute_task(row.task_id, session_factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
+    db.refresh(row)
+    view = task_view(row)
+    assert len(calls) == 4
+    assert row.status == 'BLOCKED'
+    assert row.blocker_code == 'DELIVERY_QUALIFICATION_REJECTED'
+    assert not view['objects'].get('deliveries')
+    assert view['objects']['delivery_outcome']['product_outcome'] == 'NONE'
+    result = view['objects']['delivery_qualification_results'][0]
+    assert result['admitted_delivery_level'] == 'REJECTED'
+    assert result['product_outcome'] == 'NONE'
+    saved_outputs = [json.loads(item.output_json) for item in db.query(SinglePromptExecutionProposalResult).all()]
+    assert any(item.get('delivery_qualification_result', {}).get('result_id') == result['result_id']
+        for item in saved_outputs)
+
+
 def test_multi_run_task_preserves_each_contribution_version_and_never_reads_latest(scene, monkeypatch):
     from sqlalchemy.orm import sessionmaker
     from app.models import BrowserMonitorRun, ReferenceSource, SinglePromptCitationContributionResult, SinglePromptCitationContributionExecution

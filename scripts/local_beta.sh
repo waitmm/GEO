@@ -14,7 +14,10 @@ DATABASE_PATH="${GEO_BETA_DATABASE_PATH:-$DATA_DIR/geo-beta.db}"
 BACKEND_HOST="127.0.0.1"
 BACKEND_PORT="${GEO_BETA_PORT:-8032}"
 URL="http://$BACKEND_HOST:$BACKEND_PORT/"
-PYTHON_BIN="$BACKEND_DIR/.venv/bin/python"
+# launchd may reject an executable reached through a symlinked parent directory
+# with EX_CONFIG before the process starts. Resolve the venv bin directory while
+# retaining the venv interpreter path (and therefore its installed packages).
+PYTHON_BIN="$(cd "$BACKEND_DIR/.venv/bin" 2>/dev/null && pwd -P)/python"
 BACKEND_LABEL="com.geo.beta.backend"
 WORKER_LABEL="com.geo.beta.worker"
 BACKEND_PLIST="$LAUNCHD_DIR/$BACKEND_LABEL.plist"
@@ -77,10 +80,11 @@ PY
 bootstrap_or_restart() {
   local label="$1" plist="$2"
   if service_loaded "$label"; then
-    launchctl kickstart -k "$LAUNCH_DOMAIN/$label"
-  else
-    launchctl bootstrap "$LAUNCH_DOMAIN" "$plist"
+    # kickstart reuses the already loaded definition and would ignore a newly
+    # rendered plist. Reload so path, port and safety settings are authoritative.
+    launchctl bootout "$LAUNCH_DOMAIN/$label"
   fi
+  launchctl bootstrap "$LAUNCH_DOMAIN" "$plist"
 }
 
 start() {
@@ -122,14 +126,24 @@ status() {
   local failed=0 pid
   if service_loaded "$BACKEND_LABEL"; then
     pid="$(service_pid "$BACKEND_LABEL")"
-    echo "backend: running${pid:+ (pid $pid)}"
+    if [[ -n "$pid" ]]; then
+      echo "backend: running (pid $pid)"
+    else
+      echo "backend: loaded but not running"
+      failed=1
+    fi
   else
     echo "backend: stopped"
     failed=1
   fi
   if service_loaded "$WORKER_LABEL"; then
     pid="$(service_pid "$WORKER_LABEL")"
-    echo "worker: running${pid:+ (pid $pid)}"
+    if [[ -n "$pid" ]]; then
+      echo "worker: running (pid $pid)"
+    else
+      echo "worker: loaded but not running"
+      failed=1
+    fi
   else
     echo "worker: stopped"
     failed=1

@@ -223,6 +223,37 @@ def test_success_settles_to_actual_usage_and_restart_keeps_state(tmp_path):
     assert after_restart["requests"][0]["actual_peak_price_cost_cny"] == 0.006
 
 
+def test_settlement_replay_after_process_restart_is_idempotent(tmp_path):
+    path = ledger(tmp_path)
+    request = identity("restart-idempotence")
+    first = SharedBudgetHooks(path, lane="AGENT_EXPERIMENT", operation_id="agent-restart")
+    first.request_guard(request)
+    event = {
+        "request_identity": request, "response_source": "EXTERNAL_LLM",
+        "validation_status": "REJECTED", "finish_reason": "incomplete",
+        "response_model": "deepseek-flash", "provider_response_id": "resp-restart",
+        "provider_response_status": "incomplete", "incomplete_reason": "max_output_tokens",
+        "provider_output_summary": [{"type": "message", "status": "incomplete"}],
+        "partial_output_text": "partial but not publishable",
+        "raw_response_hash": "f" * 64, "rejection_code": "PROVIDER_INCOMPLETE",
+        "token_usage": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500},
+    }
+    first.audit_sink(event)
+    first.audit_sink(event)
+
+    restarted = SharedBudgetHooks(path, lane="AGENT_EXPERIMENT", operation_id="agent-restart")
+    restarted.audit_sink(event)
+    state = summary(path)
+    assert state["used_requests"] == 1 and state["used_tokens"] == 1500
+    assert state["requests"][0]["status"] == "FAILED"
+
+    changed = {**event, "incomplete_reason": "content_filter"}
+    with pytest.raises(SharedBudgetDenied, match="REQUEST_ALREADY_SETTLED_DIFFERENT_OUTCOME"):
+        SharedBudgetHooks(
+            path, lane="AGENT_EXPERIMENT", operation_id="agent-restart",
+        ).audit_sink(changed)
+
+
 def test_unknown_delivery_holds_full_reservation_and_no_retry(tmp_path):
     path = ledger(tmp_path)
     request = identity()

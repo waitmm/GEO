@@ -547,18 +547,46 @@ def _account_external_response(db: Session, run: AgentExperimentRun, event: dict
         try:
             usage = _complete_provider_usage(event)
         except RuntimeError:
-            if validation_status != "REJECTED" or event.get("http_status") is None:
+            provider_incomplete = (
+                validation_status == "REJECTED"
+                and (
+                    event.get("provider_response_status") == "incomplete"
+                    or event.get("rejection_code") == "PROVIDER_INCOMPLETE"
+                )
+            )
+            definite_provider_response = (
+                validation_status == "REJECTED"
+                and (
+                    isinstance(event.get("raw_provider_response"), dict)
+                    or event.get("provider_response_status") in {
+                        "completed", "incomplete", "failed",
+                    }
+                )
+            )
+            if validation_status != "REJECTED" or (
+                event.get("http_status") is None and not definite_provider_response
+            ):
                 raise
-            # A definite provider HTTP rejection has no billable usage to
-            # settle. Preserve the full conservative hold without presenting
-            # it as actual tokens or allowing automatic replay.
+            # A definite HTTP rejection or an incomplete provider envelope
+            # without usage cannot release its conservative hold. Preserve it
+            # without presenting the ceiling as actual tokens or replaying.
             reserved_cost = float(progress.get("external_request_reserved_cost_cny", 0.0))
             run.model_call_count += 1
+            if provider_incomplete:
+                unknown_state = "PROVIDER_INCOMPLETE_USAGE_UNKNOWN"
+            elif definite_provider_response:
+                unknown_state = "PROVIDER_RESPONSE_USAGE_UNKNOWN"
+            else:
+                unknown_state = "PROVIDER_REJECTED_USAGE_UNKNOWN"
             run.progress_json = _canonical({
                 **progress,
-                "external_request_state": "PROVIDER_REJECTED_USAGE_UNKNOWN",
-                "provider_http_status": int(event["http_status"]),
+                "external_request_state": unknown_state,
+                "provider_http_status": (
+                    int(event["http_status"]) if event.get("http_status") is not None else None
+                ),
                 "provider_error_category": event.get("provider_error_category"),
+                "provider_response_status": event.get("provider_response_status"),
+                "provider_incomplete_reason": event.get("incomplete_reason", "UNKNOWN"),
                 "accounted_external_request_input_hashes": [*accounted, input_hash],
             })
             run.revision += 1
@@ -572,7 +600,10 @@ def _account_external_response(db: Session, run: AgentExperimentRun, event: dict
                 "rejection_code": event.get("rejection_code"),
                 "http_status": event.get("http_status"),
                 "provider_error_category": event.get("provider_error_category"),
-                "local_external_request_state": "PROVIDER_REJECTED_USAGE_UNKNOWN",
+                "provider_response_status": event.get("provider_response_status"),
+                "incomplete_reason": event.get("incomplete_reason", "UNKNOWN"),
+                "usage_audit_state": "USAGE_UNKNOWN",
+                "local_external_request_state": unknown_state,
                 "reserved_cost_cny": reserved_cost,
             })
             return
@@ -586,6 +617,13 @@ def _account_external_response(db: Session, run: AgentExperimentRun, event: dict
         run.cost_cny += usage["total_tokens"] * unit_price / 1_000_000
         run.progress_json = _canonical({
             **progress,
+            "external_request_state": (
+                "PROVIDER_INCOMPLETE_SETTLED"
+                if event.get("provider_response_status") == "incomplete" else
+                progress.get("external_request_state")
+            ),
+            "provider_response_status": event.get("provider_response_status"),
+            "provider_incomplete_reason": event.get("incomplete_reason", "UNKNOWN"),
             "accounted_external_request_input_hashes": [*accounted, input_hash],
         })
     else:
@@ -599,6 +637,9 @@ def _account_external_response(db: Session, run: AgentExperimentRun, event: dict
         "response_model": event.get("response_model"),
         "raw_response_hash": event.get("raw_response_hash"),
         "rejection_code": event.get("rejection_code"),
+        "provider_response_status": event.get("provider_response_status"),
+        "incomplete_reason": event.get("incomplete_reason", "UNKNOWN"),
+        "usage_audit_state": "KNOWN" if usage else "USAGE_UNKNOWN",
         "local_external_request_state": loads(run.progress_json, {}).get("external_request_state"),
     })
 
@@ -606,10 +647,10 @@ def _account_external_response(db: Session, run: AgentExperimentRun, event: dict
 def _response_audit_sink(db: Session, run: AgentExperimentRun, shared_budget_hooks,
                          response_audit_archive=None):
     def sink(event: dict[str, Any]) -> None:
+        if response_audit_archive is not None:
+            response_audit_archive.record_provider_response(run_id=run.run_id, event=event)
         shared_budget_hooks.audit_sink(event)
         _account_external_response(db, run, event)
-        if response_audit_archive is not None:
-            response_audit_archive.record_rejected_response(run_id=run.run_id, event=event)
     return sink
 
 
@@ -621,7 +662,9 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
         execution = loads(candidate.agent_execution_json, {}) if candidate else {}
     finally:
         probe.close()
-    if execution.get("contract_version") == "geo.evidence-pack.execution.v1":
+    if execution.get("contract_version") in {
+        "geo.evidence-pack.execution.v1", "geo.evidence-pack.execution.v2",
+    }:
         from .evidence_pack import execute_evidence_pack_run
         execute_evidence_pack_run(
             run_id, session_factory=session_factory, client=client,

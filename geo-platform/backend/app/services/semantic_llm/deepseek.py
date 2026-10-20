@@ -122,6 +122,82 @@ def _responses_output_candidate(
     return arguments, parsed, output_kind
 
 
+def _responses_envelope_observation(data: dict[str, Any]) -> dict[str, Any]:
+    """Extract auditable envelope metadata without treating partial output as success.
+
+    Visible ``output_text`` is retained for the restricted audit archive. Reasoning
+    text remains only inside the raw restricted envelope and is never copied into
+    product-facing events or result objects.
+    """
+    output = data.get("output")
+    summaries: list[dict[str, Any]] = []
+    visible_parts: list[str] = []
+    if isinstance(output, list):
+        for index, item in enumerate(output):
+            if not isinstance(item, dict):
+                summaries.append({"index": index, "type": "INVALID", "status": "UNKNOWN"})
+                continue
+            item_type = str(item.get("type") or "UNKNOWN")
+            summary = {
+                "index": index,
+                "type": item_type,
+                "status": str(item.get("status") or "UNKNOWN"),
+            }
+            if item_type == "message" and isinstance(item.get("content"), list):
+                output_text_parts = [
+                    part.get("text") for part in item["content"]
+                    if isinstance(part, dict) and part.get("type") == "output_text"
+                    and isinstance(part.get("text"), str)
+                ]
+                visible_parts.extend(output_text_parts)
+                summary["output_text_parts"] = len(output_text_parts)
+                summary["output_text_characters"] = sum(len(part) for part in output_text_parts)
+            summaries.append(summary)
+    incomplete = data.get("incomplete_details")
+    incomplete_reason = (
+        str(incomplete.get("reason"))
+        if isinstance(incomplete, dict) and incomplete.get("reason") is not None else "UNKNOWN"
+    )
+    provider_error = data.get("error")
+    provider_error_state = (
+        "UNKNOWN" if "error" not in data else
+        "NULL" if provider_error is None else
+        "PRESENT" if isinstance(provider_error, dict) else "INVALID"
+    )
+    return {
+        "provider_response_id": data.get("id") if isinstance(data.get("id"), str) else None,
+        "provider_response_status": str(data.get("status") or "UNKNOWN"),
+        "incomplete_reason": incomplete_reason,
+        "provider_error": provider_error if isinstance(provider_error, dict) else None,
+        "provider_error_state": provider_error_state,
+        "provider_output_summary": summaries,
+        "partial_output_text": "".join(visible_parts),
+    }
+
+
+def _responses_usage_observation(data: dict[str, Any]) -> dict[str, Any]:
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+    total_tokens = usage.get("total_tokens")
+    normalized: dict[str, Any] = {}
+    if isinstance(input_tokens, int) and not isinstance(input_tokens, bool) and input_tokens >= 0:
+        normalized["input_tokens"] = input_tokens
+    if isinstance(output_tokens, int) and not isinstance(output_tokens, bool) and output_tokens >= 0:
+        normalized["output_tokens"] = output_tokens
+    if isinstance(total_tokens, int) and not isinstance(total_tokens, bool) and total_tokens >= 0:
+        normalized["total_tokens"] = total_tokens
+    details = usage.get("output_tokens_details")
+    if isinstance(details, dict):
+        reasoning_tokens = details.get("reasoning_tokens")
+        if isinstance(reasoning_tokens, int) and not isinstance(reasoning_tokens, bool) \
+                and reasoning_tokens >= 0:
+            normalized["output_tokens_details"] = {"reasoning_tokens": reasoning_tokens}
+    return normalized
+
+
 def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -812,6 +888,7 @@ class DeepSeekClient(SemanticLLMClient):
         content = ""
         usage: dict[str, Any] = {}
         finish_reason = "unknown"
+        envelope_observation: dict[str, Any] = {}
         try:
             self._external_calls += 1
             with httpx.Client(timeout=self.settings.deepseek_timeout_seconds) as client:
@@ -837,7 +914,22 @@ class DeepSeekClient(SemanticLLMClient):
                 except Exception:
                     pass
                 raise error
-            response_data = response.json()
+            try:
+                parsed_response = response.json()
+            except Exception as parse_error:
+                error = SemanticLLMError("DeepSeek 200 响应不是合法 JSON envelope")
+                error.code = "PROVIDER_RESPONSE_JSON_INVALID"
+                error.http_status = response.status_code
+                raise error from parse_error
+            if not isinstance(parsed_response, dict):
+                error = SemanticLLMError("DeepSeek 200 响应不是对象 envelope")
+                error.code = "PROVIDER_RESPONSE_ENVELOPE_INVALID"
+                error.http_status = response.status_code
+                raise error
+            response_data = parsed_response
+            envelope_observation = _responses_envelope_observation(response_data)
+            usage = _responses_usage_observation(response_data)
+            content = str(envelope_observation.get("partial_output_text") or "")
             response_model = str(response_data.get("model") or "")
             if response_model != effective_request_model:
                 raise _provider_protocol_error(
@@ -847,8 +939,8 @@ class DeepSeekClient(SemanticLLMClient):
             finish_reason = str(response_data.get("status") or "unknown")
             if finish_reason != "completed":
                 raise _response_error(
-                    "模型文本响应未完整完成", source="EXTERNAL_LLM",
-                    content="", finish_reason=finish_reason,
+                    "模型文本响应未完整完成", code="PROVIDER_INCOMPLETE",
+                    source="EXTERNAL_LLM", content=content, finish_reason=finish_reason,
                 )
             content, candidate, output_kind = _responses_output_candidate(
                 response_data, expected_function_name="EvidencePackMarkdown",
@@ -858,7 +950,6 @@ class DeepSeekClient(SemanticLLMClient):
                     "证据包生成必须返回唯一非空 output_text",
                     "PROVIDER_TEXT_OUTPUT_INVALID",
                 )
-            usage = response_data.get("usage") or {}
             raw_input = usage.get("input_tokens", usage.get("prompt_tokens"))
             raw_output = usage.get("output_tokens", usage.get("completion_tokens"))
             raw_total = usage.get("total_tokens")
@@ -876,9 +967,14 @@ class DeepSeekClient(SemanticLLMClient):
                 "validation_status": "ACCEPTED", "finish_reason": finish_reason,
                 "response_model": response_model, "provider_output_kind": output_kind,
                 "raw_provider_response": response_data,
-                "raw_response_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                **envelope_observation,
+                "raw_response_hash": hashlib.sha256(
+                    json.dumps(response_data, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest(),
                 "token_usage": {"input_tokens": input_tokens, "output_tokens": output_tokens,
-                                "total_tokens": total_tokens},
+                                "total_tokens": total_tokens,
+                                **({"output_tokens_details": usage["output_tokens_details"]}
+                                   if "output_tokens_details" in usage else {})},
             })
         except SemanticLLMError as error:
             audited = (json.dumps(response_data, ensure_ascii=False, sort_keys=True)
@@ -894,6 +990,7 @@ class DeepSeekClient(SemanticLLMClient):
                 "response_length": len(audited),
                 "raw_response_hash": hashlib.sha256(audited.encode("utf-8")).hexdigest(),
                 "token_usage": usage,
+                **envelope_observation,
                 "rejection_code": str(getattr(error, "code", "SEMANTIC_LLM_ERROR")),
                 "rejection_reason": str(error),
                 "http_status": getattr(error, "http_status", None),

@@ -431,7 +431,17 @@ def settle(path: Path, *, request_id: str, status: str, outcome: dict[str, Any])
         row = connection.execute(
             "SELECT status,token_ceiling FROM model_requests WHERE request_id=?", (request_id,)
         ).fetchone()
-        if not row or row["status"] != "RESERVED":
+        if not row:
+            raise SharedBudgetDenied("REQUEST_NOT_ACTIVE")
+        if row["status"] in FINAL_STATUSES:
+            existing = connection.execute(
+                "SELECT outcome_json FROM model_requests WHERE request_id=?", (request_id,)
+            ).fetchone()
+            if row["status"] == status and existing and existing["outcome_json"] == _canonical(outcome):
+                connection.commit()
+                return
+            raise SharedBudgetDenied("REQUEST_ALREADY_SETTLED_DIFFERENT_OUTCOME")
+        if row["status"] != "RESERVED":
             raise SharedBudgetDenied("REQUEST_NOT_ACTIVE")
         if known and total_tokens > row["token_ceiling"]:
             raise SharedBudgetDenied("ACTUAL_USAGE_EXCEEDS_RESERVATION")
@@ -532,7 +542,10 @@ class SharedBudgetHooks:
         if event.get("response_source") == "LLM_CALL_CACHE":
             return
         identity = event.get("request_identity") or {}
+        payload_hash = str(identity.get("provider_payload_hash") or "")
         request_id = self._active.get(str(identity.get("input_hash") or ""))
+        if not request_id and _hex64(payload_hash):
+            request_id = f"{self.lane}:{self.operation_id}:{payload_hash[:24]}"
         if not request_id or request_id in self._finished:
             return
         validation = str(event.get("validation_status") or "")
@@ -544,10 +557,19 @@ class SharedBudgetHooks:
             "finish_reason": event.get("finish_reason"),
             "response_model": event.get("response_model"),
             "raw_response_hash": event.get("raw_response_hash"),
-            "response_excerpt": event.get("response_excerpt"),
             "response_length": event.get("response_length"),
             "http_status": event.get("http_status"),
             "provider_error_category": event.get("provider_error_category"),
+            "provider_response_id": event.get("provider_response_id"),
+            "provider_response_status": event.get("provider_response_status"),
+            "incomplete_reason": event.get("incomplete_reason", "UNKNOWN"),
+            "provider_error_state": event.get("provider_error_state", "UNKNOWN"),
+            "provider_output_summary": event.get("provider_output_summary") or [],
+            "partial_output_hash": (
+                hashlib.sha256(str(event.get("partial_output_text") or "").encode("utf-8")).hexdigest()
+                if event.get("partial_output_text") else None
+            ),
+            "partial_output_length": len(str(event.get("partial_output_text") or "")),
             "token_usage": event.get("token_usage") or {},
             "rejection_code": event.get("rejection_code"),
         })

@@ -219,6 +219,11 @@ def test_rejected_response_archive_is_complete_restricted_and_response_only(tmp_
     assert archive.record_rejected_response(run_id="agent-run-test", event={
         **event, "validation_status": "ACCEPTED",
     }) is None
+    accepted_path = archive.record_provider_response(run_id="agent-run-accepted", event={
+        **event, "validation_status": "ACCEPTED", "raw_response_hash": "a" * 64,
+    })
+    assert accepted_path is not None
+    assert json.loads(accepted_path.read_text(encoding="utf-8"))["validation_status"] == "ACCEPTED"
 
     http_event = {
         "response_source": "EXTERNAL_LLM", "validation_status": "REJECTED",
@@ -308,7 +313,12 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
         execution_mode="EVIDENCE_PACK",
     )
     assert created
-    assert loads(run.agent_execution_json, {})["contract_version"] == "geo.evidence-pack.execution.v1"
+    execution = loads(run.agent_execution_json, {})
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v2"
+    assert execution["model_profile"]["reasoning_effort"] == "none"
+    assert execution["model_profile"]["response_transport"] == (
+        "geo.deepseek.responses-text.no-thinking.v2"
+    )
     assert loads(run.budget_json, {})["max_model_calls"] == 1
     assert loads(run.budget_json, {})["max_tool_calls"] == 0
     pack = build_evidence_pack(loads(run.input_scope_json, {}))
@@ -941,6 +951,138 @@ def test_rejected_provider_response_settles_local_usage_before_decision_parse(tm
     assert db.query(AgentEvent).filter_by(
         agent_run_id=row.run_id, event_type="MODEL_REQUEST_ACCOUNTED",
     ).count() == 1
+    assert len(list(archive.root.glob("agent-response-*.json"))) == 1
+
+
+def test_incomplete_provider_response_settles_usage_and_archives_partial_output(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    row, _ = _create_from_fixture(db, fixture, key="agent-incomplete-usage-0001")
+    row.status = "WAITING_AUTHORIZATION"; db.commit()
+    row = authorize_agent_run(
+        db, run_id=row.run_id, project_id=1, prompt_id=44, revision=row.revision,
+        max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
+        conservative_cny_per_million_tokens=10.0,
+        pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+        pricing_checked_at="2026-10-19", authorized_by="qa",
+    )
+    ledger = tmp_path / "shared-budget-incomplete.sqlite3"
+    initialize_shared_budget(ledger, batch_id="agent-incomplete-accounting",
+                             pricing_checked_at="2026-10-19")
+    hooks = SharedBudgetHooks(ledger, lane="AGENT_EXPERIMENT", operation_id=row.run_id)
+    request = {
+        "provider": "deepseek", "requested_model_alias": "deepseek-flash",
+        "effective_request_model": "deepseek-flash",
+        "endpoint": "https://api.deepseek.com/responses", "endpoint_path": "/responses",
+        "transport_kind": "RESPONSES_JSON_SCHEMA", "attempt": 1,
+        "input_token_upper_bound": 1000, "max_output_tokens": 2000,
+        "input_hash": "4" * 64, "provider_payload_hash": "5" * 64,
+    }
+    _request_guard(db, row, shared_budget_hooks=hooks)(request)
+    partial = "## GEO 诊断与依据\n未完成正文，不得交付。"
+    raw = {
+        "id": "resp-incomplete", "model": "deepseek-flash", "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{"type": "message", "status": "incomplete", "content": [
+            {"type": "output_text", "text": partial},
+        ]}],
+        "usage": {"input_tokens": 100, "output_tokens": 50,
+                  "output_tokens_details": {"reasoning_tokens": 40}, "total_tokens": 150},
+    }
+    event = {
+        "request_identity": request, "response_source": "EXTERNAL_LLM",
+        "validation_status": "REJECTED", "finish_reason": "incomplete",
+        "response_model": "deepseek-flash", "provider_response_id": "resp-incomplete",
+        "provider_response_status": "incomplete", "incomplete_reason": "max_output_tokens",
+        "provider_output_summary": [{"type": "message", "status": "incomplete"}],
+        "partial_output_text": partial, "raw_response_hash": "6" * 64,
+        "rejection_code": "PROVIDER_INCOMPLETE", "raw_provider_response": raw,
+        "token_usage": raw["usage"],
+    }
+    archive = SecureResponseAuditArchive(tmp_path / "incomplete-response-audit")
+    sink = _response_audit_sink(db, row, hooks, archive)
+    sink(event)
+    sink(event)
+    db.refresh(row)
+    state = shared_budget_summary(ledger)
+    assert state["used_requests"] == 1 and state["used_tokens"] == 150
+    assert state["requests"][0]["status"] == "FAILED"
+    ledger_outcome = json.loads(state["requests"][0]["outcome_json"])
+    assert "response_excerpt" not in ledger_outcome
+    assert ledger_outcome["partial_output_length"] == len(partial)
+    assert row.model_call_count == 1 and row.input_tokens == 100 and row.output_tokens == 50
+    assert row.cost_cny == pytest.approx(0.0015)
+    progress = loads(row.progress_json, {})
+    assert progress["external_request_state"] == "PROVIDER_INCOMPLETE_SETTLED"
+    assert progress["provider_incomplete_reason"] == "max_output_tokens"
+    assert db.query(AgentResultVersion).filter_by(agent_run_id=row.run_id).count() == 0
+    paths = list(archive.root.glob("agent-response-*.json"))
+    assert len(paths) == 1
+    stored = json.loads(paths[0].read_text(encoding="utf-8"))
+    assert stored["partial_output_text"] == partial
+    assert stored["raw_provider_response"] == raw
+
+
+@pytest.mark.parametrize(("provider_status", "reason", "rejection_code", "expected_state"), [
+    ("incomplete", "content_filter", "PROVIDER_INCOMPLETE",
+     "PROVIDER_INCOMPLETE_USAGE_UNKNOWN"),
+    ("completed", "UNKNOWN", "FAILED_PARSE", "PROVIDER_RESPONSE_USAGE_UNKNOWN"),
+])
+def test_provider_response_without_usage_keeps_conservative_hold(
+    tmp_path, monkeypatch, provider_status, reason, rejection_code, expected_state,
+):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    row, _ = _create_from_fixture(db, fixture, key="agent-incomplete-unknown-usage-0001")
+    row.status = "WAITING_AUTHORIZATION"; db.commit()
+    row = authorize_agent_run(
+        db, run_id=row.run_id, project_id=1, prompt_id=44, revision=row.revision,
+        max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
+        conservative_cny_per_million_tokens=10.0,
+        pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+        pricing_checked_at="2026-10-19", authorized_by="qa",
+    )
+    ledger = tmp_path / "shared-budget-incomplete-unknown.sqlite3"
+    initialize_shared_budget(ledger, batch_id="agent-incomplete-unknown-accounting",
+                             pricing_checked_at="2026-10-19")
+    hooks = SharedBudgetHooks(ledger, lane="AGENT_EXPERIMENT", operation_id=row.run_id)
+    request = {
+        "provider": "deepseek", "requested_model_alias": "deepseek-flash",
+        "effective_request_model": "deepseek-flash",
+        "endpoint": "https://api.deepseek.com/responses", "endpoint_path": "/responses",
+        "transport_kind": "RESPONSES_JSON_SCHEMA", "attempt": 1,
+        "input_token_upper_bound": 1000, "max_output_tokens": 2000,
+        "input_hash": "7" * 64, "provider_payload_hash": "8" * 64,
+    }
+    _request_guard(db, row, shared_budget_hooks=hooks)(request)
+    archive = SecureResponseAuditArchive(tmp_path / "incomplete-unknown-response-audit")
+    _response_audit_sink(db, row, hooks, archive)({
+        "request_identity": request, "response_source": "EXTERNAL_LLM",
+        "validation_status": "REJECTED", "finish_reason": provider_status,
+        "response_model": "deepseek-flash", "provider_response_id": "resp-no-usage",
+        "provider_response_status": provider_status, "incomplete_reason": reason,
+        "partial_output_text": "", "raw_response_hash": "9" * 64,
+        "rejection_code": rejection_code,
+        "raw_provider_response": {
+            "id": "resp-no-usage", "model": "deepseek-flash", "status": provider_status,
+            "incomplete_details": ({"reason": reason} if provider_status == "incomplete" else None),
+            "output": [],
+        },
+        "token_usage": {},
+    })
+    db.refresh(row)
+    state = shared_budget_summary(ledger)
+    assert state["used_requests"] == 1 and state["used_tokens"] == 3000
+    assert state["requests"][0]["status"] == "FAILED"
+    assert state["requests"][0]["actual_total_tokens"] is None
+    assert row.model_call_count == 1 and row.input_tokens == row.output_tokens == 0
+    progress = loads(row.progress_json, {})
+    assert progress["external_request_state"] == expected_state
+    assert progress["provider_incomplete_reason"] == reason
+    event = db.query(AgentEvent).filter_by(
+        agent_run_id=row.run_id, event_type="MODEL_REQUEST_ACCOUNTED",
+    ).one()
+    assert loads(event.payload_json, {})["usage_audit_state"] == "USAGE_UNKNOWN"
     assert len(list(archive.root.glob("agent-response-*.json"))) == 1
 
 

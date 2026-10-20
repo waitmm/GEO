@@ -19,9 +19,13 @@ from .scope import revalidate_frozen_scope
 
 
 EVIDENCE_PACK_CONTRACT = "geo.evidence-pack.v1"
-EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v1"
 EVIDENCE_PACK_RESULT_CONTRACT = "geo.evidence-pack.markdown-result.v1"
-EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.v1"
+LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v1"
+LEGACY_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v1"
+LEGACY_EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.v1"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v2"
+EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v2"
+EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.no-thinking.v2"
 DEFAULT_TEXT_BUDGET = 90_000
 REQUIRED_SECTIONS = (
     "GEO 诊断与依据",
@@ -335,10 +339,14 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[
 
 class DeepSeekEvidencePackClient:
     def __init__(self, *, cache_only: bool, request_guard, conservative_cny_per_million_tokens: float,
-                 response_audit_sink=None):
+                 response_audit_sink=None, thinking_mode: str | None = "disabled",
+                 prompt_version: str = EVIDENCE_PACK_PROMPT_VERSION,
+                 transport_version: str = EVIDENCE_PACK_TRANSPORT_VERSION):
         self.audit: list[dict[str, Any]] = []
         self.response_audit_sink_configured = response_audit_sink is not None
         self.unit_price = conservative_cny_per_million_tokens
+        self.prompt_version = prompt_version
+        self.transport_version = transport_version
 
         def audit(event: dict[str, Any]) -> None:
             self.audit.append(event)
@@ -346,7 +354,7 @@ class DeepSeekEvidencePackClient:
                 response_audit_sink(event)
 
         self.client = DeepSeekClient(
-            cache_only=cache_only, max_attempts=1,
+            cache_only=cache_only, max_attempts=1, thinking_mode=thinking_mode,
             response_audit_sink=audit, request_guard=request_guard,
         )
 
@@ -356,9 +364,9 @@ class DeepSeekEvidencePackClient:
         before_out = self.client.external_output_token_count
         markdown = self.client.text_generate_sync(
             system_prompt=system_prompt, user_payload=evidence_pack,
-            model="deepseek-flash", prompt_version=EVIDENCE_PACK_PROMPT_VERSION,
+            model="deepseek-flash", prompt_version=self.prompt_version,
             schema_version=EVIDENCE_PACK_RESULT_CONTRACT, max_tokens=max_tokens,
-            db=db, transport_version=EVIDENCE_PACK_TRANSPORT_VERSION,
+            db=db, transport_version=self.transport_version,
         )
         input_tokens = self.client.external_input_token_count - before_in
         output_tokens = self.client.external_output_token_count - before_out
@@ -391,7 +399,10 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
         if not run or run.status != "QUEUED":
             return
         execution = loads(run.agent_execution_json, {})
-        if execution.get("contract_version") != "geo.evidence-pack.execution.v1":
+        execution_contract = execution.get("contract_version")
+        if execution_contract not in {
+            LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT, EVIDENCE_PACK_EXECUTION_CONTRACT,
+        }:
             raise RuntimeError("EVIDENCE_PACK_EXECUTION_PROFILE_MISMATCH")
         scope = revalidate_frozen_scope(db, run)
         if digest(scope) != run.input_scope_hash:
@@ -421,6 +432,7 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
         if client is None:
             if shared_budget_hooks is None and authorization.get("mode") == "EXTERNAL_ALLOWED":
                 raise RuntimeError("AGENT_SHARED_BUDGET_GUARD_REQUIRED")
+            legacy_profile = execution_contract == LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT
             client = DeepSeekEvidencePackClient(
                 cache_only=authorization.get("mode") != "EXTERNAL_ALLOWED",
                 request_guard=_request_guard(db, run, shared_budget_hooks=shared_budget_hooks),
@@ -430,6 +442,15 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
                 response_audit_sink=(
                     _response_audit_sink(db, run, shared_budget_hooks, response_audit_archive)
                     if shared_budget_hooks is not None else None
+                ),
+                thinking_mode=None if legacy_profile else "disabled",
+                prompt_version=(
+                    LEGACY_EVIDENCE_PACK_PROMPT_VERSION
+                    if legacy_profile else EVIDENCE_PACK_PROMPT_VERSION
+                ),
+                transport_version=(
+                    LEGACY_EVIDENCE_PACK_TRANSPORT_VERSION
+                    if legacy_profile else EVIDENCE_PACK_TRANSPORT_VERSION
                 ),
             )
         markdown, usage = client.generate(

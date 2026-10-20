@@ -1,4 +1,4 @@
-"""Restricted local archive for complete rejected provider responses."""
+"""Restricted local archive for complete provider response envelopes."""
 
 from __future__ import annotations
 
@@ -58,11 +58,11 @@ class SecureResponseAuditArchive:
             if modified < cutoff:
                 path.unlink()
 
-    def record_rejected_response(self, *, run_id: str, event: dict[str, Any]) -> Path | None:
+    def record_provider_response(self, *, run_id: str, event: dict[str, Any]) -> Path | None:
         provider_response = event.get("raw_provider_response")
         http_response = event.get("raw_http_response")
         if (event.get("response_source") != "EXTERNAL_LLM"
-                or event.get("validation_status") != "REJECTED"
+                or event.get("validation_status") not in {"ACCEPTED", "REJECTED"}
                 or (not isinstance(provider_response, dict) and not isinstance(http_response, str))):
             return None
         self.prepare()
@@ -76,12 +76,12 @@ class SecureResponseAuditArchive:
             )
         }
         record = {
-            "contract_version": "geo.agent.rejected-provider-response-audit.v1",
+            "contract_version": "geo.agent.provider-response-audit.v2",
             "run_id": run_id,
             "recorded_at": now.isoformat(),
             "expires_at": (now + timedelta(days=self.retention_days)).isoformat(),
             "request_identity": safe_identity,
-            "validation_status": "REJECTED",
+            "validation_status": event.get("validation_status"),
             "rejection_code": event.get("rejection_code"),
             "rejection_reason": event.get("rejection_reason"),
             "http_status": event.get("http_status"),
@@ -89,6 +89,13 @@ class SecureResponseAuditArchive:
             "finish_reason": event.get("finish_reason"),
             "response_model": event.get("response_model"),
             "provider_output_kind": event.get("provider_output_kind"),
+            "provider_response_id": event.get("provider_response_id"),
+            "provider_response_status": event.get("provider_response_status"),
+            "incomplete_reason": event.get("incomplete_reason"),
+            "provider_error": _redact(event.get("provider_error")),
+            "provider_error_state": event.get("provider_error_state", "UNKNOWN"),
+            "provider_output_summary": event.get("provider_output_summary") or [],
+            "partial_output_text": _redact(event.get("partial_output_text") or ""),
             "raw_response_hash": event.get("raw_response_hash"),
             "token_usage": event.get("token_usage") or {},
             "raw_provider_response": _redact(provider_response) if isinstance(provider_response, dict) else None,
@@ -118,3 +125,9 @@ class SecureResponseAuditArchive:
         if stat.S_IMODE(path.stat().st_mode) != 0o600:
             raise RuntimeError("AGENT_RESPONSE_AUDIT_FILE_PERMISSIONS_INVALID")
         return path
+
+    def record_rejected_response(self, *, run_id: str, event: dict[str, Any]) -> Path | None:
+        """Backward-compatible name retained for existing controllers/tests."""
+        if event.get("validation_status") != "REJECTED":
+            return None
+        return self.record_provider_response(run_id=run_id, event=event)

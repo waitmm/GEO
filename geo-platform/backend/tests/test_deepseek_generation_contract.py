@@ -159,6 +159,144 @@ def test_responses_plain_text_transport_has_no_json_format_or_retry(monkeypatch)
     assert client.external_call_count == 1 and client.external_token_count == 120
 
 
+@pytest.mark.parametrize("reason", ["max_output_tokens", "content_filter"])
+def test_responses_incomplete_audits_envelope_partial_output_and_usage(monkeypatch, reason):
+    bodies = []
+    audits = []
+    partial = "## GEO 诊断与依据\n这是尚未完成、不得发布的部分正文。"
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "id": "resp-incomplete-1", "model": "deepseek-flash",
+                "status": "incomplete", "incomplete_details": {"reason": reason},
+                "error": None,
+                "output": [
+                    {"type": "reasoning", "status": "completed", "summary": []},
+                    {"type": "message", "status": "incomplete", "content": [
+                        {"type": "output_text", "text": partial},
+                    ]},
+                ],
+                "usage": {
+                    "input_tokens": 2300, "output_tokens": 16384,
+                    "output_tokens_details": {"reasoning_tokens": 15000},
+                    "total_tokens": 18684,
+                },
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json):
+            bodies.append(json)
+            return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(
+        max_attempts=1, thinking_mode="disabled", response_audit_sink=audits.append,
+    )
+    monkeypatch.setattr(client.settings, "deepseek_api_key", "test-key")
+
+    with pytest.raises(SemanticLLMError) as rejected:
+        client.text_generate_sync(
+            system_prompt="Return one complete Markdown artifact.",
+            user_payload={"contract_version": "geo.evidence-pack.v1"},
+            model="deepseek-flash", prompt_version="geo-evidence-pack-synthesis.v2",
+            schema_version="geo.evidence-pack.markdown-result.v1", max_tokens=16384,
+            transport_version="geo.deepseek.responses-text.no-thinking.v2",
+        )
+
+    assert getattr(rejected.value, "code", "") == "PROVIDER_INCOMPLETE"
+    assert bodies[0]["reasoning"] == {"effort": "none"}
+    assert bodies[0]["max_output_tokens"] == 16384
+    event = audits[-1]
+    assert event["validation_status"] == "REJECTED"
+    assert event["rejection_code"] == "PROVIDER_INCOMPLETE"
+    assert event["provider_response_id"] == "resp-incomplete-1"
+    assert event["provider_response_status"] == "incomplete"
+    assert event["incomplete_reason"] == reason
+    assert event["partial_output_text"] == partial
+    assert event["structured_response_text"] == partial
+    assert event["provider_output_summary"][1]["output_text_characters"] == len(partial)
+    assert event["token_usage"] == {
+        "input_tokens": 2300, "output_tokens": 16384, "total_tokens": 18684,
+        "output_tokens_details": {"reasoning_tokens": 15000},
+    }
+    assert event["raw_provider_response"] == FakeResponse.json()
+    assert client.external_call_count == 1
+
+
+def test_responses_incomplete_without_usage_keeps_unknown_usage(monkeypatch):
+    audits = []
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "id": "resp-incomplete-no-usage", "model": "deepseek-flash",
+                "status": "incomplete", "incomplete_details": {"reason": "content_filter"},
+                "output": [{"type": "message", "status": "incomplete", "content": []}],
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json): return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(max_attempts=1, response_audit_sink=audits.append)
+    monkeypatch.setattr(client.settings, "deepseek_api_key", "test-key")
+    with pytest.raises(SemanticLLMError) as rejected:
+        client.text_generate_sync(
+            system_prompt="Return Markdown.", user_payload={"scope": "frozen"},
+            model="deepseek-flash", prompt_version="evidence-pack-incomplete-v1",
+        )
+    assert getattr(rejected.value, "code", "") == "PROVIDER_INCOMPLETE"
+    assert audits[-1]["incomplete_reason"] == "content_filter"
+    assert audits[-1]["token_usage"] == {}
+    assert audits[-1]["raw_provider_response"] == FakeResponse.json()
+
+
+def test_responses_invalid_json_preserves_raw_http_failure(monkeypatch):
+    audits = []
+
+    class FakeResponse:
+        status_code = 200
+        text = "provider returned a non-json envelope"
+
+        @staticmethod
+        def json():
+            raise ValueError("invalid json")
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json): return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(max_attempts=1, response_audit_sink=audits.append)
+    monkeypatch.setattr(client.settings, "deepseek_api_key", "test-key")
+    with pytest.raises(SemanticLLMError) as rejected:
+        client.text_generate_sync(
+            system_prompt="Return Markdown.", user_payload={"scope": "frozen"},
+            model="deepseek-flash", prompt_version="evidence-pack-invalid-json-v1",
+        )
+    assert getattr(rejected.value, "code", "") == "PROVIDER_RESPONSE_JSON_INVALID"
+    assert audits[-1]["http_status"] == 200
+    assert audits[-1]["raw_http_response"] == FakeResponse.text
+    assert audits[-1]["token_usage"] == {}
+
+
 def test_provider_http_error_audit_retains_status_category_and_no_usage(monkeypatch):
     audits = []
 

@@ -45,9 +45,9 @@ def _imports(database: Path) -> dict[str, Any]:
     from app.core.release_database import ReleaseSessionLocal
     from app.models import AgentExperimentRun
     from app.modules.agent_experiment.evidence_pack import (
-        EVIDENCE_PACK_PROMPT_VERSION,
         EVIDENCE_PACK_RESULT_CONTRACT,
-        EVIDENCE_PACK_TRANSPORT_VERSION,
+        LEGACY_EVIDENCE_PACK_PROMPT_VERSION,
+        LEGACY_EVIDENCE_PACK_TRANSPORT_VERSION,
         build_evidence_pack,
         render_evidence_pack_prompt,
     )
@@ -208,8 +208,8 @@ def _prepare(database: Path, ledger: Path, output: Path, audit_dir: Path) -> dic
                 "evidence_pack_hash": pack["evidence_pack_hash"],
             },
             transport_kind="RESPONSES_TEXT",
-            transport_version=symbols["EVIDENCE_PACK_TRANSPORT_VERSION"],
-            prompt_version=symbols["EVIDENCE_PACK_PROMPT_VERSION"],
+            transport_version=symbols["LEGACY_EVIDENCE_PACK_TRANSPORT_VERSION"],
+            prompt_version=symbols["LEGACY_EVIDENCE_PACK_PROMPT_VERSION"],
             schema_version=symbols["EVIDENCE_PACK_RESULT_CONTRACT"],
             execution_contract=execution["contract_version"],
             pricing_checked_at=PRICING_CHECKED_AT,

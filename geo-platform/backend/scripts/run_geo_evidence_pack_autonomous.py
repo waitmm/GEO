@@ -26,10 +26,10 @@ from scripts.run_geo_agent_real_comparison import (
 
 
 PRICING_CHECKED_AT = "2026-10-20"
-AUTHORIZATION_ID = "evidence-pack-autonomous-p1-p1-r1-20261020"
+AUTHORIZATION_ID = "evidence-pack-autonomous-locators-v3-p1-p1-r1-20261020"
 OPERATION_ID = "evidence-pack-autonomous-p1-p1-r1-20261020"
 RUN_KEY_PREFIX = "evidence-pack-autonomous-p1-p1-r1-20261020"
-EXPECTED_PACK_HASH = "21260f1074248ead7939be0161c9e9a2b500d82aa185a09fa99bff3e3335c515"
+EXPECTED_PACK_HASH = "bc1a36e91cae4b5e8c48ed7ab6882dbdfbd5352bf4729e46e5548ecc8e7123c9"
 RESPONSE_AUDIT_RETENTION_DAYS = 7
 LOCAL_RUN_BUDGET = {
     "max_model_calls": 1,
@@ -119,7 +119,7 @@ def _scope_checks(row, symbols: dict[str, Any]) -> tuple[dict[str, Any], dict[st
         or profile.get("prompt_version") != symbols["EVIDENCE_PACK_PROMPT_VERSION"]
         or profile.get("response_transport") != symbols["EVIDENCE_PACK_TRANSPORT_VERSION"]
     ):
-        raise RuntimeError("EVIDENCE_PACK_V2_EXECUTION_PROFILE_MISMATCH")
+        raise RuntimeError("EVIDENCE_PACK_V3_EXECUTION_PROFILE_MISMATCH")
     return scope, execution
 
 

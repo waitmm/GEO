@@ -88,6 +88,28 @@ def authorize_autonomous_text(path, *, operation_id="evidence-pack-autonomous"):
     )
 
 
+def authorize_autonomous_text_v3(path, *, operation_id="evidence-pack-autonomous"):
+    return append_transport_authorization(
+        path,
+        authorization_id="evidence-pack-autonomous-locators-v3",
+        batch_id="geo-agent-comparison-20261019",
+        lane="AGENT_EXPERIMENT",
+        operation_id=operation_id,
+        scope={"project_id": 1, "prompt_id": 1, "run_ids": [1], "pack": "v3"},
+        transport_kind="RESPONSES_TEXT",
+        transport_version="geo.deepseek.responses-text.no-thinking.v2",
+        prompt_version="geo-evidence-pack-synthesis.v3",
+        schema_version="geo.evidence-pack.markdown-result.v1",
+        execution_contract="geo.evidence-pack.execution.v3",
+        pricing_checked_at=TODAY.isoformat(),
+        max_requests=10,
+        max_tokens=1_000_000,
+        max_cost_cny=10.0,
+        authorized_by="explicit-user-authorization",
+        today=TODAY,
+    )
+
+
 def test_authorized_batch_is_exact_and_pricing_must_be_current(tmp_path):
     path = ledger(tmp_path)
     state = summary(path)
@@ -185,6 +207,43 @@ def test_autonomous_text_authorization_uses_one_shared_sub_budget(tmp_path):
     assert extension["used_tokens"] == 90_000
     assert extension["remaining_requests"] == 7
     assert extension["remaining_tokens"] == 910_000
+
+
+def test_autonomous_profile_versions_share_one_operation_sub_budget(tmp_path):
+    path = ledger(tmp_path)
+    authorize_autonomous_text(path)
+    first = identity("autonomous-v2", input_ceiling=100_000, output_ceiling=10_000)
+    first.update({
+        "transport_kind": "RESPONSES_TEXT",
+        "transport_version": "geo.deepseek.responses-text.no-thinking.v2",
+        "prompt_version": "geo-evidence-pack-synthesis.v2",
+        "schema_version": "geo.evidence-pack.markdown-result.v1",
+    })
+    reserve(path, lane="AGENT_EXPERIMENT", operation_id="evidence-pack-autonomous",
+            request_id="autonomous-v2", identity=first)
+    settle(path, request_id="autonomous-v2", status="FAILED", outcome={
+        "token_usage": {"input_tokens": 80_000, "output_tokens": 10_000,
+                        "total_tokens": 90_000},
+    })
+    authorize_autonomous_text_v3(path)
+    second = identity("autonomous-v3", input_ceiling=100_000, output_ceiling=10_000)
+    second.update({
+        "transport_kind": "RESPONSES_TEXT",
+        "transport_version": "geo.deepseek.responses-text.no-thinking.v2",
+        "prompt_version": "geo-evidence-pack-synthesis.v3",
+        "schema_version": "geo.evidence-pack.markdown-result.v1",
+    })
+    reserve(path, lane="AGENT_EXPERIMENT", operation_id="evidence-pack-autonomous",
+            request_id="autonomous-v3", identity=second)
+    settle(path, request_id="autonomous-v3", status="FINISHED", outcome={
+        "token_usage": {"input_tokens": 70_000, "output_tokens": 10_000,
+                        "total_tokens": 80_000},
+    })
+    extensions = summary(path)["authorization_extensions"]
+    assert len(extensions) == 2
+    assert {row["used_requests"] for row in extensions} == {2}
+    assert {row["used_tokens"] for row in extensions} == {170_000}
+    assert {row["remaining_requests"] for row in extensions} == {8}
 
 
 def test_text_authorization_rejects_wrong_scope_versions_and_is_immutable(tmp_path):

@@ -51,12 +51,12 @@ def _execution_profile(*, regenerate_nonce: str | None = None,
         raise HTTPException(422, {"code": "AGENT_EXECUTION_MODE_INVALID"})
     if execution_mode == "EVIDENCE_PACK":
         return {
-            "contract_version": "geo.evidence-pack.execution.v2",
+            "contract_version": "geo.evidence-pack.execution.v3",
             "execution_mode": "EVIDENCE_PACK",
             "decision_contract": "ONE_MARKDOWN_SYNTHESIS_NO_TOOLS",
             "model_profile": {
                 "provider": "deepseek", "model": "deepseek-flash", "mode": "CACHE_ONLY",
-                "prompt_version": "geo-evidence-pack-synthesis.v2",
+                "prompt_version": "geo-evidence-pack-synthesis.v3",
                 "response_transport": "geo.deepseek.responses-text.no-thinking.v2",
                 "reasoning_effort": "none",
                 "max_model_calls": 1, "automatic_retries": 0,

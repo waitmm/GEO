@@ -376,10 +376,9 @@ def reserve(
         cost = round(token_ceiling * config["conservative_cny_per_million_tokens"] / 1_000_000, 8)
         if extension is not None:
             extension_rows = connection.execute(
-                """SELECT r.accounted_tokens,r.accounted_cost_cny,r.status
-                FROM model_requests r JOIN request_authorizations a
-                ON a.request_id=r.request_id WHERE a.authorization_id=?""",
-                (extension["authorization_id"],),
+                """SELECT accounted_tokens,accounted_cost_cny,status
+                FROM model_requests WHERE operation_id=?""",
+                (extension["operation_id"],),
             ).fetchall()
             extension_counted = [row for row in extension_rows if row["status"] in COUNTED_STATUSES]
             if len(extension_counted) + 1 > extension["max_requests"]:
@@ -493,7 +492,7 @@ def summary(path: Path) -> dict[str, Any]:
         extensions = []
         for extension in _authorization_extensions(connection):
             extension_rows = [row for row in counted
-                              if row.get("authorization_id") == extension["authorization_id"]]
+                              if row.get("operation_id") == extension["operation_id"]]
             used_extension_tokens = sum(row["accounted_tokens"] for row in extension_rows)
             used_extension_cost = round(sum(row["accounted_cost_cny"] for row in extension_rows), 8)
             extensions.append({

@@ -314,7 +314,8 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v2"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v3"
+    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v3"
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
         "geo.deepseek.responses-text.no-thinking.v2"
@@ -326,7 +327,14 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     assert pack["evidence_pack_hash"] == digest({key: value for key, value in pack.items()
                                                   if key != "evidence_pack_hash"})
     assert pack["runs"][0]["answer_text"]
+    assert pack["runs"][0]["answer_evidence_locator"].endswith(
+        f":0:{len(pack['runs'][0]['answer_text'])}]]"
+    )
     assert len(pack["citation_occurrences"]) == 2
+    assert all(row["evidence_locator"].startswith("[[citation:")
+               for row in pack["citation_occurrences"])
+    assert all(row["evidence_locator"].startswith("[[truth:")
+               for row in pack["product_truth"]["facts"])
     assert pack["coverage"]["source_passage_total"] >= 1
     assert pack["coverage"]["source_passage_included"] >= 1
     serialized = json.dumps(pack, ensure_ascii=False).lower()

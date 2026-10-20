@@ -134,8 +134,8 @@ def _prepare(database: Path, ledger: Path, output: Path, audit_dir: Path,
     try:
         baseline = _baseline(db, symbols)
         if (
-            baseline["workflow_result_version"] != BASELINE_RESULT_VERSION
-            or baseline["workflow_result_hash"] != BASELINE_RESULT_HASH
+            baseline["chain"]["execution"]["result_version"] != BASELINE_RESULT_VERSION
+            or baseline["chain"]["execution"]["result_hash"] != BASELINE_RESULT_HASH
         ):
             raise RuntimeError("WORKFLOW_BASELINE_DRIFT")
         run_key = f"{RUN_KEY_PREFIX}-attempt-{attempt}"

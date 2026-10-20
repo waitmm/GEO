@@ -484,6 +484,32 @@ class AgentResultVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AgentResultFeedback(Base):
+    """Append-only internal Beta feedback bound to an immutable Agent result."""
+
+    __tablename__ = "agent_result_feedback"
+    __table_args__ = (
+        Index("ix_agent_result_feedback_result", "result_version", "created_at"),
+        Index("ix_agent_result_feedback_scope", "project_id", "prompt_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    feedback_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_experiment_runs.run_id"), index=True)
+    result_version: Mapped[str] = mapped_column(ForeignKey("agent_result_versions.result_version"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    submitted_by: Mapped[str] = mapped_column(String(120))
+    rating: Mapped[str] = mapped_column(String(24), index=True)
+    reason_tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    suggestion: Mapped[str] = mapped_column(Text, default="")
+    adoption_status: Mapped[str] = mapped_column(String(24), default="UNKNOWN", index=True)
+    modification_level: Mapped[str] = mapped_column(String(24), default="NOT_RECORDED")
+    modification_summary: Mapped[str] = mapped_column(Text, default="")
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SinglePromptAnalysisContext(Base):
     __tablename__ = "single_prompt_analysis_contexts"
 

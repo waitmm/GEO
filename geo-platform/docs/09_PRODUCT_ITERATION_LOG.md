@@ -1,5 +1,23 @@
 # 09 Product Iteration Log
 
+## 2026-10-20 爱短链内部 Beta
+
+The product priority is now employee use, not further Agent-versus-Workflow architecture
+debate. Optimize opens on “AI 优化” backed by the isolated Evidence Pack route; the formal
+flow remains a fallback and exact-input comparison. Employees see business sections,
+saved versions, copy/export and lightweight adoption feedback instead of being asked to
+operate Citation/Binding/Truth internals.
+
+Brand association intent and brand fact are deliberately different inputs. The former may
+guide what opportunity to pursue; it cannot create an eligible product claim. History-only
+use is also distinct from new generation: without a separately configured daily model
+authorization, the Beta can display and evaluate saved real output but cannot spend the old
+experiment balance or report a read as a new success.
+
+M1 freezes as a trial candidate before M2. 八木屋 onboarding will reuse the same product
+through configuration and data only; cross-brand abstractions follow real feedback rather
+than speculative platform expansion.
+
 ## 2026-10-19 GEO Agent Parallel Experiment V1
 
 Optimize now retains its formal Workflow as the default lane and exposes an independent

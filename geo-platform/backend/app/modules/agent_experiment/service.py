@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AgentCheckpoint, AgentEvent, AgentExperimentRun, AgentResultVersion,
+    AgentCheckpoint, AgentEvent, AgentExperimentRun, AgentResultFeedback, AgentResultVersion,
     SinglePromptAnalysis, SinglePromptAnalysisContext, SinglePromptOptimizationTask,
 )
 from app.modules.single_prompt_v2.delivery_text import digest
@@ -28,6 +28,13 @@ EVIDENCE_PACK_BUDGET = {"max_model_calls": 1, "max_tool_calls": 0, "max_total_to
                         "max_elapsed_seconds": 300, "max_repairs": 0, "max_cost_cny": 5.0}
 EXECUTION_MODES = frozenset({"TOOL_LOOP", "EVIDENCE_PACK"})
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "PARTIAL", "NEEDS_INPUT", "BLOCKED", "FAILED", "CANCELLED"})
+FEEDBACK_RATINGS = frozenset({"USABLE", "NEEDS_CHANGES", "UNUSABLE"})
+FEEDBACK_REASONS = frozenset({
+    "BRAND_ASSOCIATION", "FACTUAL_ACCURACY", "STRATEGY_TOO_GENERIC", "DRAFT_QUALITY",
+    "EVIDENCE_LIMITATION", "OPERABILITY", "OTHER",
+})
+ADOPTION_STATUSES = frozenset({"ADOPTED", "PARTIALLY_ADOPTED", "NOT_ADOPTED", "UNKNOWN"})
+MODIFICATION_LEVELS = frozenset({"NONE", "LIGHT", "MEDIUM", "HEAVY", "NOT_RECORDED"})
 
 
 def _canonical(value: Any) -> str:
@@ -238,6 +245,87 @@ def get_agent_run(db: Session, *, run_id: str, project_id: int, prompt_id: int) 
             "events": [{"event_id": event.event_id, "sequence_number": event.sequence_number,
                         "event_type": event.event_type, "payload": loads(event.payload_json, {}),
                         "payload_hash": event.payload_hash, "created_at": event.created_at.isoformat()} for event in events]}
+
+
+def list_agent_results(db: Session, *, run_id: str, project_id: int, prompt_id: int) -> list[dict[str, Any]]:
+    run = db.query(AgentExperimentRun).filter_by(
+        run_id=run_id, project_id=project_id, prompt_id=prompt_id).one_or_none()
+    if not run:
+        raise HTTPException(404, "AI 优化任务不存在")
+    rows = db.query(AgentResultVersion).filter_by(agent_run_id=run_id).order_by(
+        AgentResultVersion.version_number.desc()).all()
+    return [result_view(row) for row in rows]
+
+
+def feedback_view(row: AgentResultFeedback) -> dict[str, Any]:
+    return {
+        "feedback_id": row.feedback_id, "agent_run_id": row.agent_run_id,
+        "result_version": row.result_version, "project_id": row.project_id,
+        "prompt_id": row.prompt_id, "submitted_by": row.submitted_by,
+        "rating": row.rating, "reason_tags": loads(row.reason_tags_json, []),
+        "suggestion": row.suggestion, "adoption_status": row.adoption_status,
+        "modification_level": row.modification_level,
+        "modification_summary": row.modification_summary,
+        "payload_hash": row.payload_hash, "created_at": row.created_at.isoformat(),
+    }
+
+
+def list_result_feedback(db: Session, *, run_id: str, project_id: int, prompt_id: int,
+                         result_version: str | None = None) -> list[dict[str, Any]]:
+    run = db.query(AgentExperimentRun).filter_by(
+        run_id=run_id, project_id=project_id, prompt_id=prompt_id).one_or_none()
+    if not run:
+        raise HTTPException(404, "AI 优化任务不存在")
+    query = db.query(AgentResultFeedback).filter_by(
+        agent_run_id=run_id, project_id=project_id, prompt_id=prompt_id)
+    if result_version:
+        result = db.query(AgentResultVersion).filter_by(
+            agent_run_id=run_id, result_version=result_version).one_or_none()
+        if not result:
+            raise HTTPException(404, "结果版本不存在或不属于当前任务")
+        query = query.filter_by(result_version=result_version)
+    return [feedback_view(row) for row in query.order_by(AgentResultFeedback.created_at.desc()).all()]
+
+
+def add_result_feedback(
+    db: Session, *, run_id: str, project_id: int, prompt_id: int, result_version: str,
+    submitted_by: str, rating: str, reason_tags: list[str], suggestion: str,
+    adoption_status: str, modification_level: str, modification_summary: str,
+) -> AgentResultFeedback:
+    run = db.query(AgentExperimentRun).filter_by(
+        run_id=run_id, project_id=project_id, prompt_id=prompt_id).one_or_none()
+    if not run:
+        raise HTTPException(404, "AI 优化任务不存在")
+    result = db.query(AgentResultVersion).filter_by(
+        agent_run_id=run_id, result_version=result_version).one_or_none()
+    if not result:
+        raise HTTPException(404, "结果版本不存在或不属于当前任务")
+    normalized_reasons = sorted(set(reason_tags))
+    if rating not in FEEDBACK_RATINGS or any(value not in FEEDBACK_REASONS for value in normalized_reasons):
+        raise HTTPException(422, "反馈结论或原因标签无效")
+    if adoption_status not in ADOPTION_STATUSES or modification_level not in MODIFICATION_LEVELS:
+        raise HTTPException(422, "采用状态或修改量无效")
+    payload = {
+        "contract_version": "geo.internal-beta.result-feedback.v1",
+        "agent_run_id": run_id, "result_version": result_version,
+        "project_id": project_id, "prompt_id": prompt_id,
+        "submitted_by": submitted_by, "rating": rating,
+        "reason_tags": normalized_reasons, "suggestion": suggestion.strip(),
+        "adoption_status": adoption_status, "modification_level": modification_level,
+        "modification_summary": modification_summary.strip(),
+    }
+    row = AgentResultFeedback(
+        feedback_id=f"agent-feedback-{uuid4()}", agent_run_id=run_id,
+        result_version=result_version, project_id=project_id, prompt_id=prompt_id,
+        submitted_by=submitted_by, rating=rating,
+        reason_tags_json=_canonical(normalized_reasons), suggestion=payload["suggestion"],
+        adoption_status=adoption_status, modification_level=modification_level,
+        modification_summary=payload["modification_summary"], payload_hash=digest(payload),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def list_agent_runs(db: Session, *, project_id: int, prompt_id: int, analysis_id: str | None = None) -> list[dict[str, Any]]:

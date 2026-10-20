@@ -2,6 +2,24 @@
 
 Status: ACTIVE
 
+## 2026-10-20 Internal Beta Product Convergence
+
+- M1 is the 爱短链 internal Beta: employees use the existing Monitor and isolated
+  Evidence Pack Optimize lane to obtain diagnosis, strategy, complete copy and QA,
+  then copy/export and append feedback to an exact result version.
+- M1 ships for employee trial before M2 begins. M2 must onboard 八木屋 through the
+  same project, brand, Prompt and data configuration, without brand-specific core code.
+  M3 generalization follows evidence from both internal teams.
+- A desired brand association is optimization intent, never Product Truth. User-supplied
+  brand context remains independently unverified until the existing Truth and evidence
+  qualification rules admit a public claim.
+- Saved historical model results and new generation are distinct product states. Reading
+  a saved result cannot be shown as a newly successful task.
+- Old experiment budget is not daily-use authorization. Daily model calls require an
+  explicit deployment authorization and remain fail-closed by default.
+- Evidence Pack remains an isolated experimental result namespace. This decision does not
+  replace formal V2 or authorize production deployment, publishing or a semantic cutover.
+
 ## 2026-08-05
 
 - Decision: P0 priority is optimization loop, not broad daily trend dashboard.

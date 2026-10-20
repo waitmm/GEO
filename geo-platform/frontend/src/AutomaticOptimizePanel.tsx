@@ -297,11 +297,11 @@ function WorkflowOptimizePanel({ projectId, promptId, analysisId, rawHash, compl
 }
 
 export function AutomaticOptimizePanel(props: AutomaticOptimizePanelProps) {
-  const [lane, setLane] = useState<"workflow" | "agent">("workflow");
+  const [lane, setLane] = useState<"workflow" | "agent">("agent");
   return <section aria-label="优化线路">
     <Space direction="vertical" style={{ width: "100%" }} size={16}>
       <Segmented aria-label="选择优化线路" value={lane} onChange={value => setLane(value as "workflow" | "agent")}
-        options={[{ label: "正式 Workflow", value: "workflow" }, { label: "Agent 实验", value: "agent" }]} />
+        options={[{ label: "AI 优化", value: "agent" }, { label: "正式流程（备用）", value: "workflow" }]} />
       {lane === "workflow" ? <WorkflowOptimizePanel {...props} />
         : <AgentExperimentPanel projectId={props.projectId} promptId={props.promptId} analysisId={props.analysisId}
             contextId={props.contextId} completion={props.completion} />}

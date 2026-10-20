@@ -1,5 +1,18 @@
 # 08 Development Log
 
+2026-10-20 / IMPLEMENTATION_CHANGE / M1 爱短链 internal Beta candidate:
+the existing Evidence Pack lane is presented as the default employee-facing AI Optimize
+view while formal Workflow remains a visible fallback. The UI separates diagnosis, brand
+gap, strategy, full draft, QA and retest; exposes exact result history; and moves hashes,
+raw evidence and Trace into audit details. Brand-context entry now separates desired
+association from claimed capability, sources, unknowns and prohibited wording. A new
+append-only `agent_result_feedback` table binds rating, reason, adoption and editing effort
+to exact Project/Prompt/Agent Run/AgentResultVersion; triggers prohibit update/delete.
+Release revision `20261020_01` adds only this isolated feedback table. Daily model calls
+fail closed unless a deployment-level internal Beta authorization is explicitly enabled;
+historical experiment budget is never inherited. Formal V2 tables and contracts are not
+changed. See `docs/geo-agent-v1/M1_INTERNAL_BETA_2026-10-20.md` for operation and M2 bounds.
+
 2026-10-19 / SEMANTIC_RISK + IMPLEMENTATION_CHANGE / GEO-AGT shadow lane:
 from protected baseline `codex/geo-integration@d715964`, an isolated worktree adds
 server-frozen Project/Prompt/Analysis/Context/Run/Citation/Source/Brand/Truth identity,

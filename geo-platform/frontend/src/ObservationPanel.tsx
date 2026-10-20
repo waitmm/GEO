@@ -5,6 +5,7 @@ import { request } from "./api/client";
 import type { Project } from "./types";
 import { SamplingSchedulePanel } from "./SamplingSchedulePanel";
 import { SupplementalSources } from "./SupplementalSources";
+import { brandAssociationContent } from "./brandAssociationContext";
 
 const names: Record<string, string> = { brand_mention_rate: "正文提及", brand_option_rate: "列为选项", brand_recommendation_rate: "明确推荐", target_brand_official_reference_rate: "官方来源引用", published_url_reference_rate: "目标 URL 引用" };
 const ratio = (m: any) => m?.value == null ? "不可计算" : `${m.hit_count}/${m.evaluable_count} (${(m.value * 100).toFixed(1)}%)`;
@@ -142,7 +143,13 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     const epoch = generation.current;
     setBusy(true); setError("");
     try {
-      await request(`/api/v2/projects/${project.id}/brand-contexts`, { method: "POST", body: JSON.stringify({ ...values, expected_version: contexts[0]?.version_number || 0 }) });
+      const { association_goals, verified_capabilities, verified_sources, pending_capabilities,
+        prohibited_claims, content_assets, channels, ...identity } = values;
+      const content = brandAssociationContent({ association_goals, verified_capabilities,
+        verified_sources, pending_capabilities, prohibited_claims, content_assets, channels });
+      await request(`/api/v2/projects/${project.id}/brand-contexts`, { method: "POST", body: JSON.stringify({
+        ...identity, content, expected_version: contexts[0]?.version_number || 0,
+      }) });
       if (generation.current === epoch) { form.resetFields(); setReload(n => n + 1); }
     } catch (e) { if (generation.current === epoch) setError((e as Error).message); }
     finally { if (generation.current === epoch) setBusy(false); }
@@ -191,9 +198,17 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       <SupplementalSources key={project.id} projectId={project.id} />
       <Typography.Title level={4}>内部补充上下文</Typography.Title>
       <Alert type="info" message="资料可选，不自动成为已核实品牌事实" />
+      <Alert type="info" showIcon message="品牌关联目标不等于品牌事实"
+        description="希望 AI 将品牌与某类问题关联，只是优化意图。只有经过 Product Truth 与来源资格校验的能力才能作为品牌事实写入对外内容。每次保存都会创建不可变的新版本。" />
       <Form form={form} layout="vertical" onFinish={save} style={{ marginTop: 16 }}>
-        <Form.Item label="资料标题" name="title" rules={[{ required: true, whitespace: true }]}><Input maxLength={240} /></Form.Item>
-        <Form.Item label="品牌资料正文" name="content" rules={[{ required: true, whitespace: true }]}><Input.TextArea rows={8} maxLength={100000} /></Form.Item>
+        <Form.Item label="资料版本标题" name="title" rules={[{ required: true, whitespace: true }]}><Input maxLength={240} placeholder="例如：爱短链品牌关联资料 2026-10" /></Form.Item>
+        <Form.Item label="希望建立的品牌关联" name="association_goals" rules={[{ required: true, whitespace: true }]} extra="这是业务目标，不会自动成为产品事实。"><Input.TextArea rows={3} maxLength={12000} /></Form.Item>
+        <Form.Item label="项目组声明为已核实的产品能力" name="verified_capabilities" extra="仍须通过 Product Truth 与来源资格校验后才可作为公开主张。"><Input.TextArea rows={4} maxLength={20000} /></Form.Item>
+        <Form.Item label="能力来源与维护依据" name="verified_sources"><Input.TextArea rows={3} maxLength={12000} placeholder="填写官网、内部文档版本或维护人；不要填写密钥。" /></Form.Item>
+        <Form.Item label="待核实能力与资料缺口" name="pending_capabilities"><Input.TextArea rows={3} maxLength={12000} /></Form.Item>
+        <Form.Item label="禁止使用的品牌表述" name="prohibited_claims"><Input.TextArea rows={3} maxLength={12000} /></Form.Item>
+        <Form.Item label="可供考虑的内容资产" name="content_assets"><Input.TextArea rows={3} maxLength={12000} /></Form.Item>
+        <Form.Item label="可供考虑的发布渠道" name="channels"><Input.TextArea rows={3} maxLength={12000} /></Form.Item>
         <Form.Item label="资料出处或维护说明" name="source_reference"><Input maxLength={1000} /></Form.Item>
         <Button htmlType="submit" type="primary" loading={busy} icon={<Save size={16} />}>保存新资料版本</Button>
       </Form>

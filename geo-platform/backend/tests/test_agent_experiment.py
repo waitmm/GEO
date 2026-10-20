@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+import os
+import stat
 from uuid import uuid4
 
 import pytest
@@ -24,6 +26,7 @@ from release_test_client import TestClient
 from app.modules.agent_experiment.contracts import AgentArtifact
 from app.modules.agent_experiment.grading import validate_and_grade
 from app.modules.agent_experiment.reconciliation import reconcile_agent_run_usage
+from app.modules.agent_experiment.response_audit import SecureResponseAuditArchive
 from app.modules.agent_experiment.runner import (
     _model_payload, _recover_agent_dsml_tool_call, _request_guard, _response_audit_sink,
     _settle_local_reservation, execute_agent_run,
@@ -109,6 +112,45 @@ def test_dsml_adapter_extracts_only_complete_top_level_agent_decision():
             '<｜｜DSML｜｜ parameter name="unexpected">x</｜｜DSML｜｜ parameter>'
             '</｜｜DSML｜｜ invoke> </｜｜DSML｜｜ calls>',
         ))
+
+
+def test_rejected_response_archive_is_complete_restricted_and_response_only(tmp_path):
+    root = tmp_path / "restricted-response-audit"
+    archive = SecureResponseAuditArchive(root, retention_days=7)
+    secret = "sk-must-never-enter-response-audit"
+    raw = {
+        "model": "deepseek-flash", "status": "completed",
+        "output": [{"type": "message", "content": [
+            {"type": "output_text", "text": "complete provider response"},
+        ]}],
+        "usage": {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19},
+    }
+    event = {
+        "response_source": "EXTERNAL_LLM", "validation_status": "REJECTED",
+        "request_identity": {"provider": "deepseek", "input_hash": "a" * 64,
+                             "authorization": f"Bearer {secret}"},
+        "rejection_code": "FAILED_PARSE", "raw_response_hash": "b" * 64,
+        "raw_provider_response": raw, "token_usage": raw["usage"],
+    }
+    path = archive.record_rejected_response(run_id="agent-run-test", event=event)
+    assert path is not None
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    stored_text = path.read_text(encoding="utf-8")
+    stored = json.loads(stored_text)
+    assert stored["raw_provider_response"] == raw
+    assert stored["expires_at"] and stored["record_hash"]
+    assert secret not in stored_text and "authorization" not in stored_text.lower()
+    assert archive.record_rejected_response(run_id="agent-run-test", event={
+        **event, "validation_status": "ACCEPTED",
+    }) is None
+
+    expired = root / "agent-response-expired.json"
+    expired.write_text("{}", encoding="utf-8")
+    old = datetime.now().timestamp() - 8 * 24 * 60 * 60
+    os.utime(expired, (old, old))
+    archive.prepare()
+    assert not expired.exists()
 
 
 def _artifact(*, run_id: int, answer_end: int, source=None, readiness="VERIFY_FIRST"):
@@ -627,9 +669,11 @@ def test_rejected_provider_response_settles_local_usage_before_decision_parse(tm
         "request_identity": request, "response_source": "EXTERNAL_LLM",
         "validation_status": "REJECTED", "response_model": "deepseek-flash",
         "raw_response_hash": "e" * 64, "rejection_code": "FAILED_PARSE",
+        "raw_provider_response": {"model": "deepseek-flash", "output": []},
         "token_usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
     }
-    sink = _response_audit_sink(db, row, hooks)
+    archive = SecureResponseAuditArchive(tmp_path / "response-audit")
+    sink = _response_audit_sink(db, row, hooks, archive)
     sink(event)
     sink(event)  # repeated reads/restarts cannot double-account a settled request
     db.refresh(row)
@@ -643,6 +687,7 @@ def test_rejected_provider_response_settles_local_usage_before_decision_parse(tm
     assert db.query(AgentEvent).filter_by(
         agent_run_id=row.run_id, event_type="MODEL_REQUEST_ACCOUNTED",
     ).count() == 1
+    assert len(list(archive.root.glob("agent-response-*.json"))) == 1
 
 
 def test_external_agent_execution_without_shared_guard_fails_before_model(tmp_path, monkeypatch):

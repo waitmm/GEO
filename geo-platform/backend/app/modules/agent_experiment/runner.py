@@ -540,15 +540,18 @@ def _account_external_response(db: Session, run: AgentExperimentRun, event: dict
     })
 
 
-def _response_audit_sink(db: Session, run: AgentExperimentRun, shared_budget_hooks):
+def _response_audit_sink(db: Session, run: AgentExperimentRun, shared_budget_hooks,
+                         response_audit_archive=None):
     def sink(event: dict[str, Any]) -> None:
         shared_budget_hooks.audit_sink(event)
         _account_external_response(db, run, event)
+        if response_audit_archive is not None:
+            response_audit_archive.record_rejected_response(run_id=run.run_id, event=event)
     return sink
 
 
 def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | None = None,
-                      shared_budget_hooks=None) -> None:
+                      shared_budget_hooks=None, response_audit_archive=None) -> None:
     db: Session = session_factory()
     try:
         run = db.query(AgentExperimentRun).filter_by(run_id=run_id).one_or_none()
@@ -579,7 +582,7 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
             conservative_cny_per_million_tokens=float(
                 authorization.get("conservative_cny_per_million_tokens", 0.0)),
             response_audit_sink=(
-                _response_audit_sink(db, run, shared_budget_hooks)
+                _response_audit_sink(db, run, shared_budget_hooks, response_audit_archive)
                 if shared_budget_hooks is not None else None
             ),
         )

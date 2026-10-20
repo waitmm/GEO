@@ -363,8 +363,8 @@ def _revalidate(database: Path, ledger: Path, output: Path, *, run_id: str) -> d
             "normalizations": checked["result"].get("normalizations") or [],
             "additional_model_calls": 0,
         })
-        row.blocker_code = None
-        row.blocker_detail = None
+        row.blocker_code = ""
+        row.blocker_detail = ""
         target = symbols["_save_result"](
             db, row, checked["result"], checked["validation"], eligibility,
             status="SUCCEEDED",

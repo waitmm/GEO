@@ -144,7 +144,11 @@ def _run_key(attempt: int) -> str:
         # immutable semantic-region artifacts live.
         return "real-comparison-p1-p1-r1-20261020-validation-5-artifact-root"
     if attempt == STRICT_SINGLE_DECISION_ATTEMPT:
-        return "real-comparison-p1-p1-r1-20261020-single-decision-v3-gate"
+        # Preserve the zero-call BLOCKED row created from the worktree's empty
+        # Run 1 artifact root.  Execute worktree code from the repository
+        # backend/ so immutable semantic-region artifacts resolve identically
+        # to the prior strictly paired validations.
+        return "real-comparison-p1-p1-r1-20261020-single-decision-v3-gate-artifact-root"
     return ("real-comparison-p1-p1-r1-20261019" if attempt == 0
             else f"real-comparison-p1-p1-r1-20261019-repair-{attempt}")
 

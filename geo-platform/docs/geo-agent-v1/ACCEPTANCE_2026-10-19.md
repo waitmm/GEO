@@ -197,3 +197,11 @@ returned eight newline-delimited decisions in one output instead of the required
 `AgentDecision`. The strict adapter rejected it, settled usage and preserved the complete raw
 provider response in the restricted seven-day audit archive. No tool or second model request
 ran, no Agent result was created, and comparison quality remains `NOT_MEASURABLE`.
+
+The zero-cost protocol convergence is recorded in
+`docs/geo-agent-v1/SINGLE_DECISION_PROTOCOL_CONVERGENCE_2026-10-20.md`. Exact reconstruction of the
+fifth request matched its persisted provider-payload hash and showed that local `strict_json` had not
+enabled provider `text.format.strict`. The Agent-only transport now sends strict mode, leads with a
+single-current-action contract, exposes a closed allowlisted decision Schema, rejects mixed actions,
+and versions all affected identities. The exact eight-decision response remains wholly rejected in
+offline replay. No external request was made.

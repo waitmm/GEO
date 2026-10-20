@@ -314,8 +314,8 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v3"
-    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v3"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v4"
+    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v4"
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
         "geo.deepseek.responses-text.no-thinking.v2"
@@ -366,7 +366,37 @@ def test_evidence_pack_capacity_is_explicit_and_deterministic(tmp_path, monkeypa
     constrained = build_evidence_pack(passage_heavy, text_budget=constrained_budget)
     assert constrained["coverage"]["source_passage_omitted"] >= 1
     assert constrained == build_evidence_pack(passage_heavy, text_budget=constrained_budget)
-    assert all(row["reason"] == "TEXT_BUDGET" for row in constrained["coverage"]["omitted_materials"])
+    assert all(row["reason"] == "TEXT_BUDGET"
+               for row in constrained["coverage"]["omitted_materials"])
+
+
+def test_evidence_pack_demotes_only_nested_draft_h2_headings(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = _create_from_fixture(
+        db, fixture, key="evidence-pack-heading-normalization-0001",
+        execution_mode="EVIDENCE_PACK",
+    )
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    markdown = _evidence_markdown(pack).replace(
+        "## 完整正文\n",
+        "## 完整正文\n开场说明。\n\n## 正文内部小节\n",
+    )
+    checked, _eligibility = validate_markdown_result(markdown, pack)
+    assert checked["validation"]["status"] == "PASS"
+    assert checked["result"]["normalizations"] == [
+        {"code": "DRAFT_H2_DEMOTED", "detail": "正文内部小节"},
+    ]
+    assert "### 正文内部小节" in checked["result"]["raw_markdown"]
+
+    outside = markdown.replace(
+        "## 品牌表现与证据缺口\n",
+        "## 非契约顶层章节\n内容。\n\n## 品牌表现与证据缺口\n",
+    )
+    rejected, _ = validate_markdown_result(outside, pack)
+    assert {row["code"] for row in rejected["validation"]["issues"]} >= {
+        "UNEXPECTED_TOP_LEVEL_SECTION",
+    }
 
 
 def test_evidence_pack_single_call_persists_validated_independent_result(tmp_path, monkeypatch):

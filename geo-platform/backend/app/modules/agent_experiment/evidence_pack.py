@@ -25,8 +25,10 @@ LEGACY_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v1"
 LEGACY_EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.v1"
 PREVIOUS_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v2"
 PREVIOUS_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v2"
-EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v3"
-EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v3"
+LOCATOR_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v3"
+LOCATOR_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v3"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v4"
+EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v4"
 EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.no-thinking.v2"
 DEFAULT_TEXT_BUDGET = 90_000
 REQUIRED_SECTIONS = (
@@ -202,12 +204,19 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
     return pack
 
 
-def render_evidence_pack_prompt(*, require_exact_locators: bool = True) -> str:
+def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VERSION) -> str:
     headings = "\n".join(f"## {name}" for name in REQUIRED_SECTIONS)
     locator_rule = (
         "必须逐字复制证据对象给出的 `answer_evidence_locator` 或 `evidence_locator`；不得自行猜测\n"
         "answer 的 START/END、Truth 的 VERSION 或任何内部标识。\n"
-        if require_exact_locators else ""
+        if prompt_version in {
+            LOCATOR_EVIDENCE_PACK_PROMPT_VERSION, EVIDENCE_PACK_PROMPT_VERSION,
+        } else ""
+    )
+    heading_rule = (
+        "上述六个契约章节是全文仅允许出现的 `##` 标题；`完整正文` 内部的小标题必须使用\n"
+        "`###` 或更低层级，不得再使用 `##`。\n"
+        if prompt_version == EVIDENCE_PACK_PROMPT_VERSION else ""
     )
     return f"""# GEO 冻结证据包单次综合任务
 
@@ -219,6 +228,8 @@ def render_evidence_pack_prompt(*, require_exact_locators: bool = True) -> str:
 每节都要有实质内容，`完整正文` 不得只是提纲或占位符：
 
 {headings}
+
+{heading_rule}
 
 需要证据的位置使用下列可反查标记，且只能引用证据包中真实存在并已包含的对象：
 
@@ -233,6 +244,26 @@ def render_evidence_pack_prompt(*, require_exact_locators: bool = True) -> str:
 若品牌事实不足，采用 L3 安全写法，并在 `QA 与事实限制` 中逐字写出 `VERIFY_FIRST`。
 模型自检不代表服务端校验通过，也不得声称优化已造成后续指标改善。
 """
+
+
+def _normalize_draft_heading_levels(markdown: str) -> tuple[str, list[dict[str, str]]]:
+    """Demote only non-contract H2 headings inside the complete-draft section."""
+    lines = markdown.splitlines(keepends=True)
+    inside_draft = False
+    changes: list[dict[str, str]] = []
+    normalized: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## 完整正文":
+            inside_draft = True
+        elif stripped == "## QA 与事实限制":
+            inside_draft = False
+        elif inside_draft and re.match(r"^##\s+\S", stripped):
+            replacement = re.sub(r"^(\s*)##(\s+)", r"\1###\2", line, count=1)
+            changes.append({"code": "DRAFT_H2_DEMOTED", "detail": stripped[3:].strip()})
+            line = replacement
+        normalized.append(line)
+    return "".join(normalized), changes
 
 
 def _parse_sections(markdown: str) -> tuple[dict[str, str], list[dict[str, str]]]:
@@ -290,10 +321,11 @@ def _validate_reference(kind: str, locator: str, pack: dict[str, Any]) -> str | 
 
 
 def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
-    sections, issues = _parse_sections(markdown)
+    normalized_markdown, normalizations = _normalize_draft_heading_levels(markdown)
+    sections, issues = _parse_sections(normalized_markdown)
     references = []
     matched_tokens = set()
-    for match in _REF.finditer(markdown):
+    for match in _REF.finditer(normalized_markdown):
         kind, locator = match.group(1), match.group(2)
         token = match.group(0)
         matched_tokens.add(token)
@@ -301,7 +333,7 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[
         references.append({"kind": kind, "locator": locator, "token": token, "valid": code is None})
         if code:
             issues.append({"code": code, "detail": locator})
-    for token in _ANY_REF.findall(markdown):
+    for token in _ANY_REF.findall(normalized_markdown):
         if token not in matched_tokens:
             issues.append({"code": "EVIDENCE_REF_FORMAT_INVALID", "detail": token[:160]})
     for name in REQUIRED_SECTIONS[:3]:
@@ -350,7 +382,9 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[
         "qa": sections.get("QA 与事实限制", ""),
         "validation_plan": sections.get("复测计划", ""),
         "limitations": ["模型输出必须经过服务端校验，不能自行批准 Truth、发布或效果因果。"],
-        "raw_markdown": markdown,
+        "raw_markdown": normalized_markdown,
+        "provider_output_hash": digest(markdown),
+        "normalizations": normalizations,
         "evidence_pack": {
             "evidence_pack_hash": pack["evidence_pack_hash"],
             "coverage": pack["coverage"],
@@ -430,6 +464,7 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
         if execution_contract not in {
             LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT,
             PREVIOUS_EVIDENCE_PACK_EXECUTION_CONTRACT,
+            LOCATOR_EVIDENCE_PACK_EXECUTION_CONTRACT,
             EVIDENCE_PACK_EXECUTION_CONTRACT,
         }:
             raise RuntimeError("EVIDENCE_PACK_EXECUTION_PROFILE_MISMATCH")
@@ -458,11 +493,20 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
         })
         authorization = loads(run.authorization_json, {})
         budget = loads(run.budget_json, {})
+        legacy_profile = execution_contract == LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT
+        previous_profile = execution_contract == PREVIOUS_EVIDENCE_PACK_EXECUTION_CONTRACT
+        locator_profile = execution_contract == LOCATOR_EVIDENCE_PACK_EXECUTION_CONTRACT
+        selected_prompt_version = (
+            LEGACY_EVIDENCE_PACK_PROMPT_VERSION if legacy_profile else (
+                PREVIOUS_EVIDENCE_PACK_PROMPT_VERSION if previous_profile else (
+                    LOCATOR_EVIDENCE_PACK_PROMPT_VERSION
+                    if locator_profile else EVIDENCE_PACK_PROMPT_VERSION
+                )
+            )
+        )
         if client is None:
             if shared_budget_hooks is None and authorization.get("mode") == "EXTERNAL_ALLOWED":
                 raise RuntimeError("AGENT_SHARED_BUDGET_GUARD_REQUIRED")
-            legacy_profile = execution_contract == LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT
-            previous_profile = execution_contract == PREVIOUS_EVIDENCE_PACK_EXECUTION_CONTRACT
             client = DeepSeekEvidencePackClient(
                 cache_only=authorization.get("mode") != "EXTERNAL_ALLOWED",
                 request_guard=_request_guard(db, run, shared_budget_hooks=shared_budget_hooks),
@@ -475,11 +519,7 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
                 ),
                 thinking_mode=None if legacy_profile else "disabled",
                 prompt_version=(
-                    LEGACY_EVIDENCE_PACK_PROMPT_VERSION
-                    if legacy_profile else (
-                        PREVIOUS_EVIDENCE_PACK_PROMPT_VERSION
-                        if previous_profile else EVIDENCE_PACK_PROMPT_VERSION
-                    )
+                    selected_prompt_version
                 ),
                 transport_version=(
                     LEGACY_EVIDENCE_PACK_TRANSPORT_VERSION
@@ -489,7 +529,7 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
         markdown, usage = client.generate(
             db=db,
             system_prompt=render_evidence_pack_prompt(
-                require_exact_locators=execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT,
+                prompt_version=selected_prompt_version,
             ),
             evidence_pack=pack,
             max_tokens=min(16_384, int(budget.get("max_total_tokens", 16_384))),

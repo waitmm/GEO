@@ -1,10 +1,12 @@
 """Controlled autonomous Evidence Pack batch for the exact P1/P1/R1 comparison.
 
-``prepare`` is zero-provider-call: it freezes one new v2 Agent run, performs the
+``prepare`` is zero-provider-call: it freezes one new Agent run, performs the
 cache-only gate, authorizes that run locally, and appends/reuses one shared
 10-request / 1M-token / CNY10 transport authorization. ``execute`` consumes at
-most one request for the selected run. Repeated attempts therefore share one
-persistent sub-budget and the historical global ledger.
+most one request for the selected run. ``revalidate`` can append a new immutable
+result from an already archived provider output after a format-only validator
+upgrade and never calls the provider. Repeated attempts share one persistent
+sub-budget and the historical global ledger.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from scripts.run_geo_agent_real_comparison import (
 
 
 PRICING_CHECKED_AT = "2026-10-20"
-AUTHORIZATION_ID = "evidence-pack-autonomous-locators-v3-p1-p1-r1-20261020"
+AUTHORIZATION_ID = "evidence-pack-autonomous-markdown-v4-p1-p1-r1-20261020"
 OPERATION_ID = "evidence-pack-autonomous-p1-p1-r1-20261020"
 RUN_KEY_PREFIX = "evidence-pack-autonomous-p1-p1-r1-20261020"
 EXPECTED_PACK_HASH = "bc1a36e91cae4b5e8c48ed7ab6882dbdfbd5352bf4729e46e5548ecc8e7123c9"
@@ -45,7 +47,7 @@ def _imports(database: Path) -> dict[str, Any]:
     os.environ["GEO_RELEASE_DATABASE_URL"] = f"sqlite:///{database.resolve()}"
     from app.core.config import get_settings
     from app.core.release_database import ReleaseSessionLocal
-    from app.models import AgentExperimentRun
+    from app.models import AgentExperimentRun, AgentResultVersion
     from app.modules.agent_experiment.evidence_pack import (
         EVIDENCE_PACK_EXECUTION_CONTRACT,
         EVIDENCE_PACK_PROMPT_VERSION,
@@ -53,9 +55,10 @@ def _imports(database: Path) -> dict[str, Any]:
         EVIDENCE_PACK_TRANSPORT_VERSION,
         build_evidence_pack,
         render_evidence_pack_prompt,
+        validate_markdown_result,
     )
     from app.modules.agent_experiment.response_audit import SecureResponseAuditArchive
-    from app.modules.agent_experiment.runner import execute_agent_run
+    from app.modules.agent_experiment.runner import _append_event, _save_result, execute_agent_run
     from app.modules.agent_experiment.service import authorize_agent_run, create_agent_run, get_agent_run
     from app.services.serialization import loads
     from app.services.shared_model_budget import (
@@ -119,7 +122,7 @@ def _scope_checks(row, symbols: dict[str, Any]) -> tuple[dict[str, Any], dict[st
         or profile.get("prompt_version") != symbols["EVIDENCE_PACK_PROMPT_VERSION"]
         or profile.get("response_transport") != symbols["EVIDENCE_PACK_TRANSPORT_VERSION"]
     ):
-        raise RuntimeError("EVIDENCE_PACK_V3_EXECUTION_PROFILE_MISMATCH")
+        raise RuntimeError("EVIDENCE_PACK_V4_EXECUTION_PROFILE_MISMATCH")
     return scope, execution
 
 
@@ -301,6 +304,110 @@ def _execute(database: Path, ledger: Path, output: Path, audit_dir: Path,
             raise RuntimeError(f"EVIDENCE_PACK_NOT_EXECUTABLE:{row.status}")
     finally:
         db.close()
+
+
+def _revalidate(database: Path, ledger: Path, output: Path, *, run_id: str) -> dict[str, Any]:
+    """Revalidate one preserved real output; never invoke a model or alter usage."""
+    symbols = _imports(database)
+    budget_before = symbols["summary"](ledger)
+    _assert_shared_budget(budget_before)
+    db = symbols["ReleaseSessionLocal"]()
+    try:
+        row = db.query(symbols["AgentExperimentRun"]).filter_by(run_id=run_id).one_or_none()
+        if not row or not row.idempotency_key.startswith(RUN_KEY_PREFIX):
+            raise RuntimeError("AUTONOMOUS_AGENT_RUN_NOT_FOUND")
+        if row.input_scope_hash != EXPECTED_SCOPE_HASH or row.status != "FAILED":
+            raise RuntimeError("AUTONOMOUS_REVALIDATION_SOURCE_INVALID")
+        execution = symbols["loads"](row.agent_execution_json, {})
+        profile = execution.get("model_profile") or {}
+        if (
+            execution.get("contract_version") != "geo.evidence-pack.execution.v3"
+            or profile.get("prompt_version") != "geo-evidence-pack-synthesis.v3"
+            or row.blocker_code != "EVIDENCE_PACK_OUTPUT_VALIDATION_FAILED"
+        ):
+            raise RuntimeError("AUTONOMOUS_REVALIDATION_PROFILE_INVALID")
+        versions = db.query(symbols["AgentResultVersion"]).filter_by(
+            agent_run_id=run_id,
+        ).order_by(symbols["AgentResultVersion"].version_number).all()
+        if len(versions) != 1:
+            raise RuntimeError("AUTONOMOUS_REVALIDATION_VERSION_COUNT_INVALID")
+        source_version = versions[0]
+        source = symbols["loads"](source_version.result_json, {})
+        if symbols["digest"](source) != source_version.result_hash:
+            raise RuntimeError("AUTONOMOUS_REVALIDATION_SOURCE_RESULT_HASH_MISMATCH")
+        markdown = str(source.get("raw_markdown") or "")
+        if not markdown or symbols["digest"](markdown) != source.get("provider_output_hash"):
+            # v3 predates provider_output_hash in the result payload. In that
+            # exact case the immutable result hash and secure provider archive
+            # remain the audit anchors; do not accept any other mismatch.
+            if source.get("provider_output_hash") is not None:
+                raise RuntimeError("AUTONOMOUS_REVALIDATION_PROVIDER_OUTPUT_HASH_MISMATCH")
+        scope = symbols["loads"](row.input_scope_json, {})
+        pack = symbols["build_evidence_pack"](scope)
+        if pack["evidence_pack_hash"] != EXPECTED_PACK_HASH:
+            raise RuntimeError("EVIDENCE_PACK_HASH_DRIFT")
+        checked, eligibility = symbols["validate_markdown_result"](markdown, pack)
+        if checked["validation"]["status"] != "PASS":
+            raise RuntimeError("AUTONOMOUS_REVALIDATION_STILL_FAILED")
+        checked["result"]["revalidation"] = {
+            "mode": "OFFLINE_FORMAT_ONLY",
+            "source_result_version": source_version.result_version,
+            "source_result_hash": source_version.result_hash,
+            "provider_request_reused": True,
+            "additional_model_calls": 0,
+        }
+        symbols["_append_event"](db, row, "EVIDENCE_PACK_OFFLINE_REVALIDATED", {
+            "source_result_version": source_version.result_version,
+            "source_result_hash": source_version.result_hash,
+            "evidence_pack_hash": pack["evidence_pack_hash"],
+            "normalizations": checked["result"].get("normalizations") or [],
+            "additional_model_calls": 0,
+        })
+        row.blocker_code = None
+        row.blocker_detail = None
+        target = symbols["_save_result"](
+            db, row, checked["result"], checked["validation"], eligibility,
+            status="SUCCEEDED",
+        )
+        baseline = _baseline(db, symbols)
+        agent = symbols["get_agent_run"](
+            db, run_id=run_id, project_id=PROJECT_ID, prompt_id=PROMPT_ID,
+        )
+        budget_after = symbols["summary"](ledger)
+        if budget_after["used_requests"] != budget_before["used_requests"] \
+                or budget_after["used_tokens"] != budget_before["used_tokens"] \
+                or budget_after["used_cost_cny"] != budget_before["used_cost_cny"]:
+            raise RuntimeError("OFFLINE_REVALIDATION_CHANGED_SHARED_BUDGET")
+        report = {
+            "status": "AUTONOMOUS_EVIDENCE_PACK_REVALIDATED",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "external_calls": 0,
+            "agent": agent,
+            "workflow_baseline": baseline,
+            "source_result": {
+                "result_version": source_version.result_version,
+                "result_hash": source_version.result_hash,
+                "validation_status": symbols["loads"](
+                    source_version.validation_report_json, {},
+                ).get("status"),
+            },
+            "target_result": {
+                "result_version": target.result_version,
+                "result_hash": target.result_hash,
+                "validation_status": symbols["loads"](
+                    target.validation_report_json, {},
+                ).get("status"),
+                "evidence_grade": target.evidence_grade,
+                "public_claim_eligibility": target.public_claim_eligibility,
+                "publication_eligibility": target.publication_eligibility,
+            },
+            "normalizations": checked["result"].get("normalizations") or [],
+            "shared_budget": budget_after,
+        }
+        _write_json(output, report)
+        return report
+    finally:
+        db.close()
     archive = symbols["SecureResponseAuditArchive"](
         audit_dir, retention_days=RESPONSE_AUDIT_RETENTION_DAYS,
     )
@@ -359,7 +466,7 @@ def _execute(database: Path, ledger: Path, output: Path, audit_dir: Path,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("prepare", "execute"))
+    parser.add_argument("mode", choices=("prepare", "execute", "revalidate"))
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -367,19 +474,22 @@ def main() -> None:
     parser.add_argument("--attempt", type=int, default=1)
     parser.add_argument("--agent-run-id")
     args = parser.parse_args()
-    if args.mode == "execute" and not args.agent_run_id:
-        parser.error("--agent-run-id is required for execute")
-    result = (
-        _prepare(
+    if args.mode in {"execute", "revalidate"} and not args.agent_run_id:
+        parser.error("--agent-run-id is required for execute/revalidate")
+    if args.mode == "prepare":
+        result = _prepare(
             args.database, args.ledger, args.output, args.response_audit_dir,
             attempt=args.attempt,
         )
-        if args.mode == "prepare"
-        else _execute(
+    elif args.mode == "execute":
+        result = _execute(
             args.database, args.ledger, args.output, args.response_audit_dir,
             run_id=args.agent_run_id,
         )
-    )
+    else:
+        result = _revalidate(
+            args.database, args.ledger, args.output, run_id=args.agent_run_id,
+        )
     print(_canonical({
         "status": result["status"],
         "output": str(args.output.resolve()),

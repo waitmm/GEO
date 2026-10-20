@@ -137,7 +137,10 @@ def _run_key(attempt: int) -> str:
         # relative monitoring-artifact root and failed Run revalidation.
         return "real-comparison-p1-p1-r1-20261019-repair-3-artifact-root"
     if attempt == REAL_VALIDATION_ATTEMPT:
-        return "real-comparison-p1-p1-r1-20261020-validation-5"
+        # Preserve the zero-call BLOCKED row created from the wrong relative
+        # artifact root; this key is only used from backend/, where Run 1's
+        # immutable semantic-region artifacts live.
+        return "real-comparison-p1-p1-r1-20261020-validation-5-artifact-root"
     return ("real-comparison-p1-p1-r1-20261019" if attempt == 0
             else f"real-comparison-p1-p1-r1-20261019-repair-{attempt}")
 

@@ -190,3 +190,10 @@ recovery from the Agent path, strictly adapts one complete DSML `AgentDecision` 
 Responses output item, and records provider usage before business parsing. The historical
 Agent Run projection is reconciled to the unchanged shared ledger with append-only correction
 events. Offline regression passes, but no new provider request or GEO result was produced.
+
+The newly authorized single real validation is recorded in
+`docs/geo-agent-v1/REAL_RUN_VALIDATION_5_2026-10-20.md`. The provider completed one request but
+returned eight newline-delimited decisions in one output instead of the required single
+`AgentDecision`. The strict adapter rejected it, settled usage and preserved the complete raw
+provider response in the restricted seven-day audit archive. No tool or second model request
+ran, no Agent result was created, and comparison quality remains `NOT_MEASURABLE`.

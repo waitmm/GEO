@@ -1,0 +1,8 @@
+{"action_type":"TOOL_CALL","reasoning":"首轮需要确认冻结范围、可用工具与证据目录结构，再决定读答案与引用的顺序。范围摘要显示 prompt 为“抖音跳转链接”、品牌上下文为空、1 条有效答案、19 次引用出现——先取范围元数据以确认 answer/run/citation 的可定位 ID 与预算约束。","tool_name":"get_scope_summary","arguments":{}}
+{"action_type":"TOOL_CALL","reasoning":"品牌上下文为空且品牌提及为 0，需要读取唯一有效答案原文，判断该 Prompt 的真实意图（概念解释/操作教程/选型）以及答案主张、候选方案与限制条件，再决定引用调查范围。","tool_name":"read_answer","arguments":{}}
+{"action_type":"TOOL_CALL","reasoning":"摘要显示 19 次引用出现但品牌提及为 0，需要先取引用清单（含 occurrence 定位与来源快照映射），再挑与“抖音跳转链接”操作路径最相关的少量来源精读，避免一次灌入大量正文。","tool_name":"list_citations","arguments":{}}
+{"action_type":"TOOL_CALL","reasoning":"需要确认是否存在可用的品牌/产品 Truth 版本；若为空则内容稿必须写成中性教程与选择标准，并把品牌相关主张单列为待核验，不能发明功能。","tool_name":"read_product_truth","arguments":{}}
+{"action_type":"TOOL_CALL","reasoning":"读取该项目已有的 Monitor/Validate 指标定义，以便 validation_plan 尽量复用既有指标而非自造口径。","tool_name":"read_monitor_metrics","arguments":{}}
+{"action_type":"TOOL_CALL","reasoning":"品牌上下文模式为 EMPTY，但需确认是否有可用的用户资料/知识库版本及其授权范围，以决定能否在内容稿中保留任何品牌相关陈述。","tool_name":"read_brand_context","arguments":{}}
+{"action_type":"TOOL_CALL","reasoning":"确认冻结范围内的 Run 列表与采样口径（run_count=1），为后续验证计划说明“样本仅 1 个 Run、无连续采样”的限制提供依据。","tool_name":"list_runs","arguments":{}}
+{"action_type":"STOP","reasoning":"若服务端在本次响应中已返回足以支撑诊断与交付的证据（答案原文 + 引用清单 + 来源快照），且品牌/Truth 均确认为空，则不需要再请求额外探索工具；缺口仅为缺少品牌事实资料与单 Run 小样本，将在 limitations 中如实说明。此分支作为备选，仅在无法继续取证时使用。","stop_reason":"等待首轮工具返回后判断：若仅有 1 个 Run 且品牌/Truth 为空，则后续只做最小必要的引用来源精读，不做重复探索。"}

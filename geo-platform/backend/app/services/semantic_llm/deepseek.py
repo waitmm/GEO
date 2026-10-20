@@ -133,6 +133,7 @@ def derive_deepseek_call_contract(
     transport_version: str = "", endpoint_base_url: str | None = None,
     allow_json_wrapper_recovery: bool = False,
     recovery_contract_version: str = "",
+    provider_schema_strict: bool = False,
 ) -> dict[str, Any]:
     """Return the complete immutable identity of one derived model call kind."""
     mode = structured_output_mode or "JSON_OBJECT_FALLBACK"
@@ -168,6 +169,7 @@ def derive_deepseek_call_contract(
             "temperature": 0.0,
             "max_output_tokens": effective_max_tokens,
             "thinking_mode": thinking_mode,
+            **({"provider_schema_strict": True} if provider_schema_strict else {}),
             **({"json_wrapper_recovery": "EXTRACT_THEN_STRICT_VALIDATE"}
                if allow_json_wrapper_recovery else {}),
             **({"non_json_recovery_contract": recovery_contract_version}
@@ -264,6 +266,7 @@ class DeepSeekClient(SemanticLLMClient):
         allow_json_wrapper_recovery: bool = False,
         non_json_response_recovery: Callable[[str], dict[str, Any] | None] | None = None,
         recovery_contract_version: str = "",
+        provider_schema_strict: bool = False,
     ) -> dict[str, Any]:
         self._assert_budget(db)
 
@@ -278,6 +281,8 @@ class DeepSeekClient(SemanticLLMClient):
         provider_schema: dict[str, Any] | None = None
         provider_schema_hash = ""
         if structured_output_mode == "JSON_SCHEMA":
+            if provider_schema_strict and not strict_json:
+                raise ValueError("provider_schema_strict 要求同时启用 strict_json")
             if not hasattr(response_schema, "model_json_schema"):
                 raise ValueError("JSON_SCHEMA 模式要求 Pydantic typed response model")
             provider_schema = response_schema.model_json_schema(mode="validation")
@@ -301,6 +306,7 @@ class DeepSeekClient(SemanticLLMClient):
             transport_version=transport_version, endpoint_base_url=self.settings.deepseek_base_url,
             allow_json_wrapper_recovery=allow_json_wrapper_recovery,
             recovery_contract_version=recovery_contract_version,
+            provider_schema_strict=provider_schema_strict,
         )
         if self.frozen_call_contracts is not None:
             frozen = self.frozen_call_contracts.get(prompt_version)
@@ -410,6 +416,8 @@ class DeepSeekClient(SemanticLLMClient):
                     }
                 },
             }
+            if provider_schema_strict:
+                body["text"]["format"]["strict"] = True
             if self.thinking_mode:
                 body["reasoning"] = {
                     "effort": "none" if self.thinking_mode == "disabled" else "high"

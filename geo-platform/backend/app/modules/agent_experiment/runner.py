@@ -30,6 +30,10 @@ class DecisionClient(Protocol):
 
 
 DSML_RECOVERY_CONTRACT = "geo.agent.deepseek-dsml-agent-decision.v2"
+AGENT_DECISION_PROMPT_VERSION = "geo-agent-loop.v3"
+AGENT_DECISION_SCHEMA_VERSION = "geo.agent.decision.v2"
+AGENT_DECISION_TRANSPORT_VERSION = "geo.agent.deepseek.responses-json-schema.single-decision.v1"
+SINGLE_DECISION_PROMPT_CONTRACT = "geo.agent.single-decision.v2"
 FINALIZATION_RESERVED_CALLS = 2
 MAX_CONSECUTIVE_NO_PROGRESS = 2
 MAX_HISTORY_ENTRIES = 12
@@ -143,9 +147,11 @@ class DeepSeekDecisionClient:
         before_out = self.client.external_output_token_count
         output = self.client.structured_generate_sync(
             system_prompt=system_prompt, user_payload=user_payload, response_schema=AgentDecision,
-            model="deepseek-flash", prompt_version="geo-agent-loop.v2",
-            schema_version="geo.agent.decision.v1", max_tokens=max_tokens, db=db,
+            model="deepseek-flash", prompt_version=AGENT_DECISION_PROMPT_VERSION,
+            schema_version=AGENT_DECISION_SCHEMA_VERSION, max_tokens=max_tokens, db=db,
             strict_json=True, structured_output_mode="JSON_SCHEMA",
+            transport_version=AGENT_DECISION_TRANSPORT_VERSION,
+            provider_schema_strict=True,
             allow_json_wrapper_recovery=False,
             non_json_response_recovery=_recover_agent_dsml_tool_call,
             recovery_contract_version=DSML_RECOVERY_CONTRACT,
@@ -192,7 +198,24 @@ def _checkpoint(db: Session, run: AgentExperimentRun, state: dict[str, Any]) -> 
 
 
 def _system_prompt(execution: dict[str, Any]) -> str:
+    model_profile = execution.get("model_profile") or {}
+    if (execution.get("contract_version") != "geo.agent.execution.v3"
+            or model_profile.get("single_decision_prompt_contract")
+            != SINGLE_DECISION_PROMPT_CONTRACT):
+        raise RuntimeError("AGENT_SINGLE_DECISION_PROMPT_CONTRACT_MISMATCH")
     instructions = execution["instructions"]["files"]
+    single_decision_protocol = """# 当前调用协议（高于下方长期业务目标）
+
+当前这一次模型调用只负责选择**现在最有价值的一个动作**，不是一次性输出完整调查计划。
+只返回一个顶层 `AgentDecision` 对象：`TOOL_CALL`、`FINAL_ARTIFACT`、`STOP` 三选一。
+不得返回数组、多个 JSON 对象、后续动作清单或多个工具调用。可以在 `reasoning` 中简要解释
+为什么当前动作最有价值，但不得把未来动作编码为额外决策。服务端执行当前动作并把真实结果
+放入下一轮输入后，你才能决定下一步；不得假设尚未执行的工具已经返回结果。
+
+`TOOL_CALL` 只指定一个白名单工具及其参数；`FINAL_ARTIFACT` 只提交完整产物；`STOP` 只说明
+无法安全继续的明确缺口。三个动作的字段不得混用。即使你已有整体思路，本次也只能提交其中
+一个当前动作。
+"""
     tools = """
 
 服务端工具：get_scope_summary、list_runs、read_answer、list_citations、read_source、
@@ -203,7 +226,8 @@ read_brand_context、read_product_truth、read_monitor_metrics、save_working_no
 的相同 observation_key 当成未读取。FINALIZATION 阶段不得再请求普通探索工具：证据足够时
 提交完整 FINAL_ARTIFACT，证据不足时 STOP 并明确缺口。
 """
-    return "\n\n".join(str(row["content"]) for row in instructions) + tools
+    business_instructions = "\n\n".join(str(row["content"]) for row in instructions)
+    return single_decision_protocol + "\n\n" + business_instructions + tools
 
 
 def _summarize_observation(observation: dict[str, Any]) -> dict[str, Any]:
@@ -269,7 +293,7 @@ def _model_payload(scope: dict[str, Any], history: list[dict[str, Any]], observa
     calls_remaining_including_current = max_model_calls - turn + 1
     phase = "FINALIZATION" if finalization else "INVESTIGATION"
     return {
-        "contract_version": "geo.agent.loop-input.v2", "turn": turn,
+        "contract_version": "geo.agent.loop-input.v3", "turn": turn,
         "execution_identity": execution_identity,
         "execution_phase": phase,
         "budget_progress": {
@@ -299,12 +323,20 @@ def _model_payload(scope: dict[str, Any], history: list[dict[str, Any]], observa
             }),
         },
         "server_validation_feedback": validation_feedback or [],
+        "current_call_contract": {
+            "decision_count": 1,
+            "allowed_action_types": ["TOOL_CALL", "FINAL_ARTIFACT", "STOP"],
+            "future_action_list_allowed": False,
+            "unexecuted_tool_results_must_not_be_assumed": True,
+        },
         "instruction": (
-            "现在是 FINALIZATION：不得调用普通探索工具。证据足够则提交完整 FINAL_ARTIFACT；"
-            "证据不足则 STOP 并列出明确缺口。允许安全的 L3 交付，不得编造事实。"
+            "当前调用只返回一个 AgentDecision。现在是 FINALIZATION：不得调用普通探索工具。"
+            "证据足够则提交完整 FINAL_ARTIFACT；证据不足则 STOP 并列出明确缺口。"
+            "允许安全的 L3 交付，不得编造事实或输出多个备选动作。"
             if finalization else
-            "自主决定下一次必要的白名单工具调用，或提交完整候选 artifact；优先复用 observation_catalog，"
-            "不得重复请求相同 observation_key；证据指针必须来自已返回工具结果。"
+            "当前调用只选择现在最有价值的一个动作：一次白名单工具调用、一个完整候选 artifact，"
+            "或安全停止。不得列出后续工具清单，不得假设未执行工具已有结果。优先复用 "
+            "observation_catalog，不得重复请求相同 observation_key；证据指针必须来自已返回工具结果。"
         ),
     }
 

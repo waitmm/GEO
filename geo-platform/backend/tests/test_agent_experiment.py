@@ -23,7 +23,7 @@ from app.models import (
 from app.core.release_database import get_release_db
 from app.release_main import create_release_app
 from release_test_client import TestClient
-from app.modules.agent_experiment.contracts import AgentArtifact
+from app.modules.agent_experiment.contracts import AgentArtifact, AgentDecision
 from app.modules.agent_experiment.grading import validate_and_grade
 from app.modules.agent_experiment.reconciliation import reconcile_agent_run_usage
 from app.modules.agent_experiment.response_audit import SecureResponseAuditArchive
@@ -112,6 +112,19 @@ def test_dsml_adapter_extracts_only_complete_top_level_agent_decision():
             '<｜｜DSML｜｜ parameter name="unexpected">x</｜｜DSML｜｜ parameter>'
             '</｜｜DSML｜｜ invoke> </｜｜DSML｜｜ calls>',
         ))
+
+
+@pytest.mark.parametrize("candidate", [
+    {"action_type": "TOOL_CALL", "reasoning": "非法工具", "tool_name": "run_shell",
+     "arguments": {}, "artifact": None, "stop_reason": None},
+    {"action_type": "TOOL_CALL", "reasoning": "冲突动作", "tool_name": "read_answer",
+     "arguments": {}, "artifact": None, "stop_reason": "同时停止"},
+    {"action_type": "STOP", "reasoning": "冲突动作", "tool_name": "read_answer",
+     "arguments": {}, "artifact": None, "stop_reason": "停止"},
+])
+def test_agent_decision_rejects_unknown_tools_and_conflicting_actions(candidate):
+    with pytest.raises(Exception):
+        AgentDecision.model_validate(candidate)
 
 
 def test_rejected_response_archive_is_complete_restricted_and_response_only(tmp_path):
@@ -264,7 +277,9 @@ def test_stateless_requests_replay_full_tool_result_and_explicit_observation_cat
     ])
     execute_agent_run(run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False), client=client)
     second = client.payloads[1]["user_payload"]
-    assert second["contract_version"] == "geo.agent.loop-input.v2"
+    assert second["contract_version"] == "geo.agent.loop-input.v3"
+    assert second["current_call_contract"]["decision_count"] == 1
+    assert second["current_call_contract"]["future_action_list_allowed"] is False
     assert second["tool_history"][0]["tool_result"]["data"]["monitor_metrics"]
     assert second["observation_catalog"][0]["tool_name"] == "get_scope_summary"
     assert second["observation_catalog"][0]["status"] == "AVAILABLE"

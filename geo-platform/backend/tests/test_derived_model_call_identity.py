@@ -51,6 +51,7 @@ def test_call_contract_is_complete_and_each_technical_dimension_is_versioned():
         {"transport_version": "semantic_llm.deepseek.responses_json_schema.v999"},
         {"endpoint_base_url": "https://identity.invalid/v1"},
         {"requested_model_alias": "deepseek-v4-pro"},
+        {"provider_schema_strict": True},
     )
     assert all(_contract(client, **variant)["call_identity_hash"] != frozen["call_identity_hash"]
                for variant in variants)

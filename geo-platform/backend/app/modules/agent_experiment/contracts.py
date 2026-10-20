@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -124,26 +124,41 @@ class AgentArtifact(StrictModel):
         return self
 
 
+ToolName = Literal[
+    "get_scope_summary", "list_runs", "read_answer", "list_citations", "read_source",
+    "read_brand_context", "read_product_truth", "read_monitor_metrics", "save_working_note",
+]
+
+
 class AgentDecision(StrictModel):
     action_type: Literal["TOOL_CALL", "FINAL_ARTIFACT", "STOP"]
     reasoning: str = Field(min_length=1)
-    tool_name: str | None = None
-    arguments: dict[str, Any] | None = None
-    artifact: AgentArtifact | None = None
-    stop_reason: str | None = None
+    # All six keys are required in the provider Schema. Non-applicable values
+    # must be explicit nulls, so a partial action cannot be mistaken for a
+    # complete decision before the cross-field validator runs.
+    tool_name: ToolName | None
+    arguments: dict[str, Any] | None
+    artifact: AgentArtifact | None
+    stop_reason: str | None
 
     @model_validator(mode="after")
     def match_action(self):
-        if self.action_type == "TOOL_CALL" and (not self.tool_name or self.arguments is None):
-            raise ValueError("TOOL_CALL 必须提供 tool_name 和 arguments")
-        if self.action_type == "FINAL_ARTIFACT" and self.artifact is None:
-            raise ValueError("FINAL_ARTIFACT 必须提供 artifact")
-        if self.action_type == "STOP" and not self.stop_reason:
-            raise ValueError("STOP 必须提供 stop_reason")
+        if self.action_type == "TOOL_CALL":
+            if not self.tool_name or self.arguments is None:
+                raise ValueError("TOOL_CALL 必须提供 tool_name 和 arguments")
+            if self.artifact is not None or self.stop_reason is not None:
+                raise ValueError("TOOL_CALL 不得同时提交 artifact 或 stop_reason")
+        elif self.action_type == "FINAL_ARTIFACT":
+            if self.artifact is None:
+                raise ValueError("FINAL_ARTIFACT 必须提供 artifact")
+            if self.tool_name is not None or self.arguments is not None or self.stop_reason is not None:
+                raise ValueError("FINAL_ARTIFACT 不得同时请求工具或停止")
+        elif self.action_type == "STOP":
+            if not self.stop_reason:
+                raise ValueError("STOP 必须提供 stop_reason")
+            if self.tool_name is not None or self.arguments is not None or self.artifact is not None:
+                raise ValueError("STOP 不得同时请求工具或提交 artifact")
         return self
 
 
-TOOL_NAMES = frozenset({
-    "get_scope_summary", "list_runs", "read_answer", "list_citations", "read_source",
-    "read_brand_context", "read_product_truth", "read_monitor_metrics", "save_working_note",
-})
+TOOL_NAMES = frozenset(get_args(ToolName))

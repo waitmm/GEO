@@ -44,12 +44,16 @@ def _instruction_bundle() -> dict[str, Any]:
 
 def _execution_profile(*, regenerate_nonce: str | None = None) -> dict[str, Any]:
     return {
-        "contract_version": "geo.agent.execution.v2",
+        "contract_version": "geo.agent.execution.v3",
         "decision_contract": "MODEL_CHOOSES_TOOL_OR_FINAL_EACH_TURN",
         "model_profile": {"provider": "deepseek", "model": "deepseek-flash", "mode": "CACHE_ONLY",
                           "response_recovery": "EXACT_TOP_LEVEL_DECISION_THEN_STRICT_VALIDATE",
+                          "provider_schema_strict": True,
+                          "single_decision_prompt_contract": "geo.agent.single-decision.v2",
+                          "response_transport":
+                              "geo.agent.deepseek.responses-json-schema.single-decision.v1",
                           "tool_transport_adapter": "geo.agent.deepseek-dsml-agent-decision.v2",
-                          "stateless_context_replay": "geo.agent.loop-input.v2",
+                          "stateless_context_replay": "geo.agent.loop-input.v3",
                           "observation_deduplication": "geo.agent.observation-key.v1",
                           "finalization_reserved_calls": 2},
         "instructions": _instruction_bundle(),

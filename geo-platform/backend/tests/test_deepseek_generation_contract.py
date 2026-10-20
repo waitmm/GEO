@@ -1,12 +1,22 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 from app.services.semantic_llm import deepseek
 from app.services.semantic_llm.base import SemanticLLMError
 from app.modules.agent_experiment.contracts import AgentDecision
-from app.modules.agent_experiment.runner import _recover_agent_dsml_tool_call
+from app.modules.agent_experiment.runner import (
+    AGENT_DECISION_PROMPT_VERSION,
+    AGENT_DECISION_SCHEMA_VERSION,
+    AGENT_DECISION_TRANSPORT_VERSION,
+    DeepSeekDecisionClient,
+    _model_payload,
+    _recover_agent_dsml_tool_call,
+    _system_prompt,
+)
+from app.modules.agent_experiment.service import _execution_profile
 
 
 def test_explicit_thinking_mode_changes_cache_identity_without_changing_legacy_identity():
@@ -176,6 +186,145 @@ def test_responses_request_serializes_agent_history_and_observation_catalog(monk
     assert bodies[0]["max_output_tokens"] == 2048
     assert bodies[0]["text"]["format"]["type"] == "json_schema"
     assert bodies[0]["text"]["format"]["name"] == "AgentDecision"
+    assert "strict" not in bodies[0]["text"]["format"]
+
+
+def test_agent_request_uses_strict_single_decision_protocol_without_parallel_flags(monkeypatch):
+    bodies = []
+    reservations = []
+    decision = {
+        "action_type": "STOP", "reasoning": "当前证据不足，安全停止",
+        "tool_name": None, "arguments": None, "artifact": None,
+        "stop_reason": "需要先取得一项真实工具观察",
+    }
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "model": "deepseek-flash", "status": "completed",
+                "output": [{"type": "message", "content": [
+                    {"type": "output_text", "text": json.dumps(decision, ensure_ascii=False)},
+                ]}],
+                "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json):
+            assert url.endswith("/responses")
+            bodies.append(json)
+            return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = DeepSeekDecisionClient(cache_only=False, request_guard=reservations.append)
+    monkeypatch.setattr(client.client.settings, "deepseek_api_key", "test-key")
+    scope = {
+        "identity": {"project_id": 1, "prompt_id": 1, "run_ids": ["1"]},
+        "prompt": {"text": "抖音跳转链接"}, "monitor_metrics": {"valid_answer_count": 1},
+        "source_snapshots": [], "product_truth": {"set_hash": "truth"},
+        "brand_context": {"mode": "EMPTY"},
+    }
+    payload = _model_payload(
+        scope, [], [], 1, max_model_calls=10, finalization=False,
+        consecutive_no_progress=0, execution_identity="execution-hash",
+    )
+    output, usage = client.decide(
+        db=None, system_prompt=_system_prompt(_execution_profile()),
+        user_payload=payload, max_tokens=2048,
+    )
+
+    assert output == decision and usage["input_tokens"] == 100
+    assert len(bodies) == len(reservations) == 1
+    body = bodies[0]
+    assert body["instructions"].startswith("# 当前调用协议（高于下方长期业务目标）")
+    assert "当前这一次模型调用只负责选择**现在最有价值的一个动作**" in body["instructions"]
+    assert "developer" not in body and "messages" not in body
+    assert "parallel_tool_calls" not in body and "max_tool_calls" not in body
+    assert body["text"]["format"]["strict"] is True
+    schema = body["text"]["format"]["schema"]
+    assert schema["type"] == "object" and schema["additionalProperties"] is False
+    assert set(schema["required"]) == {
+        "action_type", "reasoning", "tool_name", "arguments", "artifact", "stop_reason",
+    }
+    assert schema["properties"]["action_type"]["enum"] == ["TOOL_CALL", "FINAL_ARTIFACT", "STOP"]
+    assert "run_shell" not in json.dumps(schema)
+    sent_payload = json.loads(body["input"])
+    assert sent_payload["contract_version"] == "geo.agent.loop-input.v3"
+    assert sent_payload["current_call_contract"] == {
+        "decision_count": 1,
+        "allowed_action_types": ["TOOL_CALL", "FINAL_ARTIFACT", "STOP"],
+        "future_action_list_allowed": False,
+        "unexecuted_tool_results_must_not_be_assumed": True,
+    }
+    identity = reservations[0]
+    assert identity["prompt_version"] == AGENT_DECISION_PROMPT_VERSION
+    assert identity["schema_version"] == AGENT_DECISION_SCHEMA_VERSION
+    assert identity["transport_version"] == AGENT_DECISION_TRANSPORT_VERSION
+    assert identity["generation_parameters"]["provider_schema_strict"] is True
+
+
+def test_single_decision_prompt_rejects_legacy_execution_identity_before_transport():
+    legacy = _execution_profile()
+    legacy["contract_version"] = "geo.agent.execution.v2"
+    legacy["model_profile"].pop("single_decision_prompt_contract")
+    with pytest.raises(RuntimeError, match="AGENT_SINGLE_DECISION_PROMPT_CONTRACT_MISMATCH"):
+        _system_prompt(legacy)
+
+
+def test_fifth_real_batched_decision_response_is_rejected_whole(monkeypatch):
+    output_text = (
+        Path(__file__).parent / "fixtures" / "deepseek_agent_validation_5_output.txt"
+    ).read_text(encoding="utf-8").rstrip("\n")
+    assert hashlib.sha256(output_text.encode()).hexdigest() == (
+        "f9083dad8a57d7d75684bbd854b7c16557e82ac63440128078b1fbcfcf3ebe62"
+    )
+    assert len(output_text.splitlines()) == 8
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "model": "deepseek-flash", "status": "completed",
+                "output": [{"type": "message", "status": "completed", "content": [
+                    {"type": "output_text", "text": output_text},
+                ]}],
+                "usage": {"input_tokens": 5307, "output_tokens": 752, "total_tokens": 6059},
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json): return FakeResponse()
+
+    audit = []
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(max_attempts=1, response_audit_sink=audit.append)
+    monkeypatch.setattr(client.settings, "deepseek_api_key", "test-key")
+    with pytest.raises(SemanticLLMError) as rejected:
+        client.structured_generate_sync(
+            system_prompt="Return exactly one AgentDecision.", user_payload={"turn": 1},
+            response_schema=AgentDecision, model="deepseek-flash",
+            prompt_version=AGENT_DECISION_PROMPT_VERSION,
+            schema_version=AGENT_DECISION_SCHEMA_VERSION,
+            max_tokens=8192, strict_json=True, structured_output_mode="JSON_SCHEMA",
+            transport_version=AGENT_DECISION_TRANSPORT_VERSION,
+            provider_schema_strict=True, allow_json_wrapper_recovery=False,
+            non_json_response_recovery=_recover_agent_dsml_tool_call,
+            response_validator=lambda value: AgentDecision.model_validate(value).model_dump(mode="json"),
+        )
+    assert getattr(rejected.value, "code", "") == "FAILED_PARSE"
+    assert audit[-1]["validation_status"] == "REJECTED"
+    assert audit[-1]["raw_response_hash"] == hashlib.sha256(output_text.encode()).hexdigest()
 
 
 def test_responses_native_function_call_yields_one_complete_decision():

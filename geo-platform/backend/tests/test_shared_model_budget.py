@@ -61,6 +61,16 @@ def test_authorized_batch_is_exact_and_pricing_must_be_current(tmp_path):
                    conservative_cny_per_million_tokens=9.99, today=TODAY)
 
 
+def test_existing_authorization_fail_closes_for_unapproved_plain_text_transport(tmp_path):
+    path = ledger(tmp_path)
+    request = identity("evidence-pack-text")
+    request["transport_kind"] = "RESPONSES_TEXT"
+    with pytest.raises(SharedBudgetDenied, match="MODEL_OR_TRANSPORT_NOT_AUTHORIZED"):
+        reserve(path, lane="AGENT_EXPERIMENT", operation_id="evidence-pack-offline",
+                request_id="evidence-pack-text-1", identity=request)
+    assert summary(path)["used_requests"] == 0
+
+
 def test_success_settles_to_actual_usage_and_restart_keeps_state(tmp_path):
     path = ledger(tmp_path)
     reserve(path, lane="AGENT_EXPERIMENT", operation_id="agent-1", request_id="request-1",

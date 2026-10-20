@@ -544,7 +544,38 @@ def _account_external_response(db: Session, run: AgentExperimentRun, event: dict
         })
         usage: dict[str, int] = {}
     elif validation_status in {"ACCEPTED", "REJECTED"}:
-        usage = _complete_provider_usage(event)
+        try:
+            usage = _complete_provider_usage(event)
+        except RuntimeError:
+            if validation_status != "REJECTED" or event.get("http_status") is None:
+                raise
+            # A definite provider HTTP rejection has no billable usage to
+            # settle. Preserve the full conservative hold without presenting
+            # it as actual tokens or allowing automatic replay.
+            reserved_cost = float(progress.get("external_request_reserved_cost_cny", 0.0))
+            run.model_call_count += 1
+            run.progress_json = _canonical({
+                **progress,
+                "external_request_state": "PROVIDER_REJECTED_USAGE_UNKNOWN",
+                "provider_http_status": int(event["http_status"]),
+                "provider_error_category": event.get("provider_error_category"),
+                "accounted_external_request_input_hashes": [*accounted, input_hash],
+            })
+            run.revision += 1
+            db.commit()
+            _append_event(db, run, "MODEL_REQUEST_ACCOUNTED", {
+                "request_input_hash": input_hash,
+                "validation_status": validation_status,
+                "usage": {},
+                "response_model": event.get("response_model"),
+                "raw_response_hash": event.get("raw_response_hash"),
+                "rejection_code": event.get("rejection_code"),
+                "http_status": event.get("http_status"),
+                "provider_error_category": event.get("provider_error_category"),
+                "local_external_request_state": "PROVIDER_REJECTED_USAGE_UNKNOWN",
+                "reserved_cost_cny": reserved_cost,
+            })
+            return
         _settle_local_reservation(run, usage)
         progress = loads(run.progress_json, {})
         authorization = loads(run.authorization_json, {})
@@ -584,6 +615,20 @@ def _response_audit_sink(db: Session, run: AgentExperimentRun, shared_budget_hoo
 
 def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | None = None,
                       shared_budget_hooks=None, response_audit_archive=None) -> None:
+    probe: Session = session_factory()
+    try:
+        candidate = probe.query(AgentExperimentRun).filter_by(run_id=run_id).one_or_none()
+        execution = loads(candidate.agent_execution_json, {}) if candidate else {}
+    finally:
+        probe.close()
+    if execution.get("contract_version") == "geo.evidence-pack.execution.v1":
+        from .evidence_pack import execute_evidence_pack_run
+        execute_evidence_pack_run(
+            run_id, session_factory=session_factory, client=client,
+            shared_budget_hooks=shared_budget_hooks,
+            response_audit_archive=response_audit_archive,
+        )
+        return
     db: Session = session_factory()
     try:
         run = db.query(AgentExperimentRun).filter_by(run_id=run_id).one_or_none()

@@ -342,6 +342,8 @@ class SharedBudgetHooks:
             "raw_response_hash": event.get("raw_response_hash"),
             "response_excerpt": event.get("response_excerpt"),
             "response_length": event.get("response_length"),
+            "http_status": event.get("http_status"),
+            "provider_error_category": event.get("provider_error_category"),
             "token_usage": event.get("token_usage") or {},
             "rejection_code": event.get("rejection_code"),
         })

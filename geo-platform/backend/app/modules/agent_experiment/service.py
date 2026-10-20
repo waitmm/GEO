@@ -24,6 +24,9 @@ from .scope import freeze_scope
 
 DEFAULT_BUDGET = {"max_model_calls": 10, "max_tool_calls": 12, "max_total_tokens": 100_000,
                   "max_elapsed_seconds": 300, "max_repairs": 1, "max_cost_cny": 5.0}
+EVIDENCE_PACK_BUDGET = {"max_model_calls": 1, "max_tool_calls": 0, "max_total_tokens": 300_000,
+                        "max_elapsed_seconds": 300, "max_repairs": 0, "max_cost_cny": 5.0}
+EXECUTION_MODES = frozenset({"TOOL_LOOP", "EVIDENCE_PACK"})
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "PARTIAL", "NEEDS_INPUT", "BLOCKED", "FAILED", "CANCELLED"})
 
 
@@ -42,9 +45,29 @@ def _instruction_bundle() -> dict[str, Any]:
             "bundle_hash": digest([{key: row[key] for key in ("name", "content_hash")} for row in files])}
 
 
-def _execution_profile(*, regenerate_nonce: str | None = None) -> dict[str, Any]:
+def _execution_profile(*, regenerate_nonce: str | None = None,
+                       execution_mode: str = "TOOL_LOOP") -> dict[str, Any]:
+    if execution_mode not in EXECUTION_MODES:
+        raise HTTPException(422, {"code": "AGENT_EXECUTION_MODE_INVALID"})
+    if execution_mode == "EVIDENCE_PACK":
+        return {
+            "contract_version": "geo.evidence-pack.execution.v1",
+            "execution_mode": "EVIDENCE_PACK",
+            "decision_contract": "ONE_MARKDOWN_SYNTHESIS_NO_TOOLS",
+            "model_profile": {
+                "provider": "deepseek", "model": "deepseek-flash", "mode": "CACHE_ONLY",
+                "prompt_version": "geo-evidence-pack-synthesis.v1",
+                "response_transport": "geo.deepseek.responses-text.v1",
+                "max_model_calls": 1, "automatic_retries": 0,
+            },
+            "evidence_pack_contract": "geo.evidence-pack.v1",
+            "result_contract": "geo.evidence-pack.markdown-result.v1",
+            "tool_allowlist": [],
+            "regenerate_nonce": regenerate_nonce,
+        }
     return {
         "contract_version": "geo.agent.execution.v3",
+        "execution_mode": "TOOL_LOOP",
         "decision_contract": "MODEL_CHOOSES_TOOL_OR_FINAL_EACH_TURN",
         "model_profile": {"provider": "deepseek", "model": "deepseek-flash", "mode": "CACHE_ONLY",
                           "response_recovery": "EXACT_TOP_LEVEL_DECISION_THEN_STRICT_VALIDATE",
@@ -69,12 +92,16 @@ def create_agent_run(
     citation_manifest_hash: str | None = None, completion_manifest_id: str | None = None,
     completion_manifest_hash: str | None = None, brand_context_version_id: str | None = None,
     regenerate_nonce: str | None = None, budget: dict[str, Any] | None = None,
+    execution_mode: str = "TOOL_LOOP",
 ) -> tuple[AgentExperimentRun, bool]:
+    if execution_mode not in EXECUTION_MODES:
+        raise HTTPException(422, {"code": "AGENT_EXECUTION_MODE_INVALID"})
     request_identity = {
         "project_id": project_id, "prompt_id": prompt_id, "analysis_id": analysis_id, "context_id": context_id,
         "citation_manifest_id": citation_manifest_id, "citation_manifest_hash": citation_manifest_hash,
         "completion_manifest_id": completion_manifest_id, "completion_manifest_hash": completion_manifest_hash,
         "brand_context_version_id": brand_context_version_id, "regenerate_nonce": regenerate_nonce,
+        "execution_mode": execution_mode,
     }
     request_hash = digest(request_identity)
     existing = db.query(AgentExperimentRun).filter_by(project_id=project_id, idempotency_key=idempotency_key).one_or_none()
@@ -83,8 +110,15 @@ def create_agent_run(
             raise HTTPException(409, {"code": "AGENT_IDEMPOTENCY_MISMATCH", "message": "幂等键已用于不同实验输入"})
         return existing, False
 
-    execution = _execution_profile(regenerate_nonce=regenerate_nonce)
-    effective_budget = {**DEFAULT_BUDGET, **(budget or {})}
+    execution = _execution_profile(regenerate_nonce=regenerate_nonce, execution_mode=execution_mode)
+    defaults = EVIDENCE_PACK_BUDGET if execution_mode == "EVIDENCE_PACK" else DEFAULT_BUDGET
+    effective_budget = {**defaults, **(budget or {})}
+    if execution_mode == "EVIDENCE_PACK" and (
+        effective_budget["max_model_calls"] != 1
+        or effective_budget["max_tool_calls"] != 0
+        or effective_budget["max_repairs"] != 0
+    ):
+        raise HTTPException(422, {"code": "EVIDENCE_PACK_SINGLE_CALL_BUDGET_REQUIRED"})
     for key, upper in (("max_model_calls", 12), ("max_tool_calls", 30), ("max_total_tokens", 300_000),
                        ("max_elapsed_seconds", 900), ("max_repairs", 2)):
         value = effective_budget.get(key)
@@ -163,11 +197,14 @@ def create_agent_run(
 
 
 def run_view(row: AgentExperimentRun, *, include_scope: bool = False) -> dict[str, Any]:
+    execution = loads(row.agent_execution_json, {})
     value = {
         "run_id": row.run_id, "project_id": row.project_id, "prompt_id": row.prompt_id,
         "analysis_id": row.analysis_id, "context_id": row.context_id,
         "input_scope_hash": row.input_scope_hash, "agent_execution_hash": row.agent_execution_hash,
-        "qualification_hash": row.qualification_hash, "status": row.status, "revision": row.revision,
+        "qualification_hash": row.qualification_hash,
+        "execution_mode": execution.get("execution_mode", "TOOL_LOOP"),
+        "status": row.status, "revision": row.revision,
         "blocker": ({"code": row.blocker_code, "detail": row.blocker_detail} if row.blocker_code else None),
         "usage": {"model_calls": row.model_call_count, "tool_calls": row.tool_call_count,
                   "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "cost_cny": row.cost_cny,

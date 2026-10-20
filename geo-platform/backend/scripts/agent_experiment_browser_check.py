@@ -44,11 +44,12 @@ def main() -> None:
 
     from app.core.release_database import _set_sqlite_pragma
     from app.core.release_sqlite import get_release_sqlite_dbapi
-    from app.models import BrowserMonitorRun, SinglePromptAnalysisContext
+    from app.models import SinglePromptAnalysisContext
+    from app.modules.agent_experiment.evidence_pack import build_evidence_pack
     from app.modules.agent_experiment.runner import execute_agent_run
     from app.modules.agent_experiment.service import create_agent_run
     from app.services.serialization import loads
-    from test_agent_experiment import ScriptedClient, _artifact
+    from test_agent_experiment import ScriptedEvidencePackClient, _evidence_markdown
     from test_release_first_slice import _seed_frozen_analysis
 
     engine = create_engine(env["GEO_RELEASE_DATABASE_URL"], module=get_release_sqlite_dbapi())
@@ -57,20 +58,13 @@ def main() -> None:
     with Session() as db:
         analysis = _seed_frozen_analysis(db, reference_urls=[])
         context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis.analysis_id).one()
-        monitor_run = db.query(BrowserMonitorRun).filter_by(task_id=analysis.task_id).one()
         agent, _ = create_agent_run(
             db, project_id=1, prompt_id=44, analysis_id=analysis.analysis_id,
             context_id=context.context_id, idempotency_key="agent-browser-seed-0001", requested_by="browser-qa",
+            execution_mode="EVIDENCE_PACK",
         )
-        answer = loads(agent.input_scope_json, {})["runs"][0]["answer_text"]
-        scripted = ScriptedClient([
-            {"action_type": "TOOL_CALL", "reasoning": "读取冻结回答", "tool_name": "read_answer",
-             "arguments": {"run_id": str(monitor_run.id), "start": 0, "end": len(answer)},
-             "artifact": None, "stop_reason": None},
-            {"action_type": "FINAL_ARTIFACT", "reasoning": "形成证据限定的操作稿", "tool_name": None,
-             "arguments": None, "artifact": _artifact(run_id=monitor_run.id, answer_end=len(answer)),
-             "stop_reason": None},
-        ])
+        pack = build_evidence_pack(loads(agent.input_scope_json, {}))
+        scripted = ScriptedEvidencePackClient(_evidence_markdown(pack))
         agent_id = agent.run_id
         analysis_id = analysis.analysis_id
     execute_agent_run(agent_id, session_factory=Session, client=scripted)
@@ -113,7 +107,8 @@ def main() -> None:
             page.get_by_text("Agent 实验", exact=True).click()
             expect(page.get_by_role("region", name="GEO Agent 实验")).to_be_visible()
             expect(page.get_by_text("独立实验线路", exact=True)).to_be_visible()
-            expect(page.get_by_text("Agent 结果", exact=True)).to_be_visible(timeout=15000)
+            expect(page.get_by_text("冻结证据包（推荐）", exact=True)).to_be_visible(timeout=15000)
+            expect(page.get_by_text("实验结果", exact=True)).to_be_visible(timeout=15000)
             expect(page.get_by_text(
                 "服务端校验 PASS · 证据等级 L3_ACTIONABLE_WITHOUT_FACT_CLAIMS", exact=True,
             )).to_be_visible()
@@ -123,8 +118,11 @@ def main() -> None:
             page.screenshot(path=str(out / "agent-desktop.png"), full_page=True)
             report["screenshots"].append("agent-desktop.png")
 
+            page.get_by_text("证据包覆盖、来源与限制", exact=True).click()
+            expect(page.get_by_text("Evidence Pack hash", exact=True)).to_be_visible()
             page.get_by_text("运行 Trace（", exact=False).click()
-            expect(page.get_by_text("MODEL_DECISION", exact=False)).to_have_count(2)
+            expect(page.get_by_text("EVIDENCE_PACK_FROZEN", exact=False)).to_be_visible()
+            expect(page.get_by_text("EVIDENCE_PACK_OUTPUT_VALIDATED", exact=False)).to_be_visible()
             page.get_by_text("同输入 Workflow 对照（", exact=False).click()
             expect(page.get_by_text("该视图只比较同一冻结输入", exact=False)).to_be_visible()
             page.screenshot(path=str(out / "agent-trace-compare.png"), full_page=True)

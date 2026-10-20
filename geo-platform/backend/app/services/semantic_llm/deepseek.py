@@ -33,6 +33,7 @@ logger = logging.getLogger("semantic_llm.deepseek")
 
 StructuredOutputMode = Literal["JSON_SCHEMA", "STRICT_TOOL", "JSON_OBJECT_FALLBACK"]
 DEEPSEEK_JSON_SCHEMA_TRANSPORT_VERSION = "semantic_llm.deepseek.responses_json_schema.v2"
+DEEPSEEK_TEXT_TRANSPORT_VERSION = "semantic_llm.deepseek.responses_text.v1"
 DEEPSEEK_CHAT_JSON_TRANSPORT_VERSION = "semantic_llm.deepseek.chat_json_object.v1"
 DERIVED_MODEL_CALL_IDENTITY_VERSION = "derived_model_call_identity.v1"
 DERIVED_MODEL_CACHE_IDENTITY_VERSION = "derived_model_call_cache.v1"
@@ -469,11 +470,21 @@ class DeepSeekClient(SemanticLLMClient):
                     resp = client.post(url, headers=headers, json=body)
                 response_text = resp.text
                 if resp.status_code != 200:
-                    # 响应体是 API 错误详情（不含 key），截断后透传，便于调试
-                    detail = resp.text[:300]
-                    raise SemanticLLMError(
-                        f"DeepSeek HTTP {resp.status_code} (model={effective_request_model}): {detail}"
+                    error = SemanticLLMError(
+                        f"DeepSeek HTTP {resp.status_code} (model={effective_request_model})"
                     )
+                    error.code = "PROVIDER_HTTP_ERROR"
+                    error.http_status = resp.status_code
+                    error.provider_error_category = "HTTP_ERROR"
+                    try:
+                        provider_error = resp.json().get("error") or {}
+                        if isinstance(provider_error, dict):
+                            error.provider_error_category = str(
+                                provider_error.get("code") or provider_error.get("type") or "HTTP_ERROR"
+                            )[:120]
+                    except Exception:
+                        pass
+                    raise error
                 data = resp.json()
                 response_data = data
                 response_model = str(data.get("model") or "")
@@ -612,6 +623,8 @@ class DeepSeekClient(SemanticLLMClient):
                         "provider_output_kind": provider_output_kind,
                         "raw_provider_response": response_data,
                         "raw_http_response": response_text if response_data is None else None,
+                        "http_status": getattr(e, "http_status", None),
+                        "provider_error_category": getattr(e, "provider_error_category", None),
                         "structured_response_text": content,
                         "response_excerpt": _audit_excerpt(content),
                         "response_length": len(audited_response_text),
@@ -669,6 +682,245 @@ class DeepSeekClient(SemanticLLMClient):
                 token_usage=total_tokens,
             )
         return parsed
+
+    def text_generate_sync(
+        self,
+        *,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        model: str | None = None,
+        prompt_version: str,
+        schema_version: str = "plain-text.v1",
+        max_tokens: int = 8192,
+        db=None,
+        transport_version: str = DEEPSEEK_TEXT_TRANSPORT_VERSION,
+    ) -> str:
+        """Generate one complete Responses API text artifact without JSON mode.
+
+        This transport exists for the isolated evidence-pack experiment. It
+        deliberately has no parser recovery and callers set max_attempts=1.
+        """
+        self._assert_budget(db)
+        requested_model_alias = model or self.settings.deepseek_model
+        effective_request_model = (
+            "deepseek-flash" if requested_model_alias in {
+                "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+            } else requested_model_alias
+        )
+        effective_max_tokens = max(max_tokens, 2048)
+        endpoint = f"{self.settings.deepseek_base_url.rstrip('/')}/responses"
+        prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+        contract = {
+            "contract_version": DERIVED_MODEL_CALL_IDENTITY_VERSION,
+            "provider": self.provider,
+            "endpoint": endpoint,
+            "endpoint_path": "/responses",
+            "requested_model_alias": requested_model_alias,
+            "effective_request_model": effective_request_model,
+            "transport_kind": "RESPONSES_TEXT",
+            "transport_version": transport_version,
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "schema_version": schema_version,
+            "provider_schema_hash": "",
+            "generation_parameters": {
+                "temperature": 0.0, "max_output_tokens": effective_max_tokens,
+                "thinking_mode": self.thinking_mode,
+            },
+            "input_scope_contract": "canonical_user_payload_sha256.v1",
+            "cache_identity_version": DERIVED_MODEL_CACHE_IDENTITY_VERSION,
+        }
+        contract["call_identity_hash"] = _canonical_hash(contract)
+        input_scope_hash = _canonical_hash(user_payload)
+        input_key = _canonical_hash({
+            "cache_identity_version": DERIVED_MODEL_CACHE_IDENTITY_VERSION,
+            "call_identity_hash": contract["call_identity_hash"],
+            "input_scope_hash": input_scope_hash,
+        })
+        identity = {
+            "provider": self.provider,
+            "requested_model_alias": requested_model_alias,
+            "effective_request_model": effective_request_model,
+            "prompt_version": prompt_version,
+            "schema_version": schema_version,
+            "input_hash": input_key,
+            "structured_output_mode": "TEXT",
+            "provider_schema_hash": "",
+            "transport_version": transport_version,
+            "derived_call_identity_contract_version": DERIVED_MODEL_CALL_IDENTITY_VERSION,
+            "call_identity_hash": contract["call_identity_hash"],
+            "endpoint": endpoint,
+            "endpoint_path": "/responses",
+            "transport_kind": "RESPONSES_TEXT",
+            "prompt_hash": prompt_hash,
+            "generation_parameters": contract["generation_parameters"],
+            "generation_parameters_hash": _canonical_hash(contract["generation_parameters"]),
+            "input_scope_contract": contract["input_scope_contract"],
+            "input_scope_hash": input_scope_hash,
+            "cache_identity_version": DERIVED_MODEL_CACHE_IDENTITY_VERSION,
+        }
+        if db is not None:
+            cached = LLMCallCache.get(
+                db, provider=self.provider, model=effective_request_model,
+                prompt_version=prompt_version, schema_version=schema_version,
+                input_hash=input_key,
+            )
+            if cached is not None:
+                parsed = cached.get("parsed_payload") or {}
+                markdown = parsed.get("markdown") if isinstance(parsed, dict) else None
+                if not isinstance(markdown, str) or not markdown.strip():
+                    raise _response_error(
+                        "文本缓存不是完整 Markdown", code="CACHE_REJECTED_BY_VALIDATION",
+                        source="LLM_CALL_CACHE", content="",
+                    )
+                self._record_response_audit({
+                    "request_identity": identity, "response_source": "LLM_CALL_CACHE",
+                    "validation_status": "ACCEPTED", "structured_response": parsed,
+                    "raw_response_hash": str(cached.get("raw_response_hash") or ""),
+                    "token_usage": int(cached.get("token_usage") or 0),
+                })
+                self._calls += 1
+                self._tokens += int(cached.get("token_usage") or 0)
+                return markdown
+        if self.cache_only:
+            raise _response_error(
+                "当前证据包实验仅允许兼容缓存，但没有可消费缓存",
+                code="CACHE_MISS", source="LLM_CALL_CACHE", content="",
+            )
+
+        body = {
+            "model": effective_request_model,
+            "instructions": system_prompt,
+            "input": json.dumps(user_payload, ensure_ascii=False),
+            "temperature": 0.0,
+            "max_output_tokens": effective_max_tokens,
+        }
+        if self.thinking_mode:
+            body["reasoning"] = {
+                "effort": "none" if self.thinking_mode == "disabled" else "high"
+            }
+        if self.request_guard is not None:
+            self.request_guard({
+                **identity,
+                "provider_payload_hash": _canonical_hash(body),
+                "input_token_upper_bound": len(json.dumps(body, ensure_ascii=False).encode("utf-8")) + 4096,
+                "max_output_tokens": effective_max_tokens,
+                "attempt": 1,
+            })
+        response_data: dict[str, Any] | None = None
+        response_text = ""
+        content = ""
+        usage: dict[str, Any] = {}
+        finish_reason = "unknown"
+        try:
+            self._external_calls += 1
+            with httpx.Client(timeout=self.settings.deepseek_timeout_seconds) as client:
+                response = client.post(
+                    endpoint,
+                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                    json=body,
+                )
+            response_text = response.text
+            if response.status_code != 200:
+                error = SemanticLLMError(
+                    f"DeepSeek HTTP {response.status_code} (model={effective_request_model})"
+                )
+                error.code = "PROVIDER_HTTP_ERROR"
+                error.http_status = response.status_code
+                error.provider_error_category = "HTTP_ERROR"
+                try:
+                    provider_error = response.json().get("error") or {}
+                    if isinstance(provider_error, dict):
+                        error.provider_error_category = str(
+                            provider_error.get("code") or provider_error.get("type") or "HTTP_ERROR"
+                        )[:120]
+                except Exception:
+                    pass
+                raise error
+            response_data = response.json()
+            response_model = str(response_data.get("model") or "")
+            if response_model != effective_request_model:
+                raise _provider_protocol_error(
+                    "DeepSeek response.model 与冻结 effective request model 不一致",
+                    "PROVIDER_MODEL_IDENTITY_MISMATCH",
+                )
+            finish_reason = str(response_data.get("status") or "unknown")
+            if finish_reason != "completed":
+                raise _response_error(
+                    "模型文本响应未完整完成", source="EXTERNAL_LLM",
+                    content="", finish_reason=finish_reason,
+                )
+            content, candidate, output_kind = _responses_output_candidate(
+                response_data, expected_function_name="EvidencePackMarkdown",
+            )
+            if candidate is not None or output_kind != "MESSAGE_OUTPUT_TEXT" or not content.strip():
+                raise _provider_protocol_error(
+                    "证据包生成必须返回唯一非空 output_text",
+                    "PROVIDER_TEXT_OUTPUT_INVALID",
+                )
+            usage = response_data.get("usage") or {}
+            raw_input = usage.get("input_tokens", usage.get("prompt_tokens"))
+            raw_output = usage.get("output_tokens", usage.get("completion_tokens"))
+            raw_total = usage.get("total_tokens")
+            if not all(isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                       for value in (raw_input, raw_output, raw_total)):
+                raise _provider_protocol_error("DeepSeek usage 缺失", "PROVIDER_USAGE_INCOMPLETE")
+            input_tokens, output_tokens, total_tokens = raw_input, raw_output, raw_total
+            if total_tokens < input_tokens + output_tokens:
+                raise _provider_protocol_error("DeepSeek usage 非法", "PROVIDER_USAGE_INVALID")
+            self._external_tokens += total_tokens
+            self._external_input_tokens += input_tokens
+            self._external_output_tokens += output_tokens
+            self._record_response_audit({
+                "request_identity": identity, "response_source": "EXTERNAL_LLM",
+                "validation_status": "ACCEPTED", "finish_reason": finish_reason,
+                "response_model": response_model, "provider_output_kind": output_kind,
+                "raw_provider_response": response_data,
+                "raw_response_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "token_usage": {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                                "total_tokens": total_tokens},
+            })
+        except SemanticLLMError as error:
+            audited = (json.dumps(response_data, ensure_ascii=False, sort_keys=True)
+                       if response_data is not None else response_text)
+            self._record_response_audit({
+                "request_identity": identity, "response_source": "EXTERNAL_LLM",
+                "validation_status": "REJECTED", "finish_reason": finish_reason,
+                "response_model": str((response_data or {}).get("model") or ""),
+                "raw_provider_response": response_data,
+                "raw_http_response": response_text if response_data is None else None,
+                "structured_response_text": content,
+                "response_excerpt": _audit_excerpt(content),
+                "response_length": len(audited),
+                "raw_response_hash": hashlib.sha256(audited.encode("utf-8")).hexdigest(),
+                "token_usage": usage,
+                "rejection_code": str(getattr(error, "code", "SEMANTIC_LLM_ERROR")),
+                "rejection_reason": str(error),
+                "http_status": getattr(error, "http_status", None),
+                "provider_error_category": getattr(error, "provider_error_category", None),
+            })
+            raise
+        except httpx.HTTPError as error:
+            self._record_response_audit({
+                "request_identity": identity, "response_source": "EXTERNAL_LLM",
+                "validation_status": "TRANSPORT_FAILED", "raw_provider_response": None,
+                "raw_response_hash": hashlib.sha256(b"").hexdigest(), "token_usage": {},
+                "rejection_code": error.__class__.__name__, "rejection_reason": str(error),
+            })
+            raise SemanticLLMError(
+                f"DeepSeek 网络错误（尝试1次后）: {error.__class__.__name__}"
+            ) from error
+        self._calls += 1
+        self._tokens += total_tokens
+        if db is not None:
+            LLMCallCache.put(
+                db, provider=self.provider, model=effective_request_model,
+                prompt_version=prompt_version, schema_version=schema_version,
+                input_hash=input_key,
+                raw_response_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                parsed_payload={"markdown": content}, token_usage=total_tokens,
+            )
+        return content
 
     @property
     def call_count(self) -> int:

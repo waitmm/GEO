@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App as AntApp, Button, Card, Collapse, Descriptions, InputNumber, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, App as AntApp, Button, Card, Collapse, Descriptions, InputNumber, Segmented, Space, Spin, Table, Tag, Typography } from "antd";
 import { Copy, Download, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
@@ -7,6 +7,7 @@ import { BrandContextSelect } from "./BrandContextSelect";
 type AgentRun = {
   run_id: string; project_id: number; prompt_id: number; analysis_id: string; context_id: string;
   input_scope_hash: string; agent_execution_hash: string; qualification_hash: string;
+  execution_mode: "TOOL_LOOP" | "EVIDENCE_PACK";
   status: string; revision: number; blocker?: { code: string; detail: string } | null;
   usage: { model_calls: number; tool_calls: number; input_tokens: number; output_tokens: number; cost_cny: number;
     reserved_requests: number; reserved_tokens: number; reserved_cost_cny: number };
@@ -34,6 +35,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   const [detail, setDetail] = useState<AgentRun>();
   const [comparison, setComparison] = useState<any>();
   const [contextVersion, setContextVersion] = useState<string>();
+  const [executionMode, setExecutionMode] = useState<"TOOL_LOOP" | "EVIDENCE_PACK">("EVIDENCE_PACK");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -77,6 +79,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
         method: "POST", body: JSON.stringify({
           project_id: projectId, prompt_id: promptId, context_id: contextId,
           idempotency_key: `agent:${crypto.randomUUID()}`, brand_context_version_id: contextVersion || null,
+          execution_mode: executionMode,
           completion_manifest_id: completion?.manifest_id || null,
           completion_manifest_hash: completion?.payload_hash || null,
         }),
@@ -148,10 +151,12 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
 
   return <section aria-label="GEO Agent 实验">
     <Alert type="info" showIcon message="独立实验线路"
-      description="与正式 Workflow 共用同一冻结 Analysis / Run 输入，但只写 Agent 实验表；模型不能批准 Truth、Review、WAIVE 或发布。默认只读缓存，真实模型调用需单独授权。" />
+      description="与正式 Workflow 共用同一冻结 Analysis / Run 输入，但只写实验表；推荐的冻结证据包路线只做一次 Markdown 综合生成，不提供调查工具。模型不能批准 Truth、Review、WAIVE 或发布。默认只读缓存，真实模型调用需单独授权。" />
     <Card size="small" style={{ marginTop: 12 }} title="启动新的 Agent 对照 Run"
       extra={<Button aria-label="刷新 Agent 实验" icon={<RefreshCw size={16} />} onClick={() => void refresh()} />}>
       <Space direction="vertical" style={{ width: "100%" }}>
+        <Segmented value={executionMode} onChange={value => setExecutionMode(value as "TOOL_LOOP" | "EVIDENCE_PACK")}
+          options={[{ label: "冻结证据包（推荐）", value: "EVIDENCE_PACK" }, { label: "历史工具循环", value: "TOOL_LOOP" }]} />
         <BrandContextSelect projectId={projectId} value={contextVersion} onChange={setContextVersion} />
         <Typography.Text type="secondary">固定 Context：{contextId}；正文版本：{completion ? `V${completion.version_number}` : "未选择"}</Typography.Text>
         <Button type="primary" icon={<Play size={16} />} loading={busy} onClick={() => void start()}>启动 Agent 实验</Button>
@@ -165,10 +170,11 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           rowSelection={{ type: "radio", selectedRowKeys: selectedId ? [selectedId] : [],
             onChange: keys => { setSelectedId(String(keys[0])); setDetail(undefined); } }}
           columns={[{ title: "Agent Run", dataIndex: "run_id", render: value => <Typography.Text code>{String(value).slice(-12)}</Typography.Text> },
+            { title: "执行路线", dataIndex: "execution_mode", render: value => value === "EVIDENCE_PACK" ? "冻结证据包" : "工具循环" },
             { title: "状态", dataIndex: "status", render: value => <Tag>{statusLabel[value] || value}</Tag> },
             { title: "模型 / 工具", render: (_, row) => `${row.usage.model_calls} / ${row.usage.tool_calls}` },
             { title: "费用", render: (_, row) => `¥${row.usage.cost_cny.toFixed(4)}` }]} />
-        {active && <Card style={{ marginTop: 12 }} title={<Space><span>Agent 结果</span><Tag>{statusLabel[active.status] || active.status}</Tag></Space>}>
+        {active && <Card style={{ marginTop: 12 }} title={<Space><span>实验结果</span><Tag>{active.execution_mode === "EVIDENCE_PACK" ? "冻结证据包" : "工具循环"}</Tag><Tag>{statusLabel[active.status] || active.status}</Tag></Space>}>
           {active.blocker && <Alert type={active.status === "WAITING_AUTHORIZATION" ? "warning" : "error"} showIcon
             message={active.blocker.code} description={active.blocker.detail} />}
           <Descriptions size="small" column={{ xs: 1, md: 2 }} style={{ marginTop: 12 }}>
@@ -193,6 +199,20 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
             <Typography.Title level={5} style={{ marginTop: 16 }}>观察与诊断</Typography.Title>
             <Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>{active.result.result?.summary}</Typography.Paragraph>
             {active.result.deliverable_markdown && <Typography.Paragraph><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{active.result.deliverable_markdown}</pre></Typography.Paragraph>}
+            {active.execution_mode === "EVIDENCE_PACK" && <Collapse items={[{
+              key: "evidence-pack", label: "证据包覆盖、来源与限制", children: <>
+                <Descriptions size="small" column={{ xs: 1, md: 2 }}>
+                  <Descriptions.Item label="Evidence Pack hash"><Typography.Text code>{String(active.result.result?.evidence_pack?.evidence_pack_hash || "").slice(0, 16)}</Typography.Text></Descriptions.Item>
+                  <Descriptions.Item label="引用关系">{active.result.result?.evidence_pack?.coverage?.citation_occurrence_count ?? 0}</Descriptions.Item>
+                  <Descriptions.Item label="来源快照">{active.result.result?.evidence_pack?.coverage?.source_snapshot_count ?? 0}</Descriptions.Item>
+                  <Descriptions.Item label="已提供 / 省略 passages">{active.result.result?.evidence_pack?.coverage?.source_passage_included ?? 0} / {active.result.result?.evidence_pack?.coverage?.source_passage_omitted ?? 0}</Descriptions.Item>
+                </Descriptions>
+                <Typography.Title level={5}>已反查证据</Typography.Title>
+                <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(active.result.result?.evidence_references || [], null, 2)}</pre>
+                <Typography.Title level={5}>限制与省略资料</Typography.Title>
+                <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify({ limitations: active.result.result?.limitations || [], omitted: active.result.result?.evidence_pack?.coverage?.omitted_materials || [] }, null, 2)}</pre>
+              </>,
+            }]} />}
           </>}
           {comparison && <Collapse style={{ marginTop: 12 }} items={[{ key: "compare", label: `同输入 Workflow 对照（${comparison.same_input_workflow_count}）`, children: <>
             <Alert type="info" message={comparison.limitations?.[0]} />

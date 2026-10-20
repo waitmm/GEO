@@ -25,6 +25,11 @@ from app.release_main import create_release_app
 from release_test_client import TestClient
 from app.modules.agent_experiment.contracts import AgentArtifact, AgentDecision
 from app.modules.agent_experiment.grading import validate_and_grade
+from app.modules.agent_experiment.evidence_pack import (
+    EvidencePackCapacityError,
+    build_evidence_pack,
+    validate_markdown_result,
+)
 from app.modules.agent_experiment.reconciliation import reconcile_agent_run_usage
 from app.modules.agent_experiment.response_audit import SecureResponseAuditArchive
 from app.modules.agent_experiment.runner import (
@@ -62,6 +67,63 @@ class ScriptedClient:
             "input_tokens": 20, "output_tokens": 10, "cost_cny": 0.01,
             "response_source": "TEST_SCRIPT", "request_identity": {"provider": "test"},
         }
+
+
+class ScriptedEvidencePackClient:
+    def __init__(self, markdown: str):
+        self.markdown = markdown
+        self.calls = 0
+        self.payloads = []
+
+    def generate(self, **kwargs):
+        self.calls += 1
+        self.payloads.append(kwargs)
+        return self.markdown, {
+            "input_tokens": 120, "output_tokens": 80, "cost_cny": 0.002,
+            "response_source": "TEST_SCRIPT", "request_identity": {"provider": "test"},
+            "accounting_persisted": False,
+        }
+
+
+def _evidence_markdown(pack, *, valid=True, include_authority=True):
+    run = pack["runs"][0]
+    answer_end = min(12, len(run["answer_text"]))
+    answer_ref = f"[[answer:{run['run_id']}:0:{answer_end}]]"
+    source_ref = ""
+    if include_authority and pack["selected_source_passages"]:
+        passage = pack["selected_source_passages"][0]
+        source_ref = f" [[source:{passage['snapshot_id']}:{passage['passage_id']}]]"
+    draft = (
+        "这是一份面向当前搜索问题的完整可编辑内容。先判断用户希望打开哪一类抖音目标，"
+        "再核对平台允许的入口、账号权限和跳转后的落地体验。操作前应保存原始链接并用"
+        "同一设备完成小范围测试，避免把未经核验的第三方能力写成目标品牌承诺。\n\n"
+        "实际执行时，记录每一步的输入、跳转结果和异常现象；若页面无法打开，应回到官方"
+        "配置与权限检查，而不是反复替换未知链接。面向编辑的稿件需要说明适用条件、失败"
+        "处理和隐私边界，并把所有品牌能力保留为待核实项。\n\n"
+        "完成内容修改后，使用相同 PromptVersion、采样配置与明确 Run 范围复测，分别观察"
+        "回答是否覆盖关键步骤、目标品牌是否被提及以及真实引用关系是否变化。单次变化不能"
+        "证明由本内容造成，也不能提前承诺收录、引用或推荐效果。"
+    )
+    if not valid:
+        draft = "只有提纲"
+    return f"""## GEO 诊断与依据
+当前回答已覆盖部分操作线索，但适用条件仍需说明。{answer_ref}{source_ref}
+
+## 品牌表现与证据缺口
+当前冻结回答中的品牌表现只能在本 Run 范围内判断，品牌能力仍需核验。{answer_ref}
+
+## 优化策略与渠道
+优先在帮助中心发布与当前问题直接对应的核对指南，第三方渠道只作补充。{answer_ref}
+
+## 完整正文
+{draft}
+
+## QA 与事实限制
+VERIFY_FIRST；没有把外部来源主张直接写成目标品牌事实，也没有承诺优化效果。
+
+## 复测计划
+复用同一 PromptVersion、配置和指标，比较品牌提及与引用 occurrence；变化不代表因果。
+"""
 
 
 def test_dsml_adapter_accepts_only_one_whitelisted_tool_call():
@@ -158,6 +220,24 @@ def test_rejected_response_archive_is_complete_restricted_and_response_only(tmp_
         **event, "validation_status": "ACCEPTED",
     }) is None
 
+    http_event = {
+        "response_source": "EXTERNAL_LLM", "validation_status": "REJECTED",
+        "request_identity": {"provider": "deepseek", "input_hash": "c" * 64},
+        "rejection_code": "PROVIDER_HTTP_ERROR", "raw_response_hash": "d" * 64,
+        "raw_provider_response": None, "http_status": 400,
+        "provider_error_category": "invalid_request_error",
+        "raw_http_response": json.dumps({"error": {"message": f"bad {secret}",
+                                                       "api_key": secret}}),
+        "token_usage": {},
+    }
+    http_path = archive.record_rejected_response(run_id="agent-run-http", event=http_event)
+    assert http_path is not None
+    http_stored = json.loads(http_path.read_text(encoding="utf-8"))
+    assert http_stored["http_status"] == 400
+    assert http_stored["provider_error_category"] == "invalid_request_error"
+    assert secret not in http_path.read_text(encoding="utf-8")
+    assert "[REDACTED]" in http_stored["raw_http_response"]
+
     expired = root / "agent-response-expired.json"
     expired.write_text("{}", encoding="utf-8")
     old = datetime.now().timestamp() - 8 * 24 * 60 * 60
@@ -202,7 +282,7 @@ def _artifact(*, run_id: int, answer_end: int, source=None, readiness="VERIFY_FI
     }
 
 
-def _create_from_fixture(db, fixture, *, key="agent-fixture-0001"):
+def _create_from_fixture(db, fixture, *, key="agent-fixture-0001", execution_mode="TOOL_LOOP"):
     return create_agent_run(
         db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
         context_id=fixture["context"].context_id,
@@ -210,8 +290,161 @@ def _create_from_fixture(db, fixture, *, key="agent-fixture-0001"):
         citation_manifest_hash=fixture["manifest"].payload_hash,
         completion_manifest_id=fixture["completion"].manifest_id,
         completion_manifest_hash=fixture["completion"].payload_hash,
-        idempotency_key=key, requested_by="qa",
+        idempotency_key=key, requested_by="qa", execution_mode=execution_mode,
     )
+
+
+def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, created = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
+        context_id=fixture["context"].context_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        idempotency_key="evidence-pack-build-0001", requested_by="qa",
+        execution_mode="EVIDENCE_PACK",
+    )
+    assert created
+    assert loads(run.agent_execution_json, {})["contract_version"] == "geo.evidence-pack.execution.v1"
+    assert loads(run.budget_json, {})["max_model_calls"] == 1
+    assert loads(run.budget_json, {})["max_tool_calls"] == 0
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    assert pack["contract_version"] == "geo.evidence-pack.v1"
+    assert pack["evidence_pack_hash"] == digest({key: value for key, value in pack.items()
+                                                  if key != "evidence_pack_hash"})
+    assert pack["runs"][0]["answer_text"]
+    assert len(pack["citation_occurrences"]) == 2
+    assert pack["coverage"]["source_passage_total"] >= 1
+    assert pack["coverage"]["source_passage_included"] >= 1
+    serialized = json.dumps(pack, ensure_ascii=False).lower()
+    assert "workflow" not in serialized
+    assert "diagnosis_result" not in serialized and "strategy_result" not in serialized
+
+
+def test_evidence_pack_capacity_is_explicit_and_deterministic(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
+        context_id=fixture["context"].context_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        idempotency_key="evidence-pack-capacity-0001", requested_by="qa",
+        execution_mode="EVIDENCE_PACK",
+    )
+    scope = loads(run.input_scope_json, {})
+    oversized = json.loads(json.dumps(scope))
+    oversized["runs"][0]["answer_text"] += "超出容量" * 1_000
+    with pytest.raises(EvidencePackCapacityError, match="CORE_EXCEEDS_BUDGET"):
+        build_evidence_pack(oversized, text_budget=2_000)
+    passage_heavy = json.loads(json.dumps(scope))
+    passage_heavy["source_snapshots"][0]["passages"][0]["text"] += "来源正文" * 1_000
+    constrained_budget = 2_000
+    constrained = build_evidence_pack(passage_heavy, text_budget=constrained_budget)
+    assert constrained["coverage"]["source_passage_omitted"] >= 1
+    assert constrained == build_evidence_pack(passage_heavy, text_budget=constrained_budget)
+    assert all(row["reason"] == "TEXT_BUDGET" for row in constrained["coverage"]["omitted_materials"])
+
+
+def test_evidence_pack_single_call_persists_validated_independent_result(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
+        context_id=fixture["context"].context_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        idempotency_key="evidence-pack-execute-0001", requested_by="qa",
+        execution_mode="EVIDENCE_PACK",
+    )
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    scripted = ScriptedEvidencePackClient(_evidence_markdown(pack))
+    execute_agent_run(
+        run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False),
+        client=scripted,
+    )
+    db.expire_all()
+    stored = db.query(AgentExperimentRun).filter_by(run_id=run.run_id).one()
+    result = db.query(AgentResultVersion).filter_by(agent_run_id=run.run_id).one()
+    assert stored.status == "SUCCEEDED"
+    assert stored.model_call_count == 1 and stored.tool_call_count == 0
+    assert result.evidence_grade == "L2_PARTIALLY_GROUNDED"
+    assert result.publication_eligibility == "VERIFY_FIRST"
+    payload = loads(result.result_json, {})
+    assert payload["schema_version"] == "geo.evidence-pack.markdown-result.v1"
+    assert payload["evidence_pack"]["evidence_pack_hash"] == pack["evidence_pack_hash"]
+    assert payload["success_assessment"] == {
+        "engineering_success": True,
+        "business_usable": "REQUIRES_HUMAN_REVIEW",
+        "workflow_advantage": "NOT_MEASURABLE",
+    }
+    assert len(result.deliverable_markdown) >= 240
+    assert db.query(AgentEvent).filter_by(
+        agent_run_id=run.run_id, event_type="EVIDENCE_PACK_FROZEN",
+    ).count() == 1
+    assert not db.execute(text("SELECT COUNT(*) FROM single_prompt_strategy_results")).scalar_one()
+    assert not db.execute(text("SELECT COUNT(*) FROM single_prompt_execution_proposal_results")).scalar_one()
+
+
+def test_evidence_pack_rejects_unread_source_and_incomplete_draft(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
+        context_id=fixture["context"].context_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        idempotency_key="evidence-pack-invalid-0001", requested_by="qa",
+        execution_mode="EVIDENCE_PACK",
+    )
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    markdown = _evidence_markdown(pack, valid=False, include_authority=False).replace(
+        "[[answer:", "[[source:missing-snapshot:missing-passage]] [[answer:", 1,
+    )
+    execute_agent_run(
+        run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False),
+        client=ScriptedEvidencePackClient(markdown),
+    )
+    db.expire_all()
+    stored = db.query(AgentExperimentRun).filter_by(run_id=run.run_id).one()
+    result = db.query(AgentResultVersion).filter_by(agent_run_id=run.run_id).one()
+    validation = loads(result.validation_report_json, {})
+    assert stored.status == "FAILED"
+    assert stored.blocker_code == "EVIDENCE_PACK_OUTPUT_VALIDATION_FAILED"
+    assert {row["code"] for row in validation["issues"]} >= {
+        "SOURCE_REF_NOT_INCLUDED", "DELIVERABLE_INCOMPLETE",
+    }
+    assert validation["status"] == "FAIL"
+
+
+def test_evidence_pack_l3_requires_verify_first_and_valid_refs(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    analysis = _seed_frozen_analysis(db, reference_urls=[])
+    context = db.query(SinglePromptAnalysisContext).filter_by(analysis_id=analysis.analysis_id).one()
+    run, _ = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=analysis.analysis_id,
+        context_id=context.context_id, idempotency_key="evidence-pack-l3-0001",
+        requested_by="qa", execution_mode="EVIDENCE_PACK",
+    )
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    checked, eligibility = validate_markdown_result(
+        _evidence_markdown(pack, include_authority=False), pack,
+    )
+    assert checked["validation"]["status"] == "PASS"
+    assert eligibility["evidence_grade"] == "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS"
+    assert eligibility["public_claim_eligibility"] == "NOT_CONSUMABLE"
+    without_marker = _evidence_markdown(pack, include_authority=False).replace("VERIFY_FIRST", "待核验")
+    rejected, _ = validate_markdown_result(without_marker, pack)
+    assert "L3_VERIFY_FIRST_REQUIRED" in {row["code"] for row in rejected["validation"]["issues"]}
 
 
 def test_true_agent_loop_chooses_tools_then_persists_independent_l2_result(tmp_path, monkeypatch):
@@ -498,8 +731,9 @@ def test_no_valid_answer_creates_l4_recovery_with_zero_model_calls(tmp_path, mon
     )
     db.add_all([analysis, context]); db.commit()
     agent, _ = create_agent_run(db, project_id=1, prompt_id=44, analysis_id=analysis_id,
-                                context_id=context.context_id, idempotency_key="agent-l4-run-0001", requested_by="qa")
-    client = ScriptedClient([])
+                                context_id=context.context_id, idempotency_key="agent-l4-run-0001",
+                                requested_by="qa", execution_mode="EVIDENCE_PACK")
+    client = ScriptedEvidencePackClient("")
     execute_agent_run(agent.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False), client=client)
     db.expire_all()
     stored = db.query(AgentExperimentRun).filter_by(run_id=agent.run_id).one()
@@ -528,6 +762,9 @@ def test_agent_api_create_get_and_comparison_get_are_scoped_and_read_only(tmp_pa
                "idempotency_key": "agent-api-create-0001"}
     created = client.post(f"/api/v2/single-prompt/analyses/{fixture['analysis'].analysis_id}/agent-experiments", json=payload)
     assert created.status_code == 201, created.text
+    assert created.json()["execution_mode"] == "EVIDENCE_PACK"
+    assert created.json()["budget"]["max_model_calls"] == 1
+    assert created.json()["budget"]["max_tool_calls"] == 0
     run_id = created.json()["run_id"]
     before = db.query(AgentEvent).count()
     read = client.get(f"/api/v2/single-prompt/agent-experiments/{run_id}?project_id=1&prompt_id=44")
@@ -558,7 +795,9 @@ def test_wrong_frozen_hash_records_blocked_run_with_zero_model_and_no_result(tmp
 def test_cache_only_miss_waits_for_authorization_without_external_call(tmp_path, monkeypatch):
     db, engine = _migrated_session(tmp_path, monkeypatch)
     fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
-    row, _ = _create_from_fixture(db, fixture, key="agent-cache-only-0001")
+    row, _ = _create_from_fixture(
+        db, fixture, key="agent-cache-only-0001", execution_mode="EVIDENCE_PACK",
+    )
     execute_agent_run(row.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False))
     db.expire_all()
     stored = db.query(AgentExperimentRun).filter_by(run_id=row.run_id).one()
@@ -702,6 +941,55 @@ def test_rejected_provider_response_settles_local_usage_before_decision_parse(tm
     assert db.query(AgentEvent).filter_by(
         agent_run_id=row.run_id, event_type="MODEL_REQUEST_ACCOUNTED",
     ).count() == 1
+    assert len(list(archive.root.glob("agent-response-*.json"))) == 1
+
+
+def test_provider_http_error_preserves_original_status_without_fake_usage(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    row, _ = _create_from_fixture(db, fixture, key="agent-http-rejected-usage-0001")
+    row.status = "WAITING_AUTHORIZATION"; db.commit()
+    row = authorize_agent_run(
+        db, run_id=row.run_id, project_id=1, prompt_id=44, revision=row.revision,
+        max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
+        conservative_cny_per_million_tokens=10.0,
+        pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+        pricing_checked_at="2026-10-19", authorized_by="qa",
+    )
+    ledger = tmp_path / "shared-budget-http-rejected.sqlite3"
+    initialize_shared_budget(ledger, batch_id="agent-http-rejected-accounting",
+                             pricing_checked_at="2026-10-19")
+    hooks = SharedBudgetHooks(ledger, lane="AGENT_EXPERIMENT", operation_id=row.run_id)
+    request = {
+        "provider": "deepseek", "requested_model_alias": "deepseek-flash",
+        "effective_request_model": "deepseek-flash",
+        "endpoint": "https://api.deepseek.com/responses", "endpoint_path": "/responses",
+        "transport_kind": "RESPONSES_JSON_SCHEMA", "attempt": 1,
+        "input_token_upper_bound": 1000, "max_output_tokens": 2000,
+        "input_hash": "1" * 64, "provider_payload_hash": "2" * 64,
+    }
+    _request_guard(db, row, shared_budget_hooks=hooks)(request)
+    archive = SecureResponseAuditArchive(tmp_path / "http-response-audit")
+    _response_audit_sink(db, row, hooks, archive)({
+        "request_identity": request, "response_source": "EXTERNAL_LLM",
+        "validation_status": "REJECTED", "response_model": "",
+        "raw_response_hash": "3" * 64, "rejection_code": "PROVIDER_HTTP_ERROR",
+        "rejection_reason": "DeepSeek HTTP 400", "raw_provider_response": None,
+        "raw_http_response": '{"error":{"type":"invalid_request_error"}}',
+        "http_status": 400, "provider_error_category": "invalid_request_error",
+        "token_usage": {},
+    })
+    db.refresh(row)
+    progress = loads(row.progress_json, {})
+    state = shared_budget_summary(ledger)
+    assert row.model_call_count == 1
+    assert row.input_tokens == row.output_tokens == 0 and row.cost_cny == 0
+    assert progress["external_request_state"] == "PROVIDER_REJECTED_USAGE_UNKNOWN"
+    assert progress["provider_http_status"] == 400
+    assert state["used_requests"] == 1 and state["used_tokens"] == 3000
+    assert state["in_flight"] == 0
+    assert state["requests"][0]["actual_total_tokens"] is None
+    assert json.loads(state["requests"][0]["outcome_json"])["http_status"] == 400
     assert len(list(archive.root.glob("agent-response-*.json"))) == 1
 
 

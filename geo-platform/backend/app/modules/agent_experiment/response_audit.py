@@ -6,10 +6,36 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 import stat
 from typing import Any
 
 from app.modules.single_prompt_v2.delivery_text import digest
+
+
+_SENSITIVE_KEY = re.compile(r"authorization|api[-_]?key|access[-_]?token|secret|password", re.I)
+_SECRET_TEXT = re.compile(r"(?i)(bearer\s+|sk-)[a-z0-9._-]+")
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): "[REDACTED]" if _SENSITIVE_KEY.search(str(key)) else _redact(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return _SECRET_TEXT.sub("[REDACTED]", value)
+    return value
+
+
+def _redact_http_body(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return str(_redact(value))
+    return json.dumps(_redact(parsed), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 class SecureResponseAuditArchive:
@@ -33,11 +59,11 @@ class SecureResponseAuditArchive:
                 path.unlink()
 
     def record_rejected_response(self, *, run_id: str, event: dict[str, Any]) -> Path | None:
-        if (
-            event.get("response_source") != "EXTERNAL_LLM"
-            or event.get("validation_status") != "REJECTED"
-            or not isinstance(event.get("raw_provider_response"), dict)
-        ):
+        provider_response = event.get("raw_provider_response")
+        http_response = event.get("raw_http_response")
+        if (event.get("response_source") != "EXTERNAL_LLM"
+                or event.get("validation_status") != "REJECTED"
+                or (not isinstance(provider_response, dict) and not isinstance(http_response, str))):
             return None
         self.prepare()
         now = datetime.now(timezone.utc)
@@ -58,17 +84,20 @@ class SecureResponseAuditArchive:
             "validation_status": "REJECTED",
             "rejection_code": event.get("rejection_code"),
             "rejection_reason": event.get("rejection_reason"),
+            "http_status": event.get("http_status"),
+            "provider_error_category": event.get("provider_error_category"),
             "finish_reason": event.get("finish_reason"),
             "response_model": event.get("response_model"),
             "provider_output_kind": event.get("provider_output_kind"),
             "raw_response_hash": event.get("raw_response_hash"),
             "token_usage": event.get("token_usage") or {},
-            "raw_provider_response": event["raw_provider_response"],
+            "raw_provider_response": _redact(provider_response) if isinstance(provider_response, dict) else None,
+            "raw_http_response": _redact_http_body(http_response) if isinstance(http_response, str) else None,
         }
         record["record_hash"] = digest(record)
         encoded = (json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
         input_hash = str(safe_identity.get("input_hash") or digest(safe_identity))
-        raw_hash = str(event.get("raw_response_hash") or digest(event["raw_provider_response"]))
+        raw_hash = str(event.get("raw_response_hash") or digest(provider_response or http_response))
         path = self.root / (
             f"agent-response-{digest(run_id)[:12]}-{input_hash[:16]}-{raw_hash[:16]}.json"
         )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -30,7 +32,7 @@ class StrictModel(BaseModel):
 class AgentBudget(StrictModel):
     max_model_calls: int | None = Field(default=None, ge=0, le=12)
     max_tool_calls: int | None = Field(default=None, ge=0, le=30)
-    max_total_tokens: int | None = Field(default=None, ge=0, le=100_000)
+    max_total_tokens: int | None = Field(default=None, ge=0, le=300_000)
     max_elapsed_seconds: int | None = Field(default=None, ge=0, le=900)
     max_repairs: int | None = Field(default=None, ge=0, le=2)
     max_cost_cny: float | None = Field(default=None, ge=0, le=50)
@@ -47,6 +49,7 @@ class AgentRunCreate(StrictModel):
     brand_context_version_id: str | None = Field(default=None, max_length=80)
     idempotency_key: str = Field(min_length=8, max_length=120)
     regenerate_nonce: str | None = Field(default=None, min_length=8, max_length=80)
+    execution_mode: Literal["TOOL_LOOP", "EVIDENCE_PACK"] = "EVIDENCE_PACK"
     budget: AgentBudget | None = None
 
 
@@ -58,7 +61,7 @@ class AgentScopeAction(StrictModel):
 class AgentAuthorization(AgentScopeAction):
     revision: int = Field(gt=0)
     max_requests: int = Field(gt=0, le=12)
-    max_total_tokens: int = Field(gt=0, le=100_000)
+    max_total_tokens: int = Field(gt=0, le=300_000)
     max_cost_cny: float = Field(gt=0, le=50)
     conservative_cny_per_million_tokens: float = Field(gt=0, le=10_000)
     pricing_source: str = Field(min_length=8, max_length=2000)

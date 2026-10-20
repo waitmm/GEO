@@ -110,6 +110,123 @@ def test_cache_only_miss_never_reads_api_key_or_starts_http(monkeypatch):
     assert client.external_token_count == 0
 
 
+def test_responses_plain_text_transport_has_no_json_format_or_retry(monkeypatch):
+    bodies = []
+    reservations = []
+    audits = []
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "model": "deepseek-flash", "status": "completed",
+                "output": [{"type": "message", "content": [
+                    {"type": "output_text", "text": "## GEO 诊断与依据\n完整 Markdown"},
+                ]}],
+                "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+            }
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json):
+            assert url.endswith("/responses")
+            bodies.append(json)
+            return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(
+        max_attempts=1, request_guard=reservations.append,
+        response_audit_sink=audits.append,
+    )
+    monkeypatch.setattr(client.settings, "deepseek_api_key", "test-key")
+    output = client.text_generate_sync(
+        system_prompt="Return one Markdown artifact.",
+        user_payload={"contract_version": "geo.evidence-pack.v1"},
+        model="deepseek-flash", prompt_version="geo-evidence-pack-synthesis.v1",
+        schema_version="geo.evidence-pack.markdown-result.v1", max_tokens=4096,
+    )
+    assert output.endswith("完整 Markdown")
+    assert len(bodies) == len(reservations) == 1
+    assert "text" not in bodies[0] and "tools" not in bodies[0]
+    assert reservations[0]["transport_kind"] == "RESPONSES_TEXT"
+    assert reservations[0]["attempt"] == 1
+    assert audits[-1]["validation_status"] == "ACCEPTED"
+    assert client.external_call_count == 1 and client.external_token_count == 120
+
+
+def test_provider_http_error_audit_retains_status_category_and_no_usage(monkeypatch):
+    audits = []
+
+    class FakeResponse:
+        status_code = 400
+        text = '{"error":{"type":"invalid_request_error","message":"unsupported field"}}'
+
+        @staticmethod
+        def json():
+            return {"error": {"type": "invalid_request_error", "message": "unsupported field"}}
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json): return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(max_attempts=1, response_audit_sink=audits.append)
+    monkeypatch.setattr(client.settings, "deepseek_api_key", "test-key")
+    with pytest.raises(SemanticLLMError) as rejected:
+        client.text_generate_sync(
+            system_prompt="Return Markdown.", user_payload={"scope": "frozen"},
+            model="deepseek-flash", prompt_version="evidence-pack-http-error-v1",
+        )
+    assert getattr(rejected.value, "code", "") == "PROVIDER_HTTP_ERROR"
+    assert audits[-1]["http_status"] == 400
+    assert audits[-1]["provider_error_category"] == "invalid_request_error"
+    assert audits[-1]["token_usage"] == {}
+    assert audits[-1]["raw_http_response"] == FakeResponse.text
+
+
+def test_structured_provider_http_error_is_audited_before_parse(monkeypatch):
+    audits = []
+
+    class FakeResponse:
+        status_code = 422
+        text = '{"error":{"code":"schema_unsupported","message":"bad format"}}'
+
+        @staticmethod
+        def json():
+            return {"error": {"code": "schema_unsupported", "message": "bad format"}}
+
+    class FakeHttpClient:
+        def __init__(self, timeout): self.timeout = timeout
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json): return FakeResponse()
+
+    monkeypatch.setattr(deepseek.httpx, "Client", FakeHttpClient)
+    client = deepseek.DeepSeekClient(max_attempts=1, response_audit_sink=audits.append)
+    monkeypatch.setattr(client.settings, "deepseek_api_key", "test-key")
+    with pytest.raises(SemanticLLMError) as rejected:
+        client.structured_generate_sync(
+            system_prompt="Return one decision.", user_payload={"scope": "frozen"},
+            response_schema=AgentDecision, model="deepseek-flash",
+            prompt_version="structured-http-error-v1", schema_version="decision-v1",
+            strict_json=True, structured_output_mode="JSON_SCHEMA",
+            provider_schema_strict=True,
+        )
+    assert getattr(rejected.value, "code", "") == "PROVIDER_HTTP_ERROR"
+    assert audits[-1]["validation_status"] == "REJECTED"
+    assert audits[-1]["http_status"] == 422
+    assert audits[-1]["provider_error_category"] == "schema_unsupported"
+    assert audits[-1]["token_usage"] == {}
+    assert audits[-1]["raw_http_response"] == FakeResponse.text
+
+
 def test_request_guard_denial_precedes_network_and_retry(monkeypatch):
     reservations = []
     def guard(identity):

@@ -1,7 +1,7 @@
 # GEO M1 Beta 本机部署
 
 本机安装目录默认为 `/Users/bmwqr/Desktop/python/GEO/runtime/geo-m1-beta`，仅监听
-`127.0.0.1:8021`。前端使用已构建的 release 静态文件，由 FastAPI 同源提供；后台同时启动
+`127.0.0.1:8032`。前端使用已构建的 release 静态文件，由 FastAPI 同源提供；后台同时启动
 单并发 release worker。
 
 ```bash
@@ -12,7 +12,7 @@
 /Users/bmwqr/Desktop/python/GEO/runtime/geo-m1-beta/geo-beta logs
 ```
 
-网站地址：`http://127.0.0.1:8021/`
+网站地址：`http://127.0.0.1:8032/`
 
 数据与运行文件：
 

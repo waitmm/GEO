@@ -29,6 +29,10 @@ DEEPSEEK_FLASH_PEAK_CNY_PER_MILLION = {
 AUTHORIZED_LANES = frozenset({"AGENT_EXPERIMENT", "WORKFLOW_BASELINE"})
 COUNTED_STATUSES = frozenset({"RESERVED", "FINISHED", "FAILED", "DELIVERY_UNKNOWN"})
 FINAL_STATUSES = COUNTED_STATUSES - {"RESERVED"}
+AUTHORIZED_EXTENSION_LIMITS = frozenset({
+    (1, 300_000, 3.0),
+    (10, 1_000_000, 10.0),
+})
 
 
 class SharedBudgetDenied(RuntimeError):
@@ -210,7 +214,7 @@ def append_transport_authorization(
         or transport_kind != "RESPONSES_TEXT"
         or not transport_version.strip() or not prompt_version.strip()
         or not schema_version.strip() or not execution_contract.strip()
-        or max_requests != 1 or max_tokens != 300_000 or max_cost_cny != 3.0
+        or (max_requests, max_tokens, float(max_cost_cny)) not in AUTHORIZED_EXTENSION_LIMITS
         or not isinstance(scope, dict) or not scope
     ):
         raise SharedBudgetDenied("AUTHORIZATION_EXTENSION_MISMATCH")

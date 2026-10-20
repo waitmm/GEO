@@ -205,3 +205,14 @@ enabled provider `text.format.strict`. The Agent-only transport now sends strict
 single-current-action contract, exposes a closed allowlisted decision Schema, rejects mixed actions,
 and versions all affected identities. The exact eight-decision response remains wholly rejected in
 offline replay. No external request was made.
+
+The final authorized text-protocol validation is recorded in
+`docs/geo-agent-v1/REAL_RUN_STRICT_SINGLE_DECISION_2026-10-20.md`. The corrected request reached
+DeepSeek but received a non-200 response before any provider envelope, usage or `AgentDecision`.
+The first protocol gate stopped the run after exactly one request; no tool, result or second request
+ran. The shared ledger conservatively retains the full reservation. A local accounting/audit defect
+masked the original HTTP detail and did not archive the raw non-200 body, so the rejected field
+cannot be claimed from available evidence. The Agent/Workflow quality comparison remains
+`NOT_MEASURABLE`. Per the approved architecture stop, the text JSON decision route is closed; any
+next phase must separately choose between a provider-native single function and a minimal frozen
+evidence package.

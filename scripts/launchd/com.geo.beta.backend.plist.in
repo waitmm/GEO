@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.geo.beta.backend</string>
+  <key>ProgramArguments</key><array>
+    <string>@@PYTHON_BIN@@</string><string>-m</string><string>uvicorn</string>
+    <string>app.release_main:app</string><string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>@@PORT@@</string><string>--workers</string><string>1</string>
+  </array>
+  <key>WorkingDirectory</key><string>@@BACKEND_DIR@@</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>GEO_RELEASE_DATABASE_URL</key><string>@@DATABASE_URL@@</string>
+    <key>GEO_AGENT_BETA_DAILY_MODEL_CALLS</key><string>0</string>
+  </dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>@@LOG_PATH@@</string>
+  <key>StandardErrorPath</key><string>@@LOG_PATH@@</string>
+  <key>ThrottleInterval</key><integer>5</integer>
+</dict></plist>

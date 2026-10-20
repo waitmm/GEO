@@ -2,7 +2,7 @@
 
 本机安装目录默认为 `/Users/bmwqr/Desktop/python/GEO/runtime/geo-m1-beta`，仅监听
 `127.0.0.1:8032`。前端使用已构建的 release 静态文件，由 FastAPI 同源提供；后台同时启动
-单并发 release worker。
+单并发 release worker。后端与 Worker 由当前 macOS 用户的 `launchd` 托管，关闭终端不会停止服务。
 
 ```bash
 /Users/bmwqr/Desktop/python/GEO/runtime/geo-m1-beta/geo-beta start

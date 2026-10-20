@@ -8,6 +8,7 @@ from app.services.shared_model_budget import (
     PRICING_SOURCE,
     SharedBudgetDenied,
     SharedBudgetHooks,
+    append_transport_authorization,
     initialize,
     reserve,
     settle,
@@ -43,6 +44,28 @@ def ledger(tmp_path):
     return path
 
 
+def authorize_text(path, *, operation_id="evidence-pack-run"):
+    return append_transport_authorization(
+        path,
+        authorization_id="evidence-pack-p1-p1-r1-20261020",
+        batch_id="geo-agent-comparison-20261019",
+        lane="AGENT_EXPERIMENT",
+        operation_id=operation_id,
+        scope={"project_id": 1, "prompt_id": 1, "run_ids": [1]},
+        transport_kind="RESPONSES_TEXT",
+        transport_version="geo.deepseek.responses-text.v1",
+        prompt_version="geo-evidence-pack-synthesis.v1",
+        schema_version="geo.evidence-pack.markdown-result.v1",
+        execution_contract="geo.evidence-pack.execution.v1",
+        pricing_checked_at=TODAY.isoformat(),
+        max_requests=1,
+        max_tokens=300_000,
+        max_cost_cny=3.0,
+        authorized_by="explicit-user-authorization",
+        today=TODAY,
+    )
+
+
 def test_authorized_batch_is_exact_and_pricing_must_be_current(tmp_path):
     path = ledger(tmp_path)
     state = summary(path)
@@ -69,6 +92,118 @@ def test_existing_authorization_fail_closes_for_unapproved_plain_text_transport(
         reserve(path, lane="AGENT_EXPERIMENT", operation_id="evidence-pack-offline",
                 request_id="evidence-pack-text-1", identity=request)
     assert summary(path)["used_requests"] == 0
+
+
+def test_append_only_text_authorization_is_exact_and_preserves_base_config(tmp_path):
+    path = ledger(tmp_path)
+    before = summary(path)
+    authorization = authorize_text(path)
+    after_append = summary(path)
+    assert after_append["config_hash"] == before["config_hash"]
+    assert after_append["requests"] == before["requests"] == []
+    assert authorization["parent_config_hash"] == before["config_hash"]
+    assert authorization["max_requests"] == 1
+    assert authorization["provider_peak_rates_cny_per_million"] == {
+        "input_cache_hit": 0.04, "input_cache_miss": 2.0, "output": 8.0,
+    }
+    assert after_append["authorization_extensions"][0]["used_requests"] == 0
+
+    request = identity("evidence-pack-authorized", input_ceiling=20_000, output_ceiling=16_384)
+    request.update({
+        "transport_kind": "RESPONSES_TEXT",
+        "transport_version": "geo.deepseek.responses-text.v1",
+        "prompt_version": "geo-evidence-pack-synthesis.v1",
+        "schema_version": "geo.evidence-pack.markdown-result.v1",
+    })
+    reserve(path, lane="AGENT_EXPERIMENT", operation_id="evidence-pack-run",
+            request_id="evidence-pack-request", identity=request)
+    settle(path, request_id="evidence-pack-request", status="FINISHED", outcome={
+        "token_usage": {"input_tokens": 10_000, "output_tokens": 4_000,
+                        "total_tokens": 14_000},
+    })
+    restarted = summary(path)
+    extension = restarted["authorization_extensions"][0]
+    assert restarted["used_requests"] == extension["used_requests"] == 1
+    assert extension["used_tokens"] == 14_000
+    assert extension["remaining_requests"] == 0
+    assert restarted["requests"][0]["authorization_id"] == authorization["authorization_id"]
+    with pytest.raises(SharedBudgetDenied, match="AUTHORIZATION_REQUEST_LIMIT_EXHAUSTED"):
+        second = {**request, "provider_payload_hash": hashlib.sha256(b"second").hexdigest(),
+                  "input_hash": hashlib.sha256(b"second-input").hexdigest()}
+        reserve(path, lane="AGENT_EXPERIMENT", operation_id="evidence-pack-run",
+                request_id="evidence-pack-request-2", identity=second)
+
+
+def test_text_authorization_rejects_wrong_scope_versions_and_is_immutable(tmp_path):
+    path = ledger(tmp_path)
+    authorize_text(path)
+    request = identity("wrong-text")
+    request.update({
+        "transport_kind": "RESPONSES_TEXT",
+        "transport_version": "geo.deepseek.responses-text.v1",
+        "prompt_version": "geo-evidence-pack-synthesis.v1",
+        "schema_version": "geo.evidence-pack.markdown-result.v1",
+    })
+    for field, wrong in (
+        ("transport_version", "other"), ("prompt_version", "other"),
+        ("schema_version", "other"),
+    ):
+        altered = {**request, field: wrong}
+        with pytest.raises(SharedBudgetDenied, match="MODEL_OR_TRANSPORT_NOT_AUTHORIZED"):
+            reserve(path, lane="AGENT_EXPERIMENT", operation_id="evidence-pack-run",
+                    request_id=f"wrong-{field}", identity=altered)
+    with pytest.raises(SharedBudgetDenied, match="MODEL_OR_TRANSPORT_NOT_AUTHORIZED"):
+        reserve(path, lane="AGENT_EXPERIMENT", operation_id="different-run",
+                request_id="wrong-operation", identity=request)
+    with pytest.raises(SharedBudgetDenied, match="AUTHORIZATION_EXTENSION_IMMUTABLE"):
+        append_transport_authorization(
+            path, authorization_id="evidence-pack-p1-p1-r1-20261020",
+            batch_id="geo-agent-comparison-20261019", lane="AGENT_EXPERIMENT",
+            operation_id="different-run", scope={"project_id": 1},
+            transport_kind="RESPONSES_TEXT", transport_version="geo.deepseek.responses-text.v1",
+            prompt_version="geo-evidence-pack-synthesis.v1",
+            schema_version="geo.evidence-pack.markdown-result.v1",
+            execution_contract="geo.evidence-pack.execution.v1",
+            pricing_checked_at=TODAY.isoformat(), max_requests=1, max_tokens=300_000,
+            max_cost_cny=3.0, authorized_by="explicit-user-authorization", today=TODAY,
+        )
+
+
+def test_text_authorization_token_and_cost_limits_fail_closed(tmp_path):
+    path = ledger(tmp_path)
+    authorize_text(path)
+    request = identity("text-over", input_ceiling=284_000, output_ceiling=16_384)
+    request.update({
+        "transport_kind": "RESPONSES_TEXT",
+        "transport_version": "geo.deepseek.responses-text.v1",
+        "prompt_version": "geo-evidence-pack-synthesis.v1",
+        "schema_version": "geo.evidence-pack.markdown-result.v1",
+    })
+    with pytest.raises(SharedBudgetDenied, match="AUTHORIZATION_TOKEN_LIMIT_EXHAUSTED"):
+        reserve(path, lane="AGENT_EXPERIMENT", operation_id="evidence-pack-run",
+                request_id="text-over", identity=request)
+    assert summary(path)["used_requests"] == 0
+
+
+def test_text_authorization_keeps_legacy_transport_and_concurrency_guard(tmp_path):
+    path = ledger(tmp_path)
+    authorize_text(path)
+    legacy = identity("legacy-after-extension")
+    reserve(path, lane="WORKFLOW_BASELINE", operation_id="workflow",
+            request_id="legacy-request", identity=legacy)
+    text_request = identity("text-while-in-flight")
+    text_request.update({
+        "transport_kind": "RESPONSES_TEXT",
+        "transport_version": "geo.deepseek.responses-text.v1",
+        "prompt_version": "geo-evidence-pack-synthesis.v1",
+        "schema_version": "geo.evidence-pack.markdown-result.v1",
+    })
+    with pytest.raises(SharedBudgetDenied, match="CONCURRENCY_LIMIT_EXCEEDED"):
+        reserve(path, lane="AGENT_EXPERIMENT", operation_id="evidence-pack-run",
+                request_id="text-request", identity=text_request)
+    state = summary(path)
+    assert state["used_requests"] == 1
+    assert state["authorization_extensions"][0]["used_requests"] == 0
 
 
 def test_success_settles_to_actual_usage_and_restart_keeps_state(tmp_path):

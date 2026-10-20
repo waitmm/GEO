@@ -35,9 +35,11 @@ PRICING_CHECKED_AT = "2026-10-19"
 BATCH_ID = "geo-agent-workflow-comparison-p1-p1-r1-20261019"
 CONTEXT_REPAIR_ATTEMPT = 3
 REAL_VALIDATION_ATTEMPT = 4
-EXPECTED_PRIOR_REQUESTS = 18
-EXPECTED_PRIOR_TOKENS = 137_492
-EXPECTED_PRIOR_COST_CNY = 1.37492
+STRICT_SINGLE_DECISION_ATTEMPT = 5
+EXPECTED_PRIOR_USAGE = {
+    REAL_VALIDATION_ATTEMPT: {"requests": 18, "tokens": 137_492, "cost_cny": 1.37492},
+    STRICT_SINGLE_DECISION_ATTEMPT: {"requests": 19, "tokens": 143_551, "cost_cny": 1.43551},
+}
 
 
 def _canonical(value: Any) -> str:
@@ -141,12 +143,15 @@ def _run_key(attempt: int) -> str:
         # artifact root; this key is only used from backend/, where Run 1's
         # immutable semantic-region artifacts live.
         return "real-comparison-p1-p1-r1-20261020-validation-5-artifact-root"
+    if attempt == STRICT_SINGLE_DECISION_ATTEMPT:
+        return "real-comparison-p1-p1-r1-20261020-single-decision-v3-gate"
     return ("real-comparison-p1-p1-r1-20261019" if attempt == 0
             else f"real-comparison-p1-p1-r1-20261019-repair-{attempt}")
 
 
 def _attempt_budget(attempt: int) -> dict[str, Any]:
-    if attempt in {CONTEXT_REPAIR_ATTEMPT, REAL_VALIDATION_ATTEMPT}:
+    if attempt in {CONTEXT_REPAIR_ATTEMPT, REAL_VALIDATION_ATTEMPT,
+                   STRICT_SINGLE_DECISION_ATTEMPT}:
         return {"max_model_calls": 10, "max_tool_calls": 12, "max_total_tokens": 300_000,
                 "max_elapsed_seconds": 300, "max_repairs": 1, "max_cost_cny": 3.0}
     return {"max_model_calls": 6, "max_tool_calls": 12, "max_total_tokens": 100_000,
@@ -204,14 +209,15 @@ def _preflight(database: Path, ledger: Path, output: Path, *, attempt: int,
             raise RuntimeError("SHARED_LEDGER_HAS_IN_FLIGHT_REQUEST")
         if attempt == 0 and budget["used_requests"] != 0:
             raise RuntimeError("SHARED_LEDGER_NOT_PRISTINE")
-        if attempt == REAL_VALIDATION_ATTEMPT and (
-            budget["used_requests"] != EXPECTED_PRIOR_REQUESTS
-            or budget["used_tokens"] != EXPECTED_PRIOR_TOKENS
-            or abs(float(budget["used_cost_cny"]) - EXPECTED_PRIOR_COST_CNY) > 1e-8
+        expected_prior = EXPECTED_PRIOR_USAGE.get(attempt)
+        if expected_prior is not None and (
+            budget["used_requests"] != expected_prior["requests"]
+            or budget["used_tokens"] != expected_prior["tokens"]
+            or abs(float(budget["used_cost_cny"]) - expected_prior["cost_cny"]) > 1e-8
         ):
             raise RuntimeError("SHARED_LEDGER_PRIOR_USAGE_MISMATCH")
         response_audit = None
-        if attempt == REAL_VALIDATION_ATTEMPT:
+        if attempt in {REAL_VALIDATION_ATTEMPT, STRICT_SINGLE_DECISION_ATTEMPT}:
             if response_audit_dir is None:
                 raise RuntimeError("RESPONSE_AUDIT_DIRECTORY_REQUIRED")
             archive = symbols["SecureResponseAuditArchive"](response_audit_dir, retention_days=7)
@@ -233,9 +239,12 @@ def _preflight(database: Path, ledger: Path, output: Path, *, attempt: int,
             "baseline": baseline,
             "shared_budget": budget,
             "authorized_sub_budget": {
-                "max_requests": 10 if attempt in {CONTEXT_REPAIR_ATTEMPT, REAL_VALIDATION_ATTEMPT} else 6,
-                "max_tokens": 300_000 if attempt in {CONTEXT_REPAIR_ATTEMPT, REAL_VALIDATION_ATTEMPT} else 100_000,
-                "max_cost_cny": 3.0 if attempt in {CONTEXT_REPAIR_ATTEMPT, REAL_VALIDATION_ATTEMPT} else 1.0,
+                "max_requests": 10 if attempt in {CONTEXT_REPAIR_ATTEMPT, REAL_VALIDATION_ATTEMPT,
+                                                   STRICT_SINGLE_DECISION_ATTEMPT} else 6,
+                "max_tokens": 300_000 if attempt in {CONTEXT_REPAIR_ATTEMPT, REAL_VALIDATION_ATTEMPT,
+                                                       STRICT_SINGLE_DECISION_ATTEMPT} else 100_000,
+                "max_cost_cny": 3.0 if attempt in {CONTEXT_REPAIR_ATTEMPT, REAL_VALIDATION_ATTEMPT,
+                                                    STRICT_SINGLE_DECISION_ATTEMPT} else 1.0,
                 "automatic_retries": 0,
             },
             "response_audit": response_audit,
@@ -271,13 +280,15 @@ def _execute(database: Path, ledger: Path, output: Path, *, attempt: int,
         raise RuntimeError("SHARED_LEDGER_HAS_IN_FLIGHT_REQUEST")
     if attempt == 0 and state["used_requests"] != 0:
         raise RuntimeError("SHARED_LEDGER_NOT_PRISTINE")
-    if attempt == REAL_VALIDATION_ATTEMPT and (
-        state["used_requests"] != EXPECTED_PRIOR_REQUESTS
-        or state["used_tokens"] != EXPECTED_PRIOR_TOKENS
-        or abs(float(state["used_cost_cny"]) - EXPECTED_PRIOR_COST_CNY) > 1e-8
+    expected_prior = EXPECTED_PRIOR_USAGE.get(attempt)
+    if expected_prior is not None and (
+        state["used_requests"] != expected_prior["requests"]
+        or state["used_tokens"] != expected_prior["tokens"]
+        or abs(float(state["used_cost_cny"]) - expected_prior["cost_cny"]) > 1e-8
     ):
         raise RuntimeError("SHARED_LEDGER_PRIOR_USAGE_MISMATCH")
-    if attempt == REAL_VALIDATION_ATTEMPT and response_audit_dir is None:
+    if attempt in {REAL_VALIDATION_ATTEMPT, STRICT_SINGLE_DECISION_ATTEMPT} \
+            and response_audit_dir is None:
         raise RuntimeError("RESPONSE_AUDIT_DIRECTORY_REQUIRED")
     archive = (symbols["SecureResponseAuditArchive"](response_audit_dir, retention_days=7)
                if response_audit_dir is not None else None)
@@ -346,7 +357,7 @@ def main() -> None:
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--attempt", type=int, default=0, choices=range(0, 5))
+    parser.add_argument("--attempt", type=int, default=0, choices=range(0, 6))
     parser.add_argument("--response-audit-dir", type=Path)
     args = parser.parse_args()
     result = (_preflight(args.database, args.ledger, args.output, attempt=args.attempt,

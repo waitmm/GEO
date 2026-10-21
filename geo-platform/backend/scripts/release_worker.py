@@ -34,7 +34,8 @@ from app.modules.single_prompt_v2.service import execute_analysis
 from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_STATUS, execute_auto_fetch
 from app.release_schema import validate_release_database
 from app.services.serialization import loads
-from app.modules.single_prompt_v2.scheduling import tick, allow_scheduled_start
+from app.modules.single_prompt_v2.scheduling import (allow_collection_start, allow_scheduled_start,
+                                                      sync_execution_audit, tick)
 from app.modules.single_prompt_v2.automatic_delivery import execute_task, recover_interrupted_tasks
 from app.modules.single_prompt_v2.supplemental_sources import execute_source, recover_interrupted_sources
 from app.modules.agent_experiment.runner import execute_agent_run
@@ -85,6 +86,28 @@ def recover_interrupted_run_retries(db) -> int:
     return len(tasks)
 
 
+def recover_interrupted_collection_tasks(db) -> int:
+    """Preserve uncertain scheduled sampling attempts and never replay them."""
+    tasks = db.query(BrowserMonitorTask).filter_by(
+        schedule_type="collection_only_schedule", status="running",
+    ).order_by(BrowserMonitorTask.id).all()
+    for task in tasks:
+        task.status = "interrupted"
+        for run in db.query(BrowserMonitorRun).filter(
+                BrowserMonitorRun.task_id == task.id,
+                BrowserMonitorRun.status.in_(["queued", "running"]),
+        ).all():
+            run.status = "failed"
+            run.stage = "failed"
+            run.error_type = "worker_restart_delivery_unknown"
+            run.error_message = "采集 worker 重启，外部请求送达状态未知；未自动重试。"
+            run.finished_at = datetime.utcnow()
+    if tasks:
+        db.commit()
+        sync_execution_audit(db)
+    return len(tasks)
+
+
 def recover_owned_tasks():
     from app.modules.single_prompt_v2.service import recover_interrupted_analyses
     from app.modules.single_prompt_v2.diagnosis import recover_interrupted_diagnoses
@@ -93,7 +116,7 @@ def recover_owned_tasks():
     from app.modules.single_prompt_v2.source_preparation import recover_interrupted_source_preparations
     db = ReleaseSessionLocal()
     try:
-        for recover in (recover_interrupted_run_retries, recover_interrupted_tasks,
+        for recover in (recover_interrupted_run_retries, recover_interrupted_collection_tasks, recover_interrupted_tasks,
                         recover_interrupted_agent_runs,
                         recover_interrupted_analyses, recover_interrupted_diagnoses,
                         recover_interrupted_citation_contributions, recover_interrupted_qualification_critics,
@@ -113,6 +136,12 @@ def run_once() -> str | None:
             .order_by(BrowserMonitorTask.id.asc())
             .first()
         )
+        collection_task = (
+            db.query(BrowserMonitorTask)
+            .filter_by(schedule_type="collection_only_schedule", status="queued")
+            .order_by(BrowserMonitorTask.id.asc())
+            .first()
+        )
         analysis = (
             db.query(SinglePromptAnalysis)
             .filter(SinglePromptAnalysis.status == "QUEUED")
@@ -125,6 +154,11 @@ def run_once() -> str | None:
         if retry_task:
             identity = retry_task.id
             work_type = "run_retry"
+        elif collection_task:
+            if not allow_collection_start(db, collection_task):
+                return f"collection_cancelled:{collection_task.id}"
+            identity = collection_task.id
+            work_type = "collection_only"
         elif analysis:
             if not allow_scheduled_start(db, analysis):
                 return f"schedule_cancelled:{analysis.analysis_id}"
@@ -209,6 +243,22 @@ def run_once() -> str | None:
             executor.close()
             db.close()
         return f"run_retry:{identity}"
+    if work_type == "collection_only":
+        db = ReleaseSessionLocal()
+        executor = MonitoringTaskExecutor()
+        try:
+            task = db.get(BrowserMonitorTask, identity)
+            if not task or task.status not in {"queued", "running"}:
+                return None
+            task.status = "running"
+            db.commit()
+            executor.execute_queued_runs(db, task.id)
+            update_task_status_from_runs(db, task)
+            sync_execution_audit(db)
+        finally:
+            executor.close()
+            db.close()
+        return f"collection_only:{identity}"
     if work_type == "analysis":
         # The release acceptance path retains successful planned Runs and lets
         # the operator explicitly retry failures before freezing the Context.

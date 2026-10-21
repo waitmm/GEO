@@ -1,109 +1,113 @@
 import { useEffect, useState } from "react";
-import { Alert, Button, Checkbox, Collapse, Form, Input, InputNumber, Popconfirm, Select, Space, Table, Typography } from "antd";
-import { CalendarClock, Pause } from "lucide-react";
+import { Alert, Button, Collapse, Form, Input, InputNumber, Popconfirm, Select, Space, Table, Tag, Typography } from "antd";
+import { CalendarClock, Pause, Play, RefreshCw } from "lucide-react";
 import { api, request } from "./api/client";
-import { BrandContextSelect } from "./BrandContextSelect";
 import type { PromptVersion } from "./types";
 
-const labels: Record<string, string> = { ACTIVE: "已开启", PAUSED: "已暂停", BLOCKED: "需恢复", EXHAUSTED: "次数已用完" };
+const labels: Record<string, string> = { ACTIVE: "运行中", PAUSED: "已暂停", BLOCKED: "需恢复", EXHAUSTED: "次数已用完", SUPERSEDED: "已替换" };
+const executionLabels: Record<string, string> = { SUCCESS: "成功", PARTIAL: "部分成功", FAILED: "失败", BLOCKED: "受阻", CANCELLED: "已取消", MISSED: "设备离线，已跳过", QUEUED: "排队中", RUNNING: "采集中" };
 
 export function SamplingSchedulePanel({ projectId, promptId }: { projectId: number; promptId: number }) {
   const [rows, setRows] = useState<any[]>([]);
+  const [executions, setExecutions] = useState<Record<string, any[]>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
-  const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
-  const [selectedPromptVersion, setSelectedPromptVersion] = useState<PromptVersion | null>(null);
-  const [promptVersionsLoading, setPromptVersionsLoading] = useState(false);
+  const [versions, setVersions] = useState<PromptVersion[]>([]);
+  const [selected, setSelected] = useState<PromptVersion | null>(null);
   const [form] = Form.useForm();
-  const optimizeEnabled = Form.useWatch("optimize_enabled", form);
-  const tasks = Form.useWatch(["optimization", "max_tasks"], form) || 0;
-  const perCost = Form.useWatch(["optimization", "authorization", "max_cost_cny"], form) || 0;
+  const cadence = Form.useWatch("cadence_type", form) || "DAILY";
   const base = `/api/v2/projects/${projectId}/prompts/${promptId}/sampling-schedules`;
+
   useEffect(() => {
-    const c = new AbortController(); setBusy(true);
-    request<any[]>(base, { signal: c.signal }).then(setRows).catch(e => { if (!c.signal.aborted) setError(e.message); }).finally(() => { if (!c.signal.aborted) setBusy(false); });
-    return () => c.abort();
+    const controller = new AbortController(); setBusy(true); setError("");
+    request<any[]>(base, { signal: controller.signal }).then(async data => {
+      if (controller.signal.aborted) return;
+      setRows(data);
+      const history = await Promise.all(data.filter(row => row.automation_policy === "COLLECTION_ONLY")
+        .map(async row => [row.schedule_id, await request<any[]>(`${base}/${row.schedule_id}/executions`, { signal: controller.signal })] as const));
+      if (!controller.signal.aborted) setExecutions(Object.fromEntries(history));
+    }).catch(e => { if (!controller.signal.aborted) setError(e.message); })
+      .finally(() => { if (!controller.signal.aborted) setBusy(false); });
+    return () => controller.abort();
   }, [base, reload]);
+
   useEffect(() => {
-    let cancelled = false;
-    setPromptVersionsLoading(true);
-    setSelectedPromptVersion(null);
-    api.listPromptVersions(projectId, promptId)
-      .then((versions) => { if (!cancelled) setPromptVersions(versions); })
-      .catch((e: Error) => { if (!cancelled) { setPromptVersions([]); setError(e.message); } })
-      .finally(() => { if (!cancelled) setPromptVersionsLoading(false); });
+    let cancelled = false; setSelected(null);
+    api.listPromptVersions(projectId, promptId).then(value => { if (!cancelled) setVersions(value); })
+      .catch((e: Error) => { if (!cancelled) setError(e.message); });
     return () => { cancelled = true; };
   }, [projectId, promptId]);
-  async function selectPromptVersion(promptVersionId: string) {
-    setPromptVersionsLoading(true);
-    setSelectedPromptVersion(null);
-    try { setSelectedPromptVersion(await api.getPromptVersion(projectId, promptId, promptVersionId)); }
-    catch (e) { setError((e as Error).message); }
-    finally { setPromptVersionsLoading(false); }
-  }
-  async function post(path: string, value: unknown) {
+
+  async function chooseVersion(id: string) {
     setBusy(true); setError("");
-    try { await request(base + path, { method: "POST", body: JSON.stringify(value) }); setReload(n => n + 1); }
+    try { setSelected(await api.getPromptVersion(projectId, promptId, id)); }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
-  return <section>
-    <Typography.Title level={4}>每日采样计划</Typography.Title>
-    {error && <Alert type="error" message={error} />}
-    <Table rowKey="schedule_id" dataSource={rows} pagination={false} scroll={{ x: 680 }} columns={[
-      { title: "状态", render: (_, r) => labels[r.status] || r.status },
-      { title: "执行时间", render: (_, r) => `${r.local_time} · ${r.timezone}` },
-      { title: "下一次", render: (_, r) => r.status === "ACTIVE" ? new Date(r.next_due_at).toLocaleString() : "已停止" },
-      { title: "剩余尝试", dataIndex: "remaining_attempts" },
-      { title: "情况", dataIndex: "pause_reason" },
-      { title: "自动优化", render: (_, r) => !r.plan.optimization ? "未开启" : <>
-        <div>每 {r.plan.optimization.every_batches} 批 · 最多 {r.plan.optimization.max_tasks} 次 · 总预算 ¥{r.plan.optimization.total_authorization.max_cost_cny}</div>
-        <div>{r.optimization.status === "BLOCKED" ? r.optimization.last_error : r.optimization.status === "EXHAUSTED" ? "优化任务额度用完" : "按固定配置交接"}</div>
-        {(r.optimization.batches || []).filter((b: any) => b.task_id).map((b: any) => <div key={b.analysis_id}><a href={`/?release_view=coreV2&v2_project=${projectId}&v2_prompt=${promptId}&v2_analysis=${b.analysis_id}`}>查看本批优化任务</a></div>)}
-      </> },
-      { title: "操作", render: (_, r) => r.status === "ACTIVE" && <Popconfirm title="暂停新采样和排队的自动优化；已开始的任务保留结果，可在任务页单独停止。" okText="确认暂停" cancelText="保留计划" onConfirm={() => post(`/${r.schedule_id}/pause`, { expected_revision: r.revision })}><Button disabled={busy} icon={<Pause size={14} />}>暂停</Button></Popconfirm> },
+
+  async function post(path: string, value: unknown) {
+    setBusy(true); setError("");
+    try { await request(base + path, { method: "POST", body: JSON.stringify(value) }); setReload(value => value + 1); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  const cadenceText = (row: any) => row.cadence?.type === "INTERVAL" ? `每 ${row.cadence.every_hours} 小时`
+    : row.cadence?.type === "WEEKLY" ? `每周 ${["一", "二", "三", "四", "五", "六", "日"][row.cadence.weekday]} ${row.cadence.local_time}`
+      : `每天 ${row.cadence?.local_time || row.local_time}`;
+
+  return <section aria-label="定时采集管理">
+    <Typography.Title level={4}>定时采集</Typography.Title>
+    <Alert type="info" showIcon message="采集自动化，分析手动化"
+      description="计划只积累真实回答、引用和运行状态，不自动分析、生成策略或写稿。设备离线期间错过的时段会记录并跳过，不批量补采。" />
+    {error && <Alert style={{ marginTop: 12 }} type="error" showIcon message={error} />}
+    <Table style={{ marginTop: 16 }} rowKey="schedule_id" dataSource={rows} loading={busy} pagination={false} scroll={{ x: 980 }} columns={[
+      { title: "状态", render: (_, row) => <><Tag color={row.status === "ACTIVE" ? "green" : row.status === "BLOCKED" ? "red" : "default"}>{labels[row.status] || row.status}</Tag>{!row.external_collection_authorized && row.automation_policy === "COLLECTION_ONLY" && <Tag color="orange">待外部采样授权</Tag>}</> },
+      { title: "频率", render: (_, row) => cadenceText(row) },
+      { title: "下一次", render: (_, row) => row.status === "ACTIVE" ? new Date(row.next_due_at).toLocaleString() : "—" },
+      { title: "剩余次数", dataIndex: "remaining_attempts" },
+      { title: "最近执行", render: (_, row) => row.last_execution ? `${executionLabels[row.last_execution.status] || row.last_execution.status} · ${new Date(row.last_execution.due_at).toLocaleString()}` : "尚未执行" },
+      { title: "成功率", render: (_, row) => row.execution_summary?.success_rate == null ? "暂无" : `${(row.execution_summary.success_rate * 100).toFixed(0)}%` },
+      { title: "说明", dataIndex: "pause_reason" },
+      { title: "操作", render: (_, row) => <Space wrap>
+        {row.status === "ACTIVE" ? <>
+          <Button disabled={busy || !row.external_collection_authorized} icon={<Play size={14} />} onClick={() => post(`/${row.schedule_id}/run-now`, { expected_revision: row.revision, idempotency_key: `manual-${Date.now()}` })}>立即采集</Button>
+          <Popconfirm title="暂停后不会启动新的采集，正在执行的任务保留真实结果。" onConfirm={() => post(`/${row.schedule_id}/pause`, { expected_revision: row.revision })}><Button disabled={busy} icon={<Pause size={14} />}>暂停</Button></Popconfirm>
+        </> : row.status === "PAUSED" && <Button disabled={busy || !row.external_collection_authorized} icon={<Play size={14} />} onClick={() => post(`/${row.schedule_id}/resume`, { expected_revision: row.revision })}>恢复</Button>}
+      </Space> },
     ]} />
-    <Form form={form} layout="vertical" initialValues={{ timezone_name: "Asia/Shanghai", local_time: "09:00", sample_count: 1, max_attempts: 7,
-      optimize_enabled: false, optimization: { every_batches: 1, max_tasks: 1 } }} onFinish={({ optimize_enabled, optimization, ...v }) => {
-        if (!selectedPromptVersion) { setError("请选择并读取一个明确的 Prompt 冻结版本后再授权采样计划。"); return; }
-        return post("", { ...v, optimization: optimize_enabled ? optimization : null,
-          prompt_version_id: selectedPromptVersion.prompt_version_id, snapshot_hash: selectedPromptVersion.snapshot_hash });
-      }} style={{ marginTop: 16 }}>
-      <Alert type={selectedPromptVersion ? "info" : "warning"} showIcon message="采样计划必须绑定明确的 Prompt 冻结版本"
-        description={<Space wrap style={{ width: "100%" }}><Select aria-label="每日采样计划绑定的 Prompt 冻结版本" style={{ width: "100%", minWidth: 0 }} loading={promptVersionsLoading}
-          value={selectedPromptVersion?.prompt_version_id} placeholder="选择冻结 Prompt 版本" onChange={(value) => void selectPromptVersion(value)}
-          options={promptVersions.filter((version) => version.status === "EFFECTIVE").map((version) => ({ value: version.prompt_version_id, label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash.slice(0, 12)}` }))} />
-          {selectedPromptVersion ? <Typography.Text>将提交 V{selectedPromptVersion.version_number} · <code>{selectedPromptVersion.snapshot_hash.slice(0, 12)}</code></Typography.Text> : <Typography.Text type="secondary">只能选择当前 EFFECTIVE 冻结版本；历史版本仅可查看，不可用于新计划，也不会使用 latest。</Typography.Text>}</Space>} />
+    {!!rows.length && <Collapse style={{ marginTop: 12 }} items={rows.filter(row => row.automation_policy === "COLLECTION_ONLY").map(row => ({
+      key: row.schedule_id, label: `执行记录 · ${cadenceText(row)}`,
+      children: <Table size="small" rowKey="execution_id" pagination={false} dataSource={executions[row.schedule_id] || []} columns={[
+        { title: "时间", render: (_, item) => new Date(item.due_at).toLocaleString() },
+        { title: "触发", render: (_, item) => item.trigger_type === "MANUAL" ? "手动" : "计划" },
+        { title: "状态", render: (_, item) => executionLabels[item.status] || item.status },
+        { title: "成功 / 部分 / 失败", render: (_, item) => `${item.success_count} / ${item.partial_count} / ${item.failure_count}` },
+        { title: "原因", render: (_, item) => Object.values(item.error_summary || {}).map((value: any) => value.message || value.reason || value.type).filter(Boolean).join("；") || "—" },
+      ]} />
+    }))} />}
+
+    <Typography.Title level={5} style={{ marginTop: 24 }}>新建采集计划</Typography.Title>
+    <Form form={form} layout="vertical" initialValues={{ timezone_name: "Asia/Shanghai", local_time: "09:00", cadence_type: "DAILY", weekday: 0, interval_hours: 6, sample_count: 3, max_attempts: 90 }}
+      onFinish={value => {
+        if (!selected) { setError("请选择明确的 Prompt 冻结版本。"); return; }
+        return post("", { ...value, collection_only: true, optimization: null,
+          prompt_version_id: selected.prompt_version_id, snapshot_hash: selected.snapshot_hash });
+      }}>
+      <Form.Item label="绑定 Prompt 冻结版本" required><Select aria-label="采集计划绑定的 Prompt 冻结版本" value={selected?.prompt_version_id} placeholder="选择当前有效版本"
+        onChange={value => void chooseVersion(value)} options={versions.filter(item => item.status === "EFFECTIVE").map(item => ({ value: item.prompt_version_id, label: `V${item.version_number} · ${item.snapshot_hash.slice(0, 12)}` }))} /></Form.Item>
       <Space wrap align="start">
+        <Form.Item label="采集频率" name="cadence_type" rules={[{ required: true }]}><Select style={{ width: 150 }} options={[{ value: "DAILY", label: "每天" }, { value: "WEEKLY", label: "每周" }, { value: "INTERVAL", label: "固定间隔" }]} /></Form.Item>
+        {cadence !== "INTERVAL" && <Form.Item label="执行时间" name="local_time" rules={[{ required: true }]}><Input type="time" /></Form.Item>}
+        {cadence === "WEEKLY" && <Form.Item label="星期" name="weekday" rules={[{ required: true }]}><Select style={{ width: 120 }} options={["一", "二", "三", "四", "五", "六", "日"].map((label, index) => ({ value: index, label: `周${label}` }))} /></Form.Item>}
+        {cadence === "INTERVAL" && <Form.Item label="每隔几小时" name="interval_hours" rules={[{ required: true }]}><InputNumber min={1} max={168} /></Form.Item>}
         <Form.Item label="时区" name="timezone_name" rules={[{ required: true }]}><Input /></Form.Item>
-        <Form.Item label="每日时间" name="local_time" rules={[{ required: true }]}><Input type="time" /></Form.Item>
-        <Form.Item label="每次独立会话数" name="sample_count" rules={[{ required: true }]}><InputNumber min={1} max={10} /></Form.Item>
-        <Form.Item label="授权总尝试上限" name="max_attempts" rules={[{ required: true }]}><InputNumber min={1} max={300} /></Form.Item>
+        <Form.Item label="每次采样数" name="sample_count" rules={[{ required: true }]}><InputNumber min={1} max={10} /></Form.Item>
+        <Form.Item label="累计授权次数" name="max_attempts" rules={[{ required: true }]}><InputNumber min={1} max={300} /></Form.Item>
       </Space>
-      <Form.Item label="采样授权说明" name="authorization_note" rules={[{ required: true, whitespace: true }]}><Input maxLength={1000} /></Form.Item>
-      <Form.Item name="optimize_enabled" valuePropName="checked"><Checkbox>采样完成后自动生成优化建议与稿件</Checkbox></Form.Item>
-      {optimizeEnabled && <section aria-label="计划自动优化授权">
-        <Alert type="warning" showIcon message={`整份计划模型预算上限 ¥${(tasks * perCost).toFixed(2)}；失败计入，自动重试为 0。`} description="品牌、事实、问题或模型配置变化后停止自动交接；价格依据过期时保留采样，优化等待处理。" />
-        <Space wrap align="start" style={{ marginTop: 16 }}>
-          <Form.Item label="每几批采样触发优化" name={["optimization", "every_batches"]} rules={[{ required: true }]}><InputNumber min={1} max={30} precision={0} /></Form.Item>
-          <Form.Item label="最多自动优化任务数" name={["optimization", "max_tasks"]} rules={[{ required: true }]}><InputNumber min={1} max={30} precision={0} /></Form.Item>
-        </Space>
-        <Form.Item name={["optimization", "brand_context_version_id"]}><BrandContextSelect projectId={projectId} onChange={v => form.setFieldValue(["optimization", "brand_context_version_id"], v)} /></Form.Item>
-        <Form.Item name={["optimization", "source_fetch_authorized"]} valuePropName="checked"><Checkbox>允许获取各批实际引用正文，每个 URL 最多 2 次，不扩站</Checkbox></Form.Item>
-        <Space wrap align="start">
-          <Form.Item label="每任务模型请求上限" name={["optimization", "authorization", "max_requests"]} rules={[{ required: true }]}><InputNumber min={1} max={1000} precision={0} /></Form.Item>
-          <Form.Item label="每任务 token 上限" name={["optimization", "authorization", "max_tokens"]} rules={[{ required: true }]}><InputNumber min={1} max={10000000} precision={0} /></Form.Item>
-          <Form.Item label="每任务费用上限（元）" name={["optimization", "authorization", "max_cost_cny"]} rules={[{ required: true }]}><InputNumber min={0.01} max={1000} precision={2} /></Form.Item>
-        </Space>
-        <Collapse defaultActiveKey={["pricing"]} items={[{ key: "pricing", label: "模型计费与授权记录（必填）", forceRender: true, children: <>
-          <Form.Item label="输入/输出较高单价（元/百万token）" name={["optimization", "authorization", "conservative_cny_per_million_tokens"]} rules={[{ required: true }]}><InputNumber min={0.01} max={1000} /></Form.Item>
-          <Form.Item label="已核实计费依据" name={["optimization", "authorization", "pricing_source"]} rules={[{ required: true, min: 8 }]}><Input maxLength={2000} /></Form.Item>
-          <Form.Item label="计费核实日期" name={["optimization", "authorization", "pricing_checked_at"]} rules={[{ required: true }]}><Input type="date" /></Form.Item>
-          <Form.Item label="授权人" name={["optimization", "authorization", "authorized_by"]} rules={[{ required: true, whitespace: true }]}><Input maxLength={240} /></Form.Item>
-        </> }]} />
-      </section>}
-      <Button htmlType="submit" type="primary" loading={busy} disabled={!selectedPromptVersion || rows.some(r => r.status === "ACTIVE")} icon={<CalendarClock size={16} />}>授权并开启每日采样</Button>
+      <Form.Item label="采样授权说明" name="authorization_note" rules={[{ required: true, whitespace: true }]}><Input maxLength={1000} placeholder="记录本计划的用途和授权范围" /></Form.Item>
+      <Space><Button htmlType="submit" type="primary" loading={busy} disabled={!selected || rows.some(row => row.status === "ACTIVE")} icon={<CalendarClock size={16} />}>保存采集计划</Button><Button icon={<RefreshCw size={16} />} onClick={() => setReload(value => value + 1)}>刷新状态</Button></Space>
     </Form>
   </section>;
 }

@@ -4,6 +4,7 @@ import { BarChart3, RefreshCw, Save } from "lucide-react";
 import { request } from "./api/client";
 import type { Project } from "./types";
 import { SamplingSchedulePanel } from "./SamplingSchedulePanel";
+import { AnalysisRangePanel } from "./AnalysisRangePanel";
 import { SupplementalSources } from "./SupplementalSources";
 import { brandAssociationContent } from "./brandAssociationContext";
 
@@ -243,7 +244,10 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
         ]} />
       </section>}
       {!promptId && !busy && <Empty description={overview?.prompts.length ? "选择问题查看原文、采样计划和详细指标" : "尚无可用问题，请先在问题配置中创建"} />}
-      {mode === "monitor" && promptId && <Collapse style={{ marginBottom: 24 }} items={[{ key: "schedule", label: "持续采样计划", children: <SamplingSchedulePanel key={`${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> }]} />}
+      {mode === "monitor" && promptId && <Collapse style={{ marginBottom: 24 }} items={[
+        { key: "schedule", label: "定时采集管理", children: <SamplingSchedulePanel key={`${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
+        { key: "range", label: "按时间范围选择分析数据", children: <AnalysisRangePanel key={`range:${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
+      ]} />}
       {promptId && !busy && !scopes.length && !pool?.runs?.length && <Empty description="尚无采样记录，请开启采样计划或进入分析与稿件开始首次采样" />}
       {mode === "monitor" && !result && pool?.pool_count > 0 && <Typography.Paragraph>累计采样尝试 {pool.pool_count} 条，当前问题原文 {pool.runs.length} 条；候选与推荐指标需选择已计算的准确回答版本。</Typography.Paragraph>}
       {mode === "monitor" && pool?.historical_query_runs?.length > 0 && <Collapse items={[{ key: "old-query", label: `历史问题版本的回答（${pool.historical_query_runs.length}），不混入当前问题指标`, children: <AnswerDetails measurement={{ runs: pool.historical_query_runs }} /> }]} />}

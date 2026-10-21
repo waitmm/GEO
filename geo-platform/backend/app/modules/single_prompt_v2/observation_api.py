@@ -1,6 +1,8 @@
 """Release Monitor / Validate and optional context entrypoints."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
@@ -91,6 +93,125 @@ class MonitorAnalysisCreate(StrictInput):
     scope_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
+class RangePreviewCreate(StrictInput):
+    mode: str = Field(pattern=r'^(LAST_7_DAYS|LAST_14_DAYS|LAST_30_DAYS|CUSTOM|RUN_IDS)$')
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    run_ids: list[int] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode='after')
+    def valid_range(self):
+        if self.mode == 'CUSTOM' and (not self.start_at or not self.end_at):
+            raise ValueError('自定义范围必须提供开始和结束时间')
+        if self.mode == 'RUN_IDS' and not self.run_ids:
+            raise ValueError('指定 Run 模式至少需要一个 Run ID')
+        if self.mode != 'RUN_IDS' and self.run_ids:
+            raise ValueError('只有指定 Run 模式可以提交 Run IDs')
+        return self
+
+
+class RangeFreezeCreate(StrictInput):
+    selector: RangePreviewCreate
+    preview_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
+    group_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
+    selected_run_ids: list[int] = Field(min_length=1, max_length=500)
+
+
+def _utc_naive(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _range_preview(project_id: int, prompt_id: int, payload: RangePreviewCreate, db: Session):
+    prompt = db.get(Prompt, prompt_id)
+    if not prompt or prompt.project_id != project_id:
+        raise HTTPException(404, '问题不存在或不属于当前项目')
+    now = datetime.utcnow()
+    if payload.mode.startswith('LAST_'):
+        days = int(payload.mode.split('_')[1])
+        start_at, end_at = now - timedelta(days=days), now
+        resolved = {'mode': 'CUSTOM', 'start_at': start_at.isoformat() + 'Z', 'end_at': end_at.isoformat() + 'Z', 'run_ids': []}
+    elif payload.mode == 'CUSTOM':
+        start_at, end_at = _utc_naive(payload.start_at), _utc_naive(payload.end_at)
+        if start_at >= end_at:
+            raise HTTPException(422, '自定义范围的结束时间必须晚于开始时间')
+        resolved = {'mode': 'CUSTOM', 'start_at': start_at.isoformat() + 'Z', 'end_at': end_at.isoformat() + 'Z', 'run_ids': []}
+    else:
+        start_at = end_at = None
+        resolved = {'mode': 'RUN_IDS', 'start_at': None, 'end_at': None, 'run_ids': sorted(set(payload.run_ids))}
+    query = db.query(BrowserMonitorRun).filter_by(project_id=project_id, prompt_id=prompt_id)
+    if payload.mode == 'RUN_IDS':
+        query = query.filter(BrowserMonitorRun.id.in_(resolved['run_ids']))
+    candidates = query.order_by(BrowserMonitorRun.id).all()
+    if payload.mode != 'RUN_IDS':
+        candidates = [run for run in candidates if start_at <= (run.finished_at or run.started_at or run.created_at) <= end_at]
+    if len(candidates) > 5000:
+        raise HTTPException(422, '该时间范围超过 5000 条采样，请缩小范围')
+    grouped = {}
+    for run in candidates:
+        try:
+            binding = prompt_version_binding_for_runs(db, run_ids=[run.id])
+        except HTTPException:
+            binding = {'binding_status': 'UNSAFE', 'reason': 'PROMPT_VERSION_BINDING_INVALID'}
+        identity = {'platform': run.platform, 'source_type': run.source_type, 'adapter': run.adapter,
+            'collection_mode': run.collection_mode, 'original_query': run.original_query,
+            'prompt_version_id': binding.get('prompt_version_id'), 'snapshot_hash': binding.get('snapshot_hash'),
+            'binding_status': binding.get('binding_status'), 'binding_reason': binding.get('reason')}
+        key = _hash(identity)
+        group = grouped.setdefault(key, {'group_hash': key, 'identity': identity, 'prompt_version': binding,
+            'run_ids': [], 'selected_run_ids': [], 'excluded_run_ids': [], 'status_counts': {}})
+        group['run_ids'].append(run.id)
+        group['status_counts'][run.status] = group['status_counts'].get(run.status, 0) + 1
+        if run.status in VALID_RUN_STATUSES and str(run.answer_text or '').strip():
+            group['selected_run_ids'].append(run.id)
+        else:
+            group['excluded_run_ids'].append(run.id)
+    groups = sorted(grouped.values(), key=lambda item: item['group_hash'])
+    preview_basis = {'contract_version': 'monitor-analysis-range-preview-v1', 'project_id': project_id,
+        'prompt_id': prompt_id, 'selector': resolved, 'groups': groups}
+    return {**preview_basis, 'preview_hash': _hash(preview_basis), 'total_count': len(candidates),
+        'valid_count': sum(len(group['selected_run_ids']) for group in groups),
+        'invalid_count': sum(len(group['excluded_run_ids']) for group in groups),
+        'mixed_groups': len(groups) > 1,
+        'limitations': ['失败采样不会按品牌未提及或零引用计入。', '不同 Prompt 版本、平台或采集配置不会静默合并。']}
+
+
+@router.post('/projects/{project_id}/prompts/{prompt_id}/analysis-ranges/preview')
+def preview_analysis_range(project_id: int, prompt_id: int, payload: RangePreviewCreate,
+                           db: Session = Depends(get_release_db)):
+    return _range_preview(project_id, prompt_id, payload, db)
+
+
+@router.post('/projects/{project_id}/prompts/{prompt_id}/analysis-ranges/freeze', status_code=201)
+def freeze_analysis_range(project_id: int, prompt_id: int, payload: RangeFreezeCreate,
+                          response: Response, db: Session = Depends(get_release_db)):
+    preview = _range_preview(project_id, prompt_id, payload.selector, db)
+    if preview['preview_hash'] != payload.preview_hash:
+        raise HTTPException(409, detail={'code': 'RANGE_PREVIEW_CHANGED', 'message': '采样范围已变化，请重新预览确认'})
+    group = next((item for item in preview['groups'] if item['group_hash'] == payload.group_hash), None)
+    if not group:
+        raise HTTPException(409, '所选采样分组已不存在')
+    selected = sorted(set(payload.selected_run_ids))
+    if not selected or not set(selected).issubset(set(group['selected_run_ids'])):
+        raise HTTPException(409, '提交的 Run 不属于当前可分析分组')
+    binding = group['prompt_version']
+    if binding.get('binding_status') != 'BOUND':
+        raise HTTPException(409, detail={'code': 'RUN_PROMPT_VERSION_UNPROVEN', 'message': '所选 Run 没有单一可证明的 Prompt 冻结版本'})
+    snapshots = _snapshot_run_rows(db, db.query(BrowserMonitorRun).filter(BrowserMonitorRun.id.in_(selected)).order_by(BrowserMonitorRun.id).all())
+    fingerprints = {int(item['run_id']): _run_input_fingerprint(item) for item in snapshots}
+    selection_hash = _hash({'preview_hash': payload.preview_hash, 'group_hash': payload.group_hash, 'run_ids': selected})
+    origin = {'contract_version': 'monitor-analysis-range-v1', 'preview_hash': payload.preview_hash,
+        'group_hash': payload.group_hash, 'selector': preview['selector'], 'selected_run_ids': selected,
+        'excluded_run_ids': sorted(set(group['run_ids']) - set(selected)), 'selection_hash': selection_hash}
+    analysis, created = create_analysis_from_runs(db, project_id=project_id, prompt_id=prompt_id,
+        prompt_version_id=binding['prompt_version_id'], snapshot_hash=binding['snapshot_hash'],
+        run_ids=selected, run_fingerprints=fingerprints, base_context_id=None,
+        idempotency_key=f'range:{selection_hash}', origin_monitor_scope=origin)
+    if not created: response.status_code = 200
+    return get_analysis_status(db, analysis.analysis_id)
+
+
 @router.post('/projects/{project_id}/prompts/{prompt_id}/monitor-analysis', status_code=201)
 def analyze_monitor_scope(project_id: int, prompt_id: int, payload: MonitorAnalysisCreate,
                           response: Response, db: Session = Depends(get_release_db)):
@@ -156,21 +277,41 @@ class ScheduleCreate(StrictInput):
     sample_count: int = Field(ge=1, le=10)
     max_attempts: int = Field(ge=1, le=300)
     authorization_note: str = Field(min_length=1, max_length=1000)
+    collection_only: bool = False
+    cadence_type: str = Field(default="DAILY", pattern=r"^(DAILY|WEEKLY|INTERVAL)$")
+    weekday: int | None = Field(default=None, ge=0, le=6)
+    interval_hours: int | None = Field(default=None, ge=1, le=168)
     optimization: ScheduledOptimization | None = None
+
+    @model_validator(mode="after")
+    def cadence_and_automation(self):
+        if self.collection_only and self.optimization is not None:
+            raise ValueError("COLLECTION_ONLY 计划不能自动分析")
+        if self.cadence_type == "WEEKLY" and self.weekday is None:
+            raise ValueError("每周计划必须选择星期")
+        if self.cadence_type == "INTERVAL" and self.interval_hours is None:
+            raise ValueError("固定间隔计划必须填写小时间隔")
+        if not self.collection_only and self.cadence_type != "DAILY":
+            raise ValueError("旧计划仅支持每日频率")
+        return self
 
 
 class SchedulePause(StrictInput):
     expected_revision: int = Field(ge=1)
 
 
+class ScheduleRunNow(SchedulePause):
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
 @router.get('/projects/{project_id}/prompts/{prompt_id}/sampling-schedules')
 def schedules(project_id: int, prompt_id: int, db: Session = Depends(get_release_db)):
-    return [scheduling.view(r) for r in db.query(SinglePromptSamplingSchedule).filter_by(project_id=project_id, prompt_id=prompt_id).order_by(SinglePromptSamplingSchedule.id.desc()).all()]
+    return [scheduling.view(r, db) for r in db.query(SinglePromptSamplingSchedule).filter_by(project_id=project_id, prompt_id=prompt_id).order_by(SinglePromptSamplingSchedule.id.desc()).all()]
 
 
 @router.post('/projects/{project_id}/prompts/{prompt_id}/sampling-schedules', status_code=201)
 def new_schedule(project_id: int, prompt_id: int, payload: ScheduleCreate, db: Session = Depends(get_release_db)):
-    return scheduling.view(scheduling.create_schedule(db, project_id=project_id, prompt_id=prompt_id, **payload.model_dump()))
+    return scheduling.view(scheduling.create_schedule(db, project_id=project_id, prompt_id=prompt_id, **payload.model_dump()), db)
 
 
 @router.post('/projects/{project_id}/prompts/{prompt_id}/sampling-schedules/{schedule_id}/pause')
@@ -178,7 +319,45 @@ def pause_schedule(project_id: int, prompt_id: int, schedule_id: str, payload: S
     row = db.query(SinglePromptSamplingSchedule).filter_by(project_id=project_id, prompt_id=prompt_id, schedule_id=schedule_id).one_or_none()
     if not row:
         raise HTTPException(404, '计划不存在或归属不符')
-    return scheduling.view(scheduling.pause_schedule(db, row, payload.expected_revision))
+    return scheduling.view(scheduling.pause_schedule(db, row, payload.expected_revision), db)
+
+
+@router.post('/projects/{project_id}/prompts/{prompt_id}/sampling-schedules/{schedule_id}/resume')
+def resume_schedule(project_id: int, prompt_id: int, schedule_id: str, payload: SchedulePause,
+                    db: Session = Depends(get_release_db)):
+    row = db.query(SinglePromptSamplingSchedule).filter_by(project_id=project_id, prompt_id=prompt_id, schedule_id=schedule_id).one_or_none()
+    if not row:
+        raise HTTPException(404, '计划不存在或归属不符')
+    return scheduling.view(scheduling.resume_schedule(db, row, payload.expected_revision), db)
+
+
+@router.post('/projects/{project_id}/prompts/{prompt_id}/sampling-schedules/{schedule_id}/run-now', status_code=202)
+def run_schedule_now(project_id: int, prompt_id: int, schedule_id: str, payload: ScheduleRunNow,
+                     db: Session = Depends(get_release_db)):
+    row = db.query(SinglePromptSamplingSchedule).filter_by(project_id=project_id, prompt_id=prompt_id, schedule_id=schedule_id).one_or_none()
+    if not row:
+        raise HTTPException(404, '计划不存在或归属不符')
+    return scheduling.execution_view(db, scheduling.queue_immediate(
+        db, row, payload.expected_revision, payload.idempotency_key))
+
+
+@router.put('/projects/{project_id}/prompts/{prompt_id}/sampling-schedules/{schedule_id}', status_code=201)
+def edit_schedule(project_id: int, prompt_id: int, schedule_id: str, payload: ScheduleCreate,
+                  expected_revision: int, db: Session = Depends(get_release_db)):
+    row = db.query(SinglePromptSamplingSchedule).filter_by(project_id=project_id, prompt_id=prompt_id, schedule_id=schedule_id).one_or_none()
+    if not row:
+        raise HTTPException(404, '计划不存在或归属不符')
+    values = payload.model_dump()
+    values.pop("collection_only", None)
+    return scheduling.view(scheduling.replace_schedule(db, row, expected_revision, **values), db)
+
+
+@router.get('/projects/{project_id}/prompts/{prompt_id}/sampling-schedules/{schedule_id}/executions')
+def schedule_executions(project_id: int, prompt_id: int, schedule_id: str, db: Session = Depends(get_release_db)):
+    row = db.query(SinglePromptSamplingSchedule).filter_by(project_id=project_id, prompt_id=prompt_id, schedule_id=schedule_id).one_or_none()
+    if not row:
+        raise HTTPException(404, '计划不存在或归属不符')
+    return scheduling.executions(db, row, limit=100)
 
 
 class ScopeReference(StrictInput):

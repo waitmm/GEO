@@ -29,6 +29,7 @@ from app.models import (
     SinglePromptStrategyExecution,
     SinglePromptSourceDisposition,
     SinglePromptSourcePreparation,
+    SinglePromptSamplingSchedule,
 )
 from app.modules.monitoring.enums import (
     BROWSER_AUDIT_ENTRY_TYPE,
@@ -255,12 +256,37 @@ def prompt_version_binding_for_runs(
     task_ids = {row.task_id for row in rows}
     source_analyses = db.query(SinglePromptAnalysis).filter(SinglePromptAnalysis.task_id.in_(task_ids)).all()
     source_by_task = {row.task_id: row for row in source_analyses}
+    tasks = db.query(BrowserMonitorTask).filter(BrowserMonitorTask.id.in_(task_ids)).all()
+    task_by_id = {row.id: row for row in tasks}
     bindings: list[dict[str, Any]] = []
     for row in rows:
         source = source_by_task.get(row.task_id)
-        if not source:
-            return {"binding_status": "LEGACY_UNBOUND"}
-        source_binding = _validate_analysis_prompt_version(db, source)
+        if source:
+            source_binding = _validate_analysis_prompt_version(db, source)
+        else:
+            task = task_by_id.get(row.task_id)
+            prefix = "sampling_schedule:"
+            if not task or task.schedule_type != "collection_only_schedule" or not task.created_by.startswith(prefix):
+                return {"binding_status": "LEGACY_UNBOUND"}
+            schedule_id = task.created_by[len(prefix):].split(":", 1)[0]
+            schedule = db.query(SinglePromptSamplingSchedule).filter_by(schedule_id=schedule_id).one_or_none()
+            plan = loads(schedule.plan_json, {}) if schedule else {}
+            source_binding = plan.get("prompt_version") or {}
+            try:
+                validated = _load_prompt_version_binding(
+                    db,
+                    project_id=row.project_id,
+                    prompt_id=row.prompt_id,
+                    prompt_version_id=source_binding.get("prompt_version_id"),
+                    snapshot_hash=source_binding.get("snapshot_hash"),
+                )
+            except (HTTPException, TypeError):
+                return {"binding_status": "LEGACY_UNBOUND"}
+            if (not schedule or schedule.project_id != row.project_id or schedule.prompt_id != row.prompt_id
+                    or task.project_id != row.project_id or plan.get("automation_policy") != "COLLECTION_ONLY"
+                    or _hash(plan) != schedule.plan_hash or source_binding != validated
+                    or row.original_query != validated["snapshot"]["prompt_text"]):
+                return {"binding_status": "UNSAFE", "reason": "COLLECTION_SCHEDULE_BINDING_INVALID"}
         if source_binding.get("binding_status") != "BOUND":
             return {"binding_status": "LEGACY_UNBOUND"}
         bindings.append(source_binding)

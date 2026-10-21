@@ -80,9 +80,24 @@ PY
 bootstrap_or_restart() {
   local label="$1" plist="$2"
   if service_loaded "$label"; then
+    local old_pid
+    old_pid="$(service_pid "$label")"
     # kickstart reuses the already loaded definition and would ignore a newly
     # rendered plist. Reload so path, port and safety settings are authoritative.
     launchctl bootout "$LAUNCH_DOMAIN/$label"
+    # bootout removes the launchd registration before the old process has
+    # necessarily released its listener. Starting immediately can return EIO
+    # or create a new process that cannot bind the port.
+    if [[ -n "$old_pid" ]]; then
+      for _ in $(seq 1 100); do
+        kill -0 "$old_pid" >/dev/null 2>&1 || break
+        sleep 0.1
+      done
+      if kill -0 "$old_pid" >/dev/null 2>&1; then
+        echo "$label did not stop within 10 seconds; refusing to overlap services." >&2
+        return 1
+      fi
+    fi
   fi
   launchctl bootstrap "$LAUNCH_DOMAIN" "$plist"
 }

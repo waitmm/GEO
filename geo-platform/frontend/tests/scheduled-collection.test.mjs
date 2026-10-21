@@ -10,6 +10,9 @@ test('scheduled collection is collection-only and exposes guarded controls', () 
   assert.match(source, /立即采集/);
   assert.match(source, /暂停/);
   assert.match(source, /恢复/);
+  assert.match(source, /编辑采集计划/);
+  assert.match(source, /method: "PUT"/);
+  assert.match(source, /避免重复创建同一问题的计划/);
   assert.doesNotMatch(source, /采样完成后自动生成优化建议与稿件/);
 });
 

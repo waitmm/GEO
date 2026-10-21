@@ -13,8 +13,9 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
-  const [versions, setVersions] = useState<PromptVersion[]>([]);
-  const [selected, setSelected] = useState<PromptVersion | null>(null);
+  const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
+  const [selectedPromptVersion, setSelectedPromptVersion] = useState<PromptVersion | null>(null);
+  const [editing, setEditing] = useState<any | null>(null);
   const [form] = Form.useForm();
   const cadence = Form.useWatch("cadence_type", form) || "DAILY";
   const base = `/api/v2/projects/${projectId}/prompts/${promptId}/sampling-schedules`;
@@ -33,15 +34,15 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
   }, [base, reload]);
 
   useEffect(() => {
-    let cancelled = false; setSelected(null);
-    api.listPromptVersions(projectId, promptId).then(value => { if (!cancelled) setVersions(value); })
+    let cancelled = false; setSelectedPromptVersion(null);
+    api.listPromptVersions(projectId, promptId).then(value => { if (!cancelled) setPromptVersions(value); })
       .catch((e: Error) => { if (!cancelled) setError(e.message); });
     return () => { cancelled = true; };
   }, [projectId, promptId]);
 
-  async function chooseVersion(id: string) {
+  async function chooseVersion(promptVersionId: string) {
     setBusy(true); setError("");
-    try { setSelected(await api.getPromptVersion(projectId, promptId, id)); }
+    try { setSelectedPromptVersion(await api.getPromptVersion(projectId, promptId, promptVersionId)); }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -50,6 +51,35 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
     setBusy(true); setError("");
     try { await request(base + path, { method: "POST", body: JSON.stringify(value) }); setReload(value => value + 1); }
     catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function edit(row: any) {
+    const plan = row.plan || {};
+    setEditing(row); setError("");
+    form.setFieldsValue({
+      timezone_name: row.timezone, local_time: row.local_time,
+      cadence_type: row.cadence?.type || "DAILY", weekday: row.cadence?.weekday ?? 0,
+      interval_hours: row.cadence?.every_hours ?? 6, sample_count: plan.sample_count,
+      max_attempts: row.remaining_attempts, authorization_note: row.authorization_note,
+    });
+    await chooseVersion(plan.prompt_version?.prompt_version_id);
+  }
+
+  async function save(value: any) {
+    if (!selectedPromptVersion) { setError("请选择明确的 Prompt 冻结版本。"); return; }
+    const payload = { ...value, collection_only: true, optimization: null,
+      prompt_version_id: selectedPromptVersion.prompt_version_id, snapshot_hash: selectedPromptVersion.snapshot_hash };
+    setBusy(true); setError("");
+    try {
+      if (editing) {
+        await request(`${base}/${editing.schedule_id}?expected_revision=${editing.revision}`,
+          { method: "PUT", body: JSON.stringify(payload) });
+      } else {
+        await request(base, { method: "POST", body: JSON.stringify(payload) });
+      }
+      setEditing(null); form.resetFields(); setSelectedPromptVersion(null); setReload(value => value + 1);
+    } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
 
@@ -75,6 +105,7 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
           <Button disabled={busy || !row.external_collection_authorized} icon={<Play size={14} />} onClick={() => post(`/${row.schedule_id}/run-now`, { expected_revision: row.revision, idempotency_key: `manual-${Date.now()}` })}>立即采集</Button>
           <Popconfirm title="暂停后不会启动新的采集，正在执行的任务保留真实结果。" onConfirm={() => post(`/${row.schedule_id}/pause`, { expected_revision: row.revision })}><Button disabled={busy} icon={<Pause size={14} />}>暂停</Button></Popconfirm>
         </> : row.status === "PAUSED" && <Button disabled={busy || !row.external_collection_authorized} icon={<Play size={14} />} onClick={() => post(`/${row.schedule_id}/resume`, { expected_revision: row.revision })}>恢复</Button>}
+        {["ACTIVE", "PAUSED", "BLOCKED", "EXHAUSTED"].includes(row.status) && <Button disabled={busy} onClick={() => void edit(row)}>编辑</Button>}
       </Space> },
     ]} />
     {!!rows.length && <Collapse style={{ marginTop: 12 }} items={rows.filter(row => row.automation_policy === "COLLECTION_ONLY").map(row => ({
@@ -88,15 +119,14 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
       ]} />
     }))} />}
 
-    <Typography.Title level={5} style={{ marginTop: 24 }}>新建采集计划</Typography.Title>
+    <Typography.Title level={5} style={{ marginTop: 24 }}>{editing ? "编辑采集计划" : "新建采集计划"}</Typography.Title>
+    {!editing && rows.some(row => row.automation_policy === "COLLECTION_ONLY" && row.status !== "SUPERSEDED") &&
+      <Alert style={{ marginBottom: 12 }} type="warning" showIcon message="当前已有采集计划"
+        description="请使用列表中的“编辑”生成替代版本，避免重复创建同一问题的计划。" />}
     <Form form={form} layout="vertical" initialValues={{ timezone_name: "Asia/Shanghai", local_time: "09:00", cadence_type: "DAILY", weekday: 0, interval_hours: 6, sample_count: 3, max_attempts: 90 }}
-      onFinish={value => {
-        if (!selected) { setError("请选择明确的 Prompt 冻结版本。"); return; }
-        return post("", { ...value, collection_only: true, optimization: null,
-          prompt_version_id: selected.prompt_version_id, snapshot_hash: selected.snapshot_hash });
-      }}>
-      <Form.Item label="绑定 Prompt 冻结版本" required><Select aria-label="采集计划绑定的 Prompt 冻结版本" value={selected?.prompt_version_id} placeholder="选择当前有效版本"
-        onChange={value => void chooseVersion(value)} options={versions.filter(item => item.status === "EFFECTIVE").map(item => ({ value: item.prompt_version_id, label: `V${item.version_number} · ${item.snapshot_hash.slice(0, 12)}` }))} /></Form.Item>
+      onFinish={save}>
+      <Form.Item label="绑定 Prompt 冻结版本" required extra="只允许当前 EFFECTIVE 冻结版本，不会使用 latest；历史版本仅可查看，不可用于新计划。"><Select aria-label="采集计划绑定的 Prompt 冻结版本" value={selectedPromptVersion?.prompt_version_id} placeholder="选择当前有效版本"
+        onChange={value => void chooseVersion(value)} options={promptVersions.filter((version) => version.status === "EFFECTIVE").map(item => ({ value: item.prompt_version_id, label: `V${item.version_number} · ${item.snapshot_hash.slice(0, 12)}` }))} /></Form.Item>
       <Space wrap align="start">
         <Form.Item label="采集频率" name="cadence_type" rules={[{ required: true }]}><Select style={{ width: 150 }} options={[{ value: "DAILY", label: "每天" }, { value: "WEEKLY", label: "每周" }, { value: "INTERVAL", label: "固定间隔" }]} /></Form.Item>
         {cadence !== "INTERVAL" && <Form.Item label="执行时间" name="local_time" rules={[{ required: true }]}><Input type="time" /></Form.Item>}
@@ -107,7 +137,11 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
         <Form.Item label="累计授权次数" name="max_attempts" rules={[{ required: true }]}><InputNumber min={1} max={300} /></Form.Item>
       </Space>
       <Form.Item label="采样授权说明" name="authorization_note" rules={[{ required: true, whitespace: true }]}><Input maxLength={1000} placeholder="记录本计划的用途和授权范围" /></Form.Item>
-      <Space><Button htmlType="submit" type="primary" loading={busy} disabled={!selected || rows.some(row => row.status === "ACTIVE")} icon={<CalendarClock size={16} />}>保存采集计划</Button><Button icon={<RefreshCw size={16} />} onClick={() => setReload(value => value + 1)}>刷新状态</Button></Space>
+      <Space><Button htmlType="submit" type="primary" loading={busy}
+        disabled={!selectedPromptVersion || (!editing && rows.some(row => row.automation_policy === "COLLECTION_ONLY" && row.status !== "SUPERSEDED"))}
+        icon={<CalendarClock size={16} />}>{editing ? "保存修改并替换原计划" : "保存采集计划"}</Button>
+        {editing && <Button onClick={() => { setEditing(null); form.resetFields(); setSelectedPromptVersion(null); }}>取消编辑</Button>}
+        <Button icon={<RefreshCw size={16} />} onClick={() => setReload(value => value + 1)}>刷新状态</Button></Space>
     </Form>
   </section>;
 }

@@ -71,7 +71,7 @@ export function AnalysisRangePanel({ projectId, promptId }: { projectId: number;
         getCheckboxProps: (row: any) => ({ disabled: row.prompt_version?.binding_status !== "BOUND" || !row.selected_run_ids.length }),
         onChange: keys => { const hash = String(keys[0] || ""); setGroupHash(hash); const group = preview.groups.find((item: any) => item.group_hash === hash); setSelectedIds(group?.selected_run_ids || []); },
       }} columns={[
-        { title: "平台 / 采集器", render: (_, row: any) => `${row.identity.platform} / ${row.identity.adapter}` },
+        { title: "平台 / 采集方式", render: (_, row: any) => <>{row.identity.platform} / {row.identity.adapter === "manual_import" ? "人工导入" : row.identity.adapter}{row.identity.source_assertion_status && <><br /><Typography.Text type="warning">人工声明，平台未独立核实</Typography.Text></>}</> },
         { title: "Prompt 版本", render: (_, row: any) => row.prompt_version?.binding_status === "BOUND" ? row.prompt_version.prompt_version_id : `不可证明：${row.prompt_version?.reason || row.identity.binding_reason || "历史未绑定"}` },
         { title: "Run", render: (_, row: any) => `${row.selected_run_ids.length} 可分析 / ${row.run_ids.length} 总数` },
         { title: "状态", render: (_, row: any) => Object.entries(row.status_counts).map(([key, value]) => `${key} ${value}`).join("；") },

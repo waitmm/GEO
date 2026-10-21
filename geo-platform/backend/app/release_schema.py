@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import Engine, inspect, text
 
 
-RELEASE_SCHEMA_REVISION = "20261020_01"
+RELEASE_SCHEMA_REVISION = "20261021_01"
 
 RELEASE_TABLE_ORDER = (
     "organizations",
@@ -55,6 +55,7 @@ RELEASE_TABLE_ORDER = (
     "brand_context_versions",
     "single_prompt_observation_comparisons",
     "single_prompt_sampling_schedules",
+    "single_prompt_manual_imports",
     "single_prompt_optimization_tasks",
     "supplemental_source_acquisitions",
     "single_prompt_truth_corrections",

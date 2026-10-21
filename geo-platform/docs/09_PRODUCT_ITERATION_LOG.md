@@ -1,5 +1,15 @@
 # 09 Product Iteration Log
 
+## 2026-10-21：本机 Beta 接纳严格版本化的人工观测
+
+M1 新增最小“人工导入回答”入口。在自动网页采集尚未获得使用许可时，员工可以提交实际观察到的
+完整文心回答和引用；服务端只在 Project/Prompt、观察时有效的 Prompt/config 版本、时间、hash 和
+导入人全部可证明时建立 `MANUAL_IMPORT` Run。该 Run 可进入时间范围选择，但人工声明与本地 hash
+不构成平台真实性认证。
+
+未提供引用、已确认无引用和引用解析失败保持不同状态。导入不自动运行分析、Evidence Pack、
+Validate、外部采集或模型生成，也不改变旧 Run、正式 V2 或历史结果。
+
 ## 2026-10-20 爱短链内部 Beta
 
 The product priority is now employee use, not further Agent-versus-Workflow architecture

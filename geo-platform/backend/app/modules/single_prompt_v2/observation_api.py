@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.core.release_database import get_release_db
+from app.core.release_access import authenticated_actor
 from app.models import BrandContextVersion, Project, Prompt, BrowserMonitorRun, SinglePromptAnalysis, SinglePromptAnalysisContext, SinglePromptObservationComparison, SinglePromptDiagnosisExecution, SinglePromptDiagnosisResult
 from app.services.serialization import loads
 from .context_provider import context_view, load_context, save_context
@@ -18,6 +19,7 @@ from .service import (_snapshot_run_rows, _hash, _run_input_fingerprint, create_
     get_analysis_status, prompt_version_binding_for_runs, VALID_RUN_STATUSES,
     _current_analysis_configuration)
 from urllib.parse import urlsplit
+from .manual_import import import_manual_observation, manual_import_view
 
 router = APIRouter(prefix='/api/v2', tags=['monitor-validate'])
 
@@ -93,6 +95,46 @@ class MonitorAnalysisCreate(StrictInput):
     scope_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
+class ManualCitationInput(StrictInput):
+    title: str = Field(default='', max_length=500)
+    url: str = Field(min_length=8, max_length=1200)
+
+
+class ManualObservationImportCreate(StrictInput):
+    prompt_version_id: str = Field(min_length=1, max_length=80)
+    prompt_snapshot_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
+    configuration_version_id: str = Field(min_length=1, max_length=80)
+    configuration_snapshot_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
+    observed_at: datetime
+    source_platform: str = Field(pattern=r'^wenxin$')
+    source_page_url: str = Field(default='', max_length=1200)
+    answer_text: str = Field(min_length=20, max_length=500000)
+    citations: list[ManualCitationInput] = Field(default_factory=list, max_length=200)
+    citation_observation_status: str = Field(pattern=r'^(COMPLETE|CONFIRMED_NONE|UNKNOWN|PARSE_FAILED)$')
+    citation_note: str = Field(default='', max_length=2000)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
+@router.post('/projects/{project_id}/prompts/{prompt_id}/manual-imports', status_code=201)
+def create_manual_import(project_id: int, prompt_id: int, payload: ManualObservationImportCreate,
+                         request: Request, response: Response, db: Session = Depends(get_release_db)):
+    record, run, created = import_manual_observation(
+        db, project_id=project_id, prompt_id=prompt_id,
+        prompt_version_id=payload.prompt_version_id, prompt_snapshot_hash=payload.prompt_snapshot_hash,
+        configuration_version_id=payload.configuration_version_id,
+        configuration_snapshot_hash=payload.configuration_snapshot_hash,
+        observed_at=payload.observed_at, source_platform=payload.source_platform,
+        source_page_url=payload.source_page_url, answer_text=payload.answer_text,
+        citations=[item.model_dump() for item in payload.citations],
+        citation_observation_status=payload.citation_observation_status,
+        citation_note=payload.citation_note, imported_by=authenticated_actor(request),
+        idempotency_key=payload.idempotency_key,
+    )
+    if not created:
+        response.status_code = 200
+    return manual_import_view(record, run, created)
+
+
 class RangePreviewCreate(StrictInput):
     mode: str = Field(pattern=r'^(LAST_7_DAYS|LAST_14_DAYS|LAST_30_DAYS|CUSTOM|RUN_IDS)$')
     start_at: datetime | None = None
@@ -154,12 +196,21 @@ def _range_preview(project_id: int, prompt_id: int, payload: RangePreviewCreate,
             binding = prompt_version_binding_for_runs(db, run_ids=[run.id])
         except HTTPException:
             binding = {'binding_status': 'UNSAFE', 'reason': 'PROMPT_VERSION_BINDING_INVALID'}
+        manual_identity = None
+        if run.sampling_mode == 'MANUAL_IMPORT':
+            from .manual_import import manual_import_binding
+            manual_identity = manual_import_binding(db, run)
+        project_configuration = (manual_identity or {}).get('project_configuration')
         identity = {'platform': run.platform, 'source_type': run.source_type, 'adapter': run.adapter,
             'collection_mode': run.collection_mode, 'original_query': run.original_query,
             'prompt_version_id': binding.get('prompt_version_id'), 'snapshot_hash': binding.get('snapshot_hash'),
-            'binding_status': binding.get('binding_status'), 'binding_reason': binding.get('reason')}
+            'binding_status': binding.get('binding_status'), 'binding_reason': binding.get('reason'),
+            'project_configuration_version_id': (project_configuration or {}).get('configuration_version_id'),
+            'project_configuration_snapshot_hash': (project_configuration or {}).get('snapshot_hash'),
+            'source_assertion_status': (manual_identity or {}).get('source_assertion_status')}
         key = _hash(identity)
         group = grouped.setdefault(key, {'group_hash': key, 'identity': identity, 'prompt_version': binding,
+            'project_configuration': project_configuration,
             'run_ids': [], 'selected_run_ids': [], 'excluded_run_ids': [], 'status_counts': {}})
         group['run_ids'].append(run.id)
         group['status_counts'][run.status] = group['status_counts'].get(run.status, 0) + 1
@@ -174,7 +225,8 @@ def _range_preview(project_id: int, prompt_id: int, payload: RangePreviewCreate,
         'valid_count': sum(len(group['selected_run_ids']) for group in groups),
         'invalid_count': sum(len(group['excluded_run_ids']) for group in groups),
         'mixed_groups': len(groups) > 1,
-        'limitations': ['失败采样不会按品牌未提及或零引用计入。', '不同 Prompt 版本、平台或采集配置不会静默合并。']}
+        'limitations': ['失败采样不会按品牌未提及或零引用计入。', '不同 Prompt 版本、平台或采集配置不会静默合并。',
+            'MANUAL_IMPORT 只验证身份、完整性与 hash，不独立证明第三方平台真实性。']}
 
 
 @router.post('/projects/{project_id}/prompts/{prompt_id}/analysis-ranges/preview')
@@ -207,7 +259,8 @@ def freeze_analysis_range(project_id: int, prompt_id: int, payload: RangeFreezeC
     analysis, created = create_analysis_from_runs(db, project_id=project_id, prompt_id=prompt_id,
         prompt_version_id=binding['prompt_version_id'], snapshot_hash=binding['snapshot_hash'],
         run_ids=selected, run_fingerprints=fingerprints, base_context_id=None,
-        idempotency_key=f'range:{selection_hash}', origin_monitor_scope=origin)
+        idempotency_key=f'range:{selection_hash}', origin_monitor_scope=origin,
+        project_configuration=group.get('project_configuration'))
     if not created: response.status_code = 200
     return get_analysis_status(db, analysis.analysis_id)
 

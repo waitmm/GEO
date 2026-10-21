@@ -4,6 +4,7 @@ import { BarChart3, RefreshCw, Save } from "lucide-react";
 import { request } from "./api/client";
 import type { Project } from "./types";
 import { SamplingSchedulePanel } from "./SamplingSchedulePanel";
+import { ManualImportPanel } from "./ManualImportPanel";
 import { AnalysisRangePanel } from "./AnalysisRangePanel";
 import { SupplementalSources } from "./SupplementalSources";
 import { brandAssociationContent } from "./brandAssociationContext";
@@ -245,6 +246,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       </section>}
       {!promptId && !busy && <Empty description={overview?.prompts.length ? "选择问题查看原文、采样计划和详细指标" : "尚无可用问题，请先在问题配置中创建"} />}
       {mode === "monitor" && promptId && <Collapse style={{ marginBottom: 24 }} items={[
+        { key: "manual-import", label: "人工导入回答", children: <ManualImportPanel key={`manual:${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
         { key: "schedule", label: "定时采集管理", children: <SamplingSchedulePanel key={`${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
         { key: "range", label: "按时间范围选择分析数据", children: <AnalysisRangePanel key={`range:${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
       ]} />}

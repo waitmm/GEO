@@ -2,6 +2,17 @@
 
 Status: ACTIVE
 
+## 2026-10-21 MANUAL_IMPORT Narrow Contract Approval
+
+- Product Owner approved `SC-RUN-IMPORT-001@1.0.0` for the local M1 Beta.
+- A manual observation becomes an analyzable Run only with exact time-valid Prompt and project
+  configuration versions, immutable answer/citation hashes, importer identity and explicit
+  `MANUAL_IMPORT / USER_ATTESTED_UNVERIFIED` provenance.
+- Integrity validation does not independently prove the third-party platform origin. Missing
+  citations stay UNKNOWN and are never converted to confirmed zero.
+- This decision does not rebind legacy Runs, trigger analysis on import, or change Product Truth,
+  Evidence, graded delivery, formal V2 results or external-call authorization.
+
 ## 2026-10-20 Internal Beta Product Convergence
 
 - M1 is the 爱短链 internal Beta: employees use the existing Monitor and isolated

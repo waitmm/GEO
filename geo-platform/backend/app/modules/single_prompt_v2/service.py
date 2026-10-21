@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect
 
 from app.models import (
     BrowserMonitorRun,
@@ -30,6 +31,7 @@ from app.models import (
     SinglePromptSourceDisposition,
     SinglePromptSourcePreparation,
     SinglePromptSamplingSchedule,
+    SinglePromptManualImport,
 )
 from app.modules.monitoring.enums import (
     BROWSER_AUDIT_ENTRY_TYPE,
@@ -265,6 +267,24 @@ def prompt_version_binding_for_runs(
             source_binding = _validate_analysis_prompt_version(db, source)
         else:
             task = task_by_id.get(row.task_id)
+            if task and task.schedule_type == "manual_import" and task.created_by.startswith("manual_import:"):
+                from .manual_import import manual_import_binding
+                identity = manual_import_binding(db, row)
+                source_binding = (identity or {}).get("prompt_version") or {}
+                if source_binding.get("binding_status") != "BOUND":
+                    return {"binding_status": "UNSAFE", "reason": "MANUAL_IMPORT_BINDING_INVALID"}
+                try:
+                    validated = _load_prompt_version_binding(
+                        db, project_id=row.project_id, prompt_id=row.prompt_id,
+                        prompt_version_id=source_binding.get("prompt_version_id"),
+                        snapshot_hash=source_binding.get("snapshot_hash"),
+                    )
+                except (HTTPException, TypeError):
+                    return {"binding_status": "UNSAFE", "reason": "MANUAL_IMPORT_BINDING_INVALID"}
+                if source_binding != validated:
+                    return {"binding_status": "UNSAFE", "reason": "MANUAL_IMPORT_BINDING_INVALID"}
+                bindings.append(source_binding)
+                continue
             prefix = "sampling_schedule:"
             if not task or task.schedule_type != "collection_only_schedule" or not task.created_by.startswith(prefix):
                 return {"binding_status": "LEGACY_UNBOUND"}
@@ -734,6 +754,7 @@ def _snapshot_run_rows(db: Session, runs: list[BrowserMonitorRun]) -> list[dict[
     references: dict[int, list[ReferenceSource]] = {run_id: [] for run_id in run_ids}
     retrievals: dict[int, list[RetrievalCandidate]] = {run_id: [] for run_id in run_ids}
     artifacts: dict[int, list[RunArtifact]] = {run_id: [] for run_id in run_ids}
+    manual_imports: dict[int, SinglePromptManualImport] = {}
     if run_ids:
         for row in db.query(ReferenceSource).filter(ReferenceSource.run_id.in_(run_ids)).order_by(ReferenceSource.run_id, ReferenceSource.reference_index):
             references[row.run_id].append(row)
@@ -741,6 +762,15 @@ def _snapshot_run_rows(db: Session, runs: list[BrowserMonitorRun]) -> list[dict[
             retrievals[row.run_id].append(row)
         for row in db.query(RunArtifact).filter(RunArtifact.run_id.in_(run_ids)).order_by(RunArtifact.run_id, RunArtifact.id):
             artifacts[row.run_id].append(row)
+        # Historical migration tests intentionally execute production readers against
+        # older schema revisions. Old Runs cannot be MANUAL_IMPORT, so absence of the
+        # new append-only ledger means an empty projection rather than a fallback bind.
+        if inspect(db.get_bind()).has_table(SinglePromptManualImport.__tablename__):
+            manual_imports = {
+                row.run_id: row for row in db.query(SinglePromptManualImport).filter(
+                    SinglePromptManualImport.run_id.in_(run_ids)
+                ).all()
+            }
     semantic_regions = {
         run_id: _semantic_region_projection(artifacts[run_id])
         for run_id in run_ids
@@ -776,6 +806,16 @@ def _snapshot_run_rows(db: Session, runs: list[BrowserMonitorRun]) -> list[dict[
                 "network_region": run.network_region,
                 "collector_version": run.collector_version,
                 "parser_version": run.parser_version,
+                "manual_observation": ({
+                    "method": "MANUAL_IMPORT",
+                    "source_assertion_status": manual_imports[run.id].source_assertion_status,
+                    "citation_observation_status": manual_imports[run.id].citation_observation_status,
+                    "observed_at": _iso(manual_imports[run.id].observed_at),
+                    "imported_at": _iso(manual_imports[run.id].created_at),
+                    "imported_by": manual_imports[run.id].imported_by,
+                    "identity_hash": manual_imports[run.id].identity_hash,
+                    "payload_hash": manual_imports[run.id].payload_hash,
+                } if run.id in manual_imports else None),
                 "session_verification": {
                     "status": "VERIFIED" if run.sampling_mode == "single_independent" else "UNVERIFIED",
                     "basis": "PRE_SUBMIT_ZERO_TURN_DOM_GATE" if run.sampling_mode == "single_independent" else "NOT_AVAILABLE",
@@ -930,6 +970,7 @@ def create_analysis_from_runs(
     base_context_id: str | None,
     idempotency_key: str,
     origin_monitor_scope: dict[str, Any] | None = None,
+    project_configuration: dict[str, Any] | None = None,
 ) -> tuple[SinglePromptAnalysis, bool]:
     project = db.get(Project, project_id)
     prompt = db.get(Prompt, prompt_id)
@@ -956,6 +997,34 @@ def create_analysis_from_runs(
         prompt_id=prompt_id,
         run_ids=run_ids,
     )
+    manual_run_ids = [
+        int(row["run_id"]) for row in snapshots
+        if (row.get("environment") or {}).get("sampling_mode") == "MANUAL_IMPORT"
+    ]
+    if manual_run_ids:
+        if len(manual_run_ids) != len(snapshots):
+            raise HTTPException(status_code=409, detail={
+                "code": "MIXED_ACQUISITION_CONFIGURATION_UNPROVEN",
+                "message": "人工导入与其他来源 Run 的观察时项目配置无法证明一致，请分组分析",
+            })
+        from .manual_import import manual_import_binding
+        run_rows = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.id.in_(manual_run_ids)).all()
+        manual_configurations = [(manual_import_binding(db, row) or {}).get("project_configuration") for row in run_rows]
+        first_configuration = manual_configurations[0] if manual_configurations else None
+        if (not first_configuration or any(item != first_configuration for item in manual_configurations[1:])):
+            raise HTTPException(status_code=409, detail={
+                "code": "MIXED_PROJECT_CONFIGURATION_VERSIONS",
+                "message": "所选人工观测不属于同一项目配置版本",
+            })
+        validated_manual_configuration = _validate_configuration_binding(db, project_id, first_configuration)
+        if project_configuration is not None and project_configuration != validated_manual_configuration:
+            raise HTTPException(status_code=409, detail={
+                "code": "RUN_CONFIGURATION_BINDING_MISMATCH",
+                "message": "提交的项目配置版本与人工观测身份不匹配",
+            })
+        project_configuration = validated_manual_configuration
+    elif project_configuration is not None:
+        project_configuration = _validate_configuration_binding(db, project_id, project_configuration)
     _require_runs_bound_to_prompt_version(
         db,
         run_ids=[int(row["run_id"]) for row in snapshots],
@@ -989,7 +1058,7 @@ def create_analysis_from_runs(
         "run_ids": ordered_ids,
         "run_fingerprints": actual_fingerprints,
         "base_context_id": base_context_id,
-        "project_configuration": _current_analysis_configuration(db, project_id),
+        "project_configuration": project_configuration or _current_analysis_configuration(db, project_id),
     }
     if origin_monitor_scope is not None:
         plan['origin_monitor_scope'] = origin_monitor_scope

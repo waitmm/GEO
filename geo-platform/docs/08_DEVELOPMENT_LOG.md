@@ -1,5 +1,13 @@
 # 08 Development Log
 
+## 2026-10-21 MANUAL_IMPORT M1 Slice
+
+- Classified as the Product Owner-approved narrow `SEMANTIC_CHANGE` and froze
+  `RFC-MANUAL-RUN-IMPORT-001` / `SC-RUN-IMPORT-001@1.0.0` before implementation.
+- Added an append-only manual import identity ledger and a preview-before-submit Monitor UI.
+- The path creates no model, collector or analysis request. Exact time-valid Prompt/configuration
+  versions and server-side hashes are mandatory; manual platform origin remains unverified.
+
 2026-10-20 / IMPLEMENTATION_CHANGE / M1 爱短链 internal Beta candidate:
 the existing Evidence Pack lane is presented as the default employee-facing AI Optimize
 view while formal Workflow remains a visible fallback. The UI separates diagnosis, brand
@@ -6741,3 +6749,21 @@ review_queue = READY
 - The historical real E1 task remains `BLOCKED / FAILED_PARSE`. A read-only cached
   replay found 10 evaluations (4 `SUPPORTS_PARTIAL`) and therefore supports an L2
   hypothesis only; it is not a new formal task, a real Draft/QA run or an E1 pass.
+
+## 2026-10-21 MANUAL_IMPORT Run Admission
+
+- Implemented approved `SC-RUN-IMPORT-001@1.0.0` as a narrow Step 1 source extension.
+  A user-observed Wenxin answer is admitted only with exact Project/Prompt ownership,
+  observation-time-valid Prompt/configuration versions, immutable answer/citation hashes,
+  importer identity and `USER_ATTESTED_UNVERIFIED` provenance. No `latest` binding or
+  `LEGACY_UNBOUND` upgrade is available.
+- Added an append-only import ledger and release migration `20261021_01`. Citation states
+  `COMPLETE`, `CONFIRMED_NONE`, `UNKNOWN` and `PARSE_FAILED` stay distinct; unknown or
+  failed reference observation is never projected as zero references.
+- The Monitor UI now provides an explicit-version, preview-before-submit manual import form.
+  Successful imports enter the existing Run pool and exact range freeze; import itself never
+  starts semantic analysis, Evidence Pack, Optimize, Validate, sampling or a model call.
+- Verification: 65 related backend tests and 28 frontend client tests passed; release build
+  and a clean-database migration/schema check passed. Local Beta was backed up and migrated,
+  then Chrome exercised the real `127.0.0.1:8032` form through preview with no page error,
+  external request or database insert. Schedule 1 remained `PAUSED`.

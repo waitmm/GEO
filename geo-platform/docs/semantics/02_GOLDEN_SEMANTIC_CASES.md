@@ -285,6 +285,18 @@ automation:
   - backend/tests/test_runtime_projection_spike.py
 ```
 
+### MANUAL_IMPORT synthetic cases
+
+- `MANUAL-IMPORT-NORMAL`：明确 Project/Prompt、观察时有效的 Prompt/config 版本、完整回答和
+  引用记录导入成功；Run 标记 `MANUAL_IMPORT` 与 `USER_ATTESTED_UNVERIFIED`，可进入明确范围，
+  但导入本身不创建 AnalysisContext 或模型任务。
+- `MANUAL-IMPORT-VERSION-TIME-REJECT`：`observed_at` 早于所选版本创建时间或落在下一版本生效后，
+  整体拒绝且零 Run、零引用、零分析写入。
+- `MANUAL-IMPORT-CITATION-UNKNOWN`：空引用且状态 `UNKNOWN` 不得被解释为
+  `CONFIRMED_NONE`；范围可以保留回答，但引用完整性保持未知。
+- `MANUAL-IMPORT-LEGACY-BLOCK`：既有 `LEGACY_UNBOUND` Run 不因新入口存在而被回填版本或获得
+  分析资格。
+
 ## 4. 验收方式
 
 1. 先验证 Manifest 的数据库文件 hash、固定对象 ID 与 Run scope hash。

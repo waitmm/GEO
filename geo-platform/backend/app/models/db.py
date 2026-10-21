@@ -1253,6 +1253,38 @@ class SinglePromptSamplingSchedule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class SinglePromptManualImport(Base):
+    """Append-only admission record for a user-observed AI answer."""
+
+    __tablename__ = "single_prompt_manual_imports"
+    __table_args__ = (
+        UniqueConstraint("project_id", "idempotency_key", name="uq_manual_import_idempotency"),
+        UniqueConstraint("run_id", name="uq_manual_import_run"),
+        UniqueConstraint("task_id", name="uq_manual_import_task"),
+        Index("ix_manual_import_project_prompt_observed", "project_id", "prompt_id", "observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    import_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_tasks.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    source_platform: Mapped[str] = mapped_column(String(80))
+    source_assertion_status: Mapped[str] = mapped_column(String(80), default="USER_ATTESTED_UNVERIFIED")
+    citation_observation_status: Mapped[str] = mapped_column(String(40))
+    observed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    imported_by: Mapped[str] = mapped_column(String(160))
+    identity_json: Mapped[str] = mapped_column(Text)
+    identity_hash: Mapped[str] = mapped_column(String(64), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_hash: Mapped[str] = mapped_column(String(64), index=True)
+    answer_hash: Mapped[str] = mapped_column(String(64), index=True)
+    citations_hash: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SupplementalSourceAcquisition(Base):
     __tablename__ = "supplemental_source_acquisitions"
     __table_args__ = (UniqueConstraint("project_id", "idempotency_key", name="uq_supplemental_source_request"),)

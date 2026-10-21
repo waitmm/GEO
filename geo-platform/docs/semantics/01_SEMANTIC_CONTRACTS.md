@@ -824,6 +824,41 @@ supersedes: null
 last_verified_at: 2026-10-19
 ```
 
+### SC-RUN-IMPORT-001 Manual Observation Run Admission
+
+```yaml
+contract_id: SC-RUN-IMPORT-001
+contract_name: Manual Observation Run Admission
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: PRODUCTION
+definition: 用户人工观察并提交的真实 AI 回答，只有在服务端严格冻结 Project、Prompt、观察时有效的 PromptVersion 与 ProjectConfigurationVersion、observed_at、来源平台、原文/引用 hash 和导入人后，才可作为 MANUAL_IMPORT Run 进入正式范围选择。
+allowed_inferences:
+  - 完整性、身份和 hash 校验通过的 MANUAL_IMPORT Run 可与合格自动采集 Run 一样进入明确的时间范围或 Run ID 冻结分析。
+  - COMPLETE、CONFIRMED_NONE、UNKNOWN、PARSE_FAILED 分别表达引用记录的观测状态。
+forbidden_inferences:
+  - 本地 hash、导入人声明或字段完整证明第三方平台真实性。
+  - 未提供引用等于零引用，或解析失败等于无引用。
+  - latest 版本回填、LEGACY_UNBOUND 升级、人工导入冒充自动采集。
+  - 导入自动触发语义分析、Optimize、Evidence Pack、Validate、外部采集或模型调用。
+unknown_behavior: 来源真实性保持 USER_ATTESTED_UNVERIFIED；引用未知或解析失败保持 UNKNOWN/失败，不升级为合法零。
+identity: project + prompt + exact prompt/config version IDs and hashes + observed_at + platform + answer/citation hashes + MANUAL_IMPORT + importer
+history: Run 与人工导入审计追加保存；既有 Run、AnalysisContext 和结果均不改写。
+step_boundary: 仅扩展 Step 1 Run 准入；不改变下游分析、Evidence、Truth 或分级交付规则。
+source_references:
+  - docs/semantics/rfcs/RFC-MANUAL-RUN-IMPORT-001.md
+enforcement_refs:
+  - backend/app/modules/single_prompt_v2/manual_import.py
+  - backend/tests/test_manual_run_import.py
+approved_by: Product Owner
+approved_at: 2026-10-21
+approval_reference: GEO M1 — MANUAL_IMPORT 窄语义契约批准
+golden_case_ids: [MANUAL-IMPORT-NORMAL, MANUAL-IMPORT-VERSION-TIME-REJECT, MANUAL-IMPORT-CITATION-UNKNOWN, MANUAL-IMPORT-LEGACY-BLOCK]
+effective_from: 2026-10-21
+supersedes: null
+last_verified_at: 2026-10-21
+```
+
 ## 3. Definition Freeze Queue
 
 `SC-RUNTIME-001@0.1.0` 已由 Product Owner 在独立 Review 005 通过后正式

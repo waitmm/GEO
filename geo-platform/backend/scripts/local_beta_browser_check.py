@@ -81,7 +81,8 @@ def main() -> None:
             history.click()
             expect(page.get_by_text(SUGGESTION, exact=False)).to_be_visible()
             page.screenshot(path=str(output / ("after-submit.png" if args.submit_feedback else "after-restart.png")), full_page=True)
-            page.get_by_role("menuitem", name="问题与采样配置").click()
+            page.get_by_role("menuitem", name="Monitor · 监测").click()
+            page.get_by_text("定时采集管理", exact=True).click()
             expect(page.get_by_role("button", name="立即采集")).to_be_enabled(timeout=20000)
             page.screenshot(path=str(output / "sampling-enabled.png"), full_page=True)
             assert not report["page_errors"], report["page_errors"]

@@ -10,6 +10,7 @@ DATA_DIR="$BETA_HOME/data"
 LOG_DIR="$BETA_HOME/logs"
 RUN_DIR="$BETA_HOME/run"
 LAUNCHD_DIR="$BETA_HOME/launchd"
+CONFIG_DIR="$BETA_HOME/config"
 DATABASE_PATH="${GEO_BETA_DATABASE_PATH:-$DATA_DIR/geo-beta.db}"
 BACKEND_HOST="127.0.0.1"
 BACKEND_PORT="${GEO_BETA_PORT:-8032}"
@@ -25,6 +26,36 @@ WORKER_PLIST="$LAUNCHD_DIR/$WORKER_LABEL.plist"
 BACKEND_LOG="$LOG_DIR/backend.log"
 WORKER_LOG="$LOG_DIR/worker.log"
 LAUNCH_DOMAIN="gui/$(id -u)"
+MODEL_BUDGET_LEDGER="$DATA_DIR/internal-beta-model-budget.sqlite3"
+WENXIN_PROFILE_DIR="$DATA_DIR/wenxin-profile"
+
+read_flag() {
+  local path="$1" default="$2" value
+  value="$default"
+  [[ -f "$path" ]] && value="$(tr -d '[:space:]' < "$path")"
+  [[ "$value" == "0" || "$value" == "1" ]] || {
+    echo "Invalid flag in $path (expected 0 or 1)." >&2
+    exit 2
+  }
+  echo "$value"
+}
+
+read_token() {
+  local path="$1" pattern="$2" label="$3" value
+  [[ -f "$path" ]] || { echo "Missing $label: $path" >&2; exit 2; }
+  value="$(tr -d '[:space:]' < "$path")"
+  [[ "$value" =~ $pattern ]] || { echo "Invalid $label in $path" >&2; exit 2; }
+  echo "$value"
+}
+
+DAILY_MODEL_CALLS="$(read_flag "$CONFIG_DIR/daily-model-calls" 0)"
+SCHEDULED_SAMPLING="$(read_flag "$CONFIG_DIR/scheduled-sampling-enabled" 0)"
+MODEL_BUDGET_BATCH_ID=""
+MODEL_PRICING_DATE=""
+if [[ "$DAILY_MODEL_CALLS" == "1" ]]; then
+  MODEL_BUDGET_BATCH_ID="$(read_token "$CONFIG_DIR/model-budget-batch-id" '^[A-Za-z0-9._:-]+$' 'model budget batch id')"
+  MODEL_PRICING_DATE="$(read_token "$CONFIG_DIR/model-pricing-checked-at" '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' 'model pricing date')"
+fi
 
 usage() { echo "Usage: $0 {start|stop|restart|status|logs|open}"; }
 
@@ -38,8 +69,8 @@ require_runtime() {
     exit 2
   }
   [[ -f "$APP_ROOT/scripts/launchd/$BACKEND_LABEL.plist.in" ]] || { echo "Missing launchd template." >&2; exit 2; }
-  mkdir -p "$DATA_DIR" "$LOG_DIR" "$RUN_DIR" "$LAUNCHD_DIR"
-  chmod 700 "$DATA_DIR" "$LOG_DIR" "$RUN_DIR" "$LAUNCHD_DIR"
+  mkdir -p "$DATA_DIR" "$LOG_DIR" "$RUN_DIR" "$LAUNCHD_DIR" "$CONFIG_DIR" "$WENXIN_PROFILE_DIR"
+  chmod 700 "$DATA_DIR" "$LOG_DIR" "$RUN_DIR" "$LAUNCHD_DIR" "$CONFIG_DIR" "$WENXIN_PROFILE_DIR"
   chmod 600 "$DATABASE_PATH"
 }
 
@@ -49,11 +80,23 @@ render_plists() {
       -e "s|@@BACKEND_DIR@@|$BACKEND_DIR|g" \
       -e "s|@@DATABASE_URL@@|$database_url|g" \
       -e "s|@@PORT@@|$BACKEND_PORT|g" \
+      -e "s|@@DAILY_MODEL_CALLS@@|$DAILY_MODEL_CALLS|g" \
+      -e "s|@@MODEL_BUDGET_LEDGER@@|$MODEL_BUDGET_LEDGER|g" \
+      -e "s|@@MODEL_BUDGET_BATCH_ID@@|$MODEL_BUDGET_BATCH_ID|g" \
+      -e "s|@@MODEL_PRICING_DATE@@|$MODEL_PRICING_DATE|g" \
+      -e "s|@@SCHEDULED_SAMPLING@@|$SCHEDULED_SAMPLING|g" \
+      -e "s|@@WENXIN_PROFILE_DIR@@|$WENXIN_PROFILE_DIR|g" \
       -e "s|@@LOG_PATH@@|$BACKEND_LOG|g" \
       "$APP_ROOT/scripts/launchd/$BACKEND_LABEL.plist.in" > "$BACKEND_PLIST"
   sed -e "s|@@PYTHON_BIN@@|$PYTHON_BIN|g" \
       -e "s|@@BACKEND_DIR@@|$BACKEND_DIR|g" \
       -e "s|@@DATABASE_URL@@|$database_url|g" \
+      -e "s|@@DAILY_MODEL_CALLS@@|$DAILY_MODEL_CALLS|g" \
+      -e "s|@@MODEL_BUDGET_LEDGER@@|$MODEL_BUDGET_LEDGER|g" \
+      -e "s|@@MODEL_BUDGET_BATCH_ID@@|$MODEL_BUDGET_BATCH_ID|g" \
+      -e "s|@@MODEL_PRICING_DATE@@|$MODEL_PRICING_DATE|g" \
+      -e "s|@@SCHEDULED_SAMPLING@@|$SCHEDULED_SAMPLING|g" \
+      -e "s|@@WENXIN_PROFILE_DIR@@|$WENXIN_PROFILE_DIR|g" \
       -e "s|@@LOG_PATH@@|$WORKER_LOG|g" \
       "$APP_ROOT/scripts/launchd/$WORKER_LABEL.plist.in" > "$WORKER_PLIST"
   chmod 600 "$BACKEND_PLIST" "$WORKER_PLIST"
@@ -111,13 +154,25 @@ start() {
     GEO_RELEASE_DATABASE_URL="$database_url" "$PYTHON_BIN" -c \
       'from app.core.release_database import release_engine; from app.release_schema import validate_release_database; validate_release_database(release_engine)'
   )
+  if [[ "$DAILY_MODEL_CALLS" == "1" ]]; then
+    (
+      cd "$BACKEND_DIR"
+      GEO_AGENT_BETA_DAILY_MODEL_CALLS=1 \
+      GEO_AGENT_BETA_BUDGET_LEDGER_PATH="$MODEL_BUDGET_LEDGER" \
+      GEO_AGENT_BETA_BUDGET_BATCH_ID="$MODEL_BUDGET_BATCH_ID" \
+      GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT="$MODEL_PRICING_DATE" \
+      "$PYTHON_BIN" -c \
+        'from app.services.internal_beta_model_budget import initialize_daily_budget; initialize_daily_budget()'
+    )
+  fi
   render_plists
   bootstrap_or_restart "$BACKEND_LABEL" "$BACKEND_PLIST"
   bootstrap_or_restart "$WORKER_LABEL" "$WORKER_PLIST"
   for _ in $(seq 1 60); do
     if health_check >/dev/null 2>&1; then
       echo "GEO Beta is ready: $URL"
-      echo "Daily model generation: 0 (history-only; deployment authorization is not configured)"
+      echo "Daily model generation: $DAILY_MODEL_CALLS (shared cap: ¥30 / 3,000,000 tokens / 36 requests; task cap: ¥5)"
+      echo "Scheduled sampling: $SCHEDULED_SAMPLING (single concurrency; collector retries: 0)"
       return
     fi
     sleep 0.5

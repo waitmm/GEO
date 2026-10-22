@@ -31,6 +31,9 @@ COUNTED_STATUSES = frozenset({"RESERVED", "FINISHED", "FAILED", "DELIVERY_UNKNOW
 FINAL_STATUSES = COUNTED_STATUSES - {"RESERVED"}
 AUTHORIZED_EXTENSION_LIMITS = frozenset({
     (1, 300_000, 3.0),
+    # Local M1 Beta: one Evidence Pack request, independently capped at ¥5.
+    # The parent ledger remains the immutable ¥30 / 3M / 36-request ceiling.
+    (1, 300_000, 5.0),
     (10, 1_000_000, 10.0),
 })
 

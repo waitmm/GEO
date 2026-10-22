@@ -45,6 +45,10 @@ from app.modules.single_prompt_v2.delivery_text import digest
 from app.modules.single_prompt_v2.service import _snapshot_run_rows
 from app.services.serialization import loads
 from app.services.semantic_llm.base import SemanticLLMError
+from app.services.internal_beta_model_budget import (
+    append_run_authorization,
+    initialize_daily_budget,
+)
 from app.services.shared_model_budget import SharedBudgetHooks, initialize as initialize_shared_budget, summary as shared_budget_summary
 from test_release_first_slice import (
     _migrated_session,
@@ -866,6 +870,51 @@ def test_release_worker_dispatches_agent_run_through_existing_single_concurrency
                         lambda run_id, session_factory: captured.append((run_id, session_factory)))
     assert release_worker.run_once() == f"agent_experiment:{row.run_id}"
     assert captured == [(row.run_id, factory)]
+
+
+def test_release_worker_attaches_persistent_daily_budget_to_external_evidence_pack(
+        tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    row, _ = _create_from_fixture(
+        db, fixture, key="agent-worker-live-budget-0001",
+        execution_mode="EVIDENCE_PACK",
+    )
+    row.status = "WAITING_AUTHORIZATION"
+    db.commit(); db.refresh(row)
+    ledger = tmp_path / "daily-budget.sqlite3"
+    monkeypatch.setenv("GEO_AGENT_BETA_DAILY_MODEL_CALLS", "1")
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_LEDGER_PATH", str(ledger))
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_BATCH_ID", "beta-test")
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", "2026-10-22")
+    initialize_daily_budget()
+    append_run_authorization(
+        db, run_id=row.run_id, project_id=1, prompt_id=44,
+        revision=row.revision, max_requests=1, max_total_tokens=300_000,
+        max_cost_cny=5.0, conservative_cny_per_million_tokens=10.0,
+        pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+        pricing_checked_at="2026-10-22",
+        authorized_by="qa",
+    )
+    row = authorize_agent_run(
+        db, run_id=row.run_id, project_id=1, prompt_id=44,
+        revision=row.revision, max_requests=1, max_total_tokens=300_000,
+        max_cost_cny=5.0, conservative_cny_per_million_tokens=10.0,
+        pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+        pricing_checked_at="2026-10-22", authorized_by="qa",
+    )
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    captured = []
+    sentinel = object()
+    monkeypatch.setattr(release_worker, "ReleaseSessionLocal", factory)
+    monkeypatch.setattr(release_worker, "hooks_for_run", lambda value: sentinel)
+    monkeypatch.setattr(
+        release_worker, "execute_agent_run",
+        lambda run_id, session_factory, shared_budget_hooks=None:
+            captured.append((run_id, session_factory, shared_budget_hooks)),
+    )
+    assert release_worker.run_once() == f"agent_experiment:{row.run_id}"
+    assert captured == [(row.run_id, factory, sentinel)]
 
 
 def test_external_authorization_reserves_request_token_and_cost_before_transport(tmp_path, monkeypatch):

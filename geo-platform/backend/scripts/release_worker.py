@@ -34,6 +34,7 @@ from app.modules.single_prompt_v2.service import execute_analysis
 from app.modules.single_prompt_v2.source_preparation import AUTO_FETCH_QUEUED_STATUS, execute_auto_fetch
 from app.release_schema import validate_release_database
 from app.services.serialization import loads
+from app.services.internal_beta_model_budget import hooks_for_run
 from app.modules.single_prompt_v2.scheduling import (allow_collection_start, allow_scheduled_start,
                                                       sync_execution_audit, tick)
 from app.modules.single_prompt_v2.automatic_delivery import execute_task, recover_interrupted_tasks
@@ -226,7 +227,20 @@ def run_once() -> str | None:
         execute_task(identity, session_factory=ReleaseSessionLocal)
         return f"automatic_optimize:{identity}"
     if work_type == "agent_experiment":
-        execute_agent_run(identity, session_factory=ReleaseSessionLocal)
+        probe = ReleaseSessionLocal()
+        try:
+            row = probe.query(AgentExperimentRun).filter_by(run_id=identity).one()
+            authorization = loads(row.authorization_json, {})
+            hooks = hooks_for_run(row) if authorization.get("mode") == "EXTERNAL_ALLOWED" else None
+        finally:
+            probe.close()
+        if hooks is None:
+            execute_agent_run(identity, session_factory=ReleaseSessionLocal)
+        else:
+            execute_agent_run(
+                identity, session_factory=ReleaseSessionLocal,
+                shared_budget_hooks=hooks,
+            )
         return f"agent_experiment:{identity}"
     if work_type == "run_retry":
         db = ReleaseSessionLocal()

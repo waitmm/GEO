@@ -11,6 +11,11 @@ from sqlalchemy.orm import Session
 
 from app.core.release_access import authenticated_actor
 from app.core.release_database import get_release_db, read_only_release_session
+from app.services.internal_beta_model_budget import (
+    append_run_authorization,
+    daily_budget_summary,
+)
+from app.services.shared_model_budget import SharedBudgetDenied
 
 from .service import (
     add_result_feedback,
@@ -93,8 +98,24 @@ def get_read_db(db: Session = Depends(get_release_db)):
 
 @router.get("/agent-experiments/capabilities")
 def read_agent_capabilities(project_id: int) -> dict:
-    enabled = os.environ.get("GEO_AGENT_BETA_DAILY_MODEL_CALLS") == "1"
-    return {
+    configured = os.environ.get("GEO_AGENT_BETA_DAILY_MODEL_CALLS") == "1"
+    enabled = configured
+    budget = None
+    blocker = None
+    if enabled:
+        try:
+            value = daily_budget_summary()
+            budget = {
+                key: value[key] for key in (
+                    "used_requests", "used_tokens", "used_cost_cny",
+                    "remaining_requests", "remaining_tokens", "remaining_cost_cny",
+                    "in_flight",
+                )
+            }
+        except SharedBudgetDenied as exc:
+            enabled = False
+            blocker = str(exc)
+    response = {
         "project_id": project_id,
         "execution_mode": "EVIDENCE_PACK",
         "new_generation_enabled": enabled,
@@ -102,6 +123,11 @@ def read_agent_capabilities(project_id: int) -> dict:
         "message": ("内部 Beta 模型调用已由部署环境启用，仍需对每个冻结任务设置预算。"
                     if enabled else "当前没有日常模型调用授权；可查看历史结果并准备任务，但不能产生付费请求。"),
     }
+    if configured:
+        response.update({"budget": budget, "blocker": blocker})
+        if not enabled:
+            response["message"] = "日常模型预算账本不可用；可查看历史结果，但不能产生付费请求。"
+    return response
 
 
 @router.post("/analyses/{analysis_id}/agent-experiments", status_code=201)
@@ -170,4 +196,12 @@ def authorize_agent_experiment(run_id: str, payload: AgentAuthorization,
             "code": "BETA_DAILY_MODEL_AUTHORIZATION_REQUIRED",
             "message": "部署环境尚未配置内部 Beta 日常模型调用授权；历史实验余额不会自动沿用。",
         })
+    try:
+        append_run_authorization(
+            db, run_id=run_id, authorized_by=actor, **payload.model_dump(),
+        )
+    except SharedBudgetDenied as exc:
+        raise HTTPException(409, detail={
+            "code": "BETA_DAILY_BUDGET_DENIED", "message": str(exc),
+        }) from exc
     return run_view(authorize_agent_run(db, run_id=run_id, authorized_by=actor, **payload.model_dump()))

@@ -21,6 +21,7 @@ from app.modules.agent_experiment.service import (
     list_result_feedback,
 )
 from app.services.serialization import loads
+from app.services.internal_beta_model_budget import initialize_daily_budget
 from test_agent_experiment import ScriptedEvidencePackClient, _evidence_markdown
 from test_release_first_slice import _migrated_session, _seed_citation_contribution_fixture
 
@@ -94,7 +95,7 @@ def test_feedback_is_append_only_and_bound_to_exact_result_scope(tmp_path, monke
     assert db.get(AgentResultFeedback, first.id).suggestion.startswith("品牌关联")
 
 
-def test_daily_model_calls_fail_closed_without_deployment_authorization(monkeypatch):
+def test_daily_model_calls_fail_closed_without_deployment_authorization(tmp_path, monkeypatch):
     monkeypatch.delenv("GEO_AGENT_BETA_DAILY_MODEL_CALLS", raising=False)
     assert read_agent_capabilities(1) == {
         "project_id": 1, "execution_mode": "EVIDENCE_PACK",
@@ -113,4 +114,9 @@ def test_daily_model_calls_fail_closed_without_deployment_authorization(monkeypa
     assert blocked.value.detail["code"] == "BETA_DAILY_MODEL_AUTHORIZATION_REQUIRED"
 
     monkeypatch.setenv("GEO_AGENT_BETA_DAILY_MODEL_CALLS", "1")
+    assert read_agent_capabilities(1)["new_generation_enabled"] is False
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_LEDGER_PATH", str(tmp_path / "daily.sqlite3"))
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_BATCH_ID", "beta-capability-test")
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", "2026-10-22")
+    initialize_daily_budget()
     assert read_agent_capabilities(1)["new_generation_enabled"] is True

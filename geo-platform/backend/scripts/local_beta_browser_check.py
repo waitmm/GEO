@@ -49,7 +49,8 @@ def main() -> None:
             expect(page.get_by_text("爱短链", exact=True).first).to_be_visible(timeout=20000)
             expect(page.get_by_text("抖音跳转链接", exact=True).first).to_be_visible()
             expect(page.get_by_role("region", name="AI 优化")).to_be_visible()
-            expect(page.get_by_text("当前仅开放历史结果使用", exact=True)).to_be_visible()
+            expect(page.get_by_text("日常模型调用已启用", exact=True)).to_be_visible()
+            expect(page.get_by_role("button", name="创建并运行 AI 优化")).to_be_enabled()
             expect(page.get_by_text("已保存的真实模型结果", exact=True).first).to_be_visible()
             expect(page.get_by_text("服务端校验 PASS · L2_PARTIALLY_GROUNDED", exact=True)).to_be_visible()
             for section in ["GEO 诊断与依据", "品牌表现与证据缺口", "优化策略与渠道", "完整正文", "QA 与事实限制", "复测计划"]:

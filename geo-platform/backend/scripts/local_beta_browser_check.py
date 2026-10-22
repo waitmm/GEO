@@ -49,6 +49,7 @@ def main() -> None:
             expect(page.get_by_text("爱短链", exact=True).first).to_be_visible(timeout=20000)
             expect(page.get_by_text("抖音跳转链接", exact=True).first).to_be_visible()
             expect(page.get_by_role("region", name="AI 优化")).to_be_visible()
+            expect(page.get_by_role("button", name="立即采集")).to_be_enabled()
             expect(page.get_by_text("日常模型调用已启用", exact=True)).to_be_visible()
             expect(page.get_by_role("button", name="创建并运行 AI 优化")).to_be_enabled()
             expect(page.get_by_text("已保存的真实模型结果", exact=True).first).to_be_visible()

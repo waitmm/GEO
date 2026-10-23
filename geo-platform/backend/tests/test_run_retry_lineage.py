@@ -13,12 +13,16 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, BrowserMonitorRun, BrowserMonitorTask, Project, Prompt
+from app.models import (
+    Base, BrowserMonitorRun, BrowserMonitorRunAttempt, BrowserMonitorTask,
+    Project, Prompt, ReferenceSource,
+)
 from app.modules.single_prompt_v2.service import (
     _selected_run_snapshots,
     list_prompt_run_pool,
     queue_run_retry,
 )
+from scripts.reconcile_legacy_run_retry import audit_pair, reconcile_pair
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -57,11 +61,11 @@ def _db(tmp_path):
     return db, engine, source
 
 
-def test_retry_appends_attempt_lineage_and_is_idempotent(tmp_path):
+def test_retry_updates_one_business_run_and_audits_attempts_idempotently(tmp_path):
     db, engine, source = _db(tmp_path)
     try:
         original_attempt_id = source.attempt_id
-        retry, created = queue_run_retry(
+        retry, attempt, created = queue_run_retry(
             db,
             run_id=source.id,
             project_id=1,
@@ -69,20 +73,25 @@ def test_retry_appends_attempt_lineage_and_is_idempotent(tmp_path):
             idempotency_key="retry-key-1",
         )
         assert created is True
+        assert retry.id == source.id
         assert (retry.logical_run_id, retry.attempt_no, retry.retry_of_run_id) == (
             source.logical_run_id,
             2,
-            source.id,
-        )
-        assert retry.attempt_id != original_attempt_id
-        assert (source.status, source.error_message, source.attempt_no, source.retry_of_run_id) == (
-            "failed",
-            "kept failure",
-            1,
             None,
         )
+        assert retry.attempt_id != original_attempt_id
+        assert (retry.status, retry.error_message, retry.attempt_no, retry.retry_of_run_id) == (
+            "retrying",
+            "",
+            2,
+            None,
+        )
+        assert attempt.run_id == source.id
+        assert attempt.previous_status == "failed"
+        assert attempt.previous_error_message == "kept failure"
+        assert db.query(BrowserMonitorRun).count() == 1
 
-        duplicate, duplicate_created = queue_run_retry(
+        duplicate, duplicate_attempt, duplicate_created = queue_run_retry(
             db,
             run_id=source.id,
             project_id=1,
@@ -91,32 +100,12 @@ def test_retry_appends_attempt_lineage_and_is_idempotent(tmp_path):
         )
         assert duplicate_created is False
         assert duplicate.id == retry.id
+        assert duplicate_attempt.id == attempt.id
 
-        with pytest.raises(HTTPException, match="最新失败 attempt"):
-            queue_run_retry(
-                db,
-                run_id=source.id,
-                project_id=1,
-                prompt_id=11,
-                idempotency_key="retry-key-2",
-            )
-
-        retry.status = "failed"
-        retry.stage = "failed"
-        retry.error_type = "network_error"
+        retry.status, retry.stage = "failed", "failed"
+        retry.error_type, retry.error_message = "network_error", "failed again"
         db.commit()
-        with pytest.raises(HTTPException) as reused_parent_key:
-            queue_run_retry(
-                db,
-                run_id=retry.id,
-                project_id=1,
-                prompt_id=11,
-                idempotency_key="retry-key-1",
-            )
-        assert reused_parent_key.value.status_code == 409
-        assert reused_parent_key.value.detail["code"] == "RETRY_IDEMPOTENCY_PARENT_MISMATCH"
-
-        third, third_created = queue_run_retry(
+        third, third_attempt, third_created = queue_run_retry(
             db,
             run_id=retry.id,
             project_id=1,
@@ -124,33 +113,28 @@ def test_retry_appends_attempt_lineage_and_is_idempotent(tmp_path):
             idempotency_key="retry-key-2",
         )
         assert third_created is True
+        assert third.id == source.id
         assert (third.logical_run_id, third.attempt_no, third.retry_of_run_id) == (
             source.logical_run_id,
             3,
-            retry.id,
+            None,
         )
+        assert third_attempt.previous_error_message == "failed again"
+        assert db.query(BrowserMonitorRun).count() == 1
+        assert db.query(BrowserMonitorRunAttempt).count() == 2
 
         pool = list_prompt_run_pool(db, project_id=1, prompt_id=11, page=1, page_size=20)
-        assert pool["total"] == pool["attempt_total"] == 3
-        assert pool["logical_sample_total"] == 1
-        lineage = {
-            item["run_id"]: (
-                item["logical_run_id"],
-                item["attempt_id"],
-                item["attempt_no"],
-                item["retry_of_run_id"],
-            )
-            for item in pool["items"]
-        }
-        assert lineage[source.id][2:] == (1, None)
-        assert lineage[retry.id][2:] == (2, source.id)
-        assert lineage[third.id][2:] == (3, retry.id)
+        assert pool["total"] == pool["logical_sample_total"] == 1
+        assert pool["attempt_total"] == 3
+        assert len(pool["items"]) == 1
+        assert pool["items"][0]["run_id"] == source.id
+        assert pool["items"][0]["attempt_no"] == 3
     finally:
         db.close()
         engine.dispose()
 
 
-def test_latest_rate_limited_blocked_attempt_allows_only_explicit_append_retry(tmp_path):
+def test_rate_limited_business_run_allows_only_explicit_in_place_retry(tmp_path):
     db, engine, source = _db(tmp_path)
     try:
         source.status = "blocked"
@@ -160,7 +144,7 @@ def test_latest_rate_limited_blocked_attempt_allows_only_explicit_append_retry(t
         source.blocked_reason = "今日提问次数已用完；恢复操作：确认配额恢复后人工重试。"
         db.commit()
 
-        retry, created = queue_run_retry(
+        retry, attempt, created = queue_run_retry(
             db,
             run_id=source.id,
             project_id=1,
@@ -169,19 +153,11 @@ def test_latest_rate_limited_blocked_attempt_allows_only_explicit_append_retry(t
         )
 
         assert created is True
-        assert retry.status == "queued"
-        assert retry.retry_of_run_id == source.id
-        assert retry.attempt_no == source.attempt_no + 1
-        assert source.status == "blocked"
-
-        with pytest.raises(HTTPException, match="最新失败 attempt"):
-            queue_run_retry(
-                db,
-                run_id=source.id,
-                project_id=1,
-                prompt_id=11,
-                idempotency_key="older-rate-limit-attempt",
-            )
+        assert retry.id == source.id
+        assert retry.status == "retrying"
+        assert retry.retry_of_run_id is None
+        assert retry.attempt_no == 2
+        assert attempt.previous_status == "blocked"
 
         retry.status = "blocked"
         retry.error_type = "captcha_required"
@@ -273,6 +249,65 @@ def test_database_rejects_duplicate_attempt_number(tmp_path):
             db.commit()
     finally:
         db.rollback()
+        db.close()
+        engine.dispose()
+
+
+def test_legacy_retry_pair_reconciles_to_one_business_run(tmp_path):
+    db, engine, source = _db(tmp_path)
+    try:
+        retry_task = BrowserMonitorTask(
+            project_id=1,
+            question_ids_json="[11]",
+            run_count=1,
+            status="success",
+            schedule_type="single_prompt_v2_run_retry",
+            created_by="test:legacy-retry",
+        )
+        db.add(retry_task)
+        db.flush()
+        result = BrowserMonitorRun(
+            task_id=retry_task.id,
+            project_id=1,
+            prompt_id=11,
+            status="success",
+            stage="success",
+            original_query="Question",
+            answer_text="A complete real answer that is long enough for analysis.",
+            answer_char_count=56,
+            logical_run_id=source.logical_run_id,
+            attempt_id="legacy-success-attempt",
+            attempt_no=2,
+            retry_of_run_id=source.id,
+            retry_idempotency_key="legacy-retry-key",
+            resolved_reference_count=1,
+            reference_complete=True,
+        )
+        db.add(result)
+        db.flush()
+        db.add(ReferenceSource(
+            run_id=result.id,
+            reference_index=1,
+            display_title="Observed source",
+            url="https://example.com/source",
+        ))
+        db.commit()
+
+        audit = audit_pair(db, source_run_id=source.id, result_run_id=result.id)
+        assert audit["status"] == "SAFE_TO_RECONCILE"
+        reconciled = reconcile_pair(db, source_run_id=source.id, result_run_id=result.id)
+        assert reconciled["status"] == "RECONCILED"
+        assert db.get(BrowserMonitorRun, result.id) is None
+        business_run = db.get(BrowserMonitorRun, source.id)
+        assert business_run.status == "success"
+        assert business_run.answer_text.startswith("A complete real answer")
+        assert business_run.retry_of_run_id is None
+        assert business_run.attempt_no == 2
+        assert db.query(ReferenceSource).filter_by(run_id=source.id).count() == 1
+        attempt = db.query(BrowserMonitorRunAttempt).filter_by(run_id=source.id).one()
+        assert attempt.previous_status == "failed"
+        assert attempt.status == "SUCCESS"
+    finally:
         db.close()
         engine.dispose()
 

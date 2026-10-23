@@ -1438,6 +1438,41 @@ class BrowserMonitorRun(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class BrowserMonitorRunAttempt(Base):
+    """Internal execution audit for retries of one business Run slot."""
+
+    __tablename__ = "browser_monitor_run_attempts"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", name="uq_browser_monitor_run_attempt_id_v2"),
+        UniqueConstraint("run_id", "attempt_no", name="uq_browser_monitor_run_attempt_no_v2"),
+        UniqueConstraint("run_id", "idempotency_key", name="uq_browser_monitor_run_attempt_key_v2"),
+        UniqueConstraint("task_id", name="uq_browser_monitor_run_attempt_task_v2"),
+        Index("ix_browser_monitor_run_attempt_run", "run_id", "attempt_no"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(80), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_runs.id"), index=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("browser_monitor_tasks.id"), index=True)
+    attempt_no: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    previous_status: Mapped[str] = mapped_column(String(40), default="")
+    previous_error_stage: Mapped[str] = mapped_column(String(80), default="")
+    previous_error_type: Mapped[str] = mapped_column(String(80), default="")
+    previous_error_message: Mapped[str] = mapped_column(Text, default="")
+    result_status: Mapped[str] = mapped_column(String(40), default="")
+    result_error_stage: Mapped[str] = mapped_column(String(80), default="")
+    result_error_type: Mapped[str] = mapped_column(String(80), default="")
+    result_error_message: Mapped[str] = mapped_column(Text, default="")
+    answer_char_count: Mapped[int] = mapped_column(Integer, default=0)
+    reference_count: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ReferenceSource(Base):
     __tablename__ = "reference_sources"
 

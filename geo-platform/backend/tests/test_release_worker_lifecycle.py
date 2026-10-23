@@ -22,7 +22,7 @@ def test_exclusive_worker_and_readonly_health(tmp_path):
 
 def test_restart_fails_uncertain_run_retry_without_replaying_or_touching_optimization_waits(scene, monkeypatch):
     from sqlalchemy.orm import sessionmaker
-    from app.models import BrowserMonitorRun, BrowserMonitorTask
+    from app.models import BrowserMonitorRun, BrowserMonitorRunAttempt, BrowserMonitorTask
     from scripts import release_worker
 
     db, optimization, _, _ = scene
@@ -32,6 +32,11 @@ def test_restart_fails_uncertain_run_retry_without_replaying_or_touching_optimiz
     task.status = 'running'
     run.status = 'running'
     run.stage = 'running'
+    db.add(BrowserMonitorRunAttempt(
+        attempt_id='restart-retry-attempt', run_id=run.id, task_id=task.id,
+        attempt_no=2, idempotency_key='restart-retry', status='RUNNING',
+        previous_status='failed', previous_error_type='network_error',
+    ))
     db.commit()
     preserved_runs = {
         row.id: (row.status, row.stage, row.answer_text)

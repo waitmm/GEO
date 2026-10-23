@@ -768,7 +768,7 @@ def test_release_run_selection_combines_tasks_and_rejects_cross_project_runs(tmp
         engine.dispose()
 
 
-def test_release_single_run_retry_creates_new_attempt_and_preserves_source_run(tmp_path):
+def test_release_single_run_retry_reuses_unconsumed_failed_business_run(tmp_path):
     db, engine = _session(tmp_path)
     try:
         db.add(Organization(id=1, name="Release Org", plan_type="release-1.0"))
@@ -790,18 +790,11 @@ def test_release_single_run_retry_creates_new_attempt_and_preserves_source_run(t
         source.stage = "failed"
         source.error_type = "temporary_browser_error"
         source.error_message = "temporary"
-        source.answer_text = "保留的失败现场"
-        db.add(ReferenceSource(
-            run_id=source.id,
-            reference_index=1,
-            display_title="保留来源",
-            url="https://example.com/source",
-        ))
         db.commit()
         source_id = source.id
         original_task_id = source.task_id
 
-        retry_run, created = queue_run_retry(
+        retry_run, attempt, created = queue_run_retry(
             db,
             run_id=source_id,
             project_id=1,
@@ -810,17 +803,19 @@ def test_release_single_run_retry_creates_new_attempt_and_preserves_source_run(t
         )
 
         assert created is True
-        assert retry_run.id != source_id
-        assert retry_run.task_id != original_task_id
-        assert retry_run.status == "queued"
+        assert retry_run.id == source_id
+        assert retry_run.task_id == original_task_id
+        assert attempt.task_id != original_task_id
+        assert attempt.run_id == source_id
+        assert retry_run.status == "retrying"
         assert retry_run.original_query == "推荐一个短链工具"
         db.expire_all()
-        preserved = db.get(BrowserMonitorRun, source_id)
-        assert preserved.status == "failed"
-        assert preserved.answer_text == "保留的失败现场"
-        assert db.query(ReferenceSource).filter_by(run_id=source_id).count() == 1
+        current = db.get(BrowserMonitorRun, source_id)
+        assert current.status == "retrying"
+        assert current.answer_text == ""
+        assert db.query(BrowserMonitorRun).filter_by(project_id=1, prompt_id=44).count() == 1
 
-        same_retry, created_again = queue_run_retry(
+        same_retry, same_attempt, created_again = queue_run_retry(
             db,
             run_id=source_id,
             project_id=1,
@@ -829,6 +824,7 @@ def test_release_single_run_retry_creates_new_attempt_and_preserves_source_run(t
         )
         assert created_again is False
         assert same_retry.id == retry_run.id
+        assert same_attempt.id == attempt.id
     finally:
         db.close()
         engine.dispose()
@@ -896,7 +892,7 @@ def test_release_worker_executes_only_the_queued_single_run_retry(tmp_path, monk
         successful.stage = "success"
         successful.answer_text = "保留成功回答"
         db.commit()
-        retry, _ = queue_run_retry(
+        retry, attempt, _ = queue_run_retry(
             db,
             run_id=failed.id,
             project_id=1,
@@ -906,24 +902,28 @@ def test_release_worker_executes_only_the_queued_single_run_retry(tmp_path, monk
         calls: list[tuple[str, int]] = []
 
         class FakeExecutor:
-            def execute_queued_runs(self, session, task_id):
-                calls.append(("execute", task_id))
+            def execute_run(self, session, run_id):
+                calls.append(("execute", run_id))
+                row = session.get(BrowserMonitorRun, run_id)
+                row.status = "success"
+                row.stage = "success"
+                row.answer_text = "重试后回答"
+                row.answer_char_count = len(row.answer_text)
+                session.commit()
+                return row
 
             def close(self):
                 calls.append(("close", 0))
 
-        def fake_update_task_status(session, task):
-            calls.append(("update", task.id))
-
         monkeypatch.setattr(release_worker, "ReleaseSessionLocal", factory)
         monkeypatch.setattr(release_worker, "MonitoringTaskExecutor", FakeExecutor)
-        monkeypatch.setattr(release_worker, "update_task_status_from_runs", fake_update_task_status)
 
-        assert release_worker.run_once() == f"run_retry:{retry.task_id}"
-        assert calls == [("execute", retry.task_id), ("update", retry.task_id), ("close", 0)]
+        assert release_worker.run_once() == f"run_retry:{attempt.task_id}"
+        assert calls == [("execute", retry.id), ("close", 0)]
         db.expire_all()
         assert db.get(BrowserMonitorRun, successful.id).answer_text == "保留成功回答"
-        assert db.get(BrowserMonitorRun, failed.id).status == "failed"
+        assert db.get(BrowserMonitorRun, failed.id).status == "success"
+        assert db.get(BrowserMonitorRun, failed.id).answer_text == "重试后回答"
     finally:
         db.close()
         engine.dispose()

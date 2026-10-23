@@ -6,7 +6,7 @@ const app = new URL('../src/App.tsx', import.meta.url);
 const client = new URL('../src/api/client.ts', import.meta.url);
 const types = new URL('../src/types.ts', import.meta.url);
 
-test('Run pool presents retry lineage without turning retries into independent samples', async () => {
+test('Run pool presents one business Run while keeping retry attempts as internal audit', async () => {
   const [appSource, clientSource, typeSource] = await Promise.all([
     readFile(app, 'utf8'), readFile(client, 'utf8'), readFile(types, 'utf8'),
   ]);
@@ -15,34 +15,35 @@ test('Run pool presents retry lineage without turning retries into independent s
     assert.match(typeSource, new RegExp(field.replace(/[|]/g, '\\$&')));
     assert.match(clientSource, new RegExp(field.replace(/[|]/g, '\\$&')));
   }
-  assert.match(appSource, /逻辑样本 ID/);
-  assert.match(appSource, /尝试 #\{row\.attempt_no\}/);
-  assert.match(appSource, /父 Run/);
-  assert.match(appSource, /不增加独立样本分母，并保留旧 Run/);
-  assert.match(appSource, /追加新的尝试/);
+  assert.match(appSource, /业务样本 ID/);
+  assert.match(appSource, /第 \{row\.attempt_no\} 次/);
+  assert.match(appSource, /失败过程保留在内部执行日志/);
+  assert.match(appSource, /成功后更新同一条业务 Run/);
+  assert.doesNotMatch(appSource, /父 Run/);
   assert.match(typeSource, /logical_sample_total: number/);
   assert.match(typeSource, /attempt_total: number/);
-  assert.match(appSource, /个逻辑样本 · \{v2RunPool\?\.attempt_total \|\| 0\} 次物理尝试/);
-  assert.match(appSource, /total: v2RunPool\?\.attempt_total \|\| 0/);
+  assert.match(appSource, /个业务样本 · \{v2RunPool\?\.attempt_total \|\| 0\} 次采集尝试/);
+  assert.match(appSource, /total: v2RunPool\?\.logical_sample_total \|\| 0/);
+  assert.match(appSource, /\["retrying", "queued", "running"\]/);
+  assert.match(appSource, /refreshV2RunPool\(v2RunPool\?\.page \|\| 1\)/);
 });
 
-test('Run pool selection permits at most one physical attempt for each logical sample', async () => {
+test('Run pool selection still protects against duplicate legacy business samples', async () => {
   const appSource = await readFile(app, 'utf8');
 
   assert.match(appSource, /const \[v2SelectedRuns, setV2SelectedRuns\]/);
   assert.match(appSource, /new Map<string, SinglePromptV2RunPoolItem>\(\)/);
   assert.match(appSource, /newestByLogicalRun\.set\(row\.logical_run_id, row\)/);
-  assert.match(appSource, /同一逻辑样本只能选择一个尝试；已用新选择替换该样本此前的 Run。/);
-  assert.match(appSource, /同一逻辑样本只能选择一个尝试，选择新尝试会替换此前选择。/);
+  assert.match(appSource, /检测到旧数据中的同一业务样本重复记录/);
   assert.match(appSource, /onSelectAll: \(selected, _selectedRows, changeRows\) => selectV2Runs\(changeRows, selected\)/);
-  assert.match(appSource, /个逻辑样本/);
+  assert.match(appSource, /个业务样本/);
 });
 
-test('legacy monitoring never issues an overwrite-style retry and redirects operators to V2', async () => {
+test('legacy monitoring does not expose a second retry implementation and redirects operators to V2', async () => {
   const [appSource, clientSource] = await Promise.all([readFile(app, 'utf8'), readFile(client, 'utf8')]);
 
-  assert.match(appSource, /失败 Run 请在正式 V2 采样记录池中追加式重试/);
-  assert.match(appSource, /旧监测页不再提供会覆盖原 Run 的“重新采集”/);
+  assert.match(appSource, /失败 Run 请在正式 V2 采样记录池中重试/);
+  assert.match(appSource, /旧监测页不提供另一套重试入口/);
   assert.match(appSource, /前往正式 V2 采样记录池/);
   assert.doesNotMatch(appSource, /retryBrowserAuditRun/);
   assert.doesNotMatch(clientSource, /retryBrowserAuditRun/);

@@ -292,13 +292,13 @@ export type PromptVersionBinding =
   | { binding_status: "LEGACY_UNBOUND" };
 
 export type SinglePromptV2RunPoolItem = SinglePromptV2Run & {
-  /** Stable sample identity shared by every retry attempt. */
+  /** Stable business-sample identity. Retries do not create another pool row. */
   logical_run_id: string;
-  /** Immutable identity of this individual execution attempt. */
+  /** Identity of the latest execution attempt; older attempts are internal audit records. */
   attempt_id: string;
-  /** One-based execution attempt number within the logical sample. */
+  /** One-based execution attempt number for this business sample. */
   attempt_no: number;
-  /** The immediately preceding Run when this is a retry. */
+  /** Legacy lineage only; new retries keep this null and update the same business Run. */
   retry_of_run_id: number | null;
   input_fingerprint: string;
   analysis_memberships: Array<{ analysis_id: string; context_id: string }>;
@@ -311,7 +311,7 @@ export type SinglePromptV2RunPool = {
   page_size: number;
   /** Number of unique logical samples: the analysis denominator. */
   logical_sample_total: number;
-  /** Number of stored physical execution attempts, including retries. */
+  /** Initial collection attempts plus internal retry attempts. */
   attempt_total: number;
   items: SinglePromptV2RunPoolItem[];
 };

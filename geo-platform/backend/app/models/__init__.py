@@ -23,6 +23,7 @@ from app.models.db import (
     SinglePromptTruthCorrection,
     SinglePromptObservationComparison,
     BrowserMonitorRun,
+    BrowserMonitorRunAttempt,
     BrowserMonitorTask,
     Competitor,
     CompetitorRejection,

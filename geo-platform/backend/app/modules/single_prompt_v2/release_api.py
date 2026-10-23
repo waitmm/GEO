@@ -591,7 +591,7 @@ def retry_single_run(
     response: Response,
     db: Session = Depends(get_db),
 ) -> dict:
-    run, created = queue_run_retry(
+    run, attempt, created = queue_run_retry(
         db,
         run_id=run_id,
         project_id=payload.project_id,
@@ -604,10 +604,10 @@ def retry_single_run(
         "source_run_id": run_id,
         "retry_run_id": run.id,
         "logical_run_id": run.logical_run_id,
-        "attempt_id": run.attempt_id,
-        "attempt_no": run.attempt_no,
-        "retry_of_run_id": run.retry_of_run_id,
-        "task_id": run.task_id,
+        "attempt_id": attempt.attempt_id,
+        "attempt_no": attempt.attempt_no,
+        "retry_of_run_id": None,
+        "task_id": attempt.task_id,
         "status": run.status,
         "created": created,
     }

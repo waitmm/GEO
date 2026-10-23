@@ -20,11 +20,14 @@ implementation_status = NOT_IMPLEMENTED | SHADOW | PARTIAL | PRODUCTION | DIVERG
 
 ### Run
 
-- 定义：一次 Prompt 在指定平台和采集上下文中的不可变观测记录。
+- 定义：一次 Prompt 在指定平台和采集上下文中的业务观测槽位。失败且尚未被正式分析消费时，
+  槽位可通过新的内部 Attempt 重试；只有形成可用观测或进入不可变下游后，Run 内容才冻结。
 - 标识：`BrowserMonitorRun.id`。
 - 产生：Step 1 数据采集。
 - 可推断：本次回答、引用、检索候选和采集状态。
 - 禁止推断：单个 Run 不代表稳定效果；`success` 不自动等于正式分析可用。
+- 重试边界：失败 Attempt 只属于执行审计，不是新的业务样本；已有部分真实回答或已进入
+  AnalysisContext/正式下游的 Run 不得原位覆盖。
 - 当前实现：`backend/app/models/db.py::BrowserMonitorRun`。
 
 ### AnswerUnit
@@ -227,7 +230,7 @@ Run
 
 | Object | Not This / Aliases | Identity / Scope Key | Source of Truth | Inputs -> Outputs | Owner / Allowed Consumers | Mutability / Lifecycle / Terminal | Current Maturity |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Run | 不是“稳定结论”或 Sample 展示标签 | run id；project + prompt + task lineage | `BrowserMonitorRun` 与原始 artifact | collector input -> answer/reference/retrieval facts | Step 1 / Step 2-8 只读 | 原始事实不可覆盖；终态 success/partial/failed 仍需 eligibility | OBSERVED |
+| Run | 不是“稳定结论”、失败 Attempt 或 Sample 展示标签 | run id；project + prompt + logical sample identity | `BrowserMonitorRun`、`BrowserMonitorRunAttempt` 与原始 artifact | collector input -> answer/reference/retrieval facts；失败重试 -> internal Attempt | Step 1 / Step 2-8 只读 | 未被消费且无可用回答的失败槽位可重试更新；成功、部分成功、含真实回答或被下游消费后不可覆盖 | FROZEN |
 | AnswerUnit | 不是整个答案，也不是 Product Truth | id；run + unit order + semantic contract | `AnswerUnit` persisted row | Run answer -> atomic semantic unit | Step 2 / Binding、Evidence、Gap | 新版本重建或语义复用，不原地改历史语义 | OBSERVED |
 | AnswerDecisionBinding | 不是 EvidenceAlignment | id；answer unit + same-run source lineage + binding version | `AnswerDecisionBinding` | AnswerUnit + observed context -> binding | Step 2/4 / candidate builder | 可追加版本；verified/rejected/low/none 显式 | OBSERVED |
 | Decision Reason | 不是 Theme 或自由文案 | stable reason id within fixed evidence/strategy input | versioned structured payload | AnswerUnit/recommendation -> reason | Step 2/6 / Evidence、Gap、Strategy | 随输入版本化；不能跨 scope 偷换 identity | OBSERVED |

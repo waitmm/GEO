@@ -16,6 +16,7 @@ from app.models import (
     AgentCheckpoint,
     AgentExperimentRun,
     BrowserMonitorRun,
+    BrowserMonitorRunAttempt,
     BrowserMonitorTask,
     SinglePromptAnalysis,
     SinglePromptCitationContributionExecution,
@@ -74,14 +75,21 @@ def recover_interrupted_run_retries(db) -> int:
     ).order_by(BrowserMonitorTask.id).all()
     for task in tasks:
         task.status = "failed"
-        for run in db.query(BrowserMonitorRun).filter(
-                BrowserMonitorRun.task_id == task.id,
-                BrowserMonitorRun.status.in_(["queued", "running"]),
-        ).all():
+        attempt = db.query(BrowserMonitorRunAttempt).filter_by(task_id=task.id).one_or_none()
+        runs = [db.get(BrowserMonitorRun, attempt.run_id)] if attempt else []
+        for run in [row for row in runs if row and row.status in {"retrying", "queued", "running"}]:
             run.status = "failed"
             run.stage = "failed"
             run.error_type = "worker_restart_interrupted"
             run.error_message = "发布 worker 进程中断；本次用量未知，未自动重试。"
+            run.finished_at = datetime.utcnow()
+            if attempt:
+                attempt.status = "FAILED_INTERRUPTED"
+                attempt.result_status = run.status
+                attempt.result_error_stage = run.stage
+                attempt.result_error_type = run.error_type
+                attempt.result_error_message = run.error_message
+                attempt.finished_at = run.finished_at
     if tasks:
         db.commit()
     return len(tasks)
@@ -249,10 +257,36 @@ def run_once() -> str | None:
             task = db.get(BrowserMonitorTask, identity)
             if not task or task.status != "queued":
                 return None
+            attempt = db.query(BrowserMonitorRunAttempt).filter_by(task_id=task.id).one_or_none()
+            if not attempt or attempt.status != "QUEUED":
+                task.status = "failed"
+                db.commit()
+                return f"run_retry_invalid_attempt:{identity}"
+            run = db.get(BrowserMonitorRun, attempt.run_id)
+            if not run or run.status != "retrying":
+                task.status = "failed"
+                attempt.status = "FAILED_PRECONDITION"
+                attempt.result_error_type = "retry_run_state_mismatch"
+                attempt.result_error_message = "业务 Run 不处于重试中，未发起外部采集。"
+                attempt.finished_at = datetime.utcnow()
+                db.commit()
+                return f"run_retry_invalid_run:{identity}"
             task.status = "running"
+            attempt.status = "RUNNING"
+            attempt.started_at = datetime.utcnow()
             db.commit()
-            executor.execute_queued_runs(db, task.id)
-            update_task_status_from_runs(db, task)
+            executor.execute_run(db, run.id)
+            db.refresh(run)
+            attempt.status = run.status.upper()
+            attempt.result_status = run.status
+            attempt.result_error_stage = run.error_stage
+            attempt.result_error_type = run.error_type
+            attempt.result_error_message = run.error_message
+            attempt.answer_char_count = run.answer_char_count
+            attempt.reference_count = run.resolved_reference_count
+            attempt.finished_at = run.finished_at or datetime.utcnow()
+            task.status = "completed" if run.status in {"success", "partial_success"} else "failed"
+            db.commit()
         finally:
             executor.close()
             db.close()

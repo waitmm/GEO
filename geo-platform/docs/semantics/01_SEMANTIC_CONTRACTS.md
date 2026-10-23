@@ -859,6 +859,42 @@ supersedes: null
 last_verified_at: 2026-10-21
 ```
 
+### SC-RUN-RETRY-001 Business Run Retry And Attempt Audit
+
+```yaml
+contract_id: SC-RUN-RETRY-001
+contract_name: Business Run Retry And Attempt Audit
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: PRODUCTION
+definition: 失败且尚未被任何不可变分析或下游结果消费的采样 Run 是可重试的业务样本槽位；重试是内部 Attempt，不新增业务 Run。成功后以同一 Run ID 保存回答、引用、实际采集时间和 hash，失败过程保留在内部执行审计。
+allowed_inferences:
+  - 一个业务 Run 可以有多次 Attempt，Run 池样本数与执行尝试数分别统计。
+  - 无可用回答、未被消费的 failed 或明确可恢复的 blocked/rate_limited Run 可由用户显式重试。
+forbidden_inferences:
+  - 已成功、部分成功、含真实回答或已进入 AnalysisContext/正式下游的 Run 可以原位覆盖。
+  - 失败 Attempt 是独立业务样本，或可以进入 GEO 分析分母。
+  - 重试会自动触发分析、Evidence Pack、Validate、内容生成或额外重试。
+unknown_behavior: Worker 在外部调用期间中断时，本次 Attempt 标记失败且不自动重放；Run 保留明确失败原因，等待新的人工重试。
+identity: stable BrowserMonitorRun.id + logical_run_id for the business sample; unique BrowserMonitorRunAttempt.attempt_id/task/idempotency for each retry execution
+history: 已冻结成功观测和所有下游结果不可改写；失败尝试以追加式 Attempt 审计保存。
+step_boundary: 仅调整 Step 1 失败采样的生命周期与 UI 状态，不改变分析、Evidence、Truth 或分级交付语义。
+source_references:
+  - docs/semantics/rfcs/RFC-BUSINESS-RUN-RETRY-001.md
+enforcement_refs:
+  - backend/app/modules/single_prompt_v2/service.py::queue_run_retry
+  - backend/scripts/release_worker.py::recover_interrupted_run_retries
+  - backend/tests/test_run_retry_lineage.py
+  - backend/tests/test_release_first_slice.py
+approved_by: Product Owner
+approved_at: 2026-10-23
+approval_reference: 用户明确批准 RFC-BUSINESS-RUN-RETRY-001 Definition Freeze 与本机 Beta 切换
+golden_case_ids: [RUN-RETRY-NORMAL, RUN-RETRY-FAIL-AGAIN, RUN-RETRY-CONSUMED-BLOCK, RUN-RETRY-PARTIAL-CONTENT-BLOCK]
+effective_from: 2026-10-23
+supersedes: append-only physical retry Run behavior from 2026-10-15
+last_verified_at: 2026-10-23
+```
+
 ## 3. Definition Freeze Queue
 
 `SC-RUNTIME-001@0.1.0` 已由 Product Owner 在独立 Review 005 通过后正式

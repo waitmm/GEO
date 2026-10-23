@@ -1,5 +1,14 @@
 # 08 Development Log
 
+## 2026-10-23 Business Run Retry
+
+- Classified as the Product Owner-approved narrow `SEMANTIC_CHANGE` and froze
+  `RFC-BUSINESS-RUN-RETRY-001` / `SC-RUN-RETRY-001@1.0.0`.
+- A failed, unconsumed business Run now owns append-only internal retry Attempts instead of
+  creating another Run-pool row. Runs with preserved answer content or immutable downstream
+  membership remain protected. The UI shows `重试中`, polls until terminal state and refreshes
+  the same row. No external collection or model call was made during implementation.
+
 ## 2026-10-21 MANUAL_IMPORT M1 Slice
 
 - Classified as the Product Owner-approved narrow `SEMANTIC_CHANGE` and froze

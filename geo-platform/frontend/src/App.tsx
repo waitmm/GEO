@@ -219,11 +219,11 @@ const CHANNEL_BUTTONS: [string, string][] = [
 function statusTag(status: string) {
   const labels: Record<string, string> = {
     success: "成功", partial_success: "部分成功", failed: "采集失败",
-    blocked: "被拦截", running: "运行中", pending: "等待中", queued: "队列中"
+    blocked: "被拦截", retrying: "重试中", running: "运行中", pending: "等待中", queued: "队列中"
   };
   const colors: Record<string, string> = {
     success: "green", partial_success: "gold", failed: "red", blocked: "volcano",
-    running: "processing", pending: "default", queued: "blue"
+    retrying: "processing", running: "processing", pending: "default", queued: "blue"
   };
   return <Tag color={colors[status]}>{labels[status] || status || "未知"}</Tag>;
 }
@@ -2084,7 +2084,7 @@ export default function App() {
   function selectV2Runs(rows: SinglePromptV2RunPoolItem[], selected: boolean) {
     if (!rows.length) return;
     if (selected && rows.some((row) => v2SelectedRuns.some((current) => current.logical_run_id === row.logical_run_id && current.run_id !== row.run_id))) {
-      message.info("同一逻辑样本只能选择一个尝试；已用新选择替换该样本此前的 Run。");
+      message.info("检测到旧数据中的同一业务样本重复记录；已只保留当前选择，避免重复计入分析。");
     }
     setV2SelectedRuns((current) => {
       if (!selected) {
@@ -2166,7 +2166,7 @@ export default function App() {
         prompt_id: activePromptId,
         idempotency_key: crypto.randomUUID(),
       });
-      message.success(`已保留 Run #${row.run_id}；逻辑样本 ${result.logical_run_id} 已追加尝试 #${result.attempt_no}（Run #${result.retry_run_id}）`);
+      message.success(`Run #${row.run_id} 已进入第 ${result.attempt_no} 次采集尝试，完成后会自动更新本行状态`);
       await refreshV2RunPool();
     } catch (error: any) {
       message.error(error.message || "单 Run 重试排队失败");
@@ -4076,6 +4076,12 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [v2Analysis?.analysis.analysis_id, v2Analysis?.sampling.status, projectId, activePromptId]);
   useEffect(() => {
+    if (page !== "coreV2" || !projectId || !activePromptId) return;
+    if (!(v2RunPool?.items || []).some((row) => ["retrying", "queued", "running"].includes(row.status))) return;
+    const timer = window.setInterval(() => { void refreshV2RunPool(v2RunPool?.page || 1); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [page, projectId, activePromptId, v2RunPool?.page, v2RunPool?.items]);
+  useEffect(() => {
     if (page !== "coreV2" || !v2Analysis?.context_id) return;
     void refreshV2SourcePreparation();
   }, [page, v2Analysis?.analysis.analysis_id, v2Analysis?.context_id, projectId, activePromptId]);
@@ -5939,8 +5945,8 @@ export default function App() {
                 completion={v2SourcePreparation?.completion_manifest} />
             </>}
             <details className="v2-advanced-details" key={`run-pool:${v2Analysis?.analysis.analysis_id || 'unselected'}`} open={!v2Analysis}>
-            <summary>采样记录与新分析范围（{v2RunPool?.logical_sample_total || 0} 个逻辑样本 · {v2RunPool?.attempt_total || 0} 次物理尝试）</summary>
-            <Card size="small" title={<Space><Monitor size={18} />采样记录池<Tag>{v2RunPool?.logical_sample_total || 0} 个逻辑样本 · {v2RunPool?.attempt_total || 0} 次物理尝试</Tag></Space>} extra={<Space>
+            <summary>采样记录与新分析范围（{v2RunPool?.logical_sample_total || 0} 个业务样本 · {v2RunPool?.attempt_total || 0} 次采集尝试）</summary>
+            <Card size="small" title={<Space><Monitor size={18} />采样记录池<Tag>{v2RunPool?.logical_sample_total || 0} 个业务样本 · {v2RunPool?.attempt_total || 0} 次采集尝试</Tag></Space>} extra={<Space>
               <Text type="secondary">新增采样不会改变已有分析</Text>
               <Button icon={<RefreshCw size={15} />} loading={v2RunPoolLoading} onClick={() => refreshV2RunPool()}>刷新</Button>
             </Space>}>
@@ -5948,7 +5954,7 @@ export default function App() {
                 type="info"
                 showIcon
                 message="先选择 Run，再决定是否建立新的分析版本"
-                description="可以只选新增样本，也可以选择历史加新增样本。重试仅追加同一逻辑样本的新尝试，不增加独立样本分母，并保留旧 Run；同一逻辑样本只能选择一个尝试，选择新尝试会替换此前选择。旧 Analysis、Context、审核和正文准备不会被修改。"
+                description="可以只选新增样本，也可以选择历史加新增样本。失败 Run 的重试会更新同一条业务记录，失败过程保留在内部执行日志，不会产生重复业务 Run。已进入分析的成功 Run 保持不可变，旧 Analysis、Context、审核和正文准备不会被修改。"
                 style={{ marginBottom: 12 }}
               />
               <Table<SinglePromptV2RunPoolItem>
@@ -5967,7 +5973,7 @@ export default function App() {
                 pagination={{
                   current: v2RunPool?.page || 1,
                   pageSize: v2RunPool?.page_size || 20,
-                  total: v2RunPool?.attempt_total || 0,
+                  total: v2RunPool?.logical_sample_total || 0,
                   showSizeChanger: false,
                   onChange: (nextPage) => refreshV2RunPool(nextPage),
                 }}
@@ -5980,8 +5986,8 @@ export default function App() {
                 </Space> }}
                 columns={[
                   { title: "Run", width: 82, render: (_: unknown, row) => <Text code>#{row.run_id}</Text> },
-                  { title: "逻辑样本 ID", width: 170, render: (_: unknown, row) => <Text code ellipsis={{ tooltip: row.logical_run_id }}>{row.logical_run_id}</Text> },
-                  { title: "尝试", width: 150, render: (_: unknown, row) => <Space direction="vertical" size={0}><Text>尝试 #{row.attempt_no}</Text><Text type="secondary">父 Run {row.retry_of_run_id === null ? "无（首次）" : `#${row.retry_of_run_id}`}</Text></Space> },
+                  { title: "业务样本 ID", width: 170, render: (_: unknown, row) => <Text code ellipsis={{ tooltip: row.logical_run_id }}>{row.logical_run_id}</Text> },
+                  { title: "执行", width: 110, render: (_: unknown, row) => <Text>第 {row.attempt_no} 次</Text> },
                   { title: "状态", width: 190, render: (_: unknown, row) => isV2RunRateLimited(row)
                     ? <Space size={4}>{statusTag(row.status)}<Tag color="orange">{RATE_LIMIT_LABEL}</Tag></Space>
                     : statusTag(row.status) },
@@ -5993,8 +5999,8 @@ export default function App() {
                     ? <Text ellipsis={{ tooltip: row.analysis_memberships.map((item) => item.analysis_id).join("、") }}>{row.analysis_memberships.length} 个版本</Text>
                     : <Text type="secondary">尚未纳入</Text> },
                   { title: "操作", width: 150, fixed: "right", render: (_: unknown, row) => isV2RunRateLimited(row)
-                    ? <Popconfirm title={`确认在窗口/配额恢复后追加 Run #${row.run_id}？`} description="不会自动重试。此操作会为同一逻辑样本追加新的尝试，不增加独立样本分母，并保留旧 Run。" okText="确认追加尝试" cancelText="取消" onConfirm={() => retryV2Run(row)}><Button size="small" danger>恢复后追加尝试</Button></Popconfirm>
-                    : row.status === "failed" ? <Popconfirm title={`重试 Run #${row.run_id}？`} description="会为同一逻辑样本追加新的尝试，不增加独立样本分母，并保留旧 Run。" onConfirm={() => retryV2Run(row)}><Button size="small">重试</Button></Popconfirm> : null },
+                    ? <Popconfirm title={`确认在窗口/配额恢复后重试 Run #${row.run_id}？`} description="不会自动重试。失败过程写入内部执行日志，成功后更新同一条业务 Run。" okText="确认重试" cancelText="取消" onConfirm={() => retryV2Run(row)}><Button size="small" danger>恢复后重试</Button></Popconfirm>
+                    : row.status === "failed" ? <Popconfirm title={`重试 Run #${row.run_id}？`} description="失败过程写入内部执行日志，成功后更新同一条业务 Run，不会新增重复业务记录。" onConfirm={() => retryV2Run(row)}><Button size="small">重试</Button></Popconfirm> : null },
                 ]}
               />
               <Row justify="space-between" align="middle" gutter={[12, 12]}>
@@ -10302,7 +10308,7 @@ export default function App() {
         </Space> : <Space direction="vertical" size={16} className="page-stack">
           {scopedPrompt && <PromptScopeAlert prompt={scopedPrompt} description="以下仅展示该 Prompt 的采集记录；切回「全部 Prompt」查看项目全部采样。" />}
           <Card title="采集记录" extra={<Tag>{activePromptId ? `Prompt #${activePromptId} · 每行是一次独立采样` : "每行是一次独立采样"}</Tag>}>
-          <Alert type="info" showIcon message="失败 Run 请在正式 V2 采样记录池中追加式重试" description="旧监测页不再提供会覆盖原 Run 的“重新采集”。请前往正式 V2 采样记录池；重试会保留旧 Run，并且不会增加独立样本分母。" action={<Button size="small" onClick={() => setPage("coreV2")}>前往正式 V2 采样记录池</Button>} style={{ marginBottom: 12 }} />
+          <Alert type="info" showIcon message="失败 Run 请在正式 V2 采样记录池中重试" description="旧监测页不提供另一套重试入口。请前往正式 V2 采样记录池；未进入分析的失败 Run 会在同一业务记录上重试，过程保留在内部执行日志。" action={<Button size="small" onClick={() => setPage("coreV2")}>前往正式 V2 采样记录池</Button>} style={{ marginBottom: 12 }} />
           {visibleRuns.some(isMonitorRunRateLimited) && <RateLimitAlert action={<Button size="small" onClick={() => setPage("coreV2")}>前往正式 V2 样本池</Button>} />}
           <Table rowKey="id" loading={loading} dataSource={visibleRuns} locale={{ emptyText: activePromptId ? "该 Prompt 还没有采集记录" : "暂无采集记录" }} pagination={{ pageSize: 12 }} onRow={(row) => ({ onClick: () => openRun(row.id) })} columns={[
             { title: "编号", dataIndex: "id", width: 70, render: (id) => `#${id}` },

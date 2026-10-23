@@ -129,6 +129,28 @@ investigation_reference: docs/semantics/shadows/RFC-RUNTIME-001.phase-1b-prospec
 last_verified_at: 2026-09-10
 ```
 
+### SEM-CONFLICT-005 失败 Run 不可变性与业务样本重试
+
+```yaml
+status: RESOLVED
+severity: MEDIUM
+affected_contracts:
+  - SC-RUN-RETRY-001@1.0.0
+affected_objects: [Run, BrowserMonitorRunAttempt, AnalysisContext]
+source_a: 旧 Run 定义及追加式重试把每次失败/重试都保存为独立物理 Run。
+source_b: Product Owner 决定失败采样是任务执行状态；未被消费的失败业务 Run 应在同一逻辑槽位重试。
+current_production_behavior: 未被消费且无可用回答的失败 Run 原位进入 retrying 并由内部 Attempt 审计；成功或已被消费的 Run 不可覆盖。
+risk: 若不区分业务 Run 与 Attempt，偶发失败会污染样本池；若无冻结保护原位更新，则会破坏分析历史。
+resolution_required: 已完成；SC-RUN-RETRY-001 同时冻结允许更新条件与不可变边界。
+resolution_rfc: docs/semantics/rfcs/RFC-BUSINESS-RUN-RETRY-001.md
+resolution_reference: docs/semantics/01_SEMANTIC_CONTRACTS.md::SC-RUN-RETRY-001@1.0.0
+resolved_at: 2026-10-23
+resolved_by: Product Owner
+winning_contract_version: SC-RUN-RETRY-001@1.0.0
+superseded_contract_version: 2026-10-15 append-only physical retry Run behavior
+last_verified_at: 2026-10-23
+```
+
 ## 3. Tracked Gaps, Not Yet Conflicts
 
 - `SC-EXPERIMENT-001` 当前 `implementation_status=PARTIAL`：旧 Step 8 服务具备部分 snapshot freeze，但 PR5-C 尚未实现。这是已知实现阶段缺口，不代表可绕过 PR5-C。

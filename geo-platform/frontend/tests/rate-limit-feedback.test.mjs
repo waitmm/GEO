@@ -15,7 +15,7 @@ test('only a blocked structured rate_limited signal receives rate-limit feedback
 test('Run pool and legacy Monitor UI preserve the rate-limit recovery boundary', async () => {
   const source = await (await import('node:fs/promises')).readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   assert.match(source, /RateLimitAlert/);
-  assert.match(source, /恢复后追加尝试/);
+  assert.match(source, /恢复后重试/);
   assert.match(source, /不作为品牌未提及处理/);
-  assert.match(source, /旧监测页不再提供会覆盖原 Run 的“重新采集”/);
+  assert.match(source, /旧监测页不提供另一套重试入口/);
 });

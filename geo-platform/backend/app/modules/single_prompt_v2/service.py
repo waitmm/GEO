@@ -15,6 +15,7 @@ from sqlalchemy import inspect
 
 from app.models import (
     BrowserMonitorRun,
+    BrowserMonitorRunAttempt,
     BrowserMonitorTask,
     Project,
     ProjectConfigurationVersion,
@@ -25,6 +26,7 @@ from app.models import (
     RunArtifact,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
+    SinglePromptCitationContributionExecution,
     SinglePromptExecutionProposal,
     SinglePromptExecutionProposalResult,
     SinglePromptStrategyExecution,
@@ -448,8 +450,8 @@ def queue_run_retry(
     project_id: int,
     prompt_id: int,
     idempotency_key: str,
-) -> tuple[BrowserMonitorRun, bool]:
-    """Queue a new immutable Run attempt without overwriting the failed Run."""
+) -> tuple[BrowserMonitorRun, BrowserMonitorRunAttempt, bool]:
+    """Retry one unconsumed failed business Run and audit the execution attempt."""
 
     source = db.get(BrowserMonitorRun, run_id)
     if not source:
@@ -457,26 +459,11 @@ def queue_run_retry(
     if source.project_id != project_id or source.prompt_id != prompt_id:
         raise HTTPException(status_code=409, detail="Run 与当前 Project/Prompt 不匹配")
 
-    existing_run = (
-        db.query(BrowserMonitorRun)
-        .filter_by(
-            logical_run_id=source.logical_run_id,
-            retry_idempotency_key=idempotency_key,
-        )
-        .one_or_none()
-    )
-    if existing_run:
-        if existing_run.retry_of_run_id == source.id:
-            return existing_run, False
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "RETRY_IDEMPOTENCY_PARENT_MISMATCH",
-                "message": "该幂等键已用于同一逻辑 Run 的另一父 attempt",
-                "retry_run_id": existing_run.id,
-                "retry_of_run_id": existing_run.retry_of_run_id,
-            },
-        )
+    existing_attempt = db.query(BrowserMonitorRunAttempt).filter_by(
+        run_id=source.id, idempotency_key=idempotency_key,
+    ).one_or_none()
+    if existing_attempt:
+        return source, existing_attempt, False
 
     is_recoverable_rate_limit = source.status == "blocked" and source.error_type == "rate_limited"
     if source.status != "failed" and not is_recoverable_rate_limit:
@@ -486,69 +473,94 @@ def queue_run_retry(
         )
     if source.error_type in NON_RETRYABLE_ERRORS and not is_recoverable_rate_limit:
         raise HTTPException(status_code=422, detail="该错误类型不支持自动重试")
-
-    latest_attempt = (
-        db.query(BrowserMonitorRun)
-        .filter_by(logical_run_id=source.logical_run_id)
-        .order_by(BrowserMonitorRun.attempt_no.desc(), BrowserMonitorRun.id.desc())
-        .first()
-    )
-    if not latest_attempt or latest_attempt.id != source.id:
+    if (source.answer_text or "").strip():
         raise HTTPException(
             status_code=409,
-            detail="仅允许从当前最新失败 attempt 或 blocked/rate_limited attempt 重试",
+            detail={
+                "code": "FAILED_RUN_HAS_PRESERVED_CONTENT",
+                "message": "该失败记录仍有真实回答内容，禁止原位覆盖；请保留并另行采样。",
+            },
+        )
+
+    memberships = []
+    for context in db.query(SinglePromptAnalysisContext).filter_by(
+        project_id=project_id, prompt_id=prompt_id,
+    ).all():
+        scope = loads(context.run_scope_json, {})
+        if source.id in {int(value) for value in scope.get("run_ids") or []}:
+            memberships.append(context.analysis_id)
+    downstream = db.query(SinglePromptCitationContributionExecution).filter_by(
+        selected_run_id=source.id,
+    ).first()
+    if memberships or downstream:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RUN_ALREADY_CONSUMED_IMMUTABLE",
+                "message": "该 Run 已进入不可变分析或下游结果，禁止覆盖；重新采集必须创建新 Run。",
+                "analysis_ids": sorted(memberships),
+            },
         )
 
     _require_sampling_enabled(db, project_id, prompt_id)
     created_by = f"single_prompt_v2:run_retry:{source.logical_run_id}:{idempotency_key}"
-    task = create_browser_task_from_frozen_prompt(
-        db,
+    task = BrowserMonitorTask(
         project_id=project_id,
-        prompt_id=prompt_id,
-        prompt_text=source.original_query,
-        run_count=1,
-        execute_now=True,
+        batch_id=source.batch_id,
         platform=source.platform,
         source_type=source.source_type,
         adapter=source.adapter,
-        collection_mode=source.collection_mode,
+        question_ids_json=dumps([prompt_id]),
+        run_count=1,
         schedule_type="single_prompt_v2_run_retry",
+        status="queued",
         created_by=created_by,
-        commit=False,
     )
-    retry_run = db.query(BrowserMonitorRun).filter_by(task_id=task.id).one()
-    retry_run.retry_count = source.retry_count + 1
-    retry_run.logical_run_id = source.logical_run_id
-    retry_run.attempt_no = source.attempt_no + 1
-    retry_run.retry_of_run_id = source.id
-    retry_run.retry_idempotency_key = idempotency_key
+    db.add(task)
+    db.flush()
+    next_attempt_no = max(2, source.attempt_no + 1, source.retry_count + 2)
+    attempt = BrowserMonitorRunAttempt(
+        attempt_id=f"run-attempt-{uuid4()}",
+        run_id=source.id,
+        task_id=task.id,
+        attempt_no=next_attempt_no,
+        idempotency_key=idempotency_key,
+        status="QUEUED",
+        previous_status=source.status,
+        previous_error_stage=source.error_stage,
+        previous_error_type=source.error_type,
+        previous_error_message=source.error_message,
+    )
+    db.add(attempt)
+    source.status = "retrying"
+    source.stage = "queued"
+    source.retry_count = next_attempt_no - 1
+    source.attempt_no = next_attempt_no
+    source.attempt_id = attempt.attempt_id
+    source.retry_of_run_id = None
+    source.retry_idempotency_key = idempotency_key
+    source.started_at = None
+    source.finished_at = None
+    source.duration_ms = 0
+    source.error_stage = ""
+    source.error_type = ""
+    source.error_message = ""
+    source.blocked_type = ""
+    source.blocked_reason = ""
+    source.outcome_category = "retrying"
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        existing_run = (
-            db.query(BrowserMonitorRun)
-            .filter_by(
-                logical_run_id=source.logical_run_id,
-                retry_idempotency_key=idempotency_key,
-            )
-            .one_or_none()
-        )
-        if existing_run:
-            if existing_run.retry_of_run_id == source.id:
-                return existing_run, False
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "RETRY_IDEMPOTENCY_PARENT_MISMATCH",
-                    "message": "该幂等键已用于同一逻辑 Run 的另一父 attempt",
-                    "retry_run_id": existing_run.id,
-                    "retry_of_run_id": existing_run.retry_of_run_id,
-                },
-            )
-        raise HTTPException(status_code=409, detail="该逻辑 Run 已产生更新的 attempt，请刷新后重试")
-    db.refresh(retry_run)
-    return retry_run, True
+        existing_attempt = db.query(BrowserMonitorRunAttempt).filter_by(
+            run_id=run_id, idempotency_key=idempotency_key,
+        ).one_or_none()
+        if existing_attempt:
+            return db.get(BrowserMonitorRun, run_id), existing_attempt, False
+        raise HTTPException(status_code=409, detail="该业务 Run 已产生新的重试，请刷新后再操作")
+    db.refresh(source)
+    db.refresh(attempt)
+    return source, attempt, True
 
 
 def create_frozen_analysis(
@@ -1152,9 +1164,17 @@ def list_prompt_run_pool(
     prompt = db.get(Prompt, prompt_id)
     if not prompt or prompt.project_id != project_id:
         raise HTTPException(status_code=404, detail="Prompt 不存在或不属于当前项目")
-    query = db.query(BrowserMonitorRun).filter_by(project_id=project_id, prompt_id=prompt_id)
-    attempt_total = query.count()
-    logical_sample_total = query.with_entities(BrowserMonitorRun.logical_run_id).distinct().count()
+    query = db.query(BrowserMonitorRun).filter_by(
+        project_id=project_id, prompt_id=prompt_id, retry_of_run_id=None,
+    )
+    logical_sample_total = query.count()
+    retry_attempt_total = db.query(BrowserMonitorRunAttempt).join(
+        BrowserMonitorRun, BrowserMonitorRunAttempt.run_id == BrowserMonitorRun.id,
+    ).filter(
+        BrowserMonitorRun.project_id == project_id,
+        BrowserMonitorRun.prompt_id == prompt_id,
+    ).count()
+    attempt_total = logical_sample_total + retry_attempt_total
     rows = (
         query.order_by(BrowserMonitorRun.id.desc())
         .offset((page - 1) * page_size)
@@ -1181,7 +1201,7 @@ def list_prompt_run_pool(
         "prompt_id": prompt_id,
         "page": page,
         "page_size": page_size,
-        "total": attempt_total,
+        "total": logical_sample_total,
         "logical_sample_total": logical_sample_total,
         "attempt_total": attempt_total,
         "items": items,

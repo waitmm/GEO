@@ -297,6 +297,17 @@ automation:
 - `MANUAL-IMPORT-LEGACY-BLOCK`：既有 `LEGACY_UNBOUND` Run 不因新入口存在而被回填版本或获得
   分析资格。
 
+### Business Run retry synthetic cases
+
+- `RUN-RETRY-NORMAL`：未被消费、无回答的失败 Run 显式重试；Run ID 不变，新增内部 Attempt；
+  成功后同一业务行保存新回答、引用、采集时间和 hash，Run 池业务样本数不增加。
+- `RUN-RETRY-FAIL-AGAIN`：重试再次失败；同一 Run 更新失败原因并可再次人工重试，Attempt
+  审计追加保存，不自动重放、不进入有效分析样本。
+- `RUN-RETRY-CONSUMED-BLOCK`：Run 已出现在任一 AnalysisContext 或正式下游输入中；原位重试
+  整体拒绝，重新采集必须创建新的业务 Run。
+- `RUN-RETRY-PARTIAL-CONTENT-BLOCK`：失败 Run 仍保存真实回答或部分可用内容；禁止清空覆盖，
+  必须保留该观测并另行采样。
+
 ## 4. 验收方式
 
 1. 先验证 Manifest 的数据库文件 hash、固定对象 ID 与 Run scope hash。

@@ -486,6 +486,31 @@ def test_evidence_pack_prompt_requires_evidence_in_each_analysis_section():
     assert "不要把这三节需要的证据标记集中放到其他章节" in prompt
 
 
+def test_evidence_pack_ignores_literal_reference_examples_inside_markdown_code(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = _create_from_fixture(
+        db, fixture, key="evidence-pack-literal-reference-example-0001",
+        execution_mode="EVIDENCE_PACK",
+    )
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    markdown = _evidence_markdown(pack).replace(
+        "## 品牌表现与证据缺口\n",
+        "## 品牌表现与证据缺口\n缺失来源时不得填写 `[[citation:...]]` 或 `[[source:...]]`。\n\n",
+    )
+    checked, _ = validate_markdown_result(markdown, pack)
+    assert checked["validation"]["status"] == "PASS"
+    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v2"
+    assert not any(row["locator"] == "..." for row in checked["result"]["evidence_references"])
+
+    rejected, _ = validate_markdown_result(
+        markdown.replace("`[[citation:...]]`", "[[citation:...]]"), pack,
+    )
+    assert "CITATION_REF_OUT_OF_SCOPE" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+
 def test_evidence_pack_l3_requires_verify_first_and_valid_refs(tmp_path, monkeypatch):
     db, _engine = _migrated_session(tmp_path, monkeypatch)
     analysis = _seed_frozen_analysis(db, reference_urls=[])

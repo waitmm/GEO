@@ -42,6 +42,7 @@ REQUIRED_SECTIONS = (
 _HEADING = re.compile(r"(?m)^##\s+(.+?)\s*$")
 _REF = re.compile(r"\[\[(answer|citation|source|truth):([^\]]+)\]\]")
 _ANY_REF = re.compile(r"\[\[[^\]]+\]\]")
+_MARKDOWN_CODE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
 
 
 class EvidencePackCapacityError(RuntimeError):
@@ -289,6 +290,14 @@ def _parse_sections(markdown: str) -> tuple[dict[str, str], list[dict[str, str]]
     return sections, issues
 
 
+def _mask_markdown_code(markdown: str) -> str:
+    """Exclude literal code examples from evidence-reference interpretation."""
+    return _MARKDOWN_CODE.sub(
+        lambda match: "".join("\n" if char == "\n" else " " for char in match.group(0)),
+        markdown,
+    )
+
+
 def _validate_reference(kind: str, locator: str, pack: dict[str, Any]) -> str | None:
     if kind == "answer":
         parts = locator.split(":")
@@ -327,9 +336,10 @@ def _validate_reference(kind: str, locator: str, pack: dict[str, Any]) -> str | 
 def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     normalized_markdown, normalizations = _normalize_draft_heading_levels(markdown)
     sections, issues = _parse_sections(normalized_markdown)
+    evidence_markdown = _mask_markdown_code(normalized_markdown)
     references = []
     matched_tokens = set()
-    for match in _REF.finditer(normalized_markdown):
+    for match in _REF.finditer(evidence_markdown):
         kind, locator = match.group(1), match.group(2)
         token = match.group(0)
         matched_tokens.add(token)
@@ -337,11 +347,11 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[
         references.append({"kind": kind, "locator": locator, "token": token, "valid": code is None})
         if code:
             issues.append({"code": code, "detail": locator})
-    for token in _ANY_REF.findall(normalized_markdown):
+    for token in _ANY_REF.findall(evidence_markdown):
         if token not in matched_tokens:
             issues.append({"code": "EVIDENCE_REF_FORMAT_INVALID", "detail": token[:160]})
     for name in REQUIRED_SECTIONS[:3]:
-        if sections.get(name) and not _REF.search(sections[name]):
+        if sections.get(name) and not _REF.search(_mask_markdown_code(sections[name])):
             issues.append({"code": "SECTION_EVIDENCE_REQUIRED", "detail": name})
 
     draft = sections.get("完整正文", "")
@@ -361,7 +371,7 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[
             issues.append({"code": "NUMERIC_CLAIM_WITHOUT_AUTHORITY", "detail": paragraph[:120]})
 
     validation = {
-        "contract_version": "geo.evidence-pack.validation.v1",
+        "contract_version": "geo.evidence-pack.validation.v2",
         "status": "PASS" if not issues else "FAIL",
         "issues": issues,
         "server_validated": True,

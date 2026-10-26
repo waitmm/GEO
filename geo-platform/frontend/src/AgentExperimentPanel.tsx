@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App as AntApp, Button, Card, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Spin, Table, Tag, Typography } from "antd";
-import { Copy, Download, MessageSquare, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
+import { Alert, App as AntApp, Button, Card, Collapse, Descriptions, Form, Input, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { Copy, Download, MessageSquare, Play, RefreshCw, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { savedResultLabel, splitAgentResult } from "./agentResultPresentation";
@@ -34,7 +34,7 @@ type Completion = { manifest_id: string; payload_hash: string; version_number: n
 type Capabilities = { new_generation_enabled: boolean; authorization_scope: string; message: string };
 
 const statusLabel: Record<string, string> = {
-  QUEUED: "待运行", RUNNING: "生成中", WAITING_AUTHORIZATION: "等待管理员授权",
+  QUEUED: "待运行", RUNNING: "生成中", WAITING_AUTHORIZATION: "等待服务启动",
   SUCCEEDED: "已完成", PARTIAL: "部分完成", NEEDS_INPUT: "需要补充资料",
   BLOCKED: "已阻塞", FAILED: "失败", CANCELLED: "已取消",
 };
@@ -58,7 +58,7 @@ function humanTime(value?: string | null) {
 export function AgentExperimentPanel({ projectId, promptId, analysisId, contextId, completion }: {
   projectId: number; promptId: number; analysisId: string; contextId: string; completion?: Completion | null;
 }) {
-  const { message, modal } = AntApp.useApp();
+  const { message } = AntApp.useApp();
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [detail, setDetail] = useState<AgentRun>();
@@ -130,7 +130,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
         }),
       });
       setSelectedId(saved.run_id); setDetail(saved); setSelectedResultVersion(undefined);
-      message.success("新的冻结优化任务已创建；它不会复用历史结果冒充新生成。等待管理员按独立日常额度授权。" );
+      message.success("AI 优化任务已创建并开始运行；历史结果不会被冒充为本次生成。" );
       await refresh();
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
@@ -148,38 +148,9 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
     finally { setBusy(false); }
   }
 
-  function authorize() {
-    let amount = Math.min(1, active?.budget.max_cost_cny || 1);
-    const requests = 1;
-    let tokens = Math.min(300000, active?.budget.max_total_tokens || 1);
-    let price = 0; let pricingSource = ""; let pricingDate = "";
-    modal.confirm({ title: "管理员授权当前冻结任务", okText: "确认授权", cancelText: "取消", width: 620,
-      content: <Space direction="vertical" style={{ width: "100%" }}>
-        <Alert type="warning" showIcon message="本授权只覆盖当前任务"
-          description="不包含新采样、抓取、发布或正式库写入；历史实验余额不会转为日常额度。" />
-        <Typography.Text>请求次数上限（Evidence Pack 固定为 1）</Typography.Text>
-        <InputNumber value={requests} disabled />
-        <Typography.Text>总 Token 上限</Typography.Text>
-        <InputNumber min={2048} max={active?.budget.max_total_tokens || 2048} precision={0} defaultValue={tokens}
-          onChange={value => { tokens = Number(value || 0); }} />
-        <Typography.Text>人民币硬上限</Typography.Text>
-        <InputNumber min={0.01} max={active?.budget.max_cost_cny || 0.01} precision={2} defaultValue={amount}
-          onChange={value => { amount = Number(value || 0); }} />
-        <Typography.Text>保守单价（人民币 / 百万 Token）</Typography.Text>
-        <InputNumber min={0.01} max={10000} onChange={value => { price = Number(value || 0); }} />
-        <Input aria-label="AI 优化计费依据" placeholder="可核对的计费依据" maxLength={2000} onChange={event => { pricingSource = event.target.value; }} />
-        <Input aria-label="AI 优化计费核实日期" type="date" onChange={event => { pricingDate = event.target.value; }} />
-      </Space>,
-      onOk: () => {
-        if (!price || pricingSource.trim().length < 8 || !/^\d{4}-\d{2}-\d{2}$/.test(pricingDate)) {
-          message.error("请填写保守单价、可核对的计费依据和核实日期");
-          return Promise.reject(new Error("pricing evidence required"));
-        }
-        return post("authorization", { revision: active!.revision, max_requests: requests,
-          max_total_tokens: tokens, max_cost_cny: amount, conservative_cny_per_million_tokens: price,
-          pricing_source: pricingSource.trim(), pricing_checked_at: pricingDate });
-      },
-    });
+  function restartWithServerPolicy() {
+    if (!active) return;
+    void post("authorization", { revision: active.revision });
   }
 
   async function submitFeedback(values: any) {
@@ -215,7 +186,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
         <Typography.Text>选择要随本次任务冻结的品牌资料版本</Typography.Text>
         <BrandContextSelect projectId={projectId} value={contextVersion} onChange={setContextVersion} />
         <Alert type={capabilities?.new_generation_enabled ? "success" : "warning"} showIcon
-          message={capabilities?.new_generation_enabled ? "日常模型调用已启用" : "当前仅开放历史结果使用"}
+          message={capabilities?.new_generation_enabled ? "AI 生成已启用" : "当前仅开放历史结果使用"}
           description={capabilities?.message || "正在检查运行授权"} />
         <Typography.Text type="secondary">当前范围：Analysis {analysisId.slice(-10)} · Context {contextId.slice(-10)} · {completion ? `来源资料 V${completion.version_number}` : "未选择来源完成版本"}</Typography.Text>
         <Button type="primary" icon={<Play size={16} />} loading={busy}
@@ -225,7 +196,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
     {error && <Alert style={{ marginTop: 12 }} type="error" showIcon message="AI 优化操作未完成" description={error} />}
     {loading ? <Spin tip="正在读取优化历史"><div style={{ minHeight: 100 }} /></Spin> : runs.length === 0
       ? <Alert style={{ marginTop: 16 }} type="info" message="当前冻结分析还没有优化历史"
-          description={capabilities?.new_generation_enabled ? "选择品牌资料后即可创建第一条任务。" : "配置独立的日常模型额度后才可创建新生成；历史实验额度不会自动沿用。"} />
+          description={capabilities?.new_generation_enabled ? "选择品牌资料后即可创建第一条任务。" : "AI 生成尚未由服务端启用；历史结果仍可正常查看和使用。"} />
       : <>
         <Typography.Title level={4} style={{ marginTop: 20 }}>优化历史</Typography.Title>
         <Table size="small" pagination={{ pageSize: 8 }} rowKey="run_id" dataSource={runs}
@@ -235,14 +206,13 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
             { title: "创建时间", dataIndex: "created_at", render: humanTime },
             { title: "状态", dataIndex: "status", render: (value, row) => <Space><Tag>{statusLabel[value] || value}</Tag><Typography.Text type="secondary">{savedResultLabel(row.usage.model_calls, value)}</Typography.Text></Space> },
             { title: "结果", render: (_, row) => row.status === "SUCCEEDED" ? "可查看" : row.blocker?.detail || "尚未生成" },
-            { title: "用量", render: (_, row) => `${row.usage.model_calls} 次 · ¥${row.usage.cost_cny.toFixed(4)}` },
           ]} />
         {active && <Card style={{ marginTop: 16 }} title={<Space wrap><span>优化结果</span><Tag>{statusLabel[active.status] || active.status}</Tag><Tag color={active.usage.model_calls ? "blue" : undefined}>{savedResultLabel(active.usage.model_calls, active.status)}</Tag></Space>}>
           {active.blocker && <Alert type={active.status === "WAITING_AUTHORIZATION" ? "warning" : "error"} showIcon
             message={statusLabel[active.status] || active.blocker.code} description={active.blocker.detail} />}
           <Space wrap style={{ marginTop: 12 }}>
-            {active.status === "WAITING_AUTHORIZATION" && capabilities?.new_generation_enabled && <Button icon={<ShieldCheck size={16} />} onClick={authorize}>管理员设置本任务额度</Button>}
-            {active.status === "WAITING_AUTHORIZATION" && !capabilities?.new_generation_enabled && <Tag color="orange">需要部署级日常额度授权</Tag>}
+            {active.status === "WAITING_AUTHORIZATION" && capabilities?.new_generation_enabled && <Button onClick={restartWithServerPolicy}>重新尝试启动</Button>}
+            {active.status === "WAITING_AUTHORIZATION" && !capabilities?.new_generation_enabled && <Tag color="orange">AI 生成服务暂未启用</Tag>}
             {['QUEUED', 'RUNNING', 'WAITING_AUTHORIZATION'].includes(active.status) && <Button danger icon={<Square size={16} />} onClick={() => void post("cancel")}>停止任务</Button>}
           </Space>
           {results.length > 0 && <Select aria-label="结果历史版本" style={{ width: "100%", marginTop: 16 }} value={result?.result_version}
@@ -296,9 +266,9 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
               </> },
               { key: "audit", label: "技术审计信息", children: <>
                 <Descriptions size="small" column={{ xs: 1, md: 2 }}>
-                  <Descriptions.Item label="模型调用">{active.usage.model_calls} / {active.budget.max_model_calls}</Descriptions.Item>
-                  <Descriptions.Item label="Token">{active.usage.input_tokens + active.usage.output_tokens} / {active.budget.max_total_tokens}</Descriptions.Item>
-                  <Descriptions.Item label="费用">¥{active.usage.cost_cny.toFixed(4)} / ¥{active.budget.max_cost_cny.toFixed(2)}</Descriptions.Item>
+                  <Descriptions.Item label="模型调用">{active.usage.model_calls} 次</Descriptions.Item>
+                  <Descriptions.Item label="Token">{active.usage.input_tokens + active.usage.output_tokens}</Descriptions.Item>
+                  <Descriptions.Item label="费用">¥{active.usage.cost_cny.toFixed(4)}</Descriptions.Item>
                   <Descriptions.Item label="结果版本"><Typography.Text code>{result.result_version}</Typography.Text></Descriptions.Item>
                   <Descriptions.Item label="输入身份"><Typography.Text code>{active.input_scope_hash.slice(0, 16)}</Typography.Text></Descriptions.Item>
                   <Descriptions.Item label="执行身份"><Typography.Text code>{active.agent_execution_hash.slice(0, 16)}</Typography.Text></Descriptions.Item>

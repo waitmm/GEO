@@ -13,7 +13,7 @@ from app.core.release_access import authenticated_actor
 from app.core.release_database import get_release_db, read_only_release_session
 from app.services.internal_beta_model_budget import (
     append_run_authorization,
-    daily_budget_summary,
+    server_task_policy,
 )
 from app.services.shared_model_budget import SharedBudgetDenied
 
@@ -39,15 +39,6 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class AgentBudget(StrictModel):
-    max_model_calls: int | None = Field(default=None, ge=0, le=12)
-    max_tool_calls: int | None = Field(default=None, ge=0, le=30)
-    max_total_tokens: int | None = Field(default=None, ge=0, le=300_000)
-    max_elapsed_seconds: int | None = Field(default=None, ge=0, le=900)
-    max_repairs: int | None = Field(default=None, ge=0, le=2)
-    max_cost_cny: float | None = Field(default=None, ge=0, le=50)
-
-
 class AgentRunCreate(StrictModel):
     project_id: int = Field(gt=0)
     prompt_id: int = Field(gt=0)
@@ -60,7 +51,6 @@ class AgentRunCreate(StrictModel):
     idempotency_key: str = Field(min_length=8, max_length=120)
     regenerate_nonce: str | None = Field(default=None, min_length=8, max_length=80)
     execution_mode: Literal["TOOL_LOOP", "EVIDENCE_PACK"] = "EVIDENCE_PACK"
-    budget: AgentBudget | None = None
 
 
 class AgentScopeAction(StrictModel):
@@ -68,14 +58,8 @@ class AgentScopeAction(StrictModel):
     prompt_id: int = Field(gt=0)
 
 
-class AgentAuthorization(AgentScopeAction):
+class AgentServerQueue(AgentScopeAction):
     revision: int = Field(gt=0)
-    max_requests: int = Field(gt=0, le=12)
-    max_total_tokens: int = Field(gt=0, le=300_000)
-    max_cost_cny: float = Field(gt=0, le=50)
-    conservative_cny_per_million_tokens: float = Field(gt=0, le=10_000)
-    pricing_source: str = Field(min_length=8, max_length=2000)
-    pricing_checked_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
 class AgentResultFeedbackCreate(AgentScopeAction):
@@ -100,18 +84,10 @@ def get_read_db(db: Session = Depends(get_release_db)):
 def read_agent_capabilities(project_id: int) -> dict:
     configured = os.environ.get("GEO_AGENT_BETA_DAILY_MODEL_CALLS") == "1"
     enabled = configured
-    budget = None
     blocker = None
     if enabled:
         try:
-            value = daily_budget_summary()
-            budget = {
-                key: value[key] for key in (
-                    "used_requests", "used_tokens", "used_cost_cny",
-                    "remaining_requests", "remaining_tokens", "remaining_cost_cny",
-                    "in_flight",
-                )
-            }
+            server_task_policy()
         except SharedBudgetDenied as exc:
             enabled = False
             blocker = str(exc)
@@ -120,22 +96,43 @@ def read_agent_capabilities(project_id: int) -> dict:
         "execution_mode": "EVIDENCE_PACK",
         "new_generation_enabled": enabled,
         "authorization_scope": "INTERNAL_BETA_DAILY" if enabled else "HISTORY_ONLY",
-        "message": ("内部 Beta 模型调用已由部署环境启用，仍需对每个冻结任务设置预算。"
-                    if enabled else "当前没有日常模型调用授权；可查看历史结果并准备任务，但不能产生付费请求。"),
+        "message": ("AI 生成已由服务端启用；创建任务后会自动开始，无需设置 Token、金额或计费参数。"
+                    if enabled else "AI 生成尚未由服务端启用；当前仍可查看和使用历史结果。"),
     }
     if configured:
-        response.update({"budget": budget, "blocker": blocker})
+        response.update({"blocker": blocker})
         if not enabled:
-            response["message"] = "日常模型预算账本不可用；可查看历史结果，但不能产生付费请求。"
+            response["message"] = "AI 生成服务暂不可用；可查看历史结果，但不会产生外部调用。"
     return response
 
 
 @router.post("/analyses/{analysis_id}/agent-experiments", status_code=201)
 def start_agent_experiment(analysis_id: str, payload: AgentRunCreate, response: Response,
                            actor: str = Depends(authenticated_actor), db: Session = Depends(get_release_db)) -> dict:
+    try:
+        policy = server_task_policy()
+    except SharedBudgetDenied as exc:
+        raise HTTPException(409, detail={
+            "code": "BETA_SERVER_MODEL_POLICY_UNAVAILABLE", "message": str(exc),
+        }) from exc
     values = payload.model_dump()
-    values["budget"] = payload.budget.model_dump(exclude_none=True) if payload.budget else None
     row, created = create_agent_run(db, analysis_id=analysis_id, requested_by=actor, **values)
+    authorization = run_view(row).get("authorization") or {}
+    if (row.status in {"QUEUED", "WAITING_AUTHORIZATION"}
+            and authorization.get("mode") == "CACHE_ONLY"):
+        try:
+            append_run_authorization(
+                db, run_id=row.run_id, project_id=row.project_id, prompt_id=row.prompt_id,
+                revision=row.revision, authorized_by=f"server-policy:{actor}", **policy,
+            )
+            row = authorize_agent_run(
+                db, run_id=row.run_id, project_id=row.project_id, prompt_id=row.prompt_id,
+                revision=row.revision, authorized_by=f"server-policy:{actor}", **policy,
+            )
+        except SharedBudgetDenied as exc:
+            raise HTTPException(409, detail={
+                "code": "BETA_SERVER_MODEL_POLICY_DENIED", "message": str(exc),
+            }) from exc
     if not created:
         response.status_code = 200
     return run_view(row, include_scope=True)
@@ -188,20 +185,20 @@ def cancel_agent_experiment(run_id: str, payload: AgentScopeAction,
 
 
 @router.post("/agent-experiments/{run_id}/authorization")
-def authorize_agent_experiment(run_id: str, payload: AgentAuthorization,
+def authorize_agent_experiment(run_id: str, payload: AgentServerQueue,
                                actor: str = Depends(authenticated_actor),
                                db: Session = Depends(get_release_db)) -> dict:
-    if os.environ.get("GEO_AGENT_BETA_DAILY_MODEL_CALLS") != "1":
-        raise HTTPException(409, detail={
-            "code": "BETA_DAILY_MODEL_AUTHORIZATION_REQUIRED",
-            "message": "部署环境尚未配置内部 Beta 日常模型调用授权；历史实验余额不会自动沿用。",
-        })
     try:
+        policy = server_task_policy()
         append_run_authorization(
-            db, run_id=run_id, authorized_by=actor, **payload.model_dump(),
+            db, run_id=run_id, project_id=payload.project_id, prompt_id=payload.prompt_id,
+            revision=payload.revision, authorized_by=f"server-policy:{actor}", **policy,
         )
     except SharedBudgetDenied as exc:
         raise HTTPException(409, detail={
-            "code": "BETA_DAILY_BUDGET_DENIED", "message": str(exc),
+            "code": "BETA_SERVER_MODEL_POLICY_DENIED", "message": str(exc),
         }) from exc
-    return run_view(authorize_agent_run(db, run_id=run_id, authorized_by=actor, **payload.model_dump()))
+    return run_view(authorize_agent_run(
+        db, run_id=run_id, project_id=payload.project_id, prompt_id=payload.prompt_id,
+        revision=payload.revision, authorized_by=f"server-policy:{actor}", **policy,
+    ))

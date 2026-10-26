@@ -1,5 +1,14 @@
 # 08 Development Log
 
+## 2026-10-26 Server-Owned AI Optimize Policy
+
+- Classified as the Product Owner-approved `SEMANTIC_CHANGE` and froze
+  `RFC-SERVER-MODEL-POLICY-001` / `SC-SERVER-MODEL-POLICY-001@1.0.0`.
+- The employee action expresses only the intent to run AI Optimize on the exact frozen input.
+  Request/token/CNY/pricing fields are no longer employee inputs; deployment/account policy
+  owns execution eligibility and technical stop protection. Historical ledgers and results remain
+  immutable. Implementation and offline acceptance make zero external model calls.
+
 ## 2026-10-23 Business Run Retry
 
 - Classified as the Product Owner-approved narrow `SEMANTIC_CHANGE` and froze

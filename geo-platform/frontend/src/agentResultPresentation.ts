@@ -26,6 +26,6 @@ export function splitAgentResult(markdown: string): Record<ResultHeading, string
 export function savedResultLabel(modelCalls: number, status: string) {
   if (status === "SUCCEEDED" && modelCalls > 0) return "已保存的真实模型结果";
   if (status === "SUCCEEDED") return "已保存结果（来源待核对）";
-  if (status === "WAITING_AUTHORIZATION") return "待管理员授权的新任务";
+  if (status === "WAITING_AUTHORIZATION") return "等待服务启动的新任务";
   return "历史任务记录";
 }

@@ -9,6 +9,16 @@ Conflict 不允许通过“代码已经如此运行”或“最后一条聊天�
 
 ## 2. Open Conflicts
 
+### SEM-CONFLICT-006 员工逐任务预算表单与服务端策略
+
+- Status: RESOLVED, 2026-10-26.
+- Source A: M1 实验实现要求员工为每个冻结任务填写请求、Token、金额、价格依据和核实日期。
+- Source B: Product Owner 决定内部员工和未来客户均不自行设置模型限制，未来额度由服务端按账号配置。
+- Winning contract: `SC-SERVER-MODEL-POLICY-001@1.0.0`。
+- Resolution: 新任务只接受业务意图；服务端策略负责准入和技术停止保护，客户端预算字段不再具有授权能力。
+- Preservation: 历史授权、账本、用量、结果、冻结输入、证据 Gate 和正式 V2 隔离保持不变。
+- Resolution RFC: `docs/semantics/rfcs/RFC-SERVER-MODEL-POLICY-001.md`。
+
 ### SEM-CONFLICT-005 Publication prerequisite versus continuous monitoring
 
 - Status: RESOLVED_DEFINITION_IMPLEMENTATION_PENDING, 2026-10-09.

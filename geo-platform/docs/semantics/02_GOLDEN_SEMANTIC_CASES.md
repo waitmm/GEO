@@ -14,6 +14,32 @@ Golden Case 保护业务语义，不只是代码输出。每个 Case 必须绑�
 
 ## 2. Synthetic Cases
 
+### CASE-SYN-008 员工一键优化与服务端运行策略
+
+```yaml
+contracts:
+  - SC-SERVER-MODEL-POLICY-001@1.0.0
+verification_mode: AUTOMATED_TEST + BROWSER_ACCEPTANCE
+premise:
+  frozen_agent_input: valid
+  authenticated_actor: employee-one
+  server_model_policy: enabled_and_available
+expected:
+  - 一次“创建并运行 AI 优化”操作创建冻结任务并由服务端策略排队。
+  - 页面不要求员工填写请求、Token、金额、单价、计费来源或日期。
+  - 实际用量只作为审计结果记录。
+boundary:
+  server_model_policy: unavailable
+boundary_expected:
+  - 外部调用为零并返回业务可读阻断，不创建可误认为正在运行的新任务。
+forbidden:
+  - 客户端字段扩大服务端运行权限。
+  - 回退使用历史实验余额。
+automation:
+  - backend/tests/test_agent_internal_beta.py
+  - frontend/tests/agent-internal-beta.test.mjs
+```
+
 ### CASE-SYN-001 Product Truth 与 Citation Intervention 分离
 
 ```yaml

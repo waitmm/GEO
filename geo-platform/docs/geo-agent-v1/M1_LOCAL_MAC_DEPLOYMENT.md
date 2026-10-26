@@ -24,9 +24,9 @@
 - 后端与 Worker 日志：`logs/`
 - 进程 PID 与 Worker heartbeat：`run/` 和 `data/*.worker.*`
 
-默认 `GEO_AGENT_BETA_DAILY_MODEL_CALLS=0`，因此可查看、导出和反馈历史真实结果，但不能
-批准新的付费生成。开启新生成还需要独立日常预算账本、累计额度和逐任务硬上限；仅设置开关
-不构成预算授权。
+`GEO_AGENT_BETA_DAILY_MODEL_CALLS` 由部署管理员控制。启用后，员工只需点击“创建并运行 AI
+优化”；模型、Transport、并发、重试和技术停止边界全部由服务端策略管理，页面不再要求员工
+填写请求数、Token、金额、单价或计费依据。关闭时仍可查看、导出和反馈历史真实结果。
 
 ## 2026-10-20 本机验收
 

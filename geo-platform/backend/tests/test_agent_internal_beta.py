@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import AgentResultFeedback
 from app.modules.agent_experiment.api import (
-    AgentAuthorization,
+    AgentServerQueue,
     authorize_agent_experiment,
     read_agent_capabilities,
 )
@@ -100,23 +100,21 @@ def test_daily_model_calls_fail_closed_without_deployment_authorization(tmp_path
     assert read_agent_capabilities(1) == {
         "project_id": 1, "execution_mode": "EVIDENCE_PACK",
         "new_generation_enabled": False, "authorization_scope": "HISTORY_ONLY",
-        "message": "当前没有日常模型调用授权；可查看历史结果并准备任务，但不能产生付费请求。",
+        "message": "AI 生成尚未由服务端启用；当前仍可查看和使用历史结果。",
     }
-    payload = AgentAuthorization(
-        project_id=1, prompt_id=44, revision=1, max_requests=1,
-        max_total_tokens=300000, max_cost_cny=3,
-        conservative_cny_per_million_tokens=10,
-        pricing_source="provider pricing page", pricing_checked_at="2026-10-20",
-    )
+    payload = AgentServerQueue(project_id=1, prompt_id=44, revision=1)
     with pytest.raises(HTTPException) as blocked:
         authorize_agent_experiment("agent-run-not-used", payload, actor="admin", db=None)
     assert blocked.value.status_code == 409
-    assert blocked.value.detail["code"] == "BETA_DAILY_MODEL_AUTHORIZATION_REQUIRED"
+    assert blocked.value.detail["code"] == "BETA_SERVER_MODEL_POLICY_DENIED"
 
     monkeypatch.setenv("GEO_AGENT_BETA_DAILY_MODEL_CALLS", "1")
     assert read_agent_capabilities(1)["new_generation_enabled"] is False
     monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_LEDGER_PATH", str(tmp_path / "daily.sqlite3"))
     monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_BATCH_ID", "beta-capability-test")
-    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", "2026-10-22")
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", "2026-10-26")
     initialize_daily_budget()
-    assert read_agent_capabilities(1)["new_generation_enabled"] is True
+    capability = read_agent_capabilities(1)
+    assert capability["new_generation_enabled"] is True
+    assert "budget" not in capability
+    assert "无需设置 Token" in capability["message"]

@@ -32,6 +32,10 @@ from app.services.shared_model_budget import (
 
 
 DAILY_AUTHORIZATION_SCOPE = "INTERNAL_BETA_DAILY"
+SERVER_TASK_MAX_REQUESTS = 1
+SERVER_TASK_MAX_TOKENS = 300_000
+SERVER_TASK_MAX_COST_CNY = 5.0
+SERVER_CONSERVATIVE_CNY_PER_MILLION_TOKENS = 10.0
 
 
 def _enabled() -> bool:
@@ -73,6 +77,29 @@ def daily_budget_summary() -> dict[str, Any]:
     return summary(_ledger_path())
 
 
+def server_task_policy() -> dict[str, Any]:
+    """Return the server-owned task policy; never accept these values from a client."""
+    if not _enabled():
+        raise SharedBudgetDenied("BETA_DAILY_MODEL_CALLS_DISABLED")
+    # Reading the persistent ledger is part of the preflight. Missing/corrupt
+    # state must stop before a business task is created or a provider is called.
+    daily_budget_summary()
+    pricing_checked_at = os.environ.get(
+        "GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", ""
+    ).strip()
+    if not pricing_checked_at:
+        raise SharedBudgetDenied("BETA_DAILY_PRICING_DATE_NOT_CONFIGURED")
+    return {
+        "max_requests": SERVER_TASK_MAX_REQUESTS,
+        "max_total_tokens": SERVER_TASK_MAX_TOKENS,
+        "max_cost_cny": SERVER_TASK_MAX_COST_CNY,
+        "conservative_cny_per_million_tokens":
+            SERVER_CONSERVATIVE_CNY_PER_MILLION_TOKENS,
+        "pricing_source": PRICING_SOURCE,
+        "pricing_checked_at": pricing_checked_at,
+    }
+
+
 def append_run_authorization(
     db: Session, *, run_id: str, project_id: int, prompt_id: int,
     revision: int, max_requests: int, max_total_tokens: int,
@@ -86,7 +113,10 @@ def append_run_authorization(
     ).one_or_none()
     if not row:
         raise SharedBudgetDenied("BETA_AGENT_RUN_NOT_FOUND")
-    if row.status != "WAITING_AUTHORIZATION" or row.revision != revision:
+    authorization = loads(row.authorization_json, {})
+    if (row.status not in {"QUEUED", "WAITING_AUTHORIZATION"}
+            or authorization.get("mode") != "CACHE_ONLY"
+            or row.revision != revision):
         raise SharedBudgetDenied("BETA_AGENT_RUN_AUTHORIZATION_STATE_CHANGED")
     execution = loads(row.agent_execution_json, {})
     if execution.get("contract_version") != EVIDENCE_PACK_EXECUTION_CONTRACT:

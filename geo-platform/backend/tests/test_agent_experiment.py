@@ -806,6 +806,12 @@ def test_agent_api_create_get_and_comparison_get_are_scoped_and_read_only(tmp_pa
 
     app.dependency_overrides[get_release_db] = override_release_db
     client = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
+    ledger = tmp_path / "api-daily-budget.sqlite3"
+    monkeypatch.setenv("GEO_AGENT_BETA_DAILY_MODEL_CALLS", "1")
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_LEDGER_PATH", str(ledger))
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_BATCH_ID", "api-beta-test")
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", "2026-10-26")
+    initialize_daily_budget()
     payload = {"project_id": 1, "prompt_id": 44, "context_id": fixture["context"].context_id,
                "citation_manifest_id": fixture["manifest"].manifest_id,
                "citation_manifest_hash": fixture["manifest"].payload_hash,
@@ -817,7 +823,19 @@ def test_agent_api_create_get_and_comparison_get_are_scoped_and_read_only(tmp_pa
     assert created.json()["execution_mode"] == "EVIDENCE_PACK"
     assert created.json()["budget"]["max_model_calls"] == 1
     assert created.json()["budget"]["max_tool_calls"] == 0
+    assert created.json()["status"] == "QUEUED"
+    assert created.json()["authorization"]["mode"] == "EXTERNAL_ALLOWED"
+    assert created.json()["authorization"]["authorized_by"].startswith("server-policy:")
     run_id = created.json()["run_id"]
+    run_count = db.query(AgentExperimentRun).count()
+    client_budget = client.post(
+        f"/api/v2/single-prompt/analyses/{fixture['analysis'].analysis_id}/agent-experiments",
+        json={**payload, "idempotency_key": "agent-api-client-budget-0001", "budget": {
+            "max_model_calls": 1, "max_total_tokens": 1, "max_cost_cny": 0.01,
+        }},
+    )
+    assert client_budget.status_code == 422
+    assert db.query(AgentExperimentRun).count() == run_count
     before = db.query(AgentEvent).count()
     read = client.get(f"/api/v2/single-prompt/agent-experiments/{run_id}?project_id=1&prompt_id=44")
     compared = client.get(f"/api/v2/single-prompt/agent-experiments/{run_id}/comparison?project_id=1&prompt_id=44")

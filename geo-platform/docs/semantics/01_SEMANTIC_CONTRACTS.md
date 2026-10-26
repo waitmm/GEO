@@ -14,6 +14,41 @@
 
 ## 2. 首批 Contract
 
+### SC-SERVER-MODEL-POLICY-001 Server-Owned Model Execution Policy
+
+```yaml
+contract_id: SC-SERVER-MODEL-POLICY-001
+contract_name: Server-Owned Model Execution Policy
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: PRODUCTION
+definition: 员工只提交当前冻结 GEO 输入的 AI 优化意图；运行资格、模型、Transport、并发、重试与技术停止边界由服务端策略决定，客户端任务表单不能授予或扩大额度。
+allowed_inferences:
+  - 服务端策略可用且冻结身份通过时，一次用户操作可以创建并排队 Evidence Pack 任务。
+  - 实际调用次数、Token 和费用可以作为只读审计信息展示。
+  - 未来可以按认证账号配置服务端额度而不改变员工操作流程。
+forbidden_inferences:
+  - 要求员工填写请求数、Token、金额、价格来源或核实日期才能运行。
+  - 接受客户端预算字段作为模型运行授权来源。
+  - 策略不可用时回退到历史实验余额、默认无限额度或模型自行决定。
+unknown_behavior: 服务端策略、账本或运行身份不可验证时，在外部请求前阻断并返回业务可读错误。
+identity: authenticated actor/deployment policy + project + prompt + frozen Agent run identity + server ledger authorization
+history: 历史任务、授权、账本、用量和结果保持不可变；只改变新任务的准入交互。
+step_boundary: Optimize 执行准入；不改变采样、Evidence、Truth、Review、正式 V2 或发布权限。
+source_references:
+  - docs/semantics/rfcs/RFC-SERVER-MODEL-POLICY-001.md
+enforcement_refs:
+  - backend/app/modules/agent_experiment/api.py
+  - backend/app/services/internal_beta_model_budget.py
+  - backend/tests/test_agent_internal_beta.py
+  - frontend/tests/agent-internal-beta.test.mjs
+approved_by: Product Owner
+approved_at: 2026-10-26
+approval_reference: 用户明确取消客户端预算设置并决定未来由服务端按账号配置额度
+golden_case_ids: [CASE-SYN-008]
+effective_from: 2026-10-26
+```
+
 ### SC-DELIVERY-001 Continuous Monitor And Independent Validate
 
 ```yaml

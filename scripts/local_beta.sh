@@ -171,7 +171,7 @@ start() {
   for _ in $(seq 1 60); do
     if health_check >/dev/null 2>&1; then
       echo "GEO Beta is ready: $URL"
-      echo "Daily model generation: $DAILY_MODEL_CALLS (shared cap: ¥30 / 3,000,000 tokens / 36 requests; task cap: ¥5)"
+      echo "AI generation: $DAILY_MODEL_CALLS (server-managed policy)"
       echo "Scheduled sampling: $SCHEDULED_SAMPLING (single concurrency; collector retries: 0)"
       return
     fi

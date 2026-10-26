@@ -16,7 +16,7 @@ test('business result parser keeps the six delivery sections separate', () => {
 
 test('historical result is never presented as a newly completed task', () => {
   assert.equal(savedResultLabel(1, 'SUCCEEDED'), '已保存的真实模型结果');
-  assert.equal(savedResultLabel(0, 'WAITING_AUTHORIZATION'), '待管理员授权的新任务');
+  assert.equal(savedResultLabel(0, 'WAITING_AUTHORIZATION'), '等待服务启动的新任务');
   assert.equal(savedResultLabel(0, 'SUCCEEDED'), '已保存结果（来源待核对）');
 });
 
@@ -43,4 +43,7 @@ test('AI optimization is the default lane and feedback uses actual APIs', () => 
   assert.match(panel, /复制完整正文/);
   assert.match(panel, /result\?\.result\?\.raw_markdown \|\| result\?\.deliverable_markdown/);
   assert.match(panel, /download\(reportMarkdown, result\.result_version\)/);
+  assert.doesNotMatch(panel, /管理员设置本任务额度|管理员授权当前冻结任务|保守单价|AI 优化计费依据|InputNumber/);
+  assert.match(panel, /AI 优化任务已创建并开始运行/);
+  assert.match(panel, /restartWithServerPolicy/);
 });

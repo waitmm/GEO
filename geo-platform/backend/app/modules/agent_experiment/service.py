@@ -406,7 +406,10 @@ def authorize_agent_run(db: Session, *, run_id: str, project_id: int, prompt_id:
     row = db.query(AgentExperimentRun).filter_by(run_id=run_id, project_id=project_id, prompt_id=prompt_id).one_or_none()
     if not row:
         raise HTTPException(404, "Agent 实验运行不存在")
-    if row.status != "WAITING_AUTHORIZATION" or row.revision != revision:
+    current_authorization = loads(row.authorization_json, {})
+    if (row.status not in {"QUEUED", "WAITING_AUTHORIZATION"}
+            or current_authorization.get("mode") != "CACHE_ONLY"
+            or row.revision != revision):
         raise HTTPException(409, "Agent 状态或 revision 已变化")
     budget = loads(row.budget_json, {})
     if (max_cost_cny <= 0 or max_cost_cny > float(budget.get("max_cost_cny", 0))

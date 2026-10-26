@@ -18,6 +18,16 @@ implementation_status = NOT_IMPLEMENTED | SHADOW | PARTIAL | PRODUCTION | DIVERG
 
 ## 2. 核心对象
 
+### Server Model Execution Policy
+
+- 定义：由服务端绑定部署或认证账号的模型运行资格与技术停止边界；它不是员工填写的任务参数。
+- 标识：当前 M1 为部署策略与持久化账本身份；未来账号级策略必须绑定认证主体。
+- 产生：服务部署配置，不由 Optimize 页面或模型产生。
+- 可推断：当前员工是否可对一个已冻结输入发起 AI 优化。
+- 禁止推断：客户端填写额度、历史实验余额或模型输出不能授予/扩大运行权限。
+- 未知行为：策略、账本或价格配置不可验证时，在外部请求前阻断。
+- 当前实现：`backend/app/services/internal_beta_model_budget.py`。
+
 ### Run
 
 - 定义：一次 Prompt 在指定平台和采集上下文中的业务观测槽位。失败且尚未被正式分析消费时，

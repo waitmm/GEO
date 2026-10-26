@@ -168,7 +168,10 @@ start() {
   render_plists
   bootstrap_or_restart "$BACKEND_LABEL" "$BACKEND_PLIST"
   bootstrap_or_restart "$WORKER_LABEL" "$WORKER_PLIST"
-  for _ in $(seq 1 60); do
+  # A cold launchd start on the local Mac can spend more than 30 seconds
+  # importing the release app. Keep polling instead of reporting a false
+  # deployment failure while both supervised processes are still starting.
+  for _ in $(seq 1 240); do
     if health_check >/dev/null 2>&1; then
       echo "GEO Beta is ready: $URL"
       echo "AI generation: $DAILY_MODEL_CALLS (server-managed policy)"

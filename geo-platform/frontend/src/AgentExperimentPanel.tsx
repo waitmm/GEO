@@ -55,6 +55,21 @@ function humanTime(value?: string | null) {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
+function validationIssueText(validation?: any) {
+  const issues = Array.isArray(validation?.issues) ? validation.issues : [];
+  return issues.map((item: any) => {
+    if (item?.code === "SECTION_EVIDENCE_REQUIRED") return `${item.detail}缺少可反查证据标记`;
+    return item?.detail ? `${item.code || "校验问题"}：${item.detail}` : String(item?.code || "校验问题");
+  }).join("；");
+}
+
+function blockerText(run: AgentRun) {
+  if (run.blocker?.code === "EVIDENCE_PACK_OUTPUT_VALIDATION_FAILED") {
+    return "内容已经生成并保存，但没有通过证据校验；请打开该结果查看草稿和具体缺口。";
+  }
+  return run.blocker?.detail || "尚未生成";
+}
+
 export function AgentExperimentPanel({ projectId, promptId, analysisId, contextId, completion }: {
   projectId: number; promptId: number; analysisId: string; contextId: string; completion?: Completion | null;
 }) {
@@ -205,11 +220,12 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           columns={[
             { title: "创建时间", dataIndex: "created_at", render: humanTime },
             { title: "状态", dataIndex: "status", render: (value, row) => <Space><Tag>{statusLabel[value] || value}</Tag><Typography.Text type="secondary">{savedResultLabel(row.usage.model_calls, value)}</Typography.Text></Space> },
-            { title: "结果", render: (_, row) => row.status === "SUCCEEDED" ? "可查看" : row.blocker?.detail || "尚未生成" },
+            { title: "结果", render: (_, row) => row.status === "SUCCEEDED" ? "可查看" : blockerText(row) },
           ]} />
         {active && <Card style={{ marginTop: 16 }} title={<Space wrap><span>优化结果</span><Tag>{statusLabel[active.status] || active.status}</Tag><Tag color={active.usage.model_calls ? "blue" : undefined}>{savedResultLabel(active.usage.model_calls, active.status)}</Tag></Space>}>
           {active.blocker && <Alert type={active.status === "WAITING_AUTHORIZATION" ? "warning" : "error"} showIcon
-            message={statusLabel[active.status] || active.blocker.code} description={active.blocker.detail} />}
+            message={active.blocker.code === "EVIDENCE_PACK_OUTPUT_VALIDATION_FAILED" ? "内容已生成，但未通过证据校验" : statusLabel[active.status] || active.blocker.code}
+            description={blockerText(active)} />}
           <Space wrap style={{ marginTop: 12 }}>
             {active.status === "WAITING_AUTHORIZATION" && capabilities?.new_generation_enabled && <Button onClick={restartWithServerPolicy}>重新尝试启动</Button>}
             {active.status === "WAITING_AUTHORIZATION" && !capabilities?.new_generation_enabled && <Tag color="orange">AI 生成服务暂未启用</Tag>}
@@ -220,10 +236,12 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
               label: `结果 V${item.version_number} · ${humanTime(item.created_at)} · ${item.evidence_grade}` }))} />}
           {result && <>
             <Alert style={{ marginTop: 12 }} type={result.validation?.status === "PASS" ? "success" : "warning"} showIcon
-              message={`服务端校验 ${result.validation?.status || "未知"} · ${result.evidence_grade}`}
-              description={`公开主张：${result.public_claim_eligibility}；发布资格：${result.publication_eligibility}。VERIFY_FIRST 表示必须先由员工核实，不是允许直接发布。`} />
+              message={result.validation?.status === "PASS" ? `服务端校验通过 · ${result.evidence_grade}` : `草稿已保存，服务端校验未通过 · ${result.evidence_grade}`}
+              description={result.validation?.status === "PASS"
+                ? `公开主张：${result.public_claim_eligibility}；发布资格：${result.publication_eligibility}。VERIFY_FIRST 表示必须先由员工核实，不是允许直接发布。`
+                : `${validationIssueText(result.validation) || "存在未通过的内容校验项"}。这份草稿可查看和导出排查，但不是合格交付。`} />
             <Space wrap style={{ marginTop: 12 }}>
-              <Button icon={<Copy size={16} />} onClick={() => copy(sections["完整正文"] || result.deliverable_markdown)}>复制完整正文</Button>
+              <Button icon={<Copy size={16} />} onClick={() => copy(sections["完整正文"] || result.deliverable_markdown)}>{result.validation?.status === "PASS" ? "复制完整正文" : "复制未通过草稿"}</Button>
               <Button icon={<Download size={16} />} onClick={() => download(reportMarkdown, result.result_version)}>导出完整报告</Button>
             </Space>
             <Descriptions size="small" column={{ xs: 1, md: 3 }} style={{ marginTop: 16 }}>

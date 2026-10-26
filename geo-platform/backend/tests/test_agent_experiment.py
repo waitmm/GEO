@@ -28,6 +28,7 @@ from app.modules.agent_experiment.grading import validate_and_grade
 from app.modules.agent_experiment.evidence_pack import (
     EvidencePackCapacityError,
     build_evidence_pack,
+    render_evidence_pack_prompt,
     validate_markdown_result,
 )
 from app.modules.agent_experiment.reconciliation import reconcile_agent_run_usage
@@ -318,8 +319,8 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v4"
-    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v4"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v5"
+    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v5"
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
         "geo.deepseek.responses-text.no-thinking.v2"
@@ -476,6 +477,13 @@ def test_evidence_pack_rejects_unread_source_and_incomplete_draft(tmp_path, monk
         "SOURCE_REF_NOT_INCLUDED", "DELIVERABLE_INCOMPLETE",
     }
     assert validation["status"] == "FAIL"
+
+
+def test_evidence_pack_prompt_requires_evidence_in_each_analysis_section():
+    prompt = render_evidence_pack_prompt()
+    assert "三节必须各自至少包含一个" in prompt
+    assert "只写 `Run 10`、`truth 1`" in prompt
+    assert "不要把这三节需要的证据标记集中放到其他章节" in prompt
 
 
 def test_evidence_pack_l3_requires_verify_first_and_valid_refs(tmp_path, monkeypatch):

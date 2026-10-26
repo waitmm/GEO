@@ -27,8 +27,8 @@ PREVIOUS_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v2"
 PREVIOUS_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v2"
 LOCATOR_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v3"
 LOCATOR_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v3"
-EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v4"
-EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v4"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v5"
+EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v5"
 EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.no-thinking.v2"
 DEFAULT_TEXT_BUDGET = 90_000
 REQUIRED_SECTIONS = (
@@ -239,6 +239,10 @@ def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VE
 - `[[truth:TRUTH_ID:VERSION]]`
 
 {locator_rule}
+
+`GEO 诊断与依据`、`品牌表现与证据缺口`、`优化策略与渠道` 三节必须各自至少包含一个
+上述完整标记。只写 `Run 10`、`truth 1` 或内部字段名不算证据引用；必须同时逐字复制该
+对象的完整 locator。不要把这三节需要的证据标记集中放到其他章节。
 
 来源 passage 与目标品牌 Truth 不是同一种资格；外部来源提到某能力不能自动变成目标品牌事实。
 若品牌事实不足，采用 L3 安全写法，并在 `QA 与事实限制` 中逐字写出 `VERIFY_FIRST`。

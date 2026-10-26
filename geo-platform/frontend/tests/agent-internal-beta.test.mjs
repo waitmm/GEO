@@ -41,6 +41,8 @@ test('AI optimization is the default lane and feedback uses actual APIs', () => 
   assert.match(panel, /agent-experiments\/capabilities/);
   assert.match(panel, /结果历史版本/);
   assert.match(panel, /复制完整正文/);
+  assert.match(panel, /内容已经生成并保存，但没有通过证据校验/);
+  assert.match(panel, /复制未通过草稿/);
   assert.match(panel, /result\?\.result\?\.raw_markdown \|\| result\?\.deliverable_markdown/);
   assert.match(panel, /download\(reportMarkdown, result\.result_version\)/);
   assert.doesNotMatch(panel, /管理员设置本任务额度|管理员授权当前冻结任务|保守单价|AI 优化计费依据|InputNumber/);

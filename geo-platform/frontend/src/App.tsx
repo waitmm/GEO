@@ -21,8 +21,8 @@ import { ReleaseWorkerStatus } from "./ReleaseWorkerStatus";
 import { isRateLimited, RATE_LIMIT_LABEL, RATE_LIMIT_RECOVERY_GUIDANCE } from "./rateLimitFeedback";
 import { formatBeijingDateTime } from "./time";
 import type {
-  BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, PromptVersion, PromptVersionBinding, RunArtifactContent, Topic,
-  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
+  BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, PromptVersionBinding, RunArtifactContent, Topic,
+  SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
   SinglePromptV2RetestReadiness, SinglePromptV2RetestStatus, SinglePromptV2StrategyStatus, ValidationDashboard, ValidationPresence, ValidationSource
 } from "./types";
 
@@ -364,6 +364,22 @@ function v2MetricValue(metric?: { hit_count: number; evaluable_count: number; va
 
 function formatDateTime(v: string | null | undefined) {
   return formatBeijingDateTime(v, "-");
+}
+
+function analysisRangeLabel(
+  origin: SinglePromptV2Status["origin_monitor_scope"],
+  createdAt: string | null | undefined,
+  fallbackCount: number,
+) {
+  const count = origin?.selected_run_ids?.length || fallbackCount;
+  const selector = origin?.selector;
+  if (selector?.start_at && selector?.end_at) {
+    return `${formatDateTime(selector.start_at)} 至 ${formatDateTime(selector.end_at)} · ${count} 条回答`;
+  }
+  if (selector?.mode === "RUN_IDS") {
+    return `指定回答 · ${count} 条 · ${formatDateTime(createdAt)}`;
+  }
+  return `已固定数据 · ${count} 条回答 · ${formatDateTime(createdAt)}`;
 }
 function safeRate(n: number, d: number) {
   return d ? Math.round((n / d) * 1000) / 10 : 0;
@@ -1560,17 +1576,7 @@ export default function App() {
   const [v2Analysis, setV2Analysis] = useState<SinglePromptV2Status | null>(null);
   const [v2AnalysisHistory, setV2AnalysisHistory] = useState<SinglePromptV2AnalysisListItem[]>([]);
   const [v2AnalysisHistoryLoading, setV2AnalysisHistoryLoading] = useState(false);
-  const [v2RunPool, setV2RunPool] = useState<SinglePromptV2RunPool | null>(null);
-  const [v2RunPoolLoading, setV2RunPoolLoading] = useState(false);
-  const [v2SelectedRuns, setV2SelectedRuns] = useState<Array<{ run_id: number; input_fingerprint: string; logical_run_id: string; attempt_no: number }>>([]);
-  const v2SelectedRunIds = v2SelectedRuns.map((run) => run.run_id);
-  const v2SelectedRunFingerprints = Object.fromEntries(v2SelectedRuns.map((run) => [run.run_id, run.input_fingerprint]));
-  const [v2PromptVersions, setV2PromptVersions] = useState<PromptVersion[]>([]);
-  const [v2SelectedPromptVersion, setV2SelectedPromptVersion] = useState<PromptVersion | null>(null);
-  const [v2PromptVersionsLoading, setV2PromptVersionsLoading] = useState(false);
   const [v2Loading, setV2Loading] = useState(false);
-  const [v2SampleCount, setV2SampleCount] = useState(3);
-  const v2PendingIdempotencyKey = useRef<string | null>(null);
   const [v2SourcePreparation, setV2SourcePreparation] = useState<SinglePromptV2SourcePreparation | null>(null);
   const [v2SourceRefreshing, setV2SourceRefreshing] = useState(false);
   const [v2SourceActionKey, setV2SourceActionKey] = useState<string | null>(null);
@@ -1765,14 +1771,14 @@ export default function App() {
   }
   function invalidateV2Reads() {
     v2ReadRequests.current = {};
-    setV2Loading(false); setV2AnalysisHistoryLoading(false); setV2RunPoolLoading(false);
+    setV2Loading(false); setV2AnalysisHistoryLoading(false);
     setV2SourceRefreshing(false); setV2DiagnosisLoading(false);
     setV2CitationContributionHistoryLoading(false); setV2CitationContributionLoading(false);
     setV2StrategyLoading(false); setV2ExecutionLoading(false); setV2RetestLoading(false);
     setV2QualificationCriticLoading(false); setV2CriticGoldLoading(false);
   }
   function resetV2PendingKeys() {
-    [v2PendingIdempotencyKey, v2PendingDiagnosisKey, v2PendingStrategyKey,
+    [v2PendingDiagnosisKey, v2PendingStrategyKey,
       v2PendingExecutionKey, v2PendingConfirmationKey, v2PendingPublicationKey,
       v2PendingRetestKey].forEach(ref => { ref.current = null; });
   }
@@ -1782,20 +1788,6 @@ export default function App() {
   function promptVersionBindingLabel(binding: PromptVersionBinding) {
     if (binding.binding_status === "LEGACY_UNBOUND") return <Tag color="orange">LEGACY_UNBOUND</Tag>;
     return <Space size={4} wrap><Tag color="blue">Prompt V{binding.version_number}</Tag><Text code>{binding.snapshot_hash.slice(0, 12)}</Text></Space>;
-  }
-
-  async function selectV2PromptVersion(promptVersionId: string) {
-    if (!projectId || !activePromptId) return;
-    setV2PromptVersionsLoading(true);
-    setV2SelectedPromptVersion(null);
-    try {
-      // The detail endpoint is the authority for the ID/hash submitted to mutations.
-      setV2SelectedPromptVersion(await api.getPromptVersion(projectId, activePromptId, promptVersionId));
-    } catch (error: any) {
-      message.error(error.message || "读取所选 Prompt 冻结版本失败");
-    } finally {
-      setV2PromptVersionsLoading(false);
-    }
   }
 
   function resetPromptScopedAnalysisState() {
@@ -1894,7 +1886,7 @@ export default function App() {
       ++projectRequestSeq.current;
       setPromptContext(null);
       setPrompts([]);
-      setV2AnalysisHistory([]); setV2RunPool(null);
+      setV2AnalysisHistory([]);
       setV2Analysis(null);
       setV2SourcePreparation(null);
       setV2Diagnosis(null);
@@ -1906,7 +1898,6 @@ export default function App() {
       setV2Execution(null);
       setV2RetestReadiness(null);
       setV2Retest(null);
-      setV2SelectedRuns([]);
     }
     setProjectId(id);
   }
@@ -1917,8 +1908,7 @@ export default function App() {
       resetV2PendingKeys();
       const params = new URLSearchParams({ release_view: page, v2_project: String(projectId), v2_prompt: String(id) });
       window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
-      setV2Analysis(null); setV2AnalysisHistory([]); setV2RunPool(null);
-      setV2SelectedRuns([]);
+      setV2Analysis(null); setV2AnalysisHistory([]);
       setV2SourcePreparation(null); setV2Diagnosis(null); setV2CitationContribution(null);
       setV2StrategyReadiness(null); setV2QualificationProjection(null); setV2QualificationCritic(null);
       setV2Strategy(null); setV2Execution(null); setV2RetestReadiness(null); setV2Retest(null);
@@ -2023,7 +2013,6 @@ export default function App() {
       const status = await api.getSinglePromptV2Analysis(analysisId, projectId, activePromptId);
       if (!current()) return;
       setV2Analysis(status);
-      setV2SampleCount(status.sampling.planned_run_count);
       persistV2Identity(status);
     } catch (error: any) {
       if (!current()) return;
@@ -2047,115 +2036,6 @@ export default function App() {
       message.error(error.message || "读取已有分析失败");
     } finally {
       if (current()) setV2AnalysisHistoryLoading(false);
-    }
-  }
-
-  async function refreshV2RunPool(page = v2RunPool?.page || 1) {
-    if (!projectId || !activePromptId) return;
-    const current = beginV2Read('pool', false);
-    setV2RunPoolLoading(true);
-    try {
-      const rows = await api.listSinglePromptV2RunPool(projectId, activePromptId, page, 20);
-      if (current()) setV2RunPool(rows);
-    } catch (error: any) {
-      if (!current()) return;
-      message.error(error.message || "读取采样记录池失败");
-    } finally {
-      if (current()) setV2RunPoolLoading(false);
-    }
-  }
-
-  function selectV2Runs(rows: SinglePromptV2RunPoolItem[], selected: boolean) {
-    if (!rows.length) return;
-    if (selected && rows.some((row) => v2SelectedRuns.some((current) => current.logical_run_id === row.logical_run_id && current.run_id !== row.run_id))) {
-      message.info("检测到旧数据中的同一业务样本重复记录；已只保留当前选择，避免重复计入分析。");
-    }
-    setV2SelectedRuns((current) => {
-      if (!selected) {
-        const removed = new Set(rows.map((row) => row.run_id));
-        return current.filter((run) => !removed.has(run.run_id));
-      }
-      const newestByLogicalRun = new Map<string, SinglePromptV2RunPoolItem>();
-      for (const row of rows) {
-        const existing = newestByLogicalRun.get(row.logical_run_id);
-        if (!existing || row.attempt_no > existing.attempt_no || (row.attempt_no === existing.attempt_no && row.run_id > existing.run_id)) {
-          newestByLogicalRun.set(row.logical_run_id, row);
-        }
-      }
-      const replacingLogicalRunIds = new Set(newestByLogicalRun.keys());
-      const retained = current.filter((run) => !replacingLogicalRunIds.has(run.logical_run_id));
-      return [...retained, ...[...newestByLogicalRun.values()].map((row) => ({
-        run_id: row.run_id,
-        input_fingerprint: row.input_fingerprint,
-        logical_run_id: row.logical_run_id,
-        attempt_no: row.attempt_no,
-      }))];
-    });
-  }
-
-  async function createV2AnalysisFromSelectedRuns() {
-    if (!projectId || !activePromptId || !v2SelectedRunIds.length) return;
-    if (!v2SelectedPromptVersion) {
-      message.warning("请先选择并读取一个明确的 Prompt 冻结版本");
-      return;
-    }
-    const runIds = v2SelectedRunIds.map(Number).sort((a, b) => a - b);
-    const missingFingerprint = runIds.find((runId) => !v2SelectedRunFingerprints[runId]);
-    if (missingFingerprint) {
-      message.error(`Run #${missingFingerprint} 缺少当前输入指纹，请刷新记录池后重新选择`);
-      return;
-    }
-    const current = beginV2Read('analysis', false);
-    setV2Loading(true);
-    try {
-      const status = await api.createSinglePromptV2AnalysisFromRuns({
-        project_id: projectId,
-        prompt_id: activePromptId,
-        run_ids: runIds,
-        run_fingerprints: Object.fromEntries(runIds.map((runId) => [runId, v2SelectedRunFingerprints[runId]])),
-        base_context_id: v2Analysis?.context_id || null,
-        prompt_version_id: v2SelectedPromptVersion.prompt_version_id,
-        snapshot_hash: v2SelectedPromptVersion.snapshot_hash,
-        idempotency_key: crypto.randomUUID(),
-      });
-      if (!current()) return;
-      setV2Analysis(status);
-      setV2SourcePreparation(null);
-      setV2Diagnosis(null);
-      setV2StrategyReadiness(null);
-      setV2QualificationProjection(null);
-      setV2QualificationCritic(null);
-      setV2Strategy(null);
-      setV2Execution(null);
-      setV2RetestReadiness(null);
-      setV2Retest(null);
-      persistV2Identity(status);
-      await refreshV2AnalysisHistory();
-      if (!current()) return;
-      message.success(`已用 ${runIds.length} 个明确 Run 创建新的不可变分析版本`);
-    } catch (error: any) {
-      if (!current()) return;
-      message.error(error.message || "按所选 Run 创建分析失败");
-    } finally {
-      if (current()) setV2Loading(false);
-    }
-  }
-
-  async function retryV2Run(row: SinglePromptV2RunPoolItem) {
-    if (!projectId || !activePromptId) return;
-    setV2RunPoolLoading(true);
-    try {
-      const result = await api.retrySinglePromptV2Run(row.run_id, {
-        project_id: projectId,
-        prompt_id: activePromptId,
-        idempotency_key: crypto.randomUUID(),
-      });
-      message.success(`Run #${row.run_id} 已进入第 ${result.attempt_no} 次采集尝试，完成后会自动更新本行状态`);
-      await refreshV2RunPool();
-    } catch (error: any) {
-      message.error(error.message || "单 Run 重试排队失败");
-    } finally {
-      setV2RunPoolLoading(false);
     }
   }
 
@@ -2199,7 +2079,6 @@ export default function App() {
       params.delete("v2_retest");
       window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
       setV2Analysis(status);
-      setV2SampleCount(status.sampling.planned_run_count);
       setV2SourcePreparation(null);
       setV2Diagnosis(null);
       setV2CitationContribution(null);
@@ -2236,65 +2115,6 @@ export default function App() {
     setV2RetestReadiness(null);
     setV2Retest(null);
     void refreshV2AnalysisHistory();
-  }
-
-  async function startV2Analysis() {
-    if (!projectId || !activePromptId) {
-      message.warning("请先选择一个 Prompt");
-      return;
-    }
-    if (!v2SelectedPromptVersion) {
-      message.warning("请先选择并读取一个明确的 Prompt 冻结版本");
-      return;
-    }
-    const current = beginV2Read('analysis', false);
-    setV2Loading(true);
-    const key = v2PendingIdempotencyKey.current || crypto.randomUUID();
-    v2PendingIdempotencyKey.current = key;
-    try {
-      const params = new URLSearchParams(window.location.search);
-      params.delete("v2_diagnosis");
-      params.delete("v2_diagnosis_result");
-      params.delete("v2_contribution");
-      params.delete("v2_critic");
-      params.delete("v2_strategy");
-      params.delete("v2_strategy_result");
-      window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
-      setV2Diagnosis(null);
-      setV2CitationContribution(null);
-      setV2DiagnosisEdits({});
-      setV2SourcePreparation(null);
-      setV2SourceDrafts({});
-      setV2SourceActionNotice(null);
-      setV2StrategyReadiness(null);
-      setV2QualificationProjection(null);
-      setV2QualificationCritic(null);
-      setV2Strategy(null);
-      setV2Execution(null);
-      setV2RetestReadiness(null);
-      setV2Retest(null);
-      const status = await api.createSinglePromptV2Analysis({
-        project_id: projectId,
-        prompt_id: activePromptId,
-        sample_count: v2SampleCount,
-        prompt_version_id: v2SelectedPromptVersion.prompt_version_id,
-        snapshot_hash: v2SelectedPromptVersion.snapshot_hash,
-        idempotency_key: key,
-      });
-      if (!current()) return;
-      v2PendingIdempotencyKey.current = null;
-      setV2Analysis(status);
-      await refreshV2AnalysisHistory();
-      if (!current()) return;
-      setV2SampleCount(status.sampling.planned_run_count);
-      persistV2Identity(status);
-      message.success("V2 分析已创建，采样计划已经固定");
-    } catch (error: any) {
-      if (!current()) return;
-      message.error(error.message || "创建 V2 分析失败");
-    } finally {
-      if (current()) setV2Loading(false);
-    }
   }
 
   async function retryV2Analysis() {
@@ -4018,11 +3838,9 @@ export default function App() {
   useEffect(() => {
     if (page !== "coreV2" || !projectId || !activePromptId) return;
     void refreshV2AnalysisHistory();
-    void refreshV2RunPool(1);
     const params = new URLSearchParams(window.location.search);
     if (Number(params.get("v2_project")) !== projectId || Number(params.get("v2_prompt")) !== activePromptId) {
       setV2Analysis(null);
-      setV2SelectedRuns([]);
       setV2Diagnosis(null);
       setV2DiagnosisEdits({});
       setV2SourcePreparation(null);
@@ -4040,31 +3858,10 @@ export default function App() {
     void refreshV2Analysis();
   }, [page, projectId, activePromptId]);
   useEffect(() => {
-    if (page !== "coreV2" || !projectId || !activePromptId) {
-      setV2PromptVersions([]);
-      setV2SelectedPromptVersion(null);
-      return;
-    }
-    let cancelled = false;
-    setV2PromptVersionsLoading(true);
-    setV2SelectedPromptVersion(null);
-    api.listPromptVersions(projectId, activePromptId)
-      .then((versions) => { if (!cancelled) setV2PromptVersions(versions); })
-      .catch((error: Error) => { if (!cancelled) { setV2PromptVersions([]); message.error(error.message || "读取 Prompt 版本列表失败"); } })
-      .finally(() => { if (!cancelled) setV2PromptVersionsLoading(false); });
-    return () => { cancelled = true; };
-  }, [page, projectId, activePromptId]);
-  useEffect(() => {
     if (!v2Analysis || !["QUEUED", "COLLECTING"].includes(v2Analysis.sampling.status)) return;
     const timer = window.setInterval(() => { void refreshV2Analysis(); }, 3000);
     return () => window.clearInterval(timer);
   }, [v2Analysis?.analysis.analysis_id, v2Analysis?.sampling.status, projectId, activePromptId]);
-  useEffect(() => {
-    if (page !== "coreV2" || !projectId || !activePromptId) return;
-    if (!(v2RunPool?.items || []).some((row) => ["retrying", "queued", "running"].includes(row.status))) return;
-    const timer = window.setInterval(() => { void refreshV2RunPool(v2RunPool?.page || 1); }, 2000);
-    return () => window.clearInterval(timer);
-  }, [page, projectId, activePromptId, v2RunPool?.page, v2RunPool?.items]);
   useEffect(() => {
     if (page !== "coreV2" || !v2Analysis?.context_id) return;
     void refreshV2SourcePreparation();
@@ -5880,129 +5677,49 @@ export default function App() {
         {!project ? <Card loading={loading}><Empty description="请选择项目" /></Card> : ["releaseMonitor", "releaseCompare", "brandContext"].includes(page) ? <ObservationPanel key={`${project.id}:${page === "brandContext" ? "project" : activePromptId}:${page}`} project={project} promptId={page === "brandContext" ? null : activePromptId} mode={page === "brandContext" ? "context" : page === "releaseCompare" ? "compare" : "monitor"} /> : page === "coreV2" ? <Space direction="vertical" size={16} className="page-stack">
           {!activePromptId ? <Card><Empty description="请在顶部选择一个 Prompt" /></Card> : <>
             <Card size="small" title={<Space><Play size={18} />问题 #{activePromptId}</Space>} extra={<Space wrap>
-              <Text type="secondary">采样次数</Text>
-              <InputNumber aria-label="本次采样次数" min={1} max={10} value={v2SampleCount} onChange={(value) => setV2SampleCount(Number(value || 1))} disabled={v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")} />
-              <Popconfirm
-                title={v2AnalysisHistory.length ? "新增一批浏览器采样？" : "开始首次浏览器采样？"}
-                description={v2AnalysisHistory.length ? "这会新增 Run，不会修改或重算已有分析。采样完成后可在下方选择是否纳入新分析。" : "采样完成后会形成第一份不可变分析输入。"}
-                okText="确认采样"
-                cancelText="取消"
-                onConfirm={startV2Analysis}
-              >
-                <Tooltip title="只新增采样记录；继续历史分析请使用下方已有分析">
-                  <Button icon={<Play size={15} />} loading={v2Loading} disabled={!v2SelectedPromptVersion || scopedPrompt?.enabled === false || v2Loading || ["QUEUED", "COLLECTING"].includes(v2Analysis?.sampling.status || "")}>
-                    {v2AnalysisHistory.length ? "新增采样" : "开始首次采样"}
-                  </Button>
-                </Tooltip>
-              </Popconfirm>
-              <Tooltip title="读取这次分析的后端权威状态">
+              <Button icon={<BarChart3 size={15} />} onClick={() => {
+                setPage("releaseMonitor");
+                const params = new URLSearchParams(window.location.search);
+                params.set("release_view", "releaseMonitor");
+                params.set("v2_project", String(projectId));
+                params.set("v2_prompt", String(activePromptId));
+                window.history.replaceState(null, "", `?${params}`);
+              }}>前往 Monitor 选择回答</Button>
+              <Tooltip title="读取当前分析的最新状态">
                 <Button icon={<RefreshCw size={15} />} loading={v2Loading} disabled={!v2Analysis} onClick={refreshV2Analysis} aria-label="刷新分析状态" />
               </Tooltip>
             </Space>}>
               <Text>{scopedPrompt?.prompt_text}</Text>
-              <Alert style={{ marginTop: 12 }} type={v2SelectedPromptVersion ? "info" : "warning"} showIcon
-                message="新建采样必须绑定明确的 Prompt 冻结版本"
-                description={<Space wrap style={{ width: "100%" }}>
-                  <Select aria-label="本次新建采样绑定的 Prompt 冻结版本" style={{ width: "100%", minWidth: 0 }} loading={v2PromptVersionsLoading}
-                    value={v2SelectedPromptVersion?.prompt_version_id} placeholder="选择冻结 Prompt 版本"
-                    onChange={(value) => void selectV2PromptVersion(value)}
-                    options={v2PromptVersions.map((version) => ({ value: version.prompt_version_id, label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash.slice(0, 12)}` }))} />
-                  {v2SelectedPromptVersion
-                    ? <Text>将提交 V{v2SelectedPromptVersion.version_number} · <Text code>{v2SelectedPromptVersion.snapshot_hash.slice(0, 12)}</Text></Text>
-                    : <Text type="secondary">请从已有冻结版本中明确选择；不会隐式使用 latest。</Text>}
-                </Space>} />
-              {scopedPrompt?.enabled === false && <Alert type="info" message="问题已停用：不再发起新采样，历史样本和已有分析仍可使用" />}
+              {!v2Analysis && <Alert style={{ marginTop: 12 }} type="info" showIcon
+                message="请先在 Monitor 选择要分析的回答"
+                description="采集、人工导入和时间范围筛选都在 Monitor 完成。确认回答后，系统会自动固定本次数据并进入这里生成诊断、策略和稿件。" />}
+              {scopedPrompt?.enabled === false && <Alert style={{ marginTop: 12 }} type="info" message="问题已停用：不能新增采集，但仍可使用已有回答和历史分析" />}
             </Card>
 
             {v2Analysis?.context_id && v2Analysis.raw_output_hash && projectId && activePromptId && <>
               <Space wrap style={{ justifyContent: "space-between", width: "100%" }}>
-                <Text>当前分析：{v2Analysis.sampling.valid_run_count}/{v2Analysis.sampling.planned_run_count} 条有效回答</Text>
+                <Text>当前数据范围：<Text strong>{analysisRangeLabel(v2Analysis.origin_monitor_scope, v2Analysis.created_at, v2Analysis.sampling.valid_run_count)}</Text></Text>
                 <Button size="small" onClick={showV2AnalysisHistory}>切换已有分析</Button>
               </Space>
               {v2Analysis.origin_monitor_scope && <Alert type="info"
-                message={`来自监测的固定范围：Run ${v2Analysis.origin_monitor_scope.selected_run_ids.join("、")}`}
+                message={`本次分析使用的回答：#${v2Analysis.origin_monitor_scope.selected_run_ids.join("、#")}`}
                 description={v2Analysis.origin_monitor_scope.excluded_run_ids.length
-                  ? `Run ${v2Analysis.origin_monitor_scope.excluded_run_ids.join("、")} 无可分析正文，未进入分析，也未被当作零结果。`
+                  ? `回答 #${v2Analysis.origin_monitor_scope.excluded_run_ids.join("、#")} 没有可分析正文，未进入分析，也未被当作零结果。`
                   : undefined} />}
               <AutomaticOptimizePanel key={`${projectId}:${activePromptId}:${v2Analysis.analysis.analysis_id}`}
                 projectId={projectId} promptId={activePromptId} analysisId={v2Analysis.analysis.analysis_id} contextId={v2Analysis.context_id} rawHash={v2Analysis.raw_output_hash}
                 completion={v2SourcePreparation?.completion_manifest} />
             </>}
-            <details className="v2-advanced-details" key={`run-pool:${v2Analysis?.analysis.analysis_id || 'unselected'}`} open={!v2Analysis}>
-            <summary>采样记录与新分析范围（{v2RunPool?.logical_sample_total || 0} 个业务样本 · {v2RunPool?.attempt_total || 0} 次采集尝试）</summary>
-            <Card size="small" title={<Space><Monitor size={18} />采样记录池<Tag>{v2RunPool?.logical_sample_total || 0} 个业务样本 · {v2RunPool?.attempt_total || 0} 次采集尝试</Tag></Space>} extra={<Space>
-              <Text type="secondary">新增采样不会改变已有分析</Text>
-              <Button icon={<RefreshCw size={15} />} loading={v2RunPoolLoading} onClick={() => refreshV2RunPool()}>刷新</Button>
-            </Space>}>
-              <Alert
-                type="info"
-                showIcon
-                message="先选择 Run，再决定是否建立新的分析版本"
-                description="可以只选新增样本，也可以选择历史加新增样本。失败 Run 的重试会更新同一条业务记录，失败过程保留在内部执行日志，不会产生重复业务 Run。已进入分析的成功 Run 保持不可变，旧 Analysis、Context、审核和正文准备不会被修改。"
-                style={{ marginBottom: 12 }}
-              />
-              <Table<SinglePromptV2RunPoolItem>
-                rowKey="run_id"
-                size="small"
-                loading={v2RunPoolLoading}
-                dataSource={v2RunPool?.items || []}
-                rowSelection={{
-                  selectedRowKeys: v2SelectedRunIds,
-                  getCheckboxProps: row => ({ name: `run-${row.run_id}`, "aria-label": `选择 Run ${row.run_id}` }),
-                  getTitleCheckboxProps: () => ({ name: "all-visible-runs", "aria-label": "选择当前页全部 Run" }),
-                  preserveSelectedRowKeys: true,
-                  onSelect: (row, selected) => selectV2Runs([row], selected),
-                  onSelectAll: (selected, _selectedRows, changeRows) => selectV2Runs(changeRows, selected),
-                }}
-                pagination={{
-                  current: v2RunPool?.page || 1,
-                  pageSize: v2RunPool?.page_size || 20,
-                  total: v2RunPool?.logical_sample_total || 0,
-                  showSizeChanger: false,
-                  onChange: (nextPage) => refreshV2RunPool(nextPage),
-                }}
-                scroll={{ x: 1240 }}
-                expandable={{ expandedRowRender: (row) => <Space direction="vertical" style={{ width: "100%" }}>
-                  {isV2RunRateLimited(row) && <RateLimitAlert />}
-                  <Text strong>实际回答正文</Text>
-                  <Typography.Paragraph className="v2-answer-text">{row.answer_text || "无可用回答"}</Typography.Paragraph>
-                  <Text type="secondary">引用 {row.references?.length || 0} 条 · 输入指纹 <Text code copyable>{row.input_fingerprint}</Text></Text>
-                </Space> }}
-                columns={[
-                  { title: "Run", width: 82, render: (_: unknown, row) => <Text code>#{row.run_id}</Text> },
-                  { title: "业务样本 ID", width: 170, render: (_: unknown, row) => <Text code ellipsis={{ tooltip: row.logical_run_id }}>{row.logical_run_id}</Text> },
-                  { title: "执行", width: 110, render: (_: unknown, row) => <Text>第 {row.attempt_no} 次</Text> },
-                  { title: "状态", width: 190, render: (_: unknown, row) => isV2RunRateLimited(row)
-                    ? <Space size={4}>{statusTag(row.status)}<Tag color="orange">{RATE_LIMIT_LABEL}</Tag></Space>
-                    : statusTag(row.status) },
-                  { title: "采样时间", width: 170, render: (_: unknown, row) => formatDateTime(row.finished_at || row.started_at) },
-                  { title: "回答", width: 110, render: (_: unknown, row) => row.answer_text ? `${row.answer_char_count || row.answer_text.length} 字` : "无" },
-                  { title: "引用", width: 80, render: (_: unknown, row) => row.references?.length || 0 },
-                  { title: "引用完整", width: 100, render: (_: unknown, row) => row.reference_complete ? <Tag color="green">完整</Tag> : <Tag color="gold">有限制</Tag> },
-                  { title: "已用于分析", width: 210, render: (_: unknown, row) => row.analysis_memberships?.length
-                    ? <Text ellipsis={{ tooltip: row.analysis_memberships.map((item) => item.analysis_id).join("、") }}>{row.analysis_memberships.length} 个版本</Text>
-                    : <Text type="secondary">尚未纳入</Text> },
-                  { title: "操作", width: 150, fixed: "right", render: (_: unknown, row) => isV2RunRateLimited(row)
-                    ? <Popconfirm title={`确认在窗口/配额恢复后重试 Run #${row.run_id}？`} description="不会自动重试。失败过程写入内部执行日志，成功后更新同一条业务 Run。" okText="确认重试" cancelText="取消" onConfirm={() => retryV2Run(row)}><Button size="small" danger>恢复后重试</Button></Popconfirm>
-                    : row.status === "failed" ? <Popconfirm title={`重试 Run #${row.run_id}？`} description="失败过程写入内部执行日志，成功后更新同一条业务 Run，不会新增重复业务记录。" onConfirm={() => retryV2Run(row)}><Button size="small">重试</Button></Popconfirm> : null },
-                ]}
-              />
-              <Row justify="space-between" align="middle" gutter={[12, 12]}>
-                <Col><Text>已选择 <Text strong>{v2SelectedRuns.length}</Text> 个逻辑样本：{v2SelectedRunIds.length ? v2SelectedRunIds.map(Number).sort((a, b) => a - b).join("、") : "尚未选择"}</Text></Col>
-                <Col><Button type="primary" icon={<ListChecks size={15} />} disabled={!v2SelectedRunIds.length || !v2SelectedPromptVersion} loading={v2Loading} onClick={createV2AnalysisFromSelectedRuns}>用所选 Run 建立分析版本</Button></Col>
-              </Row>
-            </Card>
-            </details>
-
             {!v2Analysis ? <Card title="已有分析" loading={v2AnalysisHistoryLoading} extra={<Button icon={<RefreshCw size={15} />} onClick={refreshV2AnalysisHistory}>刷新</Button>}>
-              {v2AnalysisHistory.length === 0 ? <Empty description="当前 Prompt 还没有分析，可从上方开始一次新分析" /> : <Table<SinglePromptV2AnalysisListItem>
+              {v2AnalysisHistory.length === 0 ? <Empty description="当前问题还没有分析结果，请先到 Monitor 选择回答并开始分析" /> : <Table<SinglePromptV2AnalysisListItem>
                 rowKey={(row) => row.analysis.analysis_id}
                 size="small"
                 pagination={false}
                 dataSource={v2AnalysisHistory}
                 columns={[
                   { title: "状态", width: 120, render: (_: unknown, row) => v2AnalysisStatusTag(row.sampling.status) },
-                  { title: "Prompt 绑定", width: 220, render: (_: unknown, row) => promptVersionBindingLabel(row.analysis.prompt_version) },
+                  { title: "问题版本", width: 220, render: (_: unknown, row) => promptVersionBindingLabel(row.analysis.prompt_version) },
+                  { title: "数据范围", width: 330, render: (_: unknown, row) => analysisRangeLabel(row.origin_monitor_scope, row.created_at, row.sampling.valid_run_count) },
                   { title: "采样", width: 150, render: (_: unknown, row) => `${row.sampling.valid_run_count}/${row.sampling.planned_run_count} 有效` },
                   { title: "Analysis", render: (_: unknown, row: SinglePromptV2AnalysisListItem) => <Text code copyable>{row.analysis.analysis_id}</Text> },
                   { title: "当前进度", width: 230, render: (_: unknown, row: SinglePromptV2AnalysisListItem) => row.source_preparation_summary

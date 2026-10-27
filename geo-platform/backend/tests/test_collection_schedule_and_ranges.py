@@ -92,6 +92,11 @@ def test_range_preview_groups_and_freezes_exact_runs(tmp_path, monkeypatch):
         plan = json.loads(analysis.sampling_plan_json)
         assert analysis.task_id is None and plan["run_ids"] == [runs[0].id]
         before = plan["origin_monitor_scope"]
+        listed = client.get("/api/v2/single-prompt/analyses?project_id=1&prompt_id=44")
+        assert listed.status_code == 200, listed.text
+        listed_row = next(item for item in listed.json() if item["analysis"]["analysis_id"] == analysis.analysis_id)
+        assert listed_row["origin_monitor_scope"]["selector"] == body["selector"]
+        assert listed_row["origin_monitor_scope"]["selected_run_ids"] == [runs[0].id]
         queue_immediate(db, schedule, schedule.revision, "later-run-fixed-scope", now + timedelta(hours=10))
         db.refresh(analysis)
         assert json.loads(analysis.sampling_plan_json)["origin_monitor_scope"] == before

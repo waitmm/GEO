@@ -68,7 +68,7 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
   }
 
   async function save(value: any) {
-    if (!selectedPromptVersion) { setError("请选择明确的 Prompt 冻结版本。"); return; }
+    if (!selectedPromptVersion) { setError("请选择采集时要使用的问题版本。"); return; }
     const payload = { ...value, collection_only: true, optimization: null,
       prompt_version_id: selectedPromptVersion.prompt_version_id, snapshot_hash: selectedPromptVersion.snapshot_hash };
     setBusy(true); setError("");
@@ -126,8 +126,8 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
         description="请使用列表中的“编辑”生成替代版本，避免重复创建同一问题的计划。" />}
     <Form form={form} layout="vertical" initialValues={{ timezone_name: "Asia/Shanghai", local_time: "09:00", cadence_type: "DAILY", weekday: 0, interval_hours: 6, sample_count: 3, max_attempts: 90 }}
       onFinish={save}>
-      <Form.Item label="绑定 Prompt 冻结版本" required extra="只允许当前 EFFECTIVE 冻结版本，不会使用 latest；历史版本仅可查看，不可用于新计划。"><Select aria-label="采集计划绑定的 Prompt 冻结版本" value={selectedPromptVersion?.prompt_version_id} placeholder="选择当前有效版本"
-        onChange={value => void chooseVersion(value)} options={promptVersions.filter((version) => version.status === "EFFECTIVE").map(item => ({ value: item.prompt_version_id, label: `V${item.version_number} · ${item.snapshot_hash.slice(0, 12)}` }))} /></Form.Item>
+      <Form.Item label="采集使用的问题版本" required extra="通常选择当前生效版本。系统会自动保存采集时的问题内容，之后修改问题不会影响历史回答。"><Select aria-label="采集使用的问题版本" value={selectedPromptVersion?.prompt_version_id} placeholder="选择当前生效的问题版本"
+        onChange={value => void chooseVersion(value)} options={promptVersions.filter((version) => version.status === "EFFECTIVE").map(item => ({ value: item.prompt_version_id, label: `版本 ${item.version_number} · 当前生效` }))} /></Form.Item>
       <Space wrap align="start">
         <Form.Item label="采集频率" name="cadence_type" rules={[{ required: true }]}><Select style={{ width: 150 }} options={[{ value: "DAILY", label: "每天" }, { value: "WEEKLY", label: "每周" }, { value: "INTERVAL", label: "固定间隔" }]} /></Form.Item>
         {cadence !== "INTERVAL" && <Form.Item label="执行时间（计划时区）" name="local_time" rules={[{ required: true }]}><Input type="time" /></Form.Item>}

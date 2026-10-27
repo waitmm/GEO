@@ -180,9 +180,9 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
   const options = scopes.map(s => ({ value: s.context_id, label: `范围 ${s.context_id} · Runs ${(s.run_scope.run_ids || []).join("、")} · ${formatBeijingDateTime(s.created_at)}` }));
   const monitorAnalysisBindingReason = (selection: any) => {
     const status = selection?.prompt_version?.binding_status;
-    if (status === "LEGACY_UNBOUND") return "这些历史回答未绑定 Prompt 冻结版本，不能用当前或 latest Prompt 替代建立分析。";
-    if (status) return `这些回答的 Prompt 版本绑定为 ${status}，不是可证明的单一冻结版本，不能建立分析。`;
-    return "后端未提供这些回答可证明的 Prompt 冻结版本，不能建立分析。";
+    if (status === "LEGACY_UNBOUND") return "这些旧回答缺少当时的问题版本，无法安全用于新分析。";
+    if (status) return `这些回答的问题版本状态为 ${status}，无法确认属于同一个版本，不能建立分析。`;
+    return "这些回答缺少可确认的问题版本，不能建立分析。";
   };
   const output = result?.output || result || (mode === "monitor" && pool?.runs?.length ? pool : undefined);
   const measuredIdentity = result?.input?.identity || output?.identity;
@@ -251,7 +251,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
         { key: "schedule", label: "定时采集管理", children: <SamplingSchedulePanel key={`${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
         { key: "range", label: "按时间范围选择分析数据", children: <AnalysisRangePanel key={`range:${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
       ]} />}
-      {promptId && !busy && !scopes.length && !pool?.runs?.length && <Empty description="尚无采样记录，请开启采样计划或进入分析与稿件开始首次采样" />}
+      {promptId && !busy && !scopes.length && !pool?.runs?.length && <Empty description="尚无回答，请在本页人工导入，或配置并启动采集计划" />}
       {mode === "monitor" && !result && pool?.pool_count > 0 && <Typography.Paragraph>累计采样尝试 {pool.pool_count} 条，当前问题原文 {pool.runs.length} 条；候选与推荐指标需选择已计算的准确回答版本。</Typography.Paragraph>}
       {mode === "monitor" && pool?.historical_query_runs?.length > 0 && <Collapse items={[{ key: "old-query", label: `历史问题版本的回答（${pool.historical_query_runs.length}），不混入当前问题指标`, children: <AnswerDetails measurement={{ runs: pool.historical_query_runs }} /> }]} />}
       {promptId && <Space direction="vertical" size={16} style={{ width: "100%" }}>

@@ -1525,6 +1525,7 @@ def list_analysis_statuses(
             "sampling": status["sampling"],
             "result_version": status["result_version"],
             "context_id": status["context_id"],
+            "origin_monitor_scope": status["origin_monitor_scope"],
             "created_at": status["created_at"],
             "finished_at": status["finished_at"],
         })

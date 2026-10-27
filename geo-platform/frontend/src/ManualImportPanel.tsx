@@ -67,7 +67,7 @@ export function ManualImportPanel({ projectId, promptId }: { projectId: number; 
     try {
       const promptVersion = promptVersions.find(item => item.prompt_version_id === values.prompt_version_id);
       const configurationVersion = configVersions.find(item => item.configuration_version_id === values.configuration_version_id);
-      if (!promptVersion || !configurationVersion) throw new Error("必须选择明确的 Prompt 与项目配置冻结版本");
+      if (!promptVersion || !configurationVersion) throw new Error("请选择这条回答对应的问题版本和品牌资料版本");
       const citations = citationsFrom(values.citations_text || "");
       if (values.citation_observation_status === "CONFIRMED_NONE" && citations.length) throw new Error("已确认无引用时不能填写引用 URL");
       if (values.citation_observation_status === "COMPLETE" && !citations.length) throw new Error("完整引用记录至少需要一条 URL");
@@ -108,11 +108,11 @@ export function ManualImportPanel({ projectId, promptId }: { projectId: number; 
       description={<Space direction="vertical"><span>{result.warning}</span><code>{result.payload_hash}</code><Button onClick={() => window.location.reload()}>刷新并查看 Run 池</Button></Space>} />}
     <Form form={form} layout="vertical" onFinish={buildPreview} onValuesChange={() => { setPreview(undefined); setResult(undefined); }} style={{ marginTop: 16 }}>
       <Space wrap align="start" style={{ width: "100%" }}>
-        <Form.Item label="Prompt 冻结版本" name="prompt_version_id" rules={[{ required: true }]} extra="必须与实际观察时间相符，不会使用 latest">
-          <Select style={{ minWidth: 280 }} options={promptVersions.map(item => ({ value: item.prompt_version_id, label: `V${item.version_number} · ${item.status} · ${formatBeijingDateTime(item.created_at)}` }))} />
+        <Form.Item label="回答对应的问题版本" name="prompt_version_id" rules={[{ required: true }]} extra="选择你实际向 AI 提问时使用的问题版本">
+          <Select style={{ minWidth: 280 }} options={promptVersions.map(item => ({ value: item.prompt_version_id, label: `版本 ${item.version_number} · ${item.status === "EFFECTIVE" ? "当前生效" : "历史版本"} · ${formatBeijingDateTime(item.created_at)}` }))} />
         </Form.Item>
-        <Form.Item label="项目配置冻结版本" name="configuration_version_id" rules={[{ required: true }]} extra="用于冻结观察时的品牌与项目配置">
-          <Select style={{ minWidth: 280 }} options={configVersions.map(item => ({ value: item.configuration_version_id, label: `V${item.version_number} · ${item.status} · ${formatBeijingDateTime(item.created_at)}` }))} />
+        <Form.Item label="回答对应的品牌资料版本" name="configuration_version_id" rules={[{ required: true }]} extra="选择观察回答时正在使用的品牌资料">
+          <Select style={{ minWidth: 280 }} options={configVersions.map(item => ({ value: item.configuration_version_id, label: `版本 ${item.version_number} · ${item.status} · ${formatBeijingDateTime(item.created_at)}` }))} />
         </Form.Item>
       </Space>
       <Space wrap align="start">
@@ -132,12 +132,12 @@ export function ManualImportPanel({ projectId, promptId }: { projectId: number; 
     {preview && <section style={{ marginTop: 18 }} aria-label="人工导入预览">
       <Descriptions bordered size="small" column={1} title="提交前确认">
         <Descriptions.Item label="来源"><Tag>MANUAL_IMPORT</Tag> 文心助手 · <Tag color="orange">未经系统独立核实</Tag></Descriptions.Item>
-        <Descriptions.Item label="Prompt 版本">V{preview.promptVersion.version_number} · <code>{preview.promptVersion.snapshot_hash}</code></Descriptions.Item>
-        <Descriptions.Item label="项目配置版本">V{preview.configurationVersion.version_number} · <code>{preview.configurationVersion.snapshot_hash}</code></Descriptions.Item>
+        <Descriptions.Item label="问题版本">版本 {preview.promptVersion.version_number} · <code>{preview.promptVersion.snapshot_hash}</code></Descriptions.Item>
+        <Descriptions.Item label="品牌资料版本">版本 {preview.configurationVersion.version_number} · <code>{preview.configurationVersion.snapshot_hash}</code></Descriptions.Item>
         <Descriptions.Item label="观察时间">{formatBeijingDateTime(String(preview.payload.observed_at))}</Descriptions.Item>
         <Descriptions.Item label="回答长度 / 引用">{String(preview.payload.answer_text).length} 字 / {preview.citationCount} 条 · {String(preview.payload.citation_observation_status)}</Descriptions.Item>
       </Descriptions>
-      <Button style={{ marginTop: 12 }} type="primary" loading={busy} icon={<ShieldCheck size={16} />} onClick={submit}>确认冻结并导入</Button>
+      <Button style={{ marginTop: 12 }} type="primary" loading={busy} icon={<ShieldCheck size={16} />} onClick={submit}>确认并保存回答</Button>
     </section>}
   </section>;
 }

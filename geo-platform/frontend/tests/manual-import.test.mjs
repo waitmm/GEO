@@ -13,7 +13,9 @@ test('manual import requires explicit versions, preview and provenance warning',
   assert.match(source, /CONFIRMED_NONE/);
   assert.match(source, /PARSE_FAILED/);
   assert.match(source, /预览导入/);
-  assert.match(source, /确认冻结并导入/);
+  assert.match(source, /确认并保存回答/);
+  assert.match(source, /回答对应的问题版本/);
+  assert.match(source, /回答对应的品牌资料版本/);
   assert.match(source, /manual-imports/);
   assert.doesNotMatch(source, /\/latest|prompts\[0\]|configs\[0\]/i);
 });

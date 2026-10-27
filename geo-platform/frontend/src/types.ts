@@ -229,7 +229,18 @@ export type SinglePromptV2Run = {
 };
 
 export type SinglePromptV2Status = {
-  origin_monitor_scope?: { scope_hash: string; observed_run_ids: number[]; selected_run_ids: number[]; excluded_run_ids: number[] } | null;
+  origin_monitor_scope?: {
+    scope_hash?: string;
+    observed_run_ids?: number[];
+    selected_run_ids: number[];
+    excluded_run_ids: number[];
+    selector?: {
+      mode: "CUSTOM" | "RUN_IDS" | string;
+      start_at: string | null;
+      end_at: string | null;
+      run_ids: number[];
+    };
+  } | null;
   raw_output_hash?: string | null;
   analysis: {
     analysis_id: string;
@@ -328,6 +339,7 @@ export type SinglePromptV2AnalysisListItem = {
   }>;
   analysis: SinglePromptV2Status["analysis"];
   sampling: SinglePromptV2Status["sampling"];
+  origin_monitor_scope: SinglePromptV2Status["origin_monitor_scope"];
   result_version: string | null;
   context_id: string | null;
   created_at: string;

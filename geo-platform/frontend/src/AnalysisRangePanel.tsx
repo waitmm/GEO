@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Alert, Button, Checkbox, Form, Input, Select, Space, Table, Typography } from "antd";
-import { CalendarRange, LockKeyhole } from "lucide-react";
+import { CalendarRange, CheckCircle2 } from "lucide-react";
 import { request } from "./api/client";
 import { beijingLocalDateTimeToIso } from "./time";
 
@@ -23,7 +23,7 @@ export function AnalysisRangePanel({ projectId, promptId }: { projectId: number;
         payload.end_at = beijingLocalDateTimeToIso(values.end_at);
       } else if (values.mode === "RUN_IDS") {
         payload.run_ids = String(values.run_ids_text || "").split(/[，,\s]+/).filter(Boolean).map(Number);
-        if (payload.run_ids.some((value: number) => !Number.isInteger(value) || value <= 0)) throw new Error("Run IDs 必须是正整数");
+        if (payload.run_ids.some((value: number) => !Number.isInteger(value) || value <= 0)) throw new Error("回答编号必须是正整数");
       }
       const value = await request<any>(base + "/preview", { method: "POST", body: JSON.stringify(payload) });
       setPreview(value);
@@ -48,42 +48,42 @@ export function AnalysisRangePanel({ projectId, promptId }: { projectId: number;
   }
 
   return <section aria-label="按时间范围选择分析数据">
-    <Typography.Title level={4}>选择 GEO 分析范围</Typography.Title>
-    <Alert type="info" showIcon message="先预览，再冻结"
-      description="时间范围只用于找到候选采样。提交时服务端会再次校验并冻结明确 Run IDs、原始哈希和 Prompt 版本；以后新增采样不会改变这份分析。" />
+    <Typography.Title level={4}>选择本次要分析的回答</Typography.Title>
+    <Alert type="info" showIcon message="先按时间筛选，再确认具体回答"
+      description="确认后，系统会自动保存本次使用的回答及其版本。以后新增采样不会改变这次分析结果。" />
     {error && <Alert style={{ marginTop: 12 }} type="error" showIcon message={error} />}
     <Form form={form} layout="vertical" initialValues={{ mode: "LAST_7_DAYS" }} onFinish={loadPreview} style={{ marginTop: 16 }}>
       <Space wrap align="start">
         <Form.Item label="分析时间范围" name="mode" rules={[{ required: true }]}><Select style={{ width: 190 }} options={[
           { value: "LAST_7_DAYS", label: "最近 7 天" }, { value: "LAST_14_DAYS", label: "最近 14 天" },
-          { value: "LAST_30_DAYS", label: "最近 30 天" }, { value: "CUSTOM", label: "自定义日期" }, { value: "RUN_IDS", label: "指定 Run" },
+          { value: "LAST_30_DAYS", label: "最近 30 天" }, { value: "CUSTOM", label: "自定义日期" }, { value: "RUN_IDS", label: "指定回答编号" },
         ]} /></Form.Item>
         {mode === "CUSTOM" && <><Form.Item label="开始（北京时间）" name="start_at" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item><Form.Item label="结束（北京时间）" name="end_at" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item></>}
       </Space>
-      {mode === "RUN_IDS" && <Form.Item label="Run IDs" name="run_ids_text" rules={[{ required: true, whitespace: true }]} extra="使用逗号或空格分隔"><Input placeholder="例如：101, 102, 108" /></Form.Item>}
-      <Button htmlType="submit" loading={busy} icon={<CalendarRange size={16} />}>预览范围</Button>
+      {mode === "RUN_IDS" && <Form.Item label="回答编号" name="run_ids_text" rules={[{ required: true, whitespace: true }]} extra="使用逗号或空格分隔"><Input placeholder="例如：101, 102, 108" /></Form.Item>}
+      <Button htmlType="submit" loading={busy} icon={<CalendarRange size={16} />}>查看可用回答</Button>
     </Form>
 
     {preview && <section style={{ marginTop: 20 }}>
       <Alert type={preview.mixed_groups ? "warning" : "success"} showIcon
         message={`找到 ${preview.total_count} 条采样，其中 ${preview.valid_count} 条可分析、${preview.invalid_count} 条失败或无正文`}
-        description={preview.mixed_groups ? "范围含多个 Prompt 版本、平台或采集配置，请选择一个兼容分组，不会静默混合。" : "失败采样保留在监控记录中，但不会当作品牌未提及或零引用。"} />
+        description={preview.mixed_groups ? "这些回答来自不同的问题版本、AI 平台或采集配置，请选择其中一组，系统不会把不兼容的数据混在一起。" : "失败采样只保留在运行记录中，不会被当作品牌未提及或零引用。"} />
       <Table style={{ marginTop: 12 }} size="small" rowKey="group_hash" pagination={false} scroll={{ x: 780 }} dataSource={preview.groups} rowSelection={{
         type: "radio", selectedRowKeys: groupHash ? [groupHash] : [],
         getCheckboxProps: (row: any) => ({ disabled: row.prompt_version?.binding_status !== "BOUND" || !row.selected_run_ids.length }),
         onChange: keys => { const hash = String(keys[0] || ""); setGroupHash(hash); const group = preview.groups.find((item: any) => item.group_hash === hash); setSelectedIds(group?.selected_run_ids || []); },
       }} columns={[
         { title: "平台 / 采集方式", render: (_, row: any) => <>{row.identity.platform} / {row.identity.adapter === "manual_import" ? "人工导入" : row.identity.adapter}{row.identity.source_assertion_status && <><br /><Typography.Text type="warning">人工声明，平台未独立核实</Typography.Text></>}</> },
-        { title: "Prompt 版本", render: (_, row: any) => row.prompt_version?.binding_status === "BOUND" ? row.prompt_version.prompt_version_id : `不可证明：${row.prompt_version?.reason || row.identity.binding_reason || "历史未绑定"}` },
-        { title: "Run", render: (_, row: any) => `${row.selected_run_ids.length} 可分析 / ${row.run_ids.length} 总数` },
+        { title: "问题版本", render: (_, row: any) => row.prompt_version?.binding_status === "BOUND" ? "已确认" : `无法确认：${row.prompt_version?.reason || row.identity.binding_reason || "历史记录缺少版本"}` },
+        { title: "回答", render: (_, row: any) => `${row.selected_run_ids.length} 条可分析 / ${row.run_ids.length} 条总计` },
         { title: "状态", render: (_, row: any) => Object.entries(row.status_counts).map(([key, value]) => `${key} ${value}`).join("；") },
       ]} />
       {groupHash && <section style={{ marginTop: 12 }}>
-        <Typography.Text strong>本次进入分析的 Run</Typography.Text>
+        <Typography.Text strong>本次使用的回答</Typography.Text>
         <Checkbox.Group style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }} value={selectedIds} onChange={values => setSelectedIds(values.map(Number))}
-          options={(preview.groups.find((item: any) => item.group_hash === groupHash)?.selected_run_ids || []).map((id: number) => ({ label: `Run ${id}`, value: id }))} />
+          options={(preview.groups.find((item: any) => item.group_hash === groupHash)?.selected_run_ids || []).map((id: number) => ({ label: `回答 #${id}`, value: id }))} />
       </section>}
-      <Button style={{ marginTop: 16 }} type="primary" loading={busy} disabled={!groupHash || !selectedIds.length} icon={<LockKeyhole size={16} />} onClick={freeze}>冻结这 {selectedIds.length} 条 Run 并进入分析</Button>
+      <Button style={{ marginTop: 16 }} type="primary" loading={busy} disabled={!groupHash || !selectedIds.length} icon={<CheckCircle2 size={16} />} onClick={freeze}>确认使用这 {selectedIds.length} 条回答并开始分析</Button>
     </section>}
   </section>;
 }

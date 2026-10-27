@@ -4,6 +4,7 @@ import { Copy, Download, MessageSquare, Play, RefreshCw, Square } from "lucide-r
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { savedResultLabel, splitAgentResult } from "./agentResultPresentation";
+import { formatBeijingDateTime } from "./time";
 
 type AgentResult = {
   result_version: string; version_number: number; evidence_grade: string;
@@ -51,8 +52,7 @@ const modificationLabel: Record<string, string> = {
 };
 
 function humanTime(value?: string | null) {
-  if (!value) return "时间未知";
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+  return formatBeijingDateTime(value);
 }
 
 function validationIssueText(validation?: any) {
@@ -249,6 +249,14 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
               <Descriptions.Item label="引用观察">{result.result?.evidence_pack?.coverage?.citation_occurrence_count ?? 0}</Descriptions.Item>
               <Descriptions.Item label="来源快照">{result.result?.evidence_pack?.coverage?.source_snapshot_count ?? 0}</Descriptions.Item>
             </Descriptions>
+            {(result.result?.evidence_pack?.citation_channel_observations?.platforms || []).length > 0 &&
+              <Card size="small" title="引用来源渠道观察（不是渠道效果结论）" style={{ marginTop: 12 }}>
+                <Space wrap>{result.result.evidence_pack.citation_channel_observations.platforms.map((item: any) =>
+                  <Tag key={item.platform_key}>{item.platform_label} · {item.citation_occurrence_count} 条 · {item.run_ids.length} 个 Run</Tag>)}</Space>
+                <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+                  这里统计的是冻结回答实际出现的引用平台、来源域名和内容形态。引用次数高不等于该渠道最适合发布；竞品来源也不构成目标品牌能力证明。
+                </Typography.Paragraph>
+              </Card>}
             {(["GEO 诊断与依据", "品牌表现与证据缺口", "优化策略与渠道", "完整正文", "QA 与事实限制", "复测计划"] as const).map(title =>
               <Card size="small" key={title} title={title} style={{ marginTop: 12 }}>
                 <Typography.Paragraph style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginBottom: 0 }}>{sections[title] || "本结果未提供该部分。"}</Typography.Paragraph>

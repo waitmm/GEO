@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Checkbox, Collapse, Descriptions, Empty, Form, Input, Modal, Select, Space, Spin, Typography } from 'antd';
 import { Pencil, Play, Search } from 'lucide-react';
 import { request } from './api/client';
+import { formatBeijingDateTime } from './time';
 
 const labels: Record<string, string> = { SUPPORTED: '已确认支持', PARTIALLY_SUPPORTED: '在限定条件下支持',
   NOT_SUPPORTED: '已确认不支持', UNKNOWN: '尚无法确认' };
@@ -114,7 +115,7 @@ export function TruthCorrectionPanel({ taskId, projectId, promptId, onQueued }: 
             <Typography.Paragraph>原判断：{labels[c.base.product_truth_status]}；纠正后：{labels[c.output.product_truth_status]}</Typography.Paragraph>
             <Typography.Paragraph style={{ overflowWrap: 'anywhere' }}>依据：{c.output.note}</Typography.Paragraph>
             <Typography.Paragraph style={{ overflowWrap: 'anywhere' }}>出处：{c.output.source_reference || '尚无可确认出处'}</Typography.Paragraph>
-            <Typography.Text type="secondary">保存时间：{c.created_at}</Typography.Text>
+            <Typography.Text type="secondary">保存时间：{formatBeijingDateTime(c.created_at)}</Typography.Text>
             <Typography.Text type="secondary">操作者：{c.actor}；受影响方向 {c.impact.affected_direction_ids.length} 个，未受影响 {c.impact.unaffected_direction_ids.length} 个</Typography.Text>
             {affected(c.impact) ? <Button icon={<Play size={16} />} loading={busy} onClick={() => void reproject(c)}>更新受影响内容</Button>
               : <Typography.Text>本次未影响该任务的理由或方向，无需重算。</Typography.Text>}

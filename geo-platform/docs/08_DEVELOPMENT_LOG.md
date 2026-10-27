@@ -1,5 +1,23 @@
 # 08 Development Log
 
+## 2026-10-27 Citation-channel grounding and Beijing time
+
+- Classified as `IMPLEMENTATION_CHANGE`: this fulfills the existing Channel Evidence boundary;
+  it does not infer channel effectiveness from citation counts or turn competitor claims into
+  target-brand Truth.
+- Evidence Pack v2 / synthesis v6 now derives citation occurrences from the exact frozen Run
+  references when no Citation Manifest exists, records platform/domain/content-form observations,
+  freezes configured target/competitor identities, and requires the channel strategy section to
+  cite a real occurrence. Multiple decisions, unconfigured competitor ownership and channel
+  causality are not invented.
+- All touched Beta views now parse API timestamps consistently as UTC storage and render explicit
+  `Asia/Shanghai` time; datetime-local inputs are converted from Beijing time independently of the
+  browser machine timezone.
+- Offline evidence against the current frozen scope found 171 occurrences across 6 valid Runs and
+  7 source-platform groups. Backend targeted/adjacent regression passed 113 tests, frontend client
+  and startup passed 31 + 5 tests, and the release build passed. External model, collection, fetch
+  and publication calls: 0.
+
 ## 2026-10-26 Server-Owned AI Optimize Policy
 
 - Classified as the Product Owner-approved `SEMANTIC_CHANGE` and froze

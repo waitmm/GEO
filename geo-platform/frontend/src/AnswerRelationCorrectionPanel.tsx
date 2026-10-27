@@ -3,6 +3,7 @@ import { Alert, Button, Checkbox, Collapse, Descriptions, Empty, Form, Input, In
 import { Pencil, Search } from "lucide-react";
 import { api, request } from "./api/client";
 import type { AnswerRelationCorrectionImpact, AnswerRelationCorrectionStatus } from "./types";
+import { formatBeijingDateTime } from "./time";
 
 const valueLabels: Record<string, string> = {
   RECOMMEND: "推荐", INCLUDE_AS_OPTION: "纳入候选", PRAISE: "正面评价", COMPARE: "比较",
@@ -330,7 +331,7 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
           <Button type="primary" disabled={!confirmed} loading={busy} onClick={() => void save()}>保存纠错版本</Button>
         </>}
         {saved && <Alert type="success" showIcon message={`纠错版本 ${saved.result_version} 已保存`}
-          description={`操作者：${saved.actor}；保存时间：${saved.created_at}。既有策略与稿件尚未按本次纠错重算或升级。`}
+          description={`操作者：${saved.actor}；保存时间：${formatBeijingDateTime(saved.created_at)}。既有策略与稿件尚未按本次纠错重算或升级。`}
           action={saved.result_hash && <Button type="primary" loading={busy} onClick={() => void reproject(saved)}>更新受影响策略</Button>} />}
         {reprojection && <Alert type={reprojectionCompleted ? "success" : "info"} showIcon
           message={reprojectionCompleted ? "策略已重新投影，稿件尚未重新生成" : reprojection.status === "QUEUED" ? "策略重投影任务已创建，稿件尚未重新生成" : "策略重投影任务处理中，稿件尚未重新生成"}
@@ -355,7 +356,7 @@ export function AnswerRelationCorrectionPanel({ taskId, projectId, promptId }: {
           action={<Space><Button loading={busy} onClick={() => void refreshDeliveryRegeneration()}>刷新局部再生成状态</Button>
             {deliveryAuthorizationReady(deliveryRegeneration) && <Button type="primary" loading={busy} onClick={() => setDeliveryAuthorizationOpen(true)}>授权局部稿件生成</Button>}</Space>} />}
         {!!data.history.length && <Collapse items={data.history.slice().reverse().map(row => ({
-          key: row.result_version, label: `${row.result_version} · ${row.actor} · ${row.created_at}`,
+          key: row.result_version, label: `${row.result_version} · ${row.actor} · ${formatBeijingDateTime(row.created_at)}`,
           children: <Space direction="vertical" style={{ width: "100%" }}>
             <Typography.Paragraph>{valueLabels[row.summary.before] || row.summary.before} → {valueLabels[row.summary.after] || row.summary.after}</Typography.Paragraph>
             <Typography.Paragraph>依据：{row.summary.reason}</Typography.Paragraph>

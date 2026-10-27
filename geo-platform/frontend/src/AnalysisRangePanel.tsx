@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Alert, Button, Checkbox, Form, Input, Select, Space, Table, Typography } from "antd";
 import { CalendarRange, LockKeyhole } from "lucide-react";
 import { request } from "./api/client";
+import { beijingLocalDateTimeToIso } from "./time";
 
 export function AnalysisRangePanel({ projectId, promptId }: { projectId: number; promptId: number }) {
   const [form] = Form.useForm();
@@ -18,7 +19,8 @@ export function AnalysisRangePanel({ projectId, promptId }: { projectId: number;
     try {
       const payload: any = { mode: values.mode, run_ids: [] };
       if (values.mode === "CUSTOM") {
-        payload.start_at = new Date(values.start_at).toISOString(); payload.end_at = new Date(values.end_at).toISOString();
+        payload.start_at = beijingLocalDateTimeToIso(values.start_at);
+        payload.end_at = beijingLocalDateTimeToIso(values.end_at);
       } else if (values.mode === "RUN_IDS") {
         payload.run_ids = String(values.run_ids_text || "").split(/[，,\s]+/).filter(Boolean).map(Number);
         if (payload.run_ids.some((value: number) => !Number.isInteger(value) || value <= 0)) throw new Error("Run IDs 必须是正整数");
@@ -56,7 +58,7 @@ export function AnalysisRangePanel({ projectId, promptId }: { projectId: number;
           { value: "LAST_7_DAYS", label: "最近 7 天" }, { value: "LAST_14_DAYS", label: "最近 14 天" },
           { value: "LAST_30_DAYS", label: "最近 30 天" }, { value: "CUSTOM", label: "自定义日期" }, { value: "RUN_IDS", label: "指定 Run" },
         ]} /></Form.Item>
-        {mode === "CUSTOM" && <><Form.Item label="开始" name="start_at" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item><Form.Item label="结束" name="end_at" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item></>}
+        {mode === "CUSTOM" && <><Form.Item label="开始（北京时间）" name="start_at" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item><Form.Item label="结束（北京时间）" name="end_at" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item></>}
       </Space>
       {mode === "RUN_IDS" && <Form.Item label="Run IDs" name="run_ids_text" rules={[{ required: true, whitespace: true }]} extra="使用逗号或空格分隔"><Input placeholder="例如：101, 102, 108" /></Form.Item>}
       <Button htmlType="submit" loading={busy} icon={<CalendarRange size={16} />}>预览范围</Button>

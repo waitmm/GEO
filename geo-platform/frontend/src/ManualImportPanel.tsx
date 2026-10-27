@@ -3,6 +3,7 @@ import { Alert, Button, Descriptions, Form, Input, Select, Space, Tag, Typograph
 import { ClipboardPaste, ShieldCheck } from "lucide-react";
 import { api, request } from "./api/client";
 import type { PromptVersion } from "./types";
+import { beijingDateTimeLocalValue, beijingLocalDateTimeToIso, formatBeijingDateTime } from "./time";
 
 type ConfigurationVersion = {
   configuration_version_id: string;
@@ -20,9 +21,7 @@ type Preview = {
 };
 
 function localDateTimeNow() {
-  const date = new Date();
-  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-  return date.toISOString().slice(0, 16);
+  return beijingDateTimeLocalValue();
 }
 
 function citationsFrom(text: string) {
@@ -78,7 +77,7 @@ export function ManualImportPanel({ projectId, promptId }: { projectId: number; 
         prompt_snapshot_hash: promptVersion.snapshot_hash,
         configuration_version_id: configurationVersion.configuration_version_id,
         configuration_snapshot_hash: configurationVersion.snapshot_hash,
-        observed_at: new Date(values.observed_at).toISOString(), source_platform: "wenxin",
+        observed_at: beijingLocalDateTimeToIso(values.observed_at), source_platform: "wenxin",
         source_page_url: values.source_page_url || "", answer_text: values.answer_text,
         citations, citation_observation_status: values.citation_observation_status,
         citation_note: values.citation_note || "", idempotency_key: crypto.randomUUID(),
@@ -110,15 +109,15 @@ export function ManualImportPanel({ projectId, promptId }: { projectId: number; 
     <Form form={form} layout="vertical" onFinish={buildPreview} onValuesChange={() => { setPreview(undefined); setResult(undefined); }} style={{ marginTop: 16 }}>
       <Space wrap align="start" style={{ width: "100%" }}>
         <Form.Item label="Prompt 冻结版本" name="prompt_version_id" rules={[{ required: true }]} extra="必须与实际观察时间相符，不会使用 latest">
-          <Select style={{ minWidth: 280 }} options={promptVersions.map(item => ({ value: item.prompt_version_id, label: `V${item.version_number} · ${item.status} · ${item.created_at}` }))} />
+          <Select style={{ minWidth: 280 }} options={promptVersions.map(item => ({ value: item.prompt_version_id, label: `V${item.version_number} · ${item.status} · ${formatBeijingDateTime(item.created_at)}` }))} />
         </Form.Item>
         <Form.Item label="项目配置冻结版本" name="configuration_version_id" rules={[{ required: true }]} extra="用于冻结观察时的品牌与项目配置">
-          <Select style={{ minWidth: 280 }} options={configVersions.map(item => ({ value: item.configuration_version_id, label: `V${item.version_number} · ${item.status} · ${item.created_at}` }))} />
+          <Select style={{ minWidth: 280 }} options={configVersions.map(item => ({ value: item.configuration_version_id, label: `V${item.version_number} · ${item.status} · ${formatBeijingDateTime(item.created_at)}` }))} />
         </Form.Item>
       </Space>
       <Space wrap align="start">
         <Form.Item label="AI 平台" name="source_platform" rules={[{ required: true }]}><Select style={{ width: 180 }} disabled options={[{ value: "wenxin", label: "文心助手（人工观察）" }]} /></Form.Item>
-        <Form.Item label="实际观察时间" name="observed_at" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>
+        <Form.Item label="实际观察时间（北京时间）" name="observed_at" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>
       </Space>
       <Form.Item label="来源页面（可选）" name="source_page_url" rules={[{ type: "url", warningOnly: true }]}><Input placeholder="实际观察页面 URL" /></Form.Item>
       <Form.Item label="完整回答原文" name="answer_text" rules={[{ required: true, min: 20, whitespace: true }]}><Input.TextArea rows={10} placeholder="粘贴完整回答，不要改写或摘要" /></Form.Item>
@@ -135,7 +134,7 @@ export function ManualImportPanel({ projectId, promptId }: { projectId: number; 
         <Descriptions.Item label="来源"><Tag>MANUAL_IMPORT</Tag> 文心助手 · <Tag color="orange">未经系统独立核实</Tag></Descriptions.Item>
         <Descriptions.Item label="Prompt 版本">V{preview.promptVersion.version_number} · <code>{preview.promptVersion.snapshot_hash}</code></Descriptions.Item>
         <Descriptions.Item label="项目配置版本">V{preview.configurationVersion.version_number} · <code>{preview.configurationVersion.snapshot_hash}</code></Descriptions.Item>
-        <Descriptions.Item label="观察时间">{String(preview.payload.observed_at)}</Descriptions.Item>
+        <Descriptions.Item label="观察时间">{formatBeijingDateTime(String(preview.payload.observed_at))}</Descriptions.Item>
         <Descriptions.Item label="回答长度 / 引用">{String(preview.payload.answer_text).length} 字 / {preview.citationCount} 条 · {String(preview.payload.citation_observation_status)}</Descriptions.Item>
       </Descriptions>
       <Button style={{ marginTop: 12 }} type="primary" loading={busy} icon={<ShieldCheck size={16} />} onClick={submit}>确认冻结并导入</Button>

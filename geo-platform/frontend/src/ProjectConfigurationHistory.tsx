@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Alert, Button, Descriptions, Empty, Select, Space, Spin, Tag } from "antd";
 import { request } from "./api/client";
 import { projectConfigurationVersionPath } from "./projectConfiguration";
+import { formatBeijingDateTime } from "./time";
 
 type Competitor = { name?: string; aliases?: string[]; website_url?: string };
 type ConfigurationSnapshot = {
@@ -66,14 +67,14 @@ export function ProjectConfigurationHistory({ projectId }: { projectId: number }
       <Select aria-label="选择冻结配置版本" value={selectedVersionId} placeholder="选择一个冻结配置版本查看"
         onChange={value => void selectVersion(value)} options={versions.map(version => ({
           value: version.configuration_version_id,
-          label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash} · ${version.created_at}`,
+          label: `V${version.version_number} · ${version.status} · ${version.snapshot_hash} · ${formatBeijingDateTime(version.created_at)}`,
         }))} />
       <Button onClick={() => void loadVersions()}>刷新配置历史</Button>
       {selectedVersionId !== undefined && !selected && !error && <Spin size="small" aria-label="正在读取冻结配置版本" />}
       {selected && <Descriptions size="small" column={1} bordered title={`冻结配置 V${selected.version_number}`}>
         <Descriptions.Item label="版本 / 状态">V{selected.version_number} <Tag color={selected.status === "EFFECTIVE" ? "green" : "default"}>{selected.status}</Tag></Descriptions.Item>
         <Descriptions.Item label="快照哈希"><code>{selected.snapshot_hash}</code></Descriptions.Item>
-        <Descriptions.Item label="创建时间">{selected.created_at}</Descriptions.Item>
+        <Descriptions.Item label="创建时间">{formatBeijingDateTime(selected.created_at)}</Descriptions.Item>
         <Descriptions.Item label="冻结品牌">{snapshot?.brand_name || "未提供"}</Descriptions.Item>
         <Descriptions.Item label="品牌别名">{snapshot?.brand_aliases?.join("、") || "未设置"}</Descriptions.Item>
         <Descriptions.Item label="品牌官网">{snapshot?.website_url || "未设置"}</Descriptions.Item>

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     BrowserMonitorRun,
+    ProjectConfigurationVersion,
     SinglePromptAnalysis,
     SinglePromptAnalysisContext,
     SinglePromptCitationManifest,
@@ -47,6 +48,32 @@ def _matches_frozen_run(frozen: dict[str, Any], live: dict[str, Any]) -> bool:
     return _run_input_fingerprint(frozen) == _run_input_fingerprint(
         {key: live[key] for key in frozen}
     )
+
+
+def _project_entities(db: Session, *, project_id: int, configuration: dict[str, Any]) -> dict[str, Any]:
+    """Read entities only from the exact immutable project configuration version."""
+    if configuration.get("binding_status") != "BOUND":
+        return {"target_brand": configuration.get("brand") or {}, "competitors": []}
+    row = db.query(ProjectConfigurationVersion).filter_by(
+        project_id=project_id,
+        configuration_version_id=configuration.get("configuration_version_id"),
+        version_number=configuration.get("version_number"),
+        snapshot_hash=configuration.get("snapshot_hash"),
+    ).one_or_none()
+    snapshot = loads(row.snapshot_json, {}) if row else {}
+    if not row or digest(snapshot) != row.snapshot_hash:
+        _conflict("PROJECT_ENTITY_SNAPSHOT_MISMATCH", "项目品牌与竞品配置快照不匹配")
+    competitors = snapshot.get("competitors") or []
+    if not isinstance(competitors, list) or any(not isinstance(item, dict) for item in competitors):
+        _conflict("PROJECT_ENTITY_SNAPSHOT_INVALID", "项目竞品配置快照结构无效")
+    return {
+        "target_brand": configuration.get("brand") or {},
+        "competitors": [{
+            "name": str(item.get("name") or ""),
+            "aliases": [str(value) for value in (item.get("aliases") or [])],
+            "website_url": str(item.get("website_url") or ""),
+        } for item in competitors],
+    }
 
 
 def _exact_citation_manifest(
@@ -109,6 +136,9 @@ def freeze_scope(
 
     plan = loads(analysis.sampling_plan_json, {})
     configuration = _validate_analysis_configuration(db, analysis, plan)
+    project_entities = _project_entities(
+        db, project_id=project_id, configuration=configuration,
+    )
     prompt_version = _validate_analysis_prompt_version(db, analysis, plan)
     run_scope = loads(context.run_scope_json, {})
     raw = loads(context.raw_output_json, {})
@@ -199,7 +229,7 @@ def freeze_scope(
     valid_answers = [row for row in runs if row.get("status") in VALID_ANSWER_STATUSES and str(row.get("answer_text") or "").strip()]
     failed_answers = [row for row in runs if row not in valid_answers]
     input_scope = {
-        "contract_version": "geo.agent.input-scope.v1",
+        "contract_version": "geo.agent.input-scope.v2",
         "identity": {
             "project_id": project_id, "prompt_id": prompt_id, "analysis_id": analysis_id,
             "context_id": context_id, "raw_output_hash": context.raw_output_hash,
@@ -207,6 +237,7 @@ def freeze_scope(
         },
         "prompt": {"text": analysis.prompt_text_snapshot, "version": prompt_version},
         "project_configuration": configuration,
+        "project_entities": project_entities,
         "run_scope": run_scope,
         "runs": runs,
         "citation_manifest": ({"manifest_id": citation.manifest_id, "payload_hash": citation.payload_hash,
@@ -283,6 +314,10 @@ def revalidate_frozen_scope(db: Session, run) -> dict[str, Any]:
     run_scope = loads(context.run_scope_json, {})
     if scope.get("runs") != raw.get("runs") or scope.get("run_scope") != run_scope:
         _conflict("AGENT_SCOPE_CONTENT_DRIFT", "Agent scope 中的 Run 快照已偏离冻结 Context")
+    if scope.get("project_entities") != _project_entities(
+            db, project_id=run.project_id,
+            configuration=scope.get("project_configuration") or {}):
+        _conflict("AGENT_PROJECT_ENTITY_DRIFT", "Agent scope 中的品牌或竞品配置已偏离冻结版本")
     if identity.get("sampling_plan_hash") != db.query(SinglePromptAnalysis).filter_by(
             analysis_id=run.analysis_id, project_id=run.project_id, prompt_id=run.prompt_id).one().sampling_plan_hash:
         _conflict("AGENT_SAMPLING_PLAN_DRIFT", "Agent scope 的采样计划 hash 已偏离 Analysis")

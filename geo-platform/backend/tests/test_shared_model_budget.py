@@ -16,7 +16,7 @@ from app.services.shared_model_budget import (
 )
 
 
-TODAY = date(2026, 10, 19)
+TODAY = date.today()
 
 
 def identity(seed: str = "a", *, input_ceiling: int = 10_000, output_ceiling: int = 8_000,

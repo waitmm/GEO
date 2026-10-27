@@ -13,6 +13,9 @@ test('scheduled collection is collection-only and exposes guarded controls', () 
   assert.match(source, /编辑采集计划/);
   assert.match(source, /method: "PUT"/);
   assert.match(source, /避免重复创建同一问题的计划/);
+  assert.match(source, /formatBeijingDateTime/);
+  assert.match(source, /Asia\/Shanghai/);
+  assert.doesNotMatch(source, /new Date\(row\.next_due_at\)/);
   assert.doesNotMatch(source, /采样完成后自动生成优化建议与稿件/);
 });
 
@@ -25,4 +28,7 @@ test('range analysis previews then freezes exact run ids', () => {
   assert.match(source, /preview_hash/);
   assert.match(source, /selected_run_ids/);
   assert.match(source, /不会静默混合/);
+  assert.match(source, /beijingLocalDateTimeToIso/);
+  assert.match(source, /开始（北京时间）/);
+  assert.doesNotMatch(source, /new Date\(values\.start_at\)/);
 });

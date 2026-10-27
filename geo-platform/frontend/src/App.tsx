@@ -19,6 +19,7 @@ import { ReleasePromptPanel } from "./ReleasePromptPanel";
 import { useTableKeyboardScroll } from "./useTableKeyboardScroll";
 import { ReleaseWorkerStatus } from "./ReleaseWorkerStatus";
 import { isRateLimited, RATE_LIMIT_LABEL, RATE_LIMIT_RECOVERY_GUIDANCE } from "./rateLimitFeedback";
+import { formatBeijingDateTime } from "./time";
 import type {
   BrowserMonitorRun, BrowserMonitorRunDetail, BrowserQueueSummary, Project, Prompt, PromptCluster, PromptVersion, PromptVersionBinding, RunArtifactContent, Topic,
   SinglePromptV2AnalysisListItem, SinglePromptV2CitationContributionListItem, SinglePromptV2CitationContributionStatus, SinglePromptV2DiagnosisEdit, SinglePromptV2DiagnosisStatus, SinglePromptV2ExecutionStatus, SinglePromptV2QualificationCriticGoldDecision, SinglePromptV2QualificationCriticGoldStatus, SinglePromptV2QualificationCriticStatus, SinglePromptV2QualificationProjection, SinglePromptV2RunPool, SinglePromptV2RunPoolItem, SinglePromptV2SourcePreparation, SinglePromptV2Status, SinglePromptV2StrategyReadiness,
@@ -362,24 +363,7 @@ function v2MetricValue(metric?: { hit_count: number; evaluable_count: number; va
 }
 
 function formatDateTime(v: string | null | undefined) {
-  if (!v) return "-";
-  try {
-    const raw = String(v).trim();
-    const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
-    const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(normalized);
-    const date = new Date(hasTimezone ? normalized : `${normalized}Z`);
-    return new Intl.DateTimeFormat("zh-CN", {
-      timeZone: "Asia/Shanghai",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    }).format(date);
-  }
-  catch { return v; }
+  return formatBeijingDateTime(v, "-");
 }
 function safeRate(n: number, d: number) {
   return d ? Math.round((n / d) * 1000) / 10 : 0;

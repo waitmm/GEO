@@ -8,6 +8,7 @@ import { ManualImportPanel } from "./ManualImportPanel";
 import { AnalysisRangePanel } from "./AnalysisRangePanel";
 import { SupplementalSources } from "./SupplementalSources";
 import { brandAssociationContent } from "./brandAssociationContext";
+import { formatBeijingDateTime } from "./time";
 
 const names: Record<string, string> = { brand_mention_rate: "正文提及", brand_option_rate: "列为选项", brand_recommendation_rate: "明确推荐", target_brand_official_reference_rate: "官方来源引用", published_url_reference_rate: "目标 URL 引用" };
 const ratio = (m: any) => m?.value == null ? "不可计算" : `${m.hit_count}/${m.evaluable_count} (${(m.value * 100).toFixed(1)}%)`;
@@ -176,7 +177,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     } catch (e) { if (epoch === generation.current) setError((e as Error).message); }
     finally { if (epoch === generation.current) setOpeningPrompt(undefined); }
   }
-  const options = scopes.map(s => ({ value: s.context_id, label: `范围 ${s.context_id} · Runs ${(s.run_scope.run_ids || []).join("、")} · ${s.created_at}` }));
+  const options = scopes.map(s => ({ value: s.context_id, label: `范围 ${s.context_id} · Runs ${(s.run_scope.run_ids || []).join("、")} · ${formatBeijingDateTime(s.created_at)}` }));
   const monitorAnalysisBindingReason = (selection: any) => {
     const status = selection?.prompt_version?.binding_status;
     if (status === "LEGACY_UNBOUND") return "这些历史回答未绑定 Prompt 冻结版本，不能用当前或 latest Prompt 替代建立分析。";
@@ -261,7 +262,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
         {mode === "compare" && <Alert type="info" showIcon message="历史结果隔离" description="选择历史比较只恢复该结果保存时的基线、对照和回答版本；修改任一范围或目标页面会退出该历史结果，不会用新范围覆盖它。" />}
         {mode === "compare" && <Select aria-label="历史比较" style={{ width: "100%" }} placeholder="查看已保存的比较" value={result?.result_version} onChange={id => {
           restoreComparison(history.find(x => x.result_version === id)); const params = new URLSearchParams(window.location.search); params.set("observation_result", id); window.history.replaceState(null, "", `?${params}`);
-        }} options={history.map(r => ({ value: r.result_version, label: `${r.created_at} · ${r.result_version}` }))} />}
+        }} options={history.map(r => ({ value: r.result_version, label: `${formatBeijingDateTime(r.created_at)} · ${r.result_version}` }))} />}
       </Space>}
       {output && <>
         {measuredIdentity && <section aria-label="本结果测量身份" style={{ marginTop: 20, overflowWrap: "anywhere" }}>

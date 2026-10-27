@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import stat
 from uuid import uuid4
@@ -59,6 +59,9 @@ from test_release_first_slice import (
 from scripts import release_worker
 
 
+CURRENT_PRICING_DATE = datetime.now(timezone.utc).date().isoformat()
+
+
 class ScriptedClient:
     def __init__(self, decisions):
         self.decisions = list(decisions)
@@ -98,6 +101,15 @@ def _evidence_markdown(pack, *, valid=True, include_authority=True):
     if include_authority and pack["selected_source_passages"]:
         passage = pack["selected_source_passages"][0]
         source_ref = f" [[source:{passage['snapshot_id']}:{passage['passage_id']}]]"
+    citation_ref = (
+        pack["citation_occurrences"][0]["evidence_locator"]
+        if pack["citation_occurrences"] else ""
+    )
+    channel_observation = (
+        f"\n\n### 引用渠道与竞品来源观察\n"
+        f"当前引用平台分布只表示冻结回答中的可见来源；竞品归属未知时保持 INFERENCE。{citation_ref}"
+        if citation_ref else ""
+    )
     draft = (
         "这是一份面向当前搜索问题的完整可编辑内容。先判断用户希望打开哪一类抖音目标，"
         "再核对平台允许的入口、账号权限和跳转后的落地体验。操作前应保存原始链接并用"
@@ -118,7 +130,7 @@ def _evidence_markdown(pack, *, valid=True, include_authority=True):
 当前冻结回答中的品牌表现只能在本 Run 范围内判断，品牌能力仍需核验。{answer_ref}
 
 ## 优化策略与渠道
-优先在帮助中心发布与当前问题直接对应的核对指南，第三方渠道只作补充。{answer_ref}
+优先在帮助中心发布与当前问题直接对应的核对指南，第三方渠道只作补充。{answer_ref}{channel_observation}
 
 ## 完整正文
 {draft}
@@ -319,8 +331,8 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v5"
-    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v5"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v6"
+    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v6"
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
         "geo.deepseek.responses-text.no-thinking.v2"
@@ -328,7 +340,7 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     assert loads(run.budget_json, {})["max_model_calls"] == 1
     assert loads(run.budget_json, {})["max_tool_calls"] == 0
     pack = build_evidence_pack(loads(run.input_scope_json, {}))
-    assert pack["contract_version"] == "geo.evidence-pack.v1"
+    assert pack["contract_version"] == "geo.evidence-pack.v2"
     assert pack["evidence_pack_hash"] == digest({key: value for key, value in pack.items()
                                                   if key != "evidence_pack_hash"})
     assert pack["runs"][0]["answer_text"]
@@ -338,6 +350,9 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     assert len(pack["citation_occurrences"]) == 2
     assert all(row["evidence_locator"].startswith("[[citation:")
                for row in pack["citation_occurrences"])
+    assert pack["citation_channel_observations"]["platforms"]
+    assert sum(row["citation_occurrence_count"]
+               for row in pack["citation_channel_observations"]["platforms"]) == 2
     assert all(row["evidence_locator"].startswith("[[truth:")
                for row in pack["product_truth"]["facts"])
     assert pack["coverage"]["source_passage_total"] >= 1
@@ -433,6 +448,9 @@ def test_evidence_pack_single_call_persists_validated_independent_result(tmp_pat
     payload = loads(result.result_json, {})
     assert payload["schema_version"] == "geo.evidence-pack.markdown-result.v1"
     assert payload["evidence_pack"]["evidence_pack_hash"] == pack["evidence_pack_hash"]
+    assert payload["evidence_pack"]["citation_channel_observations"] == (
+        pack["citation_channel_observations"]
+    )
     assert payload["success_assessment"] == {
         "engineering_success": True,
         "business_usable": "REQUIRES_HUMAN_REVIEW",
@@ -484,6 +502,70 @@ def test_evidence_pack_prompt_requires_evidence_in_each_analysis_section():
     assert "三节必须各自至少包含一个" in prompt
     assert "只写 `Run 10`、`truth 1`" in prompt
     assert "不要把这三节需要的证据标记集中放到其他章节" in prompt
+    assert "### 引用渠道与竞品来源观察" in prompt
+    assert "引用次数多不等于渠道" in prompt
+
+
+def test_evidence_pack_uses_frozen_run_references_when_manifest_is_absent():
+    scope = {
+        "project_configuration": {"brand": {
+            "brand_name": "目标品牌", "brand_aliases": [],
+            "website_url": "https://target.example.com",
+        }},
+        "project_entities": {"competitors": [{
+            "name": "竞品甲", "aliases": ["甲工具"],
+            "website_url": "https://competitor.example.com",
+        }]},
+        "runs": [{
+            "run_id": 7, "status": "success", "answer_text": "回答正文",
+            "references": [
+                {"reference_id": 70, "index": 1, "title": "竞品甲操作教程",
+                 "url": "https://baijiahao.baidu.com/s?id=70"},
+                {"reference_id": 71, "index": 2, "title": "甲工具产品指南",
+                 "url": "https://competitor.example.com/guide"},
+            ],
+        }],
+        "product_truth": {"facts": []},
+    }
+    pack = build_evidence_pack(scope)
+    assert [row["platform_key"] for row in pack["citation_occurrences"]] == [
+        "BAIJIAHAO", "INDEPENDENT_WEB",
+    ]
+    assert pack["citation_occurrences"][1]["source_owner_type"] == "CONFIGURED_COMPETITOR"
+    assert pack["citation_occurrences"][0]["source_owner_type"] == "THIRD_PARTY_OR_UNKNOWN"
+    assert pack["citation_occurrences"][0]["title_entity_mentions"] == [{
+        "entity_type": "CONFIGURED_COMPETITOR", "entity_name": "竞品甲",
+        "matched_text": "竞品甲", "basis": "CONFIGURED_NAME_IN_TITLE",
+    }]
+    assert pack["coverage"]["citation_occurrence_count"] == 2
+    assert pack["coverage"]["citation_platform_count"] == 2
+
+
+def test_evidence_pack_requires_citation_based_channel_analysis_when_citations_exist(
+        tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = _create_from_fixture(
+        db, fixture, key="evidence-pack-channel-analysis-0001",
+        execution_mode="EVIDENCE_PACK",
+    )
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    valid = _evidence_markdown(pack)
+    checked, _ = validate_markdown_result(valid, pack)
+    assert checked["validation"]["status"] == "PASS"
+
+    without_subsection = valid.replace("### 引用渠道与竞品来源观察", "### 渠道概览")
+    rejected, _ = validate_markdown_result(without_subsection, pack)
+    assert "CITATION_CHANNEL_ANALYSIS_REQUIRED" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+    citation = pack["citation_occurrences"][0]["evidence_locator"]
+    without_citation = valid.replace(citation, "")
+    rejected, _ = validate_markdown_result(without_citation, pack)
+    assert "CITATION_CHANNEL_EVIDENCE_REQUIRED" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
 
 
 def test_evidence_pack_ignores_literal_reference_examples_inside_markdown_code(tmp_path, monkeypatch):
@@ -500,7 +582,7 @@ def test_evidence_pack_ignores_literal_reference_examples_inside_markdown_code(t
     )
     checked, _ = validate_markdown_result(markdown, pack)
     assert checked["validation"]["status"] == "PASS"
-    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v2"
+    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v3"
     assert not any(row["locator"] == "..." for row in checked["result"]["evidence_references"])
 
     rejected, _ = validate_markdown_result(
@@ -977,7 +1059,7 @@ def test_external_authorization_reserves_request_token_and_cost_before_transport
         db, run_id=row.run_id, project_id=1, prompt_id=44, revision=row.revision,
         max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
         conservative_cny_per_million_tokens=10.0,
-        pricing_source="测试中人工核实的计费页面", pricing_checked_at="2026-10-19", authorized_by="qa",
+        pricing_source="测试中人工核实的计费页面", pricing_checked_at=CURRENT_PRICING_DATE, authorized_by="qa",
     )
     guard = _request_guard(db, row)
     guard({"input_token_upper_bound": 1000, "max_output_tokens": 2000, "provider_payload_hash": "a" * 64})
@@ -1008,11 +1090,11 @@ def test_agent_external_guard_uses_controller_shared_ledger(tmp_path, monkeypatc
         max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
         conservative_cny_per_million_tokens=10.0,
         pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
-        pricing_checked_at="2026-10-19", authorized_by="qa",
+        pricing_checked_at=CURRENT_PRICING_DATE, authorized_by="qa",
     )
     ledger = tmp_path / "shared-budget.sqlite3"
     initialize_shared_budget(ledger, batch_id="agent-workflow-comparison-20261019",
-                             pricing_checked_at="2026-10-19")
+                             pricing_checked_at=CURRENT_PRICING_DATE)
     hooks = SharedBudgetHooks(ledger, lane="AGENT_EXPERIMENT", operation_id=row.run_id)
     request = {
         "provider": "deepseek", "requested_model_alias": "deepseek-flash",
@@ -1052,11 +1134,11 @@ def test_rejected_provider_response_settles_local_usage_before_decision_parse(tm
         max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
         conservative_cny_per_million_tokens=10.0,
         pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
-        pricing_checked_at="2026-10-19", authorized_by="qa",
+        pricing_checked_at=CURRENT_PRICING_DATE, authorized_by="qa",
     )
     ledger = tmp_path / "shared-budget-rejected.sqlite3"
     initialize_shared_budget(ledger, batch_id="agent-rejected-response-accounting",
-                             pricing_checked_at="2026-10-19")
+                             pricing_checked_at=CURRENT_PRICING_DATE)
     hooks = SharedBudgetHooks(ledger, lane="AGENT_EXPERIMENT", operation_id=row.run_id)
     request = {
         "provider": "deepseek", "requested_model_alias": "deepseek-flash",
@@ -1102,11 +1184,11 @@ def test_incomplete_provider_response_settles_usage_and_archives_partial_output(
         max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
         conservative_cny_per_million_tokens=10.0,
         pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
-        pricing_checked_at="2026-10-19", authorized_by="qa",
+        pricing_checked_at=CURRENT_PRICING_DATE, authorized_by="qa",
     )
     ledger = tmp_path / "shared-budget-incomplete.sqlite3"
     initialize_shared_budget(ledger, batch_id="agent-incomplete-accounting",
-                             pricing_checked_at="2026-10-19")
+                             pricing_checked_at=CURRENT_PRICING_DATE)
     hooks = SharedBudgetHooks(ledger, lane="AGENT_EXPERIMENT", operation_id=row.run_id)
     request = {
         "provider": "deepseek", "requested_model_alias": "deepseek-flash",
@@ -1178,11 +1260,11 @@ def test_provider_response_without_usage_keeps_conservative_hold(
         max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
         conservative_cny_per_million_tokens=10.0,
         pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
-        pricing_checked_at="2026-10-19", authorized_by="qa",
+        pricing_checked_at=CURRENT_PRICING_DATE, authorized_by="qa",
     )
     ledger = tmp_path / "shared-budget-incomplete-unknown.sqlite3"
     initialize_shared_budget(ledger, batch_id="agent-incomplete-unknown-accounting",
-                             pricing_checked_at="2026-10-19")
+                             pricing_checked_at=CURRENT_PRICING_DATE)
     hooks = SharedBudgetHooks(ledger, lane="AGENT_EXPERIMENT", operation_id=row.run_id)
     request = {
         "provider": "deepseek", "requested_model_alias": "deepseek-flash",
@@ -1234,11 +1316,11 @@ def test_provider_http_error_preserves_original_status_without_fake_usage(tmp_pa
         max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
         conservative_cny_per_million_tokens=10.0,
         pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
-        pricing_checked_at="2026-10-19", authorized_by="qa",
+        pricing_checked_at=CURRENT_PRICING_DATE, authorized_by="qa",
     )
     ledger = tmp_path / "shared-budget-http-rejected.sqlite3"
     initialize_shared_budget(ledger, batch_id="agent-http-rejected-accounting",
-                             pricing_checked_at="2026-10-19")
+                             pricing_checked_at=CURRENT_PRICING_DATE)
     hooks = SharedBudgetHooks(ledger, lane="AGENT_EXPERIMENT", operation_id=row.run_id)
     request = {
         "provider": "deepseek", "requested_model_alias": "deepseek-flash",
@@ -1283,7 +1365,7 @@ def test_external_agent_execution_without_shared_guard_fails_before_model(tmp_pa
         max_requests=1, max_total_tokens=4000, max_cost_cny=1.0,
         conservative_cny_per_million_tokens=10.0,
         pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
-        pricing_checked_at="2026-10-19", authorized_by="qa",
+        pricing_checked_at=CURRENT_PRICING_DATE, authorized_by="qa",
     )
     client = ScriptedClient([])
     execute_agent_run(row.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False),

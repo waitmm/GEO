@@ -65,7 +65,7 @@ def test_workflow_external_guard_uses_same_controller_ledger(scene):
         max_requests=1, max_tokens=1000, max_cost_cny=0.01,
         conservative_cny_per_million_tokens=10,
         pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
-        pricing_checked_at="2026-10-19", authorized_by="test")
+        pricing_checked_at=datetime.utcnow().date().isoformat(), authorized_by="test")
     row.status = "RUNNING"
     row.progress_json = encode({"stage": "ANSWER", "requests": []})
     db.commit()
@@ -73,7 +73,7 @@ def test_workflow_external_guard_uses_same_controller_ledger(scene):
     request.update(input_hash="a" * 64, provider_payload_hash="b" * 64, attempt=1)
     ledger = tmp_path / "shared-budget.sqlite3"
     initialize_shared_budget(ledger, batch_id="agent-workflow-comparison-20261019",
-                             pricing_checked_at="2026-10-19")
+                             pricing_checked_at=datetime.utcnow().date().isoformat())
     hooks = SharedBudgetHooks(ledger, lane="WORKFLOW_BASELINE", operation_id=row.task_id)
     with shared_live_budget_hooks(request_guard=hooks.request_guard,
                                   response_audit_sink=hooks.audit_sink):

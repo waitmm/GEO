@@ -3,6 +3,7 @@ import { Alert, Button, Collapse, Form, Input, InputNumber, Popconfirm, Select, 
 import { CalendarClock, Pause, Play, RefreshCw } from "lucide-react";
 import { api, request } from "./api/client";
 import type { PromptVersion } from "./types";
+import { formatBeijingDateTime } from "./time";
 
 const labels: Record<string, string> = { ACTIVE: "运行中", PAUSED: "已暂停", BLOCKED: "需恢复", EXHAUSTED: "次数已用完", SUPERSEDED: "已替换" };
 const executionLabels: Record<string, string> = { SUCCESS: "成功", PARTIAL: "部分成功", FAILED: "失败", BLOCKED: "受阻", CANCELLED: "已取消", MISSED: "设备离线，已跳过", QUEUED: "排队中", RUNNING: "采集中" };
@@ -84,8 +85,8 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
   }
 
   const cadenceText = (row: any) => row.cadence?.type === "INTERVAL" ? `每 ${row.cadence.every_hours} 小时`
-    : row.cadence?.type === "WEEKLY" ? `每周 ${["一", "二", "三", "四", "五", "六", "日"][row.cadence.weekday]} ${row.cadence.local_time}`
-      : `每天 ${row.cadence?.local_time || row.local_time}`;
+    : row.cadence?.type === "WEEKLY" ? `每周 ${["一", "二", "三", "四", "五", "六", "日"][row.cadence.weekday]} ${row.cadence.local_time}（${row.timezone || "Asia/Shanghai"}）`
+      : `每天 ${row.cadence?.local_time || row.local_time}（${row.timezone || "Asia/Shanghai"}）`;
 
   return <section aria-label="定时采集管理">
     <Typography.Title level={4}>定时采集</Typography.Title>
@@ -95,9 +96,9 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
     <Table style={{ marginTop: 16 }} rowKey="schedule_id" dataSource={rows} loading={busy} pagination={false} scroll={{ x: 980 }} columns={[
       { title: "状态", render: (_, row) => <><Tag color={row.status === "ACTIVE" ? "green" : row.status === "BLOCKED" ? "red" : "default"}>{labels[row.status] || row.status}</Tag>{!row.external_collection_authorized && row.automation_policy === "COLLECTION_ONLY" && <Tag color="orange">待外部采样授权</Tag>}</> },
       { title: "频率", render: (_, row) => cadenceText(row) },
-      { title: "下一次", render: (_, row) => row.status === "ACTIVE" ? new Date(row.next_due_at).toLocaleString() : "—" },
+      { title: "下一次", render: (_, row) => row.status === "ACTIVE" ? formatBeijingDateTime(row.next_due_at) : "—" },
       { title: "剩余次数", dataIndex: "remaining_attempts" },
-      { title: "最近执行", render: (_, row) => row.last_execution ? `${executionLabels[row.last_execution.status] || row.last_execution.status} · ${new Date(row.last_execution.due_at).toLocaleString()}` : "尚未执行" },
+      { title: "最近执行", render: (_, row) => row.last_execution ? `${executionLabels[row.last_execution.status] || row.last_execution.status} · ${formatBeijingDateTime(row.last_execution.due_at)}` : "尚未执行" },
       { title: "成功率", render: (_, row) => row.execution_summary?.success_rate == null ? "暂无" : `${(row.execution_summary.success_rate * 100).toFixed(0)}%` },
       { title: "说明", dataIndex: "pause_reason" },
       { title: "操作", render: (_, row) => <Space wrap>
@@ -111,7 +112,7 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
     {!!rows.length && <Collapse style={{ marginTop: 12 }} items={rows.filter(row => row.automation_policy === "COLLECTION_ONLY").map(row => ({
       key: row.schedule_id, label: `执行记录 · ${cadenceText(row)}`,
       children: <Table size="small" rowKey="execution_id" pagination={false} dataSource={executions[row.schedule_id] || []} columns={[
-        { title: "时间", render: (_, item) => new Date(item.due_at).toLocaleString() },
+        { title: "时间", render: (_, item) => formatBeijingDateTime(item.due_at) },
         { title: "触发", render: (_, item) => item.trigger_type === "MANUAL" ? "手动" : "计划" },
         { title: "状态", render: (_, item) => executionLabels[item.status] || item.status },
         { title: "成功 / 部分 / 失败", render: (_, item) => `${item.success_count} / ${item.partial_count} / ${item.failure_count}` },
@@ -129,7 +130,7 @@ export function SamplingSchedulePanel({ projectId, promptId }: { projectId: numb
         onChange={value => void chooseVersion(value)} options={promptVersions.filter((version) => version.status === "EFFECTIVE").map(item => ({ value: item.prompt_version_id, label: `V${item.version_number} · ${item.snapshot_hash.slice(0, 12)}` }))} /></Form.Item>
       <Space wrap align="start">
         <Form.Item label="采集频率" name="cadence_type" rules={[{ required: true }]}><Select style={{ width: 150 }} options={[{ value: "DAILY", label: "每天" }, { value: "WEEKLY", label: "每周" }, { value: "INTERVAL", label: "固定间隔" }]} /></Form.Item>
-        {cadence !== "INTERVAL" && <Form.Item label="执行时间" name="local_time" rules={[{ required: true }]}><Input type="time" /></Form.Item>}
+        {cadence !== "INTERVAL" && <Form.Item label="执行时间（计划时区）" name="local_time" rules={[{ required: true }]}><Input type="time" /></Form.Item>}
         {cadence === "WEEKLY" && <Form.Item label="星期" name="weekday" rules={[{ required: true }]}><Select style={{ width: 120 }} options={["一", "二", "三", "四", "五", "六", "日"].map((label, index) => ({ value: index, label: `周${label}` }))} /></Form.Item>}
         {cadence === "INTERVAL" && <Form.Item label="每隔几小时" name="interval_hours" rules={[{ required: true }]}><InputNumber min={1} max={168} /></Form.Item>}
         <Form.Item label="时区" name="timezone_name" rules={[{ required: true }]}><Input /></Form.Item>

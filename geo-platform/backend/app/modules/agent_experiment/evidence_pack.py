@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
@@ -18,7 +20,7 @@ from app.services.serialization import loads
 from .scope import revalidate_frozen_scope
 
 
-EVIDENCE_PACK_CONTRACT = "geo.evidence-pack.v1"
+EVIDENCE_PACK_CONTRACT = "geo.evidence-pack.v2"
 EVIDENCE_PACK_RESULT_CONTRACT = "geo.evidence-pack.markdown-result.v1"
 LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v1"
 LEGACY_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v1"
@@ -27,8 +29,10 @@ PREVIOUS_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v2"
 PREVIOUS_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v2"
 LOCATOR_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v3"
 LOCATOR_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v3"
-EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v5"
-EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v5"
+PRE_CHANNEL_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v5"
+PRE_CHANNEL_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v5"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v6"
+EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v6"
 EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.no-thinking.v2"
 DEFAULT_TEXT_BUDGET = 90_000
 REQUIRED_SECTIONS = (
@@ -64,21 +68,173 @@ def _text_size(value: Any) -> int:
     return 0
 
 
+def _host(value: str | None) -> str:
+    try:
+        return (urlsplit(value or "").hostname or "").lower().removeprefix("www.")
+    except ValueError:
+        return ""
+
+
+def _platform(host: str) -> tuple[str, str]:
+    rules = (
+        (("baijiahao.baidu.com",), "BAIJIAHAO", "百度百家号"),
+        (("zhihu.com",), "ZHIHU", "知乎"),
+        (("mp.weixin.qq.com",), "WECHAT_OFFICIAL_ACCOUNT", "微信公众号"),
+        (("douyin.com",), "DOUYIN", "抖音"),
+        (("xiaohongshu.com",), "XIAOHONGSHU", "小红书"),
+        (("bilibili.com", "b23.tv"), "BILIBILI", "哔哩哔哩"),
+        (("csdn.net",), "CSDN", "CSDN"),
+        (("sohu.com",), "SOHU", "搜狐"),
+        (("163.com",), "NETEASE", "网易"),
+    )
+    for domains, key, label in rules:
+        if any(host == domain or host.endswith(f".{domain}") for domain in domains):
+            return key, label
+    return "INDEPENDENT_WEB", "独立网站"
+
+
+def _content_type(title: str, url: str) -> str:
+    text = f"{title} {url}".lower()
+    if any(token in text for token in ("教程", "指南", "怎么", "如何", "步骤", "攻略", "guide", "how-to")):
+        return "TUTORIAL_OR_GUIDE"
+    if any(token in text for token in ("对比", "评测", "盘点", "哪一个", "compare", "review")):
+        return "COMPARISON_OR_REVIEW"
+    if any(token in text for token in ("faq", "常见问题", "帮助中心", "/help", "/docs", "文档")):
+        return "HELP_OR_DOCUMENTATION"
+    if any(token in text for token in ("新闻", "资讯", "/news", "news.")):
+        return "NEWS_OR_INFORMATION"
+    return "ARTICLE_OR_PAGE"
+
+
+def _configured_entities(scope: dict[str, Any]) -> list[dict[str, Any]]:
+    configuration = scope.get("project_configuration") or {}
+    brand = configuration.get("brand") or {}
+    rows = [{
+        "entity_type": "TARGET_BRAND",
+        "name": str(brand.get("brand_name") or ""),
+        "aliases": brand.get("brand_aliases") or [],
+        "website_url": str(brand.get("website_url") or ""),
+    }]
+    rows.extend({
+        "entity_type": "CONFIGURED_COMPETITOR",
+        "name": str(row.get("name") or ""),
+        "aliases": row.get("aliases") or [],
+        "website_url": str(row.get("website_url") or ""),
+    } for row in (scope.get("project_entities") or {}).get("competitors", []))
+    return [row for row in rows if row["name"] or row["website_url"]]
+
+
+def _source_owner(scope: dict[str, Any], *, host: str) -> tuple[str, str | None, str]:
+    """Classify ownership only from an exact configured domain relationship."""
+    for entity in _configured_entities(scope):
+        entity_host = _host(entity["website_url"])
+        domain_match = bool(entity_host and (host == entity_host or host.endswith(f".{entity_host}")))
+        if domain_match:
+            return entity["entity_type"], entity["name"] or None, "CONFIGURED_DOMAIN_MATCH"
+    return "THIRD_PARTY_OR_UNKNOWN", None, "NO_CONFIGURED_ENTITY_MATCH"
+
+
+def _title_entity_mentions(scope: dict[str, Any], *, title: str) -> list[dict[str, str]]:
+    """Record title mentions without misrepresenting them as publisher ownership."""
+    folded_title = title.casefold()
+    matches = []
+    for entity in _configured_entities(scope):
+        names = [entity["name"], *[str(value) for value in entity["aliases"]]]
+        matched_name = next((name for name in names if name and name.casefold() in folded_title), None)
+        if matched_name:
+            matches.append({
+                "entity_type": entity["entity_type"],
+                "entity_name": entity["name"] or matched_name,
+                "matched_text": matched_name,
+                "basis": "CONFIGURED_NAME_IN_TITLE",
+            })
+    return matches
+
+
+def _raw_run_citation_occurrences(scope: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for run in scope.get("runs") or []:
+        run_id = run.get("run_id")
+        for index, reference in enumerate(run.get("references") or [], start=1):
+            if not isinstance(reference, dict):
+                continue
+            reference_id = reference.get("reference_id")
+            if reference_id is None:
+                reference_id = reference.get("id", reference.get("index", index))
+            rows.append({
+                **reference,
+                "run_id": run_id,
+                "reference_id": reference_id,
+                "reference_index": reference.get("index", index),
+                "observation_source": "FROZEN_RUN_REFERENCE",
+            })
+    return rows
+
+
 def _citation_occurrences(scope: dict[str, Any]) -> list[dict[str, Any]]:
     manifest = (scope.get("citation_manifest") or {}).get("payload") or {}
-    rows = manifest.get("occurrences") or []
-    return [
-        {
+    manifest_rows = [row for row in (manifest.get("occurrences") or []) if isinstance(row, dict)]
+    raw_rows = _raw_run_citation_occurrences(scope)
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in [*raw_rows, *manifest_rows]:
+        key = (str(row.get("run_id")), str(row.get("reference_id")))
+        merged[key] = {**merged.get(key, {}), **row}
+    occurrences: list[dict[str, Any]] = []
+    for row in merged.values():
+        url = str(row.get("canonical_url") or row.get("url") or "")
+        title = str(row.get("title") or "")
+        host = str(row.get("domain") or _host(url)).lower().removeprefix("www.")
+        platform_key, platform_label = _platform(host)
+        owner_type, owner_name, owner_basis = _source_owner(scope, host=host)
+        occurrence_id = f"run:{row.get('run_id')}:reference:{row.get('reference_id')}"
+        occurrences.append({
             **row,
-            "citation_occurrence_id": (
-                f"run:{row.get('run_id')}:reference:{row.get('reference_id')}"
-            ),
-            "evidence_locator": (
-                f"[[citation:run:{row.get('run_id')}:reference:{row.get('reference_id')}]]"
-            ),
-        }
-        for row in rows if isinstance(row, dict)
-    ]
+            "canonical_url": url,
+            "domain": host,
+            "platform_key": platform_key,
+            "platform_label": platform_label,
+            "content_type": _content_type(title, url),
+            "source_owner_type": owner_type,
+            "source_owner_name": owner_name,
+            "source_owner_basis": owner_basis,
+            "title_entity_mentions": _title_entity_mentions(scope, title=title),
+            "citation_occurrence_id": occurrence_id,
+            "evidence_locator": f"[[citation:{occurrence_id}]]",
+        })
+    return sorted(
+        occurrences,
+        key=lambda row: (int(row.get("run_id") or 0), int(row.get("reference_index") or 0)),
+    )
+
+
+def _citation_channel_observations(citations: list[dict[str, Any]]) -> dict[str, Any]:
+    by_platform: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in citations:
+        by_platform[str(row["platform_key"])].append(row)
+    platforms = []
+    for key, rows in sorted(by_platform.items(), key=lambda item: (-len(item[1]), item[0])):
+        platforms.append({
+            "platform_key": key,
+            "platform_label": rows[0]["platform_label"],
+            "citation_occurrence_count": len(rows),
+            "run_ids": sorted({str(row.get("run_id")) for row in rows}),
+            "domains": sorted({str(row.get("domain")) for row in rows if row.get("domain")}),
+            "content_type_counts": dict(sorted(Counter(
+                str(row["content_type"]) for row in rows
+            ).items())),
+            "source_owner_counts": dict(sorted(Counter(
+                str(row["source_owner_type"]) for row in rows
+            ).items())),
+            "title_entity_mention_counts": dict(sorted(Counter(
+                f"{mention['entity_type']}:{mention['entity_name']}"
+                for row in rows for mention in row["title_entity_mentions"]
+            ).items())),
+        })
+    return {
+        "contract_version": "geo.evidence-pack.citation-channel-observation.v1",
+        "semantics": "只描述冻结回答实际引用的来源平台与内容形态，不直接决定推荐渠道或因果效果。",
+        "platforms": platforms,
+    }
 
 
 def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEXT_BUDGET) -> dict[str, Any]:
@@ -121,6 +277,7 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
             "reference_count": len(row.get("references") or []),
         } for row in runs],
         "citation_occurrences": citations,
+        "citation_channel_observations": _citation_channel_observations(citations),
         "source_dispositions": sorted(
             scope.get("source_dispositions") or [], key=lambda row: str(row.get("source_key", "")),
         ),
@@ -179,6 +336,7 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
             for row in runs
         ),
         "citation_occurrence_count": len(citations),
+        "citation_platform_count": len(core["citation_channel_observations"]["platforms"]),
         "source_snapshot_count": len(snapshots),
         "source_passage_total": len(all_passage_ids),
         "source_passage_included": len(selected_passages),
@@ -244,6 +402,12 @@ def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VE
 `GEO 诊断与依据`、`品牌表现与证据缺口`、`优化策略与渠道` 三节必须各自至少包含一个
 上述完整标记。只写 `Run 10`、`truth 1` 或内部字段名不算证据引用；必须同时逐字复制该
 对象的完整 locator。不要把这三节需要的证据标记集中放到其他章节。
+
+若 `citation_occurrences` 非空，`优化策略与渠道` 必须包含 `### 引用渠道与竞品来源观察`：
+先按冻结引用的 platform、domain、content_type 和跨 Run 出现情况解释当前引用生态，并引用至少一个
+真实 `[[citation:...]]`。明确区分已配置竞品、从标题/回答推断的可能竞品与未知第三方；推断必须标为
+`INFERENCE`。随后再给渠道建议，说明它是基于观察、可执行性还是待验证假设。引用次数多不等于渠道
+最优，竞品来源的能力也不得迁移成目标品牌事实。
 
 来源 passage 与目标品牌 Truth 不是同一种资格；外部来源提到某能力不能自动变成目标品牌事实。
 若品牌事实不足，采用 L3 安全写法，并在 `QA 与事实限制` 中逐字写出 `VERIFY_FIRST`。
@@ -353,6 +517,19 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[
     for name in REQUIRED_SECTIONS[:3]:
         if sections.get(name) and not _REF.search(_mask_markdown_code(sections[name])):
             issues.append({"code": "SECTION_EVIDENCE_REQUIRED", "detail": name})
+    strategy = sections.get("优化策略与渠道", "")
+    if pack.get("citation_occurrences"):
+        if "### 引用渠道与竞品来源观察" not in strategy:
+            issues.append({
+                "code": "CITATION_CHANNEL_ANALYSIS_REQUIRED",
+                "detail": "优化策略与渠道必须单列引用渠道与竞品来源观察",
+            })
+        if not any(match.group(1) == "citation" for match in _REF.finditer(
+                _mask_markdown_code(strategy))):
+            issues.append({
+                "code": "CITATION_CHANNEL_EVIDENCE_REQUIRED",
+                "detail": "渠道分析必须引用冻结回答中的真实 citation occurrence",
+            })
 
     draft = sections.get("完整正文", "")
     if len(draft) < 240 or len([part for part in draft.split("\n\n") if part.strip()]) < 2:
@@ -371,7 +548,7 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[
             issues.append({"code": "NUMERIC_CLAIM_WITHOUT_AUTHORITY", "detail": paragraph[:120]})
 
     validation = {
-        "contract_version": "geo.evidence-pack.validation.v2",
+        "contract_version": "geo.evidence-pack.validation.v3",
         "status": "PASS" if not issues else "FAIL",
         "issues": issues,
         "server_validated": True,
@@ -402,6 +579,7 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any]) -> tuple[dict[
         "evidence_pack": {
             "evidence_pack_hash": pack["evidence_pack_hash"],
             "coverage": pack["coverage"],
+            "citation_channel_observations": pack["citation_channel_observations"],
         },
         "success_assessment": {
             "engineering_success": not issues,
@@ -479,6 +657,7 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
             LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT,
             PREVIOUS_EVIDENCE_PACK_EXECUTION_CONTRACT,
             LOCATOR_EVIDENCE_PACK_EXECUTION_CONTRACT,
+            PRE_CHANNEL_EVIDENCE_PACK_EXECUTION_CONTRACT,
             EVIDENCE_PACK_EXECUTION_CONTRACT,
         }:
             raise RuntimeError("EVIDENCE_PACK_EXECUTION_PROFILE_MISMATCH")
@@ -510,11 +689,15 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
         legacy_profile = execution_contract == LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT
         previous_profile = execution_contract == PREVIOUS_EVIDENCE_PACK_EXECUTION_CONTRACT
         locator_profile = execution_contract == LOCATOR_EVIDENCE_PACK_EXECUTION_CONTRACT
+        pre_channel_profile = execution_contract == PRE_CHANNEL_EVIDENCE_PACK_EXECUTION_CONTRACT
         selected_prompt_version = (
             LEGACY_EVIDENCE_PACK_PROMPT_VERSION if legacy_profile else (
                 PREVIOUS_EVIDENCE_PACK_PROMPT_VERSION if previous_profile else (
                     LOCATOR_EVIDENCE_PACK_PROMPT_VERSION
-                    if locator_profile else EVIDENCE_PACK_PROMPT_VERSION
+                    if locator_profile else (
+                        PRE_CHANNEL_EVIDENCE_PACK_PROMPT_VERSION
+                        if pre_channel_profile else EVIDENCE_PACK_PROMPT_VERSION
+                    )
                 )
             )
         )

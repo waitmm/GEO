@@ -225,7 +225,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       </Form>
       <Collapse style={{ marginTop: 24 }} items={contexts.map(c => ({ key: c.context_version_id, label: `版本 ${c.version_number} · ${c.title}`, children: <><Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>{c.content}</Typography.Paragraph><Typography.Text type="secondary">{c.source_reference || "未填写出处"}</Typography.Text></> }))} />
     </> : !promptId && mode !== "monitor" ? <Empty description="请先选择一个问题" /> : <>
-      {mode === "monitor" && promptId && <Alert style={{ marginBottom: 16 }} type="info" showIcon
+      {mode === "monitor" && promptId && <Alert className="monitor-start-alert" style={{ marginBottom: 16 }} type="info" showIcon
         message="从这里开始：选择一段时间内的回答"
         description="查看当前表现后，到下方选择最近 7/14/30 天或自定义范围；确认具体回答后会进入 AI 优化。采集和分析相互独立。"
         action={<Button type="primary" href="#monitor-analysis-range">选择回答开始分析</Button>} />}

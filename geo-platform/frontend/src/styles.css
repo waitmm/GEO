@@ -778,6 +778,25 @@ body {
     flex-wrap: wrap;
   }
 
+  .monitor-start-alert {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .monitor-start-alert .ant-alert-content {
+    min-width: 0;
+  }
+
+  .monitor-start-alert .ant-alert-action {
+    flex-basis: 100%;
+    margin-top: 12px;
+    margin-inline-start: 38px;
+  }
+
+  .monitor-start-alert .ant-alert-action .ant-btn {
+    width: 100%;
+  }
+
   .page-stack .ant-card-head-wrapper {
     align-items: flex-start;
     flex-direction: column;

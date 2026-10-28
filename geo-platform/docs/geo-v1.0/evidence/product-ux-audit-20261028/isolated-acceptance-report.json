@@ -1,0 +1,11 @@
+{
+  "frozen_url": "http://127.0.0.1:8034/?release_view=coreV2&v2_project=1&v2_prompt=1&v2_analysis=70baa2d1-5755-4278-8922-d4b79933bf10",
+  "feedback_marker": "UX隔离验收-刷新后仍可见",
+  "page_errors": [],
+  "checks": {
+    "beijing_label": true,
+    "range_frozen_in_isolated_db": true,
+    "generated_markdown_rendered": true,
+    "feedback_persisted_after_refresh": true
+  }
+}

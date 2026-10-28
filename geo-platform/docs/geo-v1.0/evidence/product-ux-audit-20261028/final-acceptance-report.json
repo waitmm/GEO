@@ -1,0 +1,16 @@
+{
+  "url": "http://127.0.0.1:8032/?release_view=releaseMonitor&v2_project=1&v2_prompt=1",
+  "history_visible_seconds": 0.968,
+  "page_errors": [],
+  "checks": {
+    "monitor_next_step_visible": true,
+    "beijing_time_visible": true,
+    "analysis_history_visible": true,
+    "analysis_history_hides_internal_ids": true,
+    "result_markdown_rendered": true,
+    "evidence_tokens_readable": true,
+    "sample_count_present": true,
+    "validate_scope_business_label": true,
+    "mobile_page_loaded": true
+  }
+}

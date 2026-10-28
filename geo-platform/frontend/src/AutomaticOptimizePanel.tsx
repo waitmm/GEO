@@ -17,7 +17,7 @@ import { DeliveryQualificationCard } from "./DeliveryQualificationCard";
 import type { OptimizationSelection } from "./optimizationSelection";
 import { AgentExperimentPanel } from "./AgentExperimentPanel";
 
-type AutomaticOptimizePanelProps = { projectId: number; promptId: number; analysisId: string; contextId: string; rawHash: string; completion?: { manifest_id: string; payload_hash: string; version_number: number } | null };
+type AutomaticOptimizePanelProps = { projectId: number; promptId: number; analysisId: string; contextId: string; rawHash: string; runCount: number; completion?: { manifest_id: string; payload_hash: string; version_number: number } | null };
 
 type Task = {
   task_kind: string; pending_draft?: { sections: { heading: string; blocks: { text: string }[] }[] };
@@ -304,7 +304,7 @@ export function AutomaticOptimizePanel(props: AutomaticOptimizePanelProps) {
         options={[{ label: "AI 优化", value: "agent" }, { label: "正式流程（备用）", value: "workflow" }]} />
       {lane === "workflow" ? <WorkflowOptimizePanel {...props} />
         : <AgentExperimentPanel projectId={props.projectId} promptId={props.promptId} analysisId={props.analysisId}
-            contextId={props.contextId} completion={props.completion} />}
+            contextId={props.contextId} runCount={props.runCount} completion={props.completion} />}
     </Space>
   </section>;
 }

@@ -5708,6 +5708,7 @@ export default function App() {
                   : undefined} />}
               <AutomaticOptimizePanel key={`${projectId}:${activePromptId}:${v2Analysis.analysis.analysis_id}`}
                 projectId={projectId} promptId={activePromptId} analysisId={v2Analysis.analysis.analysis_id} contextId={v2Analysis.context_id} rawHash={v2Analysis.raw_output_hash}
+                runCount={v2Analysis.sampling.valid_run_count}
                 completion={v2SourcePreparation?.completion_manifest} />
             </>}
             {!v2Analysis ? <Card title="已有分析" loading={v2AnalysisHistoryLoading} extra={<Button icon={<RefreshCw size={15} />} onClick={refreshV2AnalysisHistory}>刷新</Button>}>
@@ -5717,17 +5718,13 @@ export default function App() {
                 pagination={false}
                 dataSource={v2AnalysisHistory}
                 columns={[
-                  { title: "状态", width: 120, render: (_: unknown, row) => v2AnalysisStatusTag(row.sampling.status) },
-                  { title: "问题版本", width: 220, render: (_: unknown, row) => promptVersionBindingLabel(row.analysis.prompt_version) },
-                  { title: "数据范围", width: 330, render: (_: unknown, row) => analysisRangeLabel(row.origin_monitor_scope, row.created_at, row.sampling.valid_run_count) },
-                  { title: "采样", width: 150, render: (_: unknown, row) => `${row.sampling.valid_run_count}/${row.sampling.planned_run_count} 有效` },
-                  { title: "Analysis", render: (_: unknown, row: SinglePromptV2AnalysisListItem) => <Text code copyable>{row.analysis.analysis_id}</Text> },
-                  { title: "当前进度", width: 230, render: (_: unknown, row: SinglePromptV2AnalysisListItem) => row.source_preparation_summary
-                    ? `${row.source_preparation_summary.ready_source_count}/${row.source_preparation_summary.required_source_count} 正文就绪，${row.source_preparation_summary.nonterminal_source_count} 待处理`
-                    : row.context_id ? "采样已冻结，待准备正文" : "采样尚未冻结" },
+                  { title: "状态", width: 110, render: (_: unknown, row) => v2AnalysisStatusTag(row.sampling.status) },
+                  { title: "数据范围", render: (_: unknown, row) => analysisRangeLabel(row.origin_monitor_scope, row.created_at, row.sampling.valid_run_count) },
+                  { title: "回答", width: 100, render: (_: unknown, row) => `${row.sampling.valid_run_count} 条` },
+                  { title: "当前进度", width: 210, render: (_: unknown, row: SinglePromptV2AnalysisListItem) => row.context_id ? "数据已固定，可继续优化" : "数据准备中" },
                   { title: "创建时间", width: 180, render: (_: unknown, row) => formatDateTime(row.created_at) },
                   { title: "操作", width: 180, render: (_: unknown, row) => <Space direction="vertical">
-                    <Button type="primary" size="small" onClick={() => openV2Analysis(row)}>继续处理</Button>
+                    <Button type="primary" size="small" onClick={() => openV2Analysis(row)}>打开分析</Button>
                     {(row.saved_deliveries || []).map((delivery, index) => <Button key={delivery.proposal_id} size="small" icon={<FileText size={14} />} href={savedV2DeliveryHref(row, delivery)}>
                       查看方案与稿件{row.saved_deliveries.length > 1 ? ` ${index + 1}` : ""}
                     </Button>)}

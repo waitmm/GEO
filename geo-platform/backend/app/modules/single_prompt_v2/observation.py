@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +17,7 @@ from .retest import _hash, _canonical_json, measure_frozen_runs, _measurement_co
 
 
 CONTRACT = "single_prompt_observation.v2_admitted_metrics"
+BEIJING_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 
 
 def fixed_scope(db: Session, project_id: int, prompt_id: int, ref: dict) -> dict:
@@ -68,12 +70,14 @@ def measure_scope(scope: dict, identity: dict, target_url: str = '') -> dict:
         try:
             value = run.get('finished_at') or run.get('started_at')
             captured = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
-            day = captured.replace(tzinfo=timezone.utc).date().isoformat() if captured.tzinfo is None else captured.astimezone(timezone.utc).date().isoformat()
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            day = captured.astimezone(BEIJING_TIME_ZONE).date().isoformat()
         except (ValueError, TypeError):
             unknown_dates.append(run['run_id'])
             continue
         days.setdefault(day, []).append(run)
-    output['trend'] = {'timezone': 'UTC', 'unknown_date_run_ids': unknown_dates, 'points': [
+    output['trend'] = {'timezone': 'Asia/Shanghai', 'unknown_date_run_ids': unknown_dates, 'points': [
         {'date': day, 'run_ids': [r['run_id'] for r in rows],
          'metrics': measure_frozen_runs(raw={**scope['raw'], 'runs': rows}, identity=frozen_identity,
              answer_diagnosis=scope['semantics'], published_url=target_url)['metrics']}

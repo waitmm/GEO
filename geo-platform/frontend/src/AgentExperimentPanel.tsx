@@ -5,6 +5,7 @@ import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { savedResultLabel, splitAgentResult } from "./agentResultPresentation";
 import { formatBeijingDateTime } from "./time";
+import { BusinessMarkdown } from "./BusinessMarkdown";
 
 type AgentResult = {
   result_version: string; version_number: number; evidence_grade: string;
@@ -70,8 +71,8 @@ function blockerText(run: AgentRun) {
   return run.blocker?.detail || "尚未生成";
 }
 
-export function AgentExperimentPanel({ projectId, promptId, analysisId, contextId, completion }: {
-  projectId: number; promptId: number; analysisId: string; contextId: string; completion?: Completion | null;
+export function AgentExperimentPanel({ projectId, promptId, analysisId, contextId, runCount, completion }: {
+  projectId: number; promptId: number; analysisId: string; contextId: string; runCount: number; completion?: Completion | null;
 }) {
   const { message } = AntApp.useApp();
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -203,7 +204,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
         <Alert type={capabilities?.new_generation_enabled ? "success" : "warning"} showIcon
           message={capabilities?.new_generation_enabled ? "AI 生成已启用" : "当前仅开放历史结果使用"}
           description={capabilities?.message || "正在检查运行授权"} />
-        <Typography.Text type="secondary">当前范围：Analysis {analysisId.slice(-10)} · Context {contextId.slice(-10)} · {completion ? `来源资料 V${completion.version_number}` : "未选择来源完成版本"}</Typography.Text>
+        <Typography.Text type="secondary">当前范围：已冻结 {runCount} 条回答 · {completion ? `来源资料 V${completion.version_number}` : "未选择来源资料版本"}</Typography.Text>
         <Button type="primary" icon={<Play size={16} />} loading={busy}
           disabled={!capabilities?.new_generation_enabled} onClick={() => void start()}>创建并运行 AI 优化</Button>
       </Space>
@@ -245,10 +246,13 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
               <Button icon={<Download size={16} />} onClick={() => download(reportMarkdown, result.result_version)}>导出完整报告</Button>
             </Space>
             <Descriptions size="small" column={{ xs: 1, md: 3 }} style={{ marginTop: 16 }}>
-              <Descriptions.Item label="当前样本">{result.result?.evidence_pack?.coverage?.run_count ?? "按冻结范围"} 个 Run</Descriptions.Item>
+              <Descriptions.Item label="当前样本">{result.result?.evidence_pack?.coverage?.run_count ?? runCount} 条回答</Descriptions.Item>
               <Descriptions.Item label="引用观察">{result.result?.evidence_pack?.coverage?.citation_occurrence_count ?? 0}</Descriptions.Item>
               <Descriptions.Item label="来源快照">{result.result?.evidence_pack?.coverage?.source_snapshot_count ?? 0}</Descriptions.Item>
             </Descriptions>
+            <Alert style={{ marginTop: 12 }} type="info" showIcon
+              message="建议阅读顺序：诊断依据 → 优化策略 → 完整正文 → QA"
+              description="蓝色“回答 #”标签表示结论可以回查到冻结回答；VERIFY_FIRST 表示相关品牌事实仍需员工核实后使用。" />
             {(result.result?.evidence_pack?.citation_channel_observations?.platforms || []).length > 0 &&
               <Card size="small" title="引用来源渠道观察（不是渠道效果结论）" style={{ marginTop: 12 }}>
                 <Space wrap>{result.result.evidence_pack.citation_channel_observations.platforms.map((item: any) =>
@@ -259,7 +263,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
               </Card>}
             {(["GEO 诊断与依据", "品牌表现与证据缺口", "优化策略与渠道", "完整正文", "QA 与事实限制", "复测计划"] as const).map(title =>
               <Card size="small" key={title} title={title} style={{ marginTop: 12 }}>
-                <Typography.Paragraph style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginBottom: 0 }}>{sections[title] || "本结果未提供该部分。"}</Typography.Paragraph>
+                <BusinessMarkdown markdown={sections[title] || "本结果未提供该部分。"} />
               </Card>)}
             <Card size="small" title={<Space><MessageSquare size={16} />提交使用反馈</Space>} style={{ marginTop: 16 }}>
               <Form form={feedbackForm} layout="vertical" initialValues={{ adoption_status: "UNKNOWN", modification_level: "NOT_RECORDED" }} onFinish={submitFeedback}>

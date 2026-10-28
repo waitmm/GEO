@@ -169,7 +169,7 @@ def joint_readonly_browser_check(args: argparse.Namespace) -> None:
             def monitor_url(prompt_id: int) -> str:
                 return f"{origin}/?release_view=releaseMonitor&v2_project={args.project_id}&v2_prompt={prompt_id}"
             page.goto(monitor_url(args.t07_prompt_id), wait_until="networkidle")
-            expect(page.get_by_text("按日期观察（UTC）", exact=True)).to_be_visible()
+            expect(page.get_by_text("按日期观察（北京时间）", exact=True)).to_be_visible()
             expect(page.get_by_text("趋势按各日期各自冻结的 Run 范围展示；范围或 Prompt 版本不同的记录不会被静默合并为同一口径。", exact=True)).to_be_visible()
             expect(page.get_by_text(f"累计采样尝试 {monitor_a['pool_count']} 条", exact=False)).to_be_visible()
             prompt_control = page.get_by_role("combobox", name="当前问题", exact=True)
@@ -184,7 +184,7 @@ def joint_readonly_browser_check(args: argparse.Namespace) -> None:
             page.get_by_text(f"#{args.t07_other_prompt_id} {monitor_b['prompt']['text']}", exact=True).filter(visible=True).click()
             expect(page).to_have_url(re.compile(rf"v2_prompt={args.t07_other_prompt_id}(?:&|$)"))
             expect(page.get_by_text(f"累计采样尝试 {monitor_b['pool_count']} 条", exact=False)).to_be_visible()
-            expect(page.get_by_text("按日期观察（UTC）", exact=True)).to_be_visible()
+            expect(page.get_by_text("按日期观察（北京时间）", exact=True)).to_be_visible()
             page.reload(wait_until="networkidle")
             expect(page).to_have_url(re.compile(rf"v2_prompt={args.t07_other_prompt_id}(?:&|$)"))
             expect(page.get_by_text(f"累计采样尝试 {monitor_b['pool_count']} 条", exact=False)).to_be_visible()

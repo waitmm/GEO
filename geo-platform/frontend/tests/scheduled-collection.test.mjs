@@ -29,6 +29,7 @@ test('range analysis confirms an exact immutable answer set in business language
   assert.match(source, /selected_run_ids/);
   assert.match(source, /不会把不兼容的数据混在一起/);
   assert.match(source, /选择本次要分析的回答/);
+  assert.match(source, /正在按时间和版本整理可用回答/);
   assert.match(source, /确认使用这/);
   assert.match(source, /beijingLocalDateTimeToIso/);
   assert.match(source, /开始（北京时间）/);

@@ -99,8 +99,8 @@ export const api = {
       source_run_id: number; retry_run_id: number; task_id: number; status: string; created: boolean;
       logical_run_id: string; attempt_id: string; attempt_no: number; retry_of_run_id: number | null;
     }>(`/api/v2/single-prompt/runs/${runId}/retry`, { method: "POST", body: JSON.stringify(payload) }),
-  listSinglePromptV2Analyses: (projectId: number, promptId: number) =>
-    request<SinglePromptV2AnalysisListItem[]>(`/api/v2/single-prompt/analyses?project_id=${projectId}&prompt_id=${promptId}`),
+  listSinglePromptV2Analyses: (projectId: number, promptId: number, limit = 10) =>
+    request<SinglePromptV2AnalysisListItem[]>(`/api/v2/single-prompt/analyses?project_id=${projectId}&prompt_id=${promptId}&limit=${limit}`),
   getSinglePromptV2Analysis: (analysisId: string, projectId: number, promptId: number) =>
     request<SinglePromptV2Status>(`/api/v2/single-prompt/analyses/${encodeURIComponent(analysisId)}?project_id=${projectId}&prompt_id=${promptId}`),
   retrySinglePromptV2Analysis: (analysisId: string, projectId: number, promptId: number) =>

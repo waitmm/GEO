@@ -46,6 +46,8 @@ test('AI optimization is the default lane and feedback uses actual APIs', () => 
   assert.match(panel, /result\?\.result\?\.raw_markdown \|\| result\?\.deliverable_markdown/);
   assert.match(panel, /download\(reportMarkdown, result\.result_version\)/);
   assert.match(panel, /引用来源渠道观察（不是渠道效果结论）/);
+  assert.match(panel, /BusinessMarkdown/);
+  assert.match(panel, /runCount\} 条回答/);
   assert.match(panel, /引用次数高不等于该渠道最适合发布/);
   assert.match(panel, /formatBeijingDateTime/);
   assert.doesNotMatch(panel, /管理员设置本任务额度|管理员授权当前冻结任务|保守单价|AI 优化计费依据|InputNumber/);

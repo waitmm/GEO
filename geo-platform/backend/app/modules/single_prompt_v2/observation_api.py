@@ -492,9 +492,14 @@ def exact_context(project_id: int, context_version_id: str, db: Session = Depend
 @router.get('/projects/{project_id}/prompts/{prompt_id}/observation-scopes')
 def scopes(project_id: int, prompt_id: int, db: Session = Depends(get_release_db)):
     rows = db.query(SinglePromptAnalysisContext).filter_by(project_id=project_id, prompt_id=prompt_id).order_by(SinglePromptAnalysisContext.id.desc()).all()
+    analyses = {
+        row.analysis_id: loads(row.sampling_plan_json, {}).get('origin_monitor_scope')
+        for row in db.query(SinglePromptAnalysis).filter_by(project_id=project_id, prompt_id=prompt_id).all()
+    }
     results = db.query(SinglePromptDiagnosisResult, SinglePromptDiagnosisExecution.context_id).join(SinglePromptDiagnosisExecution, SinglePromptDiagnosisExecution.diagnosis_id == SinglePromptDiagnosisResult.diagnosis_id).filter(SinglePromptDiagnosisExecution.project_id == project_id, SinglePromptDiagnosisExecution.prompt_id == prompt_id).all()
     return [{'context_id': row.context_id, 'analysis_id': row.analysis_id, 'raw_result_version': row.result_version,
              'raw_output_hash': row.raw_output_hash, 'run_scope': loads(row.run_scope_json, {}),
+             'origin_monitor_scope': analyses.get(row.analysis_id),
              'answer_results': [{'result_version': result.result_version, 'output_hash': result.output_hash} for result, context_id in results if context_id == row.context_id],
              'created_at': row.created_at.isoformat()} for row in rows]
 

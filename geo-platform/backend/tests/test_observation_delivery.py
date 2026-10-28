@@ -115,13 +115,14 @@ def test_macro_and_weighted_average_use_independent_expected_counts_and_unknown_
 
 def test_daily_trend_retains_unknown_time_and_uses_same_metric_definition():
     first, second, third = [scope(i)['raw']['runs'][0] for i in range(1, 4)]
-    first['finished_at'] = '2026-10-09T02:00:00+08:00'
-    second['finished_at'] = '2026-10-09T02:00:00'
+    first['finished_at'] = '2026-10-08T15:30:00Z'
+    second['finished_at'] = '2026-10-08T16:30:00'
     third['finished_at'] = 'not-a-date'
     current = scope(1)
     current['raw']['runs'] = [first, second, third]
     result = measure_scope(current, IDENTITY)
     assert [p['date'] for p in result['trend']['points']] == ['2026-10-08', '2026-10-09']
+    assert result['trend']['timezone'] == 'Asia/Shanghai'
     assert result['trend']['unknown_date_run_ids'] == [3]
     assert result['metrics']['brand_mention_rate']['evaluable_count'] == 3
     assert [p['metrics']['brand_mention_rate']['evaluable_count'] for p in result['trend']['points']] == [1, 1]

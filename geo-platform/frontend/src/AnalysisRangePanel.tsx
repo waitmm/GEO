@@ -47,7 +47,7 @@ export function AnalysisRangePanel({ projectId, promptId }: { projectId: number;
     finally { setBusy(false); }
   }
 
-  return <section aria-label="按时间范围选择分析数据">
+  return <section id="monitor-analysis-range" aria-label="按时间范围选择分析数据">
     <Typography.Title level={4}>选择本次要分析的回答</Typography.Title>
     <Alert type="info" showIcon message="先按时间筛选，再确认具体回答"
       description="确认后，系统会自动保存本次使用的回答及其版本。以后新增采样不会改变这次分析结果。" />
@@ -62,6 +62,7 @@ export function AnalysisRangePanel({ projectId, promptId }: { projectId: number;
       </Space>
       {mode === "RUN_IDS" && <Form.Item label="回答编号" name="run_ids_text" rules={[{ required: true, whitespace: true }]} extra="使用逗号或空格分隔"><Input placeholder="例如：101, 102, 108" /></Form.Item>}
       <Button htmlType="submit" loading={busy} icon={<CalendarRange size={16} />}>查看可用回答</Button>
+      {busy && <Typography.Text aria-live="polite" type="secondary" style={{ marginLeft: 12 }}>正在按时间和版本整理可用回答…</Typography.Text>}
     </Form>
 
     {preview && <section style={{ marginTop: 20 }}>

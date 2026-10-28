@@ -30,7 +30,9 @@ test('T07 retains evaluated denominators, zero results, N\/A, and Run-level deta
 test('T07 trend makes frozen Run scope and prompt-version isolation visible across refreshes', async () => {
   const source = await readFile(panel, 'utf8');
 
-  assert.match(source, /按日期观察（UTC）/);
+  assert.match(source, /按日期观察（北京时间）/);
+  assert.match(source, /从这里开始：选择一段时间内的回答/);
+  assert.match(source, /defaultActiveKey=\{\["range"\]\}/);
   assert.match(source, /title: "固定范围"/);
   assert.match(source, /趋势按各日期各自冻结的 Run 范围/);
   assert.match(source, /历史问题版本的回答（\$\{pool\.historical_query_runs\.length\}），不混入当前问题指标/);

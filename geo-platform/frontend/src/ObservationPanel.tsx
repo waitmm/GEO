@@ -177,7 +177,15 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     } catch (e) { if (epoch === generation.current) setError((e as Error).message); }
     finally { if (epoch === generation.current) setOpeningPrompt(undefined); }
   }
-  const options = scopes.map(s => ({ value: s.context_id, label: `范围 ${s.context_id} · Runs ${(s.run_scope.run_ids || []).join("、")} · ${formatBeijingDateTime(s.created_at)}` }));
+  const scopeLabel = (scope: any) => {
+    const count = (scope.run_scope?.run_ids || []).length;
+    const selector = scope.origin_monitor_scope?.selector;
+    if (selector?.start_at && selector?.end_at) {
+      return `${formatBeijingDateTime(selector.start_at)} 至 ${formatBeijingDateTime(selector.end_at)} · ${count} 条回答`;
+    }
+    return `${formatBeijingDateTime(scope.created_at)} 创建 · ${count} 条回答`;
+  };
+  const options = scopes.map(s => ({ value: s.context_id, label: scopeLabel(s) }));
   const monitorAnalysisBindingReason = (selection: any) => {
     const status = selection?.prompt_version?.binding_status;
     if (status === "LEGACY_UNBOUND") return "这些旧回答缺少当时的问题版本，无法安全用于新分析。";
@@ -217,6 +225,10 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       </Form>
       <Collapse style={{ marginTop: 24 }} items={contexts.map(c => ({ key: c.context_version_id, label: `版本 ${c.version_number} · ${c.title}`, children: <><Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>{c.content}</Typography.Paragraph><Typography.Text type="secondary">{c.source_reference || "未填写出处"}</Typography.Text></> }))} />
     </> : !promptId && mode !== "monitor" ? <Empty description="请先选择一个问题" /> : <>
+      {mode === "monitor" && promptId && <Alert style={{ marginBottom: 16 }} type="info" showIcon
+        message="从这里开始：选择一段时间内的回答"
+        description="查看当前表现后，到下方选择最近 7/14/30 天或自定义范围；确认具体回答后会进入 AI 优化。采集和分析相互独立。"
+        action={<Button type="primary" href="#monitor-analysis-range">选择回答开始分析</Button>} />}
       {mode === "monitor" && overview && <section aria-label="项目监控概览" style={{ marginBottom: 24 }}>
         <Typography.Title level={4}>项目监控概览</Typography.Title>
         <Table size="small" rowKey="key" pagination={false} scroll={{ x: 680 }} dataSource={Object.entries(overview.metrics).map(([key, data]) => ({ key, data: data as any }))} columns={[
@@ -237,7 +249,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
             <Button loading={openingPrompt === row.prompt.id} disabled={openingPrompt !== undefined || !row.analysis_selection.selected_run_ids.length || row.analysis_selection.prompt_version?.binding_status !== "BOUND" || !row.analysis_selection.prompt_version?.prompt_version_id || !row.analysis_selection.prompt_version?.snapshot_hash}
               onClick={() => openAnalysis(row)}>分析这 {row.analysis_selection.selected_run_ids.length} 条回答</Button>
             {row.analysis_selection.prompt_version?.binding_status !== "BOUND" && <Typography.Paragraph type="warning">
-              {monitorAnalysisBindingReason(row.analysis_selection)}
+              {monitorAnalysisBindingReason(row.analysis_selection)} 请使用下方“选择本次要分析的回答”，系统只会列出身份完整、可以安全分析的回答。
             </Typography.Paragraph>}
             {row.analysis_selection.excluded_run_ids.length > 0 && <Typography.Paragraph type="warning">
               Run {row.analysis_selection.excluded_run_ids.join("、")} 没有可分析正文，不进入该分析；监测统计仍保留这些尝试。
@@ -246,10 +258,10 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
         ]} />
       </section>}
       {!promptId && !busy && <Empty description={overview?.prompts.length ? "选择问题查看原文、采样计划和详细指标" : "尚无可用问题，请先在问题配置中创建"} />}
-      {mode === "monitor" && promptId && <Collapse style={{ marginBottom: 24 }} items={[
-        { key: "manual-import", label: "人工导入回答", children: <ManualImportPanel key={`manual:${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
-        { key: "schedule", label: "定时采集管理", children: <SamplingSchedulePanel key={`${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
-        { key: "range", label: "按时间范围选择分析数据", children: <AnalysisRangePanel key={`range:${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
+      {mode === "monitor" && promptId && <Collapse defaultActiveKey={["range"]} style={{ marginBottom: 24 }} items={[
+        { key: "range", label: "选择回答并开始分析", children: <AnalysisRangePanel key={`range:${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
+        { key: "manual-import", label: "补充方式：人工导入回答", children: <ManualImportPanel key={`manual:${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
+        { key: "schedule", label: "数据积累：定时采集管理", children: <SamplingSchedulePanel key={`${project.id}:${promptId}`} projectId={project.id} promptId={promptId} /> },
       ]} />}
       {promptId && !busy && !scopes.length && !pool?.runs?.length && <Empty description="尚无回答，请在本页人工导入，或配置并启动采集计划" />}
       {mode === "monitor" && !result && pool?.pool_count > 0 && <Typography.Paragraph>累计采样尝试 {pool.pool_count} 条，当前问题原文 {pool.runs.length} 条；候选与推荐指标需选择已计算的准确回答版本。</Typography.Paragraph>}
@@ -297,7 +309,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
         }).join("、")}` : "未知条件及未计算语义不按零结果处理。"} />
         {mode === "compare" && <Alert aria-label="本轮观察限制" style={{ marginTop: 12 }} type="info" showIcon message="本轮计数与限制" description={`${comparisonObservation(output)} 小样本和单轮变化不能自动判定策略有效，也不会自动晋升为策略规则；请结合后续独立观察、条件与人工结论。`} />}
         {mode === "monitor" && <>
-          <Typography.Title level={5}>按日期观察（UTC）</Typography.Title>
+          <Typography.Title level={5}>按日期观察（北京时间）</Typography.Title>
           <Typography.Paragraph type="secondary">趋势按各日期各自冻结的 Run 范围展示；范围或 Prompt 版本不同的记录不会被静默合并为同一口径。</Typography.Paragraph>
           <Table size="small" rowKey="date" scroll={{ x: 650 }} pagination={false} dataSource={output.trend?.points || []} columns={[
             { title: "日期", dataIndex: "date" }, { title: "样本数", render: (_, row: any) => row.run_ids.length },

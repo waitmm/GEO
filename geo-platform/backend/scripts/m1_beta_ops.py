@@ -435,6 +435,10 @@ def _release_path_excluded(relative: Path) -> bool:
         return False
     if relative.parts[0] in _RELEASE_RUNTIME_ROOTS:
         return True
+    if relative.parts[:3] == ("geo-platform", "backend", "runtime"):
+        return True
+    if relative.parts[:3] == ("geo-platform", "backend", "wenxin-profile"):
+        return True
     if any(part in {".git", "__pycache__"} for part in relative.parts):
         return True
     name = relative.name.lower()
@@ -624,8 +628,9 @@ def install_release(
     (home / "config" / "scheduled-sampling-enabled").write_text("0\n")
     for path in (home / "config").iterdir():
         path.chmod(0o600)
-    (home / "VERSION").write_text(f"{release_id} / {source_sha}\n")
-    (home / "VERSION").chmod(0o600)
+    if activate:
+        (home / "VERSION").write_text(f"{release_id} / {source_sha}\n")
+        (home / "VERSION").chmod(0o600)
     return manifest
 
 
@@ -642,15 +647,28 @@ def _activate_release(home: Path, release_id: str) -> str:
 
 def switch_release(home: Path, release_id: str) -> dict[str, str]:
     home = home.resolve()
-    if not SAFE_RELEASE.fullmatch(release_id) or not (home / "releases" / release_id).is_dir():
+    release = home / "releases" / release_id
+    if not SAFE_RELEASE.fullmatch(release_id) or not release.is_dir():
         raise ValueError(f"RELEASE_NOT_FOUND:{release_id}")
+    if not (home / "run" / "services-stopped").is_file():
+        raise ValueError("SERVICES_STOP_CONFIRMATION_REQUIRED")
     database = home / "data" / "geo-beta.db"
     state = inspect_database(database)
     if state["integrity"] != "ok" or state["foreign_key_violations"]:
         raise ValueError("DATABASE_PREFLIGHT_FAILED")
     if state["active_work"]:
         raise ValueError("ACTIVE_WORK_REQUIRES_QUARANTINE")
+    manifest_path = release / "RELEASE_MANIFEST.json"
+    if not manifest_path.is_file():
+        raise ValueError("RELEASE_MANIFEST_REQUIRED")
+    manifest = json.loads(manifest_path.read_text())
+    if (manifest.get("release_id") != release_id
+            or manifest.get("schema_revision") != state["revision"]):
+        raise ValueError("SWITCH_RELEASE_DATABASE_IDENTITY_MISMATCH")
     previous = _activate_release(home, release_id)
+    source_sha = str(manifest.get("source_sha") or "UNKNOWN")
+    (home / "VERSION").write_text(f"{release_id} / {source_sha}\n")
+    (home / "VERSION").chmod(0o600)
     return {"status": "PASS_RELEASE_POINTER_SWITCHED", "previous": previous, "current": release_id}
 
 

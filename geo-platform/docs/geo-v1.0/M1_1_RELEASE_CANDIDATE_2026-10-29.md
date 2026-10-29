@@ -81,7 +81,7 @@ revision 和目标 release manifest 一致，并同步更新 `VERSION`。
 
 离线证据：
 
-- 运维 + Worker 生命周期保护：22 passed；
+- 运维 + Worker 生命周期保护：24 passed；
 - 其他权限/容量/范围/导入/Agent 回归：88 passed；
 - 前端：36 passed，Release build PASS；
 - 数据库隔离迁移到 `20261022_01`，schema `READY`；

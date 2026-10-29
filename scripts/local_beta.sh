@@ -107,12 +107,14 @@ service_loaded() { launchctl print "$LAUNCH_DOMAIN/$1" >/dev/null 2>&1; }
 service_pid() { launchctl print "$LAUNCH_DOMAIN/$1" 2>/dev/null | awk '/pid = / { print $3; exit }'; }
 
 assert_service_owned_by_home() {
-  local label="$1" definition expected_database expected_workdir
+  local label="$1" definition expected_database expected_plist actual_database actual_plist
   service_loaded "$label" || return 0
   definition="$(launchctl print "$LAUNCH_DOMAIN/$label" 2>/dev/null)"
-  expected_database="GEO_RELEASE_DATABASE_URL => sqlite:///$DATABASE_PATH"
-  expected_workdir="working directory = $BACKEND_DIR"
-  if ! grep -Fq "$expected_database" <<<"$definition" || ! grep -Fq "$expected_workdir" <<<"$definition"; then
+  expected_database="sqlite:///$DATABASE_PATH"
+  expected_plist="$LAUNCHD_DIR/$label.plist"
+  actual_database="$(awk -F ' => ' '/^[[:space:]]*GEO_RELEASE_DATABASE_URL => / {print $2; exit}' <<<"$definition")"
+  actual_plist="$(awk -F ' = ' '/^[[:space:]]*path = / {print $2; exit}' <<<"$definition")"
+  if [[ "$actual_database" != "$expected_database" || "$actual_plist" != "$expected_plist" ]]; then
     echo "$label belongs to another GEO_BETA_HOME; refusing to inspect, restart, or stop it." >&2
     return 1
   fi

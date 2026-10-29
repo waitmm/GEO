@@ -14,7 +14,7 @@ backup/restore/upgrade/rollback path; this slice adds provider and accounting
 checks without changing production code.
 
 The combined protection suite was executed with the prepared project Python
-environment on 2026-10-29: **22 passed**. A second targeted product regression
+environment on 2026-10-29: **24 passed**. A second targeted product regression
 covering access isolation, internal-Beta policy, capacity, range selection,
 manual import and Agent/Evidence Pack persistence completed with **88 passed**.
 Frontend client tests completed with **36 passed**, followed by a successful
@@ -37,7 +37,7 @@ the existing read-only localhost UI path.
 | Rollback identity | Stopped marker plus backup/release/schema identity are required; `VERSION` follows the restored release | PASS (offline test) |
 | Database preflight | Integrity, foreign-key violations, and active work all fail closed | PASS (offline test) |
 | Historical budget audit | The model ledger is archived read-only and never restored as authorization | PASS (offline test) |
-| launchd instance ownership | The controller refuses to stop/restart a global label owned by another Beta home | PASS (static shell boundary) |
+| launchd instance ownership | The controller accepts an older release of the same home but refuses an exact-path mismatch | PASS (mocked launchd subprocess) |
 
 ## Current Optimize behavior
 

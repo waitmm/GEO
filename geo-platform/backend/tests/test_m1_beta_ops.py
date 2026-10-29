@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import sqlite3
@@ -19,6 +20,7 @@ from scripts.m1_beta_ops import (
     restore_backup,
     rollback_release,
     runtime,
+    switch_release,
     upgrade_release,
     verify_backup,
 )
@@ -231,6 +233,9 @@ def test_release_manifest_excludes_secrets_but_keeps_nested_dependency_data(tmp_
     package_data = source / "geo-platform" / "backend" / ".venv" / "lib" / "package" / "data"
     package_data.mkdir(parents=True)
     (package_data / "required.txt").write_text("required")
+    nested_profile = source / "geo-platform" / "backend" / "runtime" / "wenxin-profile" / "Default"
+    nested_profile.mkdir(parents=True)
+    (nested_profile / "Cookies").write_text("session")
     prepared_release_fingerprint(
         source, write=True, source_sha="1" * 40, schema_revision="20261022_01",
     )
@@ -239,6 +244,7 @@ def test_release_manifest_excludes_secrets_but_keeps_nested_dependency_data(tmp_
     release = home / "releases" / "m1-safe"
     assert not (release / "geo-platform" / "backend" / ".env").exists()
     assert not (release / "runtime").exists()
+    assert not (release / "geo-platform" / "backend" / "runtime").exists()
     assert (release / package_data.relative_to(source) / "required.txt").read_text() == "required"
 
 
@@ -247,6 +253,23 @@ def test_install_rejects_bundle_modified_after_fingerprint(tmp_path):
     (source / "geo-platform" / "frontend" / "dist" / "index.html").write_text("tampered")
     with pytest.raises(ValueError, match="PREPARED_RELEASE_CONTENT_MISMATCH"):
         install_release(source, tmp_path / "home", "m1-tampered", "1" * 40, "20261022_01")
+
+
+def test_inactive_install_does_not_change_active_version_and_switch_is_guarded(tmp_path):
+    home = tmp_path / "home"
+    _database(home)[1].close()
+    old_source = _prepared_release(tmp_path / "old", "old")
+    new_source = _prepared_release(tmp_path / "new", "new")
+    value = json.loads((new_source / "PREPARED_RELEASE_FINGERPRINT.json").read_text())
+    value["source_sha"] = "2" * 40
+    (new_source / "PREPARED_RELEASE_FINGERPRINT.json").write_text(json.dumps(value))
+    install_release(old_source, home, "m1-old", "1" * 40, "20261022_01")
+    install_release(new_source, home, "m1-new", "2" * 40, "20261022_01", activate=False)
+    assert (home / "current").resolve().name == "m1-old"
+    assert (home / "VERSION").read_text().strip() == f"m1-old / {'1' * 40}"
+    (home / "run" / "services-stopped").unlink()
+    with pytest.raises(ValueError, match="SERVICES_STOP_CONFIRMATION_REQUIRED"):
+        switch_release(home, "m1-new")
 
 
 def test_existing_shell_entrypoints_encode_safe_wal_and_stop_before_migrate():
@@ -263,6 +286,69 @@ def test_existing_shell_entrypoints_encode_safe_wal_and_stop_before_migrate():
     assert "assert_service_owned_by_home" in controller
     assert controller.index('assert_service_owned_by_home "$label"', controller.index("stop_service()")) \
         < controller.index('launchctl bootout "$LAUNCH_DOMAIN/$label"', controller.index("stop_service()"))
+
+
+def test_local_controller_only_stops_exact_home_launchd_instance(tmp_path):
+    workspace = Path(__file__).resolve().parents[3]
+    home = tmp_path / "home"
+    release = tmp_path / "candidate"
+    controller = release / "scripts" / "local_beta.sh"
+    controller.parent.mkdir(parents=True)
+    controller.write_text((workspace / "scripts" / "local_beta.sh").read_text())
+    controller.chmod(0o755)
+    python = release / "geo-platform" / "backend" / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/usr/bin/env bash\nexit 0\n")
+    python.chmod(0o755)
+    (release / "geo-platform" / "frontend" / "dist").mkdir(parents=True)
+    (release / "geo-platform" / "frontend" / "dist" / "index.html").write_text("release")
+    templates = release / "scripts" / "launchd"
+    templates.mkdir(parents=True)
+    for label in ("com.geo.beta.backend", "com.geo.beta.worker"):
+        (templates / f"{label}.plist.in").write_text("fixture")
+    (home / "data").mkdir(parents=True)
+    (home / "data" / "geo-beta.db").write_bytes(b"")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    launchctl = fake_bin / "launchctl"
+    launchctl.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        "if [[ \"$1\" == print ]]; then\n"
+        "  label=\"${2##*/}\"\n"
+        "  printf 'path = %s/launchd/%s.plist\\n' \"$MOCK_HOME\" \"$label\"\n"
+        "  printf 'working directory = /old/release/backend\\n'\n"
+        "  printf 'GEO_RELEASE_DATABASE_URL => %s\\n' \"$MOCK_DATABASE_URL\"\n"
+        "elif [[ \"$1\" == bootout ]]; then\n"
+        "  printf '%s\\n' \"$2\" >> \"$MOCK_BOOTOUT_LOG\"\n"
+        "fi\n"
+    )
+    launchctl.chmod(0o755)
+    common = {
+        **os.environ,
+        "PATH": f"{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin",
+        "GEO_BETA_HOME": str(home),
+        "MOCK_HOME": str(home),
+        "MOCK_BOOTOUT_LOG": str(tmp_path / "bootout.log"),
+    }
+    exact = subprocess.run(
+        [str(controller), "stop"],
+        env={**common, "MOCK_DATABASE_URL": f"sqlite:///{home / 'data' / 'geo-beta.db'}"},
+        capture_output=True, text=True,
+    )
+    assert exact.returncode == 0, exact.stderr
+    assert len((tmp_path / "bootout.log").read_text().splitlines()) == 2
+
+    (tmp_path / "bootout.log").unlink()
+    foreign = subprocess.run(
+        [str(controller), "stop"],
+        env={**common, "MOCK_DATABASE_URL": f"sqlite:///{home / 'data' / 'geo-beta.db'}-other"},
+        capture_output=True, text=True,
+    )
+    assert foreign.returncode != 0
+    assert "belongs to another GEO_BETA_HOME" in foreign.stderr
+    assert not (tmp_path / "bootout.log").exists()
 
 
 def test_preflight_cli_blocks_foreign_key_violation(tmp_path):

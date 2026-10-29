@@ -60,6 +60,11 @@ python3 geo-platform/backend/scripts/m1_beta_ops.py fingerprint \
   --schema-revision 20261022_01 --write
 ```
 
+指纹同时包含所有获准交付文件的相对路径、大小、权限和 SHA-256；安装会在复制前后
+重新计算并逐项比对。生成指纹后修改、增加或删除任何交付文件都会 fail-closed。
+根目录运行数据、`.env`、访问凭证和浏览器登录态明确排除；排除规则按相对根路径
+执行，不会误删 `.venv` 或其他依赖包内部名为 `data` 的合法目录。
+
 install/upgrade 会核对 OS、CPU 架构和 Python major/minor。当前 bundle 复制
 `.venv`，因此只承诺同 OS/架构使用；不是跨 macOS/Linux 或跨架构可移植包。
 Node 版本被记录为前端构建指纹，但已构建的运行时不依赖目标机 Node。
@@ -115,8 +120,10 @@ fail-closed，不接受它生成 stopped marker。首次升级使用 prepared ca
 ### 密钥与授权
 
 备份只记录非密钥开关用于审计，不复制 `.env`、浏览器登录 profile 或访问
-凭证。恢复后 `daily-model-calls=0`、`scheduled-sampling-enabled=0`；旧实验
-账本不能自动成为新机器的日常授权。
+凭证。内部模型账本通过 SQLite Online Backup 归档到 `audit-ledgers/`，包括
+`DELIVERY_UNKNOWN` 等历史状态；恢复时只放入 `backups/audit-ledgers/` 作为只读
+审计材料，不恢复为活动授权账本。恢复后 `daily-model-calls=0`、
+`scheduled-sampling-enabled=0`；旧实验账本不能自动成为新机器的日常授权。
 
 ## 6. 升级与回滚顺序
 
@@ -131,9 +138,14 @@ fail-closed，不接受它生成 stopped marker。首次升级使用 prepared ca
 7. 原子切换 `current`，强制关闭外部能力；
 8. 服务保持停止，人工审查 `UPGRADE_REPORT.json` 后启动。
 
-回滚固定使用明确的 backup 与已安装 release ID。旧活动 data/evidence 不会
+回滚固定使用明确的 backup 与已安装 release ID，并校验 stopped marker、备份版本、
+数据库 revision 和 release manifest 一致。旧活动 data/evidence 不会
 删除，而是移动到 `backups/pre-rollback-live-*`；恢复 DB 的证据绝对路径会
 重定位到最终 home 后再做完整性检查。
+
+macOS launchd 标签为单实例共享标签。控制器在停止、重启或查看已加载服务前，
+必须核对 launchd 中的数据库 URL 和工作目录属于当前 `GEO_BETA_HOME`；若标签属于
+另一安装目录则拒绝操作，不能误停其他 Beta 实例或为错误 HOME 写 stopped marker。
 
 ## 7. 公司电脑 D1 前置（尚未执行）
 

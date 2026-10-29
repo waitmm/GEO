@@ -22,6 +22,7 @@ import platform
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -231,6 +232,25 @@ def backup_home(home: Path, output: Path) -> dict[str, Any]:
         archived_sources.append({**row, "backup_path": relative})
 
     evidence_files = _copy_tree_with_hashes(home / "evidence", output / "evidence")
+    audit_ledgers: list[dict[str, Any]] = []
+    model_ledger = home / "data" / "internal-beta-model-budget.sqlite3"
+    if model_ledger.is_file():
+        audit_dir = output / "audit-ledgers"
+        audit_dir.mkdir(mode=0o700)
+        archived_ledger = audit_dir / model_ledger.name
+        with _connect_ro(model_ledger) as source, sqlite3.connect(archived_ledger) as target:
+            source.backup(target)
+        archived_ledger.chmod(0o400)
+        with _connect_ro(archived_ledger) as ledger:
+            ledger_integrity = ledger.execute("PRAGMA integrity_check").fetchone()[0]
+        if ledger_integrity != "ok":
+            raise ValueError("MODEL_BUDGET_AUDIT_LEDGER_INTEGRITY_FAILED")
+        audit_ledgers.append({
+            "kind": "INTERNAL_BETA_MODEL_BUDGET",
+            "backup_path": f"audit-ledgers/{model_ledger.name}",
+            "sha256": _hash_file(archived_ledger),
+            "restore_policy": "AUDIT_ONLY_NOT_AUTHORIZATION",
+        })
     config: dict[str, str] = {}
     for name in CONFIG_ALLOWLIST:
         path = home / "config" / name
@@ -245,6 +265,7 @@ def backup_home(home: Path, output: Path) -> dict[str, Any]:
         "database": restored_state,
         "prepared_sources": archived_sources,
         "evidence_files": evidence_files,
+        "audit_ledgers": audit_ledgers,
         "config_audit": config,
         "restore_policy": {
             "target_must_be_new": True,
@@ -277,6 +298,11 @@ def verify_backup(directory: Path) -> dict[str, Any]:
         path = directory / "evidence" / row["path"]
         if not path.is_file() or _hash_file(path) != row["sha256"]:
             raise ValueError(f"BACKUP_EVIDENCE_HASH_MISMATCH:{row['path']}")
+    for row in manifest.get("audit_ledgers", []):
+        path = directory / row["backup_path"]
+        if (row.get("restore_policy") != "AUDIT_ONLY_NOT_AUTHORIZATION"
+                or not path.is_file() or _hash_file(path) != row["sha256"]):
+            raise ValueError(f"BACKUP_AUDIT_LEDGER_MISMATCH:{row.get('kind', 'UNKNOWN')}")
     return {
         "status": "PASS",
         "revision": state["revision"],
@@ -284,6 +310,7 @@ def verify_backup(directory: Path) -> dict[str, Any]:
         "prepared_source_count": len(manifest.get("prepared_sources", [])),
         "evidence_file_count": len(manifest.get("evidence_files", [])),
         "active_work_count": len(state["active_work"]),
+        "audit_ledger_count": len(manifest.get("audit_ledgers", [])),
     }
 
 
@@ -305,6 +332,17 @@ def restore_backup(directory: Path, target_home: Path) -> dict[str, Any]:
     manifest = json.loads((directory / "manifest.json").read_text())
     if (directory / "evidence").exists():
         shutil.copytree(directory / "evidence", target_home / "evidence", dirs_exist_ok=True)
+
+    # Historical usage ledgers remain available for audit, but never become
+    # the active authorization ledger on a restored machine.
+    audit_dir = target_home / "backups" / "audit-ledgers"
+    for row in manifest.get("audit_ledgers", []):
+        audit_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        target = audit_dir / Path(row["backup_path"]).name
+        shutil.copyfile(directory / row["backup_path"], target)
+        if _hash_file(target) != row["sha256"]:
+            raise ValueError(f"RESTORED_AUDIT_LEDGER_HASH_MISMATCH:{row['kind']}")
+        target.chmod(0o400)
 
     relocated_dir = target_home / "evidence" / "prepared-sources-restored"
     relocated_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -342,6 +380,7 @@ def restore_backup(directory: Path, target_home: Path) -> dict[str, Any]:
         "database": state,
         "backup_verification": verification,
         "relocated_prepared_sources": len(manifest.get("prepared_sources", [])),
+        "audit_ledgers_restored_for_audit_only": len(manifest.get("audit_ledgers", [])),
         "daily_model_calls": 0,
         "scheduled_sampling": 0,
         "external_calls": 0,
@@ -380,13 +419,81 @@ def quiesce(home: Path) -> dict[str, str]:
     return {"status": "PASS_SERVICES_STOPPED", "marker": str(marker)}
 
 
-def _copy_release(source: Path, destination: Path) -> None:
-    excluded = {".git", "data", "evidence", "logs", "run", "backups", "__pycache__"}
+_RELEASE_RUNTIME_ROOTS = {
+    ".agents", ".codex", ".git", "backups", "browser-profile", "config",
+    "data", "evidence", "logs", "run", "runtime", "wenxin-profile",
+}
+_RELEASE_SECRET_NAMES = {
+    "access-config.json", "cookies.json", "credentials.json",
+    "release-access.json", "storage-state.json",
+}
 
-    def ignore(_directory: str, names: list[str]):
-        return {name for name in names if name in excluded or name.endswith((".pyc", ".pyo"))}
 
-    shutil.copytree(source, destination, symlinks=False, ignore=ignore)
+def _release_path_excluded(relative: Path) -> bool:
+    """Exclude runtime/secret material without deleting dependency data dirs."""
+    if not relative.parts:
+        return False
+    if relative.parts[0] in _RELEASE_RUNTIME_ROOTS:
+        return True
+    if any(part in {".git", "__pycache__"} for part in relative.parts):
+        return True
+    name = relative.name.lower()
+    if name == "prepared_release_fingerprint.json":
+        return True
+    if name == ".env" or name.startswith(".env."):
+        return True
+    if name in _RELEASE_SECRET_NAMES or name.startswith(("cookies.", "storage-state.")):
+        return True
+    if name.endswith((".pyc", ".pyo")):
+        return True
+    return False
+
+
+def _release_file_manifest(source: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in sorted(source.rglob("*")):
+        relative = path.relative_to(source)
+        if _release_path_excluded(relative):
+            continue
+        if path.is_symlink():
+            raise ValueError(f"PREPARED_RELEASE_SYMLINK_FORBIDDEN:{relative.as_posix()}")
+        if not path.is_file():
+            continue
+        rows.append({
+            "path": relative.as_posix(),
+            "sha256": _hash_file(path),
+            "size": path.stat().st_size,
+            "mode": stat.S_IMODE(path.stat().st_mode),
+        })
+    return rows
+
+
+def _manifest_hash(files: list[dict[str, Any]]) -> str:
+    payload = json.dumps(files, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return _hash_text(payload)
+
+
+def _copy_release(source: Path, destination: Path, files: list[dict[str, Any]]) -> None:
+    destination.mkdir(parents=True, mode=0o700)
+    for row in files:
+        relative = Path(str(row["path"]))
+        if relative.is_absolute() or ".." in relative.parts or _release_path_excluded(relative):
+            raise ValueError(f"PREPARED_RELEASE_MANIFEST_PATH_INVALID:{relative.as_posix()}")
+        original = source / relative
+        target = destination / relative
+        if not original.is_file() or original.is_symlink():
+            raise ValueError(f"PREPARED_RELEASE_FILE_MISSING:{relative.as_posix()}")
+        before = _hash_file(original)
+        if before != row["sha256"] or original.stat().st_size != int(row["size"]):
+            raise ValueError(f"PREPARED_RELEASE_CONTENT_MISMATCH:{relative.as_posix()}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(original, target, follow_symlinks=False)
+        if _hash_file(original) != before or _hash_file(target) != before:
+            raise ValueError(f"PREPARED_RELEASE_CHANGED_DURING_COPY:{relative.as_posix()}")
+        target.chmod(int(row["mode"]))
+    copied = _release_file_manifest(destination)
+    if copied != files:
+        raise ValueError("PREPARED_RELEASE_INSTALLED_MANIFEST_MISMATCH")
 
 
 def prepared_release_fingerprint(
@@ -417,8 +524,9 @@ def prepared_release_fingerprint(
         raise ValueError("PREPARED_PYTHON_NOT_EXECUTABLE:" + process.stderr[-1000:])
     runtime = json.loads(process.stdout)
     node = subprocess.run(["node", "--version"], capture_output=True, text=True)
+    files = _release_file_manifest(source)
     value = {
-        "format": "geo-m1-prepared-release-fingerprint.v1",
+        "format": "geo-m1-prepared-release-fingerprint.v2",
         "prepared_at": _utc_now(),
         "os": runtime["system"],
         "arch": runtime["machine"],
@@ -427,6 +535,9 @@ def prepared_release_fingerprint(
         "python_executable_at_prepare_time": runtime["executable"],
         "node_version_at_frontend_build": node.stdout.strip() if node.returncode == 0 else "UNKNOWN",
         "portability": "SAME_OS_ARCH_ONLY; copied venv is not a cross-platform artifact",
+        "files": files,
+        "content_manifest_sha256": _manifest_hash(files),
+        "excluded_material": "runtime roots, .env files, access credentials, browser state",
     }
     if write:
         if not source_sha or not re.fullmatch(r"[0-9a-f]{7,40}", source_sha):
@@ -444,7 +555,7 @@ def _validate_prepared_fingerprint(source: Path, source_sha: str, schema_revisio
     if not path.is_file():
         raise ValueError("PREPARED_RELEASE_FINGERPRINT_REQUIRED")
     value = json.loads(path.read_text())
-    if value.get("format") != "geo-m1-prepared-release-fingerprint.v1":
+    if value.get("format") != "geo-m1-prepared-release-fingerprint.v2":
         raise ValueError("PREPARED_RELEASE_FINGERPRINT_UNSUPPORTED")
     if value.get("source_sha") != source_sha or value.get("schema_revision") != schema_revision:
         raise ValueError("PREPARED_RELEASE_IDENTITY_MISMATCH")
@@ -454,6 +565,11 @@ def _validate_prepared_fingerprint(source: Path, source_sha: str, schema_revisio
             f"{platform.system()}/{platform.machine()}"
         )
     actual = prepared_release_fingerprint(source)
+    files = value.get("files")
+    if not isinstance(files, list) or value.get("content_manifest_sha256") != _manifest_hash(files):
+        raise ValueError("PREPARED_RELEASE_MANIFEST_INVALID")
+    if files != actual["files"] or value["content_manifest_sha256"] != actual["content_manifest_sha256"]:
+        raise ValueError("PREPARED_RELEASE_CONTENT_MISMATCH")
     if actual["python_version"].split(".")[:2] != str(value.get("python_version", "")).split(".")[:2]:
         raise ValueError("PREPARED_RELEASE_PYTHON_MISMATCH")
     return value
@@ -490,7 +606,7 @@ def install_release(
     staging = home / "releases" / f".{release_id}.staging"
     if staging.exists():
         raise ValueError(f"STALE_RELEASE_STAGING:{staging}")
-    _copy_release(source, staging)
+    _copy_release(source, staging, runtime_fingerprint["files"])
     manifest = {
         "format": "geo-m1-release.v1",
         "release_id": release_id,
@@ -530,6 +646,8 @@ def switch_release(home: Path, release_id: str) -> dict[str, str]:
         raise ValueError(f"RELEASE_NOT_FOUND:{release_id}")
     database = home / "data" / "geo-beta.db"
     state = inspect_database(database)
+    if state["integrity"] != "ok" or state["foreign_key_violations"]:
+        raise ValueError("DATABASE_PREFLIGHT_FAILED")
     if state["active_work"]:
         raise ValueError("ACTIVE_WORK_REQUIRES_QUARANTINE")
     previous = _activate_release(home, release_id)
@@ -665,8 +783,22 @@ def rollback_release(home: Path, backup: Path, release_id: str) -> dict[str, Any
     a timestamped failed-state directory; nothing is deleted by this command.
     """
     home, backup = home.resolve(), backup.resolve()
-    if not (home / "releases" / release_id).is_dir():
+    release = home / "releases" / release_id
+    if not release.is_dir():
         raise ValueError(f"RELEASE_NOT_FOUND:{release_id}")
+    if not (home / "run" / "services-stopped").is_file():
+        raise ValueError("SERVICES_STOP_CONFIRMATION_REQUIRED")
+    verification = verify_backup(backup)
+    release_manifest_path = release / "RELEASE_MANIFEST.json"
+    if not release_manifest_path.is_file():
+        raise ValueError("RELEASE_MANIFEST_REQUIRED")
+    release_manifest = json.loads(release_manifest_path.read_text())
+    if (release_manifest.get("release_id") != release_id
+            or release_manifest.get("schema_revision") != verification["revision"]):
+        raise ValueError("ROLLBACK_RELEASE_BACKUP_IDENTITY_MISMATCH")
+    backup_manifest = json.loads((backup / "manifest.json").read_text())
+    if str(backup_manifest.get("source_version", "")).split(" / ", 1)[0] != release_id:
+        raise ValueError("ROLLBACK_RELEASE_BACKUP_VERSION_MISMATCH")
     current_state = inspect_database(home / "data" / "geo-beta.db")
     if current_state["active_work"]:
         raise ValueError("ACTIVE_WORK_REQUIRES_QUARANTINE")
@@ -686,6 +818,9 @@ def rollback_release(home: Path, backup: Path, release_id: str) -> dict[str, Any
     )
     shutil.rmtree(staging)
     previous = _activate_release(home, release_id)
+    source_sha = str(release_manifest.get("source_sha") or "UNKNOWN")
+    (home / "VERSION").write_text(f"{release_id} / {source_sha}\n")
+    (home / "VERSION").chmod(0o600)
     for name in ("daily-model-calls", "scheduled-sampling-enabled"):
         path = home / "config" / name
         path.write_text("0\n")
@@ -753,7 +888,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "preflight":
         result = inspect_database(args.database)
-        result["status"] = "PASS" if not result["active_work"] else "BLOCKED_ACTIVE_WORK"
+        if result["integrity"] != "ok":
+            result["status"] = "BLOCKED_DATABASE_INTEGRITY"
+        elif result["foreign_key_violations"]:
+            result["status"] = "BLOCKED_FOREIGN_KEY_VIOLATIONS"
+        elif result["revision"] == "UNKNOWN":
+            result["status"] = "BLOCKED_SCHEMA_REVISION_UNKNOWN"
+        elif result["active_work"]:
+            result["status"] = "BLOCKED_ACTIVE_WORK"
+        else:
+            result["status"] = "PASS"
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["status"] == "PASS" else 3
     if args.command == "backup":

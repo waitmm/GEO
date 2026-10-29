@@ -14,7 +14,7 @@ backup/restore/upgrade/rollback path; this slice adds provider and accounting
 checks without changing production code.
 
 The combined protection suite was executed with the prepared project Python
-environment on 2026-10-29: **18 passed**. A second targeted product regression
+environment on 2026-10-29: **22 passed**. A second targeted product regression
 covering access isolation, internal-Beta policy, capacity, range selection,
 manual import and Agent/Evidence Pack persistence completed with **88 passed**.
 Frontend client tests completed with **36 passed**, followed by a successful
@@ -33,6 +33,11 @@ the existing read-only localhost UI path.
 | Worker singleton | Second worker cannot acquire the DB lock; heartbeat is removed on clean stop | PASS (offline test) |
 | Project permissions | Owner-only access config and cross-project request denial | PASS (offline test) |
 | Offline external work | Scheduled sampling is disabled and cache-only generation returns `CACHE_MISS` without transport | PASS (offline test); queue quarantine still required by preflight |
+| Prepared release identity | A full file manifest rejects post-fingerprint changes and excludes `.env`/browser state | PASS (offline test) |
+| Rollback identity | Stopped marker plus backup/release/schema identity are required; `VERSION` follows the restored release | PASS (offline test) |
+| Database preflight | Integrity, foreign-key violations, and active work all fail closed | PASS (offline test) |
+| Historical budget audit | The model ledger is archived read-only and never restored as authorization | PASS (offline test) |
+| launchd instance ownership | The controller refuses to stop/restart a global label owned by another Beta home | PASS (static shell boundary) |
 
 ## Current Optimize behavior
 
@@ -53,8 +58,10 @@ idempotent at the ledger boundary, including after a process restart.
 The local Beta release scripts use these P0 controls:
 
 1. A backup uses SQLite Online Backup rather than copying the live database
-   file, and archives explicitly listed evidence roots with hashes.
-2. `preflight` rejects active queue rows. Upgrade additionally requires the
+   file, and archives explicitly listed evidence roots and model-ledger audit
+   history with hashes. The restored ledger is audit-only, never authorization.
+2. `preflight` rejects database corruption, foreign-key violations, and active
+   queue rows. Upgrade additionally requires the
    service-stopped marker, creates a recoverable pre-upgrade backup, validates
    an isolated restore/migration using the candidate runtime, and only then
    migrates the stopped live database.
@@ -63,7 +70,10 @@ The local Beta release scripts use these P0 controls:
    and credentials are excluded from backups.
 4. The Worker lock is database-scoped and single-instance. Project access is
    checked server-side; an invitation account cannot address another project.
-5. Offline startup must not resume queued external work. The safe sequence is
+5. Prepared releases carry a complete file manifest; runtime roots, `.env`,
+   access credentials, and browser state are excluded. launchd labels must be
+   proven to belong to the requested Beta home before they are touched.
+6. Offline startup must not resume queued external work. The safe sequence is
    `preflight -> quarantine/refuse active work -> start API/worker`; setting
    the two capability flags to zero is not, by itself, permission to resume a
    queued task. The release scripts enforce this through active-work refusal;

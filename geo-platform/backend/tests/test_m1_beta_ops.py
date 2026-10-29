@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import platform
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 
@@ -12,6 +14,7 @@ from scripts.m1_beta_ops import (
     backup_home,
     install_release,
     inspect_database,
+    prepared_release_fingerprint,
     quiesce,
     restore_backup,
     rollback_release,
@@ -89,25 +92,20 @@ def _prepared_release(root: Path, marker: str) -> Path:
     frontend.write_text("release")
     script.chmod(0o755)
     python.chmod(0o755)
-    (root / "PREPARED_RELEASE_FINGERPRINT.json").write_text(json.dumps({
-        "format": "geo-m1-prepared-release-fingerprint.v1",
-        "prepared_at": "2026-10-29T00:00:00+00:00",
-        "os": platform.system(),
-        "arch": platform.machine(),
-        "python_version": platform.python_version(),
-        "python_implementation": platform.python_implementation(),
-        "python_executable_at_prepare_time": str(python),
-        "node_version_at_frontend_build": "v-test",
-        "portability": "SAME_OS_ARCH_ONLY; copied venv is not a cross-platform artifact",
-        "source_sha": "1" * 40,
-        "schema_revision": "20261022_01",
-    }))
+    prepared_release_fingerprint(
+        root, write=True, source_sha="1" * 40, schema_revision="20261022_01",
+    )
     return root
 
 
 def test_online_backup_includes_committed_wal_and_restores_artifact_identity(tmp_path):
     home = tmp_path / "home"
     database, writer = _database(home)
+    ledger = home / "data" / "internal-beta-model-budget.sqlite3"
+    with sqlite3.connect(ledger) as budget:
+        budget.execute("CREATE TABLE audit_events(id INTEGER PRIMARY KEY, state TEXT NOT NULL)")
+        budget.execute("INSERT INTO audit_events(state) VALUES ('DELIVERY_UNKNOWN')")
+        budget.commit()
     # Keep the WAL connection open and add a committed row after schema setup.
     # A raw copy of the main file is not guaranteed to contain this row.
     writer.execute("INSERT INTO sample_rows(value) VALUES ('committed-in-wal')")
@@ -117,6 +115,7 @@ def test_online_backup_includes_committed_wal_and_restores_artifact_identity(tmp
     manifest = backup_home(home, backup)
     assert manifest["database"]["revision"] == "20261022_01"
     assert verify_backup(backup)["prepared_source_count"] == 1
+    assert verify_backup(backup)["audit_ledger_count"] == 1
     with sqlite3.connect(backup / "database.db") as restored:
         assert restored.execute("SELECT value FROM sample_rows ORDER BY id").fetchall() == [
             ("base",), ("committed-in-wal",),
@@ -127,6 +126,11 @@ def test_online_backup_includes_committed_wal_and_restores_artifact_identity(tmp
     report = restore_backup(backup, target)
     assert report["daily_model_calls"] == report["scheduled_sampling"] == 0
     assert (target / "config" / "daily-model-calls").read_text().strip() == "0"
+    assert not (target / "data" / "internal-beta-model-budget.sqlite3").exists()
+    restored_ledger = target / "backups" / "audit-ledgers" / "internal-beta-model-budget.sqlite3"
+    assert restored_ledger.is_file()
+    with sqlite3.connect(restored_ledger) as budget:
+        assert budget.execute("SELECT state FROM audit_events").fetchall() == [("DELIVERY_UNKNOWN",)]
     with sqlite3.connect(target / "data" / "geo-beta.db") as db:
         path, expected = db.execute(
             "SELECT artifact_path, artifact_hash FROM single_prompt_prepared_source_snapshots"
@@ -185,6 +189,24 @@ def test_install_runtime_upgrade_and_rollback_are_versioned_and_fail_closed(tmp_
     assert (home / "current").resolve().name == "m1-old"
     assert Path(rolled_back["retained_pre_rollback_state"]).is_dir()
     assert inspect_database(home / "data" / "geo-beta.db")["integrity"] == "ok"
+    assert (home / "VERSION").read_text().strip() == f"m1-old / {'1' * 40}"
+
+
+def test_rollback_requires_stopped_marker_and_matching_release_identity(tmp_path):
+    home = tmp_path / "home"
+    _database(home)[1].close()
+    source = _prepared_release(tmp_path / "source", "old")
+    install_release(source, home, "m1-old", "1" * 40, "20261022_01")
+    backup = tmp_path / "backup"
+    backup_home(home, backup)
+    (home / "run" / "services-stopped").unlink()
+    with pytest.raises(ValueError, match="SERVICES_STOP_CONFIRMATION_REQUIRED"):
+        rollback_release(home, backup, "m1-old")
+    (home / "run" / "services-stopped").write_text("stopped\n")
+    other = _prepared_release(tmp_path / "other", "other")
+    install_release(other, home, "m1-other", "1" * 40, "20261022_01", activate=False)
+    with pytest.raises(ValueError, match="ROLLBACK_RELEASE_BACKUP_VERSION_MISMATCH"):
+        rollback_release(home, backup, "m1-other")
 
 
 def test_install_rejects_unfingerprinted_or_cross_platform_bundle(tmp_path):
@@ -201,6 +223,32 @@ def test_install_rejects_unfingerprinted_or_cross_platform_bundle(tmp_path):
         install_release(source, tmp_path / "home-b", "m1-b", "1" * 40, "20261022_01")
 
 
+def test_release_manifest_excludes_secrets_but_keeps_nested_dependency_data(tmp_path):
+    source = _prepared_release(tmp_path / "source", "fixture")
+    (source / "geo-platform" / "backend" / ".env").write_text("SECRET=do-not-copy\n")
+    (source / "runtime" / "wenxin-profile").mkdir(parents=True)
+    (source / "runtime" / "wenxin-profile" / "Cookies").write_text("session")
+    package_data = source / "geo-platform" / "backend" / ".venv" / "lib" / "package" / "data"
+    package_data.mkdir(parents=True)
+    (package_data / "required.txt").write_text("required")
+    prepared_release_fingerprint(
+        source, write=True, source_sha="1" * 40, schema_revision="20261022_01",
+    )
+    home = tmp_path / "home"
+    install_release(source, home, "m1-safe", "1" * 40, "20261022_01")
+    release = home / "releases" / "m1-safe"
+    assert not (release / "geo-platform" / "backend" / ".env").exists()
+    assert not (release / "runtime").exists()
+    assert (release / package_data.relative_to(source) / "required.txt").read_text() == "required"
+
+
+def test_install_rejects_bundle_modified_after_fingerprint(tmp_path):
+    source = _prepared_release(tmp_path / "source", "fixture")
+    (source / "geo-platform" / "frontend" / "dist" / "index.html").write_text("tampered")
+    with pytest.raises(ValueError, match="PREPARED_RELEASE_CONTENT_MISMATCH"):
+        install_release(source, tmp_path / "home", "m1-tampered", "1" * 40, "20261022_01")
+
+
 def test_existing_shell_entrypoints_encode_safe_wal_and_stop_before_migrate():
     workspace = Path(__file__).resolve().parents[3]
     prepare = (workspace / "scripts" / "prepare_internal_beta.sh").read_text()
@@ -212,3 +260,34 @@ def test_existing_shell_entrypoints_encode_safe_wal_and_stop_before_migrate():
     preflight = controller.index("m1_beta_ops.py preflight", start)
     migrate = controller.index('alembic -c alembic.release.ini upgrade head', start)
     assert stop_worker < preflight < migrate
+    assert "assert_service_owned_by_home" in controller
+    assert controller.index('assert_service_owned_by_home "$label"', controller.index("stop_service()")) \
+        < controller.index('launchctl bootout "$LAUNCH_DOMAIN/$label"', controller.index("stop_service()"))
+
+
+def test_preflight_cli_blocks_foreign_key_violation(tmp_path):
+    database = tmp_path / "broken.db"
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute("CREATE TABLE parent(id INTEGER PRIMARY KEY)")
+        db.execute("CREATE TABLE child(parent_id INTEGER REFERENCES parent(id))")
+        db.execute("INSERT INTO child(parent_id) VALUES (99)")
+        db.commit()
+    script = Path(__file__).resolve().parents[1] / "scripts" / "m1_beta_ops.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "preflight", "--database", str(database)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 3
+    assert '"status": "BLOCKED_FOREIGN_KEY_VIOLATIONS"' in result.stdout
+
+    clean_unversioned = tmp_path / "unversioned.db"
+    with sqlite3.connect(clean_unversioned) as db:
+        db.execute("CREATE TABLE rows(id INTEGER PRIMARY KEY)")
+        db.commit()
+    result = subprocess.run(
+        [sys.executable, str(script), "preflight", "--database", str(clean_unversioned)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 3
+    assert '"status": "BLOCKED_SCHEMA_REVISION_UNKNOWN"' in result.stdout

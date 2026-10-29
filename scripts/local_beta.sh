@@ -106,6 +106,18 @@ render_plists() {
 service_loaded() { launchctl print "$LAUNCH_DOMAIN/$1" >/dev/null 2>&1; }
 service_pid() { launchctl print "$LAUNCH_DOMAIN/$1" 2>/dev/null | awk '/pid = / { print $3; exit }'; }
 
+assert_service_owned_by_home() {
+  local label="$1" definition expected_database expected_workdir
+  service_loaded "$label" || return 0
+  definition="$(launchctl print "$LAUNCH_DOMAIN/$label" 2>/dev/null)"
+  expected_database="GEO_RELEASE_DATABASE_URL => sqlite:///$DATABASE_PATH"
+  expected_workdir="working directory = $BACKEND_DIR"
+  if ! grep -Fq "$expected_database" <<<"$definition" || ! grep -Fq "$expected_workdir" <<<"$definition"; then
+    echo "$label belongs to another GEO_BETA_HOME; refusing to inspect, restart, or stop it." >&2
+    return 1
+  fi
+}
+
 health_check() {
   "$PYTHON_BIN" - "$URL" <<'PY'
 import json
@@ -124,6 +136,7 @@ PY
 bootstrap_or_restart() {
   local label="$1" plist="$2"
   if service_loaded "$label"; then
+    assert_service_owned_by_home "$label"
     local old_pid
     old_pid="$(service_pid "$label")"
     # kickstart reuses the already loaded definition and would ignore a newly
@@ -199,6 +212,7 @@ start() {
 stop_service() {
   local label="$1" name="$2" old_pid=""
   if service_loaded "$label"; then
+    assert_service_owned_by_home "$label"
     old_pid="$(service_pid "$label")"
     launchctl bootout "$LAUNCH_DOMAIN/$label"
     if [[ -n "$old_pid" ]]; then
@@ -221,6 +235,9 @@ status() {
   require_runtime
   local failed=0 pid
   if service_loaded "$BACKEND_LABEL"; then
+    if ! assert_service_owned_by_home "$BACKEND_LABEL"; then
+      failed=1
+    else
     pid="$(service_pid "$BACKEND_LABEL")"
     if [[ -n "$pid" ]]; then
       echo "backend: running (pid $pid)"
@@ -228,17 +245,22 @@ status() {
       echo "backend: loaded but not running"
       failed=1
     fi
+    fi
   else
     echo "backend: stopped"
     failed=1
   fi
   if service_loaded "$WORKER_LABEL"; then
+    if ! assert_service_owned_by_home "$WORKER_LABEL"; then
+      failed=1
+    else
     pid="$(service_pid "$WORKER_LABEL")"
     if [[ -n "$pid" ]]; then
       echo "worker: running (pid $pid)"
     else
       echo "worker: loaded but not running"
       failed=1
+    fi
     fi
   else
     echo "worker: stopped"

@@ -35,7 +35,9 @@ Git 关系已核实为线性祖先链：
 
 活动本机安装不能作为 D0 身份依据：其版本标签与若干实际文件不完全对应。因此
 公司包必须生成 `PREPARED_RELEASE_FINGERPRINT.json`，同时冻结源码 SHA、数据库
-revision、OS、CPU 架构、Python、Node 构建版本和发布 manifest。候选只承诺同
+revision、OS、CPU 架构、Python、Node 构建版本及全部交付文件的路径、大小、权限与
+SHA-256。`.env`、访问凭证、浏览器 profile 与运行数据不进入包；安装会在复制前后
+复核完整文件 manifest。候选只承诺同
 OS/架构使用，不宣称跨 macOS/Linux 或跨 CPU 可移植。
 
 ## 3. D1：安装、升级、回滚
@@ -69,11 +71,17 @@ Backup，执行 integrity/foreign-key/hash 校验，并归档 Evidence 和 prepa
 
 任何 Worker 可消费的 `QUEUED`、`RUNNING`、`retrying`、`EVIDENCE_QUEUED`、
 `AUTO_FETCH_QUEUED` 或 `RESERVED_IN_FLIGHT` 记录都会阻断启动/备份/升级/回滚。
-关闭模型和采样 UI 开关不能代替队列检查。
+关闭模型和采样 UI 开关不能代替队列检查。数据库 integrity、外键违规或活动队列任一
+不合格都会阻断。macOS 全局 launchd 标签还必须与目标 HOME 的数据库和工作目录一致，
+否则拒绝停止、重启或查看，避免误操作另一安装实例。
+
+内部模型预算账本随备份保留为只读审计材料，包含历史未知送达状态；恢复时不会放回
+活动账本路径，也不会成为新机器授权。回滚额外要求 stopped marker、备份版本、schema
+revision 和目标 release manifest 一致，并同步更新 `VERSION`。
 
 离线证据：
 
-- 运维 + Worker 生命周期保护：18 passed；
+- 运维 + Worker 生命周期保护：22 passed；
 - 其他权限/容量/范围/导入/Agent 回归：88 passed；
 - 前端：36 passed，Release build PASS；
 - 数据库隔离迁移到 `20261022_01`，schema `READY`；

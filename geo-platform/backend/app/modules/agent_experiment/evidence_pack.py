@@ -20,7 +20,7 @@ from app.services.serialization import loads
 from .scope import revalidate_frozen_scope
 
 
-EVIDENCE_PACK_CONTRACT = "geo.evidence-pack.v2"
+EVIDENCE_PACK_CONTRACT = "geo.evidence-pack.v3"
 EVIDENCE_PACK_RESULT_CONTRACT = "geo.evidence-pack.markdown-result.v1"
 LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v1"
 LEGACY_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v1"
@@ -31,7 +31,8 @@ LOCATOR_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v3"
 LOCATOR_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v3"
 PRE_CHANNEL_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v5"
 PRE_CHANNEL_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v5"
-EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v6"
+FULL_CITATION_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v6"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v7"
 EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v6"
 EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.no-thinking.v2"
 DEFAULT_TEXT_BUDGET = 90_000
@@ -188,7 +189,10 @@ def _citation_occurrences(scope: dict[str, Any]) -> list[dict[str, Any]]:
         owner_type, owner_name, owner_basis = _source_owner(scope, host=host)
         occurrence_id = f"run:{row.get('run_id')}:reference:{row.get('reference_id')}"
         occurrences.append({
-            **row,
+            "run_id": row.get("run_id"),
+            "reference_id": row.get("reference_id"),
+            "reference_index": row.get("reference_index"),
+            "title": title,
             "canonical_url": url,
             "domain": host,
             "platform_key": platform_key,
@@ -204,6 +208,40 @@ def _citation_occurrences(scope: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(
         occurrences,
         key=lambda row: (int(row.get("run_id") or 0), int(row.get("reference_index") or 0)),
+    )
+
+
+def _citation_evidence_catalog(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse repeated URLs while retaining a real, reversible citation locator.
+
+    The frozen scope remains unchanged. This projection only prevents repeated
+    citations across a multi-run range from consuming the complete model input.
+    Counts and Run membership are derived from every frozen occurrence.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in citations:
+        key = str(row.get("canonical_url") or "")
+        if not key:
+            key = f"{row.get('domain')}\u0000{row.get('title')}"
+        grouped[key].append(row)
+    catalog: list[dict[str, Any]] = []
+    for _key, rows in sorted(grouped.items()):
+        rows = sorted(
+            rows,
+            key=lambda row: (int(row.get("run_id") or 0), int(row.get("reference_index") or 0)),
+        )
+        representative = rows[0]
+        catalog.append({
+            **representative,
+            "occurrence_count": len(rows),
+            "run_ids": sorted(
+                {str(row.get("run_id")) for row in rows}, key=lambda value: int(value)
+            ),
+            "projection_basis": "REPRESENTATIVE_OF_IDENTICAL_CANONICAL_URL",
+        })
+    return sorted(
+        catalog,
+        key=lambda row: (-int(row["occurrence_count"]), str(row.get("canonical_url") or "")),
     )
 
 
@@ -243,10 +281,11 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
         raise EvidencePackCapacityError("EVIDENCE_PACK_TEXT_BUDGET_TOO_SMALL")
     identity = scope.get("identity") or {}
     runs = sorted(scope.get("runs") or [], key=lambda row: int(row.get("run_id", 0)))
-    citations = sorted(
+    all_citations = sorted(
         _citation_occurrences(scope),
         key=lambda row: (int(row.get("run_id", 0)), int(row.get("reference_index", 0))),
     )
+    citation_catalog = _citation_evidence_catalog(all_citations)
     raw_truths = sorted(
         (scope.get("product_truth") or {}).get("facts") or [],
         key=lambda row: str(row.get("truth_id", row.get("id", ""))),
@@ -276,8 +315,8 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
             "competitors": row.get("competitors") or [],
             "reference_count": len(row.get("references") or []),
         } for row in runs],
-        "citation_occurrences": citations,
-        "citation_channel_observations": _citation_channel_observations(citations),
+        "citation_occurrences": [],
+        "citation_channel_observations": _citation_channel_observations(all_citations),
         "source_dispositions": sorted(
             scope.get("source_dispositions") or [], key=lambda row: str(row.get("source_key", "")),
         ),
@@ -287,13 +326,20 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
         "monitor_metrics": scope.get("monitor_metrics") or {},
         "qualification": scope.get("qualification") or {},
     }
-    core_size = _text_size(core)
-    if core_size > text_budget:
+    fixed_core_size = _text_size(core)
+    if fixed_core_size > text_budget:
         raise EvidencePackCapacityError(
-            f"EVIDENCE_PACK_CORE_EXCEEDS_BUDGET:{core_size}:{text_budget}"
+            f"EVIDENCE_PACK_CORE_EXCEEDS_BUDGET:{fixed_core_size}:{text_budget}"
         )
 
-    remaining = text_budget - core_size
+    remaining = text_budget - fixed_core_size
+    selected_citations: list[dict[str, Any]] = []
+    for citation in citation_catalog:
+        size = _text_size(citation)
+        if size <= remaining:
+            selected_citations.append(citation)
+            remaining -= size
+    core["citation_occurrences"] = selected_citations
     selected_passages: list[dict[str, Any]] = []
     omitted: list[dict[str, Any]] = []
     all_passage_ids: list[str] = []
@@ -335,7 +381,11 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
             row.get("status") in {"success", "completed"} and bool(str(row.get("answer_text") or "").strip())
             for row in runs
         ),
-        "citation_occurrence_count": len(citations),
+        "citation_occurrence_count": len(all_citations),
+        "citation_evidence_total": len(citation_catalog),
+        "citation_evidence_included": len(selected_citations),
+        "citation_evidence_omitted": len(citation_catalog) - len(selected_citations),
+        "citation_projection_hash": digest(all_citations),
         "citation_platform_count": len(core["citation_channel_observations"]["platforms"]),
         "source_snapshot_count": len(snapshots),
         "source_passage_total": len(all_passage_ids),
@@ -343,7 +393,9 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
         "source_passage_omitted": len(omitted),
         "truth_fact_count": len(truths),
         "brand_context_mode": brand_context.get("mode", "EMPTY"),
-        "compression": "DETERMINISTIC_WHOLE_PASSAGE_PREFIX_BY_STABLE_ID",
+        "compression": (
+            "DETERMINISTIC_CITATION_URL_CATALOG_AND_WHOLE_PASSAGE_PREFIX_BY_STABLE_ID"
+        ),
         "omitted_materials": omitted,
     }
     pack = {
@@ -658,6 +710,7 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
             PREVIOUS_EVIDENCE_PACK_EXECUTION_CONTRACT,
             LOCATOR_EVIDENCE_PACK_EXECUTION_CONTRACT,
             PRE_CHANNEL_EVIDENCE_PACK_EXECUTION_CONTRACT,
+            FULL_CITATION_EVIDENCE_PACK_EXECUTION_CONTRACT,
             EVIDENCE_PACK_EXECUTION_CONTRACT,
         }:
             raise RuntimeError("EVIDENCE_PACK_EXECUTION_PROFILE_MISMATCH")
@@ -723,6 +776,12 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
                     if legacy_profile else EVIDENCE_PACK_TRANSPORT_VERSION
                 ),
             )
+        run.progress_json = json.dumps(
+            {**loads(run.progress_json, {}), "phase": "GENERATING_CONTENT"},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        run.revision += 1
+        db.commit()
         markdown, usage = client.generate(
             db=db,
             system_prompt=render_evidence_pack_prompt(
@@ -738,6 +797,12 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
             run.cost_cny += float(usage.get("cost_cny", 0.0))
             run.revision += 1
             db.commit()
+        run.progress_json = json.dumps(
+            {**loads(run.progress_json, {}), "phase": "VALIDATING_CONTENT"},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        run.revision += 1
+        db.commit()
         checked, eligibility = validate_markdown_result(markdown, pack)
         _append_event(db, run, "EVIDENCE_PACK_OUTPUT_VALIDATED", {
             "evidence_pack_hash": pack["evidence_pack_hash"],

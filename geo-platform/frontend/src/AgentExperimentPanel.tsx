@@ -51,6 +51,10 @@ const adoptionLabel: Record<string, string> = {
 const modificationLabel: Record<string, string> = {
   NONE: "无需修改", LIGHT: "少量修改", MEDIUM: "中等修改", HEAVY: "大量修改", NOT_RECORDED: "未记录",
 };
+const progressLabel: Record<string, string> = {
+  QUEUED: "任务已排队，等待后台开始", BUILDING_EVIDENCE_PACK: "正在整理所选回答、引用与品牌资料",
+  GENERATING_CONTENT: "正在生成诊断、策略与正文", VALIDATING_CONTENT: "正在校验证据、事实与正文完整性",
+};
 
 function humanTime(value?: string | null) {
   return formatBeijingDateTime(value);
@@ -65,6 +69,9 @@ function validationIssueText(validation?: any) {
 }
 
 function blockerText(run: AgentRun) {
+  if (run.blocker?.code?.startsWith("EVIDENCE_PACK_CORE_EXCEEDS_BUDGET")) {
+    return "所选回答中的重复引用资料超过旧版输入容量；本次未调用模型、未产生费用。请使用已升级的输入整理重新创建任务。";
+  }
   if (run.blocker?.code === "EVIDENCE_PACK_OUTPUT_VALIDATION_FAILED") {
     return "内容已经生成并保存，但没有通过证据校验；请打开该结果查看草稿和具体缺口。";
   }
@@ -90,6 +97,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   const [feedbackForm] = Form.useForm();
   const generation = useRef(0);
   const active = detail || runs.find(row => row.run_id === selectedId);
+  const activeIsRunning = Boolean(active && ["QUEUED", "RUNNING"].includes(active.status));
   const result = results.find(row => row.result_version === selectedResultVersion) || results[0] || active?.result || undefined;
   const reportMarkdown = result?.result?.raw_markdown || result?.deliverable_markdown || "";
   const sections = splitAgentResult(reportMarkdown);
@@ -205,8 +213,12 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           message={capabilities?.new_generation_enabled ? "AI 生成已启用" : "当前仅开放历史结果使用"}
           description={capabilities?.message || "正在检查运行授权"} />
         <Typography.Text type="secondary">当前范围：已冻结 {runCount} 条回答 · {completion ? `来源资料 V${completion.version_number}` : "未选择来源资料版本"}</Typography.Text>
-        <Button type="primary" icon={<Play size={16} />} loading={busy}
-          disabled={!capabilities?.new_generation_enabled} onClick={() => void start()}>创建并运行 AI 优化</Button>
+        <Button type="primary" icon={<Play size={16} />} loading={busy || activeIsRunning}
+          disabled={!capabilities?.new_generation_enabled || activeIsRunning} onClick={() => void start()}>
+          {busy || activeIsRunning ? "AI 优化运行中…" : "创建并运行 AI 优化"}
+        </Button>
+        {activeIsRunning && <Alert type="info" showIcon message="AI 优化正在运行"
+          description={`${progressLabel[String(active?.progress?.phase || active?.status || "")] || "后台正在处理"}。系统会自动刷新；完成或失败后会直接显示结果和原因，无需手动刷新页面。`} />}
       </Space>
     </Card>
     {error && <Alert style={{ marginTop: 12 }} type="error" showIcon message="AI 优化操作未完成" description={error} />}

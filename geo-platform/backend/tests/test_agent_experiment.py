@@ -331,7 +331,7 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v6"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v7"
     assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v6"
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
@@ -340,7 +340,7 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     assert loads(run.budget_json, {})["max_model_calls"] == 1
     assert loads(run.budget_json, {})["max_tool_calls"] == 0
     pack = build_evidence_pack(loads(run.input_scope_json, {}))
-    assert pack["contract_version"] == "geo.evidence-pack.v2"
+    assert pack["contract_version"] == "geo.evidence-pack.v3"
     assert pack["evidence_pack_hash"] == digest({key: value for key, value in pack.items()
                                                   if key != "evidence_pack_hash"})
     assert pack["runs"][0]["answer_text"]
@@ -388,6 +388,26 @@ def test_evidence_pack_capacity_is_explicit_and_deterministic(tmp_path, monkeypa
     assert constrained == build_evidence_pack(passage_heavy, text_budget=constrained_budget)
     assert all(row["reason"] == "TEXT_BUDGET"
                for row in constrained["coverage"]["omitted_materials"])
+
+    repeated = json.loads(json.dumps(scope))
+    repeated["citation_manifest"] = None
+    original_run = repeated["runs"][0]
+    repeated["runs"] = []
+    for offset in range(30):
+        row = json.loads(json.dumps(original_run))
+        row["run_id"] = 10_000 + offset
+        repeated["runs"].append(row)
+    projected = build_evidence_pack(repeated)
+    assert projected["coverage"]["citation_occurrence_count"] == (
+        len(original_run["references"]) * 30
+    )
+    assert projected["coverage"]["citation_evidence_total"] == len({
+        row["canonical_url"] for row in projected["citation_occurrences"]
+    })
+    assert projected["coverage"]["citation_evidence_included"] == (
+        projected["coverage"]["citation_evidence_total"]
+    )
+    assert all(row["occurrence_count"] == 30 for row in projected["citation_occurrences"])
 
 
 def test_evidence_pack_demotes_only_nested_draft_h2_headings(tmp_path, monkeypatch):

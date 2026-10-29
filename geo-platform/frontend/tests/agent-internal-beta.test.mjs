@@ -52,5 +52,9 @@ test('AI optimization is the default lane and feedback uses actual APIs', () => 
   assert.match(panel, /formatBeijingDateTime/);
   assert.doesNotMatch(panel, /管理员设置本任务额度|管理员授权当前冻结任务|保守单价|AI 优化计费依据|InputNumber/);
   assert.match(panel, /AI 优化任务已创建并开始运行/);
+  assert.match(panel, /AI 优化运行中…/);
+  assert.match(panel, /正在整理所选回答、引用与品牌资料/);
+  assert.match(panel, /无需手动刷新页面/);
+  assert.match(panel, /EVIDENCE_PACK_CORE_EXCEEDS_BUDGET/);
   assert.match(panel, /restartWithServerPolicy/);
 });

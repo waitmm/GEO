@@ -34,7 +34,23 @@ if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
 fi
 
 mkdir -p "$(dirname "$TARGET_DB")"
-install -m 600 "$SOURCE_DB" "$TARGET_DB"
+# A direct file copy is not a consistent backup of a live SQLite WAL database.
+# Use SQLite's online backup API and validate the resulting standalone image.
+"$BACKEND_DIR/.venv/bin/python" - "$SOURCE_DB" "$TARGET_DB" <<'PY'
+from pathlib import Path
+import sqlite3
+import sys
+
+source, target = map(lambda value: Path(value).resolve(), sys.argv[1:])
+with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as origin, sqlite3.connect(target) as destination:
+    origin.backup(destination)
+with sqlite3.connect(f"file:{target}?mode=ro", uri=True) as database:
+    if database.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+        raise SystemExit("Prepared SQLite backup failed integrity_check")
+    if database.execute("PRAGMA foreign_key_check").fetchall():
+        raise SystemExit("Prepared SQLite backup failed foreign_key_check")
+target.chmod(0o600)
+PY
 
 (
   cd "$BACKEND_DIR"

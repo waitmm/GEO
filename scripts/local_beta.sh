@@ -28,6 +28,7 @@ WORKER_LOG="$LOG_DIR/worker.log"
 LAUNCH_DOMAIN="gui/$(id -u)"
 MODEL_BUDGET_LEDGER="$DATA_DIR/internal-beta-model-budget.sqlite3"
 WENXIN_PROFILE_DIR="$DATA_DIR/wenxin-profile"
+STOPPED_MARKER="$RUN_DIR/services-stopped"
 
 read_flag() {
   local path="$1" default="$2" value
@@ -147,6 +148,16 @@ bootstrap_or_restart() {
 
 start() {
   require_runtime
+  # Upgrade/start is a deployment boundary. Stop both writers before the
+  # preflight or migration; never migrate underneath a running API/worker.
+  stop_service "$WORKER_LABEL" "worker"
+  stop_service "$BACKEND_LABEL" "backend"
+  printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STOPPED_MARKER"
+  chmod 600 "$STOPPED_MARKER"
+  (
+    cd "$BACKEND_DIR"
+    "$PYTHON_BIN" scripts/m1_beta_ops.py preflight --database "$DATABASE_PATH"
+  )
   local database_url="sqlite:///$DATABASE_PATH"
   (
     cd "$BACKEND_DIR"
@@ -166,6 +177,7 @@ start() {
     )
   fi
   render_plists
+  rm -f "$STOPPED_MARKER"
   bootstrap_or_restart "$BACKEND_LABEL" "$BACKEND_PLIST"
   bootstrap_or_restart "$WORKER_LABEL" "$WORKER_PLIST"
   # A cold launchd start on the local Mac can spend more than 30 seconds
@@ -185,9 +197,20 @@ start() {
 }
 
 stop_service() {
-  local label="$1" name="$2"
+  local label="$1" name="$2" old_pid=""
   if service_loaded "$label"; then
+    old_pid="$(service_pid "$label")"
     launchctl bootout "$LAUNCH_DOMAIN/$label"
+    if [[ -n "$old_pid" ]]; then
+      for _ in $(seq 1 100); do
+        kill -0 "$old_pid" >/dev/null 2>&1 || break
+        sleep 0.1
+      done
+      if kill -0 "$old_pid" >/dev/null 2>&1; then
+        echo "$name did not stop within 10 seconds; refusing deployment operations." >&2
+        return 1
+      fi
+    fi
     echo "$name: stopped"
   else
     echo "$name: not running"
@@ -234,6 +257,8 @@ case "$ACTION" in
     require_runtime
     stop_service "$WORKER_LABEL" "worker"
     stop_service "$BACKEND_LABEL" "backend"
+    printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STOPPED_MARKER"
+    chmod 600 "$STOPPED_MARKER"
     ;;
   restart)
     "$0" stop

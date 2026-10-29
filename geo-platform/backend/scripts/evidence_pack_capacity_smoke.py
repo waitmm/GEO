@@ -78,6 +78,10 @@ def main() -> None:
                     f"{plan['coverage']['source_snapshot_covered']}/"
                     f"{plan['coverage']['source_snapshot_total']}"
                 ),
+                "source_disposition_coverage": (
+                    f"{plan['coverage']['source_disposition_covered']}/"
+                    f"{plan['coverage']['source_disposition_total']}"
+                ),
             })
     print(json.dumps({
         "contract_version": "geo.evidence-pack.capacity-acceptance.synthetic.v1",

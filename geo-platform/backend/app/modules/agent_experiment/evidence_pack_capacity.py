@@ -12,6 +12,7 @@ diagnosis/strategy/draft is a semantic change and is not authorized here.
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from typing import Any
 
 from app.modules.single_prompt_v2.delivery_text import digest
@@ -33,6 +34,103 @@ DEFAULT_TASK_TOKEN_CAP = 300_000
 def model_input_characters(payload: dict[str, Any]) -> int:
     """Return the exact JSON character count used by the current transport."""
     return len(json.dumps(payload, ensure_ascii=False))
+
+
+def audit_citation_content_versions(scope: dict[str, Any]) -> list[dict[str, Any]]:
+    """Audit URL occurrence projection separately from immutable content versions.
+
+    Production v3 groups citation *occurrences* by canonical URL.  This shadow
+    audit makes explicit that URL equality is not content equality.
+    """
+    occurrences = _citation_occurrences(scope)
+    occurrence_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in occurrences:
+        url = str(row.get("canonical_url") or "")
+        key = url or f"{row.get('domain')}\u0000{row.get('title')}"
+        occurrence_groups[key].append(row)
+    snapshot_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for snapshot in scope.get("source_snapshots") or []:
+        url = str(snapshot.get("canonical_url") or "")
+        if not url:
+            continue
+        content_hash = str(snapshot.get("content_hash") or "")
+        snapshot_groups[url].append({
+            "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+            "content_hash": content_hash or None,
+            "content_identity_status": "KNOWN" if content_hash else "UNKNOWN",
+        })
+
+    rows = []
+    for key, group in sorted(occurrence_groups.items()):
+        url = str(group[0].get("canonical_url") or "")
+        occurrence_ids = sorted(
+            str(row["citation_occurrence_id"]) for row in group
+        )
+        catalog_identity = {
+            "canonical_url": url or None,
+            "fallback_domain": None if url else str(group[0].get("domain") or ""),
+            "fallback_title": None if url else str(group[0].get("title") or ""),
+            "occurrence_ids": occurrence_ids,
+        }
+        versions = sorted(
+            snapshot_groups.get(url, []),
+            key=lambda row: (str(row.get("content_hash") or ""), str(row["snapshot_id"])),
+        )
+        hashes = {str(row["content_hash"]) for row in versions if row.get("content_hash")}
+        if not versions or any(row["content_identity_status"] == "UNKNOWN" for row in versions):
+            status = "UNKNOWN"
+        elif len(hashes) > 1:
+            status = "MULTIPLE_KNOWN_VERSIONS"
+        else:
+            status = "SINGLE_KNOWN_VERSION"
+        rows.append({
+            "catalog_key": key,
+            "canonical_url": url,
+            "catalog_identity": catalog_identity,
+            "catalog_identity_hash": digest(catalog_identity),
+            "citation_occurrence_ids": occurrence_ids,
+            "occurrence_count": len(group),
+            "run_ids": sorted({_run_id(row.get("run_id")) for row in group}, key=int),
+            "content_identity_status": status,
+            "source_content_versions": versions,
+            "projection_semantics": "SAME_URL_OCCURRENCES_NOT_CONTENT_EQUIVALENCE",
+        })
+    return rows
+
+
+def _source_disposition_identity(row: dict[str, Any]) -> str:
+    source_key = str(row.get("source_key") or "UNKEYED")
+    return f"{source_key}:{digest(row)}"
+
+
+def audit_source_dispositions(scope: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep failed/unknown/waived and snapshot-less dispositions auditable."""
+    rows = [{
+        "disposition_identity": _source_disposition_identity(row),
+        "source_key": str(row.get("source_key") or ""),
+        "status": str(row.get("status") or "UNKNOWN").upper(),
+        "snapshot_present": bool(row.get("source_key") and any(
+            str(snapshot.get("source_key") or "") == str(row.get("source_key"))
+            for snapshot in scope.get("source_snapshots") or []
+        )),
+        "row_hash": digest(row),
+    } for row in scope.get("source_dispositions") or []]
+    return sorted(rows, key=lambda row: row["disposition_identity"])
+
+
+def shadow_omitted_citation_catalog_entries(
+    scope: dict[str, Any], pack: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Recover v3 citation omission identities without changing production v3."""
+    selected = {
+        str(row.get("canonical_url") or f"{row.get('domain')}\u0000{row.get('title')}")
+        for row in pack.get("citation_occurrences") or []
+    }
+    return [
+        {**row, "reason": "TEXT_BUDGET"}
+        for row in audit_citation_content_versions(scope)
+        if row["catalog_key"] not in selected
+    ]
 
 
 def responses_text_budget_projection(
@@ -93,9 +191,15 @@ def _scope_for_runs(scope: dict[str, Any], run_ids: list[str]) -> dict[str, Any]
         for row in projected["source_snapshots"]
         if row.get("source_key")
     }
+    all_snapshot_source_keys = {
+        str(row.get("source_key") or "")
+        for row in scope.get("source_snapshots") or []
+        if row.get("source_key")
+    }
     projected["source_dispositions"] = [
         row for row in projected.get("source_dispositions") or []
         if str(row.get("source_key") or "") in selected_source_keys
+        or str(row.get("source_key") or "") not in all_snapshot_source_keys
     ]
     return projected
 
@@ -116,9 +220,12 @@ def _try_batch(
         pack, max_output_tokens=max_output_tokens,
     )
     if coverage["citation_evidence_omitted"]:
+        omitted = shadow_omitted_citation_catalog_entries(projected, pack)
         return False, {
             "reason": "CITATION_CATALOG_OMITTED",
             "omitted": coverage["citation_evidence_omitted"],
+            "omitted_catalog_entries": omitted,
+            "omitted_catalog_hash": digest(omitted),
             "actual_model_input_characters": actual_characters,
         }
     if coverage["source_passage_omitted"]:
@@ -151,6 +258,13 @@ def _try_batch(
         "source_snapshot_ids": [
             str(row.get("snapshot_id")) for row in projected.get("source_snapshots") or []
         ],
+        "source_disposition_ids": [
+            _source_disposition_identity(row)
+            for row in sorted(
+                projected.get("source_dispositions") or [],
+                key=_source_disposition_identity,
+            )
+        ],
     }
 
 
@@ -169,11 +283,16 @@ def plan_evidence_pack_batches(
     ordered_ids = [_run_id(row.get("run_id")) for row in runs]
     scope_hash = digest(scope)
     all_occurrences = _citation_occurrences(scope)
+    content_version_audit = audit_citation_content_versions(scope)
+    source_disposition_audit = audit_source_dispositions(scope)
     expected_citations = {
         str(row["citation_occurrence_id"]) for row in all_occurrences
     }
     all_snapshots = {
         str(row.get("snapshot_id")) for row in scope.get("source_snapshots") or []
+    }
+    expected_dispositions = {
+        row["disposition_identity"] for row in source_disposition_audit
     }
     cited_urls = {
         str(row.get("canonical_url") or "") for row in all_occurrences
@@ -191,6 +310,7 @@ def plan_evidence_pack_batches(
     cursor = 0
     covered_citations: set[str] = set()
     covered_snapshots: set[str] = set()
+    covered_dispositions: set[str] = set()
     while cursor < len(ordered_ids):
         low, high = 1, len(ordered_ids) - cursor
         best_count = 0
@@ -224,8 +344,10 @@ def plan_evidence_pack_batches(
         pack = best["pack"]
         citation_ids = best["citation_occurrence_ids"]
         snapshot_ids = best["source_snapshot_ids"]
+        disposition_ids = best["source_disposition_ids"]
         covered_citations.update(citation_ids)
         covered_snapshots.update(snapshot_ids)
+        covered_dispositions.update(disposition_ids)
         batch_number = len(batches) + 1
         batch_identity = {
             "frozen_scope_hash": scope_hash,
@@ -233,6 +355,7 @@ def plan_evidence_pack_batches(
             "run_ids": batch_run_ids,
             "citation_occurrence_ids": citation_ids,
             "source_snapshot_ids": snapshot_ids,
+            "source_disposition_ids": disposition_ids,
             "evidence_pack_hash": pack["evidence_pack_hash"],
         }
         batches.append({
@@ -252,8 +375,10 @@ def plan_evidence_pack_batches(
     } - {row["run_id"] for row in blocked}, key=int)
     missing_citations = sorted(expected_citations - covered_citations)
     missing_snapshots = sorted(all_snapshots - covered_snapshots)
+    missing_dispositions = sorted(expected_dispositions - covered_dispositions)
     partition_status = "READY" if not (
-        blocked or missing_runs or missing_citations or missing_snapshots or unassigned_snapshots
+        blocked or missing_runs or missing_citations or missing_snapshots
+        or missing_dispositions or unassigned_snapshots
     ) else "REVIEW_REQUIRED"
     aggregate_token_reservation = sum(
         int(row["total_token_reservation"]) for row in batches
@@ -293,10 +418,38 @@ def plan_evidence_pack_batches(
             "citation_occurrence_covered": len(covered_citations),
             "source_snapshot_total": len(all_snapshots),
             "source_snapshot_covered": len(covered_snapshots),
+            "source_disposition_total": len(expected_dispositions),
+            "source_disposition_covered": len(covered_dispositions),
             "missing_run_ids": missing_runs,
             "missing_citation_occurrence_ids": missing_citations,
             "missing_source_snapshot_ids": missing_snapshots,
+            "missing_source_disposition_ids": missing_dispositions,
             "unassigned_source_snapshot_ids": unassigned_snapshots,
+        },
+        "citation_content_version_audit": {
+            "catalog_entry_count": len(content_version_audit),
+            "multiple_known_version_count": sum(
+                row["content_identity_status"] == "MULTIPLE_KNOWN_VERSIONS"
+                for row in content_version_audit
+            ),
+            "unknown_content_identity_count": sum(
+                row["content_identity_status"] == "UNKNOWN"
+                for row in content_version_audit
+            ),
+            "audit_hash": digest(content_version_audit),
+            "semantics": "SAME_URL_OCCURRENCES_NOT_CONTENT_EQUIVALENCE",
+        },
+        "source_disposition_audit": {
+            "total": len(source_disposition_audit),
+            "status_counts": {
+                status: sum(row["status"] == status for row in source_disposition_audit)
+                for status in sorted({row["status"] for row in source_disposition_audit})
+            },
+            "snapshot_missing_count": sum(
+                not row["snapshot_present"] for row in source_disposition_audit
+            ),
+            "audit_hash": digest(source_disposition_audit),
+            "unknown_semantics": "PRESERVED_NOT_UPGRADED",
         },
         "cutover_blocker": (
             "SEMANTIC_CONTRACT_REVIEW_REQUIRED:MULTI_BATCH_RESULT_MERGE"

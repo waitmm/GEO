@@ -10,8 +10,11 @@ from app.modules.agent_experiment.evidence_pack import (
     build_evidence_pack,
 )
 from app.modules.agent_experiment.evidence_pack_capacity import (
+    audit_citation_content_versions,
+    audit_source_dispositions,
     model_input_characters,
     plan_evidence_pack_batches,
+    shadow_omitted_citation_catalog_entries,
 )
 from app.modules.single_prompt_v2.delivery_text import digest
 
@@ -126,6 +129,7 @@ def test_shadow_capacity_plan_covers_every_identity(run_count: int, distribution
     assert not plan["coverage"]["missing_run_ids"]
     assert not plan["coverage"]["missing_citation_occurrence_ids"]
     assert not plan["coverage"]["missing_source_snapshot_ids"]
+    assert not plan["coverage"]["missing_source_disposition_ids"]
     assert not plan["coverage"]["unassigned_source_snapshot_ids"]
     assert all(row["actual_model_input_characters"] <= DEFAULT_TEXT_BUDGET
                for row in plan["batches"])
@@ -163,22 +167,69 @@ def test_same_url_content_versions_are_not_claimed_as_identical():
     changed["content_hash"] = "b" * 64
     changed["passages"][0]["content_hash"] = "b" * 64
     scope["source_snapshots"].append(changed)
-    pack = build_evidence_pack(scope)
-    row = next(item for item in pack["citation_occurrences"]
+    audit = audit_citation_content_versions(scope)
+    row = next(item for item in audit
                if item["canonical_url"] == original["canonical_url"])
     assert row["content_identity_status"] == "MULTIPLE_KNOWN_VERSIONS"
     assert {item["content_hash"] for item in row["source_content_versions"]} == {
         original["content_hash"], "b" * 64,
     }
-    assert row["projection_basis"] == (
-        "CANONICAL_URL_OCCURRENCE_CATALOG_NOT_CONTENT_EQUIVALENCE"
+    assert row["projection_semantics"] == (
+        "SAME_URL_OCCURRENCES_NOT_CONTENT_EQUIVALENCE"
     )
 
     changed["content_hash"] = None
-    pack = build_evidence_pack(scope)
-    row = next(item for item in pack["citation_occurrences"]
+    audit = audit_citation_content_versions(scope)
+    row = next(item for item in audit
                if item["canonical_url"] == original["canonical_url"])
     assert row["content_identity_status"] == "UNKNOWN"
+
+
+def test_url_less_citation_has_stable_identity_with_occurrence_lineage():
+    scope = synthetic_scope(2, "HIGH_REPEAT")
+    for run in scope["runs"]:
+        for reference in run["references"]:
+            reference["canonical_url"] = ""
+            reference["url"] = ""
+            reference["domain"] = "unknown.example"
+            reference["title"] = "无链接来源"
+    audit = audit_citation_content_versions(scope)
+    assert len(audit) == 1
+    row = audit[0]
+    assert row["catalog_identity"]["canonical_url"] is None
+    assert row["catalog_identity"]["fallback_domain"] == "unknown.example"
+    assert row["catalog_identity"]["fallback_title"] == "无链接来源"
+    assert len(row["citation_occurrence_ids"]) == 4
+    assert row["catalog_identity_hash"] == digest(row["catalog_identity"])
+    assert audit == audit_citation_content_versions(scope)
+
+
+def test_snapshotless_failed_unknown_waived_dispositions_are_globally_preserved():
+    scope = synthetic_scope(50, "HIGH_REPEAT")
+    scope["source_dispositions"].extend([
+        {"source_key": "missing-failed", "status": "FAILED", "reason": "FETCH_FAILED"},
+        {"source_key": "missing-unknown", "status": "UNKNOWN", "reason": "NOT_EVALUATED"},
+        {"source_key": "missing-waived", "status": "WAIVED", "reason": "OWNER_WAIVER"},
+    ])
+    audit = audit_source_dispositions(scope)
+    assert {row["status"] for row in audit if not row["snapshot_present"]} == {
+        "FAILED", "UNKNOWN", "WAIVED",
+    }
+    plan = plan_evidence_pack_batches(scope)
+    assert plan["partition_status"] == "READY"
+    assert plan["coverage"]["source_disposition_covered"] == (
+        plan["coverage"]["source_disposition_total"]
+    )
+    assert not plan["coverage"]["missing_source_disposition_ids"]
+    assert plan["source_disposition_audit"]["snapshot_missing_count"] == 3
+    assert plan["source_disposition_audit"]["unknown_semantics"] == (
+        "PRESERVED_NOT_UPGRADED"
+    )
+    missing_ids = {
+        row["disposition_identity"] for row in audit if not row["snapshot_present"]
+    }
+    assert all(missing_ids.issubset(set(batch["source_disposition_ids"]))
+               for batch in plan["batches"])
 
 
 def test_unplannable_single_run_is_explicit_and_never_silently_dropped():
@@ -194,10 +245,9 @@ def test_unplannable_single_run_is_explicit_and_never_silently_dropped():
 
 def test_omitted_citation_identity_is_reported_when_direct_pack_is_constrained():
     scope = synthetic_scope(22, "HIGH_UNIQUE")
-    pack = build_evidence_pack(scope, text_budget=20_000)
+    pack = build_evidence_pack(scope, text_budget=12_000)
     assert pack["coverage"]["citation_evidence_omitted"] > 0
-    omissions = [row for row in pack["coverage"]["omitted_materials"]
-                 if row["kind"] == "citation_catalog_entry"]
+    omissions = shadow_omitted_citation_catalog_entries(scope, pack)
     assert len(omissions) == pack["coverage"]["citation_evidence_omitted"]
     assert all(row["canonical_url"] and row["run_ids"] for row in omissions)
 

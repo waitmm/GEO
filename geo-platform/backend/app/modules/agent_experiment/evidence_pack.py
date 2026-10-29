@@ -211,34 +211,7 @@ def _citation_occurrences(scope: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
 
-def _source_content_versions(
-    snapshots: list[dict[str, Any]],
-) -> dict[str, list[dict[str, Any]]]:
-    """Index immutable source versions without treating a URL as content identity."""
-    versions: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for snapshot in snapshots:
-        url = str(snapshot.get("canonical_url") or "")
-        if not url:
-            continue
-        content_hash = str(snapshot.get("content_hash") or "")
-        versions[url].append({
-            "snapshot_id": str(snapshot.get("snapshot_id") or ""),
-            "content_hash": content_hash or None,
-            "content_identity_status": "KNOWN" if content_hash else "UNKNOWN",
-        })
-    for url, rows in versions.items():
-        versions[url] = sorted(
-            rows,
-            key=lambda row: (str(row.get("content_hash") or ""), str(row["snapshot_id"])),
-        )
-    return versions
-
-
-def _citation_evidence_catalog(
-    citations: list[dict[str, Any]],
-    *,
-    source_snapshots: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
+def _citation_evidence_catalog(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse repeated URLs while retaining a real, reversible citation locator.
 
     The frozen scope remains unchanged. This projection only prevents repeated
@@ -246,7 +219,6 @@ def _citation_evidence_catalog(
     Counts and Run membership are derived from every frozen occurrence.
     """
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    content_versions = _source_content_versions(source_snapshots or [])
     for row in citations:
         key = str(row.get("canonical_url") or "")
         if not key:
@@ -259,25 +231,13 @@ def _citation_evidence_catalog(
             key=lambda row: (int(row.get("run_id") or 0), int(row.get("reference_index") or 0)),
         )
         representative = rows[0]
-        versions = content_versions.get(str(representative.get("canonical_url") or ""), [])
-        known_hashes = sorted({
-            str(row["content_hash"]) for row in versions if row.get("content_hash")
-        })
-        if not versions or any(row["content_identity_status"] == "UNKNOWN" for row in versions):
-            content_identity_status = "UNKNOWN"
-        elif len(known_hashes) > 1:
-            content_identity_status = "MULTIPLE_KNOWN_VERSIONS"
-        else:
-            content_identity_status = "SINGLE_KNOWN_VERSION"
         catalog.append({
             **representative,
             "occurrence_count": len(rows),
             "run_ids": sorted(
                 {str(row.get("run_id")) for row in rows}, key=lambda value: int(value)
             ),
-            "source_content_versions": versions,
-            "content_identity_status": content_identity_status,
-            "projection_basis": "CANONICAL_URL_OCCURRENCE_CATALOG_NOT_CONTENT_EQUIVALENCE",
+            "projection_basis": "REPRESENTATIVE_OF_IDENTICAL_CANONICAL_URL",
         })
     return sorted(
         catalog,
@@ -325,12 +285,7 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
         _citation_occurrences(scope),
         key=lambda row: (int(row.get("run_id", 0)), int(row.get("reference_index", 0))),
     )
-    snapshots = sorted(
-        scope.get("source_snapshots") or [], key=lambda row: str(row.get("snapshot_id", ""))
-    )
-    citation_catalog = _citation_evidence_catalog(
-        all_citations, source_snapshots=snapshots,
-    )
+    citation_catalog = _citation_evidence_catalog(all_citations)
     raw_truths = sorted(
         (scope.get("product_truth") or {}).get("facts") or [],
         key=lambda row: str(row.get("truth_id", row.get("id", ""))),
@@ -379,25 +334,16 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
 
     remaining = text_budget - fixed_core_size
     selected_citations: list[dict[str, Any]] = []
-    omitted_citations: list[dict[str, Any]] = []
     for citation in citation_catalog:
         size = _text_size(citation)
         if size <= remaining:
             selected_citations.append(citation)
             remaining -= size
-        else:
-            omitted_citations.append({
-                "kind": "citation_catalog_entry",
-                "canonical_url": citation.get("canonical_url"),
-                "occurrence_count": citation.get("occurrence_count"),
-                "run_ids": citation.get("run_ids") or [],
-                "content_identity_status": citation.get("content_identity_status", "UNKNOWN"),
-                "reason": "TEXT_BUDGET",
-            })
     core["citation_occurrences"] = selected_citations
     selected_passages: list[dict[str, Any]] = []
-    omitted_passages: list[dict[str, Any]] = []
+    omitted: list[dict[str, Any]] = []
     all_passage_ids: list[str] = []
+    snapshots = sorted(scope.get("source_snapshots") or [], key=lambda row: str(row.get("snapshot_id", "")))
     for snapshot in snapshots:
         passages = sorted(snapshot.get("passages") or [], key=lambda row: str(row.get("passage_id", "")))
         for passage in passages:
@@ -421,7 +367,7 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
                 selected_passages.append(selected)
                 remaining -= size
             else:
-                omitted_passages.append({
+                omitted.append({
                     "kind": "source_passage", "snapshot_id": snapshot.get("snapshot_id"),
                     "passage_id": passage_id, "passage_hash": selected["passage_hash"],
                     "reason": "TEXT_BUDGET",
@@ -444,13 +390,13 @@ def build_evidence_pack(scope: dict[str, Any], *, text_budget: int = DEFAULT_TEX
         "source_snapshot_count": len(snapshots),
         "source_passage_total": len(all_passage_ids),
         "source_passage_included": len(selected_passages),
-        "source_passage_omitted": len(omitted_passages),
+        "source_passage_omitted": len(omitted),
         "truth_fact_count": len(truths),
         "brand_context_mode": brand_context.get("mode", "EMPTY"),
         "compression": (
             "DETERMINISTIC_CITATION_URL_CATALOG_AND_WHOLE_PASSAGE_PREFIX_BY_STABLE_ID"
         ),
-        "omitted_materials": [*omitted_citations, *omitted_passages],
+        "omitted_materials": omitted,
     }
     pack = {
         "contract_version": EVIDENCE_PACK_CONTRACT,

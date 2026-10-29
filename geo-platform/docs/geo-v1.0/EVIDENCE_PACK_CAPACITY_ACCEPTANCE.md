@@ -13,6 +13,8 @@
   字符未超限、实际 JSON 已超限的情况。
 - 15 组合成场景均可被确定性分成单批实际 JSON 不超过 90,000 字符、且 Run/Citation/Source
   身份覆盖完整的子包。
+- 生产 `build_evidence_pack`、`geo.evidence-pack.v3` 与 execution v7 保持 `8dd6b62` 原样；
+  内容版本和遗漏身份检查只存在于 shadow 模块。
 - 但 300,000 Token 的任务级保守上限会先于很多大范围分析触发。分批“可构造”不等于在当前
   任务预算内“可执行”。
 - 多批模型结果如何合并为一个诊断、策略、正文与 QA 会改变 Optimize 交付语义。本轮未接入
@@ -43,41 +45,45 @@
 
 | 分布 | Run | 唯一 URL | v3 单包 | Shadow 批数 | 最大批 Run | 最大批实际 JSON 字符 | 合计保守 Token 预留 | 任务预算 |
 |---|---:|---:|---|---:|---:|---:|---:|---|
-| 高重复 | 22 | 5 | FIT | 1 | 22 | 23,065 | 63,341 | 通过 |
-| 高重复 | 50 | 5 | FIT | 1 | 50 | 37,036 | 90,248 | 通过 |
-| 高重复 | 100 | 5 | FIT | 1 | 100 | 61,978 | 138,290 | 通过 |
-| 高重复 | 300 | 5 | CORE_EXCEEDS | 2 | 155 | 89,790 | 374,134 | 超限 |
-| 高重复 | 1,000 | 5 | CORE_EXCEEDS | 7 | 155 | 89,791 | 1,263,063 | 超限 |
-| 高唯一 | 22 | 44 | JSON_EXCEEDS | 2 | 19 | 89,790 | 219,994 | 通过 |
-| 高唯一 | 50 | 100 | JSON_EXCEEDS | 3 | 19 | 89,790 | 461,093 | 超限 |
-| 高唯一 | 100 | 200 | JSON_EXCEEDS | 6 | 19 | 89,791 | 928,591 | 超限 |
-| 高唯一 | 300 | 600 | CORE_EXCEEDS | 17 | 19 | 89,791 | 2,775,376 | 超限 |
-| 高唯一 | 1,000 | 2,000 | CORE_EXCEEDS | 58 | 19 | 89,792 | 9,360,552 | 超限 |
-| 长来源 | 22 | 3 | FIT | 1 | 22 | 61,755 | 167,955 | 通过 |
-| 长来源 | 50 | 5 | JSON_EXCEEDS | 2 | 40 | 86,925 | 301,249 | 超限 |
-| 长来源 | 100 | 10 | JSON_EXCEEDS | 3 | 40 | 86,984 | 576,820 | 超限 |
-| 长来源 | 300 | 30 | CORE_EXCEEDS | 9 | 40 | 89,776 | 1,876,343 | 超限 |
-| 长来源 | 1,000 | 100 | CORE_EXCEEDS | 29 | 40 | 89,777 | 6,378,254 | 超限 |
+| 高重复 | 22 | 5 | FIT | 1 | 22 | 21,835 | 62,021 | 通过 |
+| 高重复 | 50 | 5 | FIT | 1 | 50 | 35,806 | 88,928 | 通过 |
+| 高重复 | 100 | 5 | FIT | 1 | 100 | 60,748 | 136,970 | 通过 |
+| 高重复 | 300 | 5 | CORE_EXCEEDS | 2 | 157 | 89,571 | 371,494 | 超限 |
+| 高重复 | 1,000 | 5 | CORE_EXCEEDS | 7 | 157 | 89,853 | 1,253,823 | 超限 |
+| 高唯一 | 22 | 44 | JSON_EXCEEDS | 2 | 21 | 88,732 | 208,344 | 通过 |
+| 高唯一 | 50 | 100 | JSON_EXCEEDS | 3 | 21 | 89,409 | 434,602 | 超限 |
+| 高唯一 | 100 | 200 | JSON_EXCEEDS | 5 | 21 | 89,410 | 849,752 | 超限 |
+| 高唯一 | 300 | 600 | CORE_EXCEEDS | 15 | 21 | 89,410 | 2,564,386 | 超限 |
+| 高唯一 | 1,000 | 2,000 | CORE_EXCEEDS | 50 | 21 | 89,993 | 8,621,665 | 超限 |
+| 长来源 | 22 | 3 | FIT | 1 | 22 | 61,017 | 167,163 | 通过 |
+| 长来源 | 50 | 5 | JSON_EXCEEDS | 2 | 40 | 85,941 | 299,929 | 通过 |
+| 长来源 | 100 | 10 | JSON_EXCEEDS | 3 | 40 | 86,000 | 574,180 | 超限 |
+| 长来源 | 300 | 30 | CORE_EXCEEDS | 9 | 40 | 89,785 | 1,867,608 | 超限 |
+| 长来源 | 1,000 | 100 | CORE_EXCEEDS | 29 | 40 | 89,786 | 6,348,322 | 超限 |
 
 上述所有场景的 Run、Citation occurrence 与 SourceSnapshot 身份覆盖率均为 100%。
 
 ## 首先触发限制的数据
 
-1. **唯一来源多**最早触发：22 Run / 44 URL 时，逻辑字符为 66,148，但实际 JSON 已达
-   103,748。只观察旧 `estimated_text_characters` 会漏判。
-2. **来源正文长**其次：50 Run / 5 个长来源时实际 JSON 达 92,958。
+1. **唯一来源多**最早触发：22 Run / 44 URL 时，原始 v3 逻辑字符为 61,098，但实际 JSON
+   已达 92,890。只观察旧 `estimated_text_characters` 会漏判。
+2. **来源正文长**其次：50 Run / 5 个长来源时原始 v3 实际 JSON 达 91,728。
 3. **URL 高重复**增长最慢，但 300 Run 时回答核心区仍超过 90,000。
 4. 即使可以分批，任务级 300,000 Token 保守预留会在 50 条高唯一来源、50 条长来源或
-   300 条高重复来源时阻断，不能静默扩大额度。
+   300 条高重复来源时阻断；50 条长来源的合计预留为 299,929，仍在边界内。不能静默扩大额度。
 
 ## 身份与正确性 Gate
 
-- URL 仅用于 Citation occurrence 目录去重，不再被描述为“正文相同”。
-- 同 URL 的多个 `snapshot_id/content_hash` 全部保留，状态为
+- 原始 v3 生产投影不变；shadow audit 将 URL 只视为 Citation occurrence 目录键，不把 URL
+  相同解释为正文相同。
+- 同 URL 的多个 `snapshot_id/content_hash` 在 shadow audit 中全部保留，状态为
   `MULTIPLE_KNOWN_VERSIONS`。
 - 任一 snapshot 缺少 `content_hash` 时内容身份保持 `UNKNOWN`。
-- 被容量排除的 Citation catalog entry 现在显式记录 URL、Run IDs、出现次数和原因，不再
-  只给出计数。
+- 被原始 v3 容量排除的 Citation catalog entry，由 shadow audit 恢复稳定 catalog identity、
+  URL（若有）、Run IDs、occurrence IDs、出现次数和原因；不改写生产 pack。
+- 无 URL Citation 使用 domain、title 与完整 occurrence IDs 形成稳定 identity/hash。
+- 无 SourceSnapshot 的 FAILED/UNKNOWN/WAIVED disposition 作为全局清单进入每个相关 shadow
+  batch 并参与 coverage/hash；UNKNOWN 保持 UNKNOWN，不升级。
 - 单 Run 自身超过容量时进入 `blocked_runs`，不会静默丢弃或伪装为分批成功。
 - Shadow plan 固定原始 scope hash、每批 Run/Citation/Source IDs、Evidence Pack hash 与
   batch hash，且同输入重复规划结果一致。
@@ -104,4 +110,3 @@ cd backend
 python3 -m pytest -q tests/test_evidence_pack_capacity_scaling.py
 python3 scripts/evidence_pack_capacity_smoke.py
 ```
-

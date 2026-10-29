@@ -175,12 +175,14 @@ def test_backup_requires_explicit_stopped_service_marker(tmp_path):
 def test_install_runtime_upgrade_and_rollback_are_versioned_and_fail_closed(tmp_path):
     home = tmp_path / "home"
     _database(home)[1].close()
+    (home / "config" / "tls").mkdir(mode=0o700)
     old_source = _prepared_release(tmp_path / "old-source", "old")
     new_source = _prepared_release(tmp_path / "new-source", "new")
     value = json.loads((new_source / "PREPARED_RELEASE_FINGERPRINT.json").read_text())
     value["source_sha"] = "2" * 40
     (new_source / "PREPARED_RELEASE_FINGERPRINT.json").write_text(json.dumps(value))
     installed = install_release(old_source, home, "m1-old", "1" * 40, "20261022_01")
+    assert (home / "config" / "tls").stat().st_mode & 0o777 == 0o700
     assert installed["source_sha"] == "1" * 40
     assert (home / "current").resolve().name == "m1-old"
     assert runtime(home, "status") == 0

@@ -415,7 +415,7 @@ def restore_backup(directory: Path, target_home: Path) -> dict[str, Any]:
     (target_home / "config" / "scheduled-sampling-enabled").write_text("0\n")
     (target_home / "config" / "lan-enabled").write_text("0\n")
     for path in (target_home / "config").iterdir():
-        path.chmod(0o600)
+        path.chmod(0o700 if path.is_dir() else 0o600)
     (target_home / "VERSION").write_text(manifest.get("source_version", "UNKNOWN") + "\n")
     (target_home / "VERSION").chmod(0o600)
 
@@ -680,7 +680,7 @@ def install_release(
     (home / "config" / "scheduled-sampling-enabled").write_text("0\n")
     (home / "config" / "lan-enabled").write_text("0\n")
     for path in (home / "config").iterdir():
-        path.chmod(0o600)
+        path.chmod(0o700 if path.is_dir() else 0o600)
     if activate:
         (home / "VERSION").write_text(f"{release_id} / {source_sha}\n")
         (home / "VERSION").chmod(0o600)

@@ -171,6 +171,7 @@ assert_all_service_ownership() {
   for label in "$PROXY_LABEL" "$WORKER_LABEL" "$BACKEND_LABEL"; do
     service_loaded "$label" && assert_service_owned_by_home "$label"
   done
+  return 0
 }
 
 health_check() {

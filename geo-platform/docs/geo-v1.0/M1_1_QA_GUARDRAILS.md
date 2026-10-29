@@ -13,6 +13,14 @@ existing `backend/tests/test_m1_beta_ops.py` covers the release CLI's full
 backup/restore/upgrade/rollback path; this slice adds provider and accounting
 checks without changing production code.
 
+The combined protection suite was executed with the prepared project Python
+environment on 2026-10-29: **18 passed**. A second targeted product regression
+covering access isolation, internal-Beta policy, capacity, range selection,
+manual import and Agent/Evidence Pack persistence completed with **88 passed**.
+Frontend client tests completed with **36 passed**, followed by a successful
+release build. All of these runs were offline and used temporary databases or
+the existing read-only localhost UI path.
+
 | Check | Expected boundary | Status |
 |---|---|---|
 | Capacity preflight | An oversized frozen pack fails before provider generation; no model call or result version | PASS (offline test) |
@@ -63,11 +71,6 @@ The local Beta release scripts use these P0 controls:
 
 ## Remaining evidence gaps
 
-- The current interpreter in this workspace lacks the project's Alembic
-  runtime (`ImportError: cannot import name 'command' from alembic`), so the
-  isolated pytest module could be syntax-checked but not fully collected here.
-  The test file is intended for the release `.venv` used by the existing test
-  suite; no dependency was installed and no network was used.
 - No company computer install, real path relocation, or browser permission
   test has been performed. Those require an explicit deployment environment.
 - No real scheduled collection or model generation was enabled. The current

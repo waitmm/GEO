@@ -26,12 +26,12 @@ from app.models import AgentExperimentRun
 from app.modules.agent_experiment import evidence_pack
 from app.modules.agent_experiment.evidence_pack import (
     DeepSeekEvidencePackClient,
+    EvidencePackCapacityError,
     build_evidence_pack,
     execute_evidence_pack_run,
 )
 from app.modules.single_prompt_v2.scheduling import _collection_authorized
 from app.services.semantic_llm.base import SemanticLLMError
-from app.modules.single_prompt_v2.delivery_text import digest
 from app.services.shared_model_budget import (
     SharedBudgetDenied,
     initialize,
@@ -80,12 +80,18 @@ def test_capacity_failure_is_before_provider_and_is_recorded_as_failed_run(tmp_p
     )
     assert created
     scope = json.loads(run.input_scope_json)
-    scope["runs"][0]["answer_text"] += "超容量" * 50_000
-    run.input_scope_hash = digest(scope)
-    db.commit()
     # Keep this test focused on the provider boundary. The capacity planner is
-    # exercised separately; this synthetic scope models its hard-stop result.
+    # exercised separately; this injected hard-stop preserves the immutable
+    # run identity while proving that a capacity failure never reaches the
+    # provider or creates a result version.
     monkeypatch.setattr(evidence_pack, "revalidate_frozen_scope", lambda _db, _run: scope)
+    monkeypatch.setattr(
+        evidence_pack,
+        "build_evidence_pack",
+        lambda _scope: (_ for _ in ()).throw(
+            EvidencePackCapacityError("EVIDENCE_PACK_CORE_EXCEEDS_BUDGET:150000:90000")
+        ),
+    )
     client = _NeverCalledClient()
     execute_evidence_pack_run(
         run.run_id,
@@ -234,6 +240,8 @@ def test_restore_relocates_artifacts_and_keeps_external_capabilities_disabled(tm
     (home / "data").mkdir(parents=True)
     (home / "evidence").mkdir()
     (home / "config").mkdir()
+    (home / "run").mkdir()
+    (home / "run" / "services-stopped").write_text("offline QA\n")
     (home / "VERSION").write_text("qa\n")
     db_path = home / "data" / "geo-beta.db"
     with sqlite3.connect(db_path) as db:

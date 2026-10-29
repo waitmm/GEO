@@ -52,6 +52,9 @@ def _database(home: Path, *, active: bool = False) -> tuple[Path, sqlite3.Connec
           artifact_hash TEXT NOT NULL,
           clean_text TEXT NOT NULL
         );
+        CREATE TRIGGER trg_prepared_source_no_update
+        BEFORE UPDATE ON single_prompt_prepared_source_snapshots
+        BEGIN SELECT RAISE(ABORT, 'RELEASE_HISTORY_IMMUTABLE'); END;
         CREATE TABLE browser_monitor_tasks(status TEXT NOT NULL);
         CREATE TABLE sample_rows(id INTEGER PRIMARY KEY, value TEXT NOT NULL);
         """
@@ -139,6 +142,11 @@ def test_online_backup_includes_committed_wal_and_restores_artifact_identity(tmp
         path, expected = db.execute(
             "SELECT artifact_path, artifact_hash FROM single_prompt_prepared_source_snapshots"
         ).fetchone()
+        with pytest.raises(sqlite3.IntegrityError, match="RELEASE_HISTORY_IMMUTABLE"):
+            db.execute(
+                "UPDATE single_prompt_prepared_source_snapshots SET artifact_path='tampered' "
+                "WHERE snapshot_id='snapshot-1'"
+            )
     relocated = Path(path)
     assert relocated.is_relative_to(target / "evidence")
     assert relocated.is_file()

@@ -319,6 +319,52 @@ def verify_backup(directory: Path) -> dict[str, Any]:
     }
 
 
+def _relocate_prepared_source_bindings(
+    db: sqlite3.Connection,
+    updates: list[tuple[str, str, str]],
+    *,
+    mismatch_code: str,
+) -> None:
+    """Relocate restored files while preserving immutable-table triggers.
+
+    This is only used against a stopped restore/rollback database.  The
+    exclusive transaction removes the table's guards for the exact
+    hash-qualified path updates and recreates byte-identical trigger SQL before
+    commit.  Any mismatch rolls the whole transaction back.
+    """
+    trigger_rows = db.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='trigger' "
+        "AND tbl_name='single_prompt_prepared_source_snapshots' AND sql IS NOT NULL "
+        "ORDER BY name"
+    ).fetchall()
+    db.execute("BEGIN EXCLUSIVE")
+    try:
+        for name, _sql in trigger_rows:
+            quoted = str(name).replace('"', '""')
+            db.execute(f'DROP TRIGGER "{quoted}"')
+        for new_path, snapshot_id, artifact_hash in updates:
+            cursor = db.execute(
+                "UPDATE single_prompt_prepared_source_snapshots SET artifact_path=? "
+                "WHERE snapshot_id=? AND artifact_hash=?",
+                (new_path, snapshot_id, artifact_hash),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"{mismatch_code}:{snapshot_id}")
+        for _name, sql in trigger_rows:
+            db.execute(sql)
+        restored = db.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='trigger' "
+            "AND tbl_name='single_prompt_prepared_source_snapshots' AND sql IS NOT NULL "
+            "ORDER BY name"
+        ).fetchall()
+        if restored != trigger_rows:
+            raise ValueError(f"{mismatch_code}:TRIGGER_SET")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
 def restore_backup(directory: Path, target_home: Path) -> dict[str, Any]:
     directory, target_home = directory.resolve(), target_home.resolve()
     verification = verify_backup(directory)
@@ -351,21 +397,18 @@ def restore_backup(directory: Path, target_home: Path) -> dict[str, Any]:
 
     relocated_dir = target_home / "evidence" / "prepared-sources-restored"
     relocated_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    binding_updates: list[tuple[str, str, str]] = []
+    for index, row in enumerate(manifest.get("prepared_sources", [])):
+        suffix = Path(row["original_path"]).suffix or ".txt"
+        target = relocated_dir / f"{index:06d}-{row['artifact_hash'][:16]}{suffix}"
+        shutil.copyfile(directory / row["backup_path"], target)
+        if _hash_file(target) != row["artifact_hash"]:
+            raise ValueError(f"RESTORED_SOURCE_HASH_MISMATCH:{row['snapshot_id']}")
+        binding_updates.append((str(target), row["snapshot_id"], row["artifact_hash"]))
     with sqlite3.connect(destination) as db:
-        for index, row in enumerate(manifest.get("prepared_sources", [])):
-            suffix = Path(row["original_path"]).suffix or ".txt"
-            target = relocated_dir / f"{index:06d}-{row['artifact_hash'][:16]}{suffix}"
-            shutil.copyfile(directory / row["backup_path"], target)
-            if _hash_file(target) != row["artifact_hash"]:
-                raise ValueError(f"RESTORED_SOURCE_HASH_MISMATCH:{row['snapshot_id']}")
-            cursor = db.execute(
-                "UPDATE single_prompt_prepared_source_snapshots SET artifact_path=? "
-                "WHERE snapshot_id=? AND artifact_hash=?",
-                (str(target), row["snapshot_id"], row["artifact_hash"]),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError(f"RESTORED_SOURCE_BINDING_MISMATCH:{row['snapshot_id']}")
-        db.commit()
+        _relocate_prepared_source_bindings(
+            db, binding_updates, mismatch_code="RESTORED_SOURCE_BINDING_MISMATCH",
+        )
 
     # Capability flags are intentionally not restored as authorization.
     (target_home / "config" / "daily-model-calls").write_text("0\n")
@@ -778,7 +821,6 @@ def upgrade_release(
 
 
 def _relocate_restored_paths(database: Path, from_home: Path, to_home: Path) -> int:
-    relocated = 0
     with sqlite3.connect(database) as db:
         if "single_prompt_prepared_source_snapshots" not in _tables(db):
             return 0
@@ -786,6 +828,7 @@ def _relocate_restored_paths(database: Path, from_home: Path, to_home: Path) -> 
             "SELECT snapshot_id, artifact_path, artifact_hash "
             "FROM single_prompt_prepared_source_snapshots ORDER BY snapshot_id"
         ).fetchall()
+        updates: list[tuple[str, str, str]] = []
         for snapshot_id, raw_path, expected in rows:
             old = Path(raw_path)
             try:
@@ -795,14 +838,11 @@ def _relocate_restored_paths(database: Path, from_home: Path, to_home: Path) -> 
             new = to_home / relative
             if not new.is_file() or _hash_file(new) != expected:
                 raise ValueError(f"RESTORED_ARTIFACT_RELOCATION_FAILED:{snapshot_id}")
-            db.execute(
-                "UPDATE single_prompt_prepared_source_snapshots SET artifact_path=? "
-                "WHERE snapshot_id=? AND artifact_hash=?",
-                (str(new), snapshot_id, expected),
-            )
-            relocated += 1
-        db.commit()
-    return relocated
+            updates.append((str(new), snapshot_id, expected))
+        _relocate_prepared_source_bindings(
+            db, updates, mismatch_code="RESTORED_ARTIFACT_BINDING_MISMATCH",
+        )
+    return len(updates)
 
 
 def rollback_release(home: Path, backup: Path, release_id: str) -> dict[str, Any]:

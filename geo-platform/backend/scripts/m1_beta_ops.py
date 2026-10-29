@@ -446,7 +446,9 @@ def _release_path_excluded(relative: Path) -> bool:
         return True
     if relative.parts[:3] == ("geo-platform", "backend", "wenxin-profile"):
         return True
-    if any(part in {".git", "__pycache__"} for part in relative.parts):
+    if relative.parts[:2] == ("geo-platform", "artifacts"):
+        return True
+    if any(part in {".git", ".pytest_cache", "__pycache__"} for part in relative.parts):
         return True
     name = relative.name.lower()
     if name == "prepared_release_fingerprint.json":

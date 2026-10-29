@@ -233,6 +233,10 @@ def test_release_manifest_excludes_secrets_but_keeps_nested_dependency_data(tmp_
     (source / "geo-platform" / "backend" / ".env").write_text("SECRET=do-not-copy\n")
     (source / "runtime" / "wenxin-profile").mkdir(parents=True)
     (source / "runtime" / "wenxin-profile" / "Cookies").write_text("session")
+    (source / "geo-platform" / "artifacts" / "debug").mkdir(parents=True)
+    (source / "geo-platform" / "artifacts" / "debug" / "captured.html").write_text("private")
+    (source / "geo-platform" / ".pytest_cache").mkdir(parents=True)
+    (source / "geo-platform" / ".pytest_cache" / "nodeids").write_text("test state")
     package_data = source / "geo-platform" / "backend" / ".venv" / "lib" / "package" / "data"
     package_data.mkdir(parents=True)
     (package_data / "required.txt").write_text("required")
@@ -248,6 +252,8 @@ def test_release_manifest_excludes_secrets_but_keeps_nested_dependency_data(tmp_
     assert not (release / "geo-platform" / "backend" / ".env").exists()
     assert not (release / "runtime").exists()
     assert not (release / "geo-platform" / "backend" / "runtime").exists()
+    assert not (release / "geo-platform" / "artifacts").exists()
+    assert not (release / "geo-platform" / ".pytest_cache").exists()
     assert (release / package_data.relative_to(source) / "required.txt").read_text() == "required"
 
 

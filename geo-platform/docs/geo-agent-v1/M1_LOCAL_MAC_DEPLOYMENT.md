@@ -1,5 +1,9 @@
 # GEO M1 Beta 本机部署
 
+> 2026-10-29 状态：本机安装仍为 `geo-internal-beta.m1-local-rc2` / `50a4a57`，服务健康，
+> 但它不是当前开发 HEAD。公司机器部署不得直接复制该运行目录作为最新版；应先按
+> [M1 项目总控](../geo-v1.0/PROJECT_CONTROL_2026-10-29.md) 冻结候选 SHA、备份、迁移并验收。
+
 长期运行副本安装在 `/Users/bmwqr/Library/Application Support/GEO Beta`，仅监听
 `127.0.0.1:8032`。前端使用已构建的 release 静态文件，由 FastAPI 同源提供；后台同时启动
 单并发 release worker。后端与 Worker 由当前 macOS 用户的 `launchd` 托管，关闭终端不会停止服务。

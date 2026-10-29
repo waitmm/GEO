@@ -1,5 +1,9 @@
 # 02 Current Status
 
+> 2026-10-29：本文件主体保留早期正式优化闭环状态，不再代表当前 M1 内部 Beta 的发布状态。
+> 当前开发、部署、子需求、问题与下一阶段统一以
+> [GEO M1 内部试用项目总控](geo-v1.0/PROJECT_CONTROL_2026-10-29.md) 为入口。
+
 Status: ACTIVE
 
 ## Implemented

@@ -28,6 +28,7 @@ from .evidence_pack import (
 
 CAPACITY_PLAN_CONTRACT = "geo.evidence-pack.capacity-plan.shadow.v1"
 DEFAULT_MAX_OUTPUT_TOKENS = 16_384
+MIN_OUTPUT_TOKENS = 2_048
 DEFAULT_TASK_TOKEN_CAP = 300_000
 
 
@@ -108,7 +109,7 @@ def audit_source_dispositions(scope: dict[str, Any]) -> list[dict[str, Any]]:
     rows = [{
         "disposition_identity": _source_disposition_identity(row),
         "source_key": str(row.get("source_key") or ""),
-        "status": str(row.get("status") or "UNKNOWN").upper(),
+        "status": str(row.get("state") or row.get("status") or "UNKNOWN").upper(),
         "snapshot_present": bool(row.get("source_key") and any(
             str(snapshot.get("source_key") or "") == str(row.get("source_key"))
             for snapshot in scope.get("source_snapshots") or []
@@ -137,12 +138,13 @@ def responses_text_budget_projection(
     payload: dict[str, Any], *, max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> dict[str, int]:
     """Mirror the production Responses text request-guard reservation."""
+    effective_max_output_tokens = max(int(max_output_tokens), MIN_OUTPUT_TOKENS)
     body = {
         "model": "deepseek-flash",
         "instructions": render_evidence_pack_prompt(),
         "input": json.dumps(payload, ensure_ascii=False),
         "temperature": 0.0,
-        "max_output_tokens": max_output_tokens,
+        "max_output_tokens": effective_max_output_tokens,
         "reasoning": {"effort": "none"},
     }
     request_body_utf8_bytes = len(json.dumps(body, ensure_ascii=False).encode("utf-8"))
@@ -150,8 +152,8 @@ def responses_text_budget_projection(
     return {
         "request_body_utf8_bytes": request_body_utf8_bytes,
         "input_token_upper_bound": input_token_upper_bound,
-        "max_output_tokens": max_output_tokens,
-        "total_token_reservation": input_token_upper_bound + max_output_tokens,
+        "max_output_tokens": effective_max_output_tokens,
+        "total_token_reservation": input_token_upper_bound + effective_max_output_tokens,
     }
 
 
@@ -279,6 +281,7 @@ def plan_evidence_pack_batches(
     multi-call execution or claim that independently generated prose can be
     merged without a dedicated semantic contract.
     """
+    effective_max_output_tokens = max(int(max_output_tokens), MIN_OUTPUT_TOKENS)
     runs = sorted(scope.get("runs") or [], key=lambda row: int(row.get("run_id", 0)))
     ordered_ids = [_run_id(row.get("run_id")) for row in runs]
     scope_hash = digest(scope)
@@ -321,7 +324,7 @@ def plan_evidence_pack_batches(
             candidate_ids = ordered_ids[cursor:cursor + count]
             fits, details = _try_batch(
                 scope, candidate_ids, text_budget=text_budget,
-                max_output_tokens=max_output_tokens, task_token_cap=task_token_cap,
+                max_output_tokens=effective_max_output_tokens, task_token_cap=task_token_cap,
             )
             if fits:
                 best_count, best = count, details
@@ -333,7 +336,7 @@ def plan_evidence_pack_batches(
             run_id = ordered_ids[cursor]
             fits, details = _try_batch(
                 scope, [run_id], text_budget=text_budget,
-                max_output_tokens=max_output_tokens, task_token_cap=task_token_cap,
+                max_output_tokens=effective_max_output_tokens, task_token_cap=task_token_cap,
             )
             assert not fits
             blocked.append({"run_id": run_id, **(details or last_failure)})
@@ -397,7 +400,7 @@ def plan_evidence_pack_batches(
         "status": status,
         "frozen_scope_hash": scope_hash,
         "text_budget": text_budget,
-        "max_output_tokens_per_batch": max_output_tokens,
+        "max_output_tokens_per_batch": effective_max_output_tokens,
         "task_token_cap": task_token_cap,
         "partition_status": partition_status,
         "aggregate_budget_status": aggregate_budget_status,

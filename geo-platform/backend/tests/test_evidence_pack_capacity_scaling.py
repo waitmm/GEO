@@ -207,9 +207,9 @@ def test_url_less_citation_has_stable_identity_with_occurrence_lineage():
 def test_snapshotless_failed_unknown_waived_dispositions_are_globally_preserved():
     scope = synthetic_scope(50, "HIGH_REPEAT")
     scope["source_dispositions"].extend([
-        {"source_key": "missing-failed", "status": "FAILED", "reason": "FETCH_FAILED"},
-        {"source_key": "missing-unknown", "status": "UNKNOWN", "reason": "NOT_EVALUATED"},
-        {"source_key": "missing-waived", "status": "WAIVED", "reason": "OWNER_WAIVER"},
+        {"source_key": "missing-failed", "state": "FAILED", "reason": "FETCH_FAILED"},
+        {"source_key": "missing-unknown", "state": "UNKNOWN", "reason": "NOT_EVALUATED"},
+        {"source_key": "missing-waived", "state": "WAIVED", "reason": "OWNER_WAIVER"},
     ])
     audit = audit_source_dispositions(scope)
     assert {row["status"] for row in audit if not row["snapshot_present"]} == {
@@ -230,6 +230,13 @@ def test_snapshotless_failed_unknown_waived_dispositions_are_globally_preserved(
     }
     assert all(missing_ids.issubset(set(batch["source_disposition_ids"]))
                for batch in plan["batches"])
+
+
+def test_output_reservation_mirrors_provider_minimum():
+    scope = synthetic_scope(22, "HIGH_REPEAT")
+    plan = plan_evidence_pack_batches(scope, max_output_tokens=1)
+    assert plan["max_output_tokens_per_batch"] == 2_048
+    assert all(batch["max_output_tokens"] == 2_048 for batch in plan["batches"])
 
 
 def test_unplannable_single_run_is_explicit_and_never_silently_dropped():

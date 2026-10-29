@@ -9,6 +9,7 @@
   <key>WorkingDirectory</key><string>@@BACKEND_DIR@@</string>
   <key>EnvironmentVariables</key><dict>
     <key>GEO_RELEASE_DATABASE_URL</key><string>@@DATABASE_URL@@</string>
+    <key>GEO_RELEASE_ACCESS_CONFIG</key><string>@@ACCESS_CONFIG@@</string>
     <key>GEO_AGENT_BETA_DAILY_MODEL_CALLS</key><string>@@DAILY_MODEL_CALLS@@</string>
     <key>GEO_AGENT_BETA_BUDGET_LEDGER_PATH</key><string>@@MODEL_BUDGET_LEDGER@@</string>
     <key>GEO_AGENT_BETA_BUDGET_BATCH_ID</key><string>@@MODEL_BUDGET_BATCH_ID@@</string>

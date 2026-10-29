@@ -7,8 +7,9 @@ always targets a new home and relocates immutable prepared-source artifacts;
 it never overwrites a live database.
 
 This is deployment plumbing, not an authorization mechanism.  New installs and
-restores force model generation and scheduled sampling off.  An operator must
-separately authorize those capabilities after deployment validation.
+restores force model generation, scheduled sampling, and LAN exposure off.  An
+operator must separately authorize those capabilities after deployment
+validation.
 """
 from __future__ import annotations
 
@@ -33,6 +34,9 @@ SAFE_RELEASE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 CONFIG_ALLOWLIST = (
     "daily-model-calls",
     "scheduled-sampling-enabled",
+    "lan-enabled",
+    "lan-port",
+    "lan-cidr",
     "model-budget-batch-id",
     "model-pricing-checked-at",
 )
@@ -272,6 +276,7 @@ def backup_home(home: Path, output: Path) -> dict[str, Any]:
             "prepared_source_paths_are_relocated": True,
             "daily_model_calls": 0,
             "scheduled_sampling": 0,
+            "lan_enabled": 0,
             "credentials_and_browser_profiles": "EXCLUDED",
         },
         "external_calls": 0,
@@ -365,6 +370,7 @@ def restore_backup(directory: Path, target_home: Path) -> dict[str, Any]:
     # Capability flags are intentionally not restored as authorization.
     (target_home / "config" / "daily-model-calls").write_text("0\n")
     (target_home / "config" / "scheduled-sampling-enabled").write_text("0\n")
+    (target_home / "config" / "lan-enabled").write_text("0\n")
     for path in (target_home / "config").iterdir():
         path.chmod(0o600)
     (target_home / "VERSION").write_text(manifest.get("source_version", "UNKNOWN") + "\n")
@@ -383,6 +389,7 @@ def restore_backup(directory: Path, target_home: Path) -> dict[str, Any]:
         "audit_ledgers_restored_for_audit_only": len(manifest.get("audit_ledgers", [])),
         "daily_model_calls": 0,
         "scheduled_sampling": 0,
+        "lan_enabled": 0,
         "external_calls": 0,
     }
     _write_json(target_home / "RESTORE_REPORT.json", report)
@@ -626,6 +633,7 @@ def install_release(
         _activate_release(home, release_id)
     (home / "config" / "daily-model-calls").write_text("0\n")
     (home / "config" / "scheduled-sampling-enabled").write_text("0\n")
+    (home / "config" / "lan-enabled").write_text("0\n")
     for path in (home / "config").iterdir():
         path.chmod(0o600)
     if activate:
@@ -747,7 +755,7 @@ def upgrade_release(
     previous = _activate_release(home, release_id)
     (home / "VERSION").write_text(f"{release_id} / {source_sha}\n")
     (home / "VERSION").chmod(0o600)
-    for name in ("daily-model-calls", "scheduled-sampling-enabled"):
+    for name in ("daily-model-calls", "scheduled-sampling-enabled", "lan-enabled"):
         path = home / "config" / name
         path.write_text("0\n")
         path.chmod(0o600)
@@ -760,6 +768,7 @@ def upgrade_release(
         "live_migration": live,
         "daily_model_calls": 0,
         "scheduled_sampling": 0,
+        "lan_enabled": 0,
         "external_calls": 0,
     }
     _write_json(home / "UPGRADE_REPORT.json", report)
@@ -839,7 +848,7 @@ def rollback_release(home: Path, backup: Path, release_id: str) -> dict[str, Any
     source_sha = str(release_manifest.get("source_sha") or "UNKNOWN")
     (home / "VERSION").write_text(f"{release_id} / {source_sha}\n")
     (home / "VERSION").chmod(0o600)
-    for name in ("daily-model-calls", "scheduled-sampling-enabled"):
+    for name in ("daily-model-calls", "scheduled-sampling-enabled", "lan-enabled"):
         path = home / "config" / name
         path.write_text("0\n")
         path.chmod(0o600)
@@ -854,6 +863,7 @@ def rollback_release(home: Path, backup: Path, release_id: str) -> dict[str, Any
         "database": final,
         "daily_model_calls": 0,
         "scheduled_sampling": 0,
+        "lan_enabled": 0,
         "external_calls": 0,
     }
     _write_json(home / "ROLLBACK_REPORT.json", report)

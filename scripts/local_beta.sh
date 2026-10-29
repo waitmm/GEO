@@ -21,14 +21,21 @@ URL="http://$BACKEND_HOST:$BACKEND_PORT/"
 PYTHON_BIN="$(cd "$BACKEND_DIR/.venv/bin" 2>/dev/null && pwd -P)/python"
 BACKEND_LABEL="com.geo.beta.backend"
 WORKER_LABEL="com.geo.beta.worker"
+PROXY_LABEL="com.geo.beta.proxy"
 BACKEND_PLIST="$LAUNCHD_DIR/$BACKEND_LABEL.plist"
 WORKER_PLIST="$LAUNCHD_DIR/$WORKER_LABEL.plist"
+PROXY_PLIST="$LAUNCHD_DIR/$PROXY_LABEL.plist"
 BACKEND_LOG="$LOG_DIR/backend.log"
 WORKER_LOG="$LOG_DIR/worker.log"
+PROXY_LOG="$LOG_DIR/proxy.log"
 LAUNCH_DOMAIN="gui/$(id -u)"
 MODEL_BUDGET_LEDGER="$DATA_DIR/internal-beta-model-budget.sqlite3"
 WENXIN_PROFILE_DIR="$DATA_DIR/wenxin-profile"
 STOPPED_MARKER="$RUN_DIR/services-stopped"
+ACCESS_CONFIG="$CONFIG_DIR/release-access.json"
+BACKEND_ENV="$CONFIG_DIR/backend.env"
+TLS_CERT="$CONFIG_DIR/tls/server.crt"
+TLS_KEY="$CONFIG_DIR/tls/server.key"
 
 read_flag() {
   local path="$1" default="$2" value
@@ -51,6 +58,12 @@ read_token() {
 
 DAILY_MODEL_CALLS="$(read_flag "$CONFIG_DIR/daily-model-calls" 0)"
 SCHEDULED_SAMPLING="$(read_flag "$CONFIG_DIR/scheduled-sampling-enabled" 0)"
+LAN_ENABLED="$(read_flag "$CONFIG_DIR/lan-enabled" 0)"
+LAN_PORT="${GEO_BETA_LAN_PORT:-8443}"
+LAN_CIDR="${GEO_BETA_LAN_CIDR:-192.168.0.0/16}"
+[[ -f "$CONFIG_DIR/lan-port" ]] && LAN_PORT="$(read_token "$CONFIG_DIR/lan-port" '^[0-9]{2,5}$' 'LAN port')"
+[[ -f "$CONFIG_DIR/lan-cidr" ]] && LAN_CIDR="$(read_token "$CONFIG_DIR/lan-cidr" '^[0-9A-Fa-f:.]+/[0-9]{1,3}$' 'LAN CIDR')"
+(( LAN_PORT >= 1024 && LAN_PORT <= 65535 )) || { echo "LAN port must be between 1024 and 65535." >&2; exit 2; }
 MODEL_BUDGET_BATCH_ID=""
 MODEL_PRICING_DATE=""
 if [[ "$DAILY_MODEL_CALLS" == "1" ]]; then
@@ -70,6 +83,19 @@ require_runtime() {
     exit 2
   }
   [[ -f "$APP_ROOT/scripts/launchd/$BACKEND_LABEL.plist.in" ]] || { echo "Missing launchd template." >&2; exit 2; }
+  if [[ -f "$BACKEND_ENV" ]]; then
+    [[ "$(stat -f '%Lp' "$BACKEND_ENV")" == "600" ]] || { echo "Backend env must be 0600: $BACKEND_ENV" >&2; exit 2; }
+    ln -sfn "$BACKEND_ENV" "$BACKEND_DIR/.env"
+  fi
+  if [[ -f "$ACCESS_CONFIG" ]]; then
+    [[ "$(stat -f '%Lp' "$ACCESS_CONFIG")" == "600" ]] || { echo "Access config must be 0600: $ACCESS_CONFIG" >&2; exit 2; }
+  fi
+  if [[ "$LAN_ENABLED" == "1" ]]; then
+    [[ -f "$ACCESS_CONFIG" ]] || { echo "LAN access requires $ACCESS_CONFIG" >&2; exit 2; }
+    [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]] || { echo "LAN access requires TLS certificate and key." >&2; exit 2; }
+    [[ "$(stat -f '%Lp' "$TLS_KEY")" == "600" ]] || { echo "TLS private key must be 0600." >&2; exit 2; }
+    [[ -f "$APP_ROOT/scripts/launchd/$PROXY_LABEL.plist.in" ]] || { echo "Missing proxy launchd template." >&2; exit 2; }
+  fi
   mkdir -p "$DATA_DIR" "$LOG_DIR" "$RUN_DIR" "$LAUNCHD_DIR" "$CONFIG_DIR" "$WENXIN_PROFILE_DIR"
   chmod 700 "$DATA_DIR" "$LOG_DIR" "$RUN_DIR" "$LAUNCHD_DIR" "$CONFIG_DIR" "$WENXIN_PROFILE_DIR"
   chmod 600 "$DATABASE_PATH"
@@ -77,9 +103,12 @@ require_runtime() {
 
 render_plists() {
   local database_url="sqlite:///$DATABASE_PATH"
+  local access_config_value=""
+  [[ -f "$ACCESS_CONFIG" ]] && access_config_value="$ACCESS_CONFIG"
   sed -e "s|@@PYTHON_BIN@@|$PYTHON_BIN|g" \
       -e "s|@@BACKEND_DIR@@|$BACKEND_DIR|g" \
       -e "s|@@DATABASE_URL@@|$database_url|g" \
+      -e "s|@@ACCESS_CONFIG@@|$access_config_value|g" \
       -e "s|@@PORT@@|$BACKEND_PORT|g" \
       -e "s|@@DAILY_MODEL_CALLS@@|$DAILY_MODEL_CALLS|g" \
       -e "s|@@MODEL_BUDGET_LEDGER@@|$MODEL_BUDGET_LEDGER|g" \
@@ -92,6 +121,7 @@ render_plists() {
   sed -e "s|@@PYTHON_BIN@@|$PYTHON_BIN|g" \
       -e "s|@@BACKEND_DIR@@|$BACKEND_DIR|g" \
       -e "s|@@DATABASE_URL@@|$database_url|g" \
+      -e "s|@@ACCESS_CONFIG@@|$access_config_value|g" \
       -e "s|@@DAILY_MODEL_CALLS@@|$DAILY_MODEL_CALLS|g" \
       -e "s|@@MODEL_BUDGET_LEDGER@@|$MODEL_BUDGET_LEDGER|g" \
       -e "s|@@MODEL_BUDGET_BATCH_ID@@|$MODEL_BUDGET_BATCH_ID|g" \
@@ -101,6 +131,19 @@ render_plists() {
       -e "s|@@LOG_PATH@@|$WORKER_LOG|g" \
       "$APP_ROOT/scripts/launchd/$WORKER_LABEL.plist.in" > "$WORKER_PLIST"
   chmod 600 "$BACKEND_PLIST" "$WORKER_PLIST"
+  if [[ "$LAN_ENABLED" == "1" ]]; then
+    sed -e "s|@@PYTHON_BIN@@|$PYTHON_BIN|g" \
+        -e "s|@@PROXY_SCRIPT@@|$BACKEND_DIR/scripts/lan_https_proxy.py|g" \
+        -e "s|@@BACKEND_DIR@@|$BACKEND_DIR|g" \
+        -e "s|@@PORT@@|$BACKEND_PORT|g" \
+        -e "s|@@LAN_PORT@@|$LAN_PORT|g" \
+        -e "s|@@LAN_CIDR@@|$LAN_CIDR|g" \
+        -e "s|@@TLS_CERT@@|$TLS_CERT|g" \
+        -e "s|@@TLS_KEY@@|$TLS_KEY|g" \
+        -e "s|@@LOG_PATH@@|$PROXY_LOG|g" \
+        "$APP_ROOT/scripts/launchd/$PROXY_LABEL.plist.in" > "$PROXY_PLIST"
+    chmod 600 "$PROXY_PLIST"
+  fi
 }
 
 service_loaded() { launchctl print "$LAUNCH_DOMAIN/$1" >/dev/null 2>&1; }
@@ -114,10 +157,20 @@ assert_service_owned_by_home() {
   expected_plist="$LAUNCHD_DIR/$label.plist"
   actual_database="$(awk -F ' => ' '/^[[:space:]]*GEO_RELEASE_DATABASE_URL => / {print $2; exit}' <<<"$definition")"
   actual_plist="$(awk -F ' = ' '/^[[:space:]]*path = / {print $2; exit}' <<<"$definition")"
+  if [[ "$label" == "$PROXY_LABEL" ]]; then
+    expected_database=""
+  fi
   if [[ "$actual_database" != "$expected_database" || "$actual_plist" != "$expected_plist" ]]; then
     echo "$label belongs to another GEO_BETA_HOME; refusing to inspect, restart, or stop it." >&2
     return 1
   fi
+}
+
+assert_all_service_ownership() {
+  local label
+  for label in "$PROXY_LABEL" "$WORKER_LABEL" "$BACKEND_LABEL"; do
+    service_loaded "$label" && assert_service_owned_by_home "$label"
+  done
 }
 
 health_check() {
@@ -163,8 +216,10 @@ bootstrap_or_restart() {
 
 start() {
   require_runtime
+  assert_all_service_ownership
   # Upgrade/start is a deployment boundary. Stop both writers before the
   # preflight or migration; never migrate underneath a running API/worker.
+  stop_service "$PROXY_LABEL" "HTTPS proxy"
   stop_service "$WORKER_LABEL" "worker"
   stop_service "$BACKEND_LABEL" "backend"
   printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STOPPED_MARKER"
@@ -200,9 +255,13 @@ start() {
   # deployment failure while both supervised processes are still starting.
   for _ in $(seq 1 240); do
     if health_check >/dev/null 2>&1; then
+      if [[ "$LAN_ENABLED" == "1" ]]; then
+        bootstrap_or_restart "$PROXY_LABEL" "$PROXY_PLIST"
+      fi
       echo "GEO Beta is ready: $URL"
       echo "AI generation: $DAILY_MODEL_CALLS (server-managed policy)"
       echo "Scheduled sampling: $SCHEDULED_SAMPLING (single concurrency; collector retries: 0)"
+      [[ "$LAN_ENABLED" == "1" ]] && echo "LAN HTTPS: enabled on port $LAN_PORT for $LAN_CIDR"
       return
     fi
     sleep 0.5
@@ -268,6 +327,20 @@ status() {
     echo "worker: stopped"
     failed=1
   fi
+  if [[ "$LAN_ENABLED" == "1" ]]; then
+    if service_loaded "$PROXY_LABEL" && assert_service_owned_by_home "$PROXY_LABEL"; then
+      pid="$(service_pid "$PROXY_LABEL")"
+      if [[ -n "$pid" ]]; then
+        echo "HTTPS proxy: running (pid $pid)"
+      else
+        echo "HTTPS proxy: loaded but not running"
+        failed=1
+      fi
+    else
+      echo "HTTPS proxy: stopped"
+      failed=1
+    fi
+  fi
   if (( failed == 0 )); then
     health_check
     echo "website: $URL"
@@ -279,6 +352,8 @@ case "$ACTION" in
   start) start ;;
   stop)
     require_runtime
+    assert_all_service_ownership
+    stop_service "$PROXY_LABEL" "HTTPS proxy"
     stop_service "$WORKER_LABEL" "worker"
     stop_service "$BACKEND_LABEL" "backend"
     printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STOPPED_MARKER"
@@ -291,7 +366,7 @@ case "$ACTION" in
   status) status ;;
   logs)
     require_runtime
-    tail -n 80 "$BACKEND_LOG" "$WORKER_LOG"
+    tail -n 80 "$BACKEND_LOG" "$WORKER_LOG" "$PROXY_LOG"
     ;;
   open)
     status >/dev/null 2>&1 || start

@@ -127,7 +127,9 @@ def test_online_backup_includes_committed_wal_and_restores_artifact_identity(tmp
     target = tmp_path / "restored"
     report = restore_backup(backup, target)
     assert report["daily_model_calls"] == report["scheduled_sampling"] == 0
+    assert report["lan_enabled"] == 0
     assert (target / "config" / "daily-model-calls").read_text().strip() == "0"
+    assert (target / "config" / "lan-enabled").read_text().strip() == "0"
     assert not (target / "data" / "internal-beta-model-budget.sqlite3").exists()
     restored_ledger = target / "backups" / "audit-ledgers" / "internal-beta-model-budget.sqlite3"
     assert restored_ledger.is_file()
@@ -185,6 +187,7 @@ def test_install_runtime_upgrade_and_rollback_are_versioned_and_fail_closed(tmp_
     assert Path(upgraded["pre_upgrade_backup"]).is_dir()
     assert (home / "config" / "daily-model-calls").read_text().strip() == "0"
     assert (home / "config" / "scheduled-sampling-enabled").read_text().strip() == "0"
+    assert (home / "config" / "lan-enabled").read_text().strip() == "0"
 
     rolled_back = rollback_release(home, Path(upgraded["pre_upgrade_backup"]), "m1-old")
     assert rolled_back["status"] == "PASS_ROLLED_BACK_SERVICES_REMAIN_STOPPED"
@@ -319,7 +322,9 @@ def test_local_controller_only_stops_exact_home_launchd_instance(tmp_path):
         "  label=\"${2##*/}\"\n"
         "  printf 'path = %s/launchd/%s.plist\\n' \"$MOCK_HOME\" \"$label\"\n"
         "  printf 'working directory = /old/release/backend\\n'\n"
-        "  printf 'GEO_RELEASE_DATABASE_URL => %s\\n' \"$MOCK_DATABASE_URL\"\n"
+        "  if [[ \"$label\" != com.geo.beta.proxy ]]; then\n"
+        "    printf 'GEO_RELEASE_DATABASE_URL => %s\\n' \"$MOCK_DATABASE_URL\"\n"
+        "  fi\n"
         "elif [[ \"$1\" == bootout ]]; then\n"
         "  printf '%s\\n' \"$2\" >> \"$MOCK_BOOTOUT_LOG\"\n"
         "fi\n"
@@ -338,7 +343,7 @@ def test_local_controller_only_stops_exact_home_launchd_instance(tmp_path):
         capture_output=True, text=True,
     )
     assert exact.returncode == 0, exact.stderr
-    assert len((tmp_path / "bootout.log").read_text().splitlines()) == 2
+    assert len((tmp_path / "bootout.log").read_text().splitlines()) == 3
 
     (tmp_path / "bootout.log").unlink()
     foreign = subprocess.run(

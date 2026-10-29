@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.geo.beta.proxy</string>
+  <key>ProgramArguments</key><array>
+    <string>@@PYTHON_BIN@@</string><string>@@PROXY_SCRIPT@@</string>
+    <string>--listen-host</string><string>0.0.0.0</string>
+    <string>--listen-port</string><string>@@LAN_PORT@@</string>
+    <string>--upstream-host</string><string>127.0.0.1</string>
+    <string>--upstream-port</string><string>@@PORT@@</string>
+    <string>--allowed-cidr</string><string>@@LAN_CIDR@@</string>
+    <string>--certificate</string><string>@@TLS_CERT@@</string>
+    <string>--private-key</string><string>@@TLS_KEY@@</string>
+  </array>
+  <key>WorkingDirectory</key><string>@@BACKEND_DIR@@</string>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>@@LOG_PATH@@</string>
+  <key>StandardErrorPath</key><string>@@LOG_PATH@@</string>
+  <key>ThrottleInterval</key><integer>5</integer>
+</dict></plist>

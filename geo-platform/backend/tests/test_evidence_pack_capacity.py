@@ -148,6 +148,7 @@ def _matrix_rows() -> list[dict]:
                     "citation_occurrences": expected_occurrences,
                     "included_urls": None,
                     "omitted_urls": None,
+                    "omission_identity": "NOT_AVAILABLE_PRODUCTION_V3",
                     "included_runs": None,
                     "source_passages": len(scope["source_snapshots"]),
                     "source_passages_included": None,
@@ -161,9 +162,17 @@ def _matrix_rows() -> list[dict]:
                 item["canonical_url"] for item in pack["citation_occurrences"]
             }
             omitted_urls = {
+                # v3 reports this count but intentionally does not emit a
+                # per-entry omission object.  Identity recovery is tested in
+                # the shadow planner, not inferred here.
                 item["canonical_url"] for item in coverage["omitted_materials"]
                 if item.get("kind") == "citation_catalog_entry"
             }
+            omitted_url_count = int(coverage.get("citation_evidence_omitted", 0))
+            if omitted_url_count:
+                assert not omitted_urls, (
+                    "production v3 must not silently claim per-entry omission identity"
+                )
             rows.append({
                 "profile": profile,
                 "runs": run_count,
@@ -172,7 +181,11 @@ def _matrix_rows() -> list[dict]:
                 "unique_urls": len(expected_urls),
                 "citation_occurrences": coverage["citation_occurrence_count"],
                 "included_urls": len(included_urls),
-                "omitted_urls": len(omitted_urls),
+                "omitted_urls": omitted_url_count,
+                "omission_identity": (
+                    "AVAILABLE" if omitted_url_count == len(omitted_urls)
+                    else "NOT_AVAILABLE_PRODUCTION_V3"
+                ),
                 "included_runs": len(included_runs),
                 "source_passages": coverage["source_passage_total"],
                 "source_passages_included": coverage["source_passage_included"],
@@ -196,6 +209,8 @@ def test_capacity_matrix_is_deterministic_and_loss_explicit():
         assert row["included_runs"] == row["runs"]
         assert row["citation_occurrences"] == row["runs"] * 3
         assert row["included_urls"] + row["omitted_urls"] == row["unique_urls"]
+        if row["omitted_urls"]:
+            assert row["omission_identity"] == "NOT_AVAILABLE_PRODUCTION_V3"
         assert row["pack_chars"] is not None
 
 

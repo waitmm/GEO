@@ -1,0 +1,33 @@
+{
+  "fixture_version": "c0-second-platform-observations.v1",
+  "provenance": "SYNTHETIC_CONTRACT_PROBE",
+  "actual_platform_capture": false,
+  "production_admission": false,
+  "observations": [
+    {
+      "platform": "doubao",
+      "proposed_adapter": "doubao_web_audit",
+      "proposed_label": "豆包",
+      "answer_text": "【合成测试，非豆包真实回答】评估二维码工具时需要检查内容更新方式、适用场景及使用限制；本文不证明任何品牌具备特定能力。[1][2]",
+      "references": [
+        {"reference_index": 1, "display_title": "合成指南", "url": "https://source.example.invalid/guide", "resolution_method": "synthetic_observed_link"},
+        {"reference_index": 2, "display_title": "同一来源再次引用", "url": "https://source.example.invalid/guide", "resolution_method": "synthetic_observed_link"}
+      ],
+      "retrieval_candidates": [
+        {"rank": 1, "title": "仅检索候选，非答案引用", "url": "https://candidate.example.invalid/search-result"}
+      ],
+      "metrics": {"ui_declared_count": 2, "dom_reference_count": 2, "parsed_reference_count": 2, "resolved_url_count": 2}
+    },
+    {
+      "platform": "yuanbao",
+      "proposed_adapter": "yuanbao_web_audit",
+      "proposed_label": "腾讯元宝",
+      "answer_text": "【合成测试，非元宝真实回答】选择文件二维码方案时，应核实文件支持范围、可见性和更新规则；来源列表不自动证明文章支持全部结论。[1]",
+      "references": [
+        {"reference_index": 1, "display_title": "合成来源，仅保留观察 URL", "url": "https://redirect.example.invalid/link?target=unknown", "resolution_method": "synthetic_observed_unresolved_target"}
+      ],
+      "retrieval_candidates": [],
+      "metrics": {"ui_declared_count": 1, "dom_reference_count": 1, "parsed_reference_count": 1, "resolved_url_count": 0}
+    }
+  ]
+}

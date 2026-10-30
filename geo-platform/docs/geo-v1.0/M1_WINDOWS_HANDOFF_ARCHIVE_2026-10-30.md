@@ -125,7 +125,8 @@ C:\ProgramData\GEO Beta\
 
 ## 7. 当前未完成项
 
-- Windows 发布脚本和密码门禁尚未实现、测试和提交；
+- Windows 发布脚本和共享密码门禁已完成离线实现，见
+  [Windows 试用运行手册](M1_1_WINDOWS_PILOT_RUNBOOK.md)；尚未在目标 Windows 执行；
 - 目标 Windows 的版本、架构、固定局域网 IP、管理员权限和备份盘尚未现场确认；
 - Mac 数据尚未生成用于本次迁移的最终一致性快照；
 - 公司模型额度、自动采样许可均未授权；

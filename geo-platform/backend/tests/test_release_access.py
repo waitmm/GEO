@@ -6,9 +6,11 @@ from release_test_client import TestClient
 import pytest
 
 from app.core.release_access import install_access, require_project_access
+from scripts.create_shared_password_config import create as create_shared_password
 
 
 KEY = 'isolated-test-invitation-not-a-real-secret-0123456789'
+PASSWORD = 'isolated-shared-password-2026'
 
 
 def app():
@@ -73,3 +75,55 @@ def test_local_only_requires_real_loopback_and_safe_origin(monkeypatch):
     assert rebound.get('/api/projects/1').status_code == 403
     remote = TestClient(instance, base_url='http://127.0.0.1', client=('192.0.2.10', 8000))
     assert remote.get('/api/projects/1').status_code == 403
+
+
+def test_shared_password_allows_only_explicit_private_http_scope(tmp_path, monkeypatch):
+    path = tmp_path / 'shared-access.json'
+    create_shared_password(path, PASSWORD, 1)
+    monkeypatch.setenv('GEO_RELEASE_ACCESS_CONFIG', str(path))
+    monkeypatch.setenv('GEO_ALLOW_TRUSTED_LAN_HTTP', '1')
+    monkeypatch.setenv('GEO_TRUSTED_LAN_CIDR', '192.168.3.0/24')
+    client = TestClient(app(), base_url='http://192.168.3.50', client=('192.168.3.25', 8000))
+    assert client.get('/api/projects/1').status_code == 401
+    login = client.post('/api/access/session', json={'password': PASSWORD})
+    assert login.status_code == 200
+    assert 'HttpOnly' in login.headers['set-cookie']
+    assert 'SameSite=strict' in login.headers['set-cookie']
+    assert 'Secure' not in login.headers['set-cookie']
+    session = client.get('/api/access/session').json()
+    assert session == {'authenticated': True, 'mode': 'SHARED_PASSWORD',
+                       'name': '爱短链内部试用', 'admin': False}
+    assert client.get('/api/projects/1').status_code == 200
+    assert client.get('/api/projects/2').status_code == 403
+
+    public_client = TestClient(app(), base_url='http://192.168.3.50', client=('203.0.113.8', 8000))
+    assert public_client.get('/api/access/session').status_code == 403
+    wrong_host = TestClient(app(), base_url='http://192.168.4.50', client=('192.168.3.25', 8000))
+    assert wrong_host.get('/api/access/session').status_code == 403
+
+
+def test_shared_password_http_is_fail_closed_and_rotation_revokes_sessions(tmp_path, monkeypatch):
+    path = tmp_path / 'shared-access.json'
+    create_shared_password(path, PASSWORD, 1)
+    monkeypatch.setenv('GEO_RELEASE_ACCESS_CONFIG', str(path))
+    monkeypatch.setenv('GEO_TRUSTED_LAN_CIDR', '192.168.3.0/24')
+    blocked = TestClient(app(), base_url='http://192.168.3.50', client=('192.168.3.25', 8000))
+    assert blocked.get('/api/access/session').status_code == 403
+
+    monkeypatch.setenv('GEO_ALLOW_TRUSTED_LAN_HTTP', '1')
+    client = TestClient(app(), base_url='http://192.168.3.50', client=('192.168.3.25', 8000))
+    assert client.post('/api/access/session', json={'password': PASSWORD}).status_code == 200
+    assert client.get('/api/projects/1').status_code == 200
+    create_shared_password(path, 'rotated-shared-password-2026', 1, replace=True)
+    assert client.get('/api/projects/1').status_code == 401
+
+
+def test_shared_password_configuration_never_persists_plaintext(tmp_path):
+    path = tmp_path / 'shared-access.json'
+    value = create_shared_password(path, PASSWORD, 1)
+    assert value['mode'] == 'SHARED_PASSWORD'
+    assert PASSWORD not in path.read_text()
+    assert len(value['shared_password']['salt_hex']) == 32
+    assert len(value['shared_password']['password_scrypt']) == 64
+    assert value['shared_password']['project_ids'] == [1]
+    assert value['shared_password']['admin'] is False

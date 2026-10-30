@@ -1,0 +1,31 @@
+{
+  "report_version": "c0-second-platform-offline.v1",
+  "date": "2026-10-30",
+  "timezone": "Asia/Shanghai",
+  "branch": "codex/c0-second-platform-eval",
+  "source_baseline": "6714b10",
+  "classification": "SEMANTIC_RISK_INVESTIGATION_ONLY",
+  "production_files_changed": false,
+  "fixture": "backend/tests/fixtures/c0_second_platform_observations.json",
+  "fixture_sha256": "04c588872742ff434aaa71f5a58c5031d58827132d6bf138969962611df4607e",
+  "fixture_provenance": "SYNTHETIC_CONTRACT_PROBE",
+  "consumer_samples": 0,
+  "consumer_requests": 0,
+  "model_requests": 0,
+  "source_body_fetches": 0,
+  "public_document_research": true,
+  "checks": [
+    {"command": "python -m pytest -q tests/test_c0_second_platform_probe.py --disable-warnings -rx", "passed": 10, "xfailed": 2, "failed": 0, "duration_seconds": 4.15},
+    {"command": "python -m pytest -q tests/test_manual_run_import.py --disable-warnings", "passed": 3, "failed": 0, "duration_seconds": 10.69},
+    {"command": "git diff --check", "exit_code": 0}
+  ],
+  "known_blockers": [
+    "C1-GAP-01: Missing reference metadata defaults to complete zero in the shared executor",
+    "C1-GAP-02: Reference persistence currently hardcodes Wenxin platform label",
+    "Candidate collector registry and manual import platform admission are not enabled",
+    "Current Yuanbao official agreement body could not be verified: public-document fetch timed out twice",
+    "No consumer automation permission or real UI capture has been verified"
+  ],
+  "recommendation": "Prioritize Yuanbao research for complementary source coverage; no automatic sampling enablement",
+  "c1_status": "NOT_AUTHORIZED_NOT_READY"
+}

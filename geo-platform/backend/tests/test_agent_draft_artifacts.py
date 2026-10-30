@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pytest
 from alembic import command
@@ -163,6 +164,91 @@ def test_evidence_pack_two_asset_partial_success_keeps_good_sibling(tmp_path, mo
         "DELIVERABLE_INCOMPLETE", "FAQ_STRUCTURE_REQUIRED"}
     assert list_agent_results(db, run_id=run.run_id, project_id=1, prompt_id=44)[0][
         "draft_delivery_status"] == "PARTIAL_SUCCESS"
+
+
+def test_asset_scoped_invalid_reference_fails_only_faq_and_keeps_help_exportable(
+    tmp_path, monkeypatch,
+):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
+        context_id=fixture["context"].context_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        idempotency_key="multi-content-asset-invalid-ref", requested_by="qa",
+        execution_mode="EVIDENCE_PACK", requested_artifact_types=["HELP_DOC", "FAQ"])
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    markdown = _multi_markdown(pack).replace(
+        "### 批量处理前需要确认什么？",
+        "[[answer:999999:0:999]]\n\n### 批量处理前需要确认什么？", 1)
+    execute_agent_run(
+        run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False),
+        client=ScriptedEvidencePackClient(markdown))
+    db.expire_all()
+    stored = db.query(AgentExperimentRun).filter_by(run_id=run.run_id).one()
+    result = list_agent_results(db, run_id=run.run_id, project_id=1, prompt_id=44)[0]
+    artifacts = result["draft_artifacts"]
+    help_doc = next(row for row in artifacts if row["artifact_type"] == "HELP_DOC")
+    faq = next(row for row in artifacts if row["artifact_type"] == "FAQ")
+    assert stored.status == "PARTIAL"
+    assert result["validation"]["status"] == "PARTIAL"
+    assert result["draft_delivery_status"] == "PARTIAL_SUCCESS"
+    assert help_doc["status"] == "SUCCESS"
+    assert faq["status"] == "FAILED"
+    assert all(reference.get("locator") != "999999:0:999"
+               for reference in help_doc["evidence"]["result_evidence_references"])
+    assert any(reference.get("locator") == "999999:0:999"
+               for reference in faq["evidence"]["result_evidence_references"])
+    assert "ANSWER_REF_OUT_OF_SCOPE" in {
+        issue["code"] for issue in faq["qa"]["artifact_validation"]["issues"]}
+    assert draft_artifact_export(
+        db, artifact_version=help_doc["artifact_version"], project_id=1,
+        prompt_id=44)["content"] == help_doc["body_markdown"]
+    with pytest.raises(HTTPException) as blocked:
+        draft_artifact_export(
+            db, artifact_version=faq["artifact_version"], project_id=1, prompt_id=44)
+    assert blocked.value.status_code == 409
+
+
+def test_shared_section_invalid_reference_fails_all_children_and_parent(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
+        context_id=fixture["context"].context_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        idempotency_key="multi-content-shared-invalid-ref", requested_by="qa",
+        execution_mode="EVIDENCE_PACK", requested_artifact_types=["HELP_DOC", "FAQ"])
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    markdown = re.sub(
+        r"\[\[answer:[^\]]+\]\]", "[[answer:999999:0:999]]",
+        _multi_markdown(pack), count=1)
+    execute_agent_run(
+        run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False),
+        client=ScriptedEvidencePackClient(markdown))
+    db.expire_all()
+    stored = db.query(AgentExperimentRun).filter_by(run_id=run.run_id).one()
+    result = list_agent_results(db, run_id=run.run_id, project_id=1, prompt_id=44)[0]
+    artifacts = result["draft_artifacts"]
+    assert stored.status == "FAILED"
+    assert result["validation"]["status"] == "FAIL"
+    assert result["validation"]["shared_issue_count"] >= 1
+    assert result["draft_delivery_status"] == "FAILED"
+    assert {row["status"] for row in artifacts} == {"FAILED"}
+    for artifact in artifacts:
+        assert "ANSWER_REF_OUT_OF_SCOPE" in {
+            issue["code"] for issue in artifact["qa"]["artifact_validation"]["issues"]}
+        with pytest.raises(HTTPException) as blocked:
+            draft_artifact_export(
+                db, artifact_version=artifact["artifact_version"], project_id=1,
+                prompt_id=44)
+        assert blocked.value.status_code == 409
 
 
 def test_parent_is_frozen_optimize_and_child_failures_are_independent(tmp_path, monkeypatch):

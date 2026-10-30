@@ -590,75 +590,116 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
     required = [*REQUIRED_SECTIONS[:3], *artifact_sections.values(), *REQUIRED_SECTIONS[4:]]
     normalized_markdown, normalizations = _normalize_draft_heading_levels(
         markdown, set(artifact_sections.values()))
-    sections, issues = _parse_sections(normalized_markdown, required_sections=required)
+    sections, parse_issues = _parse_sections(normalized_markdown, required_sections=required)
+    section_to_artifact = {section: artifact_type for artifact_type, section in artifact_sections.items()}
+    shared_issues: list[dict[str, str]] = []
+    artifact_issues: dict[str, list[dict[str, str]]] = {
+        artifact_type: [] for artifact_type in artifact_sections
+    }
+
+    def add_issue(issue: dict[str, str], section: str | None = None) -> None:
+        target = section_to_artifact.get(section or "")
+        annotated = {**issue, **({"section": section} if section else {})}
+        if target:
+            artifact_issues[target].append(annotated)
+        else:
+            shared_issues.append(annotated)
+
+    for issue in parse_issues:
+        # Missing/duplicate typed draft sections belong only to that child.
+        # Unknown/global section shape remains a shared contract failure.
+        add_issue(issue, issue.get("detail") if issue.get("detail") in section_to_artifact else None)
+
+    heading_matches = list(_HEADING.finditer(normalized_markdown))
+
+    def section_at(offset: int) -> str | None:
+        for index, heading in enumerate(heading_matches):
+            end = heading_matches[index + 1].start() if index + 1 < len(heading_matches) \
+                else len(normalized_markdown)
+            if heading.end() <= offset < end:
+                return heading.group(1).strip()
+        return None
+
     evidence_markdown = _mask_markdown_code(normalized_markdown)
     references = []
-    matched_tokens = set()
+    matched_spans: set[tuple[int, int]] = set()
     for match in _REF.finditer(evidence_markdown):
         kind, locator = match.group(1), match.group(2)
         token = match.group(0)
-        matched_tokens.add(token)
+        matched_spans.add(match.span())
+        section = section_at(match.start())
         code = _validate_reference(kind, locator, pack)
-        references.append({"kind": kind, "locator": locator, "token": token, "valid": code is None})
+        references.append({"kind": kind, "locator": locator, "token": token,
+                           "section": section, "valid": code is None})
         if code:
-            issues.append({"code": code, "detail": locator})
-    for token in _ANY_REF.findall(evidence_markdown):
-        if token not in matched_tokens:
-            issues.append({"code": "EVIDENCE_REF_FORMAT_INVALID", "detail": token[:160]})
+            add_issue({"code": code, "detail": locator}, section)
+    for match in _ANY_REF.finditer(evidence_markdown):
+        if match.span() not in matched_spans:
+            add_issue({"code": "EVIDENCE_REF_FORMAT_INVALID",
+                       "detail": match.group(0)[:160]}, section_at(match.start()))
     for name in REQUIRED_SECTIONS[:3]:
         if sections.get(name) and not _REF.search(_mask_markdown_code(sections[name])):
-            issues.append({"code": "SECTION_EVIDENCE_REQUIRED", "detail": name})
+            add_issue({"code": "SECTION_EVIDENCE_REQUIRED", "detail": name}, name)
     strategy = sections.get("优化策略与渠道", "")
     if pack.get("citation_occurrences"):
         if "### 引用渠道与竞品来源观察" not in strategy:
-            issues.append({
+            add_issue({
                 "code": "CITATION_CHANNEL_ANALYSIS_REQUIRED",
                 "detail": "优化策略与渠道必须单列引用渠道与竞品来源观察",
-            })
+            }, "优化策略与渠道")
         if not any(match.group(1) == "citation" for match in _REF.finditer(
                 _mask_markdown_code(strategy))):
-            issues.append({
+            add_issue({
                 "code": "CITATION_CHANNEL_EVIDENCE_REQUIRED",
                 "detail": "渠道分析必须引用冻结回答中的真实 citation occurrence",
-            })
+            }, "优化策略与渠道")
 
-    deliverables = []
+    draft_by_artifact: dict[str, str] = {}
     for artifact_type, section_name in artifact_sections.items():
         draft = sections.get(section_name, "")
-        artifact_issues = []
+        draft_by_artifact[artifact_type] = draft
         if len(draft) < 240 or len([part for part in draft.split("\n\n") if part.strip()]) < 2:
-            artifact_issues.append({"code": "DELIVERABLE_INCOMPLETE",
-                                    "detail": f"{section_name}必须是可编辑成稿"})
+            add_issue({"code": "DELIVERABLE_INCOMPLETE",
+                       "detail": f"{section_name}必须是可编辑成稿"}, section_name)
         if re.search(r"(?i)\bTODO\b|待补充正文|此处填写|仅供占位", draft):
-            artifact_issues.append({"code": "DELIVERABLE_PLACEHOLDER",
-                                    "detail": f"{section_name}包含占位符"})
+            add_issue({"code": "DELIVERABLE_PLACEHOLDER",
+                       "detail": f"{section_name}包含占位符"}, section_name)
         if artifact_type == "FAQ" and draft and len(re.findall(r"(?m)^###\s+|(?:^|\n)问[:：]|Q[:：]", draft)) < 2:
-            artifact_issues.append({"code": "FAQ_STRUCTURE_REQUIRED",
-                                    "detail": "常见问题至少需要两个明确问题与回答"})
-        deliverables.append({
-            "id": f"evidence-pack-{artifact_type.lower()}",
-            "action_ids": ["evidence-pack-strategy"], "asset_type": artifact_type,
-            "title": "帮助文档" if artifact_type == "HELP_DOC" else "常见问题",
-            "body_markdown": draft,
-            "editorial_notes": ["发布前按 QA 与事实限制完成人工核验"],
-            "artifact_validation": {
-                "status": "PASS" if not artifact_issues else "FAIL", "issues": artifact_issues,
-            },
-        })
+            add_issue({"code": "FAQ_STRUCTURE_REQUIRED",
+                       "detail": "常见问题至少需要两个明确问题与回答"}, section_name)
 
     authoritative = [row for row in references if row["valid"] and row["kind"] in {"source", "truth"}]
     grade = "L2_PARTIALLY_GROUNDED" if authoritative else "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS"
     qa = sections.get("QA 与事实限制", "")
     if grade == "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS" and "VERIFY_FIRST" not in qa:
-        issues.append({"code": "L3_VERIFY_FIRST_REQUIRED", "detail": "QA 必须标记 VERIFY_FIRST"})
-    for deliverable in deliverables:
-        for paragraph in [part for part in deliverable["body_markdown"].split("\n\n") if part.strip()]:
+        add_issue({"code": "L3_VERIFY_FIRST_REQUIRED", "detail": "QA 必须标记 VERIFY_FIRST"},
+                  "QA 与事实限制")
+    for artifact_type, draft in draft_by_artifact.items():
+        for paragraph in [part for part in draft.split("\n\n") if part.strip()]:
             if re.search(r"\d\s*(?:%|元)|[¥￥]\s*\d", paragraph) \
                     and not re.search(r"\[\[(?:source|truth):", paragraph):
-                issues.append({"code": "NUMERIC_CLAIM_WITHOUT_AUTHORITY", "detail": paragraph[:120]})
+                add_issue({"code": "NUMERIC_CLAIM_WITHOUT_AUTHORITY",
+                           "detail": paragraph[:120]}, artifact_sections[artifact_type])
+
+    deliverables = []
+    for artifact_type, section_name in artifact_sections.items():
+        own_issues = artifact_issues[artifact_type]
+        effective_issues = [*shared_issues, *own_issues]
+        deliverables.append({
+            "id": f"evidence-pack-{artifact_type.lower()}",
+            "action_ids": ["evidence-pack-strategy"], "asset_type": artifact_type,
+            "title": "帮助文档" if artifact_type == "HELP_DOC" else "常见问题",
+            "body_markdown": draft_by_artifact[artifact_type],
+            "editorial_notes": ["发布前按 QA 与事实限制完成人工核验"],
+            "artifact_validation": {
+                "status": "PASS" if not effective_issues else "FAIL",
+                "issues": effective_issues,
+                "shared_issue_count": len(shared_issues),
+            },
+        })
 
     passed_assets = sum(row["artifact_validation"]["status"] == "PASS" for row in deliverables)
-    if issues:
+    if shared_issues:
         validation_status = "FAIL"
     elif passed_assets == len(deliverables):
         validation_status = "PASS"
@@ -670,14 +711,15 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
     validation = {
         "contract_version": "geo.evidence-pack.validation.v3",
         "status": validation_status,
-        "issues": [*issues, *[issue for row in deliverables
-                              for issue in row["artifact_validation"]["issues"]]],
+        "issues": [*shared_issues, *[issue for values in artifact_issues.values()
+                                     for issue in values]],
         "server_validated": True,
         "evidence_ref_count": len(references),
         "valid_evidence_ref_count": sum(row["valid"] for row in references),
         "required_sections": required,
         "requested_artifact_types": list(artifact_sections),
         "artifact_pass_count": passed_assets, "artifact_total_count": len(deliverables),
+        "shared_issue_count": len(shared_issues),
         "evidence_pack_hash": pack["evidence_pack_hash"],
     }
     eligibility = {

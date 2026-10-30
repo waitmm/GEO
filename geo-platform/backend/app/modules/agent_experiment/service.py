@@ -459,18 +459,28 @@ def list_draft_artifacts_for_result(db: Session, result_version: str) -> list[di
     return [draft_artifact_view(row) for row in rows]
 
 
-def _artifact_evidence(result: dict[str, Any], action_ids: list[str]) -> dict[str, Any]:
+def _artifact_evidence(
+    result: dict[str, Any], action_ids: list[str], artifact_type: str,
+) -> dict[str, Any]:
     actions = {str(row.get("id")): row for row in (result.get("actions") or [])
                if isinstance(row, dict) and row.get("id") is not None}
     action_refs = []
     for action_id in action_ids:
         action = actions.get(str(action_id)) or {}
         action_refs.extend(action.get("evidence_refs") or [])
+    artifact_sections = {"HELP_DOC": "帮助文档", "FAQ": "常见问题"}
+    own_section = artifact_sections.get(str(artifact_type).upper())
+    result_refs = [
+        row for row in (result.get("evidence_references") or [])
+        if not isinstance(row, dict)
+        or row.get("section") not in set(artifact_sections.values())
+        or row.get("section") == own_section
+    ]
     return {
         "contract_version": "geo.draft-artifact.evidence.v1",
         "action_ids": action_ids,
         "action_evidence_refs": action_refs,
-        "result_evidence_references": result.get("evidence_references") or [],
+        "result_evidence_references": result_refs,
         "evidence_pack_hash": ((result.get("evidence_pack") or {}).get("evidence_pack_hash")),
     }
 
@@ -541,7 +551,7 @@ def materialize_result_draft_artifacts(
         deliverable = {
             **raw,
             "id": source_id,
-            "evidence": _artifact_evidence(result, action_ids),
+            "evidence": _artifact_evidence(result, action_ids, str(raw.get("asset_type") or "")),
             "artifact_validation": artifact_validation,
             "qa": {"result_qa": result.get("qa_self_check", result.get("qa", {})),
                    "artifact_validation": artifact_validation,

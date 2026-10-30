@@ -709,11 +709,47 @@ def draft_artifact_regeneration_view(row: AgentDraftArtifactRegeneration) -> dic
         "target_artifact_version": row.target_artifact_version,
         "parent_result_version": row.parent_result_version, "agent_run_id": row.agent_run_id,
         "project_id": row.project_id, "prompt_id": row.prompt_id,
-        "status": row.status,
+        "status": row.status, "attempt_count": row.attempt_count,
+        "usage": loads(row.usage_json, {}), "audit": loads(row.audit_json, {}),
+        "cancel_requested": row.cancel_requested_at is not None,
         "failure": ({"code": row.failure_code, "detail": row.failure_detail}
                     if row.failure_code else None),
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        "updated_at": row.updated_at.isoformat(),
         "created_at": row.created_at.isoformat(),
     }
+
+
+def get_draft_artifact_regeneration(
+    db: Session, *, request_id: str, project_id: int, prompt_id: int,
+) -> AgentDraftArtifactRegeneration:
+    row = db.query(AgentDraftArtifactRegeneration).filter_by(
+        request_id=request_id, project_id=project_id, prompt_id=prompt_id).one_or_none()
+    if not row:
+        raise HTTPException(404, "稿件重生成任务不存在或不属于当前项目范围")
+    return row
+
+
+def cancel_draft_artifact_regeneration(
+    db: Session, *, request_id: str, project_id: int, prompt_id: int,
+) -> AgentDraftArtifactRegeneration:
+    row = get_draft_artifact_regeneration(
+        db, request_id=request_id, project_id=project_id, prompt_id=prompt_id)
+    if row.status in {"COMPLETED", "FAILED", "CANCELLED"}:
+        return row
+    row.cancel_requested_at = datetime.utcnow()
+    audit = loads(row.audit_json, {})
+    if row.status == "QUEUED":
+        row.status = "CANCELLED"
+        row.finished_at = datetime.utcnow()
+        row.audit_json = _canonical({**audit, "external_request_state": "NOT_SENT",
+                                     "cancelled_before_provider": True})
+    else:
+        row.audit_json = _canonical({**audit, "cancel_requested_while_running": True})
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def complete_draft_artifact_regeneration(
@@ -726,8 +762,8 @@ def complete_draft_artifact_regeneration(
     if request.status == "COMPLETED" and request.target_artifact_version:
         return db.query(AgentDraftArtifactVersion).filter_by(
             artifact_version=request.target_artifact_version).one()
-    if request.status != "QUEUED":
-        raise HTTPException(409, {"code": "DRAFT_REGENERATION_NOT_QUEUED", "status": request.status})
+    if request.status not in {"QUEUED", "RUNNING"}:
+        raise HTTPException(409, {"code": "DRAFT_REGENERATION_NOT_ACTIVE", "status": request.status})
     source = get_draft_artifact(db, artifact_version=request.source_artifact_version,
                                 project_id=request.project_id, prompt_id=request.prompt_id)
     parent = db.query(AgentResultVersion).filter_by(
@@ -757,6 +793,7 @@ def complete_draft_artifact_regeneration(
     request.status = "COMPLETED" if child.status == "SUCCESS" else "FAILED"
     request.failure_code = child.failure_code
     request.failure_detail = child.failure_detail
+    request.finished_at = datetime.utcnow()
     db.commit()
     db.refresh(child)
     return child

@@ -22,6 +22,7 @@ from .service import (
     add_result_feedback,
     authorize_agent_run,
     cancel_agent_run,
+    cancel_draft_artifact_regeneration,
     compare_with_workflow,
     create_agent_run,
     draft_artifact_export,
@@ -30,13 +31,13 @@ from .service import (
     draft_artifact_view,
     get_agent_run,
     get_draft_artifact,
+    get_draft_artifact_regeneration,
     list_draft_artifact_feedback,
     list_draft_artifacts,
     list_agent_results,
     list_agent_runs,
     list_result_feedback,
     feedback_view,
-    queue_draft_artifact_regeneration,
     run_view,
 )
 
@@ -125,6 +126,9 @@ def read_agent_capabilities(project_id: int) -> dict:
         "authorization_scope": "INTERNAL_BETA_DAILY" if enabled else "HISTORY_ONLY",
         "message": ("AI 生成已由服务端启用；创建任务后会自动开始，无需设置 Token、金额或计费参数。"
                     if enabled else "AI 生成尚未由服务端启用；当前仍可查看和使用历史结果。"),
+        "draft_regeneration_enabled": False,
+        "draft_regeneration_blocker": "DRAFT_REGENERATION_EXTERNAL_CALL_NOT_AUTHORIZED",
+        "draft_regeneration_message": "单篇重新生成尚未获得独立外部模型授权；当前不会创建排队任务。",
     }
     if configured:
         response.update({"blocker": blocker})
@@ -243,18 +247,28 @@ def regenerate_draft_artifact(
     artifact_version: str, payload: AgentDraftArtifactRegenerate, response: Response,
     actor: str = Depends(authenticated_actor), db: Session = Depends(get_release_db),
 ) -> dict:
-    try:
-        policy = server_task_policy()
-    except SharedBudgetDenied as exc:
-        raise HTTPException(409, detail={
-            "code": "BETA_SERVER_MODEL_POLICY_DENIED", "message": str(exc),
-        }) from exc
-    row, created = queue_draft_artifact_regeneration(
-        db, artifact_version=artifact_version, requested_by=actor,
-        server_policy=policy, **payload.model_dump())
-    if not created:
-        response.status_code = 200
-    return draft_artifact_regeneration_view(row)
+    raise HTTPException(409, detail={
+        "code": "DRAFT_REGENERATION_EXTERNAL_CALL_NOT_AUTHORIZED",
+        "message": "单篇重新生成尚未获得独立外部模型授权，未创建任务且不会产生外部调用。",
+    })
+
+
+@router.get("/draft-artifact-regenerations/{request_id}")
+def read_draft_artifact_regeneration(
+    request_id: str, project_id: int, prompt_id: int,
+    db: Session = Depends(get_read_db),
+) -> dict:
+    return draft_artifact_regeneration_view(get_draft_artifact_regeneration(
+        db, request_id=request_id, project_id=project_id, prompt_id=prompt_id))
+
+
+@router.post("/draft-artifact-regenerations/{request_id}/cancel")
+def cancel_draft_artifact_regeneration_request(
+    request_id: str, payload: AgentScopeAction,
+    db: Session = Depends(get_release_db),
+) -> dict:
+    return draft_artifact_regeneration_view(cancel_draft_artifact_regeneration(
+        db, request_id=request_id, **payload.model_dump()))
 
 
 @router.get("/agent-experiments/{run_id}/comparison")

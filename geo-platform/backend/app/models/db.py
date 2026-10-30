@@ -606,8 +606,16 @@ class AgentDraftArtifactRegeneration(Base):
     request_hash: Mapped[str] = mapped_column(String(64))
     server_policy_json: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="QUEUED", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    usage_json: Mapped[str] = mapped_column(Text, default="{}")
+    audit_json: Mapped[str] = mapped_column(Text, default="{}")
     failure_code: Mapped[str] = mapped_column(String(80), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
+    cancel_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

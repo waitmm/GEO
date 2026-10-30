@@ -217,6 +217,15 @@ implementation_status = NOT_IMPLEMENTED | SHADOW | PARTIAL | PRODUCTION | DIVERG
 - 禁止推断：创建草案不等于发布或有效；Decision Stability 仅旁路观测，不改变 Step 1–8。
 - 当前实现：`backend/app/models/db.py::OptimizationExperiment`、`service.py::create_experiment`。
 
+### OptimizeResult / DraftArtifactVersion
+
+- `AgentResultVersion`：一次明确冻结 Project/Prompt/Run 输入上的不可变 Optimize 结果，不等于单篇稿件。
+- `DraftArtifactVersion`：该结果下一个明确内容资产的追加式版本；首批类型仅 `HELP_DOC`、`FAQ`。
+- 标识：`parent_result_version + artifact_id + version_number`；重生成保存 `previous_artifact_version`。
+- 可推断：各子资产独立成功或失败，父交付状态可派生为 SUCCESS/PARTIAL_SUCCESS/FAILED。
+- 禁止推断：子稿不得升级 Evidence/Truth/发布资格；一稿成功不得掩盖另一稿失败；旧单稿不得猜测类型回填。
+- 当前实现：`AgentDraftArtifactVersion`、`AgentDraftArtifactFeedback`、`AgentDraftArtifactRegeneration`。
+
 ## 3. 对象流与边界
 
 ```text
@@ -261,3 +270,5 @@ Run
 | ExecutionProposal | 不是 Action，也不是 persisted truth | proposal/snapshot id + accepted candidate + package/channel | PR5-A/B canonical ephemeral payload | Strategy + allowed assets -> review proposal | Step 8 / human revalidation only | overlay 重建；READY 不等于持久化终态 | OBSERVED |
 | Action | 不是 Strategy proposal | action id + accepted candidate/experiment lineage | `OptimizationAction` | confirmed execution choice -> concrete action | Step 8 / Experiment | 创建后按状态推进；历史 action 不改 current scope | OBSERVED |
 | Experiment | 不是效果结论 | experiment id + one action + frozen snapshot set | `OptimizationExperiment` frozen fields | action + asset + baseline -> draft/retest unit | Step 8 / release、retest、conclusion | 快照不可变；draft/released/retested/concluded 显式 | OBSERVED |
+| OptimizeResult | 不是单篇稿件或正式 V2 ResultVersion | exact AgentResultVersion + frozen scope hashes | `AgentResultVersion` | Evidence Pack/Agent result -> immutable parent result | Agent Experiment / child asset read only | 追加版本，不原位改写；子稿状态只派生展示 | FROZEN |
+| DraftArtifactVersion | 不是父结果、Truth 或发布批准 | parent result + logical artifact id + version | `AgentDraftArtifactVersion` | explicit HELP_DOC/FAQ deliverable + Evidence/QA -> child version | internal Beta content use / exact feedback/export | append-only；重生成追加 lineage；失败独立保存 | FROZEN |

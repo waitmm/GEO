@@ -334,6 +334,16 @@ automation:
 - `RUN-RETRY-PARTIAL-CONTENT-BLOCK`：失败 Run 仍保存真实回答或部分可用内容；禁止清空覆盖，
   必须保留该观测并另行采样。
 
+### Multi-draft artifact synthetic cases
+
+- `MULTI-DRAFT-PARTIAL`：同一冻结 Optimize 的 HELP_DOC 合格、FAQ 正文为空；两条子版本都保存，
+  父结果不变，派生状态为 `PARTIAL_SUCCESS`。
+- `MULTI-DRAFT-REGENERATE-ONE`：只重生成失败 FAQ；追加相同 artifact lineage 的 v2，父结果、HELP_DOC
+  和 FAQ v1 哈希不变；重复幂等请求返回同一结果。
+- `MULTI-DRAFT-CROSS-SCOPE`：用其它 Project/Prompt 读取、导出、反馈或重生成子稿，统一拒绝且不泄露对象。
+- `MULTI-DRAFT-LEGACY`：无子资产的历史 AgentResultVersion 保持原 `deliverable_markdown` 可读，标记
+  `LEGACY_SINGLE_DRAFT`，不猜测资产类型、不补写子行。
+
 ## 4. 验收方式
 
 1. 先验证 Manifest 的数据库文件 hash、固定对象 ID 与 Run scope hash。

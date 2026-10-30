@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import Engine, inspect, text
 
 
-RELEASE_SCHEMA_REVISION = "20261022_01"
+RELEASE_SCHEMA_REVISION = "20261030_01"
 
 RELEASE_TABLE_ORDER = (
     "organizations",
@@ -65,6 +65,9 @@ RELEASE_TABLE_ORDER = (
     "agent_checkpoints",
     "agent_result_versions",
     "agent_result_feedback",
+    "agent_draft_artifact_versions",
+    "agent_draft_artifact_feedback",
+    "agent_draft_artifact_regenerations",
 )
 RELEASE_TABLE_ALLOWLIST = frozenset(RELEASE_TABLE_ORDER)
 

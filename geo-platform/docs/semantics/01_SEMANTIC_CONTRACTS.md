@@ -930,6 +930,43 @@ supersedes: append-only physical retry Run behavior from 2026-10-15
 last_verified_at: 2026-10-23
 ```
 
+### SC-MULTI-DRAFT-ARTIFACT-001 Frozen Optimize And Versioned Draft Assets
+
+```yaml
+contract_id: SC-MULTI-DRAFT-ARTIFACT-001
+contract_name: Frozen Optimize And Versioned Draft Assets
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: PARTIAL
+definition: AgentResultVersion 表示一次冻结 Optimize；明确类型的 HELP_DOC/FAQ 以不可变 DraftArtifactVersion 子版本保存，分别绑定 Evidence、QA、反馈、导出和重生成 lineage。
+allowed_inferences:
+  - 子资产最新版本全部成功时父交付状态为 SUCCESS；成功与失败并存为 PARTIAL_SUCCESS；无成功为 FAILED。
+  - 单资产重生成只追加相同 artifact_id 的下一版本，并引用 previous_artifact_version。
+  - 无子资产的旧结果继续按 LEGACY_SINGLE_DRAFT 读取。
+forbidden_inferences:
+  - 改写父 AgentResultVersion、兄弟资产或旧子版本。
+  - 从旧 deliverable 文案猜测 HELP_DOC/FAQ 并补绑。
+  - 子资产成功升级 Evidence、Truth、Review、Gate 或发布资格。
+  - 客户端自定模型次数、Token、金额或跨 Project/Prompt 访问。
+unknown_behavior: 子资产缺失、正文为空或 Evidence/QA 不完整时只影响该子资产并保留失败；UNKNOWN 不升级。
+identity: exact parent result version + project/prompt/run scope + logical artifact id + version + hashes
+history: parent and children append-only; feedback append-only; regeneration request identity immutable
+step_boundary: existing isolated Agent Experiment Optimize result only; no formal V2 write and no second analysis chain
+source_references:
+  - docs/semantics/rfcs/RFC-MULTI-DRAFT-ARTIFACT-001.md
+  - docs/semantics/approvals/RFC-MULTI-DRAFT-ARTIFACT-001.definition-freeze.md
+enforcement_refs:
+  - backend/app/modules/agent_experiment/service.py
+  - backend/tests/test_agent_draft_artifacts.py
+approved_by: Product Owner
+approved_at: 2026-10-30
+approval_reference: GEO M1.2 B-line explicit approved semantic change
+golden_case_ids: [MULTI-DRAFT-PARTIAL, MULTI-DRAFT-REGENERATE-ONE, MULTI-DRAFT-CROSS-SCOPE, MULTI-DRAFT-LEGACY]
+effective_from: 2026-10-30
+supersedes: null
+last_verified_at: 2026-10-30
+```
+
 ## 3. Definition Freeze Queue
 
 `SC-RUNTIME-001@0.1.0` 已由 Product Owner 在独立 Review 005 通过后正式

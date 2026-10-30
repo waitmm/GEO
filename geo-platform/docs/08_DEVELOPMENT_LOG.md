@@ -1,5 +1,17 @@
 # 08 Development Log
 
+## 2026-10-30 Frozen Optimize With Versioned Draft Assets
+
+- Classified as the Product Owner-approved `SEMANTIC_CHANGE` and froze
+  `RFC-MULTI-DRAFT-ARTIFACT-001` / `SC-MULTI-DRAFT-ARTIFACT-001@1.0.0` before cutover.
+- `AgentResultVersion` remains one immutable Optimize result. Explicit `HELP_DOC` and `FAQ`
+  deliverables now persist as append-only child versions with their own Evidence, QA, feedback,
+  export and single-asset regeneration lineage. Partial failure derives `PARTIAL_SUCCESS` without
+  rewriting the parent or successful sibling.
+- Historical untyped single drafts remain readable and are not guessed/backfilled. Regeneration
+  requests accept no client budget fields and freeze the server policy. Implementation and tests
+  made zero external model, collection, fetch or publication calls.
+
 ## 2026-10-27 Citation-channel grounding and Beijing time
 
 - Classified as `IMPLEMENTATION_CHANGE`: this fulfills the existing Channel Evidence boundary;

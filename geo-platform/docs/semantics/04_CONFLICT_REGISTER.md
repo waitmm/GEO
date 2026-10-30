@@ -161,6 +161,28 @@ superseded_contract_version: 2026-10-15 append-only physical retry Run behavior
 last_verified_at: 2026-10-23
 ```
 
+### SEM-CONFLICT-006 单稿父结果与多内容资产版本
+
+```yaml
+status: RESOLVED
+severity: MEDIUM
+affected_contracts:
+  - SC-MULTI-DRAFT-ARTIFACT-001@1.0.0
+affected_objects: [AgentResultVersion, DraftArtifactVersion]
+source_a: 旧 AgentResultVersion 通过一个 deliverable_markdown 暗含一次结果等于一篇稿件。
+source_b: Product Owner 决定一次冻结 Optimize 可交付多个独立稿件，并要求单稿反馈、导出和重生成。
+current_production_behavior: 父结果保持不可变；明确 HELP_DOC/FAQ 追加为子版本；旧单稿不回填。
+risk: 若改写父结果或从旧文案猜类型，会破坏历史 identity；若只保留父状态，会掩盖部分失败。
+resolution_required: 已完成；采用不可变父结果加 append-only child lineage，父状态仅派生。
+resolution_rfc: docs/semantics/rfcs/RFC-MULTI-DRAFT-ARTIFACT-001.md
+resolution_reference: docs/semantics/01_SEMANTIC_CONTRACTS.md::SC-MULTI-DRAFT-ARTIFACT-001@1.0.0
+resolved_at: 2026-10-30
+resolved_by: Product Owner
+winning_contract_version: SC-MULTI-DRAFT-ARTIFACT-001@1.0.0
+superseded_contract_version: implicit one-result-one-draft read assumption
+last_verified_at: 2026-10-30
+```
+
 ## 3. Tracked Gaps, Not Yet Conflicts
 
 - `SC-EXPERIMENT-001` 当前 `implementation_status=PARTIAL`：旧 Step 8 服务具备部分 snapshot freeze，但 PR5-C 尚未实现。这是已知实现阶段缺口，不代表可绕过 PR5-C。

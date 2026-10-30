@@ -18,16 +18,25 @@ from app.services.internal_beta_model_budget import (
 from app.services.shared_model_budget import SharedBudgetDenied
 
 from .service import (
+    add_draft_artifact_feedback,
     add_result_feedback,
     authorize_agent_run,
     cancel_agent_run,
     compare_with_workflow,
     create_agent_run,
+    draft_artifact_export,
+    draft_artifact_feedback_view,
+    draft_artifact_regeneration_view,
+    draft_artifact_view,
     get_agent_run,
+    get_draft_artifact,
+    list_draft_artifact_feedback,
+    list_draft_artifacts,
     list_agent_results,
     list_agent_runs,
     list_result_feedback,
     feedback_view,
+    queue_draft_artifact_regeneration,
     run_view,
 )
 
@@ -51,6 +60,8 @@ class AgentRunCreate(StrictModel):
     idempotency_key: str = Field(min_length=8, max_length=120)
     regenerate_nonce: str | None = Field(default=None, min_length=8, max_length=80)
     execution_mode: Literal["TOOL_LOOP", "EVIDENCE_PACK"] = "EVIDENCE_PACK"
+    requested_artifact_types: list[Literal["HELP_DOC", "FAQ"]] = Field(
+        default_factory=lambda: ["HELP_DOC"], min_length=1, max_length=2)
 
 
 class AgentScopeAction(StrictModel):
@@ -73,6 +84,22 @@ class AgentResultFeedbackCreate(AgentScopeAction):
     adoption_status: Literal["ADOPTED", "PARTIALLY_ADOPTED", "NOT_ADOPTED", "UNKNOWN"] = "UNKNOWN"
     modification_level: Literal["NONE", "LIGHT", "MEDIUM", "HEAVY", "NOT_RECORDED"] = "NOT_RECORDED"
     modification_summary: str = Field(default="", max_length=4000)
+
+
+class AgentDraftArtifactFeedbackCreate(AgentScopeAction):
+    rating: Literal["USABLE", "NEEDS_CHANGES", "UNUSABLE"]
+    reason_tags: list[Literal[
+        "BRAND_ASSOCIATION", "FACTUAL_ACCURACY", "STRATEGY_TOO_GENERIC", "DRAFT_QUALITY",
+        "EVIDENCE_LIMITATION", "OPERABILITY", "OTHER",
+    ]] = Field(default_factory=list, max_length=7)
+    suggestion: str = Field(default="", max_length=4000)
+    adoption_status: Literal["ADOPTED", "PARTIALLY_ADOPTED", "NOT_ADOPTED", "UNKNOWN"] = "UNKNOWN"
+    modification_level: Literal["NONE", "LIGHT", "MEDIUM", "HEAVY", "NOT_RECORDED"] = "NOT_RECORDED"
+    modification_summary: str = Field(default="", max_length=4000)
+
+
+class AgentDraftArtifactRegenerate(AgentScopeAction):
+    idempotency_key: str = Field(min_length=8, max_length=120)
 
 
 def get_read_db(db: Session = Depends(get_release_db)):
@@ -170,6 +197,64 @@ def create_agent_feedback(run_id: str, payload: AgentResultFeedbackCreate,
                           db: Session = Depends(get_release_db)) -> dict:
     return feedback_view(add_result_feedback(
         db, run_id=run_id, submitted_by=actor, **payload.model_dump()))
+
+
+@router.get("/agent-experiments/{run_id}/draft-artifacts")
+def read_draft_artifacts(run_id: str, project_id: int, prompt_id: int,
+                         result_version: str | None = None,
+                         db: Session = Depends(get_read_db)) -> list[dict]:
+    return list_draft_artifacts(
+        db, run_id=run_id, project_id=project_id, prompt_id=prompt_id,
+        result_version=result_version)
+
+
+@router.get("/draft-artifacts/{artifact_version}")
+def read_draft_artifact(artifact_version: str, project_id: int, prompt_id: int,
+                        db: Session = Depends(get_read_db)) -> dict:
+    return draft_artifact_view(get_draft_artifact(
+        db, artifact_version=artifact_version, project_id=project_id, prompt_id=prompt_id))
+
+
+@router.get("/draft-artifacts/{artifact_version}/export")
+def export_draft_artifact(artifact_version: str, project_id: int, prompt_id: int,
+                          db: Session = Depends(get_read_db)) -> dict:
+    return draft_artifact_export(
+        db, artifact_version=artifact_version, project_id=project_id, prompt_id=prompt_id)
+
+
+@router.get("/draft-artifacts/{artifact_version}/feedback")
+def read_draft_artifact_feedback(artifact_version: str, project_id: int, prompt_id: int,
+                                 db: Session = Depends(get_read_db)) -> list[dict]:
+    return list_draft_artifact_feedback(
+        db, artifact_version=artifact_version, project_id=project_id, prompt_id=prompt_id)
+
+
+@router.post("/draft-artifacts/{artifact_version}/feedback", status_code=201)
+def create_draft_artifact_feedback(
+    artifact_version: str, payload: AgentDraftArtifactFeedbackCreate,
+    actor: str = Depends(authenticated_actor), db: Session = Depends(get_release_db),
+) -> dict:
+    return draft_artifact_feedback_view(add_draft_artifact_feedback(
+        db, artifact_version=artifact_version, submitted_by=actor, **payload.model_dump()))
+
+
+@router.post("/draft-artifacts/{artifact_version}/regenerations", status_code=201)
+def regenerate_draft_artifact(
+    artifact_version: str, payload: AgentDraftArtifactRegenerate, response: Response,
+    actor: str = Depends(authenticated_actor), db: Session = Depends(get_release_db),
+) -> dict:
+    try:
+        policy = server_task_policy()
+    except SharedBudgetDenied as exc:
+        raise HTTPException(409, detail={
+            "code": "BETA_SERVER_MODEL_POLICY_DENIED", "message": str(exc),
+        }) from exc
+    row, created = queue_draft_artifact_regeneration(
+        db, artifact_version=artifact_version, requested_by=actor,
+        server_policy=policy, **payload.model_dump())
+    if not created:
+        response.status_code = 200
+    return draft_artifact_regeneration_view(row)
 
 
 @router.get("/agent-experiments/{run_id}/comparison")

@@ -331,8 +331,9 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v7"
-    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v6"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v8"
+    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v7"
+    assert execution["requested_artifact_types"] == ["HELP_DOC"]
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
         "geo.deepseek.responses-text.no-thinking.v2"
@@ -466,7 +467,7 @@ def test_evidence_pack_single_call_persists_validated_independent_result(tmp_pat
     assert result.evidence_grade == "L2_PARTIALLY_GROUNDED"
     assert result.publication_eligibility == "VERIFY_FIRST"
     payload = loads(result.result_json, {})
-    assert payload["schema_version"] == "geo.evidence-pack.markdown-result.v1"
+    assert payload["schema_version"] == "geo.evidence-pack.markdown-result.v2"
     assert payload["evidence_pack"]["evidence_pack_hash"] == pack["evidence_pack_hash"]
     assert payload["evidence_pack"]["citation_channel_observations"] == (
         pack["citation_channel_observations"]

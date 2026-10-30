@@ -510,6 +510,107 @@ class AgentResultFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AgentDraftArtifactVersion(Base):
+    """Append-only content asset belonging to one frozen AgentResultVersion."""
+
+    __tablename__ = "agent_draft_artifact_versions"
+    __table_args__ = (
+        UniqueConstraint("artifact_id", "version_number", name="uq_agent_draft_artifact_version"),
+        UniqueConstraint("parent_result_version", "source_deliverable_id", "version_number",
+                         name="uq_agent_draft_artifact_parent_slot_version"),
+        Index("ix_agent_draft_artifact_parent", "parent_result_version", "created_at"),
+        Index("ix_agent_draft_artifact_scope", "project_id", "prompt_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    artifact_version: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    artifact_id: Mapped[str] = mapped_column(String(96), index=True)
+    parent_result_version: Mapped[str] = mapped_column(
+        ForeignKey("agent_result_versions.result_version"), index=True)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_experiment_runs.run_id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    source_deliverable_id: Mapped[str] = mapped_column(String(96))
+    version_number: Mapped[int] = mapped_column(Integer)
+    previous_artifact_version: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("agent_draft_artifact_versions.artifact_version"), nullable=True)
+    artifact_type: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(500), default="")
+    body_markdown: Mapped[str] = mapped_column(Text, default="")
+    action_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    editorial_notes_json: Mapped[str] = mapped_column(Text, default="[]")
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    qa_json: Mapped[str] = mapped_column(Text, default="{}")
+    qa_hash: Mapped[str] = mapped_column(String(64))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    artifact_hash: Mapped[str] = mapped_column(String(64))
+    failure_code: Mapped[str] = mapped_column(String(80), default="")
+    failure_detail: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(120), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentDraftArtifactFeedback(Base):
+    """Append-only feedback bound to an exact child artifact version."""
+
+    __tablename__ = "agent_draft_artifact_feedback"
+    __table_args__ = (
+        Index("ix_agent_draft_feedback_artifact", "artifact_version", "created_at"),
+        Index("ix_agent_draft_feedback_scope", "project_id", "prompt_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    feedback_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    artifact_version: Mapped[str] = mapped_column(
+        ForeignKey("agent_draft_artifact_versions.artifact_version"), index=True)
+    parent_result_version: Mapped[str] = mapped_column(
+        ForeignKey("agent_result_versions.result_version"), index=True)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_experiment_runs.run_id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    submitted_by: Mapped[str] = mapped_column(String(120))
+    rating: Mapped[str] = mapped_column(String(24), index=True)
+    reason_tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    suggestion: Mapped[str] = mapped_column(Text, default="")
+    adoption_status: Mapped[str] = mapped_column(String(24), default="UNKNOWN", index=True)
+    modification_level: Mapped[str] = mapped_column(String(24), default="NOT_RECORDED")
+    modification_summary: Mapped[str] = mapped_column(Text, default="")
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentDraftArtifactRegeneration(Base):
+    """Server-authorized request for one child-only regeneration lineage."""
+
+    __tablename__ = "agent_draft_artifact_regenerations"
+    __table_args__ = (
+        UniqueConstraint("project_id", "idempotency_key", name="uq_agent_draft_regeneration_key"),
+        Index("ix_agent_draft_regeneration_source", "source_artifact_version", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    source_artifact_version: Mapped[str] = mapped_column(
+        ForeignKey("agent_draft_artifact_versions.artifact_version"), index=True)
+    target_artifact_version: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("agent_draft_artifact_versions.artifact_version"), nullable=True)
+    parent_result_version: Mapped[str] = mapped_column(
+        ForeignKey("agent_result_versions.result_version"), index=True)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_experiment_runs.run_id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    requested_by: Mapped[str] = mapped_column(String(120))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    server_policy_json: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="QUEUED", index=True)
+    failure_code: Mapped[str] = mapped_column(String(80), default="")
+    failure_detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SinglePromptAnalysisContext(Base):
     __tablename__ = "single_prompt_analysis_contexts"
 

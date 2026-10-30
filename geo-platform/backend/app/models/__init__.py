@@ -1,5 +1,8 @@
 from app.models.db import (
     AgentCheckpoint,
+    AgentDraftArtifactFeedback,
+    AgentDraftArtifactRegeneration,
+    AgentDraftArtifactVersion,
     AgentEvent,
     AgentExperimentRun,
     AgentResultFeedback,
@@ -106,6 +109,9 @@ from app.models.db import (
 
 __all__ = [
     "AgentCheckpoint",
+    "AgentDraftArtifactFeedback",
+    "AgentDraftArtifactRegeneration",
+    "AgentDraftArtifactVersion",
     "AgentEvent",
     "AgentExperimentRun",
     "AgentResultFeedback",

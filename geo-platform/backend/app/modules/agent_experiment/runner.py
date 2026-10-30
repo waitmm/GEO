@@ -21,6 +21,7 @@ from app.services.serialization import loads
 from .contracts import AgentArtifact, AgentDecision, TOOL_NAMES
 from .grading import validate_and_grade
 from .scope import revalidate_frozen_scope
+from .service import materialize_result_draft_artifacts
 from .tools import ToolRegistry
 
 
@@ -389,6 +390,9 @@ def _save_result(db: Session, run: AgentExperimentRun, result: dict[str, Any], v
         validation_report_json=_canonical(validation),
     )
     db.add(row)
+    db.flush()
+    materialize_result_draft_artifacts(
+        db, parent=row, run=run, result=result, validation=validation)
     run.status = status
     run.finished_at = datetime.utcnow()
     run.progress_json = _canonical({**loads(run.progress_json, {}), "phase": status,
@@ -666,7 +670,7 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
         "geo.evidence-pack.execution.v1", "geo.evidence-pack.execution.v2",
         "geo.evidence-pack.execution.v3", "geo.evidence-pack.execution.v4",
         "geo.evidence-pack.execution.v5", "geo.evidence-pack.execution.v6",
-        "geo.evidence-pack.execution.v7",
+        "geo.evidence-pack.execution.v7", "geo.evidence-pack.execution.v8",
     }:
         from .evidence_pack import execute_evidence_pack_run
         execute_evidence_pack_run(

@@ -19,7 +19,7 @@ HTTP 不提供链路加密。只有产品负责人明确接受可信局域网风
 - 固定或 DHCP 保留的 RFC1918 IPv4；
 - Python 3.12 x64；
 - 已构建 `frontend/dist` 的冻结源码包；
-- Mac 停服后生成的一致性数据库备份，或完整 `m1_beta_ops.py backup` 目录；
+- Mac 停服后生成的完整 `m1_beta_ops.py backup` 目录（含 manifest、数据库、Evidence 和审计账本）；
 - 离线 wheelhouse，或安装时明确使用 `-AllowDependencyDownload`；
 - 足够存放数据库、Evidence、日志和至少两份备份的磁盘空间。
 
@@ -35,7 +35,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 cd <解压后的冻结发布包>\scripts\windows
 .\install.ps1 `
   -Source <解压后的冻结发布包> `
-  -DatabaseBackup D:\geo-migration\geo-beta.db `
+  -RestoreBackup D:\geo-migration\full-backup `
   -ReleaseId geo-m1.1-windows-<短SHA> `
   -SourceSha <完整Git-SHA> `
   -PythonExe py.exe `
@@ -48,7 +48,13 @@ cd <解压后的冻结发布包>\scripts\windows
 安装过程交互设置共享密码。密码不进入命令行、环境变量或配置明文；配置只保存随机 salt 和
 scrypt verifier。安装结束状态必须是 `INSTALLED_STOPPED`，不会自动启动模型或采样。
 
-如果输入是完整备份目录，使用 `-RestoreBackup` 代替 `-DatabaseBackup`。两者不能同时提供。
+只接受 `-RestoreBackup` 完整备份目录；`-DatabaseBackup` 裸数据库入口会明确拒绝，不能证明
+Evidence 完整或历史费用审计保留。安装前先核验 integrity、外键、schema revision 和活动队列，
+再按 manifest 校验内容 hash，直接恢复到最终 Home。已存在非空 Home 不得覆盖。
+
+恢复会把来源文件绑定重定位到最终 `Home\evidence`，保留 `Home\backups\audit-ledgers`
+和 `RESTORE_REPORT.json`。历史费用账本仅供审计，不成为新实例授权；UNKNOWN 记录原样保留。
+任何安装阶段失败时保留现场并停机，不自动删除恢复目录或覆写重装。
 
 ## 4. 管理命令
 
@@ -78,8 +84,11 @@ Backend 和 Worker 分别由 Windows 任务计划程序管理，均禁止并行�
 未在实际 Windows 上完成以上步骤前，状态只能是
 `OFFLINE_IMPLEMENTED / COMPANY_PILOT_NOT_READY`。
 
+2026-10-30 离线修复：移除会产生失效绝对路径的临时恢复后搬移流程。合成 WAL 数据、
+prepared-source hash、未知费用审计的恢复验收在隔离目录执行；PowerShell 目标机命令和
+Windows ACL/防火墙仍须在实际 Windows 验证，不将静态检查当作部署通过。
+
 ## 6. 回退
 
 目标机验收失败时停止两个任务并保留日志。不要修改 Mac 归档数据库来修复 Windows。
 从同一份一致性备份重新建立一个干净 Windows Home；不要把失败实例的数据库覆盖回原备份。
-

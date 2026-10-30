@@ -100,8 +100,27 @@ function Install-Geo {
     Assert-PrivateIPv4 $BindAddress
     if ($ProjectId -lt 1) { throw "PROJECT_ID_MUST_BE_POSITIVE" }
     $paths = Get-Paths
-    if (Test-Path -LiteralPath (Join-Path $paths.Home "current")) { throw "WINDOWS_HOME_ALREADY_INSTALLED" }
+    # A database file alone does not carry immutable Evidence or usage-audit
+    # ledgers. Never promote it into a runnable company instance.
+    if ($DatabaseBackup) { throw "RAW_DATABASE_BACKUP_UNSUPPORTED_USE_FULL_BACKUP" }
+    if (-not $RestoreBackup -or -not (Test-Path -LiteralPath $RestoreBackup -PathType Container)) {
+        throw "COMPLETE_BACKUP_DIRECTORY_REQUIRED"
+    }
+    if ((Test-Path -LiteralPath $paths.Home) -and (Get-ChildItem -Force -LiteralPath $paths.Home | Select-Object -First 1)) {
+        throw "WINDOWS_HOME_MUST_BE_NEW_OR_EMPTY"
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $Source "geo-platform\frontend\dist\index.html"))) { throw "RELEASE_FRONTEND_BUILD_REQUIRED" }
+
+    # This helper is stdlib-only. Preflight and restore before installing the
+    # application: restore rewrites prepared-source bindings to its target.
+    # That target MUST be the final Home, never a subsequently moved stage.
+    $lifecycle = Join-Path $Source "geo-platform\backend\scripts\m1_beta_ops.py"
+    & $PythonExe $lifecycle preflight --database (Join-Path $RestoreBackup "database.db")
+    if ($LASTEXITCODE -ne 0) { throw "BACKUP_DATABASE_PREFLIGHT_FAILED" }
+    New-Item -ItemType Directory -Force -Path $paths.Home | Out-Null
+    Set-RestrictedAcl $paths.Home
+    & $PythonExe $lifecycle restore --backup $RestoreBackup --target-home $paths.Home
+    if ($LASTEXITCODE -ne 0) { throw "RESTORE_BACKUP_FAILED" }
 
     foreach ($directory in @($paths.Home, $paths.Config, $paths.Data, $paths.Logs, $paths.Run, (Join-Path $paths.Home "releases"), (Join-Path $paths.Home "backups"), (Join-Path $paths.Home "evidence"))) {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
@@ -126,21 +145,6 @@ function Install-Geo {
         throw "WHEELHOUSE_REQUIRED_OR_ALLOW_DEPENDENCY_DOWNLOAD"
     }
     if ($LASTEXITCODE -ne 0) { throw "DEPENDENCY_INSTALL_FAILED" }
-
-    if ($RestoreBackup) {
-        if ($DatabaseBackup) { throw "CHOOSE_DATABASE_BACKUP_OR_RESTORE_BACKUP" }
-        & $venv (Join-Path $backend "scripts\m1_beta_ops.py") restore --backup $RestoreBackup --target-home (Join-Path $paths.Home ".restore-stage")
-        if ($LASTEXITCODE -ne 0) { throw "RESTORE_BACKUP_FAILED" }
-        Move-Item -Force -LiteralPath (Join-Path $paths.Home ".restore-stage\data\geo-beta.db") -Destination $paths.Database
-        if (Test-Path -LiteralPath (Join-Path $paths.Home ".restore-stage\evidence")) {
-            & robocopy.exe (Join-Path $paths.Home ".restore-stage\evidence") (Join-Path $paths.Home "evidence") /E /R:1 /W:1 | Out-Null
-            if ($LASTEXITCODE -ge 8) { throw "RESTORED_EVIDENCE_COPY_FAILED:$LASTEXITCODE" }
-        }
-        Remove-Item -Recurse -Force -LiteralPath (Join-Path $paths.Home ".restore-stage")
-    } else {
-        if (-not $DatabaseBackup -or -not (Test-Path -LiteralPath $DatabaseBackup -PathType Leaf)) { throw "CONSISTENT_DATABASE_BACKUP_REQUIRED" }
-        Copy-Item -LiteralPath $DatabaseBackup -Destination $paths.Database
-    }
 
     $databaseUrl = "sqlite:///" + ($paths.Database -replace '\\', '/')
     $env:GEO_RELEASE_DATABASE_URL = $databaseUrl

@@ -36,7 +36,7 @@ type Feedback = {
 };
 
 type Completion = { manifest_id: string; payload_hash: string; version_number: number };
-type Capabilities = { new_generation_enabled: boolean; authorization_scope: string; message: string };
+type Capabilities = { new_generation_enabled: boolean; draft_regeneration_enabled?: boolean; authorization_scope: string; message: string };
 
 const statusLabel: Record<string, string> = {
   QUEUED: "待运行", RUNNING: "生成中", WAITING_AUTHORIZATION: "等待服务启动",
@@ -269,7 +269,8 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
                 : `${validationIssueText(result.validation) || "存在未通过的内容校验项"}。这份草稿可查看和导出排查，但不是合格交付。`} />
             {(result.draft_artifacts || []).length > 0 && <DraftArtifactPanel
               artifacts={result.draft_artifacts || []} projectId={projectId} promptId={promptId}
-              parentStatus={result.draft_delivery_status || "FAILED"} onChanged={refresh} />}
+              parentStatus={result.draft_delivery_status || "FAILED"}
+              regenerationEnabled={Boolean(capabilities?.draft_regeneration_enabled)} onChanged={refresh} />}
             <Space wrap style={{ marginTop: 12 }}>
               <Button icon={<Copy size={16} />} onClick={() => copy(sections["完整正文"] || result.deliverable_markdown)}>{result.validation?.status === "PASS" ? "复制完整正文" : "复制未通过草稿"}</Button>
               <Button icon={<Download size={16} />} onClick={() => download(reportMarkdown, result.result_version)}>导出完整报告</Button>

@@ -20,6 +20,8 @@ test("子稿件分别展示状态、证据、QA、导出、反馈和重生成", 
   assert.match(children, /parent_result_version/);
   assert.match(children, /稿件已保存，但未通过独立校验/);
   assert.match(children, /disabled=\{artifact.status !== "SUCCESS"\}/);
+  assert.match(children, /单篇重新生成尚未启用/);
+  assert.match(children, /disabled=\{!regenerationEnabled\}/);
 });
 
 test("父部分成功不会伪装成全部完成", () => {

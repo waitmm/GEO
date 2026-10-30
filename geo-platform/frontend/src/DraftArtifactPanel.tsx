@@ -32,8 +32,9 @@ function download(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
-export function DraftArtifactPanel({ artifacts, projectId, promptId, parentStatus, onChanged }: {
-  artifacts: DraftArtifact[]; projectId: number; promptId: number; parentStatus: string; onChanged: () => Promise<void>;
+export function DraftArtifactPanel({ artifacts, projectId, promptId, parentStatus, regenerationEnabled, onChanged }: {
+  artifacts: DraftArtifact[]; projectId: number; promptId: number; parentStatus: string;
+  regenerationEnabled: boolean; onChanged: () => Promise<void>;
 }) {
   const { message } = AntApp.useApp();
   const latest = useMemo(() => {
@@ -51,15 +52,20 @@ export function DraftArtifactPanel({ artifacts, projectId, promptId, parentStatu
     </Tag>}>
     <Alert type="info" showIcon message="每份内容独立保存和校验"
       description="帮助文档与 FAQ 共享本次冻结的诊断、策略和证据；每份稿件仍有独立状态、证据、QA、导出、反馈和重生成历史。单篇失败不会删除另一篇成果。" />
+    {!regenerationEnabled && <Alert style={{ marginTop: 8 }} type="warning" showIcon
+      message="单篇重新生成尚未启用"
+      description="当前服务端没有获得单资产外部生成授权，因此不会创建无法执行的排队任务；查看、复制、导出和反馈不受影响。" />}
     <Space direction="vertical" size="middle" style={{ width: "100%", marginTop: 12 }}>
       {latest.map(row => <ArtifactCard key={row.artifact_version} artifact={row} projectId={projectId}
-        promptId={promptId} onChanged={onChanged} notify={(kind, text) => message[kind](text)} />)}
+        promptId={promptId} regenerationEnabled={regenerationEnabled} onChanged={onChanged}
+        notify={(kind, text) => message[kind](text)} />)}
     </Space>
   </Card>;
 }
 
-function ArtifactCard({ artifact, projectId, promptId, onChanged, notify }: {
+function ArtifactCard({ artifact, projectId, promptId, regenerationEnabled, onChanged, notify }: {
   artifact: DraftArtifact; projectId: number; promptId: number; onChanged: () => Promise<void>;
+  regenerationEnabled: boolean;
   notify: (kind: "success" | "error", text: string) => void;
 }) {
   const [feedback, setFeedback] = useState<Feedback[]>([]);
@@ -116,7 +122,8 @@ function ArtifactCard({ artifact, projectId, promptId, onChanged, notify }: {
           .catch(() => notify("error", "复制失败，请检查浏览器权限"))}>{artifact.status === "SUCCESS" ? "复制" : "复制未通过草稿"}</Button>
         <Button icon={<Download size={16} />} loading={busy} disabled={artifact.status !== "SUCCESS"}
           onClick={() => void exportOne()}>导出 Markdown</Button>
-        <Button icon={<RefreshCw size={16} />} loading={busy} onClick={() => void regenerate()}>只重新生成这份</Button>
+        <Button icon={<RefreshCw size={16} />} loading={busy} disabled={!regenerationEnabled}
+          onClick={() => void regenerate()}>只重新生成这份</Button>
       </Space>
     </>}
     <Collapse style={{ marginTop: 12 }} items={[

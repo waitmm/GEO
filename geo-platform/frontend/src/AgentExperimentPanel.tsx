@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App as AntApp, Button, Card, Collapse, Descriptions, Form, Input, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, App as AntApp, Button, Card, Checkbox, Collapse, Descriptions, Form, Input, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import { Copy, Download, MessageSquare, Play, RefreshCw, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
 import { savedResultLabel, splitAgentResult } from "./agentResultPresentation";
 import { formatBeijingDateTime } from "./time";
 import { BusinessMarkdown } from "./BusinessMarkdown";
+import { DraftArtifactPanel, type DraftArtifact } from "./DraftArtifactPanel";
 
 type AgentResult = {
   result_version: string; version_number: number; evidence_grade: string;
   public_claim_eligibility: string; publication_eligibility: string;
   deliverable_markdown: string; result: any; validation: any; created_at: string;
+  draft_delivery_status?: "SUCCESS" | "PARTIAL_SUCCESS" | "FAILED" | "LEGACY_SINGLE_DRAFT";
+  draft_artifacts?: DraftArtifact[]; legacy_single_draft?: boolean;
 };
 
 type AgentRun = {
@@ -91,6 +94,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   const [comparison, setComparison] = useState<any>();
   const [capabilities, setCapabilities] = useState<Capabilities>();
   const [contextVersion, setContextVersion] = useState<string>();
+  const [requestedArtifactTypes, setRequestedArtifactTypes] = useState<string[]>(["HELP_DOC", "FAQ"]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -149,6 +153,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           project_id: projectId, prompt_id: promptId, context_id: contextId,
           idempotency_key: `beta:${nonce}`, regenerate_nonce: nonce,
           brand_context_version_id: contextVersion || null, execution_mode: "EVIDENCE_PACK",
+          requested_artifact_types: requestedArtifactTypes,
           completion_manifest_id: completion?.manifest_id || null,
           completion_manifest_hash: completion?.payload_hash || null,
         }),
@@ -213,8 +218,17 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           message={capabilities?.new_generation_enabled ? "AI 生成已启用" : "当前仅开放历史结果使用"}
           description={capabilities?.message || "正在检查运行授权"} />
         <Typography.Text type="secondary">当前范围：已冻结 {runCount} 条回答 · {completion ? `来源资料 V${completion.version_number}` : "未选择来源资料版本"}</Typography.Text>
+        <div>
+          <Typography.Text strong>本次生成的内容资产</Typography.Text>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            两份内容共享同一次诊断、策略和证据，但分别服务“操作说明”和“问题解答”，不会把同一篇文章换标题重复交付。
+          </Typography.Paragraph>
+          <Checkbox.Group value={requestedArtifactTypes} onChange={values => setRequestedArtifactTypes(values.map(String))}
+            options={[{ label: "帮助文档", value: "HELP_DOC" }, { label: "常见问题 FAQ", value: "FAQ" }]} />
+          {requestedArtifactTypes.length === 0 && <Typography.Text type="danger">请至少选择一种内容资产</Typography.Text>}
+        </div>
         <Button type="primary" icon={<Play size={16} />} loading={busy || activeIsRunning}
-          disabled={!capabilities?.new_generation_enabled || activeIsRunning} onClick={() => void start()}>
+          disabled={!capabilities?.new_generation_enabled || activeIsRunning || requestedArtifactTypes.length === 0} onClick={() => void start()}>
           {busy || activeIsRunning ? "AI 优化运行中…" : "创建并运行 AI 优化"}
         </Button>
         {activeIsRunning && <Alert type="info" showIcon message="AI 优化正在运行"
@@ -253,6 +267,9 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
               description={result.validation?.status === "PASS"
                 ? `公开主张：${result.public_claim_eligibility}；发布资格：${result.publication_eligibility}。VERIFY_FIRST 表示必须先由员工核实，不是允许直接发布。`
                 : `${validationIssueText(result.validation) || "存在未通过的内容校验项"}。这份草稿可查看和导出排查，但不是合格交付。`} />
+            {(result.draft_artifacts || []).length > 0 && <DraftArtifactPanel
+              artifacts={result.draft_artifacts || []} projectId={projectId} promptId={promptId}
+              parentStatus={result.draft_delivery_status || "FAILED"} onChanged={refresh} />}
             <Space wrap style={{ marginTop: 12 }}>
               <Button icon={<Copy size={16} />} onClick={() => copy(sections["完整正文"] || result.deliverable_markdown)}>{result.validation?.status === "PASS" ? "复制完整正文" : "复制未通过草稿"}</Button>
               <Button icon={<Download size={16} />} onClick={() => download(reportMarkdown, result.result_version)}>导出完整报告</Button>

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -151,6 +152,56 @@ def test_online_backup_includes_committed_wal_and_restores_artifact_identity(tmp
     assert relocated.is_relative_to(target / "evidence")
     assert relocated.is_file()
     assert hashlib.sha256(relocated.read_bytes()).hexdigest() == expected
+
+
+def test_restored_audit_ledger_is_inherited_deduplicated_and_never_authorizes(tmp_path):
+    home = tmp_path / "home"
+    _database(home)[1].close()
+    ledger = home / "data" / "internal-beta-model-budget.sqlite3"
+    with sqlite3.connect(ledger) as budget:
+        budget.execute("CREATE TABLE audit_events(id INTEGER PRIMARY KEY, state TEXT NOT NULL)")
+        budget.execute("INSERT INTO audit_events(state) VALUES ('DELIVERY_UNKNOWN')")
+        budget.commit()
+    first_backup = tmp_path / "first-backup"
+    backup_home(home, first_backup)
+    restored = tmp_path / "restored"
+    restore_backup(first_backup, restored)
+    historical = restored / "backups" / "audit-ledgers" / ledger.name
+    archive_manifest = restored / "backups" / "audit-ledgers" / "manifest.json"
+    assert historical.is_file() and archive_manifest.is_file()
+    assert not (restored / "data" / ledger.name).exists()
+
+    # Even when the same logical ledger is also present as an active candidate,
+    # the next backup keeps one audit-only copy rather than duplicating usage.
+    shutil_target = restored / "data" / ledger.name
+    shutil_target.write_bytes(historical.read_bytes())
+    second_backup = tmp_path / "second-backup"
+    manifest = backup_home(restored, second_backup)
+    assert len(manifest["audit_ledgers"]) == 1
+    assert manifest["audit_ledgers"][0]["restore_policy"] == "AUDIT_ONLY_NOT_AUTHORIZATION"
+    final = tmp_path / "final"
+    restore_backup(second_backup, final)
+    assert not (final / "data" / ledger.name).exists()
+    assert (final / "backups" / "audit-ledgers" / ledger.name).is_file()
+
+
+def test_historical_audit_ledger_hash_mismatch_fails_closed(tmp_path):
+    home = tmp_path / "home"
+    _database(home)[1].close()
+    ledger = home / "data" / "internal-beta-model-budget.sqlite3"
+    with sqlite3.connect(ledger) as budget:
+        budget.execute("CREATE TABLE audit_events(id INTEGER PRIMARY KEY, state TEXT NOT NULL)")
+        budget.commit()
+    first_backup = tmp_path / "first-backup"
+    backup_home(home, first_backup)
+    restored = tmp_path / "restored"
+    restore_backup(first_backup, restored)
+    sidecar = restored / "backups" / "audit-ledgers" / "manifest.json"
+    value = json.loads(sidecar.read_text())
+    value["ledgers"][0]["sha256"] = "0" * 64
+    sidecar.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="HISTORICAL_AUDIT_LEDGER_HASH_MISMATCH"):
+        backup_home(restored, tmp_path / "rejected-backup")
 
 
 def test_backup_and_preflight_fail_closed_for_active_queue(tmp_path):

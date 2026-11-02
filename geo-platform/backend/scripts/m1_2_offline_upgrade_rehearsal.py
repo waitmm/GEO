@@ -120,19 +120,58 @@ def _online_backup(source: Path, destination: Path) -> None:
         origin.backup(target)
 
 
-def _prepare_stopped_copy(source_home: Path, target_home: Path) -> None:
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _evidence_inventory(source: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if not source.exists():
+        return rows
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"SOURCE_EVIDENCE_SYMLINK_FORBIDDEN:{path}")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source)
+        rows.append({"path": relative.as_posix(), "sha256": _file_sha256(path)})
+    return rows
+
+
+def _copy_evidence_inventory(source: Path, destination: Path) -> list[dict[str, str]]:
+    rows = _evidence_inventory(source)
+    for row in rows:
+        path = source / row["path"]
+        target = destination / row["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+        if _file_sha256(target) != row["sha256"]:
+            raise ValueError(f"SOURCE_EVIDENCE_CHANGED_DURING_COPY:{row['path']}")
+    if _evidence_inventory(source) != rows:
+        raise ValueError("SOURCE_EVIDENCE_TREE_CHANGED_DURING_COPY")
+    return rows
+
+
+def _prepare_stopped_copy(source_home: Path, target_home: Path) -> list[dict[str, str]]:
     for name in ("data", "evidence", "config", "logs", "run", "backups"):
         (target_home / name).mkdir(parents=True, mode=0o700, exist_ok=True)
     _online_backup(source_home / "data" / "geo-beta.db", target_home / "data" / "geo-beta.db")
     ledger = source_home / "data" / "internal-beta-model-budget.sqlite3"
     if ledger.is_file():
         _online_backup(ledger, target_home / "data" / ledger.name)
+    evidence_inventory = _copy_evidence_inventory(
+        source_home / "evidence", target_home / "evidence")
     version = (source_home / "VERSION").read_text().strip()
     (target_home / "VERSION").write_text(version + "\n")
     (target_home / "run" / "services-stopped").write_text(
         datetime.now(timezone.utc).isoformat() + "\n")
     for name in EXTERNAL_CAPABILITY_FILES:
         (target_home / "config" / name).write_text("0\n")
+    return evidence_inventory
 
 
 def _run_migration(backend: Path, database: Path, revision: str) -> dict[str, Any]:
@@ -223,7 +262,7 @@ def rehearse(source_home: Path, output: Path) -> dict[str, Any]:
         raise ValueError(f"OUTPUT_EXISTS:{output}")
     output.mkdir(parents=True, mode=0o700)
     stopped_copy = output / "m1.1-consistent-copy"
-    _prepare_stopped_copy(source_home, stopped_copy)
+    evidence_inventory = _prepare_stopped_copy(source_home, stopped_copy)
     source_state = inspect_database(stopped_copy / "data" / "geo-beta.db")
     if source_state["active_work"]:
         raise ValueError("SOURCE_COPY_HAS_ACTIVE_WORK")
@@ -231,7 +270,9 @@ def rehearse(source_home: Path, output: Path) -> dict[str, Any]:
         raise ValueError(f"SOURCE_REVISION_NOT_M1_1:{source_state['revision']}")
 
     pre_backup = output / "m1.1-pre-upgrade-backup"
-    backup_home(stopped_copy, pre_backup)
+    pre_manifest = backup_home(stopped_copy, pre_backup)
+    if pre_manifest.get("evidence_files") != evidence_inventory:
+        raise RuntimeError("PRE_UPGRADE_EVIDENCE_INVENTORY_MISMATCH")
     upgrade_home = output / "m1.2-upgrade-home"
     restore_backup(pre_backup, upgrade_home)
     database = upgrade_home / "data" / "geo-beta.db"
@@ -255,7 +296,17 @@ def rehearse(source_home: Path, output: Path) -> dict[str, Any]:
         raise RuntimeError("LEGACY_SINGLE_DRAFT_READBACK_FAILED")
 
     post_backup = output / "m1.2-post-upgrade-backup"
-    backup_home(upgrade_home, post_backup)
+    post_manifest = backup_home(upgrade_home, post_backup)
+    post_evidence = {
+        row["path"]: row["sha256"] for row in post_manifest.get("evidence_files", [])}
+    if any(post_evidence.get(row["path"]) != row["sha256"] for row in evidence_inventory):
+        raise RuntimeError("POST_UPGRADE_EVIDENCE_INVENTORY_MISMATCH")
+    pre_audit_hashes = {
+        row.get("logical_sha256") for row in pre_manifest.get("audit_ledgers", [])}
+    post_audit_hashes = {
+        row.get("logical_sha256") for row in post_manifest.get("audit_ledgers", [])}
+    if pre_audit_hashes != post_audit_hashes:
+        raise RuntimeError("POST_UPGRADE_AUDIT_LEDGER_INHERITANCE_MISMATCH")
     restored_home = output / "m1.2-restored-home"
     restore_backup(post_backup, restored_home)
     restored = _table_fingerprints(restored_home / "data" / "geo-beta.db")
@@ -308,6 +359,12 @@ def rehearse(source_home: Path, output: Path) -> dict[str, Any]:
         "preexisting_table_count": len(before),
         "preexisting_tables_changed": [],
         "dependency_counts": explicit_counts,
+        "evidence_file_count": len(evidence_inventory),
+        "post_upgrade_evidence_file_count": len(post_evidence),
+        "evidence_inventory_sha256": hashlib.sha256(
+            _canonical(evidence_inventory)).hexdigest(),
+        "pre_upgrade_audit_ledger_count": len(pre_manifest.get("audit_ledgers", [])),
+        "post_upgrade_audit_ledger_count": len(post_manifest.get("audit_ledgers", [])),
         "legacy_single_draft_readback": legacy,
         "post_upgrade_backup_revision": inspect_database(post_backup / "database.db")["revision"],
         "post_upgrade_restore_revision": inspect_database(

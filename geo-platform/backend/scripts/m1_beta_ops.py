@@ -167,6 +167,99 @@ def _copy_tree_with_hashes(source: Path, destination: Path) -> list[dict[str, st
     return rows
 
 
+AUDIT_LEDGER_RESTORE_POLICY = "AUDIT_ONLY_NOT_AUTHORIZATION"
+AUDIT_LEDGER_ARCHIVE_FORMAT = "geo-m1-audit-ledgers.v1"
+
+
+def _sqlite_logical_hash(path: Path) -> str:
+    """Stable content identity used only to de-duplicate audit copies."""
+    with _connect_ro(path) as db:
+        integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise ValueError(f"AUDIT_LEDGER_INTEGRITY_FAILED:{path}")
+        dump = "\n".join(db.iterdump())
+    return _hash_text(dump)
+
+
+def _historical_audit_ledgers(home: Path) -> list[dict[str, Any]]:
+    audit_dir = home / "backups" / "audit-ledgers"
+    if not audit_dir.exists():
+        return []
+    files = sorted(path for path in audit_dir.glob("*.sqlite3") if path.is_file())
+    if not files:
+        return []
+    manifest_path = audit_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError("HISTORICAL_AUDIT_LEDGER_MANIFEST_REQUIRED")
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get("format") != AUDIT_LEDGER_ARCHIVE_FORMAT:
+        raise ValueError("HISTORICAL_AUDIT_LEDGER_MANIFEST_UNSUPPORTED")
+    rows = manifest.get("ledgers")
+    if not isinstance(rows, list):
+        raise ValueError("HISTORICAL_AUDIT_LEDGER_MANIFEST_INVALID")
+    listed: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("path") or "")
+        if not name or Path(name).name != name or name in listed:
+            raise ValueError("HISTORICAL_AUDIT_LEDGER_PATH_INVALID")
+        listed.add(name)
+        source = audit_dir / name
+        if row.get("restore_policy") != AUDIT_LEDGER_RESTORE_POLICY \
+                or not source.is_file() or _hash_file(source) != row.get("sha256"):
+            raise ValueError(f"HISTORICAL_AUDIT_LEDGER_HASH_MISMATCH:{name}")
+        logical = _sqlite_logical_hash(source)
+        if row.get("logical_sha256") and row["logical_sha256"] != logical:
+            raise ValueError(f"HISTORICAL_AUDIT_LEDGER_LOGICAL_HASH_MISMATCH:{name}")
+        result.append({
+            "kind": row.get("kind") or "HISTORICAL_AUDIT_LEDGER",
+            "source": source,
+            "logical_sha256": logical,
+        })
+    if listed != {path.name for path in files}:
+        raise ValueError("HISTORICAL_AUDIT_LEDGER_MANIFEST_INCOMPLETE")
+    return result
+
+
+def _archive_audit_ledgers(home: Path, output: Path) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    active = home / "data" / "internal-beta-model-budget.sqlite3"
+    if active.is_file():
+        candidates.append({
+            "kind": "INTERNAL_BETA_MODEL_BUDGET", "source": active,
+            "logical_sha256": _sqlite_logical_hash(active),
+        })
+    candidates.extend(_historical_audit_ledgers(home))
+    if not candidates:
+        return []
+    audit_dir = output / "audit-ledgers"
+    audit_dir.mkdir(mode=0o700)
+    archived: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        logical = candidate["logical_sha256"]
+        if logical in seen:
+            continue
+        seen.add(logical)
+        basename = candidate["source"].name
+        target = audit_dir / basename
+        if target.exists():
+            target = audit_dir / f"{logical[:16]}-{basename}"
+        with _connect_ro(candidate["source"]) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+        if _sqlite_logical_hash(target) != logical:
+            raise ValueError(f"ARCHIVED_AUDIT_LEDGER_LOGICAL_HASH_MISMATCH:{basename}")
+        target.chmod(0o400)
+        archived.append({
+            "kind": candidate["kind"],
+            "backup_path": f"audit-ledgers/{target.name}",
+            "sha256": _hash_file(target),
+            "logical_sha256": logical,
+            "restore_policy": AUDIT_LEDGER_RESTORE_POLICY,
+        })
+    return archived
+
+
 def _prepared_sources(database: Path) -> list[dict[str, Any]]:
     with _connect_ro(database) as db:
         if "single_prompt_prepared_source_snapshots" not in _tables(db):
@@ -237,25 +330,7 @@ def backup_home(home: Path, output: Path) -> dict[str, Any]:
         archived_sources.append({**row, "backup_path": relative})
 
     evidence_files = _copy_tree_with_hashes(home / "evidence", output / "evidence")
-    audit_ledgers: list[dict[str, Any]] = []
-    model_ledger = home / "data" / "internal-beta-model-budget.sqlite3"
-    if model_ledger.is_file():
-        audit_dir = output / "audit-ledgers"
-        audit_dir.mkdir(mode=0o700)
-        archived_ledger = audit_dir / model_ledger.name
-        with _connect_ro(model_ledger) as source, sqlite3.connect(archived_ledger) as target:
-            source.backup(target)
-        archived_ledger.chmod(0o400)
-        with _connect_ro(archived_ledger) as ledger:
-            ledger_integrity = ledger.execute("PRAGMA integrity_check").fetchone()[0]
-        if ledger_integrity != "ok":
-            raise ValueError("MODEL_BUDGET_AUDIT_LEDGER_INTEGRITY_FAILED")
-        audit_ledgers.append({
-            "kind": "INTERNAL_BETA_MODEL_BUDGET",
-            "backup_path": f"audit-ledgers/{model_ledger.name}",
-            "sha256": _hash_file(archived_ledger),
-            "restore_policy": "AUDIT_ONLY_NOT_AUTHORIZATION",
-        })
+    audit_ledgers = _archive_audit_ledgers(home, output)
     config: dict[str, str] = {}
     for name in CONFIG_ALLOWLIST:
         path = home / "config" / name
@@ -306,9 +381,11 @@ def verify_backup(directory: Path) -> dict[str, Any]:
             raise ValueError(f"BACKUP_EVIDENCE_HASH_MISMATCH:{row['path']}")
     for row in manifest.get("audit_ledgers", []):
         path = directory / row["backup_path"]
-        if (row.get("restore_policy") != "AUDIT_ONLY_NOT_AUTHORIZATION"
+        if (row.get("restore_policy") != AUDIT_LEDGER_RESTORE_POLICY
                 or not path.is_file() or _hash_file(path) != row["sha256"]):
             raise ValueError(f"BACKUP_AUDIT_LEDGER_MISMATCH:{row.get('kind', 'UNKNOWN')}")
+        if row.get("logical_sha256") and row["logical_sha256"] != _sqlite_logical_hash(path):
+            raise ValueError(f"BACKUP_AUDIT_LEDGER_LOGICAL_HASH_MISMATCH:{row.get('kind', 'UNKNOWN')}")
     return {
         "status": "PASS",
         "revision": state["revision"],
@@ -388,6 +465,7 @@ def restore_backup(directory: Path, target_home: Path) -> dict[str, Any]:
     # Historical usage ledgers remain available for audit, but never become
     # the active authorization ledger on a restored machine.
     audit_dir = target_home / "backups" / "audit-ledgers"
+    restored_audit_rows: list[dict[str, Any]] = []
     for row in manifest.get("audit_ledgers", []):
         audit_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         target = audit_dir / Path(row["backup_path"]).name
@@ -395,6 +473,18 @@ def restore_backup(directory: Path, target_home: Path) -> dict[str, Any]:
         if _hash_file(target) != row["sha256"]:
             raise ValueError(f"RESTORED_AUDIT_LEDGER_HASH_MISMATCH:{row['kind']}")
         target.chmod(0o400)
+        restored_audit_rows.append({
+            "kind": row["kind"], "path": target.name,
+            "sha256": row["sha256"],
+            "logical_sha256": row.get("logical_sha256") or _sqlite_logical_hash(target),
+            "restore_policy": AUDIT_LEDGER_RESTORE_POLICY,
+        })
+    if restored_audit_rows:
+        _write_json(audit_dir / "manifest.json", {
+            "format": AUDIT_LEDGER_ARCHIVE_FORMAT,
+            "created_at": _utc_now(),
+            "ledgers": restored_audit_rows,
+        })
 
     relocated_dir = target_home / "evidence" / "prepared-sources-restored"
     relocated_dir.mkdir(parents=True, mode=0o700, exist_ok=True)

@@ -105,6 +105,10 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   const result = results.find(row => row.result_version === selectedResultVersion) || results[0] || active?.result || undefined;
   const reportMarkdown = result?.result?.raw_markdown || result?.deliverable_markdown || "";
   const sections = splitAgentResult(reportMarkdown);
+  const hasDraftArtifacts = Boolean(result?.draft_artifacts?.length);
+  const displayedSectionTitles = hasDraftArtifacts
+    ? (["GEO 诊断与依据", "品牌表现与证据缺口", "优化策略与渠道", "QA 与事实限制", "复测计划"] as const)
+    : (["GEO 诊断与依据", "品牌表现与证据缺口", "优化策略与渠道", "完整正文", "QA 与事实限制", "复测计划"] as const);
   const query = `project_id=${projectId}&prompt_id=${promptId}`;
   const base = "/api/v2/single-prompt";
 
@@ -272,8 +276,10 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
               parentStatus={result.draft_delivery_status || "FAILED"}
               regenerationEnabled={Boolean(capabilities?.draft_regeneration_enabled)} onChanged={refresh} />}
             <Space wrap style={{ marginTop: 12 }}>
-              <Button icon={<Copy size={16} />} onClick={() => copy(sections["完整正文"] || result.deliverable_markdown)}>{result.validation?.status === "PASS" ? "复制完整正文" : "复制未通过草稿"}</Button>
-              <Button icon={<Download size={16} />} onClick={() => download(reportMarkdown, result.result_version)}>导出完整报告</Button>
+              {!hasDraftArtifacts && <Button icon={<Copy size={16} />} onClick={() => copy(sections["完整正文"] || result.deliverable_markdown)}>{result.validation?.status === "PASS" ? "复制完整正文" : "复制未通过草稿"}</Button>}
+              <Button icon={<Download size={16} />} onClick={() => download(reportMarkdown, result.result_version)}>
+                {hasDraftArtifacts ? "导出本次优化完整报告" : "导出完整报告"}
+              </Button>
             </Space>
             <Descriptions size="small" column={{ xs: 1, md: 3 }} style={{ marginTop: 16 }}>
               <Descriptions.Item label="当前样本">{result.result?.evidence_pack?.coverage?.run_count ?? runCount} 条回答</Descriptions.Item>
@@ -281,7 +287,9 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
               <Descriptions.Item label="来源快照">{result.result?.evidence_pack?.coverage?.source_snapshot_count ?? 0}</Descriptions.Item>
             </Descriptions>
             <Alert style={{ marginTop: 12 }} type="info" showIcon
-              message="建议阅读顺序：诊断依据 → 优化策略 → 完整正文 → QA"
+              message={hasDraftArtifacts
+                ? "建议阅读顺序：诊断依据 → 优化策略 → 各内容资产 → QA"
+                : "建议阅读顺序：诊断依据 → 优化策略 → 完整正文 → QA"}
               description="蓝色“回答 #”标签表示结论可以回查到冻结回答；VERIFY_FIRST 表示相关品牌事实仍需员工核实后使用。" />
             {(result.result?.evidence_pack?.citation_channel_observations?.platforms || []).length > 0 &&
               <Card size="small" title="引用来源渠道观察（不是渠道效果结论）" style={{ marginTop: 12 }}>
@@ -291,7 +299,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
                   这里统计的是冻结回答实际出现的引用平台、来源域名和内容形态。引用次数高不等于该渠道最适合发布；竞品来源也不构成目标品牌能力证明。
                 </Typography.Paragraph>
               </Card>}
-            {(["GEO 诊断与依据", "品牌表现与证据缺口", "优化策略与渠道", "完整正文", "QA 与事实限制", "复测计划"] as const).map(title =>
+            {displayedSectionTitles.map(title =>
               <Card size="small" key={title} title={title} style={{ marginTop: 12 }}>
                 <BusinessMarkdown markdown={sections[title] || "本结果未提供该部分。"} />
               </Card>)}

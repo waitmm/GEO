@@ -37,13 +37,18 @@ export function DraftArtifactPanel({ artifacts, projectId, promptId, parentStatu
   regenerationEnabled: boolean; onChanged: () => Promise<void>;
 }) {
   const { message } = AntApp.useApp();
-  const latest = useMemo(() => {
-    const byId = new Map<string, DraftArtifact>();
+  const [selectedVersions, setSelectedVersions] = useState<Record<string, string>>({});
+  const groups = useMemo(() => {
+    const byId = new Map<string, DraftArtifact[]>();
     for (const row of artifacts) {
-      const old = byId.get(row.artifact_id);
-      if (!old || row.version_number > old.version_number) byId.set(row.artifact_id, row);
+      const versions = byId.get(row.artifact_id) || [];
+      versions.push(row);
+      byId.set(row.artifact_id, versions);
     }
-    return [...byId.values()].sort((a, b) => a.artifact_type.localeCompare(b.artifact_type));
+    return [...byId.entries()].map(([artifactId, versions]) => ({
+      artifactId,
+      versions: versions.sort((a, b) => b.version_number - a.version_number),
+    })).sort((a, b) => a.versions[0].artifact_type.localeCompare(b.versions[0].artifact_type));
   }, [artifacts]);
 
   return <Card style={{ marginTop: 16 }} title="本次优化的内容资产"
@@ -56,9 +61,26 @@ export function DraftArtifactPanel({ artifacts, projectId, promptId, parentStatu
       message="单篇重新生成尚未启用"
       description="当前服务端没有获得单资产外部生成授权，因此不会创建无法执行的排队任务；查看、复制、导出和反馈不受影响。" />}
     <Space direction="vertical" size="middle" style={{ width: "100%", marginTop: 12 }}>
-      {latest.map(row => <ArtifactCard key={row.artifact_version} artifact={row} projectId={projectId}
-        promptId={promptId} regenerationEnabled={regenerationEnabled} onChanged={onChanged}
-        notify={(kind, text) => message[kind](text)} />)}
+      {groups.map(group => {
+        const selectedVersion = selectedVersions[group.artifactId] || group.versions[0].artifact_version;
+        const row = group.versions.find(item => item.artifact_version === selectedVersion) || group.versions[0];
+        return <div key={group.artifactId}>
+          {group.versions.length > 1 && <Space wrap style={{ marginBottom: 8 }}>
+            <Typography.Text strong>{typeLabel[row.artifact_type] || row.artifact_type}版本</Typography.Text>
+            <Select aria-label={`${typeLabel[row.artifact_type] || row.artifact_type}历史版本`}
+              value={row.artifact_version} style={{ minWidth: 280 }}
+              onChange={value => setSelectedVersions(current => ({ ...current, [group.artifactId]: value }))}
+              options={group.versions.map(item => ({
+                value: item.artifact_version,
+                label: `第 ${item.version_number} 版 · ${formatBeijingDateTime(item.created_at)} · ${statusLabel[item.status] || item.status}`,
+              }))} />
+            <Typography.Text type="secondary">历史版本只读保留，不会被重新生成覆盖</Typography.Text>
+          </Space>}
+          <ArtifactCard artifact={row} projectId={projectId}
+            promptId={promptId} regenerationEnabled={regenerationEnabled} onChanged={onChanged}
+            notify={(kind, text) => message[kind](text)} />
+        </div>;
+      })}
     </Space>
   </Card>;
 }

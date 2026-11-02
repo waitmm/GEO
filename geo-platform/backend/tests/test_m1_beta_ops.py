@@ -204,6 +204,23 @@ def test_historical_audit_ledger_hash_mismatch_fails_closed(tmp_path):
         backup_home(restored, tmp_path / "rejected-backup")
 
 
+def test_historical_audit_manifest_with_missing_only_ledger_fails_closed(tmp_path):
+    home = tmp_path / "home"
+    _database(home)[1].close()
+    ledger = home / "data" / "internal-beta-model-budget.sqlite3"
+    with sqlite3.connect(ledger) as budget:
+        budget.execute("CREATE TABLE audit_events(id INTEGER PRIMARY KEY, state TEXT NOT NULL)")
+        budget.commit()
+    first_backup = tmp_path / "first-backup"
+    backup_home(home, first_backup)
+    restored = tmp_path / "restored"
+    restore_backup(first_backup, restored)
+    historical = restored / "backups" / "audit-ledgers" / ledger.name
+    historical.unlink()
+    with pytest.raises(ValueError, match="HISTORICAL_AUDIT_LEDGER_HASH_MISMATCH"):
+        backup_home(restored, tmp_path / "rejected-backup")
+
+
 def test_backup_and_preflight_fail_closed_for_active_queue(tmp_path):
     home = tmp_path / "home"
     database, connection = _database(home, active=True)

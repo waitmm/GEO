@@ -186,9 +186,9 @@ def _historical_audit_ledgers(home: Path) -> list[dict[str, Any]]:
     if not audit_dir.exists():
         return []
     files = sorted(path for path in audit_dir.glob("*.sqlite3") if path.is_file())
-    if not files:
-        return []
     manifest_path = audit_dir / "manifest.json"
+    if not files and not manifest_path.exists():
+        return []
     if not manifest_path.is_file():
         raise ValueError("HISTORICAL_AUDIT_LEDGER_MANIFEST_REQUIRED")
     manifest = json.loads(manifest_path.read_text())

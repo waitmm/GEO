@@ -164,6 +164,22 @@ def test_backup_and_preflight_fail_closed_for_active_queue(tmp_path):
         backup_home(home, tmp_path / "backup")
 
 
+def test_preflight_includes_draft_artifact_regeneration_queue(tmp_path):
+    home = tmp_path / "home"
+    database, connection = _database(home)
+    connection.execute(
+        "CREATE TABLE agent_draft_artifact_regenerations(id INTEGER PRIMARY KEY, status TEXT NOT NULL)"
+    )
+    connection.execute("INSERT INTO agent_draft_artifact_regenerations(status) VALUES ('QUEUED')")
+    connection.commit()
+    connection.close()
+    assert inspect_database(database)["active_work"] == [{
+        "table": "agent_draft_artifact_regenerations", "rowid": 1, "status": "QUEUED",
+    }]
+    with pytest.raises(ValueError, match="ACTIVE_WORK_REQUIRES_QUARANTINE"):
+        backup_home(home, tmp_path / "backup")
+
+
 def test_backup_requires_explicit_stopped_service_marker(tmp_path):
     home = tmp_path / "home"
     _database(home)[1].close()
@@ -205,6 +221,26 @@ def test_install_runtime_upgrade_and_rollback_are_versioned_and_fail_closed(tmp_
     assert Path(rolled_back["retained_pre_rollback_state"]).is_dir()
     assert inspect_database(home / "data" / "geo-beta.db")["integrity"] == "ok"
     assert (home / "VERSION").read_text().strip() == f"m1-old / {'1' * 40}"
+
+
+def test_rollback_reports_preserved_unknown_audit_ledger(tmp_path):
+    home = tmp_path / "home"
+    _database(home)[1].close()
+    ledger = home / "data" / "internal-beta-model-budget.sqlite3"
+    with sqlite3.connect(ledger) as budget:
+        budget.execute("CREATE TABLE model_requests(id INTEGER PRIMARY KEY, status TEXT NOT NULL)")
+        budget.execute("INSERT INTO model_requests(status) VALUES ('DELIVERY_UNKNOWN')")
+        budget.commit()
+    source = _prepared_release(tmp_path / "source", "old")
+    install_release(source, home, "m1-old", "1" * 40, "20261022_01")
+    backup = tmp_path / "backup"
+    backup_home(home, backup)
+    report = rollback_release(home, backup, "m1-old")
+    receipt = report["audit_ledger_locations"][0]
+    assert receipt["restore_policy"] == "AUDIT_ONLY_NOT_AUTHORIZATION"
+    assert receipt["status_counts"] == {"model_requests": {"DELIVERY_UNKNOWN": 1}}
+    assert Path(receipt["path"]).is_file()
+    assert not (home / "data" / "internal-beta-model-budget.sqlite3").exists()
 
 
 def test_rollback_requires_stopped_marker_and_matching_release_identity(tmp_path):

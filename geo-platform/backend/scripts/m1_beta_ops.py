@@ -57,6 +57,7 @@ WORK_QUEUE_TABLES = (
     "single_prompt_diagnosis_executions",
     "single_prompt_citation_contribution_executions",
     "single_prompt_qualification_critic_executions",
+    "agent_draft_artifact_regenerations",
 )
 
 
@@ -868,6 +869,30 @@ def rollback_release(home: Path, backup: Path, release_id: str) -> dict[str, Any
     backup_manifest = json.loads((backup / "manifest.json").read_text())
     if str(backup_manifest.get("source_version", "")).split(" / ", 1)[0] != release_id:
         raise ValueError("ROLLBACK_RELEASE_BACKUP_VERSION_MISMATCH")
+    audit_ledger_locations: list[dict[str, Any]] = []
+    for row in backup_manifest.get("audit_ledgers", []):
+        audit_path = backup / row["backup_path"]
+        if (row.get("restore_policy") != "AUDIT_ONLY_NOT_AUTHORIZATION"
+                or not audit_path.is_file() or _hash_file(audit_path) != row["sha256"]):
+            raise ValueError(f"ROLLBACK_AUDIT_LEDGER_MISMATCH:{row.get('kind', 'UNKNOWN')}")
+        status_counts: dict[str, dict[str, int]] = {}
+        with _connect_ro(audit_path) as ledger:
+            for table in sorted(_tables(ledger)):
+                if "status" not in _columns(ledger, table):
+                    continue
+                quoted = table.replace('"', '""')
+                status_counts[table] = {
+                    str(status): int(count) for status, count in ledger.execute(
+                        f'SELECT status, count(*) FROM "{quoted}" GROUP BY status ORDER BY status'
+                    )
+                }
+        audit_ledger_locations.append({
+            "kind": row.get("kind", "UNKNOWN"),
+            "path": str(audit_path.resolve()),
+            "sha256": row["sha256"],
+            "restore_policy": "AUDIT_ONLY_NOT_AUTHORIZATION",
+            "status_counts": status_counts,
+        })
     current_state = inspect_database(home / "data" / "geo-beta.db")
     if current_state["active_work"]:
         raise ValueError("ACTIVE_WORK_REQUIRES_QUARANTINE")
@@ -902,6 +927,7 @@ def rollback_release(home: Path, backup: Path, release_id: str) -> dict[str, Any
         "backup": str(backup),
         "retained_pre_rollback_state": str(retained),
         "relocated_prepared_sources": relocated,
+        "audit_ledger_locations": audit_ledger_locations,
         "database": final,
         "daily_model_calls": 0,
         "scheduled_sampling": 0,

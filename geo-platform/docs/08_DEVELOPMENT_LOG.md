@@ -6830,12 +6830,14 @@ review_queue = READY
   locators, QA qualification, validation issues and a visible VERIFY_FIRST warning. Raw JSON
   remains available only under the nested technical-details disclosure; feedback ratings are
   displayed in business language.
-- Verification: 18/18 backend multi-content tests, 6/6 targeted frontend tests and 36/36
+- Verification: 19/19 backend multi-content tests, 7/7 targeted frontend tests and 36/36
   frontend client tests passed; production frontend build passed. The isolated Chrome flow
   seeded one frozen Analysis and two scripted child assets, displayed independent HELP_DOC and
   FAQ content/Evidence/QA/export state on desktop and mobile, and passed with zero external
-  calls. Evidence is under `backend/artifacts/acceptance/agent-browser-20261105T025147Z/`.
-- Two broader Agent tests still fail closed because their fixture hard-codes 2026-10-22/26
-  pricing evidence and the production seven-day freshness rule now rejects it. This is logged
-  as test-clock debt, not hidden as a multi-content regression. Real model content quality,
+  calls. Evidence is under `backend/artifacts/acceptance/agent-browser-20261105T030230Z/`.
+- Independent QA found and blocked two defects before acceptance: headings could contribute
+  operation verbs, and a false `verify_first` field could display a VERIFY_FIRST warning. Both
+  now have direct negative tests. The same batch removed hard-coded October pricing dates from
+  the affected tests without weakening the production seven-day freshness rule; Agent,
+  multi-content and internal-Beta backend tests now pass 66/66. Real model content quality,
   Windows deployment and M1.1-to-M1.2 release promotion remain separate uncompleted gates.

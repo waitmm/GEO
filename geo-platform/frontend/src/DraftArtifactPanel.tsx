@@ -4,6 +4,7 @@ import { Copy, Download, RefreshCw } from "lucide-react";
 import { request } from "./api/client";
 import { BusinessMarkdown } from "./BusinessMarkdown";
 import { formatBeijingDateTime } from "./time";
+import { feedbackRatingLabel, summarizeArtifactEvidenceQa } from "./draftArtifactPresentation";
 
 export type DraftArtifact = {
   artifact_version: string; artifact_id: string; parent_result_version: string;
@@ -94,6 +95,7 @@ function ArtifactCard({ artifact, projectId, promptId, regenerationEnabled, onCh
   const [busy, setBusy] = useState(false);
   const [form] = Form.useForm();
   const query = `project_id=${projectId}&prompt_id=${promptId}`;
+  const evidenceQa = summarizeArtifactEvidenceQa(artifact.evidence, artifact.qa, artifact.status, artifact.failure);
   useEffect(() => {
     request<Feedback[]>(`/api/v2/single-prompt/draft-artifacts/${encodeURIComponent(artifact.artifact_version)}/feedback?${query}`)
       .then(setFeedback).catch(() => setFeedback([]));
@@ -149,10 +151,21 @@ function ArtifactCard({ artifact, projectId, promptId, regenerationEnabled, onCh
       </Space>
     </>}
     <Collapse style={{ marginTop: 12 }} items={[
-      { key: "evidence", label: "证据与 QA", children: <Descriptions size="small" column={1}>
-        <Descriptions.Item label="证据定位"><pre>{JSON.stringify(artifact.evidence, null, 2)}</pre></Descriptions.Item>
-        <Descriptions.Item label="独立 QA"><pre>{JSON.stringify(artifact.qa, null, 2)}</pre></Descriptions.Item>
-      </Descriptions> },
+      { key: "evidence", label: "证据与 QA", children: <>
+        <Descriptions size="small" column={1}>
+          <Descriptions.Item label="证据数量">{evidenceQa.evidenceCount} 条</Descriptions.Item>
+          <Descriptions.Item label="证据类型">{evidenceQa.evidenceTypes.join("、") || "暂未提供证据类型"}</Descriptions.Item>
+          <Descriptions.Item label="证据定位">{evidenceQa.evidenceLocations.length ? evidenceQa.evidenceLocations.join("；") : "暂未提供可定位的证据"}</Descriptions.Item>
+          <Descriptions.Item label="QA 资格"><Tag color={evidenceQa.qualificationTone === "success" ? "green" : evidenceQa.qualificationTone === "error" ? "red" : "gold"}>{evidenceQa.qualification}</Tag></Descriptions.Item>
+          {evidenceQa.issues.length > 0 && <Descriptions.Item label="需要处理的问题">{evidenceQa.issues.join("；")}</Descriptions.Item>}
+        </Descriptions>
+        {evidenceQa.verifyFirst && <Alert style={{ marginTop: 8 }} type="warning" showIcon message="需先核实（VERIFY_FIRST）"
+          description="这份稿件含有需要员工先核对的事实或限制；完成核实前，请勿将相关内容作为已确认的对外表述。" />}
+        <Collapse size="small" style={{ marginTop: 8 }} items={[{ key: "technical", label: "技术详情（原始数据）", children: <Descriptions size="small" column={1}>
+          <Descriptions.Item label="原始证据数据"><pre>{JSON.stringify(artifact.evidence, null, 2)}</pre></Descriptions.Item>
+          <Descriptions.Item label="原始 QA 数据"><pre>{JSON.stringify(artifact.qa, null, 2)}</pre></Descriptions.Item>
+        </Descriptions> }]} />
+      </> },
       { key: "feedback", label: `这份稿件的反馈（${feedback.length}）`, children: <>
         <Form form={form} layout="vertical" initialValues={{ adoption_status: "UNKNOWN", modification_level: "NOT_RECORDED", reason_tags: [] }} onFinish={submit}>
           <Form.Item name="rating" label="是否可用" rules={[{ required: true }]}><Select options={[
@@ -176,7 +189,7 @@ function ArtifactCard({ artifact, projectId, promptId, regenerationEnabled, onCh
           <Button type="primary" htmlType="submit" loading={busy}>保存这份稿件的反馈</Button>
         </Form>
         {feedback.map(row => <Typography.Paragraph key={row.feedback_id} type="secondary">
-          {formatBeijingDateTime(row.created_at)} · {row.rating} · {row.suggestion || "未填写建议"}
+          {formatBeijingDateTime(row.created_at)} · {feedbackRatingLabel[row.rating] || row.rating} · {row.suggestion || "未填写建议"}
         </Typography.Paragraph>)}
       </> },
     ]} />

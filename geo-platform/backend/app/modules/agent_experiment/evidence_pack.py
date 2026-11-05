@@ -49,6 +49,20 @@ _HEADING = re.compile(r"(?m)^##\s+(.+?)\s*$")
 _REF = re.compile(r"\[\[(answer|citation|source|truth):([^\]]+)\]\]")
 _ANY_REF = re.compile(r"\[\[[^\]]+\]\]")
 _MARKDOWN_CODE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+_HELP_STEP_HEADING = re.compile(
+    r"(?im)^#{3,6}\s*(?:步骤\s*[一二三四五六七八九十\d]+|"
+    r"第\s*[一二三四五六七八九十\d]+\s*步|操作\s*[一二三四五六七八九十\d]+|"
+    r"准备(?:工作)?|开始(?:操作)?|配置|执行|检查|验证|异常处理|完成)"
+)
+_ORDERED_STEP = re.compile(r"(?m)^\s*(?:\d+[.)、]|[一二三四五六七八九十]+[.)、])\s*\S")
+_OPERATION_VERB = re.compile(
+    r"选择|打开|点击|输入|填写|配置|检查|确认|核对|保存|提交|执行|记录|验证|测试|停止|返回"
+)
+_DRAFT_SIMILARITY_VERSION = "geo.draft-content-similarity.v1"
+_DRAFT_SIMILARITY_NGRAM = 5
+_DRAFT_SIMILARITY_MIN_NORMALIZED_CHARS = 180
+_DRAFT_SIMILARITY_MIN_CONTAINMENT = 0.88
+_DRAFT_SIMILARITY_MIN_JACCARD = 0.72
 
 
 class EvidencePackCapacityError(RuntimeError):
@@ -578,6 +592,73 @@ def _validate_reference(kind: str, locator: str, pack: dict[str, Any]) -> str | 
     return "EVIDENCE_REF_KIND_INVALID"
 
 
+def _help_doc_structure_metrics(markdown: str) -> dict[str, Any]:
+    heading_count = len(_HELP_STEP_HEADING.findall(markdown))
+    ordered_step_count = len(_ORDERED_STEP.findall(markdown))
+    operation_verb_count = len(_OPERATION_VERB.findall(markdown))
+    structurally_editable = (
+        (heading_count >= 2 or ordered_step_count >= 3)
+        and operation_verb_count >= 2
+    )
+    return {
+        "algorithm": "geo.help-doc-operation-structure.v1",
+        "step_heading_count": heading_count,
+        "ordered_step_count": ordered_step_count,
+        "operation_verb_count": operation_verb_count,
+        "required_step_headings": 2,
+        "required_ordered_steps": 3,
+        "required_operation_verbs": 2,
+        "passed": structurally_editable,
+    }
+
+
+def _draft_similarity_metrics(left: str, right: str) -> dict[str, Any]:
+    def shingles(markdown: str) -> tuple[str, set[str]]:
+        without_refs = _ANY_REF.sub("", _mask_markdown_code(markdown))
+        # Asset-specific headings and list markers are presentation structure,
+        # not substantive differentiation. Shared facts remain, but cannot trip
+        # the gate unless long spans are actually reused.
+        without_headings = re.sub(r"(?m)^#{1,6}\s+.*$", "", without_refs)
+        without_markers = re.sub(
+            r"(?m)^\s*(?:\d+[.)、]|[一二三四五六七八九十]+[.)、])\s*", "", without_headings)
+        normalized = "".join(re.findall(
+            r"[\u3400-\u9fffA-Za-z0-9]", without_markers)).lower()
+        values = {
+            normalized[index:index + _DRAFT_SIMILARITY_NGRAM]
+            for index in range(max(0, len(normalized) - _DRAFT_SIMILARITY_NGRAM + 1))
+        }
+        return normalized, values
+
+    left_text, left_shingles = shingles(left)
+    right_text, right_shingles = shingles(right)
+    intersection = len(left_shingles & right_shingles)
+    union = len(left_shingles | right_shingles)
+    smaller = min(len(left_shingles), len(right_shingles))
+    smaller_chars = min(len(left_text), len(right_text))
+    jaccard = intersection / union if union else 0.0
+    containment = intersection / smaller if smaller else 0.0
+    triggered = (
+        smaller_chars >= _DRAFT_SIMILARITY_MIN_NORMALIZED_CHARS
+        and containment >= _DRAFT_SIMILARITY_MIN_CONTAINMENT
+        and jaccard >= _DRAFT_SIMILARITY_MIN_JACCARD
+    )
+    return {
+        "algorithm": _DRAFT_SIMILARITY_VERSION,
+        "ngram_size": _DRAFT_SIMILARITY_NGRAM,
+        "left_normalized_chars": len(left_text),
+        "right_normalized_chars": len(right_text),
+        "left_shingle_count": len(left_shingles),
+        "right_shingle_count": len(right_shingles),
+        "intersection_count": intersection,
+        "jaccard": round(jaccard, 6),
+        "containment": round(containment, 6),
+        "minimum_normalized_chars": _DRAFT_SIMILARITY_MIN_NORMALIZED_CHARS,
+        "jaccard_threshold": _DRAFT_SIMILARITY_MIN_JACCARD,
+        "containment_threshold": _DRAFT_SIMILARITY_MIN_CONTAINMENT,
+        "triggered": triggered,
+    }
+
+
 def validate_markdown_result(markdown: str, pack: dict[str, Any],
                              requested_artifact_types: list[str] | None = None
                              ) -> tuple[dict[str, Any], dict[str, str]]:
@@ -655,6 +736,9 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
             }, "优化策略与渠道")
 
     draft_by_artifact: dict[str, str] = {}
+    artifact_quality_metrics: dict[str, dict[str, Any]] = {
+        artifact_type: {} for artifact_type in artifact_sections
+    }
     for artifact_type, section_name in artifact_sections.items():
         draft = sections.get(section_name, "")
         draft_by_artifact[artifact_type] = draft
@@ -667,6 +751,29 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
         if artifact_type == "FAQ" and draft and len(re.findall(r"(?m)^###\s+|(?:^|\n)问[:：]|Q[:：]", draft)) < 2:
             add_issue({"code": "FAQ_STRUCTURE_REQUIRED",
                        "detail": "常见问题至少需要两个明确问题与回答"}, section_name)
+
+    if set(artifact_sections) == {"HELP_DOC", "FAQ"}:
+        help_metrics = _help_doc_structure_metrics(draft_by_artifact["HELP_DOC"])
+        artifact_quality_metrics["HELP_DOC"]["operation_structure"] = help_metrics
+        if not help_metrics["passed"]:
+            add_issue({
+                "code": "HELP_DOC_OPERATION_STRUCTURE_REQUIRED",
+                "detail": "帮助文档至少需要两个步骤小节或三个有序步骤，并包含可执行操作",
+            }, artifact_sections["HELP_DOC"])
+        similarity = _draft_similarity_metrics(
+            draft_by_artifact["HELP_DOC"], draft_by_artifact["FAQ"])
+        for artifact_type, peer in (("HELP_DOC", "FAQ"), ("FAQ", "HELP_DOC")):
+            artifact_quality_metrics[artifact_type]["cross_asset_similarity"] = {
+                **similarity, "compared_with": peer,
+            }
+            if similarity["triggered"]:
+                add_issue({
+                    "code": "ARTIFACT_CONTENT_TOO_SIMILAR",
+                    "detail": (
+                        f"与 {peer} 正文实质高度重复（Jaccard={similarity['jaccard']:.3f}，"
+                        f"containment={similarity['containment']:.3f}）"
+                    ),
+                }, artifact_sections[artifact_type])
 
     authoritative = [row for row in references if row["valid"] and row["kind"] in {"source", "truth"}]
     grade = "L2_PARTIALLY_GROUNDED" if authoritative else "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS"
@@ -695,6 +802,7 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
                 "status": "PASS" if not effective_issues else "FAIL",
                 "issues": effective_issues,
                 "shared_issue_count": len(shared_issues),
+                "quality_metrics": artifact_quality_metrics[artifact_type],
             },
         })
 
@@ -720,6 +828,7 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
         "requested_artifact_types": list(artifact_sections),
         "artifact_pass_count": passed_assets, "artifact_total_count": len(deliverables),
         "shared_issue_count": len(shared_issues),
+        "artifact_quality_metrics": artifact_quality_metrics,
         "evidence_pack_hash": pack["evidence_pack_hash"],
     }
     eligibility = {

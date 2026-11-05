@@ -15,7 +15,9 @@ from app.models import (
     AgentDraftArtifactRegeneration, AgentDraftArtifactVersion,
     AgentExperimentRun, AgentResultVersion,
 )
-from app.modules.agent_experiment.evidence_pack import build_evidence_pack
+from app.modules.agent_experiment.evidence_pack import (
+    _draft_similarity_metrics, _help_doc_structure_metrics, build_evidence_pack,
+)
 from app.modules.agent_experiment.api import (
     AgentDraftArtifactRegenerate, read_agent_capabilities, regenerate_draft_artifact,
 )
@@ -78,8 +80,43 @@ def _multi_result():
     return result
 
 
+def _help_doc_body():
+    return (
+        "这是一份面向当前搜索问题的可编辑操作说明，所有品牌能力在发布前都必须依据冻结事实核验。\n\n"
+        "### 步骤一：确认使用条件\n\n"
+        "先核对账号权限、目标页面、输入范围与失败回退方式，记录当前平台和设备环境。"
+        "不要把竞品能力或未知第三方描述写成目标品牌承诺。\n\n"
+        "### 步骤二：执行小范围测试\n\n"
+        "选择一组可复现样例，保存原始输入后执行操作，并逐项记录跳转结果、异常现象和实际限制。"
+        "如果页面无法打开，应停止扩大范围，返回官方配置与权限检查。\n\n"
+        "### 步骤三：检查并交付\n\n"
+        "核对正文中的适用条件、失败处理和隐私边界，确认每项品牌事实都有 Product Truth 或权威来源。"
+        "完成编辑后保存版本，再用同一 PromptVersion、采样配置和 Run 范围验证结果。"
+    )
+
+
+def test_quality_gate_boundaries_ignore_short_shared_facts_and_accept_ordered_steps():
+    shared = "爱短链相关能力必须依据冻结 Product Truth 核验，不能把竞品能力迁移成品牌事实。"
+    assert _draft_similarity_metrics(shared * 2, shared * 2)["triggered"] is False
+    help_body = shared * 3 + "选择样例并记录输入输出，检查失败回退和权限。" * 6
+    faq_body = shared * 3 + "用户常问适用条件与限制，回答必须保留待核实事项。" * 6
+    metrics = _draft_similarity_metrics(help_body, faq_body)
+    assert metrics["left_normalized_chars"] >= 180
+    assert metrics["right_normalized_chars"] >= 180
+    assert metrics["triggered"] is False
+    ordered = (
+        "1. 选择一组可复现样例并保存输入。\n"
+        "2. 执行小范围测试并记录错误。\n"
+        "3. 检查结果，确认限制后保存版本。"
+    )
+    assert _help_doc_structure_metrics(ordered)["passed"] is True
+
+
 def _multi_markdown(pack, *, valid_faq=True):
     markdown = _evidence_markdown(pack).replace("## 完整正文", "## 帮助文档")
+    before, remainder = markdown.split("## 帮助文档", 1)
+    _old_help, after = remainder.split("## QA 与事实限制", 1)
+    markdown = f"{before}## 帮助文档\n{_help_doc_body()}\n\n## QA 与事实限制{after}"
     faq = ("### 批量处理前需要确认什么？\n\n需要确认账号权限、处理数量、失败回退和可核验资料，"
            "不能把尚未确认的品牌能力写成承诺。编辑应保存测试条件、输入样例与失败记录。\n\n"
            "### 结果异常时如何处理？\n\n先停止扩大范围，核对输入、平台限制和真实错误，再用小样本复测。"
@@ -134,6 +171,86 @@ def test_evidence_pack_selection_freezes_and_generates_two_distinct_assets(tmp_p
     assert {row["artifact_type"] for row in artifacts} == {"HELP_DOC", "FAQ"}
     assert all(row["status"] == "SUCCESS" for row in artifacts)
     assert len({row["body_markdown"] for row in artifacts}) == 2
+    for row in artifacts:
+        metrics = row["qa"]["artifact_validation"]["quality_metrics"]
+        assert metrics["cross_asset_similarity"]["triggered"] is False
+    help_doc = next(row for row in artifacts if row["artifact_type"] == "HELP_DOC")
+    assert help_doc["qa"]["artifact_validation"]["quality_metrics"][
+        "operation_structure"]["passed"] is True
+
+
+def test_dual_asset_unstructured_help_fails_only_help_and_keeps_faq(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
+        context_id=fixture["context"].context_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        idempotency_key="multi-content-unstructured-help", requested_by="qa",
+        execution_mode="EVIDENCE_PACK", requested_artifact_types=["HELP_DOC", "FAQ"])
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    markdown = _multi_markdown(pack)
+    before, remainder = markdown.split("## 帮助文档", 1)
+    _help, after = remainder.split("## 常见问题", 1)
+    unstructured = (
+        "当前问题需要先理解使用环境、账号权限、目标页面和失败风险。编辑应当核对真实资料，"
+        "保留适用条件与限制，不把竞品能力迁移成目标品牌事实。为了提高内容可读性，还需要"
+        "说明输入范围、异常现象、隐私边界和复测条件。\n\n"
+        "本文建议使用小样本观察结果，保存原始输入与实际错误，并在发现异常时停止扩大范围。"
+        "所有价格、效果、平台兼容性和品牌能力都必须由 Product Truth 或权威来源支持。"
+        "内容交付后应使用同一 PromptVersion、采样配置与 Run 范围复测，但不能宣称变化存在因果。"
+    )
+    markdown = f"{before}## 帮助文档\n{unstructured}\n\n## 常见问题{after}"
+    execute_agent_run(
+        run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False),
+        client=ScriptedEvidencePackClient(markdown))
+    db.expire_all()
+    artifacts = list_draft_artifacts(db, run_id=run.run_id, project_id=1, prompt_id=44)
+    assert {(row["artifact_type"], row["status"]) for row in artifacts} == {
+        ("HELP_DOC", "FAILED"), ("FAQ", "SUCCESS")}
+    help_doc = next(row for row in artifacts if row["artifact_type"] == "HELP_DOC")
+    assert "HELP_DOC_OPERATION_STRUCTURE_REQUIRED" in {
+        issue["code"] for issue in help_doc["qa"]["artifact_validation"]["issues"]}
+    assert help_doc["qa"]["artifact_validation"]["quality_metrics"][
+        "operation_structure"]["passed"] is False
+
+
+def test_dual_asset_substantive_copy_fails_both_with_auditable_metrics(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _ = create_agent_run(
+        db, project_id=1, prompt_id=44, analysis_id=fixture["analysis"].analysis_id,
+        context_id=fixture["context"].context_id,
+        citation_manifest_id=fixture["manifest"].manifest_id,
+        citation_manifest_hash=fixture["manifest"].payload_hash,
+        completion_manifest_id=fixture["completion"].manifest_id,
+        completion_manifest_hash=fixture["completion"].payload_hash,
+        idempotency_key="multi-content-substantive-copy", requested_by="qa",
+        execution_mode="EVIDENCE_PACK", requested_artifact_types=["HELP_DOC", "FAQ"])
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    markdown = _multi_markdown(pack)
+    before_faq, faq_and_after = markdown.split("## 常见问题", 1)
+    _faq, after_faq = faq_and_after.split("## QA 与事实限制", 1)
+    markdown = f"{before_faq}## 常见问题\n{_help_doc_body()}\n\n## QA 与事实限制{after_faq}"
+    execute_agent_run(
+        run.run_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False),
+        client=ScriptedEvidencePackClient(markdown))
+    db.expire_all()
+    stored = db.query(AgentExperimentRun).filter_by(run_id=run.run_id).one()
+    artifacts = list_draft_artifacts(db, run_id=run.run_id, project_id=1, prompt_id=44)
+    assert stored.status == "FAILED"
+    assert {row["status"] for row in artifacts} == {"FAILED"}
+    for row in artifacts:
+        validation = row["qa"]["artifact_validation"]
+        assert "ARTIFACT_CONTENT_TOO_SIMILAR" in {
+            issue["code"] for issue in validation["issues"]}
+        metrics = validation["quality_metrics"]["cross_asset_similarity"]
+        assert metrics["algorithm"] == "geo.draft-content-similarity.v1"
+        assert metrics["triggered"] is True
+        assert metrics["jaccard"] == 1.0 and metrics["containment"] == 1.0
 
 
 def test_evidence_pack_two_asset_partial_success_keeps_good_sibling(tmp_path, monkeypatch):

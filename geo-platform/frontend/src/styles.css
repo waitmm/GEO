@@ -170,6 +170,49 @@ body {
   width: 100%;
 }
 
+.agent-history-table {
+  max-width: 100%;
+}
+
+.agent-history-table .ant-table-cell {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.agent-result-card,
+.agent-result-card .ant-card-body,
+.agent-result-version-select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.agent-result-card {
+  overflow: hidden;
+}
+
+.agent-result-card .ant-alert-description,
+.agent-result-card .ant-select-selection-item {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.draft-artifact-card,
+.draft-artifact-card .ant-card-body,
+.draft-artifact-card .ant-card-head-wrapper {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.draft-artifact-card .ant-card-head-wrapper {
+  flex-wrap: wrap;
+}
+
+.draft-artifact-card .ant-alert-description,
+.draft-artifact-card .ant-select-selection-item {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .context-card h4 {
   margin: 0;
 }
@@ -806,6 +849,11 @@ body {
     width: 100%;
     margin-inline-start: 0;
     padding-top: 8px;
+  }
+
+  .agent-history-table .ant-table-content {
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   .v2-capability-desktop {

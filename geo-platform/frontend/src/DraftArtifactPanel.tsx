@@ -66,10 +66,10 @@ export function DraftArtifactPanel({ artifacts, projectId, promptId, parentStatu
         const selectedVersion = selectedVersions[group.artifactId] || group.versions[0].artifact_version;
         const row = group.versions.find(item => item.artifact_version === selectedVersion) || group.versions[0];
         return <div key={group.artifactId}>
-          {group.versions.length > 1 && <Space wrap style={{ marginBottom: 8 }}>
+          {group.versions.length > 1 && <Space wrap style={{ marginBottom: 8, width: "100%", minWidth: 0 }}>
             <Typography.Text strong>{typeLabel[row.artifact_type] || row.artifact_type}版本</Typography.Text>
             <Select aria-label={`${typeLabel[row.artifact_type] || row.artifact_type}历史版本`}
-              value={row.artifact_version} style={{ minWidth: 280 }}
+              value={row.artifact_version} style={{ width: 280, minWidth: 0, maxWidth: "100%" }}
               onChange={value => setSelectedVersions(current => ({ ...current, [group.artifactId]: value }))}
               options={group.versions.map(item => ({
                 value: item.artifact_version,
@@ -96,6 +96,8 @@ function ArtifactCard({ artifact, projectId, promptId, regenerationEnabled, onCh
   const [form] = Form.useForm();
   const query = `project_id=${projectId}&prompt_id=${promptId}`;
   const evidenceQa = summarizeArtifactEvidenceQa(artifact.evidence, artifact.qa, artifact.status, artifact.failure);
+  const failureSummary = evidenceQa.issues.filter(issue => issue !== "稿件未通过独立校验").join("；")
+    || "请查看证据与 QA 中的具体缺口";
   useEffect(() => {
     request<Feedback[]>(`/api/v2/single-prompt/draft-artifacts/${encodeURIComponent(artifact.artifact_version)}/feedback?${query}`)
       .then(setFeedback).catch(() => setFeedback([]));
@@ -132,11 +134,14 @@ function ArtifactCard({ artifact, projectId, promptId, regenerationEnabled, onCh
     finally { setBusy(false); }
   }
 
-  return <Card size="small" title={<Space wrap><span>{typeLabel[artifact.artifact_type] || artifact.artifact_type}</span>
+  return <Card size="small" className="draft-artifact-card"
+    data-testid={`draft-artifact-${artifact.artifact_type.toLowerCase()}`}
+    aria-label={`${typeLabel[artifact.artifact_type] || artifact.artifact_type}内容资产`}
+    title={<Space wrap><span>{typeLabel[artifact.artifact_type] || artifact.artifact_type}</span>
     <Tag color={artifact.status === "SUCCESS" ? "green" : "red"}>{statusLabel[artifact.status] || artifact.status}</Tag>
     <Typography.Text type="secondary">第 {artifact.version_number} 版 · {formatBeijingDateTime(artifact.created_at)}</Typography.Text></Space>}>
     {artifact.failure && <Alert type="warning" showIcon message="稿件已保存，但未通过独立校验"
-      description={`${artifact.failure.code}：${artifact.failure.detail}。正文仍可查看和反馈，但不能作为合格稿件导出。`} />}
+      description={`${failureSummary}。正文仍可查看和反馈，但不能作为合格稿件导出。`} />}
     {artifact.body_markdown && <>
       <Typography.Title level={5}>{artifact.title}</Typography.Title>
       <BusinessMarkdown markdown={artifact.body_markdown} />

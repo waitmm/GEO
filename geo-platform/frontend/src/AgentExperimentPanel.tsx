@@ -72,6 +72,9 @@ function validationIssueText(validation?: any) {
 }
 
 function blockerText(run: AgentRun) {
+  if (run.status === "PARTIAL") {
+    return "部分内容已经保存并可使用；另有内容未通过独立校验。请打开结果，按稿件查看状态和具体问题。";
+  }
   if (run.blocker?.code?.startsWith("EVIDENCE_PACK_CORE_EXCEEDS_BUDGET")) {
     return "所选回答中的重复引用资料超过旧版输入容量；本次未调用模型、未产生费用。请使用已升级的输入整理重新创建任务。";
   }
@@ -245,7 +248,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           description={capabilities?.new_generation_enabled ? "选择品牌资料后即可创建第一条任务。" : "AI 生成尚未由服务端启用；历史结果仍可正常查看和使用。"} />
       : <>
         <Typography.Title level={4} style={{ marginTop: 20 }}>优化历史</Typography.Title>
-        <Table size="small" pagination={{ pageSize: 8 }} rowKey="run_id" dataSource={runs}
+        <Table className="agent-history-table" size="small" pagination={{ pageSize: 8 }} rowKey="run_id" dataSource={runs}
           rowSelection={{ type: "radio", selectedRowKeys: selectedId ? [selectedId] : [],
             onChange: keys => { setSelectedId(String(keys[0])); setDetail(undefined); setSelectedResultVersion(undefined); } }}
           columns={[
@@ -253,7 +256,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
             { title: "状态", dataIndex: "status", render: (value, row) => <Space><Tag>{statusLabel[value] || value}</Tag><Typography.Text type="secondary">{savedResultLabel(row.usage.model_calls, value)}</Typography.Text></Space> },
             { title: "结果", render: (_, row) => row.status === "SUCCEEDED" ? "可查看" : blockerText(row) },
           ]} />
-        {active && <Card style={{ marginTop: 16 }} title={<Space wrap><span>优化结果</span><Tag>{statusLabel[active.status] || active.status}</Tag><Tag color={active.usage.model_calls ? "blue" : undefined}>{savedResultLabel(active.usage.model_calls, active.status)}</Tag></Space>}>
+        {active && <Card className="agent-result-card" style={{ marginTop: 16 }} title={<Space wrap><span>优化结果</span><Tag>{statusLabel[active.status] || active.status}</Tag><Tag color={active.usage.model_calls ? "blue" : undefined}>{savedResultLabel(active.usage.model_calls, active.status)}</Tag></Space>}>
           {active.blocker && <Alert type={active.status === "WAITING_AUTHORIZATION" ? "warning" : "error"} showIcon
             message={active.blocker.code === "EVIDENCE_PACK_OUTPUT_VALIDATION_FAILED" ? "内容已生成，但未通过证据校验" : statusLabel[active.status] || active.blocker.code}
             description={blockerText(active)} />}
@@ -262,7 +265,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
             {active.status === "WAITING_AUTHORIZATION" && !capabilities?.new_generation_enabled && <Tag color="orange">AI 生成服务暂未启用</Tag>}
             {['QUEUED', 'RUNNING', 'WAITING_AUTHORIZATION'].includes(active.status) && <Button danger icon={<Square size={16} />} onClick={() => void post("cancel")}>停止任务</Button>}
           </Space>
-          {results.length > 0 && <Select aria-label="结果历史版本" style={{ width: "100%", marginTop: 16 }} value={result?.result_version}
+          {results.length > 0 && <Select className="agent-result-version-select" aria-label="结果历史版本" style={{ width: "100%", marginTop: 16 }} value={result?.result_version}
             onChange={setSelectedResultVersion} options={results.map(item => ({ value: item.result_version,
               label: `结果 V${item.version_number} · ${humanTime(item.created_at)} · ${item.evidence_grade}` }))} />}
           {result && <>

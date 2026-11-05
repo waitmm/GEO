@@ -19,6 +19,8 @@ test("子稿件分别展示状态、证据、QA、导出、反馈和重生成", 
   assert.match(children, /artifact_version/);
   assert.match(children, /parent_result_version/);
   assert.match(children, /稿件已保存，但未通过独立校验/);
+  assert.match(children, /failureSummary/);
+  assert.doesNotMatch(children, /artifact\.failure\.code.*artifact\.failure\.detail/);
   assert.match(children, /disabled=\{artifact.status !== "SUCCESS"\}/);
   assert.match(children, /单篇重新生成尚未启用/);
   assert.match(children, /disabled=\{!regenerationEnabled\}/);
@@ -29,6 +31,8 @@ test("子稿件分别展示状态、证据、QA、导出、反馈和重生成", 
 test("父部分成功不会伪装成全部完成", () => {
   assert.match(children, /PARTIAL_SUCCESS: "部分完成"/);
   assert.match(children, /单篇失败不会删除另一篇成果/);
+  assert.match(panel, /部分内容已经保存并可使用/);
+  assert.match(panel, /agent-history-table/);
 });
 
 test("多内容结果不再把父报告伪装成第三份稿件", () => {

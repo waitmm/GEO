@@ -28,6 +28,19 @@ test("VERIFY_FIRST warning requires an explicit value, not just a field name", (
   assert.equal(summarizeArtifactEvidenceQa({}, { ...base, issues: ["L3_VERIFY_FIRST_REQUIRED"] }, "SUCCESS").verifyFirst, true);
 });
 
+test("structured validation failure is translated instead of exposing raw JSON", () => {
+  const detail = JSON.stringify([
+    { code: "FAQ_STRUCTURE_REQUIRED", detail: "问题数量不足" },
+    { code: "CITATION_CHANNEL_EVIDENCE_REQUIRED" },
+  ]);
+  const summary = summarizeArtifactEvidenceQa({}, {}, "FAILED", {
+    code: "ARTIFACT_VALIDATION_FAILED", detail,
+  });
+  assert.match(summary.issues.join("；"), /常见问题至少需要两个明确问题与回答/);
+  assert.match(summary.issues.join("；"), /渠道分析缺少冻结回答中的引用依据/);
+  assert.doesNotMatch(summary.issues.join("；"), /\[\{|FAQ_STRUCTURE_REQUIRED/);
+});
+
 test("panel keeps raw JSON secondary and translates feedback history", () => {
   const panel = readFileSync(new URL("../src/DraftArtifactPanel.tsx", import.meta.url), "utf8");
   for (const text of ["证据数量", "证据类型", "证据定位", "QA 资格", "需先核实（VERIFY_FIRST）", "技术详情（原始数据）", "feedbackRatingLabel"]) {

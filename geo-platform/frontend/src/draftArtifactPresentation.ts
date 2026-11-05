@@ -45,6 +45,21 @@ function issueText(value: unknown): string {
   return [issueLabels[code] || code, detail && detail !== issueLabels[code] ? detail : ""].filter(Boolean).join("：") || "发现需要处理的问题";
 }
 
+function failureIssues(failure: { code: string; detail: string }): string[] {
+  const summary = issueText(failure.code);
+  if (!failure.detail.trim()) return [summary];
+  try {
+    const parsed = JSON.parse(failure.detail) as unknown;
+    const details = (Array.isArray(parsed) ? parsed : [parsed]).map(issueText).filter(Boolean);
+    return [...new Set([summary, ...details])];
+  } catch {
+    // Provider and validation failures that are not structured JSON still need
+    // their useful detail. Structured validation payloads are converted above
+    // so operators never have to read raw JSON in the primary result view.
+    return [summary, failure.detail];
+  }
+}
+
 function evidenceLocation(value: unknown): string {
   const item = record(value);
   if (!item) return text(value);
@@ -84,7 +99,7 @@ export function summarizeArtifactEvidenceQa(evidence: UnknownRecord, qa: Unknown
   const validation = record(qa.artifact_validation);
   const validationStatus = text(validation?.status).toUpperCase();
   const issues = [...list(validation?.issues), ...list(qa.issues)].map(issueText);
-  if (failure) issues.unshift(issueText(failure.code) + (failure.detail ? `：${failure.detail}` : ""));
+  if (failure) issues.unshift(...failureIssues(failure));
   const verifyFirst = includesVerifyFirst(qa) || includesVerifyFirst(evidence);
   const failed = status !== "SUCCESS" || validationStatus === "FAIL" || !!failure;
   const qualification = failed ? "未通过独立校验" : validationStatus === "PASS" || status === "SUCCESS" ? "校验通过" : "待核对";

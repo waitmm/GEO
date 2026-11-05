@@ -19,6 +19,15 @@ test("draft artifact evidence and QA have Chinese operator-facing summaries", ()
   assert.match(summary.issues.join("；"), /至少需要两个明确问题/);
 });
 
+test("VERIFY_FIRST warning requires an explicit value, not just a field name", () => {
+  const base = { artifact_validation: { status: "PASS", issues: [] } };
+  assert.equal(summarizeArtifactEvidenceQa({}, { ...base, verify_first: false }, "SUCCESS").verifyFirst, false);
+  assert.equal(summarizeArtifactEvidenceQa({}, { ...base, verify_first: null }, "SUCCESS").verifyFirst, false);
+  assert.equal(summarizeArtifactEvidenceQa({}, { ...base, verification_note: "无需核验" }, "SUCCESS").verifyFirst, false);
+  assert.equal(summarizeArtifactEvidenceQa({}, { ...base, verify_first: true }, "SUCCESS").verifyFirst, true);
+  assert.equal(summarizeArtifactEvidenceQa({}, { ...base, issues: ["L3_VERIFY_FIRST_REQUIRED"] }, "SUCCESS").verifyFirst, true);
+});
+
 test("panel keeps raw JSON secondary and translates feedback history", () => {
   const panel = readFileSync(new URL("../src/DraftArtifactPanel.tsx", import.meta.url), "utf8");
   for (const text of ["证据数量", "证据类型", "证据定位", "QA 资格", "需先核实（VERIFY_FIRST）", "技术详情（原始数据）", "feedbackRatingLabel"]) {

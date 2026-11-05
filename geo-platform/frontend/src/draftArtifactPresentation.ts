@@ -60,10 +60,21 @@ function evidenceType(value: unknown): string {
 }
 
 function includesVerifyFirst(value: unknown): boolean {
-  if (typeof value === "string") return value.toUpperCase().includes("VERIFY_FIRST") || value.includes("待核实") || value.includes("待核验");
+  if (typeof value === "string") {
+    const normalized = value.trim().toUpperCase();
+    if (["FALSE", "NO", "NOT_VERIFY_FIRST", "NO_VERIFY_FIRST", "NOT_REQUIRED"].includes(normalized)
+      || /(?:无需|不需|不用)(?:核实|核验|VERIFY_FIRST)/i.test(value)) return false;
+    return normalized.includes("VERIFY_FIRST") || value.includes("待核实") || value.includes("待核验");
+  }
   if (Array.isArray(value)) return value.some(includesVerifyFirst);
   const item = record(value);
-  return !!item && Object.entries(item).some(([key, entry]) => key.toLowerCase().includes("verify") || includesVerifyFirst(entry));
+  return !!item && Object.entries(item).some(([key, entry]) => {
+    // A key merely named verify_first is not itself a warning: the immutable
+    // payload must explicitly set it to true. Other qualification/issue text
+    // is detected by its actual value during the recursive walk.
+    const verificationFlag = key.toLowerCase().includes("verify") || key.toLowerCase().includes("核验");
+    return (verificationFlag && entry === true) || includesVerifyFirst(entry);
+  });
 }
 
 /** Converts the immutable API payload into operator-facing copy without changing it. */

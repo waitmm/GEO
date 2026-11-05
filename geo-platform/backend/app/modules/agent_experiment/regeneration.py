@@ -16,6 +16,7 @@ from app.modules.single_prompt_v2.delivery_text import digest
 from app.services.serialization import loads
 
 from .evidence_pack import (
+    EVIDENCE_PACK_EXECUTION_CONTRACT, EVIDENCE_PACK_PROMPT_VERSION,
     build_evidence_pack, render_evidence_pack_prompt,
     validate_markdown_result,
 )
@@ -30,6 +31,29 @@ class RegenerationClient(Protocol):
 
 class RegenerationCancelled(RuntimeError):
     pass
+
+
+class RegenerationContractError(RuntimeError):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+_CURRENT_REGENERATION_VALIDATION_CONTRACT = "geo.evidence-pack.validation.v4"
+
+
+def _frozen_generation_profile(policy: dict[str, Any]) -> dict[str, str]:
+    profile = policy.get("generation_profile")
+    if not isinstance(profile, dict):
+        raise RegenerationContractError("DRAFT_REGENERATION_GENERATION_PROFILE_MISSING")
+    expected = {
+        "execution_contract": EVIDENCE_PACK_EXECUTION_CONTRACT,
+        "prompt_version": EVIDENCE_PACK_PROMPT_VERSION,
+        "validation_contract": _CURRENT_REGENERATION_VALIDATION_CONTRACT,
+    }
+    if any(profile.get(key) != value for key, value in expected.items()):
+        raise RegenerationContractError("DRAFT_REGENERATION_GENERATION_PROFILE_UNSUPPORTED")
+    return expected
 
 
 def _canonical(value: Any) -> str:
@@ -99,6 +123,7 @@ def execute_draft_artifact_regeneration(
             raise RuntimeError("DRAFT_REGENERATION_SCOPE_HASH_MISMATCH")
         pack = build_evidence_pack(scope)
         policy = loads(request.server_policy_json, {})
+        frozen_profile = policy.get("generation_profile")
         request.status = "RUNNING"
         request.started_at = request.started_at or datetime.utcnow()
         request.attempt_count += 1
@@ -110,8 +135,11 @@ def execute_draft_artifact_regeneration(
             "input_scope_hash": run.input_scope_hash,
             "evidence_pack_hash": pack["evidence_pack_hash"],
             "artifact_type": source.artifact_type,
+            "generation_profile": frozen_profile if isinstance(frozen_profile, dict) else {},
         })
         db.commit()
+
+        generation_profile = _frozen_generation_profile(policy)
 
         if client is None:
             raise RuntimeError("DRAFT_REGENERATION_PROVIDER_NOT_AUTHORIZED")
@@ -122,6 +150,7 @@ def execute_draft_artifact_regeneration(
         markdown, usage = active_client.generate(
             db=db,
             system_prompt=render_evidence_pack_prompt(
+                prompt_version=generation_profile["prompt_version"],
                 requested_artifact_types=[source.artifact_type]),
             evidence_pack=pack,
             max_tokens=min(16_384, int(policy.get("max_total_tokens", 16_384))),
@@ -149,7 +178,11 @@ def execute_draft_artifact_regeneration(
                                           "usage_state": "KNOWN"})
         db.commit()
         checked, _eligibility = validate_markdown_result(
-            markdown, pack, requested_artifact_types=[source.artifact_type])
+            markdown, pack, requested_artifact_types=[source.artifact_type],
+            execution_contract=generation_profile["execution_contract"])
+        if checked.get("validation", {}).get("contract_version") != \
+                generation_profile["validation_contract"]:
+            raise RegenerationContractError("DRAFT_REGENERATION_VALIDATION_PROFILE_MISMATCH")
         deliverables = checked["result"].get("deliverables") or []
         if len(deliverables) != 1 or deliverables[0].get("asset_type") != source.artifact_type:
             raise RuntimeError("DRAFT_REGENERATION_ASSET_TYPE_MISMATCH")

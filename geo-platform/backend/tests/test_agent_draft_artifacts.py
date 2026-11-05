@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 
@@ -18,6 +19,7 @@ from app.models import (
 from app.modules.agent_experiment.evidence_pack import (
     _draft_similarity_metrics, _has_sufficient_faq_structure,
     _has_unsupported_numeric_claim, _help_doc_structure_metrics, build_evidence_pack,
+    validate_markdown_result,
 )
 from app.modules.agent_experiment.api import (
     AgentDraftArtifactRegenerate, read_agent_capabilities, regenerate_draft_artifact,
@@ -93,13 +95,13 @@ def _help_doc_body():
         "选择一组可复现样例，保存原始输入后执行操作，并逐项记录跳转结果、异常现象和实际限制。"
         "如果页面无法打开，应停止扩大范围，返回官方配置与权限检查。\n\n"
         "### 步骤三：检查并交付\n\n"
-        "核对正文中的适用条件、失败处理和隐私边界，确认每项品牌事实都有 Product Truth 或权威来源。"
-        "完成编辑后保存版本，再用同一 PromptVersion、采样配置和 Run 范围验证结果。"
+        "核对正文中的适用条件、失败处理和隐私边界，确认每项品牌事实都有已核实资料或权威来源。"
+        "完成内容后保存版本，再用同一问题版本、采样配置和样本范围验证结果。"
     )
 
 
 def test_quality_gate_boundaries_ignore_short_shared_facts_and_accept_ordered_steps():
-    shared = "爱短链相关能力必须依据冻结 Product Truth 核验，不能把竞品能力迁移成品牌事实。"
+    shared = "爱短链相关能力必须依据已核实品牌资料，不能把竞品能力迁移成品牌事实。"
     assert _draft_similarity_metrics(shared * 2, shared * 2)["triggered"] is False
     help_body = shared * 3 + "选择样例并记录输入输出，检查失败回退和权限。" * 6
     faq_body = shared * 3 + "用户常问适用条件与限制，回答必须保留待核实事项。" * 6
@@ -188,10 +190,10 @@ def _multi_markdown(pack, *, valid_faq=True):
     faq = ("### 批量处理前需要确认什么？\n\n需要确认账号权限、处理数量、失败回退和可核验资料，"
            "不能把尚未确认的品牌能力写成承诺。编辑应保存测试条件、输入样例与失败记录。\n\n"
            "### 结果异常时如何处理？\n\n先停止扩大范围，核对输入、平台限制和真实错误，再用小样本复测。"
-           "如果证据不足，保留 VERIFY_FIRST 并补充官方资料，不根据竞品页面反推目标品牌能力。\n\n"
+           "如果证据不足，明确标记待核实并补充官方资料，不根据竞品页面反推目标品牌能力。\n\n"
            "### 哪些信息可以写进对外稿件？\n\n只写冻结证据能够支持的操作步骤、适用条件和限制。"
-           "价格、效果承诺、平台兼容性等事实必须能够定位到 Product Truth 或权威来源；"
-           "无法核实的内容应明确列入待核验清单，由编辑完成核验后再发布。")
+           "价格、效果承诺、平台兼容性等事实必须能够定位到已核实品牌资料或权威来源；"
+           "无法核实的内容应明确列入待核验清单，核验后再发布。")
     if not valid_faq:
         faq = "只有一个尚未完成的问题。"
     return markdown.replace("## QA 与事实限制", f"## 常见问题\n{faq}\n\n## QA 与事实限制")
@@ -204,12 +206,36 @@ def _faq_markdown(pack, *, valid=True):
     faq = ("### 使用前需要核对什么？\n\n核对真实账号权限、输入范围、失败回退与官方资料，"
            "不要把竞品能力写成目标品牌事实。保存测试条件和原始错误，确保编辑可以复核。\n\n"
            "### 结果不符合预期怎么办？\n\n先缩小处理范围，核对平台限制与真实错误，再用小样本复测。"
-           "证据不足时必须标记 VERIFY_FIRST，并在发布前补充 Product Truth 或权威来源。\n\n"
+           "证据不足时必须标记待核实，并在发布前补充已核实品牌资料或权威来源。\n\n"
            "### 哪些事实可以对外使用？\n\n只有冻结证据明确支持的适用条件、操作步骤和限制可以使用。"
            "价格、效果和兼容性等表述必须逐项核验，无法核验的内容继续保留在待确认清单中。")
     if not valid:
         faq = "只有一条未完成的回答。"
     return f"{before}## 常见问题\n{faq}\n\n## QA 与事实限制{after}"
+
+
+def test_internal_authoring_leak_fails_only_affected_draft_asset(tmp_path, monkeypatch):
+    db, _engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run = _run(db, fixture, "multi-content-internal-leak-0001")
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    markdown = _multi_markdown(pack).replace(
+        "### 批量处理前需要确认什么？",
+        "### 批量处理前需要确认什么？\n\n"
+        "请编辑打开 Evidence Pack，核查 product_truth 后删除未经证实的表述。",
+    )
+    checked, _ = validate_markdown_result(
+        markdown, pack, requested_artifact_types=["HELP_DOC", "FAQ"],
+    )
+    by_type = {
+        row["asset_type"]: row for row in checked["result"]["deliverables"]
+    }
+    assert checked["validation"]["status"] == "PARTIAL"
+    assert by_type["HELP_DOC"]["artifact_validation"]["status"] == "PASS"
+    assert by_type["FAQ"]["artifact_validation"]["status"] == "FAIL"
+    assert "INTERNAL_AUTHORING_INSTRUCTION_LEAK" in {
+        row["code"] for row in by_type["FAQ"]["artifact_validation"]["issues"]
+    }
 
 
 def test_evidence_pack_selection_freezes_and_generates_two_distinct_assets(tmp_path, monkeypatch):
@@ -268,8 +294,8 @@ def test_dual_asset_unstructured_help_fails_only_help_and_keeps_faq(tmp_path, mo
         "保留适用条件与限制，不把竞品能力迁移成目标品牌事实。为了提高内容可读性，还需要"
         "说明输入范围、异常现象、隐私边界和复测条件。\n\n"
         "本文建议使用小样本观察结果，保存原始输入与实际错误，并在发现异常时停止扩大范围。"
-        "所有价格、效果、平台兼容性和品牌能力都必须由 Product Truth 或权威来源支持。"
-        "内容交付后应使用同一 PromptVersion、采样配置与 Run 范围复测，但不能宣称变化存在因果。"
+        "所有价格、效果、平台兼容性和品牌能力都必须由已核实品牌资料或权威来源支持。"
+        "内容交付后应使用同一问题版本、采样配置与样本范围复测，但不能宣称变化存在因果。"
     )
     markdown = f"{before}## 帮助文档\n{unstructured}\n\n## 常见问题{after}"
     execute_agent_run(
@@ -580,10 +606,55 @@ def test_regeneration_executor_claims_and_appends_only_target_asset(tmp_path, mo
     assert stored.status == "COMPLETED"
     assert stored.attempt_count == 1
     assert loads(stored.usage_json, {})["total_tokens"] == 200
-    assert loads(stored.audit_json, {})["external_request_state"] == "PROVIDER_RETURNED"
+    audit = loads(stored.audit_json, {})
+    assert audit["external_request_state"] == "PROVIDER_RETURNED"
+    assert audit["generation_profile"] == {
+        "execution_contract": "geo.evidence-pack.execution.v10",
+        "prompt_version": "geo-evidence-pack-synthesis.v8",
+        "validation_contract": "geo.evidence-pack.validation.v4",
+    }
+    assert "面向最终使用者" in client.payloads[0]["system_prompt"]
     assert [row.version_number for row in versions] == [1, 2]
     assert versions[-1].status == "SUCCESS"
     assert versions[-1].artifact_type == "FAQ"
+
+
+def test_historical_regeneration_without_frozen_generation_profile_fails_before_provider(
+        tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    fixture = _seed_citation_contribution_fixture(db, monkeypatch, tmp_path)
+    run, _faq, request = _queued_failed_faq(db, fixture, "regen-profile-missing")
+    policy = loads(request.server_policy_json, {})
+    policy.pop("generation_profile", None)
+    historical = AgentDraftArtifactRegeneration(
+        request_id="historical-regeneration-without-profile",
+        idempotency_key="historical-regeneration-without-profile",
+        source_artifact_version=request.source_artifact_version,
+        parent_result_version=request.parent_result_version,
+        agent_run_id=request.agent_run_id,
+        project_id=request.project_id,
+        prompt_id=request.prompt_id,
+        requested_by="historical-worker",
+        request_hash="0" * 64,
+        server_policy_json=json.dumps(policy, ensure_ascii=False, sort_keys=True),
+        status="QUEUED",
+    )
+    db.add(historical)
+    db.commit()
+    pack = build_evidence_pack(loads(run.input_scope_json, {}))
+    client = ScriptedEvidencePackClient(_faq_markdown(pack))
+
+    execute_draft_artifact_regeneration(
+        historical.request_id, session_factory=sessionmaker(bind=engine, expire_on_commit=False),
+        client=client)
+
+    db.expire_all()
+    stored = db.query(AgentDraftArtifactRegeneration).filter_by(
+        request_id=historical.request_id).one()
+    assert client.calls == 0
+    assert stored.status == "FAILED"
+    assert stored.failure_code == "DRAFT_REGENERATION_GENERATION_PROFILE_MISSING"
+    assert loads(stored.audit_json, {})["external_request_state"] == "NOT_STARTED"
 
 
 def test_regeneration_cancel_before_provider_makes_zero_calls(tmp_path, monkeypatch):

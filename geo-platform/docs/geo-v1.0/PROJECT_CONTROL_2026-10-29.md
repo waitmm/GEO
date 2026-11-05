@@ -57,7 +57,7 @@ Mac 历史运行曾保存 22 Run 真实 AI 优化结果，但服务、局域网�
 | 范围 | 冻结范围的业务可读时间命名 | DONE | UI 显示北京时间、回答数和范围，不要求员工理解内部 hash |
 | Optimize | Evidence Pack v3 单包生成 | LIMITED | 当前 22 Run 真实基线可用；容量取决于回答、唯一 URL 与正文长度 |
 | Optimize | HELP_DOC + FAQ 多内容父子版本 | REAL_GATE_FAILED / REMEDIATION_OFFLINE_ACCEPTED | 2026-11-05 已完成一次受控真实双稿生成；供应商完整返回且用量已结算，但两份资产均未通过服务端 Gate，原结果保留为失败，不进入 M1.1 |
-| Optimize | 多内容结构与重复度质量 Gate | REMEDIATION_OFFLINE_ACCEPTED | 真实回放确认：品牌表现章节缺 locator 是真实共享缺陷；编号 FAQ 是格式识别误报，已修复。负向数值清单仍按无权威 locator 的数字保守阻断，避免文本例外放过真实价格/效果主张；Prompt v8 / Execution v9 已从源头禁止把该类内部检查清单写入最终稿，仍需新的独立授权验证生成质量 |
+| Optimize | 多内容结构与重复度质量 Gate | QUALITY_GATE_V4_OFFLINE_ACCEPTED | Prompt v8 保持不变；Execution v10 / Validation v4 对明确内部编写指令和品牌章节无关 locator 增加定向 fail-closed。首次真实失败稿受保护回放可稳定命中，Execution v9 / Validation v3 历史解释不变；仍需新的独立授权验证生成质量 |
 | Optimize | 引用平台/竞品渠道分析 | DONE | 基于冻结引用观察，不把 AI 推荐渠道伪装成已验证效果 |
 | Optimize | 诊断、策略、渠道、完整正文、QA | PILOT_READY | 工程链可交付；必须用同事反馈评估品牌关联与内容采用价值 |
 | Optimize | 证据、Truth 与分级资格 Gate | DONE | 生成失败或证据不足不伪装成功；草稿与通过资格分开 |
@@ -91,9 +91,9 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
 | GEO-COL-001 | P2 | 自动文心采集未获许可且未做长期真实验收 | 计划暂停、重试 0、人工导入可用 | 获明确许可后先单条联调，再单独批准定时计划 |
 | GEO-VAL-001 | P1 | Validate 缺足够新增真实范围 | 不伪造趋势改善 | 有至少两个同口径真实冻结范围并由员工完成比较 |
 | GEO-DOC-001 | P1 | 旧 V2/实验/Beta 文档并存，容易误读状态 | 历史文档保留 | 以本总控为当前入口，发布候选时同步 RUNBOOK/USER_GUIDE |
-| GEO-MULTI-001 | P1 | 首次真实双稿已完成但质量 Gate 失败：共享章节缺证据 locator，稿件混入内部字段/编辑检查指令；另发现一项 FAQ 格式误报及一项数值 Gate 保守限制 | 原始失败结果、usage 与审计保留在受保护本地目录；不对外声称双稿质量通过，不部署至 M1.1，不自动重跑 | 完成离线修复回归后，另获一次独立授权；HELP_DOC 与 FAQ 均通过服务端 Gate，并由员工分别评价可用性/修改量 |
+| GEO-MULTI-001 | P1 | 首次真实双稿已完成但质量 Gate 失败：共享章节缺证据 locator，稿件混入内部字段/编辑检查指令；另发现一项 FAQ 格式误报及一项数值 Gate 保守限制 | 原始失败结果、usage 与审计保留在受保护本地目录；Validation v4 已离线拦截内部指令与随机/截断/覆盖不足的 locator，不对外声称双稿质量通过，不部署至 M1.1，不自动重跑 | 另获一次独立授权；HELP_DOC 与 FAQ 均通过服务端 Gate，并由员工分别评价可用性/修改量 |
 | GEO-MULTI-UI-001 | P1 | RESOLVED：隔离浏览器已验收双成功及 HELP_DOC 成功/FAQ 失败的部分成功链路 | 失败资产禁止导出；成功资产可下载；反馈、历史版本和刷新恢复已验证；无授权时单篇重生成 fail-closed | 保留报告与失败证据；真实生成质量继续由 `GEO-MULTI-001` 管控 |
-| GEO-TEST-001 | P2 | 两个 Agent 回归曾把 2026-10-22/26 价格核验日期写死，跨 7 天后固定失败 | RESOLVED；测试统一使用单次测试进程冻结的当前价格证据日，生产七天时效 Gate 未放宽 | 首次真实 Gate 修复后，Agent、子资产与内部 Beta 联合回归 71/71 通过 |
+| GEO-TEST-001 | P2 | 两个 Agent 回归曾把 2026-10-22/26 价格核验日期写死，跨 7 天后固定失败 | RESOLVED；测试统一使用单次测试进程冻结的当前价格证据日，生产七天时效 Gate 未放宽 | 本轮 Agent 与子资产联合回归 84/84、容量回归 29/29 通过 |
 
 ### GEO-CAP-001 详细记录
 
@@ -122,6 +122,18 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
 - 业务结论：诊断与引用渠道分析有信息价值，但 HELP_DOC/FAQ 混入内部 Truth/Evidence 字段和编辑检查
   指令，不是可直接交付最终用户的两份正文；`VERIFY_FIRST` 与禁止事实资格保持不变。
 - 安全边界：原始回答、Evidence、模型响应和正文只保存在 Git 忽略的受保护本地目录，未进入公开仓库。
+- 离线收口：新增
+  [RFC-EVIDENCE-PACK-QUALITY-GATE-001](../semantics/rfcs/RFC-EVIDENCE-PACK-QUALITY-GATE-001.md)，
+  Prompt v8 不变，Execution v10 绑定 Validation v4。首次真实失败稿回放同时命中
+  `INTERNAL_AUTHORING_INSTRUCTION_LEAK` 和 `BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED`；回放只输出
+  Gate 代码，没有打印或提交正文。随机有效 locator、回答截断 locator、单 Run 冒充总体结论和仅品牌名支撑
+  推荐关系、截去否定上下文的片段以及无法确定的关系表述均 fail-closed；普通“核实官方来源”、界面
+  “系统提示”和用户工具操作等业务措辞不会误杀。
+- 兼容与范围：Execution v9 仍绑定 Prompt v8 / Validation v3，历史 v7/v9 输出不重算、不改写；新 Gate
+  只是最低观察相关性检查，不替代 Product Truth 或对能力/因果的语义支持判断。新建单稿重生成请求
+  同时冻结 Prompt / Execution / Validation 身份；缺失身份的历史排队请求在 Provider 前失败，不静默套用新版本。
+- 离线回归：Agent + 子资产联合回归 84/84、容量回归 29/29 通过；Luna 与 geo_supervisor 最终均
+  `APPROVE`。首次真实失败稿受保护回放仍命中两项新增 Gate，没有打印正文，也没有新增外部调用。
 
 ## 5. 下一里程碑：公司单机内部试用
 
@@ -211,6 +223,8 @@ Python/Node 版本和网络出口。使用专用运行目录和服务账号，�
 - [x] 补齐 M1.2 资产级部分失败、导出阻断、反馈、历史版本和刷新恢复的隔离浏览器验收；未授权单稿重生成保持禁用并已验证 fail-closed。
 - [x] M1.2 已完成首次独立授权的真实双稿生成；结果为真实 Gate 失败，未伪装成通过，外部调用已停止。
 - [x] 首次真实 Gate 的离线修复已升版并通过回归；下一次真实生成必须重新获得独立授权，不能自动重跑。
+- [x] 真实失败沉淀为受保护离线反例；Validation v4 已覆盖内部编写指令泄漏与品牌章节 locator 最低相关性，
+  并保留 v9 历史兼容。下一次真实复测仍需独立付费授权。
 - [ ] 在两份资产通过服务端 Gate 后安排员工逐稿质量评审；不得以首次失败稿或合成结果替代。
 - [x] 当前 M1.2 候选已在 M1.1 只读数据副本上通过升级、备份、恢复和回滚演练；正式提升仍需真实质量与审批。
 - [ ] 试用后再决定 GEO-CAP-001 的生产语义和八木屋接入时间。

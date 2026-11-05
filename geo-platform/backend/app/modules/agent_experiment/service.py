@@ -76,7 +76,7 @@ def _execution_profile(*, regenerate_nonce: str | None = None,
         raise HTTPException(422, {"code": "AGENT_EXECUTION_MODE_INVALID"})
     if execution_mode == "EVIDENCE_PACK":
         return {
-            "contract_version": "geo.evidence-pack.execution.v9",
+            "contract_version": "geo.evidence-pack.execution.v10",
             "execution_mode": "EVIDENCE_PACK",
             "decision_contract": "ONE_MARKDOWN_SYNTHESIS_NO_TOOLS",
             "model_profile": {
@@ -679,12 +679,22 @@ def queue_draft_artifact_regeneration(
 ) -> tuple[AgentDraftArtifactRegeneration, bool]:
     source = get_draft_artifact(db, artifact_version=artifact_version,
                                 project_id=project_id, prompt_id=prompt_id)
+    execution = _execution_profile(
+        execution_mode="EVIDENCE_PACK",
+        requested_artifact_types=[source.artifact_type],
+    )
+    generation_profile = {
+        "execution_contract": execution["contract_version"],
+        "prompt_version": execution["model_profile"]["prompt_version"],
+        "validation_contract": "geo.evidence-pack.validation.v4",
+    }
+    frozen_policy = {**server_policy, "generation_profile": generation_profile}
     request_payload = {
         "contract_version": "geo.draft-artifact.regeneration-request.v1",
         "source_artifact_version": artifact_version,
         "parent_result_version": source.parent_result_version,
         "project_id": project_id, "prompt_id": prompt_id,
-        "server_policy": server_policy,
+        "server_policy": frozen_policy,
     }
     request_hash = digest(request_payload)
     existing = db.query(AgentDraftArtifactRegeneration).filter_by(
@@ -698,7 +708,7 @@ def queue_draft_artifact_regeneration(
         source_artifact_version=artifact_version,
         parent_result_version=source.parent_result_version, agent_run_id=source.agent_run_id,
         project_id=project_id, prompt_id=prompt_id, requested_by=requested_by,
-        request_hash=request_hash, server_policy_json=_canonical(server_policy), status="QUEUED")
+        request_hash=request_hash, server_policy_json=_canonical(frozen_policy), status="QUEUED")
     db.add(row)
     try:
         db.commit()

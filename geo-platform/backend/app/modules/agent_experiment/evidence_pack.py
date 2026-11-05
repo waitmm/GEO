@@ -34,7 +34,8 @@ PRE_CHANNEL_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v5"
 FULL_CITATION_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v6"
 MULTICONTENT_V1_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v8"
 MULTICONTENT_V1_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v7"
-EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v9"
+MULTICONTENT_V2_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v9"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v10"
 EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v8"
 EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.no-thinking.v2"
 _PROMPT_VERSION_BY_EXECUTION_CONTRACT = {
@@ -44,6 +45,7 @@ _PROMPT_VERSION_BY_EXECUTION_CONTRACT = {
     PRE_CHANNEL_EVIDENCE_PACK_EXECUTION_CONTRACT: PRE_CHANNEL_EVIDENCE_PACK_PROMPT_VERSION,
     FULL_CITATION_EVIDENCE_PACK_EXECUTION_CONTRACT: MULTICONTENT_V1_EVIDENCE_PACK_PROMPT_VERSION,
     MULTICONTENT_V1_EVIDENCE_PACK_EXECUTION_CONTRACT: MULTICONTENT_V1_EVIDENCE_PACK_PROMPT_VERSION,
+    MULTICONTENT_V2_EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
     EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
 }
 DEFAULT_TEXT_BUDGET = 90_000
@@ -78,6 +80,47 @@ _FAQ_QUESTION = re.compile(
     r"(?m)^\s*(?:#{3,6}\s+\S.*|(?:\*\*)?(?:问|Q)\s*\d*\s*[:：].*?\*{0,2})\s*$"
 )
 _NUMERIC_CLAIM = re.compile(r"\d\s*(?:%|元)|[¥￥]\s*\d")
+_INTERNAL_AUTHORING_IDENTIFIER = re.compile(
+    r"(?i)(?:evidence_pack|product_truth|answer_evidence_locator|evidence_locator|"
+    r"AgentResultVersion|DraftArtifactVersion|PromptVersion|input_scope_hash|run_ids?|"
+    r"VERIFY_FIRST|tool_?call|system\s*prompt|developer\s*message|"
+    r"证据定位符|内部字段|系统提示词|开发者消息|开发者指令)"
+)
+_INTERNAL_NAMED_ARTIFACT_OPERATION = re.compile(
+    r"(?i)(?:打开|查看|核查|检查|对照|读取|导出|删除|修改).{0,24}"
+    r"(?:Evidence\s*Pack|Product\s*Truth|证据包|产品事实库)|"
+    r"(?:Evidence\s*Pack|Product\s*Truth|证据包|产品事实库).{0,24}"
+    r"(?:打开|查看|核查|检查|对照|读取|导出|删除|修改)"
+)
+_INTERNAL_EDITOR_INSTRUCTION = re.compile(
+    r"(?:(?:交由|要求)(?:编辑|审核人员|内容人员)(?:人员)?|"
+    r"(?:^|[，。；：、\s])由(?:编辑|审核人员|内容人员)(?:人员)?)"
+    r".{0,12}(?:打开|查看|核查|检查|对照|删除|修改)"
+)
+_INTERNAL_PROMPT_OPERATION = re.compile(
+    r"(?i)(?:忽略|无视).{0,16}(?:之前|先前|以上|已有|原有|旧).{0,8}(?:指令|要求|提示)|"
+    r"(?:展示|输出|打印|泄露).{0,16}(?:完整)?(?:提示词|隐藏指令|系统提示词|系统指令|开发者提示词|开发者指令)|"
+    r"(?:遵循|执行).{0,16}(?:系统提示词|系统指令|开发者提示词|开发者指令|隐藏指令)|"
+    r"执行以下步骤.{0,16}(?:调用|使用)(?:内部)?工具|"
+    r"ignore.{0,16}(?:previous|prior).{0,8}instructions?|"
+    r"(?:reveal|print|show).{0,16}(?:system|developer|hidden).{0,8}(?:prompt|instructions?)"
+)
+_BRAND_ABSENCE_WORDING = re.compile(r"未提及|未出现|没有提及|未被提及|未被提到|品牌缺席")
+_BRAND_NOT_RECOMMENDED_WORDING = re.compile(r"不推荐|未推荐|没有推荐|并未推荐|未被推荐")
+_BRAND_MENTION_WORDING = re.compile(r"提及|出现|被提到|推荐|首选|优先选择|最好|最佳|最优|第一")
+_OBSERVED_SAMPLE_WORDING = re.compile(r"回答|样本|监测|Run|示例")
+_AGGREGATE_SCOPE_WORDING = re.compile(
+    r"(?:全部|所有)(?:有效)?(?:回答|样本|Run)|整体(?:回答|样本|表现)|"
+    r"(?:这|本|该)批(?:回答|样本|Run)|"
+    r"当前(?:采样|监测)?(?:回答|样本|Run)|"
+    r"(?:回答|样本|Run).{0,6}均未|每(?:条|个)(?:回答|样本|Run)|"
+    r"零次|0\s*(?:次|条)|共\s*\d+|\d+\s*条(?:有效)?回答"
+)
+_RECOMMENDATION_WORDING = re.compile(r"推荐|首选|优先选择")
+_SUPERLATIVE_WORDING = re.compile(r"最好|最佳|最优|第一")
+_CAPABILITY_WORDING = re.compile(r"支持|具备|提供|可用于|能够|可以|不支持|不具备|无法")
+_NEGATIVE_CAPABILITY_WORDING = re.compile(r"不支持|不具备|无法")
+_SENTENCE_SPLIT = re.compile(r"[。！？!?；;\n]+")
 
 
 class EvidencePackCapacityError(RuntimeError):
@@ -663,6 +706,180 @@ def _has_unsupported_numeric_claim(paragraph: str) -> bool:
     return bool(_NUMERIC_CLAIM.search(paragraph))
 
 
+def _internal_authoring_leak_categories(markdown: str) -> list[str]:
+    """Detect only explicit authoring/runtime instructions in final-user drafts."""
+    # Inline/fenced code is still visible to the final reader. Internal runtime
+    # identifiers wrapped in backticks must not bypass this user-facing gate.
+    visible = markdown
+    categories = []
+    if _INTERNAL_AUTHORING_IDENTIFIER.search(visible):
+        categories.append("INTERNAL_IDENTIFIER")
+    if _INTERNAL_NAMED_ARTIFACT_OPERATION.search(visible):
+        categories.append("INTERNAL_ARTIFACT_OPERATION")
+    if _INTERNAL_EDITOR_INSTRUCTION.search(visible):
+        categories.append("EDITORIAL_WORKFLOW_INSTRUCTION")
+    if _INTERNAL_PROMPT_OPERATION.search(visible):
+        categories.append("PROMPT_INJECTION_INSTRUCTION")
+    return categories
+
+
+def _brand_terms(pack: dict[str, Any]) -> list[str]:
+    configuration = pack.get("project_configuration") or {}
+    brand = configuration.get("brand") or configuration
+    values = [brand.get("brand_name") or configuration.get("brand_name")]
+    values.extend(brand.get("brand_aliases") or configuration.get("brand_aliases") or [])
+    return sorted({str(value).strip() for value in values if len(str(value).strip()) >= 2})
+
+
+def _answer_reference_excerpt(locator: str, pack: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    parts = locator.split(":")
+    if len(parts) != 3:
+        return None, ""
+    run_id, raw_start, raw_end = parts
+    try:
+        start, end = int(raw_start), int(raw_end)
+    except ValueError:
+        return None, ""
+    row = next((item for item in pack.get("runs") or []
+                if str(item.get("run_id")) == run_id), None)
+    if not row:
+        return None, ""
+    answer = str(row.get("answer_text") or "")
+    if start < 0 or end <= start or end > len(answer):
+        return None, ""
+    return row, answer[start:end]
+
+
+def _full_answer_locator(run: dict[str, Any]) -> str:
+    token = str(run.get("answer_evidence_locator") or "")
+    match = re.fullmatch(r"\[\[answer:([^\]]+)\]\]", token)
+    if match:
+        return match.group(1)
+    return f"{run.get('run_id')}:0:{len(str(run.get('answer_text') or ''))}"
+
+
+def _brand_sentences(text: str, terms: list[str]) -> list[str]:
+    return [sentence for sentence in _SENTENCE_SPLIT.split(text)
+            if any(term in sentence for term in terms)]
+
+
+def _has_brand_relation(text: str, terms: list[str], relation: str) -> bool:
+    for sentence in _brand_sentences(text, terms):
+        for term in terms:
+            if term not in sentence:
+                continue
+            brand = re.escape(term)
+            if relation == "RECOMMENDATION":
+                if _has_negative_brand_recommendation(sentence, [term]):
+                    continue
+                if (re.search(rf"(?:推荐|首选|优先选择)(?:使用|采用|考虑|选择)?\s*{brand}", sentence)
+                        or re.search(rf"{brand}(?:被|获|作为|是|为)(?:推荐|首选|优先选择)", sentence)):
+                    return True
+            elif relation == "SUPERLATIVE":
+                if (re.search(rf"(?:最好|最佳|最优|第一)(?:选择|推荐)?(?:是|为)?\s*{brand}", sentence)
+                        or re.search(
+                            rf"{brand}(?:被?称为|被?认为|被?列为|是|为|作为)?"
+                            rf"(?:最好|最佳|最优|第一)",
+                            sentence)):
+                    return True
+            elif relation == "NEGATIVE_CAPABILITY":
+                if re.search(rf"{brand}(?:明确)?(?:不支持|不具备|无法)", sentence):
+                    return True
+            elif relation == "CAPABILITY":
+                if re.search(rf"{brand}(?:明确)?(?:支持|具备|提供|可用于|能够|可以)", sentence):
+                    return True
+    return False
+
+
+def _has_negative_brand_recommendation(text: str, terms: list[str]) -> bool:
+    for sentence in _brand_sentences(text, terms):
+        for term in terms:
+            brand = re.escape(term)
+            if (re.search(
+                    rf"(?:不|未|没有|并未|未被)(?:明确)?(?:推荐|首选|优先选择)\s*{brand}",
+                    sentence)
+                    or re.search(
+                        rf"{brand}.{0,6}(?:不|未|没有|并未|未被)(?:明确)?"
+                        rf"(?:推荐|首选|优先选择)", sentence)):
+                return True
+    return False
+
+
+def _brand_relation_language(text: str, terms: list[str]) -> bool:
+    return any(
+        _RECOMMENDATION_WORDING.search(sentence)
+        or _SUPERLATIVE_WORDING.search(sentence)
+        or _CAPABILITY_WORDING.search(sentence)
+        for sentence in _brand_sentences(text, terms)
+    )
+
+
+def _brand_section_has_relevant_answer(section: str, references: list[dict[str, Any]],
+                                        pack: dict[str, Any]) -> bool:
+    terms = _brand_terms(pack)
+    if not terms or not any(term in section for term in terms):
+        return False
+    section_refs = [row for row in references
+                    if row.get("section") == "品牌表现与证据缺口"
+                    and row.get("valid") and row.get("kind") == "answer"]
+    section_recommendation = _has_brand_relation(section, terms, "RECOMMENDATION")
+    section_superlative = _has_brand_relation(section, terms, "SUPERLATIVE")
+    section_negative_recommendation = _has_negative_brand_recommendation(section, terms)
+    section_negative_capability = _has_brand_relation(section, terms, "NEGATIVE_CAPABILITY")
+    section_capability = _has_brand_relation(section, terms, "CAPABILITY")
+    parsed_relation = any((section_recommendation, section_superlative,
+                           section_negative_recommendation,
+                           section_negative_capability, section_capability))
+    if _brand_relation_language(section, terms) and not parsed_relation:
+        return False
+    aggregate_scope = bool(_AGGREGATE_SCOPE_WORDING.search(section))
+    relevant_observation_runs: set[str] = set()
+    for reference in section_refs:
+        locator = str(reference.get("locator") or "")
+        run, excerpt = _answer_reference_excerpt(locator, pack)
+        if not run:
+            continue
+        if any(term in excerpt for term in terms):
+            if _BRAND_ABSENCE_WORDING.search(section):
+                continue
+            if not (_BRAND_MENTION_WORDING.search(section) or section_capability
+                    or section_negative_capability):
+                continue
+            if section_recommendation and not _has_brand_relation(
+                    excerpt, terms, "RECOMMENDATION"):
+                continue
+            if section_superlative and not _has_brand_relation(excerpt, terms, "SUPERLATIVE"):
+                continue
+            if section_negative_recommendation and not _has_negative_brand_recommendation(
+                    excerpt, terms):
+                continue
+            if section_negative_capability and not _has_brand_relation(
+                    excerpt, terms, "NEGATIVE_CAPABILITY"):
+                continue
+            if section_capability and not _has_brand_relation(excerpt, terms, "CAPABILITY"):
+                continue
+            if parsed_relation and locator != _full_answer_locator(run):
+                continue
+            if aggregate_scope and locator != _full_answer_locator(run):
+                continue
+            relevant_observation_runs.add(str(run.get("run_id")))
+            if not aggregate_scope:
+                return True
+            continue
+        full_locator = locator == _full_answer_locator(run)
+        if (full_locator and _BRAND_ABSENCE_WORDING.search(section)
+                and not any(term in excerpt for term in terms)):
+            relevant_observation_runs.add(str(run.get("run_id")))
+    if not relevant_observation_runs or not _OBSERVED_SAMPLE_WORDING.search(section):
+        return False
+    if not aggregate_scope:
+        return True
+    valid_runs = [row for row in pack.get("runs") or []
+                  if row.get("status") in {"success", "completed"}
+                  and str(row.get("answer_text") or "").strip()]
+    return relevant_observation_runs == {str(row.get("run_id")) for row in valid_runs}
+
+
 def _validate_reference(kind: str, locator: str, pack: dict[str, Any]) -> str | None:
     if kind == "answer":
         parts = locator.split(":")
@@ -786,8 +1003,10 @@ def _draft_similarity_metrics(left: str, right: str) -> dict[str, Any]:
 
 
 def validate_markdown_result(markdown: str, pack: dict[str, Any],
-                             requested_artifact_types: list[str] | None = None
+                             requested_artifact_types: list[str] | None = None,
+                             execution_contract: str = EVIDENCE_PACK_EXECUTION_CONTRACT,
                              ) -> tuple[dict[str, Any], dict[str, str]]:
+    quality_gate_v4 = execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT
     selected = _normalize_requested_artifacts(requested_artifact_types)
     artifact_sections = ({"HELP_DOC": "完整正文"} if selected is None else
                          {value: ARTIFACT_SECTION[value] for value in selected})
@@ -847,6 +1066,15 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
     for name in REQUIRED_SECTIONS[:3]:
         if sections.get(name) and not _REF.search(_mask_markdown_code(sections[name])):
             add_issue({"code": "SECTION_EVIDENCE_REQUIRED", "detail": name}, name)
+    if (quality_gate_v4
+            and sections.get("品牌表现与证据缺口")
+            and not _brand_section_has_relevant_answer(
+                sections["品牌表现与证据缺口"], references, pack,
+            )):
+        add_issue({
+            "code": "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED",
+            "detail": "品牌表现章节需要与目标品牌提及或样本缺席观察直接相关的回答证据",
+        }, "品牌表现与证据缺口")
     strategy = sections.get("优化策略与渠道", "")
     if pack.get("citation_occurrences"):
         if "### 引用渠道与竞品来源观察" not in strategy:
@@ -877,6 +1105,12 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
         if artifact_type == "FAQ" and draft and not _has_sufficient_faq_structure(draft):
             add_issue({"code": "FAQ_STRUCTURE_REQUIRED",
                        "detail": "常见问题至少需要两个明确问题与回答"}, section_name)
+        if quality_gate_v4:
+            for category in _internal_authoring_leak_categories(draft):
+                add_issue({
+                    "code": "INTERNAL_AUTHORING_INSTRUCTION_LEAK",
+                    "detail": category,
+                }, section_name)
 
     if set(artifact_sections) == {"HELP_DOC", "FAQ"}:
         help_metrics = _help_doc_structure_metrics(draft_by_artifact["HELP_DOC"])
@@ -943,7 +1177,11 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
         validation_status = "FAIL"
 
     validation = {
-        "contract_version": "geo.evidence-pack.validation.v3",
+        "contract_version": (
+            "geo.evidence-pack.validation.v4"
+            if quality_gate_v4
+            else "geo.evidence-pack.validation.v3"
+        ),
         "status": validation_status,
         "issues": [*shared_issues, *[issue for values in artifact_issues.values()
                                      for issue in values]],
@@ -1134,7 +1372,9 @@ def execute_evidence_pack_run(run_id: str, *, session_factory,
         db.commit()
         checked, eligibility = validate_markdown_result(
             markdown, pack,
-            requested_artifact_types=execution.get("requested_artifact_types") or ["HELP_DOC"])
+            requested_artifact_types=execution.get("requested_artifact_types") or ["HELP_DOC"],
+            execution_contract=execution_contract,
+        )
         _append_event(db, run, "EVIDENCE_PACK_OUTPUT_VALIDATED", {
             "evidence_pack_hash": pack["evidence_pack_hash"],
             "validation": checked["validation"], "eligibility": eligibility,

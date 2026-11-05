@@ -112,6 +112,27 @@ def test_quality_gate_boundaries_ignore_short_shared_facts_and_accept_ordered_st
     assert _help_doc_structure_metrics(ordered)["passed"] is True
 
 
+def test_help_doc_structure_does_not_count_action_words_in_headings():
+    narrative_filler = (
+        "这一部分主要介绍相关背景、适用范围、风险边界和编辑原则。"
+        "内容用于说明上下文，不包含面向使用者的具体动作指令。"
+    ) * 8
+    headings_only = (
+        f"### 配置\n\n{narrative_filler}\n\n"
+        f"### 执行\n\n{narrative_filler}"
+    )
+    metrics = _help_doc_structure_metrics(headings_only)
+    assert metrics["step_heading_count"] == 2
+    assert metrics["operation_verb_count"] == 0
+    assert metrics["actionable_unit_count"] == 0
+    assert metrics["passed"] is False
+
+    real_steps = _help_doc_structure_metrics(_help_doc_body())
+    assert real_steps["operation_verb_count"] >= 2
+    assert real_steps["actionable_unit_count"] >= 2
+    assert real_steps["passed"] is True
+
+
 def _multi_markdown(pack, *, valid_faq=True):
     markdown = _evidence_markdown(pack).replace("## 完整正文", "## 帮助文档")
     before, remainder = markdown.split("## 帮助文档", 1)

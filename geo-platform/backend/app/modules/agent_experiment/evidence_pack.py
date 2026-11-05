@@ -595,19 +595,39 @@ def _validate_reference(kind: str, locator: str, pack: dict[str, Any]) -> str | 
 def _help_doc_structure_metrics(markdown: str) -> dict[str, Any]:
     heading_count = len(_HELP_STEP_HEADING.findall(markdown))
     ordered_step_count = len(_ORDERED_STEP.findall(markdown))
-    operation_verb_count = len(_OPERATION_VERB.findall(markdown))
+    # Headings describe structure but are not executable instructions. In
+    # particular, bare ``### 配置`` / ``### 执行`` headings must not satisfy
+    # the action requirement without actionable body text below them.
+    body_without_headings = re.sub(r"(?m)^#{1,6}\s+.*$", "", markdown)
+    operation_verb_count = len(_OPERATION_VERB.findall(body_without_headings))
+    body_blocks = [
+        block.strip() for block in re.split(r"\n\s*\n", body_without_headings)
+        if block.strip()
+    ]
+    actionable_body_block_count = sum(bool(_OPERATION_VERB.search(block)) for block in body_blocks)
+    actionable_ordered_step_count = sum(
+        bool(_OPERATION_VERB.search(line))
+        for line in body_without_headings.splitlines()
+        if _ORDERED_STEP.match(line)
+    )
+    actionable_unit_count = max(actionable_body_block_count, actionable_ordered_step_count)
     structurally_editable = (
         (heading_count >= 2 or ordered_step_count >= 3)
         and operation_verb_count >= 2
+        and actionable_unit_count >= 2
     )
     return {
         "algorithm": "geo.help-doc-operation-structure.v1",
         "step_heading_count": heading_count,
         "ordered_step_count": ordered_step_count,
         "operation_verb_count": operation_verb_count,
+        "actionable_body_block_count": actionable_body_block_count,
+        "actionable_ordered_step_count": actionable_ordered_step_count,
+        "actionable_unit_count": actionable_unit_count,
         "required_step_headings": 2,
         "required_ordered_steps": 3,
         "required_operation_verbs": 2,
+        "required_actionable_units": 2,
         "passed": structurally_editable,
     }
 

@@ -6841,3 +6841,9 @@ review_queue = READY
   the affected tests without weakening the production seven-day freshness rule; Agent,
   multi-content and internal-Beta backend tests now pass 66/66. Real model content quality,
   Windows deployment and M1.1-to-M1.2 release promotion remain separate uncompleted gates.
+- The accepted code checkpoint `d20e9fe84ad76dae576b2cafe9a056d5fc023f58` also passed the
+  isolated M1.1-to-M1.2 rehearsal against a read-only, SQLite-consistent copy: 57 existing
+  tables were unchanged, seven legacy single-draft results remained readable, migration and
+  restored backup both reached `20261030_02`, and rollback returned to `20261022_01` while
+  retaining the upgraded copy. Services, daily model calls and scheduled sampling stayed off;
+  external calls were zero. This does not authorize promotion of the company trial database.

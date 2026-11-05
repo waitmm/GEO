@@ -27,6 +27,7 @@ from app.modules.agent_experiment.contracts import AgentArtifact, AgentDecision
 from app.modules.agent_experiment.grading import validate_and_grade
 from app.modules.agent_experiment.evidence_pack import (
     EvidencePackCapacityError,
+    _PROMPT_VERSION_BY_EXECUTION_CONTRACT,
     build_evidence_pack,
     render_evidence_pack_prompt,
     validate_markdown_result,
@@ -331,8 +332,8 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v8"
-    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v7"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v9"
+    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v8"
     assert execution["requested_artifact_types"] == ["HELP_DOC"]
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
@@ -525,6 +526,52 @@ def test_evidence_pack_prompt_requires_evidence_in_each_analysis_section():
     assert "不要把这三节需要的证据标记集中放到其他章节" in prompt
     assert "### 引用渠道与竞品来源观察" in prompt
     assert "引用次数多不等于渠道" in prompt
+    assert "表格里的指标字段名也不算 locator" in prompt
+
+
+def test_dual_content_prompt_requires_publishable_audience_specific_assets():
+    prompt = render_evidence_pack_prompt(requested_artifact_types=["HELP_DOC", "FAQ"])
+    assert "面向最终使用者" in prompt
+    assert "不得写成给编辑的撰稿清单" in prompt
+    assert "至少使用两个 `### 问题标题`" in prompt
+    assert "不得只写加粗的 Q1/Q2" in prompt
+    assert "不得把它改写成确定的因果原因" in prompt
+    assert "不得复述无依据的数字、百分比、价格或效果值" in prompt
+
+    help_prompt = render_evidence_pack_prompt(requested_artifact_types=["HELP_DOC"])
+    assert "面向最终使用者" in help_prompt
+    assert "不得写成给编辑的撰稿清单" in help_prompt
+
+    faq_prompt = render_evidence_pack_prompt(requested_artifact_types=["FAQ"])
+    assert "面向最终使用者" in faq_prompt
+    assert "至少使用两个 `### 问题标题`" in faq_prompt
+
+
+def test_previous_multicontent_prompt_identity_remains_frozen():
+    prompt = render_evidence_pack_prompt(
+        prompt_version="geo-evidence-pack-synthesis.v7",
+        requested_artifact_types=["HELP_DOC", "FAQ"],
+    )
+    assert "必须是可直接交编辑的步骤型说明" in prompt
+    assert "面向最终使用者" not in prompt
+    assert "表格里的指标字段名也不算 locator" not in prompt
+    assert "不得把它改写成确定的因果原因" not in prompt
+    assert "上述契约章节是全文仅允许出现的 `##` 标题" in prompt
+    assert "必须逐字复制证据对象给出的 `answer_evidence_locator`" in prompt
+
+
+def test_execution_contract_routes_to_frozen_prompt_identity():
+    assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v6"] == (
+        "geo-evidence-pack-synthesis.v7"
+    )
+    assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v8"] == (
+        "geo-evidence-pack-synthesis.v7"
+    )
+    assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v9"] == (
+        "geo-evidence-pack-synthesis.v8"
+    )
+    assert "geo.evidence-pack.execution.v4" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
+    assert "geo.evidence-pack.execution.v7" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
 
 
 def test_evidence_pack_uses_frozen_run_references_when_manifest_is_absent():

@@ -16,7 +16,8 @@ from app.models import (
     AgentExperimentRun, AgentResultVersion,
 )
 from app.modules.agent_experiment.evidence_pack import (
-    _draft_similarity_metrics, _help_doc_structure_metrics, build_evidence_pack,
+    _draft_similarity_metrics, _has_sufficient_faq_structure,
+    _has_unsupported_numeric_claim, _help_doc_structure_metrics, build_evidence_pack,
 )
 from app.modules.agent_experiment.api import (
     AgentDraftArtifactRegenerate, read_agent_capabilities, regenerate_draft_artifact,
@@ -133,6 +134,50 @@ def test_help_doc_structure_does_not_count_action_words_in_headings():
     assert real_steps["operation_verb_count"] >= 2
     assert real_steps["actionable_unit_count"] >= 2
     assert real_steps["passed"] is True
+
+
+def test_faq_structure_accepts_numbered_bold_questions_but_rejects_plain_copy():
+    faq = (
+        "**Q1：使用前需要确认什么？**\nA：确认真实权限与限制。\n\n"
+        "**Q2: 结果异常怎么办？**\nA：停止扩大范围并复测。"
+    )
+    assert _has_sufficient_faq_structure(faq) is True
+    assert _has_sufficient_faq_structure("只有两段说明，没有明确问题与回答。") is False
+    assert _has_sufficient_faq_structure("**Q1：问题一？**\n\n**Q2：问题二？**") is False
+    assert _has_sufficient_faq_structure("**Q1：问题一？**\nA：\n\n**Q2：问题二？**\n答：") is False
+    assert _has_sufficient_faq_structure(
+        "**Q1：问题一？**\n**A：**\n\n**Q2：问题二？**\n**答：**"
+    ) is False
+    assert _has_sufficient_faq_structure(
+        "**Q1：问题一？**\nA1：\n\n**Q2：问题二？**\nA2："
+    ) is False
+    assert _has_sufficient_faq_structure(
+        "```markdown\n**Q1：示例一？**\nA：示例。\n**Q2：示例二？**\nA：示例。\n```"
+    ) is False
+    assert _has_sufficient_faq_structure(
+        "~~~markdown\n**Q1：示例一？**\nA：示例。\n**Q2：示例二？**\nA：示例。\n~~~"
+    ) is False
+
+
+def test_numeric_claim_gate_ignores_explicit_prohibition_but_blocks_real_claim():
+    assert _has_unsupported_numeric_claim(
+        "全文搜索敏感词：免费、永久、100%、保证。命中即删或改。"
+    ) is True
+    assert _has_unsupported_numeric_claim("不得写100%的成功率承诺。") is True
+    assert _has_unsupported_numeric_claim("实测成功率可达100%。") is True
+    assert _has_unsupported_numeric_claim("套餐价格为99元。") is True
+    assert _has_unsupported_numeric_claim("不要错过20%的折扣。") is True
+    assert _has_unsupported_numeric_claim("套餐价格不得低于99元。") is True
+    assert _has_unsupported_numeric_claim("为避免风险，回报20%。") is True
+    assert _has_unsupported_numeric_claim(
+        "敏感词命中即删或改，但本产品成功率达到100%。"
+    ) is True
+    assert _has_unsupported_numeric_claim(
+        "敏感词清单：保证。我们产品成功率达到100%。命中即删或改。"
+    ) is True
+    assert _has_unsupported_numeric_claim(
+        "敏感词清单：保证，但我们实测成功率达到100%，命中即删或改。"
+    ) is True
 
 
 def _multi_markdown(pack, *, valid_faq=True):

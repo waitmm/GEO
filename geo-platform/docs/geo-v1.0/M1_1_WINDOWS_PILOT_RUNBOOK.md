@@ -64,11 +64,16 @@ Evidence 完整或历史费用审计保留。安装前先核验 integrity、外�
 .\restart.ps1
 .\stop.ps1
 .\backup.ps1 -BackupOutput D:\GEO-Backups\2026-10-30
+.\restore.ps1 -RestoreBackup D:\GEO-Backups\2026-10-30 -TargetHome D:\GEO-Restore-Check
 .\set-password.ps1 -ProjectId 1
 ```
 
 启动成功后显示实际地址，例如 `http://192.168.3.200:8032`。改密码会立即使已有会话失效。
 Backend 和 Worker 分别由 Windows 任务计划程序管理，均禁止并行重复实例。
+
+`restore.ps1` 只允许把完整备份恢复到一个新的或空的目录，用于恢复验收或故障恢复准备；它不会
+覆盖 `C:\ProgramData\GEO Beta`、注册任务或启动服务。要重建正式实例，请使用第 3 节的
+`install.ps1 -RestoreBackup ...` 并指定一个新的 Home。
 
 ## 5. 首次目标机验收
 

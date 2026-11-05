@@ -24,9 +24,10 @@ def test_windows_entrypoints_are_present_and_use_one_controller():
     for name, action in {
         "install.ps1": "install", "start.ps1": "start", "stop.ps1": "stop",
         "restart.ps1": "restart", "status.ps1": "status", "backup.ps1": "backup",
+        "restore.ps1": "restore",
     }.items():
         assert f'") {action} @args' in source(name)
-    assert 'ValidateSet("install", "start", "stop", "restart", "status", "backup")' in controller
+    assert 'ValidateSet("install", "start", "stop", "restart", "status", "backup", "restore")' in controller
 
 
 def test_windows_pilot_is_private_http_password_mode_without_tls_material():
@@ -80,6 +81,17 @@ def test_windows_restore_targets_final_home_before_install_and_never_moves_datab
     assert "Move-Item" not in install
     assert "Copy-Item -LiteralPath $DatabaseBackup" not in install
     assert "Remove-Item -Recurse" not in install
+
+
+def test_windows_restore_command_only_restores_a_complete_backup_to_a_new_home():
+    controller = source("geo-beta.ps1")
+    restore = controller.split("function Restore-Geo", 1)[1].split("switch ($Action)", 1)[0]
+    assert "COMPLETE_BACKUP_DIRECTORY_REQUIRED" in restore
+    assert "RESTORE_TARGET_HOME_REQUIRED" in restore
+    assert "RESTORE_TARGET_MUST_BE_NEW_OR_EMPTY" in restore
+    assert "restore --backup $RestoreBackup --target-home $target" in restore
+    assert "Start-ScheduledTask" not in restore
+    assert "Remove-Item" not in restore
 
 
 def test_windows_full_backup_cli_preserves_final_source_paths_and_unknown_audit(tmp_path):

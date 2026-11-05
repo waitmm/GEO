@@ -1,12 +1,13 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("install", "start", "stop", "restart", "status", "backup")]
+    [ValidateSet("install", "start", "stop", "restart", "status", "backup", "restore")]
     [string]$Action,
     [string]$Home = "$env:ProgramData\GEO Beta",
     [string]$Source,
     [string]$DatabaseBackup,
     [string]$RestoreBackup,
+    [string]$TargetHome,
     [string]$ReleaseId,
     [string]$SourceSha,
     [string]$PythonExe = "py.exe",
@@ -208,6 +209,26 @@ function Get-GeoStatus {
     [ordered]@{ home = $paths.Home; url = if ($address -eq "UNKNOWN") { $null } else { "http://$address`:8032" }; tasks = $rows } | ConvertTo-Json -Depth 5
 }
 
+function Restore-Geo {
+    Assert-Administrator
+    if (-not $RestoreBackup -or -not (Test-Path -LiteralPath $RestoreBackup -PathType Container)) {
+        throw "COMPLETE_BACKUP_DIRECTORY_REQUIRED"
+    }
+    if (-not $TargetHome) { throw "RESTORE_TARGET_HOME_REQUIRED" }
+    $target = [IO.Path]::GetFullPath($TargetHome)
+    if ((Test-Path -LiteralPath $target) -and (Get-ChildItem -Force -LiteralPath $target | Select-Object -First 1)) {
+        throw "RESTORE_TARGET_MUST_BE_NEW_OR_EMPTY"
+    }
+    # This command is a restore verification/recovery preparation only. It
+    # never replaces an existing installed instance or starts any service.
+    $lifecycle = Join-Path $PSScriptRoot "..\..\geo-platform\backend\scripts\m1_beta_ops.py"
+    & $PythonExe $lifecycle preflight --database (Join-Path $RestoreBackup "database.db")
+    if ($LASTEXITCODE -ne 0) { throw "BACKUP_DATABASE_PREFLIGHT_FAILED" }
+    & $PythonExe $lifecycle restore --backup $RestoreBackup --target-home $target
+    if ($LASTEXITCODE -ne 0) { throw "RESTORE_BACKUP_FAILED" }
+    Write-Output "RESTORED_TO_NEW_HOME:$target"
+}
+
 switch ($Action) {
     "install" { Install-Geo }
     "start" { Start-Geo }
@@ -223,4 +244,5 @@ switch ($Action) {
         & $python (Join-Path $paths.Current "geo-platform\backend\scripts\m1_beta_ops.py") backup --home $paths.Home --output $BackupOutput
         if ($LASTEXITCODE -ne 0) { throw "WINDOWS_BACKUP_FAILED" }
     }
+    "restore" { Restore-Geo }
 }

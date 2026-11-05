@@ -6815,3 +6815,27 @@ review_queue = READY
   and a clean-database migration/schema check passed. Local Beta was backed up and migrated,
   then Chrome exercised the real `127.0.0.1:8032` form through preview with no page error,
   external request or database insert. Schedule 1 remained `PAUSED`.
+
+## 2026-11-05 M1.2 Multi-content Quality and Operator-facing QA
+
+- Classified as `IMPLEMENTATION_CHANGE` against frozen `SC-MULTI-DRAFT-ARTIFACT-001`.
+  No parent/child version meaning, delivery qualification or formal V2 contract changed.
+- Added conservative server-side quality gates for a dual HELP_DOC + FAQ delivery. The help
+  document must contain an editable operation structure; a sufficiently long pair with both
+  high containment and high shingle Jaccard is rejected as materially duplicated. Each child
+  receives its own issue and auditable metrics, so one structural failure does not erase a
+  qualified sibling. Shared brand names and short/shared fact passages are not sufficient to
+  trigger the duplicate gate.
+- Replaced employee-facing raw Evidence/QA JSON with Chinese evidence counts, types,
+  locators, QA qualification, validation issues and a visible VERIFY_FIRST warning. Raw JSON
+  remains available only under the nested technical-details disclosure; feedback ratings are
+  displayed in business language.
+- Verification: 18/18 backend multi-content tests, 6/6 targeted frontend tests and 36/36
+  frontend client tests passed; production frontend build passed. The isolated Chrome flow
+  seeded one frozen Analysis and two scripted child assets, displayed independent HELP_DOC and
+  FAQ content/Evidence/QA/export state on desktop and mobile, and passed with zero external
+  calls. Evidence is under `backend/artifacts/acceptance/agent-browser-20261105T025147Z/`.
+- Two broader Agent tests still fail closed because their fixture hard-codes 2026-10-22/26
+  pricing evidence and the production seven-day freshness rule now rejects it. This is logged
+  as test-clock debt, not hidden as a multi-content regression. Real model content quality,
+  Windows deployment and M1.1-to-M1.2 release promotion remain separate uncompleted gates.

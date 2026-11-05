@@ -1,8 +1,9 @@
 """Offline browser acceptance for GEO Agent Experiment V1.
 
 Creates a fresh release database, seeds one frozen Analysis and a scripted Agent
-result, then exercises only loopback GET/UI interactions. No model, sampling,
-source-fetch or publication call is possible in this check.
+result with HELP_DOC and FAQ child assets, then exercises only loopback GET/UI
+interactions. No model, sampling, source-fetch or publication call is possible
+in this check.
 """
 
 from __future__ import annotations
@@ -49,7 +50,8 @@ def main() -> None:
     from app.modules.agent_experiment.runner import execute_agent_run
     from app.modules.agent_experiment.service import create_agent_run
     from app.services.serialization import loads
-    from test_agent_experiment import ScriptedEvidencePackClient, _evidence_markdown
+    from test_agent_draft_artifacts import _multi_markdown
+    from test_agent_experiment import ScriptedEvidencePackClient
     from test_release_first_slice import _seed_frozen_analysis
 
     engine = create_engine(env["GEO_RELEASE_DATABASE_URL"], module=get_release_sqlite_dbapi())
@@ -62,9 +64,10 @@ def main() -> None:
             db, project_id=1, prompt_id=44, analysis_id=analysis.analysis_id,
             context_id=context.context_id, idempotency_key="agent-browser-seed-0001", requested_by="browser-qa",
             execution_mode="EVIDENCE_PACK",
+            requested_artifact_types=["HELP_DOC", "FAQ"],
         )
         pack = build_evidence_pack(loads(agent.input_scope_json, {}))
-        scripted = ScriptedEvidencePackClient(_evidence_markdown(pack))
+        scripted = ScriptedEvidencePackClient(_multi_markdown(pack))
         agent_id = agent.run_id
         analysis_id = analysis.analysis_id
     execute_agent_run(agent_id, session_factory=Session, client=scripted)
@@ -77,7 +80,7 @@ def main() -> None:
         [sys.executable, "-m", "uvicorn", "app.release_main:app", "--host", "127.0.0.1", "--port", str(port)],
         cwd=ROOT / "backend", env=env, stdout=log, stderr=subprocess.STDOUT,
     )
-    report = {"scope": "OFFLINE_ISOLATED_AGENT_UI", "external_calls": 0, "status": "FAIL",
+    report = {"scope": "OFFLINE_ISOLATED_MULTI_CONTENT_UI", "external_calls": 0, "status": "FAIL",
               "screenshots": [], "errors": [], "agent_run_id": agent_id, "analysis_id": analysis_id}
     try:
         opener = build_opener(ProxyHandler({}))
@@ -109,10 +112,18 @@ def main() -> None:
             expect(page.get_by_text("当前仅开放历史结果使用", exact=True)).to_be_visible()
             expect(page.get_by_text("优化结果", exact=True)).to_be_visible(timeout=15000)
             expect(page.get_by_text(
-                "服务端校验 PASS · L3_ACTIONABLE_WITHOUT_FACT_CLAIMS", exact=True,
+                "服务端校验通过 · L3_ACTIONABLE_WITHOUT_FACT_CLAIMS", exact=True,
             )).to_be_visible()
-            expect(page.get_by_role("button", name="复制完整正文", exact=True)).to_be_visible()
-            expect(page.get_by_role("button", name="导出完整报告", exact=True)).to_be_visible()
+            expect(page.get_by_role("button", name="导出本次优化完整报告", exact=True)).to_be_visible()
+            expect(page.get_by_text("本次优化的内容资产", exact=True)).to_be_visible()
+            expect(page.get_by_text("每份内容独立保存和校验", exact=True)).to_be_visible()
+            expect(page.get_by_text("帮助文档", exact=True).first).to_be_visible()
+            expect(page.get_by_text("常见问题 FAQ", exact=True).first).to_be_visible()
+            expect(page.get_by_role("button", name="导出 Markdown", exact=True)).to_have_count(2)
+            page.get_by_text("证据与 QA", exact=True).first.click()
+            expect(page.get_by_text("证据数量", exact=True).first).to_be_visible()
+            expect(page.get_by_text("QA 资格", exact=True).first).to_be_visible()
+            expect(page.get_by_text("技术详情（原始数据）", exact=True).first).to_be_visible()
             expect(page.locator("body")).not_to_contain_text("正式库写入成功")
             page.screenshot(path=str(out / "agent-desktop.png"), full_page=True)
             report["screenshots"].append("agent-desktop.png")

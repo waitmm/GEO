@@ -37,7 +37,9 @@ from app.modules.agent_experiment.service import (
     queue_draft_artifact_regeneration,
 )
 from app.services.serialization import loads
-from test_agent_experiment import ScriptedEvidencePackClient, _artifact, _evidence_markdown
+from test_agent_experiment import (
+    CURRENT_PRICING_DATE, ScriptedEvidencePackClient, _artifact, _evidence_markdown,
+)
 from test_release_first_slice import _migrated_session, _seed_citation_contribution_fixture
 
 
@@ -445,7 +447,7 @@ def test_single_asset_regeneration_is_idempotent_and_preserves_parent_and_siblin
     sibling = next(row for row in before if row["artifact_type"] == "HELP_DOC")
 
     policy = {"max_requests": 1, "max_total_tokens": 300_000, "max_cost_cny": 5.0,
-              "pricing_source": "server-test", "pricing_checked_at": "2026-10-30"}
+              "pricing_source": "server-test", "pricing_checked_at": CURRENT_PRICING_DATE}
     request, created = queue_draft_artifact_regeneration(
         db, artifact_version=faq["artifact_version"], project_id=1, prompt_id=44,
         idempotency_key="faq-regeneration-0001", requested_by="employee", server_policy=policy)
@@ -509,7 +511,7 @@ def _queued_failed_faq(db, fixture, key):
         db, run_id=run.run_id, project_id=1, prompt_id=44) if row["artifact_type"] == "FAQ")
     policy = {"max_requests": 1, "max_total_tokens": 300_000, "max_cost_cny": 5.0,
               "conservative_cny_per_million_tokens": 10.0,
-              "pricing_source": "server-test", "pricing_checked_at": "2026-10-30"}
+              "pricing_source": "server-test", "pricing_checked_at": CURRENT_PRICING_DATE}
     request, _ = queue_draft_artifact_regeneration(
         db, artifact_version=faq["artifact_version"], project_id=1, prompt_id=44,
         idempotency_key=f"{key}-regen", requested_by="employee", server_policy=policy)

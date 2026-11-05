@@ -22,7 +22,7 @@ from app.modules.agent_experiment.service import (
 )
 from app.services.serialization import loads
 from app.services.internal_beta_model_budget import initialize_daily_budget
-from test_agent_experiment import ScriptedEvidencePackClient, _evidence_markdown
+from test_agent_experiment import CURRENT_PRICING_DATE, ScriptedEvidencePackClient, _evidence_markdown
 from test_release_first_slice import _migrated_session, _seed_citation_contribution_fixture
 
 
@@ -101,6 +101,9 @@ def test_daily_model_calls_fail_closed_without_deployment_authorization(tmp_path
         "project_id": 1, "execution_mode": "EVIDENCE_PACK",
         "new_generation_enabled": False, "authorization_scope": "HISTORY_ONLY",
         "message": "AI 生成尚未由服务端启用；当前仍可查看和使用历史结果。",
+        "draft_regeneration_enabled": False,
+        "draft_regeneration_blocker": "DRAFT_REGENERATION_EXTERNAL_CALL_NOT_AUTHORIZED",
+        "draft_regeneration_message": "单篇重新生成尚未获得独立外部模型授权；当前不会创建排队任务。",
     }
     payload = AgentServerQueue(project_id=1, prompt_id=44, revision=1)
     with pytest.raises(HTTPException) as blocked:
@@ -112,7 +115,7 @@ def test_daily_model_calls_fail_closed_without_deployment_authorization(tmp_path
     assert read_agent_capabilities(1)["new_generation_enabled"] is False
     monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_LEDGER_PATH", str(tmp_path / "daily.sqlite3"))
     monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_BATCH_ID", "beta-capability-test")
-    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", "2026-10-26")
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", CURRENT_PRICING_DATE)
     initialize_daily_budget()
     capability = read_agent_capabilities(1)
     assert capability["new_generation_enabled"] is True

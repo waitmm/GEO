@@ -946,7 +946,7 @@ def test_agent_api_create_get_and_comparison_get_are_scoped_and_read_only(tmp_pa
     monkeypatch.setenv("GEO_AGENT_BETA_DAILY_MODEL_CALLS", "1")
     monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_LEDGER_PATH", str(ledger))
     monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_BATCH_ID", "api-beta-test")
-    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", "2026-10-26")
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", CURRENT_PRICING_DATE)
     initialize_daily_budget()
     payload = {"project_id": 1, "prompt_id": 44, "context_id": fixture["context"].context_id,
                "citation_manifest_id": fixture["manifest"].manifest_id,
@@ -1040,14 +1040,14 @@ def test_release_worker_attaches_persistent_daily_budget_to_external_evidence_pa
     monkeypatch.setenv("GEO_AGENT_BETA_DAILY_MODEL_CALLS", "1")
     monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_LEDGER_PATH", str(ledger))
     monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_BATCH_ID", "beta-test")
-    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", "2026-10-22")
+    monkeypatch.setenv("GEO_AGENT_BETA_BUDGET_PRICING_CHECKED_AT", CURRENT_PRICING_DATE)
     initialize_daily_budget()
     append_run_authorization(
         db, run_id=row.run_id, project_id=1, prompt_id=44,
         revision=row.revision, max_requests=1, max_total_tokens=300_000,
         max_cost_cny=5.0, conservative_cny_per_million_tokens=10.0,
         pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
-        pricing_checked_at="2026-10-22",
+        pricing_checked_at=CURRENT_PRICING_DATE,
         authorized_by="qa",
     )
     row = authorize_agent_run(
@@ -1055,7 +1055,7 @@ def test_release_worker_attaches_persistent_daily_budget_to_external_evidence_pa
         revision=row.revision, max_requests=1, max_total_tokens=300_000,
         max_cost_cny=5.0, conservative_cny_per_million_tokens=10.0,
         pricing_source="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
-        pricing_checked_at="2026-10-22", authorized_by="qa",
+        pricing_checked_at=CURRENT_PRICING_DATE, authorized_by="qa",
     )
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     captured = []

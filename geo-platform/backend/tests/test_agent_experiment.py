@@ -357,8 +357,8 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v10"
-    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v8"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v11"
+    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v9"
     assert execution["requested_artifact_types"] == ["HELP_DOC"]
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
@@ -562,6 +562,9 @@ def test_dual_content_prompt_requires_publishable_audience_specific_assets():
     assert "不得只写加粗的 Q1/Q2" in prompt
     assert "不得把它改写成确定的因果原因" in prompt
     assert "不得复述无依据的数字、百分比、价格或效果值" in prompt
+    assert "标记整体不得放在单反引号、代码围栏或转义符中" in prompt
+    assert "必须逐条列出覆盖范围内每个有效回答的完整 answer locator" in prompt
+    assert "必须至少包含两个以 `### 步骤`" in prompt
 
     help_prompt = render_evidence_pack_prompt(requested_artifact_types=["HELP_DOC"])
     assert "面向最终使用者" in help_prompt
@@ -585,6 +588,17 @@ def test_previous_multicontent_prompt_identity_remains_frozen():
     assert "必须逐字复制证据对象给出的 `answer_evidence_locator`" in prompt
 
 
+def test_quality_gate_v1_prompt_identity_remains_frozen():
+    prompt = render_evidence_pack_prompt(
+        prompt_version="geo-evidence-pack-synthesis.v8",
+        requested_artifact_types=["HELP_DOC", "FAQ"],
+    )
+    assert "面向最终使用者" in prompt
+    assert "标记整体不得放在单反引号、代码围栏或转义符中" not in prompt
+    assert "必须逐条列出覆盖范围内每个有效回答的完整 answer locator" not in prompt
+    assert "必须至少包含两个以 `### 步骤`" not in prompt
+
+
 def test_execution_contract_routes_to_frozen_prompt_identity():
     assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v6"] == (
         "geo-evidence-pack-synthesis.v7"
@@ -597,6 +611,9 @@ def test_execution_contract_routes_to_frozen_prompt_identity():
     )
     assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v10"] == (
         "geo-evidence-pack-synthesis.v8"
+    )
+    assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v11"] == (
+        "geo-evidence-pack-synthesis.v9"
     )
     assert "geo.evidence-pack.execution.v4" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
     assert "geo.evidence-pack.execution.v7" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
@@ -624,6 +641,22 @@ def test_quality_gate_v4_blocks_internal_authoring_instructions_without_banning_
     rejected, _ = validate_markdown_result(leaked, pack)
     assert "INTERNAL_AUTHORING_INSTRUCTION_LEAK" in {
         row["code"] for row in rejected["validation"]["issues"]
+    }
+
+
+def test_execution_v10_keeps_validation_v4_while_v11_changes_only_prompt_alignment():
+    pack = _quality_gate_pack("竞品甲提供了批量短链能力。")
+    markdown = _evidence_markdown(pack, include_authority=False)
+    leaked = markdown.replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        "请编辑打开 Evidence Pack，核查 product_truth 后删除未经证实的表述。",
+    )
+    checked, _ = validate_markdown_result(
+        leaked, pack, execution_contract="geo.evidence-pack.execution.v10",
+    )
+    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v4"
+    assert "INTERNAL_AUTHORING_INSTRUCTION_LEAK" in {
+        issue["code"] for issue in checked["validation"]["issues"]
     }
 
     historical, _ = validate_markdown_result(

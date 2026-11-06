@@ -35,8 +35,10 @@ FULL_CITATION_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v6
 MULTICONTENT_V1_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v8"
 MULTICONTENT_V1_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v7"
 MULTICONTENT_V2_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v9"
-EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v10"
-EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v8"
+QUALITY_GATE_V1_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v10"
+QUALITY_GATE_V1_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v8"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v11"
+EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v9"
 EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.no-thinking.v2"
 _PROMPT_VERSION_BY_EXECUTION_CONTRACT = {
     LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT: LEGACY_EVIDENCE_PACK_PROMPT_VERSION,
@@ -45,7 +47,10 @@ _PROMPT_VERSION_BY_EXECUTION_CONTRACT = {
     PRE_CHANNEL_EVIDENCE_PACK_EXECUTION_CONTRACT: PRE_CHANNEL_EVIDENCE_PACK_PROMPT_VERSION,
     FULL_CITATION_EVIDENCE_PACK_EXECUTION_CONTRACT: MULTICONTENT_V1_EVIDENCE_PACK_PROMPT_VERSION,
     MULTICONTENT_V1_EVIDENCE_PACK_EXECUTION_CONTRACT: MULTICONTENT_V1_EVIDENCE_PACK_PROMPT_VERSION,
-    MULTICONTENT_V2_EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
+    MULTICONTENT_V2_EVIDENCE_PACK_EXECUTION_CONTRACT:
+        QUALITY_GATE_V1_EVIDENCE_PACK_PROMPT_VERSION,
+    QUALITY_GATE_V1_EVIDENCE_PACK_EXECUTION_CONTRACT:
+        QUALITY_GATE_V1_EVIDENCE_PACK_PROMPT_VERSION,
     EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
 }
 DEFAULT_TEXT_BUDGET = 90_000
@@ -570,9 +575,30 @@ def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VE
         required = [*REQUIRED_SECTIONS[:3], *[ARTIFACT_SECTION[value] for value in selected],
                     *REQUIRED_SECTIONS[4:]]
     headings = "\n".join(f"## {name}" for name in required)
-    if prompt_version != EVIDENCE_PACK_PROMPT_VERSION:
+    if prompt_version not in {
+        QUALITY_GATE_V1_EVIDENCE_PACK_PROMPT_VERSION,
+        EVIDENCE_PACK_PROMPT_VERSION,
+    }:
         return _render_evidence_pack_prompt_v7(
             prompt_version=prompt_version, selected=selected, headings=headings,
+        )
+    alignment_rule = ""
+    if prompt_version == EVIDENCE_PACK_PROMPT_VERSION:
+        help_structure_rule = (
+            "- `帮助文档`必须至少包含两个以 `### 步骤`、`### 配置`、`### 执行` 等开头的步骤小节，\n"
+            "  或至少三个有序步骤；每个步骤都要包含实际操作，不能只写说明性标题。\n"
+            if selected is not None and "HELP_DOC" in selected else ""
+        )
+        alignment_rule = (
+            "\n输出前必须逐项自检并修正：\n\n"
+            "- 证据标记必须直接写成 [[answer:...]]、[[citation:...]]、[[source:...]] 或\n"
+            "  [[truth:...]]；标记整体不得放在单反引号、代码围栏或转义符中。\n"
+            "- `GEO 诊断与依据`、`品牌表现与证据缺口`、`优化策略与渠道` 必须分别保留至少一个\n"
+            "  本节直接使用的裸写完整 locator；渠道观察必须在该小节内裸写真实 citation locator。\n"
+            "- 品牌章节若使用“全部、所有、整体、本批、当前样本、均未、共 N 条”等总体范围措辞，\n"
+            "  必须逐条列出覆盖范围内每个有效回答的完整 answer locator；只引用一个回答时，\n"
+            "  必须明确写成单一样本观察，不得扩展为总体结论。品牌缺席只能用完整回答 locator。\n"
+            f"{help_structure_rule}"
         )
     locator_rule = (
         "必须逐字复制证据对象给出的 `answer_evidence_locator` 或 `evidence_locator`；不得自行猜测\n"
@@ -630,7 +656,7 @@ def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VE
 
 来源 passage 与目标品牌 Truth 不是同一种资格；外部来源提到某能力不能自动变成目标品牌事实。
 若品牌事实不足，采用 L3 安全写法，并在 `QA 与事实限制` 中逐字写出 `VERIFY_FIRST`。
-模型自检不代表服务端校验通过，也不得声称优化已造成后续指标改善。
+{alignment_rule}模型自检不代表服务端校验通过，也不得声称优化已造成后续指标改善。
 """
 
 
@@ -1006,7 +1032,10 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
                              requested_artifact_types: list[str] | None = None,
                              execution_contract: str = EVIDENCE_PACK_EXECUTION_CONTRACT,
                              ) -> tuple[dict[str, Any], dict[str, str]]:
-    quality_gate_v4 = execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT
+    quality_gate_v4 = execution_contract in {
+        QUALITY_GATE_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        EVIDENCE_PACK_EXECUTION_CONTRACT,
+    }
     selected = _normalize_requested_artifacts(requested_artifact_types)
     artifact_sections = ({"HELP_DOC": "完整正文"} if selected is None else
                          {value: ARTIFACT_SECTION[value] for value in selected})

@@ -1,8 +1,9 @@
-# M1.2 真实双稿质量复测预检（未授权执行）
+# M1.2 真实双稿质量复测预检与执行边界
 
-状态：`PREFLIGHT_READY / EXTERNAL_CALL_NOT_AUTHORIZED`
+状态：`EXECUTED_ONCE / AUTHORIZATION_EXHAUSTED`
 
-本文件只冻结下一次低频复测的建议边界，不构成模型调用或费用授权。
+本文件冻结 2026-11-06 已执行的一次低频复测边界，不构成后续模型调用或费用授权。执行结果见
+[M1_2_REAL_QUALITY_RETEST_RESULT_2026-11-06.md](M1_2_REAL_QUALITY_RETEST_RESULT_2026-11-06.md)。
 
 ## 固定范围
 
@@ -15,7 +16,7 @@
 - DeepSeek `deepseek-flash`、`RESPONSES_TEXT`、`reasoning.effort=none`。
 - 自动重试 0、补救请求 0、工具调用 0、单并发。
 
-## 建议硬上限（待单独授权）
+## 已执行硬上限
 
 - 最多 1 次模型请求。
 - 总 Token 保守上限 300,000。
@@ -42,6 +43,7 @@
 
 ## 当前未完成事项
 
-- 尚未取得新的模型调用与费用授权，因此没有执行复测。
-- Prompt v8 / Execution v10 的真实遵循率仍未知。
+- 本次授权已经用完；不得把历史余额解释成下一次授权。
+- Prompt v8 / Execution v10 的真实复测已完成但 Gate 失败；Prompt v9 / Execution v11 的定向修复
+  只完成离线验收，真实遵循率仍未知。
 - M1.2 发布和 M1.1 数据库升级均未获授权。

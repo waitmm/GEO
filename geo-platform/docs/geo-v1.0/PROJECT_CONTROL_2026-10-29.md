@@ -1,7 +1,7 @@
 # GEO M1 内部试用项目总控
 
-更新时间：2026-11-05（Asia/Shanghai）
-当前阶段：`M1_1_WINDOWS_DEPLOYMENT_PENDING / M1_2_MULTICONTENT_OFFLINE_CANDIDATE`
+更新时间：2026-11-09（Asia/Shanghai）
+当前阶段：`M1_1_WINDOWS_DEPLOYMENT_PENDING / M1_2_SEMANTIC_CONTRACT_REVIEW_REQUIRED`
 M1.1 稳定线：`codex/m1-1-windows-dev`（当前归档 SHA `c5f2dbbc`，目标机验收前不得宣称已部署）
 M1.2 研发线：`codex/m1-2-multicontent`（以该分支最新已验收 HEAD 为准，不自动升级 M1.1）
 C0 研究线：`codex/c0-second-platform-eval`（归档 SHA `13ecd983`；C1 未获授权，不启动真实平台采集）
@@ -56,8 +56,8 @@ Mac 历史运行曾保存 22 Run 真实 AI 优化结果，但服务、局域网�
 | 范围 | 7/14/30 天、自定义、指定/排除 Run | DONE | 最终冻结明确 Run IDs、版本及 hash，新采样不改变旧范围 |
 | 范围 | 冻结范围的业务可读时间命名 | DONE | UI 显示北京时间、回答数和范围，不要求员工理解内部 hash |
 | Optimize | Evidence Pack v3 单包生成 | LIMITED | 当前 22 Run 真实基线可用；容量取决于回答、唯一 URL 与正文长度 |
-| Optimize | HELP_DOC + FAQ 多内容父子版本 | REAL_GATE_FAILED / PROMPT_V9_REMEDIATION_OFFLINE_ACCEPTED | 2026-11-06 第二次受控真实双稿生成已完成；供应商完整返回且用量已结算，但两份资产仍未通过服务端 Gate。原始父子版本均保留为失败，不进入 M1.1；一次性授权已耗尽 |
-| Optimize | 多内容结构与重复度质量 Gate | QUALITY_GATE_V4_OFFLINE_ACCEPTED | Validation v4 不放宽；Prompt v9 / Execution v11 明确裸 locator、总体范围全回答覆盖和 HELP_DOC 步骤结构。Prompt v8 / Execution v10 及更早历史解释不变；新版本仍需新的独立授权验证真实遵循率 |
+| Optimize | HELP_DOC + FAQ 多内容父子版本 | REAL_GATE_FAILED / SEMANTIC_CONTRACT_REVIEW_REQUIRED | 2026-11-09 第三次受控真实双稿完成；16/16 locator、结构、渠道、内部泄漏与双稿差异 Gate 均通过，唯一失败为 22 条总体观察只绑定 2 条回答。父子版本保留为失败，不进入 M1.1；授权已耗尽 |
+| Optimize | 多内容结构与重复度质量 Gate | VALIDATION_V4_FROZEN / AGGREGATE_SCOPE_RFC_PROPOSED | Validation v4 不放宽、不原位修改；真实回放证明整节自然语言 aggregate 识别可漏检/误触发。停止 Prompt 补丁循环，等待显式 scope 与服务端冻结 evidence-set 契约审批 |
 | Optimize | 引用平台/竞品渠道分析 | DONE | 基于冻结引用观察，不把 AI 推荐渠道伪装成已验证效果 |
 | Optimize | 诊断、策略、渠道、完整正文、QA | PILOT_READY | 工程链可交付；必须用同事反馈评估品牌关联与内容采用价值 |
 | Optimize | 证据、Truth 与分级资格 Gate | DONE | 生成失败或证据不足不伪装成功；草稿与通过资格分开 |
@@ -91,7 +91,7 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
 | GEO-COL-001 | P2 | 自动文心采集未获许可且未做长期真实验收 | 计划暂停、重试 0、人工导入可用 | 获明确许可后先单条联调，再单独批准定时计划 |
 | GEO-VAL-001 | P1 | Validate 缺足够新增真实范围 | 不伪造趋势改善 | 有至少两个同口径真实冻结范围并由员工完成比较 |
 | GEO-DOC-001 | P1 | 旧 V2/实验/Beta 文档并存，容易误读状态 | 历史文档保留 | 以本总控为当前入口，发布候选时同步 RUNBOOK/USER_GUIDE |
-| GEO-MULTI-001 | P1 | 两次真实双稿均完成但质量 Gate 未通过；第二次已消除内部指令/无依据数字问题，仍暴露 locator 代码包装、总体品牌观察覆盖不足及 HELP_DOC 步骤格式不匹配 | 两次原始失败结果、usage 与审计保留在受保护本地目录；Validation v4 不放宽；Prompt v9 / Execution v11 定向修复已离线通过，不对外声称质量通过、不部署至 M1.1、不自动重跑 | 新授权下 HELP_DOC 与 FAQ 均通过服务端 Gate，并由员工分别评价可用性/修改量 |
+| GEO-MULTI-001 | P1 | 三次真实双稿均由 Provider 完整返回但未通过完整 Gate；第三次已通过格式、结构、渠道、泄漏与差异化检查，仍存在总体观察证据覆盖不足；同时确认 v4 整节 aggregate 识别可漏检/误触发 | 三次原始结果、usage 与审计保留在受保护本地目录；冻结 v4 历史，不补引用、不重标旧结果、不继续 Prompt/付费循环；新结构化范围契约处于 REVIEW_REQUIRED | 批准并离线实现显式 observation scope + 冻结 evidence-set；通过反例和历史兼容后再决定真实复验，最终仍需员工逐稿评价 |
 | GEO-MULTI-UI-001 | P1 | RESOLVED：隔离浏览器已验收双成功及 HELP_DOC 成功/FAQ 失败的部分成功链路 | 失败资产禁止导出；成功资产可下载；反馈、历史版本和刷新恢复已验证；无授权时单篇重生成 fail-closed | 保留报告与失败证据；真实生成质量继续由 `GEO-MULTI-001` 管控 |
 | GEO-TEST-001 | P2 | 两个 Agent 回归曾把 2026-10-22/26 价格核验日期写死，跨 7 天后固定失败 | RESOLVED；测试统一使用单次测试进程冻结的当前价格证据日，生产七天时效 Gate 未放宽 | 本轮 Agent 与子资产联合回归 84/84、容量回归 29/29 通过 |
 
@@ -141,6 +141,13 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
   Validation v4 的前提下明确三项输出要求；137 项离线专项通过。历史 v10 主结果保持原解释；旧 v10
   单稿重生成排队请求会在 Provider 前 fail-closed，不静默升级。完整脱敏记录见
   [真实复测结果](M1_2_REAL_QUALITY_RETEST_RESULT_2026-11-06.md)。
+- 2026-11-09 第三次真实验证：Prompt v9 / Execution v11 / Validation v4 在同一 22 Run 上完成唯一请求；
+  39,345 输入、3,608 输出、共 42,953 Token，结算 ¥0.42953，耗时 28.043 秒。16/16 locator 合法，
+  HELP_DOC 步骤、FAQ、渠道、内部泄漏和双稿差异化均通过；唯一失败为 22 条总体观察只绑定 2 条完整
+  回答。受保护回放另证明 v4 的 aggregate 触发依赖相邻限制说明，存在可绕过的确定性范围绑定缺陷。
+  当前停止 Prompt 补丁和付费循环，进入 `SEMANTIC_CONTRACT_REVIEW_REQUIRED`；详情见
+  [第三次真实验证结果](M1_2_REAL_QUALITY_THIRD_RESULT_2026-11-09.md) 和
+  [结构化范围绑定提案](../semantics/rfcs/RFC-EVIDENCE-PACK-AGGREGATE-SCOPE-001.md)。
 
 ## 5. 下一里程碑：公司单机内部试用
 
@@ -229,10 +236,13 @@ Python/Node 版本和网络出口。使用专用运行目录和服务账号，�
 - [x] M1.2 增加 HELP_DOC 操作结构与双稿高度重复的确定性 Gate，并完成隔离浏览器验收。
 - [x] 补齐 M1.2 资产级部分失败、导出阻断、反馈、历史版本和刷新恢复的隔离浏览器验收；未授权单稿重生成保持禁用并已验证 fail-closed。
 - [x] M1.2 已完成首次独立授权的真实双稿生成；结果为真实 Gate 失败，未伪装成通过，外部调用已停止。
-- [x] 两次真实 Gate 均保留原始失败；第二次暴露的 Prompt—Validator 格式对齐问题已升为 Prompt v9 /
+- [x] 前两次真实 Gate 均保留原始失败；第二次暴露的 Prompt—Validator 格式对齐问题已升为 Prompt v9 /
   Execution v11 并通过离线回归。任何后续真实生成仍必须重新获得独立授权，不能自动重跑。
 - [x] 真实失败沉淀为受保护离线反例；Validation v4 已覆盖内部编写指令泄漏与品牌章节 locator 最低相关性，
-  并保留 v9/v10 历史兼容。Prompt v9 / Execution v11 真实复验仍需独立付费授权。
+  并保留 v9/v10 历史兼容。
+- [x] Prompt v9 / Execution v11 第三次真实验证已完成且停止；结果仍为 Gate 失败，未自动重跑。
+- [ ] 审批 `RFC-EVIDENCE-PACK-AGGREGATE-SCOPE-001`；未冻结显式 observation scope 与 evidence-set
+  身份前，不实现新 Validation、不发起第四次付费请求。
 - [ ] 在两份资产通过服务端 Gate 后安排员工逐稿质量评审；不得以首次失败稿或合成结果替代。
 - [x] 当前 M1.2 候选已在 M1.1 只读数据副本上通过升级、备份、恢复和回滚演练；正式提升仍需真实质量与审批。
 - [ ] 试用后再决定 GEO-CAP-001 的生产语义和八木屋接入时间。

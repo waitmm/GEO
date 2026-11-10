@@ -39,7 +39,7 @@ class RegenerationContractError(RuntimeError):
         super().__init__(code)
 
 
-_CURRENT_REGENERATION_VALIDATION_CONTRACT = "geo.evidence-pack.validation.v4"
+_CURRENT_REGENERATION_VALIDATION_CONTRACT = "geo.evidence-pack.validation.v5"
 
 
 def _frozen_generation_profile(policy: dict[str, Any]) -> dict[str, str]:
@@ -121,9 +121,12 @@ def execute_draft_artifact_regeneration(
         scope = revalidate_frozen_scope(db, run)
         if digest(scope) != run.input_scope_hash:
             raise RuntimeError("DRAFT_REGENERATION_SCOPE_HASH_MISMATCH")
-        pack = build_evidence_pack(scope)
         policy = loads(request.server_policy_json, {})
         frozen_profile = policy.get("generation_profile")
+        generation_profile = _frozen_generation_profile(policy)
+        pack = build_evidence_pack(
+            scope, execution_contract=generation_profile["execution_contract"],
+        )
         request.status = "RUNNING"
         request.started_at = request.started_at or datetime.utcnow()
         request.attempt_count += 1
@@ -138,8 +141,6 @@ def execute_draft_artifact_regeneration(
             "generation_profile": frozen_profile if isinstance(frozen_profile, dict) else {},
         })
         db.commit()
-
-        generation_profile = _frozen_generation_profile(policy)
 
         if client is None:
             raise RuntimeError("DRAFT_REGENERATION_PROVIDER_NOT_AUTHORIZED")
@@ -197,7 +198,7 @@ def execute_draft_artifact_regeneration(
     except RegenerationCancelled:
         db.rollback()
         request = db.query(AgentDraftArtifactRegeneration).filter_by(request_id=request_id).one_or_none()
-        if request and request.status == "RUNNING":
+        if request and request.status in {"QUEUED", "RUNNING"}:
             request.status = "CANCELLED"
             request.finished_at = datetime.utcnow()
             request.audit_json = _canonical({**loads(request.audit_json, {}),
@@ -207,13 +208,14 @@ def execute_draft_artifact_regeneration(
     except Exception as exc:
         db.rollback()
         request = db.query(AgentDraftArtifactRegeneration).filter_by(request_id=request_id).one_or_none()
-        if request and request.status == "RUNNING":
+        if request and request.status in {"QUEUED", "RUNNING"}:
             audit = loads(request.audit_json, {})
             state = audit.get("external_request_state", "NOT_STARTED")
             request.status = "FAILED"
             request.failure_code = str(getattr(exc, "code", "") or exc.__class__.__name__).upper()
             request.failure_detail = str(exc)[:4000]
             request.finished_at = datetime.utcnow()
+            request.audit_json = _canonical({**audit, "external_request_state": state})
             if state in {"RESERVATION_PENDING", "RESERVED_IN_FLIGHT"}:
                 request.audit_json = _canonical({**audit, "external_request_state": "DELIVERY_UNKNOWN",
                                                   "usage_state": "UNKNOWN"})

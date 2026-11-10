@@ -3,7 +3,7 @@ import { Alert, App as AntApp, Button, Card, Checkbox, Collapse, Descriptions, F
 import { Copy, Download, MessageSquare, Play, RefreshCw, Square } from "lucide-react";
 import { request } from "./api/client";
 import { BrandContextSelect } from "./BrandContextSelect";
-import { savedResultLabel, splitAgentResult } from "./agentResultPresentation";
+import { aggregateObservationSummary, savedResultLabel, splitAgentResult } from "./agentResultPresentation";
 import { formatBeijingDateTime } from "./time";
 import { BusinessMarkdown } from "./BusinessMarkdown";
 import { DraftArtifactPanel, type DraftArtifact } from "./DraftArtifactPanel";
@@ -109,6 +109,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   const reportMarkdown = result?.result?.raw_markdown || result?.deliverable_markdown || "";
   const sections = splitAgentResult(reportMarkdown);
   const hasDraftArtifacts = Boolean(result?.draft_artifacts?.length);
+  const aggregateObservation = aggregateObservationSummary(result);
   const displayedSectionTitles = hasDraftArtifacts
     ? (["GEO 诊断与依据", "品牌表现与证据缺口", "优化策略与渠道", "QA 与事实限制", "复测计划"] as const)
     : (["GEO 诊断与依据", "品牌表现与证据缺口", "优化策略与渠道", "完整正文", "QA 与事实限制", "复测计划"] as const);
@@ -289,6 +290,19 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
               <Descriptions.Item label="引用观察">{result.result?.evidence_pack?.coverage?.citation_occurrence_count ?? 0}</Descriptions.Item>
               <Descriptions.Item label="来源快照">{result.result?.evidence_pack?.coverage?.source_snapshot_count ?? 0}</Descriptions.Item>
             </Descriptions>
+            {aggregateObservation && <Card size="small" title="本次品牌观察与证据范围" style={{ marginTop: 12 }}>
+              <Space wrap>
+                <Tag color={aggregateObservation.status === "UNKNOWN" ? "gold" : "blue"}>
+                  {aggregateObservation.statusLabel}
+                </Tag>
+                <Tag>纳入 {aggregateObservation.includedCount} 条完整回答</Tag>
+                {aggregateObservation.excludedCount > 0 && <Tag color="gold">待核对 {aggregateObservation.excludedCount} 条</Tag>}
+              </Space>
+              {aggregateObservation.observationText && <Typography.Paragraph style={{ marginTop: 8, marginBottom: 4 }}>
+                {aggregateObservation.observationText}
+              </Typography.Paragraph>}
+              <Typography.Text type="secondary">{aggregateObservation.limitation}</Typography.Text>
+            </Card>}
             <Alert style={{ marginTop: 12 }} type="info" showIcon
               message={hasDraftArtifacts
                 ? "建议阅读顺序：诊断依据 → 优化策略 → 各内容资产 → QA"

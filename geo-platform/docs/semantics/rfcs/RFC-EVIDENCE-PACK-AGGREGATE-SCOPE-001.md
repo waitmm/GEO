@@ -2,18 +2,20 @@
 
 ```yaml
 rfc_id: RFC-EVIDENCE-PACK-AGGREGATE-SCOPE-001
-status: PROPOSED
-semantic_maturity: REVIEW_REQUIRED
-implementation_status: NOT_STARTED
+status: APPROVED
+semantic_maturity: FROZEN
+implementation_status: IMPLEMENTED_OFFLINE_NOT_RELEASED
 change_class: SEMANTIC_CHANGE
 authors: [GEO M1.2]
 created_at: 2026-11-09
-definition_approved_by: null
-definition_approved_at: null
+definition_approved_by: Product Owner
+definition_approved_at: 2026-11-10
+definition_approval_reference: GEO M1.2 third real acceptance approval
 production_cutover_approved_by: null
 affected_contracts:
-  - geo.evidence-pack.execution.v11
-  - geo.evidence-pack.validation.v4
+  - geo.evidence-pack.execution.v12
+  - geo.evidence-pack.validation.v5
+  - geo-evidence-pack-synthesis.v10
   - RFC-EVIDENCE-PACK-QUALITY-GATE-001
 supersedes: null
 ```
@@ -34,27 +36,66 @@ Validation v4 requires exact whole-answer evidence for absence and all valid fro
 observation. It infers whether a section is aggregate from natural-language patterns and then compares referenced
 Run IDs with the full valid Run set. Historical v10/v11 results retain this interpretation.
 
-## Proposed Semantics
+## Frozen Semantics
 
-For a new, independently versioned execution/validation contract:
+For Prompt v10 / Execution v12 / Validation v5:
 
-1. Every brand observation declares a structured observation type and scope: `SAMPLE` or `FROZEN_VALID_SCOPE`.
-2. The server builds an immutable aggregate evidence-set object from the exact sorted full-answer locators,
-   Run identities, answer hashes, Prompt/Project versions and `input_scope_hash`.
-3. The object receives a server-generated locator such as `[[answer_set:SET_HASH]]`; the model cannot submit or
-   alter its membership.
-4. `FROZEN_VALID_SCOPE` must cite the exact matching evidence set. The validator expands the set and applies the
-   existing whole-answer checks to every member; a random, partial or cross-scope set fails closed.
-5. `SAMPLE` continues to cite explicit full-answer locators and cannot use aggregate wording or imply full-range
-   coverage.
-6. Literal brand absence remains an answer observation only. It cannot prove non-recommendation, capability,
-   rank, causality or Product Truth.
-7. Missing, ambiguous or mismatched scope remains UNKNOWN/failed. The server does not silently insert a locator,
-   rewrite the model's claim or reinterpret a prior result.
+1. A brand observation binds one closed predicate, one explicit scope and one server-owned Evidence Set.
+   The initial v5 slice supports only `BRAND_LITERAL_ABSENCE + FROZEN_VALID_SCOPE + TARGET_BRAND +
+   ALL_VALID_RUNS`; its value is the server-computed literal-match count. `SAMPLE` is not an accepted v5
+   observation object and therefore cannot impersonate or be upgraded to the frozen aggregate scope. Supporting a
+   structured SAMPLE object later requires a separately versioned contract. No predicate is accepted as an alias.
+2. The server computes the observation from the complete frozen answers and the exact configured brand name and
+   aliases under `geo.brand-literal-match.v1`. The model cannot choose Evidence Set members, claim a computed
+   result, change the quantifier or upgrade UNKNOWN.
+3. The immutable Evidence Set uses canonical JSON, stable Run ordering and duplicate rejection. Its identity hash
+   binds schema/set kind, Project, Prompt, `input_scope_hash`, PromptVersion identity/hash, ProjectConfigurationVersion
+   identity/hash, eligibility-rule version, included members and excluded members. Every included member binds
+   Run ID, frozen status, complete-answer locator and answer hash. It also binds the brand-configuration hash and
+   literal-match-rule version. The set hash does not include the Evidence Pack hash.
+4. A separate immutable observation hash binds predicate, subject, quantifier, scope, Evidence Set ID, matching
+   rule and the server-computed counts/result. Evidence Set membership proves the observed inputs; only the server
+   computation proves the literal-absence result.
+5. The server exposes a server-generated observation locator such as `[[observation:OBSERVATION_HASH]]` and a
+   canonical business-readable observation sentence. `品牌表现与证据缺口` is a closed server fact block and must
+   equal that heading, verified sentence and locator exactly. The model cannot append analysis, disclaimers or
+   contradictory prose inside the block. Any raw aggregate target-brand fact elsewhere in the response is
+   rejected; analysis may discuss strategy, future verification actions and evidence limitations without making
+   another range fact. A
+   neighbouring limitation or disclaimer cannot change the structured observation's scope.
+6. v5 never infers SAMPLE or aggregate scope from a Markdown section. A full-answer locator remains usable as
+   ordinary answer evidence in other sections, but it is not a v5 brand observation and cannot use the aggregate
+   observation locator or imply `FROZEN_VALID_SCOPE` coverage.
+7. Empty scope, missing/duplicate/extra members, ineligible Run, incomplete identity/hash, unknown brand identity,
+   uncertain matching rule, stale answer, cross-Project/Prompt/version membership or unknown predicate fails
+   closed. Invalid or uncertain answers are excluded with explicit reasons and cannot be counted as brand absence;
+   if the selected frozen scope contains any unresolved member, the aggregate observation is UNKNOWN and no
+   verified absence locator is produced. A complete, non-empty eligible set may legitimately compute zero matches.
+8. Manual-import provenance remains `USER_ATTESTED_UNVERIFIED`; structural verification does not independently
+   prove the third-party platform origin. The observation proves only what the frozen answer text literally contains.
 
-The structured binding may be embedded in the single Markdown response as a narrowly specified machine-readable
-line, but the service—not the model—owns set identity and membership. A future Prompt identity may teach this
-shape; it is not another prose-only quality patch.
+The structured observation is server-owned input and persisted validation evidence. Prompt v10 teaches the model
+to reproduce only the server-supplied canonical observation line; it does not ask the model to calculate facts.
+The raw provider response remains immutable. Validation may reject but never silently add a missing locator,
+rewrite provider prose or relabel a historical result.
+
+## Frozen Object Shapes
+
+```json
+{
+  "observation_type": "BRAND_LITERAL_ABSENCE",
+  "scope": "FROZEN_VALID_SCOPE",
+  "subject": "TARGET_BRAND",
+  "quantifier": "ALL_VALID_RUNS",
+  "evidence_set_id": "SERVER_GENERATED_HASH",
+  "matched_count": 0,
+  "valid_run_count": 22,
+  "verification": "SERVER_VERIFIED"
+}
+```
+
+`evidence_set_id` and `observation_id` are distinct SHA-256 identities over their respective canonical payloads.
+The model is never an authoritative writer of either payload.
 
 ## Non-Goals
 
@@ -63,7 +104,7 @@ shape; it is not another prose-only quality patch.
 - No historical revalidation, result mutation or automatic success relabeling.
 - No M1.1 database upgrade, M1.2 release or production cutover.
 
-## Required Offline Cases Before Approval
+## Required Offline Cases Before Cutover
 
 - Exact full-scope set passes only when every frozen valid Run and answer hash matches.
 - Missing member, extra member, partial answer, stale hash, cross-Project/Prompt/version and fabricated set fail.
@@ -72,11 +113,30 @@ shape; it is not another prose-only quality patch.
 - Literal absence cannot satisfy recommendation, capability, superlative or causal predicates.
 - Prompt v9 / Execution v11 / Validation v4 and all historical failures remain byte/meaning compatible.
 - Parent/child partial-success, asset Evidence, usage settlement and immutable history remain unchanged.
+- All 22 complete eligible answers absent passes; one literal target-brand match prevents all-absence verification.
+- Empty scope, unresolved selected member and unknown brand configuration produce no verified absence observation.
+- A valid observation plus an additional unsupported aggregate claim fails.
 
 ## Contract Review Gate
 
-`SEMANTIC_CONTRACT_REVIEW_REQUIRED`.
+Definition Freeze is approved for M1.2 offline implementation and protected replay only. It does not authorize a
+provider retry, M1.1 database migration, M1.2 release, production cutover or C1 sampling. Prompt v9 / Execution v11 /
+Validation v4 and every prior stored result retain their original interpretation and status.
 
-No implementation or real provider retry is authorized by this proposal. Product Owner approval must freeze the
-observation shape, evidence-set identity/hash members, failure semantics, version names and historical boundary
-before code work begins.
+## Offline Implementation Result
+
+Prompt v10 / Execution v12 / Validation v5 are implemented on the isolated M1.2 development branch. The server
+builds the exact Evidence Set and computes the only initially supported predicate, `BRAND_LITERAL_ABSENCE`.
+Validation rejects identity/member/hash drift, UNKNOWN scope, any raw aggregate target-brand fact outside the closed server
+fact block and any provider text that does not reproduce the exact server observation. Pack construction, locator
+parsing and prompt rendering are execution/prompt-version aware: v8/v9 prompt bytes and v11 pack/hash/reference
+semantics remain frozen. The UI feature-detects v5 results and shows a business-readable range summary without
+exposing set or observation hashes; historical results are not backfilled.
+
+The protected replay of the third real failure used a local database copy and made zero external calls. The stored
+v4 result remained unchanged and failed with its original range-evidence reason; the raw draft failed v5 because it
+lacked the server observation. A shadow-only result in which the server rendered the verified 22-answer observation
+passed v5. This proves the new deterministic binding path, not real model compliance or production readiness.
+
+Detailed evidence is recorded in
+`docs/geo-v1.0/M1_2_AGGREGATE_SCOPE_V5_OFFLINE_RESULT_2026-11-10.md`.

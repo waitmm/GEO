@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 import os
 import stat
@@ -28,6 +29,7 @@ from app.modules.agent_experiment.grading import validate_and_grade
 from app.modules.agent_experiment.evidence_pack import (
     EvidencePackCapacityError,
     _PROMPT_VERSION_BY_EXECUTION_CONTRACT,
+    _canonical_observation_block,
     build_evidence_pack,
     render_evidence_pack_prompt,
     validate_markdown_result,
@@ -94,7 +96,7 @@ class ScriptedEvidencePackClient:
         }
 
 
-def _evidence_markdown(pack, *, valid=True, include_authority=True):
+def _evidence_markdown(pack, *, valid=True, include_authority=True, structured=True):
     run = pack["runs"][0]
     answer_ref = run["answer_evidence_locator"]
     configuration = pack.get("project_configuration") or {}
@@ -126,11 +128,23 @@ def _evidence_markdown(pack, *, valid=True, include_authority=True):
     )
     if not valid:
         draft = "只有提纲"
+    observations = pack.get("verified_brand_observations") or []
+    if structured and observations:
+        observation = observations[0]
+        brand_section = (
+            "### 已验证品牌观察\n"
+            f"{observation['canonical_text']}{observation['evidence_locator']}"
+        )
+    else:
+        brand_section = (
+            f"{brand_name} 在这条回答样本中未被提及；"
+            f"该观察只适用于对应样本，品牌能力仍需核验。{answer_ref}"
+        )
     return f"""## GEO 诊断与依据
 当前回答已覆盖部分操作线索，但适用条件仍需说明。{answer_ref}{source_ref}
 
 ## 品牌表现与证据缺口
-{brand_name} 在这条回答样本中未被提及；该观察只适用于对应样本，品牌能力仍需核验。{answer_ref}
+{brand_section}
 
 ## 优化策略与渠道
 优先在帮助中心发布与当前问题直接对应的核对指南，第三方渠道只作补充。{answer_ref}{channel_observation}
@@ -146,12 +160,24 @@ VERIFY_FIRST；没有把外部来源主张直接写成目标品牌事实，也�
 """
 
 
-def _quality_gate_pack(*answers):
-    return build_evidence_pack({
-        "project_configuration": {"brand": {
-            "brand_name": "目标品牌", "brand_aliases": ["目标别名"],
-            "website_url": "https://target.example.com",
+def _quality_gate_scope(*answers):
+    return {
+        "identity": {
+            "project_id": 1, "prompt_id": 1, "run_scope_hash": "run-scope-hash",
+        },
+        "prompt": {"text": "测试 Prompt", "version": {
+            "binding_status": "BOUND", "prompt_version_id": "prompt-version-1",
+            "version_number": 1, "snapshot_hash": "prompt-snapshot-hash",
+            "snapshot": {"project_id": 1, "prompt_id": 1, "prompt_text": "测试 Prompt"},
         }},
+        "project_configuration": {
+            "binding_status": "BOUND", "configuration_version_id": "configuration-1",
+            "version_number": 1, "snapshot_hash": "configuration-snapshot-hash",
+            "brand": {
+                "brand_name": "目标品牌", "brand_aliases": ["目标别名"],
+                "website_url": "https://target.example.com",
+            },
+        },
         "runs": [
             {
                 "run_id": index, "status": "success", "answer_text": answer,
@@ -160,13 +186,23 @@ def _quality_gate_pack(*answers):
             for index, answer in enumerate(answers, start=1)
         ],
         "product_truth": {"facts": []},
-    })
+    }
+
+
+def _quality_gate_pack(*answers):
+    return build_evidence_pack(_quality_gate_scope(*answers))
 
 
 def _replace_markdown_section(markdown, heading, body):
     before, remainder = markdown.split(f"## {heading}\n", 1)
     _old_body, after = remainder.split("\n## ", 1)
     return f"{before}## {heading}\n{body}\n\n## {after}"
+
+
+def _validate_v4(markdown, pack):
+    return validate_markdown_result(
+        markdown, pack, execution_contract="geo.evidence-pack.execution.v11",
+    )
 
 
 def test_dsml_adapter_accepts_only_one_whitelisted_tool_call():
@@ -357,8 +393,8 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v11"
-    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v9"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v12"
+    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v10"
     assert execution["requested_artifact_types"] == ["HELP_DOC"]
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
@@ -409,7 +445,7 @@ def test_evidence_pack_capacity_is_explicit_and_deterministic(tmp_path, monkeypa
         build_evidence_pack(oversized, text_budget=2_000)
     passage_heavy = json.loads(json.dumps(scope))
     passage_heavy["source_snapshots"][0]["passages"][0]["text"] += "来源正文" * 1_000
-    constrained_budget = 2_000
+    constrained_budget = 3_500
     constrained = build_evidence_pack(passage_heavy, text_budget=constrained_budget)
     assert constrained["coverage"]["source_passage_omitted"] >= 1
     assert constrained == build_evidence_pack(passage_heavy, text_budget=constrained_budget)
@@ -563,7 +599,8 @@ def test_dual_content_prompt_requires_publishable_audience_specific_assets():
     assert "不得把它改写成确定的因果原因" in prompt
     assert "不得复述无依据的数字、百分比、价格或效果值" in prompt
     assert "标记整体不得放在单反引号、代码围栏或转义符中" in prompt
-    assert "必须逐条列出覆盖范围内每个有效回答的完整 answer locator" in prompt
+    assert "逐字复制其中的 `canonical_text`" in prompt
+    assert "不得自行改写数字、范围、谓词、结论或 locator" in prompt
     assert "必须至少包含两个以 `### 步骤`" in prompt
 
     help_prompt = render_evidence_pack_prompt(requested_artifact_types=["HELP_DOC"])
@@ -586,6 +623,19 @@ def test_previous_multicontent_prompt_identity_remains_frozen():
     assert "不得把它改写成确定的因果原因" not in prompt
     assert "上述契约章节是全文仅允许出现的 `##` 标题" in prompt
     assert "必须逐字复制证据对象给出的 `answer_evidence_locator`" in prompt
+
+
+@pytest.mark.parametrize("version,expected_hash", [
+    ("geo-evidence-pack-synthesis.v8",
+     "2ec8f943f37b4fb18abfc1f5ee491f71b53bccc785b944f253270ee37e33d280"),
+    ("geo-evidence-pack-synthesis.v9",
+     "82c1fb8e7009ad69bdc3f319cd58d6b75aed4d0f4ffe9c55172105b0fd73e07b"),
+])
+def test_historical_quality_prompt_bytes_remain_frozen(version, expected_hash):
+    prompt = render_evidence_pack_prompt(
+        prompt_version=version, requested_artifact_types=["HELP_DOC", "FAQ"],
+    )
+    assert hashlib.sha256(prompt.encode()).hexdigest() == expected_hash
 
 
 def test_quality_gate_v1_prompt_identity_remains_frozen():
@@ -615,13 +665,16 @@ def test_execution_contract_routes_to_frozen_prompt_identity():
     assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v11"] == (
         "geo-evidence-pack-synthesis.v9"
     )
+    assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v12"] == (
+        "geo-evidence-pack-synthesis.v10"
+    )
     assert "geo.evidence-pack.execution.v4" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
     assert "geo.evidence-pack.execution.v7" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
 
 
 def test_quality_gate_v4_blocks_internal_authoring_instructions_without_banning_normal_verification():
     pack = _quality_gate_pack("竞品甲提供了批量短链能力。")
-    markdown = _evidence_markdown(pack, include_authority=False)
+    markdown = _evidence_markdown(pack, include_authority=False, structured=False)
     safe = markdown.replace(
         "这是一份面向当前搜索问题的完整可编辑内容。",
         "证据不足时需核实官方来源，发布前确认适用条件。"
@@ -631,14 +684,14 @@ def test_quality_gate_v4_blocks_internal_authoring_instructions_without_banning_
         "发生导入错误时，请展示系统提示的错误信息，便于客服排查。"
         "开发者可调用工具读取数据文件，并在本机校验文件格式。",
     )
-    checked, _ = validate_markdown_result(safe, pack)
+    checked, _ = _validate_v4(safe, pack)
     assert checked["validation"]["status"] == "PASS"
 
     leaked = markdown.replace(
         "这是一份面向当前搜索问题的完整可编辑内容。",
         "请编辑打开 Evidence Pack，核查 product_truth 后删除未经证实的表述。",
     )
-    rejected, _ = validate_markdown_result(leaked, pack)
+    rejected, _ = _validate_v4(leaked, pack)
     assert "INTERNAL_AUTHORING_INSTRUCTION_LEAK" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -646,7 +699,7 @@ def test_quality_gate_v4_blocks_internal_authoring_instructions_without_banning_
 
 def test_execution_v10_keeps_validation_v4_while_v11_changes_only_prompt_alignment():
     pack = _quality_gate_pack("竞品甲提供了批量短链能力。")
-    markdown = _evidence_markdown(pack, include_authority=False)
+    markdown = _evidence_markdown(pack, include_authority=False, structured=False)
     leaked = markdown.replace(
         "这是一份面向当前搜索问题的完整可编辑内容。",
         "请编辑打开 Evidence Pack，核查 product_truth 后删除未经证实的表述。",
@@ -680,7 +733,7 @@ def test_execution_v10_keeps_validation_v4_while_v11_changes_only_prompt_alignme
         leaked = markdown.replace(
             "这是一份面向当前搜索问题的完整可编辑内容。", protocol_leak,
         )
-        rejected, _ = validate_markdown_result(leaked, pack)
+        rejected, _ = _validate_v4(leaked, pack)
         assert "INTERNAL_AUTHORING_INSTRUCTION_LEAK" in {
             row["code"] for row in rejected["validation"]["issues"]
         }
@@ -688,7 +741,7 @@ def test_execution_v10_keeps_validation_v4_while_v11_changes_only_prompt_alignme
 
 def test_quality_gate_v4_does_not_revalidate_historical_execution_contracts():
     pack = _quality_gate_pack("竞品甲提供了批量短链能力。")
-    leaked = _evidence_markdown(pack, include_authority=False).replace(
+    leaked = _evidence_markdown(pack, include_authority=False, structured=False).replace(
         "这是一份面向当前搜索问题的完整可编辑内容。",
         "请编辑打开 Evidence Pack，核查 product_truth。",
     )
@@ -709,14 +762,14 @@ def test_quality_gate_v4_does_not_revalidate_historical_execution_contracts():
 
 def test_quality_gate_v4_requires_observationally_related_brand_answer_locator():
     pack = _quality_gate_pack("竞品甲提供了批量短链能力。")
-    markdown = _evidence_markdown(pack, include_authority=False)
+    markdown = _evidence_markdown(pack, include_authority=False, structured=False)
     full_ref = pack["runs"][0]["answer_evidence_locator"]
 
     unrelated = _replace_markdown_section(
         markdown, "品牌表现与证据缺口",
         f"目标品牌支持批量处理，但仍需核验适用条件。{full_ref}",
     )
-    rejected, _ = validate_markdown_result(unrelated, pack)
+    rejected, _ = _validate_v4(unrelated, pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -726,7 +779,7 @@ def test_quality_gate_v4_requires_observationally_related_brand_answer_locator()
         markdown, "品牌表现与证据缺口",
         f"目标品牌在这条回答样本中未被提及。{partial_ref}",
     )
-    rejected, _ = validate_markdown_result(partial_absence, pack)
+    rejected, _ = _validate_v4(partial_absence, pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -734,14 +787,14 @@ def test_quality_gate_v4_requires_observationally_related_brand_answer_locator()
 
 def test_quality_gate_v4_aggregate_brand_observation_requires_every_valid_run():
     pack = _quality_gate_pack("竞品甲提供了批量能力。", "竞品乙提供了教程。")
-    markdown = _evidence_markdown(pack, include_authority=False)
+    markdown = _evidence_markdown(pack, include_authority=False, structured=False)
     first_ref = pack["runs"][0]["answer_evidence_locator"]
     second_ref = pack["runs"][1]["answer_evidence_locator"]
     one_of_two = _replace_markdown_section(
         markdown, "品牌表现与证据缺口",
         f"目标品牌在全部回答样本中均未被提及。{first_ref}",
     )
-    rejected, _ = validate_markdown_result(one_of_two, pack)
+    rejected, _ = _validate_v4(one_of_two, pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -750,19 +803,19 @@ def test_quality_gate_v4_aggregate_brand_observation_requires_every_valid_run():
         markdown, "品牌表现与证据缺口",
         f"目标品牌在全部回答样本中均未被提及。{first_ref}{second_ref}",
     )
-    checked, _ = validate_markdown_result(all_runs, pack)
+    checked, _ = _validate_v4(all_runs, pack)
     assert checked["validation"]["status"] == "PASS"
 
 
 def test_quality_gate_v4_recommendation_claim_requires_recommendation_in_answer():
     pack = _quality_gate_pack("回答提及目标品牌，但没有形成明确排序。")
-    markdown = _evidence_markdown(pack, include_authority=False)
+    markdown = _evidence_markdown(pack, include_authority=False, structured=False)
     full_ref = pack["runs"][0]["answer_evidence_locator"]
     recommendation = _replace_markdown_section(
         markdown, "品牌表现与证据缺口",
         f"这条回答样本推荐目标品牌。{full_ref}",
     )
-    rejected, _ = validate_markdown_result(recommendation, pack)
+    rejected, _ = _validate_v4(recommendation, pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -771,7 +824,7 @@ def test_quality_gate_v4_recommendation_claim_requires_recommendation_in_answer(
         markdown, "品牌表现与证据缺口",
         f"这条回答样本提及目标品牌，但没有证明品牌倾向。{full_ref}",
     )
-    checked, _ = validate_markdown_result(mention, pack)
+    checked, _ = _validate_v4(mention, pack)
     assert checked["validation"]["status"] == "PASS"
 
 
@@ -785,11 +838,11 @@ def test_quality_gate_v4_does_not_turn_negative_or_competitor_recommendation_int
     pack = _quality_gate_pack(answer)
     full_ref = pack["runs"][0]["answer_evidence_locator"]
     claimed = _replace_markdown_section(
-        _evidence_markdown(pack, include_authority=False),
+        _evidence_markdown(pack, include_authority=False, structured=False),
         "品牌表现与证据缺口",
         f"这条回答样本推荐目标品牌。{full_ref}",
     )
-    rejected, _ = validate_markdown_result(claimed, pack)
+    rejected, _ = _validate_v4(claimed, pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -799,11 +852,11 @@ def test_quality_gate_v4_does_not_assign_competitor_superlative_to_target_brand(
     pack = _quality_gate_pack("目标品牌是备选，竞品甲是最佳选择。")
     full_ref = pack["runs"][0]["answer_evidence_locator"]
     claimed = _replace_markdown_section(
-        _evidence_markdown(pack, include_authority=False),
+        _evidence_markdown(pack, include_authority=False, structured=False),
         "品牌表现与证据缺口",
         f"这条回答样本称目标品牌最佳。{full_ref}",
     )
-    rejected, _ = validate_markdown_result(claimed, pack)
+    rejected, _ = _validate_v4(claimed, pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -813,11 +866,11 @@ def test_quality_gate_v4_treats_this_batch_as_aggregate_and_requires_full_covera
     pack = _quality_gate_pack("竞品甲提供批量能力。", "竞品乙提供教程。")
     first_ref = pack["runs"][0]["answer_evidence_locator"]
     claimed = _replace_markdown_section(
-        _evidence_markdown(pack, include_authority=False),
+        _evidence_markdown(pack, include_authority=False, structured=False),
         "品牌表现与证据缺口",
         f"目标品牌在这批回答样本中均未被提及。{first_ref}",
     )
-    rejected, _ = validate_markdown_result(claimed, pack)
+    rejected, _ = _validate_v4(claimed, pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -827,11 +880,11 @@ def test_quality_gate_v4_treats_current_sampled_answers_as_collective_scope():
     pack = _quality_gate_pack("竞品甲提供批量能力。", "回答提及目标品牌。")
     first_ref = pack["runs"][0]["answer_evidence_locator"]
     claimed = _replace_markdown_section(
-        _evidence_markdown(pack, include_authority=False),
+        _evidence_markdown(pack, include_authority=False, structured=False),
         "品牌表现与证据缺口",
         f"目标品牌在当前采样回答中未被提及。{first_ref}",
     )
-    rejected, _ = validate_markdown_result(claimed, pack)
+    rejected, _ = _validate_v4(claimed, pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -842,11 +895,11 @@ def test_quality_gate_v4_relation_claim_requires_full_answer_context():
     answer = pack["runs"][0]["answer_text"]
     clipped = f"[[answer:{pack['runs'][0]['run_id']}:1:{len(answer)}]]"
     claimed = _replace_markdown_section(
-        _evidence_markdown(pack, include_authority=False),
+        _evidence_markdown(pack, include_authority=False, structured=False),
         "品牌表现与证据缺口",
         f"这条回答样本推荐目标品牌。{clipped}",
     )
-    rejected, _ = validate_markdown_result(claimed, pack)
+    rejected, _ = _validate_v4(claimed, pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
@@ -855,23 +908,322 @@ def test_quality_gate_v4_relation_claim_requires_full_answer_context():
 def test_quality_gate_v4_accepts_capability_only_when_answer_supports_same_predicate():
     supported_pack = _quality_gate_pack("目标品牌支持批量处理，并提供失败记录。")
     supported = _replace_markdown_section(
-        _evidence_markdown(supported_pack, include_authority=False),
+        _evidence_markdown(supported_pack, include_authority=False, structured=False),
         "品牌表现与证据缺口",
         f"这条回答样本显示目标品牌支持批量处理。"
         f"{supported_pack['runs'][0]['answer_evidence_locator']}",
     )
-    checked, _ = validate_markdown_result(supported, supported_pack)
+    checked, _ = _validate_v4(supported, supported_pack)
     assert checked["validation"]["status"] == "PASS"
 
     name_only_pack = _quality_gate_pack("回答只提及目标品牌，没有描述具体能力。")
     unsupported = _replace_markdown_section(
-        _evidence_markdown(name_only_pack, include_authority=False),
+        _evidence_markdown(name_only_pack, include_authority=False, structured=False),
         "品牌表现与证据缺口",
         f"这条回答样本显示目标品牌支持批量处理。"
         f"{name_only_pack['runs'][0]['answer_evidence_locator']}",
     )
-    rejected, _ = validate_markdown_result(unsupported, name_only_pack)
+    rejected, _ = _validate_v4(unsupported, name_only_pack)
     assert "BRAND_SECTION_EVIDENCE_RELEVANCE_REQUIRED" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+
+def test_quality_gate_v5_server_verifies_complete_nonempty_absence_scope():
+    pack = _quality_gate_pack(*[f"第 {index} 条回答仅介绍竞品能力。" for index in range(1, 23)])
+    frozen_set = pack["aggregate_evidence_sets"][0]
+    observation = pack["verified_brand_observations"][0]
+    assert frozen_set["observation_status"] == "SERVER_VERIFIED_ABSENCE"
+    assert len(frozen_set["members"]) == 22
+    assert observation["matched_count"] == 0
+    assert observation["valid_run_count"] == 22
+    checked, _ = validate_markdown_result(_evidence_markdown(pack), pack)
+    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v5"
+    assert checked["validation"]["status"] == "PASS"
+    assert checked["validation"]["verified_brand_observations"][0]["observation_id"] == (
+        observation["observation_id"]
+    )
+
+
+def test_quality_gate_v5_missing_frozen_identity_stays_unknown():
+    pack = build_evidence_pack({
+        "project_configuration": {"brand": {"brand_name": "目标品牌"}},
+        "runs": [{"run_id": 1, "status": "success", "answer_text": "仅提及竞品。"}],
+        "product_truth": {"facts": []},
+    })
+    frozen_set = pack["aggregate_evidence_sets"][0]
+    assert frozen_set["observation_status"] == "UNKNOWN"
+    assert "FROZEN_IDENTITY_INCOMPLETE" in frozen_set["unresolved_reasons"]
+    assert pack["verified_brand_observations"] == []
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("EMPTY", "EMPTY_VALID_SCOPE"),
+    ("DUPLICATE", "DUPLICATE_RUN_ID"),
+    ("UNKNOWN_BRAND", "TARGET_BRAND_IDENTITY_UNKNOWN"),
+])
+def test_quality_gate_v5_unresolved_scope_never_becomes_legal_zero(mutation, reason):
+    scope = _quality_gate_scope("竞品甲提供教程。", "竞品乙提供帮助。")
+    if mutation == "EMPTY":
+        scope["runs"] = []
+    elif mutation == "DUPLICATE":
+        scope["runs"][1]["run_id"] = scope["runs"][0]["run_id"]
+    else:
+        scope["project_configuration"]["brand"]["brand_name"] = ""
+        scope["project_configuration"]["brand"]["brand_aliases"] = []
+    pack = build_evidence_pack(scope)
+    frozen_set = pack["aggregate_evidence_sets"][0]
+    assert frozen_set["observation_status"] == "UNKNOWN"
+    assert reason in frozen_set["unresolved_reasons"]
+    assert pack["verified_brand_observations"] == []
+
+
+def test_quality_gate_v5_presence_or_unknown_cannot_become_full_scope_absence():
+    presence = _quality_gate_pack("竞品甲提供教程。", "回答提及目标品牌。")
+    assert presence["aggregate_evidence_sets"][0]["observation_status"] == (
+        "SERVER_VERIFIED_PRESENCE"
+    )
+    assert presence["verified_brand_observations"] == []
+    first_ref = presence["runs"][0]["answer_evidence_locator"]
+    claimed = _replace_markdown_section(
+        _evidence_markdown(presence, structured=False), "品牌表现与证据缺口",
+        f"目标品牌在全部回答样本中均未被提及。{first_ref}",
+    )
+    rejected, _ = validate_markdown_result(claimed, presence)
+    assert {"VERIFIED_BRAND_OBSERVATION_UNAVAILABLE",
+            "UNSTRUCTURED_FROZEN_SCOPE_ASSERTION"}.issubset({
+            row["code"] for row in rejected["validation"]["issues"]
+    })
+
+    unknown_scope = {
+        "project_configuration": {"brand": {
+            "brand_name": "目标品牌", "brand_aliases": [],
+        }},
+        "runs": [
+            {"run_id": 1, "status": "success", "answer_text": "竞品回答", "references": []},
+            {"run_id": 2, "status": "failed", "answer_text": "", "references": []},
+        ],
+        "product_truth": {"facts": []},
+    }
+    unknown = build_evidence_pack(unknown_scope)
+    assert unknown["aggregate_evidence_sets"][0]["observation_status"] == "UNKNOWN"
+    assert unknown["verified_brand_observations"] == []
+
+
+@pytest.mark.parametrize("mutation,expected", [
+    ("MISSING_MEMBER", "AGGREGATE_EVIDENCE_SET_MEMBERSHIP_MISMATCH"),
+    ("EXTRA_MEMBER", "AGGREGATE_EVIDENCE_SET_MEMBERSHIP_MISMATCH"),
+    ("DUPLICATE_MEMBER", "AGGREGATE_EVIDENCE_SET_MEMBERSHIP_MISMATCH"),
+    ("STALE_ANSWER_HASH", "AGGREGATE_EVIDENCE_SET_MEMBERSHIP_MISMATCH"),
+    ("CROSS_PROJECT", "AGGREGATE_EVIDENCE_SET_SCOPE_MISMATCH"),
+    ("WRONG_PROMPT_VERSION", "AGGREGATE_EVIDENCE_SET_SCOPE_MISMATCH"),
+    ("WRONG_CONFIG_VERSION", "AGGREGATE_EVIDENCE_SET_SCOPE_MISMATCH"),
+])
+def test_quality_gate_v5_blocks_evidence_set_identity_drift(mutation, expected):
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    frozen_set = pack["aggregate_evidence_sets"][0]
+    if mutation == "MISSING_MEMBER":
+        frozen_set["members"] = frozen_set["members"][:-1]
+    elif mutation == "EXTRA_MEMBER":
+        frozen_set["members"].append({**frozen_set["members"][0], "run_id": "999"})
+    elif mutation == "DUPLICATE_MEMBER":
+        frozen_set["members"].append({**frozen_set["members"][0]})
+    elif mutation == "STALE_ANSWER_HASH":
+        frozen_set["members"][0]["answer_hash"] = "stale"
+    elif mutation == "CROSS_PROJECT":
+        frozen_set["identity"]["project_id"] = 999
+    elif mutation == "WRONG_PROMPT_VERSION":
+        frozen_set["identity"]["prompt_version"] = {"value": {"id": "other"}, "hash": "bad"}
+    elif mutation == "WRONG_CONFIG_VERSION":
+        frozen_set["identity"]["project_configuration_version"] = {
+            "value": {"configuration_version_id": "other"}, "hash": "bad",
+        }
+    frozen_set["evidence_set_id"] = digest({key: frozen_set.get(key) for key in (
+        "contract_version", "set_kind", "identity", "eligibility_rule_version",
+        "members", "excluded_members", "brand_rule",
+    )})
+    rejected, _ = validate_markdown_result(_evidence_markdown(pack), pack)
+    assert expected in {row["code"] for row in rejected["validation"]["issues"]}
+
+
+def test_quality_gate_v5_scope_is_structured_and_extra_inferences_fail_closed():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    markdown = _evidence_markdown(pack)
+    checked_without, _ = validate_markdown_result(markdown, pack)
+    assert checked_without["validation"]["status"] == "PASS"
+
+    brand_section = _canonical_observation_block(pack["verified_brand_observations"][0])
+    with_disclaimer = markdown.replace(
+        brand_section,
+        f"{brand_section}\n限制：即使所有样本都完整，也不能推出因果关系。",
+    )
+    rejected, _ = validate_markdown_result(with_disclaimer, pack)
+    assert "VERIFIED_BRAND_OBSERVATION_BLOCK_MISMATCH" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+    unsupported = markdown.replace(
+        "## 优化策略与渠道\n",
+        "## 优化策略与渠道\n目标品牌在全部回答中都被推荐并且支持免审核发布。\n",
+    )
+    rejected, _ = validate_markdown_result(unsupported, pack)
+    assert "UNSTRUCTURED_FROZEN_SCOPE_ASSERTION" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+
+@pytest.mark.parametrize("heading", [
+    "GEO 诊断与依据", "优化策略与渠道", "完整正文", "QA 与事实限制", "复测计划",
+])
+def test_quality_gate_v5_blocks_unstructured_full_scope_claim_in_every_section(heading):
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    markdown = _evidence_markdown(pack)
+    injected = markdown.replace(
+        f"## {heading}\n",
+        f"## {heading}\n目标品牌在所有回答中都被推荐并且支持免审核发布。\n\n",
+        1,
+    )
+    rejected, _ = validate_markdown_result(injected, pack)
+    assert "UNSTRUCTURED_FROZEN_SCOPE_ASSERTION" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+
+@pytest.mark.parametrize("claim", [
+    "目标品牌在每份回答里都出现了。",
+    "核对了2份有效回答，目标品牌被一致推荐。",
+])
+def test_quality_gate_v5_blocks_alternate_aggregate_brand_fact_wording(claim):
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    injected = _evidence_markdown(pack).replace(
+        "## 优化策略与渠道\n",
+        f"## 优化策略与渠道\n{claim}\n\n",
+        1,
+    )
+    rejected, _ = validate_markdown_result(injected, pack)
+    assert "UNSTRUCTURED_FROZEN_SCOPE_ASSERTION" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+
+@pytest.mark.parametrize("instruction", [
+    "复测时应检查所有回答中的引用是否准确。",
+    "复测时应检查所有回答中是否出现目标品牌。",
+    "复测时记录所有回答是否推荐目标品牌。",
+])
+def test_quality_gate_v5_allows_future_scope_verification_instruction(instruction):
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    injected = _evidence_markdown(pack).replace(
+        "## 复测计划\n",
+        f"## 复测计划\n{instruction}\n\n",
+        1,
+    )
+    checked, _ = validate_markdown_result(injected, pack)
+    assert checked["validation"]["status"] == "PASS"
+
+
+def test_quality_gate_v5_future_instruction_cannot_hide_appended_aggregate_fact():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    injected = _evidence_markdown(pack).replace(
+        "## 复测计划\n",
+        "## 复测计划\n复测时应检查所有回答中是否出现目标品牌，目标品牌在每份回答里都出现了。\n\n",
+        1,
+    )
+    rejected, _ = validate_markdown_result(injected, pack)
+    assert "UNSTRUCTURED_FROZEN_SCOPE_ASSERTION" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+
+def test_quality_gate_v5_rejects_noncanonical_or_code_wrapped_fact_block():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    markdown = _evidence_markdown(pack)
+    observation = pack["verified_brand_observations"][0]
+    wrapped = markdown.replace(
+        observation["evidence_locator"], f"`{observation['evidence_locator']}`",
+    )
+    rejected, _ = validate_markdown_result(wrapped, pack)
+    codes = {row["code"] for row in rejected["validation"]["issues"]}
+    assert "VERIFIED_BRAND_OBSERVATION_BLOCK_MISMATCH" in codes
+    assert "SECTION_EVIDENCE_REQUIRED" in codes
+
+    fabricated = markdown.replace(
+        observation["evidence_locator"], "[[observation:fabricated]]",
+    )
+    rejected, _ = validate_markdown_result(fabricated, pack)
+    assert "OBSERVATION_REF_OUT_OF_SCOPE" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+
+def test_quality_gate_v5_does_not_reinterpret_v11_validation_v4_history():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    historical = _evidence_markdown(pack, structured=False)
+    first_ref = pack["runs"][0]["answer_evidence_locator"]
+    second_ref = pack["runs"][1]["answer_evidence_locator"]
+    historical = _replace_markdown_section(
+        historical, "品牌表现与证据缺口",
+        f"目标品牌在全部回答样本中均未被提及。{first_ref}{second_ref}",
+    )
+    checked, _ = validate_markdown_result(
+        historical, pack, execution_contract="geo.evidence-pack.execution.v11",
+    )
+    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v4"
+    assert checked["validation"]["status"] == "PASS"
+    assert checked["validation"]["verified_brand_observations"] == []
+
+
+def test_v11_pack_and_locator_contract_remain_frozen():
+    scope = {
+        "project_configuration": {"brand": {
+            "brand_name": "目标品牌", "brand_aliases": [],
+        }},
+        "runs": [{
+            "run_id": 1, "status": "success", "answer_text": "竞品回答", "references": [],
+        }],
+        "product_truth": {"facts": []},
+    }
+    pack = build_evidence_pack(scope, execution_contract="geo.evidence-pack.execution.v11")
+    assert pack["evidence_pack_hash"] == (
+        "18cfc9b1b67810995e02a827dbaa535c1ef087e099d6c674c80ebf2a83bc22ff"
+    )
+    assert "aggregate_evidence_sets" not in pack
+    assert "verified_brand_observations" not in pack
+    historical = _evidence_markdown(pack, structured=False).replace(
+        "当前回答已覆盖部分操作线索",
+        "当前回答已覆盖部分操作线索[[observation:historically-invalid]]",
+    )
+    checked, _ = validate_markdown_result(
+        historical, pack, execution_contract="geo.evidence-pack.execution.v11",
+    )
+    assert "EVIDENCE_REF_FORMAT_INVALID" in {
+        row["code"] for row in checked["validation"]["issues"]
+    }
+
+
+def test_quality_gate_v5_recomputes_canonical_observation_and_pack_hash():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    original = pack["verified_brand_observations"][0]
+    original["canonical_text"] = "模型自行改写的总体结论。"
+    payload = {key: original.get(key) for key in (
+        "contract_version", "observation_type", "scope", "subject", "quantifier",
+        "evidence_set_id", "matched_count", "valid_run_count", "matched_run_ids",
+        "match_rule_version", "verification", "canonical_text",
+    )}
+    original["observation_id"] = digest(payload)
+    original["evidence_locator"] = f"[[observation:{original['observation_id']}]]"
+    pack["evidence_pack_hash"] = digest({
+        key: value for key, value in pack.items() if key != "evidence_pack_hash"
+    })
+    rejected, _ = validate_markdown_result(_evidence_markdown(pack), pack)
+    assert "AGGREGATE_OBSERVATION_CONTRACT_MISMATCH" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+    intact = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    intact["input_scope_hash"] = "stale"
+    rejected, _ = validate_markdown_result(_evidence_markdown(intact), intact)
+    assert "EVIDENCE_PACK_HASH_MISMATCH" in {
         row["code"] for row in rejected["validation"]["issues"]
     }
 
@@ -947,12 +1299,12 @@ def test_evidence_pack_ignores_literal_reference_examples_inside_markdown_code(t
     )
     pack = build_evidence_pack(loads(run.input_scope_json, {}))
     markdown = _evidence_markdown(pack).replace(
-        "## 品牌表现与证据缺口\n",
-        "## 品牌表现与证据缺口\n缺失来源时不得填写 `[[citation:...]]` 或 `[[source:...]]`。\n\n",
+        "## GEO 诊断与依据\n",
+        "## GEO 诊断与依据\n缺失来源时不得填写 `[[citation:...]]` 或 `[[source:...]]`。\n\n",
     )
     checked, _ = validate_markdown_result(markdown, pack)
     assert checked["validation"]["status"] == "PASS"
-    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v4"
+    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v5"
     assert not any(row["locator"] == "..." for row in checked["result"]["evidence_references"])
 
     rejected, _ = validate_markdown_result(

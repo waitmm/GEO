@@ -344,6 +344,21 @@ automation:
 - `MULTI-DRAFT-LEGACY`：无子资产的历史 AgentResultVersion 保持原 `deliverable_markdown` 可读，标记
   `LEGACY_SINGLE_DRAFT`，不猜测资产类型、不补写子行。
 
+### Aggregate observation synthetic cases
+
+- `AGGREGATE-ABSENCE-ALL`：22 条非空、身份完整的有效冻结回答均未命中冻结品牌名或别名；服务端
+  生成精确 Evidence Set 和 `BRAND_LITERAL_ABSENCE` 观察，规范文字与 observation locator 可通过 v5。
+- `AGGREGATE-ABSENCE-PRESENCE-BLOCK`：22 条中任一完整回答命中品牌；不得生成“全部缺席”已验证观察，
+  模型声明该结论必须失败。
+- `AGGREGATE-SET-IDENTITY-BLOCK`：少/多/重复成员、部分回答、旧 answer hash、跨 Project/Prompt/version、
+  错误配置或伪造 set/observation locator 均 fail-closed；UNKNOWN 不变成合法零。
+- `AGGREGATE-EXTRA-CLAIM-BLOCK`：规范观察行合法，但模型另写未推荐、能力不足、排名或因果总体结论；
+  v5 必须在任一章节阻断；品牌事实区增加或删除相邻免责声明只会破坏封闭块，不会改变观察 scope。
+- `AGGREGATE-SAMPLE-NO-UPGRADE`：v5 不接受未版本化的 SAMPLE observation；单条完整 answer locator 不能
+  使用 aggregate observation locator，也不能声称覆盖 FROZEN_VALID_SCOPE。
+- `AGGREGATE-HISTORY-COMPAT`：v8/v9 Prompt 字节、v11 Evidence Pack/hash/locator 解析、v4 状态和解释
+  维持原样；受保护回放只验证 v5 新机制，不回填结构化对象或重新标记旧结果。
+
 ## 4. 验收方式
 
 1. 先验证 Manifest 的数据库文件 hash、固定对象 ID 与 Run scope hash。

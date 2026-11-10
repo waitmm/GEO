@@ -29,3 +29,35 @@ export function savedResultLabel(modelCalls: number, status: string) {
   if (status === "WAITING_AUTHORIZATION") return "等待服务启动的新任务";
   return "历史任务记录";
 }
+
+export type AggregateObservationSummary = {
+  status: "VERIFIED_ABSENCE" | "VERIFIED_PRESENCE" | "UNKNOWN";
+  statusLabel: string;
+  includedCount: number;
+  excludedCount: number;
+  observationText: string;
+  limitation: string;
+};
+
+export function aggregateObservationSummary(result: any): AggregateObservationSummary | null {
+  const pack = result?.result?.evidence_pack || result?.evidence_pack;
+  const sets = Array.isArray(pack?.aggregate_evidence_sets) ? pack.aggregate_evidence_sets : [];
+  if (sets.length !== 1) return null;
+  const frozenSet = sets[0] || {};
+  const observations = Array.isArray(pack?.verified_brand_observations)
+    ? pack.verified_brand_observations : [];
+  const status = frozenSet.observation_status === "SERVER_VERIFIED_ABSENCE"
+    ? "VERIFIED_ABSENCE"
+    : frozenSet.observation_status === "SERVER_VERIFIED_PRESENCE"
+      ? "VERIFIED_PRESENCE" : "UNKNOWN";
+  return {
+    status,
+    statusLabel: status === "VERIFIED_ABSENCE" ? "已核对：范围内未检测到品牌字面出现"
+      : status === "VERIFIED_PRESENCE" ? "已核对：范围内检测到品牌字面出现"
+        : "观察范围仍有待核对项",
+    includedCount: Array.isArray(frozenSet.members) ? frozenSet.members.length : 0,
+    excludedCount: Array.isArray(frozenSet.excluded_members) ? frozenSet.excluded_members.length : 0,
+    observationText: String(observations[0]?.canonical_text || ""),
+    limitation: "该观察只核对冻结回答中的品牌字面出现，不证明推荐、产品能力、排名或因果关系。",
+  };
+}

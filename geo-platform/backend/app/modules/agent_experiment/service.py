@@ -76,12 +76,12 @@ def _execution_profile(*, regenerate_nonce: str | None = None,
         raise HTTPException(422, {"code": "AGENT_EXECUTION_MODE_INVALID"})
     if execution_mode == "EVIDENCE_PACK":
         return {
-            "contract_version": "geo.evidence-pack.execution.v11",
+            "contract_version": "geo.evidence-pack.execution.v12",
             "execution_mode": "EVIDENCE_PACK",
             "decision_contract": "ONE_MARKDOWN_SYNTHESIS_NO_TOOLS",
             "model_profile": {
                 "provider": "deepseek", "model": "deepseek-flash", "mode": "CACHE_ONLY",
-                "prompt_version": "geo-evidence-pack-synthesis.v9",
+                "prompt_version": "geo-evidence-pack-synthesis.v10",
                 "response_transport": "geo.deepseek.responses-text.no-thinking.v2",
                 "reasoning_effort": "none",
                 "max_model_calls": 1, "automatic_retries": 0,
@@ -686,7 +686,7 @@ def queue_draft_artifact_regeneration(
     generation_profile = {
         "execution_contract": execution["contract_version"],
         "prompt_version": execution["model_profile"]["prompt_version"],
-        "validation_contract": "geo.evidence-pack.validation.v4",
+        "validation_contract": "geo.evidence-pack.validation.v5",
     }
     frozen_policy = {**server_policy, "generation_profile": generation_profile}
     request_payload = {

@@ -88,7 +88,7 @@ def test_capacity_failure_is_before_provider_and_is_recorded_as_failed_run(tmp_p
     monkeypatch.setattr(
         evidence_pack,
         "build_evidence_pack",
-        lambda _scope: (_ for _ in ()).throw(
+        lambda _scope, **_kwargs: (_ for _ in ()).throw(
             EvidencePackCapacityError("EVIDENCE_PACK_CORE_EXCEEDS_BUDGET:150000:90000")
         ),
     )

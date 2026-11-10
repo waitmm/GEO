@@ -609,9 +609,9 @@ def test_regeneration_executor_claims_and_appends_only_target_asset(tmp_path, mo
     audit = loads(stored.audit_json, {})
     assert audit["external_request_state"] == "PROVIDER_RETURNED"
     assert audit["generation_profile"] == {
-        "execution_contract": "geo.evidence-pack.execution.v11",
-        "prompt_version": "geo-evidence-pack-synthesis.v9",
-        "validation_contract": "geo.evidence-pack.validation.v4",
+        "execution_contract": "geo.evidence-pack.execution.v12",
+        "prompt_version": "geo-evidence-pack-synthesis.v10",
+        "validation_contract": "geo.evidence-pack.validation.v5",
     }
     assert "面向最终使用者" in client.payloads[0]["system_prompt"]
     assert [row.version_number for row in versions] == [1, 2]

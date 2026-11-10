@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { brandAssociationContent } from '../src/brandAssociationContext.ts';
-import { savedResultLabel, splitAgentResult } from '../src/agentResultPresentation.ts';
+import { aggregateObservationSummary, savedResultLabel, splitAgentResult } from '../src/agentResultPresentation.ts';
 
 test('business result parser keeps the six delivery sections separate', () => {
   const markdown = `## GEO 诊断与依据\n诊断\n\n## 品牌表现与证据缺口\n品牌缺口\n\n## 优化策略与渠道\n策略\n\n## 完整正文\n# 标题\n\n正文\n\n### 子标题\n内容\n\n## QA 与事实限制\nVERIFY_FIRST\n\n## 复测计划\n复测`;
@@ -18,6 +18,32 @@ test('historical result is never presented as a newly completed task', () => {
   assert.equal(savedResultLabel(1, 'SUCCEEDED'), '已保存的真实模型结果');
   assert.equal(savedResultLabel(0, 'WAITING_AUTHORIZATION'), '等待服务启动的新任务');
   assert.equal(savedResultLabel(0, 'SUCCEEDED'), '已保存结果（来源待核对）');
+});
+
+test('v5 aggregate observation is shown in business language without backfilling old results', () => {
+  assert.equal(aggregateObservationSummary({ result: { evidence_pack: {} } }), null);
+  const summary = aggregateObservationSummary({
+    result: {
+      evidence_pack: {
+        aggregate_evidence_sets: [{
+          evidence_set_id: 'private-set-hash',
+          observation_status: 'SERVER_VERIFIED_ABSENCE',
+          members: [{ run_id: 1 }, { run_id: 2 }],
+          excluded_members: [{ run_id: 3 }],
+        }],
+        verified_brand_observations: [{
+          observation_id: 'private-observation-hash',
+          canonical_text: '本次冻结的 2 条有效回答中，未检测到目标品牌的字面出现。',
+        }],
+      },
+    },
+  });
+  assert.equal(summary?.status, 'VERIFIED_ABSENCE');
+  assert.equal(summary?.includedCount, 2);
+  assert.equal(summary?.excludedCount, 1);
+  assert.match(summary?.observationText || '', /2 条有效回答/);
+  assert.doesNotMatch(JSON.stringify(summary), /private-set-hash|private-observation-hash/);
+  assert.match(summary?.limitation || '', /不证明推荐、产品能力、排名或因果关系/);
 });
 
 test('brand association input explicitly separates goals from facts', () => {

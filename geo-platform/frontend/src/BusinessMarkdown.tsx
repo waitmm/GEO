@@ -8,11 +8,12 @@ function evidenceLabel(token: string) {
   if (parts[0] === "truth") return `品牌事实 #${parts[1]}`;
   if (parts[0] === "citation") return `引用依据 #${parts[1]}`;
   if (parts[0] === "source") return `来源依据 #${parts[1]}`;
+  if (parts[0] === "observation") return "已验证范围观察";
   return "证据依据";
 }
 
 export function renderBusinessInline(text: string): ReactNode[] {
-  const parts = String(text || "").split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[(?:answer|truth|citation|source):[^\]]+\]\])/g);
+  const parts = String(text || "").split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[(?:answer|truth|citation|source|observation):[^\]]+\]\])/g);
   return parts.filter(Boolean).map((part, index) => {
     if (part.startsWith("**") && part.endsWith("**")) return <strong key={index}>{part.slice(2, -2)}</strong>;
     if (part.startsWith("`") && part.endsWith("`")) return <Typography.Text key={index} code>{part.slice(1, -1)}</Typography.Text>;

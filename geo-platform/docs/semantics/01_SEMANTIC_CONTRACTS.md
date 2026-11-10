@@ -967,6 +967,43 @@ supersedes: null
 last_verified_at: 2026-10-30
 ```
 
+### SC-AGGREGATE-OBSERVATION-001 Server-Verified Aggregate Observation
+
+```yaml
+contract_id: SC-AGGREGATE-OBSERVATION-001
+contract_name: Server-Verified Aggregate Observation
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: IMPLEMENTED_OFFLINE_NOT_RELEASED
+definition: Prompt v10 / Execution v12 / Validation v5 中的总体品牌字面缺席观察由服务端基于非空、身份完整的冻结有效回答集合计算，并以独立的 Evidence Set 与 Observation hash 固定；模型只可复用服务端规范文字和 locator，不能决定成员或事实值。
+allowed_inferences:
+  - 完整非空的 FROZEN_VALID_SCOPE 中所有有效完整回答均未命中冻结品牌名称/别名时，可陈述该范围内目标品牌字面未出现。
+  - v5 初始切片只接受服务端 FROZEN_VALID_SCOPE 缺席观察；普通完整回答证据不构成 SAMPLE 观察，也不能升级为总体观察。
+forbidden_inferences:
+  - 字面未出现证明未推荐、能力不足、排名、竞品更优、因果原因或 Product Truth。
+  - 合法 Evidence Set ID 允许模型自定 predicate、量词、事实值或额外总体断言。
+  - 少成员、多成员、重复成员、跨 Project/Prompt/version、旧 hash 或部分回答构成合法总体范围。
+  - 通过相邻免责声明、限制说明或整章关键词改变另一条观察的 scope。
+unknown_behavior: 空范围、无效或未决成员、品牌身份/匹配规则不确定、身份/hash/version 不完整或不一致时不生成已验证缺席观察；UNKNOWN 不计为零。
+output_boundary: 品牌事实区必须逐字等于服务端规范观察；其他章节出现原始冻结回答范围断言时阻断，不通过相邻说明推断或改变 scope。
+identity: evidence_set_hash over canonical frozen members and scope identity; separate observation_hash over predicate + subject + quantifier + scope + evidence_set_hash + server-computed value
+history: v9/v11/v4 及既有结果保持原解释和状态；不回填、不重验、不重标。
+step_boundary: Evidence Pack 构建与结果校验内部；不改变采样、正式 V2、Truth、Review、发布或父子资产不可变规则。
+source_references:
+  - docs/semantics/rfcs/RFC-EVIDENCE-PACK-AGGREGATE-SCOPE-001.md
+  - docs/semantics/approvals/RFC-EVIDENCE-PACK-AGGREGATE-SCOPE-001.definition-freeze.md
+enforcement_refs:
+  - backend/app/modules/agent_experiment/evidence_pack.py
+  - backend/tests/test_agent_experiment.py
+approved_by: Product Owner
+approved_at: 2026-11-10
+approval_reference: GEO M1.2 third real acceptance approval
+golden_case_ids: [AGGREGATE-ABSENCE-ALL, AGGREGATE-ABSENCE-PRESENCE-BLOCK, AGGREGATE-SET-IDENTITY-BLOCK, AGGREGATE-EXTRA-CLAIM-BLOCK, AGGREGATE-HISTORY-COMPAT]
+effective_from: 2026-11-10
+supersedes: null
+last_verified_at: 2026-11-10
+```
+
 ## 3. Definition Freeze Queue
 
 `SC-RUNTIME-001@0.1.0` 已由 Product Owner 在独立 Review 005 通过后正式

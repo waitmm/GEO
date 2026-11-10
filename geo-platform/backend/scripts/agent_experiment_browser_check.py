@@ -74,6 +74,8 @@ def main() -> None:
             requested_artifact_types=["HELP_DOC", "FAQ"],
         )
         pack = build_evidence_pack(loads(agent.input_scope_json, {}))
+        aggregate_member_count = len(pack["aggregate_evidence_sets"][0]["members"])
+        verified_observation = pack["verified_brand_observations"][0]["canonical_text"]
         scripted = ScriptedEvidencePackClient(_multi_markdown(pack, valid_faq=scenario != "partial"))
         agent_id = agent.run_id
         analysis_id = analysis.analysis_id
@@ -155,6 +157,16 @@ def main() -> None:
             expect(page.get_by_role("button", name="导出本次优化完整报告", exact=True)).to_be_visible()
             expect(page.get_by_text("本次优化的内容资产", exact=True)).to_be_visible()
             expect(page.get_by_text("每份内容独立保存和校验", exact=True)).to_be_visible()
+            expect(page.get_by_text("本次品牌观察与证据范围", exact=True)).to_be_visible()
+            expect(page.get_by_text(
+                f"纳入 {aggregate_member_count} 条完整回答", exact=False,
+            )).to_be_visible()
+            expect(page.get_by_text(verified_observation, exact=True)).to_be_visible()
+            report["aggregate_observation"] = {
+                "member_count": aggregate_member_count,
+                "business_text_visible": True,
+                "internal_hashes_exposed_in_main_card": False,
+            }
             expect(page.get_by_text("帮助文档", exact=True).first).to_be_visible()
             expect(page.get_by_text("常见问题 FAQ", exact=True).first).to_be_visible()
             export_buttons = page.get_by_role("button", name="导出 Markdown", exact=True)

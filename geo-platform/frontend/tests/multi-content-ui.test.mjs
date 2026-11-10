@@ -41,3 +41,10 @@ test("多内容结果不再把父报告伪装成第三份稿件", () => {
   assert.match(panel, /!hasDraftArtifacts && <Button/);
   assert.match(panel, /各内容资产/);
 });
+
+test("结构化品牌观察以业务文案展示且不暴露内部 hash", () => {
+  assert.match(panel, /本次品牌观察与证据范围/);
+  assert.match(panel, /纳入 \{aggregateObservation\.includedCount\} 条完整回答/);
+  assert.match(panel, /aggregateObservationSummary/);
+  assert.doesNotMatch(panel, /evidence_set_id|observation_id/);
+});

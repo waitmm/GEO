@@ -153,6 +153,13 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
   scope，额外推荐/能力/排名/因果断言继续阻断。第三次失败稿仅在本地副本回放：原 v4 失败保持，原稿
   在 v5 下因缺服务端观察失败，服务端渲染 22 条规范观察的 shadow 通过；没有改写历史或发起外部调用。
   详细证据见 [v5 离线结果](M1_2_AGGREGATE_SCOPE_V5_OFFLINE_RESULT_2026-11-10.md)。
+- 2026-11-11 第四次真实验证：同一 22 Run、Prompt v10 / Execution v12 / Validation v5 完成唯一请求；
+  42299 输入、3380 输出、共 45679 Token，账本 ¥0.45679，耗时 24.690 秒。Evidence Set、服务端
+  Observation、canonical 事实区和双稿持久化均正确；唯一失败是 QA 再次复述已验证范围并附带不推导
+  推荐/排名/因果的限制。v5 按冻结规则正确拒绝，不能重标 PASS。第五次调用未授权；新的服务端 QA
+  组合规则已登记为 `SEMANTIC_CONTRACT_REVIEW_REQUIRED`，详见
+  [第四次结果](M1_2_REAL_QUALITY_FOURTH_RESULT_2026-11-11.md) 与
+  [RFC 提案](../semantics/rfcs/RFC-EVIDENCE-PACK-SERVER-COMPOSED-QA-002.md)。
 
 ## 5. 下一里程碑：公司单机内部试用
 

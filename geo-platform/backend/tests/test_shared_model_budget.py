@@ -128,6 +128,28 @@ def test_authorized_batch_is_exact_and_pricing_must_be_current(tmp_path):
                    conservative_cny_per_million_tokens=9.99, today=TODAY)
 
 
+def test_one_shot_acceptance_ledger_has_no_parent_headroom(tmp_path):
+    path = tmp_path / "one-shot.sqlite3"
+    initialize(
+        path, batch_id="m1-2-one-shot", pricing_checked_at=TODAY.isoformat(),
+        total_request_limit=1, total_token_limit=300_000,
+        total_cost_limit_cny=3.0, today=TODAY,
+    )
+    state = summary(path)
+    assert state["config"]["total_request_limit"] == 1
+    assert state["config"]["total_token_limit"] == 300_000
+    assert state["config"]["total_cost_limit_cny"] == 3.0
+    assert state["remaining_requests"] == 1
+    assert state["remaining_tokens"] == 300_000
+    assert state["remaining_cost_cny"] == 3.0
+    with pytest.raises(SharedBudgetDenied, match="AUTHORIZED_BATCH_CONFIG_MISMATCH"):
+        initialize(
+            tmp_path / "unapproved-small.sqlite3", batch_id="x",
+            pricing_checked_at=TODAY.isoformat(), total_request_limit=2,
+            total_token_limit=600_000, total_cost_limit_cny=6.0, today=TODAY,
+        )
+
+
 def test_existing_authorization_fail_closes_for_unapproved_plain_text_transport(tmp_path):
     path = ledger(tmp_path)
     request = identity("evidence-pack-text")

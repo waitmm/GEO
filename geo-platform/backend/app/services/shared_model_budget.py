@@ -36,6 +36,14 @@ AUTHORIZED_EXTENSION_LIMITS = frozenset({
     (1, 300_000, 5.0),
     (10, 1_000_000, 10.0),
 })
+AUTHORIZED_BATCH_LIMITS = frozenset({
+    # Historical comparison / local Beta parent ledger.
+    (36, 3_000_000, 30.0),
+    # Isolated one-shot real-quality acceptance ledger. Its parent and child
+    # authorization carry the same hard ceiling, so no unrelated extension can
+    # consume headroom that was never granted for the acceptance operation.
+    (1, 300_000, 3.0),
+})
 
 
 class SharedBudgetDenied(RuntimeError):
@@ -120,9 +128,9 @@ def initialize(
     if (
         not batch_id.strip()
         or pricing_source.rstrip("/") != PRICING_SOURCE.rstrip("/")
-        or total_request_limit != 36
-        or total_token_limit != 3_000_000
-        or total_cost_limit_cny != 30.0
+        or (
+            total_request_limit, total_token_limit, float(total_cost_limit_cny)
+        ) not in AUTHORIZED_BATCH_LIMITS
         or not math.isfinite(conservative_cny_per_million_tokens)
         or conservative_cny_per_million_tokens < 10.0
     ):

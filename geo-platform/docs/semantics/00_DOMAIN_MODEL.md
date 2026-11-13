@@ -224,6 +224,8 @@ implementation_status = NOT_IMPLEMENTED | SHADOW | PARTIAL | PRODUCTION | DIVERG
 - 标识：`parent_result_version + artifact_id + version_number`；重生成保存 `previous_artifact_version`。
 - 可推断：各子资产独立成功或失败，父交付状态可派生为 SUCCESS/PARTIAL_SUCCESS/FAILED。
 - 禁止推断：子稿不得升级 Evidence/Truth/发布资格；一稿成功不得掩盖另一稿失败；旧单稿不得猜测类型回填。
+- 交付投影：Provider 原文保持不可变；Validation v6 只允许在 QA 中对与服务端 Observation 完全一致的
+  安全冗余说明做可审计排除，并追加服务端范围说明。该投影不是新的事实来源，也不得改写诊断、策略或正文。
 - 当前实现：`AgentDraftArtifactVersion`、`AgentDraftArtifactFeedback`、`AgentDraftArtifactRegeneration`。
 
 ## 3. 对象流与边界

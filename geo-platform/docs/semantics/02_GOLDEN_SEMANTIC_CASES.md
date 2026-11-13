@@ -359,6 +359,17 @@ automation:
 - `AGGREGATE-HISTORY-COMPAT`：v8/v9 Prompt 字节、v11 Evidence Pack/hash/locator 解析、v4 状态和解释
   维持原样；受保护回放只验证 v5 新机制，不回填结构化对象或重新标记旧结果。
 
+### Server-composed QA synthetic cases
+
+- `QA-COMPOSE-SAFE-REDUNDANCY`：QA 只安全复述精确服务端 Observation 并说明不能推出推荐、排名、能力
+  或因果；v6 记录式排除该句，以同一 Observation/Evidence Set 生成标准说明，其他正文不变。
+- `QA-COMPOSE-UNSAFE-BLOCK`：QA 在安全复述旁增加能力、推荐、最佳、排名、因果或相反事实；共享 Gate
+  继续失败，不能通过删句、相邻免责声明或合法 locator 洗白。
+- `QA-COMPOSE-AUDIT`：原始响应 hash、源偏移、被排除片段 hash、排除原因、Observation/Evidence Set、
+  模板、保留 QA、组合和最终交付 hash 均可核对；复制/导出使用交付投影而不是修改原文。
+- `QA-COMPOSE-HISTORY-COMPAT`：同一第四次真实反例在历史 v5 仍 FAIL；受保护 v6 shadow 可 PASS，数据库
+  文件 hash、历史结果、子资产和账本不变，不回填、不重标。
+
 ## 4. 验收方式
 
 1. 先验证 Manifest 的数据库文件 hash、固定对象 ID 与 Run scope hash。

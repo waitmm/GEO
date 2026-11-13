@@ -207,6 +207,8 @@ def main() -> None:
                 help_card.get_by_text("这份稿件的反馈（1）", exact=True).click()
                 expect(help_card.get_by_text("隔离浏览器反馈已保存", exact=False)).to_be_visible()
             page.get_by_text("证据与 QA", exact=True).first.click()
+            expect(page.get_by_text("服务端验证的范围说明", exact=True).first).to_be_visible()
+            expect(page.get_by_text("VERIFY_FIRST：服务端已核验", exact=False).first).to_be_visible()
             expect(page.get_by_text("证据数量", exact=True).first).to_be_visible()
             expect(page.get_by_text("QA 资格", exact=True).first).to_be_visible()
             expect(page.get_by_text("技术详情（原始数据）", exact=True).first).to_be_visible()

@@ -39,7 +39,7 @@ class RegenerationContractError(RuntimeError):
         super().__init__(code)
 
 
-_CURRENT_REGENERATION_VALIDATION_CONTRACT = "geo.evidence-pack.validation.v5"
+_CURRENT_REGENERATION_VALIDATION_CONTRACT = "geo.evidence-pack.validation.v6"
 
 
 def _frozen_generation_profile(policy: dict[str, Any]) -> dict[str, str]:

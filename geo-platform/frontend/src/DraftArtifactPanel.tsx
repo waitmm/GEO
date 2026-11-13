@@ -96,6 +96,8 @@ function ArtifactCard({ artifact, projectId, promptId, regenerationEnabled, onCh
   const [form] = Form.useForm();
   const query = `project_id=${projectId}&prompt_id=${promptId}`;
   const evidenceQa = summarizeArtifactEvidenceQa(artifact.evidence, artifact.qa, artifact.status, artifact.failure);
+  const qaComposition = artifact.qa?.qa_composition as Record<string, any> | undefined;
+  const serverLimitation = qaComposition?.server_limitation as Record<string, any> | undefined;
   const failureSummary = evidenceQa.issues.filter(issue => issue !== "稿件未通过独立校验").join("；")
     || "请查看证据与 QA 中的具体缺口";
   useEffect(() => {
@@ -157,6 +159,9 @@ function ArtifactCard({ artifact, projectId, promptId, regenerationEnabled, onCh
     </>}
     <Collapse style={{ marginTop: 12 }} items={[
       { key: "evidence", label: "证据与 QA", children: <>
+        {qaComposition?.status === "COMPOSED" && serverLimitation?.text && <Alert
+          style={{ marginBottom: 8 }} type="info" showIcon message="服务端验证的范围说明"
+          description={String(serverLimitation.text)} />}
         <Descriptions size="small" column={1}>
           <Descriptions.Item label="证据数量">{evidenceQa.evidenceCount} 条</Descriptions.Item>
           <Descriptions.Item label="证据类型">{evidenceQa.evidenceTypes.join("、") || "暂未提供证据类型"}</Descriptions.Item>

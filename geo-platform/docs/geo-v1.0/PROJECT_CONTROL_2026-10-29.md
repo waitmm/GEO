@@ -160,6 +160,12 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
   组合规则已登记为 `SEMANTIC_CONTRACT_REVIEW_REQUIRED`，详见
   [第四次结果](M1_2_REAL_QUALITY_FOURTH_RESULT_2026-11-11.md) 与
   [RFC 提案](../semantics/rfcs/RFC-EVIDENCE-PACK-SERVER-COMPOSED-QA-002.md)。
+- 2026-11-13 Product Owner 批准 QA 服务端组合 Definition Freeze。Prompt v11 / Execution v13 /
+  Validation v6 / QA Composition v1 已离线实现：Provider 原文不可变，只在 QA 中对与精确 Observation
+  等价的安全冗余句做带偏移/hash/原因/证据身份的记录式排除，并由服务端生成范围说明；诊断、策略和
+  双稿正文不做自动改写，能力/推荐/排名/因果及未知等价仍阻断。第四次保护库精确 shadow 保持历史
+  v5 FAIL，同时 v6 PASS 且数据库前后 hash 一致。第五次调用及发布仍未授权。详情见
+  [v6 离线结果](M1_2_SERVER_COMPOSED_QA_V6_OFFLINE_RESULT_2026-11-13.md)。
 
 ## 5. 下一里程碑：公司单机内部试用
 
@@ -255,7 +261,10 @@ Python/Node 版本和网络出口。使用专用运行目录和服务账号，�
 - [x] Prompt v9 / Execution v11 第三次真实验证已完成且停止；结果仍为 Gate 失败，未自动重跑。
 - [x] `RFC-EVIDENCE-PACK-AGGREGATE-SCOPE-001` 已批准并 Definition Freeze；Prompt v10 / Execution v12 /
   Validation v5 已完成离线实现、反例、历史兼容、受保护回放和隔离浏览器验收。
-- [ ] 第四次真实复测需新的独立付费授权；不得因 v5 离线通过自动调用模型或发布 M1.2。
+- [x] 第四次真实复测已按独立授权完成且保持真实 FAIL；未自动重跑或重标。
+- [x] `RFC-EVIDENCE-PACK-SERVER-COMPOSED-QA-002` 已批准并 Definition Freeze；v6 离线实现和第四次
+  保护稿 shadow 已通过，历史 v5 与数据库不变。
+- [ ] 第五次真实复测需新的独立付费授权；不得因 v6 shadow 通过自动调用模型或发布 M1.2。
 - [ ] 在两份资产通过服务端 Gate 后安排员工逐稿质量评审；不得以首次失败稿或合成结果替代。
 - [x] 当前 M1.2 候选已在 M1.1 只读数据副本上通过升级、备份、恢复和回滚演练；正式提升仍需真实质量与审批。
 - [ ] 试用后再决定 GEO-CAP-001 的生产语义和八木屋接入时间。

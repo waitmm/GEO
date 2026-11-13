@@ -28,6 +28,7 @@ from app.modules.agent_experiment.contracts import AgentArtifact, AgentDecision
 from app.modules.agent_experiment.grading import validate_and_grade
 from app.modules.agent_experiment.evidence_pack import (
     EvidencePackCapacityError,
+    AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
     _PROMPT_VERSION_BY_EXECUTION_CONTRACT,
     _canonical_observation_block,
     build_evidence_pack,
@@ -202,6 +203,13 @@ def _replace_markdown_section(markdown, heading, body):
 def _validate_v4(markdown, pack):
     return validate_markdown_result(
         markdown, pack, execution_contract="geo.evidence-pack.execution.v11",
+    )
+
+
+def _validate_v5(markdown, pack):
+    return validate_markdown_result(
+        markdown, pack,
+        execution_contract=AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
     )
 
 
@@ -393,8 +401,8 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v12"
-    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v10"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v13"
+    assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v11"
     assert execution["requested_artifact_types"] == ["HELP_DOC"]
     assert execution["model_profile"]["reasoning_effort"] == "none"
     assert execution["model_profile"]["response_transport"] == (
@@ -487,9 +495,12 @@ def test_evidence_pack_demotes_only_nested_draft_h2_headings(tmp_path, monkeypat
     )
     checked, _eligibility = validate_markdown_result(markdown, pack)
     assert checked["validation"]["status"] == "PASS"
-    assert checked["result"]["normalizations"] == [
-        {"code": "DRAFT_H2_DEMOTED", "detail": "正文内部小节"},
-    ]
+    assert {row["code"] for row in checked["result"]["normalizations"]} == {
+        "DRAFT_H2_DEMOTED", "QA_SERVER_COMPOSED",
+    }
+    assert checked["result"]["normalizations"][0] == {
+        "code": "DRAFT_H2_DEMOTED", "detail": "正文内部小节",
+    }
     assert "### 正文内部小节" in checked["result"]["raw_markdown"]
 
     outside = markdown.replace(
@@ -667,6 +678,9 @@ def test_execution_contract_routes_to_frozen_prompt_identity():
     )
     assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v12"] == (
         "geo-evidence-pack-synthesis.v10"
+    )
+    assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v13"] == (
+        "geo-evidence-pack-synthesis.v11"
     )
     assert "geo.evidence-pack.execution.v4" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
     assert "geo.evidence-pack.execution.v7" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
@@ -937,7 +951,10 @@ def test_quality_gate_v5_server_verifies_complete_nonempty_absence_scope():
     assert len(frozen_set["members"]) == 22
     assert observation["matched_count"] == 0
     assert observation["valid_run_count"] == 22
-    checked, _ = validate_markdown_result(_evidence_markdown(pack), pack)
+    checked, _ = validate_markdown_result(
+        _evidence_markdown(pack), pack,
+        execution_contract=AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
+    )
     assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v5"
     assert checked["validation"]["status"] == "PASS"
     assert checked["validation"]["verified_brand_observations"][0]["observation_id"] == (
@@ -1173,6 +1190,239 @@ def test_quality_gate_v5_does_not_reinterpret_v11_validation_v4_history():
     assert checked["validation"]["verified_brand_observations"] == []
 
 
+def test_quality_gate_v6_composes_server_qa_and_audits_safe_restatement():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    repeated = (
+        "VERIFY_FIRST；品牌字面出现：冻结证据仅证明 2 条有效回答中未检测到“目标品牌”字面，"
+        "不能证明推荐关系、排名或因果原因。其他品牌能力仍需人工核实。"
+    )
+    markdown = _replace_markdown_section(
+        _evidence_markdown(pack), "QA 与事实限制", repeated)
+    checked, _ = validate_markdown_result(markdown, pack)
+    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v6"
+    assert checked["validation"]["status"] == "PASS"
+    composition = checked["result"]["qa_composition"]
+    assert composition["contract_version"] == "geo.evidence-pack.qa-composition.v1"
+    assert composition["status"] == "COMPOSED"
+    assert len(composition["excluded_fragments"]) == 1
+    assert len(composition["excluded_fragments"][0]["fragment_hash"]) == 64
+    assert composition["server_limitation"]["observation_id"] == (
+        pack["verified_brand_observations"][0]["observation_id"])
+    assert composition["server_limitation"]["evidence_set_id"] == (
+        pack["aggregate_evidence_sets"][0]["evidence_set_id"])
+    assert digest(markdown) == checked["result"]["provider_output_hash"]
+    assert repeated in checked["result"]["raw_markdown"]
+    assert repeated not in checked["result"]["delivery_markdown"]
+    assert "### 服务端验证的范围说明" in checked["result"]["delivery_markdown"]
+    assert composition["delivery_projection_hash"] == digest(
+        checked["result"]["delivery_markdown"])
+
+
+@pytest.mark.parametrize("separator", ["，", "："])
+def test_quality_gate_v6_server_limitation_preserves_l3_verify_first(separator):
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    repeated = (
+        f"VERIFY_FIRST{separator}冻结证据仅证明 2 条有效回答中未检测到“目标品牌”字面，"
+        "不能证明推荐关系、排名或因果原因。"
+    )
+    checked, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", repeated), pack)
+    assert checked["validation"]["status"] == "PASS"
+    composition = checked["result"]["qa_composition"]
+    assert len(composition["excluded_fragments"]) == 1
+    assert "VERIFY_FIRST" in composition["server_limitation"]["text"]
+    assert "VERIFY_FIRST" in checked["result"]["delivery_markdown"]
+
+
+def test_quality_gate_v6_never_relabels_v5_history():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    repeated = (
+        "VERIFY_FIRST；冻结证据仅证明 2 条有效回答中未检测到“目标品牌”字面，"
+        "不能证明推荐关系、排名或因果原因。"
+    )
+    markdown = _replace_markdown_section(
+        _evidence_markdown(pack), "QA 与事实限制", repeated)
+    historical, _ = _validate_v5(markdown, pack)
+    assert historical["validation"]["contract_version"] == "geo.evidence-pack.validation.v5"
+    assert historical["validation"]["status"] == "FAIL"
+    assert "UNSTRUCTURED_FROZEN_SCOPE_ASSERTION" in {
+        row["code"] for row in historical["validation"]["issues"]
+    }
+    assert "qa_composition" not in historical["result"]
+    assert "delivery_markdown" not in historical["result"]
+    assert "qa_composition" not in historical["validation"]
+
+
+@pytest.mark.parametrize("unsafe_suffix", [
+    "因此目标品牌具备批量发布能力。",
+    "所以目标品牌是最佳选择。",
+    "这说明目标品牌没有被推荐的原因是缺少权威内容。",
+])
+def test_quality_gate_v6_safe_restatement_cannot_launder_unsafe_claim(unsafe_suffix):
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    qa = (
+        "VERIFY_FIRST；冻结证据仅证明 2 条有效回答中未检测到“目标品牌”字面，"
+        f"不能证明推荐关系、排名或因果原因。{unsafe_suffix}"
+    )
+    checked, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", qa), pack)
+    assert checked["validation"]["status"] == "FAIL"
+    assert ({"QA_UNVERIFIED_BRAND_CLAIM", "UNSTRUCTURED_FROZEN_SCOPE_ASSERTION"}
+            & {row["code"] for row in checked["validation"]["issues"]})
+
+
+@pytest.mark.parametrize("qa,expected", [
+    ("VERIFY_FIRST；请编辑打开 Evidence Pack 后删除未经证实的表述。",
+     "QA_INTERNAL_AUTHORING_INSTRUCTION_LEAK"),
+    ("VERIFY_FIRST；目标品牌成功率达到 99%。", "QA_NUMERIC_CLAIM_WITHOUT_AUTHORITY"),
+])
+def test_quality_gate_v6_validates_retained_model_qa(qa, expected):
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    checked, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", qa), pack)
+    assert checked["validation"]["status"] == "FAIL"
+    assert expected in {row["code"] for row in checked["validation"]["issues"]}
+
+
+def test_quality_gate_v6_retains_explicit_causal_inference_boundary():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    qa = (
+        "VERIFY_FIRST；第三方页面被引用是观察事实，不得改写为“因为被引用所以目标品牌会被提及”"
+        "的因果判断。"
+    )
+    checked, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", qa), pack)
+    assert checked["validation"]["status"] == "PASS"
+    assert qa in checked["result"]["delivery_markdown"]
+
+
+def test_quality_gate_v6_retains_closed_citation_observation_boundary_with_domain():
+    scope = _quality_gate_scope("竞品甲提供教程。", "竞品乙提供帮助。")
+    scope["project_configuration"]["brand"]["brand_aliases"] = ["example.com"]
+    pack = build_evidence_pack(scope)
+    qa = (
+        "VERIFY_FIRST；- **自有域名被引用**：example.com 页面被引用是观察事实，"
+        "不得改写为“因为被引用所以回答会提及品牌”的因果判断。"
+    )
+    checked, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", qa), pack)
+    assert checked["validation"]["status"] == "PASS"
+
+
+@pytest.mark.parametrize("qa", [
+    "2 条有效回答未出现目标品牌但它支持跨域跳转。",
+    "2 条有效回答未出现目标品牌但它支持跨域跳转，请读取 Evidence Pack 后继续。",
+    "目标品牌支持跨域跳转，是否复测以后再说。",
+    "不代表排名领先，因为内容缺失所以目标品牌没有被展示。",
+    "并非 2 条有效回答未出现目标品牌。",
+    "不能证明 2 条有效回答未出现目标品牌。",
+])
+def test_quality_gate_v6_never_launders_mixed_or_negated_claims(qa):
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    checked, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", qa), pack)
+    assert checked["validation"]["status"] == "FAIL"
+    assert ({
+        "QA_COMPOSITION_UNSAFE_AGGREGATE_ASSERTION",
+        "QA_UNVERIFIED_BRAND_CLAIM",
+        "QA_INTERNAL_AUTHORING_INSTRUCTION_LEAK",
+    } & {row["code"] for row in checked["validation"]["issues"]})
+
+
+def test_quality_gate_v6_requires_truth_to_support_the_same_capability_predicate():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    pack["product_truth"]["facts"] = [{
+        "truth_id": "unrelated-name", "truth_correction_version": 1,
+        "capability_label": "目标品牌名称为目标品牌",
+        "evidence_locator": "[[truth:unrelated-name:1]]",
+    }]
+    pack["evidence_pack_hash"] = digest({
+        key: value for key, value in pack.items() if key != "evidence_pack_hash"
+    })
+    qa = "VERIFY_FIRST；目标品牌支持跨域跳转[[truth:unrelated-name:1]]。"
+    rejected, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", qa), pack)
+    assert rejected["validation"]["status"] == "FAIL"
+    assert "QA_UNVERIFIED_BRAND_CLAIM" in {
+        row["code"] for row in rejected["validation"]["issues"]
+    }
+
+    pack["product_truth"]["facts"][0]["capability_label"] = "支持跨域跳转"
+    pack["evidence_pack_hash"] = digest({
+        key: value for key, value in pack.items() if key != "evidence_pack_hash"
+    })
+    accepted, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", qa), pack)
+    assert accepted["validation"]["status"] == "PASS"
+
+
+@pytest.mark.parametrize("qa", [
+    "VERIFY_FIRST；该品牌支持跨域自动跳转。",
+    "VERIFY_FIRST；目标品牌的能力说明：它支持跨域跳转。",
+])
+def test_quality_gate_v6_pronoun_capability_requires_independent_support(qa):
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    checked, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", qa), pack)
+    assert checked["validation"]["status"] == "FAIL"
+    assert "QA_UNVERIFIED_BRAND_CLAIM" in {
+        row["code"] for row in checked["validation"]["issues"]
+    }
+
+
+def test_quality_gate_v6_checks_each_capability_and_local_truth_polarity():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    pack["product_truth"]["facts"] = [{
+        "truth_id": "upload", "truth_correction_version": 1,
+        "capability_label": "目标品牌支持文件上传，但不支持视频剪辑",
+        "evidence_locator": "[[truth:upload:1]]",
+    }]
+    pack["evidence_pack_hash"] = digest({
+        key: value for key, value in pack.items() if key != "evidence_pack_hash"
+    })
+    cases = [
+        "VERIFY_FIRST；目标品牌支持文件上传，目标品牌支持跨域跳转[[truth:upload:1]]。",
+        "VERIFY_FIRST；目标品牌支持文件上传和跨域跳转[[truth:upload:1]]。",
+        "VERIFY_FIRST；目标品牌支持文件上传，同时支持跨域跳转[[truth:upload:1]]。",
+        "VERIFY_FIRST；目标品牌支持无限文件上传[[truth:upload:1]]。",
+        "VERIFY_FIRST；目标品牌支持文件上传，目标品牌确实支持跨域跳转[[truth:upload:1]]。",
+        "VERIFY_FIRST；目标品牌支持文件上传，另外还支持跨域跳转[[truth:upload:1]]。",
+        "VERIFY_FIRST；目标品牌不支持文件上传[[truth:upload:1]]。",
+    ]
+    for qa in cases:
+        checked, _ = validate_markdown_result(
+            _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", qa), pack)
+        assert checked["validation"]["status"] == "FAIL"
+        assert "QA_UNVERIFIED_BRAND_CLAIM" in {
+            row["code"] for row in checked["validation"]["issues"]
+        }
+
+    third_party = (
+        "VERIFY_FIRST；目标品牌支持文件上传，竞品甲支持网页编辑，"
+        "同时支持视频剪辑[[truth:upload:1]]。"
+    )
+    checked, _ = validate_markdown_result(
+        _replace_markdown_section(_evidence_markdown(pack), "QA 与事实限制", third_party), pack)
+    assert checked["validation"]["status"] == "PASS"
+
+    third_party_only = "VERIFY_FIRST；目标品牌能力待核验；竞品甲支持网页编辑。"
+    checked, _ = validate_markdown_result(
+        _replace_markdown_section(
+            _evidence_markdown(pack), "QA 与事实限制", third_party_only,
+        ), pack)
+    assert checked["validation"]["status"] == "PASS"
+
+
+def test_quality_gate_v6_fails_closed_when_observation_identity_is_invalid():
+    pack = _quality_gate_pack("竞品甲提供教程。", "竞品乙提供帮助。")
+    pack["aggregate_evidence_sets"][0]["members"][0]["answer_hash"] = "stale"
+    checked, _ = validate_markdown_result(_evidence_markdown(pack), pack)
+    codes = {row["code"] for row in checked["validation"]["issues"]}
+    assert checked["validation"]["status"] == "FAIL"
+    assert "AGGREGATE_EVIDENCE_SET_MEMBERSHIP_MISMATCH" in codes
+    assert checked["result"]["qa_composition"]["status"] == "BLOCKED"
+
+
 def test_v11_pack_and_locator_contract_remain_frozen():
     scope = {
         "project_configuration": {"brand": {
@@ -1304,7 +1554,7 @@ def test_evidence_pack_ignores_literal_reference_examples_inside_markdown_code(t
     )
     checked, _ = validate_markdown_result(markdown, pack)
     assert checked["validation"]["status"] == "PASS"
-    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v5"
+    assert checked["validation"]["contract_version"] == "geo.evidence-pack.validation.v6"
     assert not any(row["locator"] == "..." for row in checked["result"]["evidence_references"])
 
     rejected, _ = validate_markdown_result(

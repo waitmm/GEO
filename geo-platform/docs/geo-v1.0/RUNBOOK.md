@@ -2,7 +2,7 @@
 
 本手册记录当前正式入口，不代替[验收矩阵](17_验收矩阵.md)。业务边界、邀请权限和备份实现详见[运行与数据边界](15_运行与数据边界.md)。尚无最终完成声明。
 
-> **发布状态（2026-11-10）**：M1.1 Windows 公司试用尚未部署；M1.2 多内容是隔离研发候选，
+> **发布状态（2026-11-13）**：M1.1 Windows 公司试用尚未部署；M1.2 多内容是隔离研发候选，
 > 不得直接升级正在试用的数据库。当前状态、分支和阻断以
 > [M1 项目总控](PROJECT_CONTROL_2026-10-29.md)为准。下文保留的历史 release 命令不能替代
 > Windows 目标机验收，也不能授权模型调用、采样或公网暴露。
@@ -13,10 +13,15 @@
   回答集合并计算品牌字面观察。它仍是 `OFFLINE_ACCEPTED / NOT_RELEASED`，不授权真实模型调用，
   不改变 M1.1 或历史 v4 结果。验收见
   [v5 离线结果](M1_2_AGGREGATE_SCOPE_V5_OFFLINE_RESULT_2026-11-10.md)。
+- QA Composition v1 已完成离线实现：Prompt v11 / Execution v13 / Validation v6 保留 Provider 原文，
+  只对 QA 中与精确 Observation 等价的安全冗余句做可审计排除，并显示服务端范围说明。第四次真实
+  FAIL 保持原状态，受保护 v6 shadow PASS 且数据库 hash 不变。它仍是 `OFFLINE_ACCEPTED /
+  NOT_RELEASED`，不授权第五次调用或 M1.1 升级。验收见
+  [v6 离线结果](M1_2_SERVER_COMPOSED_QA_V6_OFFLINE_RESULT_2026-11-13.md)。
 
 - 已审核代码检查点：`385050b`。该检查点在 `d20e9fe` 的多内容实现上补齐资产级部分成功、
   导出阻断、历史切换、反馈刷新恢复、移动端布局及业务可读错误提示；之后的文档提交不改变该代码结论。
-- 标准客户端测试入口已纳入多内容展示、Evidence/QA 与 v5 观察范围专项，`npm run test:client`
+- 标准客户端测试入口已纳入多内容展示、Evidence/QA、v5 观察范围与 v6 服务端 QA 展示专项，`npm run test:client`
   当前共 47 项通过；后续候选不能只运行旧集合。
 - M1.1 数据副本 revision 为 `20261022_01`；M1.2 追加迁移至 `20261030_02`。迁移只增加
   `AgentResultVersion -> DraftArtifactVersion[]` 子资产及重生成 worker 数据，不改写七份旧单稿结果。

@@ -39,8 +39,12 @@ QUALITY_GATE_V1_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.
 QUALITY_GATE_V1_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v8"
 QUALITY_GATE_V2_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v11"
 QUALITY_GATE_V2_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v9"
-EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v12"
-EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v10"
+AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v12"
+AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v10"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v13"
+EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v11"
+EVIDENCE_PACK_VALIDATION_CONTRACT = "geo.evidence-pack.validation.v6"
+QA_COMPOSITION_CONTRACT = "geo.evidence-pack.qa-composition.v1"
 EVIDENCE_PACK_TRANSPORT_VERSION = "geo.deepseek.responses-text.no-thinking.v2"
 _PROMPT_VERSION_BY_EXECUTION_CONTRACT = {
     LEGACY_EVIDENCE_PACK_EXECUTION_CONTRACT: LEGACY_EVIDENCE_PACK_PROMPT_VERSION,
@@ -55,6 +59,8 @@ _PROMPT_VERSION_BY_EXECUTION_CONTRACT = {
         QUALITY_GATE_V1_EVIDENCE_PACK_PROMPT_VERSION,
     QUALITY_GATE_V2_EVIDENCE_PACK_EXECUTION_CONTRACT:
         QUALITY_GATE_V2_EVIDENCE_PACK_PROMPT_VERSION,
+    AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT:
+        AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION,
     EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
 }
 DEFAULT_TEXT_BUDGET = 90_000
@@ -554,6 +560,416 @@ def _canonical_observation_block(observation: dict[str, Any]) -> str:
     )
 
 
+def _server_qa_limitation(observation: dict[str, Any], pack: dict[str, Any]) -> dict[str, Any]:
+    """Render the public QA limitation from one server-verified Observation."""
+    configuration = pack.get("project_configuration") or {}
+    brand = configuration.get("brand") or configuration
+    brand_name = str(brand.get("brand_name") or configuration.get("brand_name") or "目标品牌")
+    count = int(observation.get("valid_run_count") or 0)
+    text = (
+        f"VERIFY_FIRST：服务端已核验本次冻结范围内的 {count} 条有效回答：按已冻结的品牌名称与别名"
+        f"字面匹配规则，未检测到“{brand_name}”出现。该观察只描述回答文本的字面出现情况，"
+        "不证明推荐关系、产品能力、排名或因果原因。"
+    )
+    block = f"### 服务端验证的范围说明\n{text}"
+    payload = {
+        "contract_version": QA_COMPOSITION_CONTRACT,
+        "template_version": "geo.evidence-pack.server-qa-limitation.zh-CN.v1",
+        "observation_id": observation.get("observation_id"),
+        "evidence_set_id": observation.get("evidence_set_id"),
+        "observation_contract_version": observation.get("contract_version"),
+        "text": text,
+        "block_markdown": block,
+    }
+    return {**payload, "limitation_hash": digest(payload)}
+
+
+_QA_LIMITATION_NEGATION = re.compile(
+    r"不证明|不能证明|无法证明|不代表|并不代表|不等于|不能据此|不得据此|无法据此|"
+    r"不得(?:将|把|改写为|推断为|解释为)|不能(?:改写为|推断为|解释为)"
+)
+_QA_LIMITATION_RELATION = re.compile(
+    r"推荐(?:关系|状态)?|首选|排名|最佳|最优|第一|产品能力|能力|因果(?:关系|原因)?|原因"
+)
+_QA_ABSENCE_CLAUSE_PREFIX = re.compile(
+    r"^(?:[-*]\s*)?(?:\*\*[^*]{1,32}\*\*\s*[：:]\s*)?"
+)
+
+
+def _closed_future_verification_question(sentence: str, terms: list[str]) -> bool:
+    """Allow only a fully framed future check, never a trailing ``是否`` waiver."""
+    marker = _INTERROGATIVE_MARKER.search(sentence)
+    if not marker or not _FUTURE_VERIFICATION_PREFIX.fullmatch(sentence[:marker.start()]):
+        return False
+    tail = sentence[marker.end():].strip()
+    subject_spans = {match.span() for match in _BRAND_PRONOUN_SUBJECT.finditer(sentence)}
+    for term in terms:
+        subject_spans.update(match.span() for match in re.finditer(re.escape(term), sentence))
+    return bool(
+        tail and len(tail) <= 48
+        and not _ASSERTION_CONTINUATION.search(tail)
+        and len(subject_spans) == 1
+    )
+
+
+def _closed_negative_inference_boundary(sentence: str, terms: list[str]) -> bool:
+    """Recognize only closed negative limits, not mixed positive/causal claims."""
+    value = re.sub(r"\s+", "", sentence).strip("。！？!?；;")
+    if not value or _internal_authoring_leak_categories(value):
+        return False
+    relation = r"(?:推荐关系|推荐状态|产品能力|排名|因果关系|因果原因)"
+    if re.fullmatch(
+            rf"(?:该观察|上述观察|该结果|上述结果|冻结证据|服务端观察)?"
+            rf"(?:仅|只)?(?:不证明|不能证明|无法证明|不代表|并不代表|不等于)"
+            rf"{relation}(?:(?:、|或|和|以及){relation})*", value):
+        return True
+
+    # A quoted inference may be retained only when the surrounding sentence is
+    # itself a closed prohibition and its preamble contains no brand claim.
+    match = re.fullmatch(
+        r"(?P<prefix>[^，,]{0,64})[，,]?"
+        r"(?:不得|不能)(?:将|把)?(?:该观察|上述观察|引用共现|第三方页面被引用)?"
+        r"(?:改写为|推断为|解释为)[“\"](?P<quoted>[^“”\"]{1,120})[”\"]"
+        r"(?:的)?(?:因果判断|因果关系|因果结论|结论|事实)?",
+        value,
+    )
+    if not match:
+        return False
+    prefix = re.sub(
+        r"^(?:[-*])?(?:\*\*[^*]{1,48}\*\*[：:])?", "", match.group("prefix"))
+    citation_observation_prefix = bool(re.fullmatch(
+        r"(?:(?:https?://)?[A-Za-z0-9.-]+)?页面被引用(?:仅)?是观察事实|"
+        r"(?:第三方页面被引用|引用共现)(?:仅)?是观察事实",
+        prefix,
+    ))
+    return not (
+        (any(term in prefix for term in terms) and not citation_observation_prefix)
+        or _CAPABILITY_WORDING.search(prefix)
+        or _RECOMMENDATION_WORDING.search(prefix)
+        or _SUPERLATIVE_WORDING.search(prefix)
+        or re.search(r"因为|因此|所以|导致|归因于|原因(?:是|在于)", prefix)
+    )
+
+
+def _safe_qa_aggregate_restatement(sentence: str, observation: dict[str, Any],
+                                    pack: dict[str, Any]) -> bool:
+    """Accept only a closed, auditable restatement of the verified absence fact.
+
+    This is deliberately not a fuzzy semantic similarity check.  One clause must
+    restate the exact count/brand/literal-absence predicate; every other clause
+    must be a negative inference boundary over the approved relation vocabulary.
+    """
+    value = re.sub(r"\s+", " ", sentence).strip()
+    if not value or len(value) > 240:
+        return False
+    if _internal_authoring_leak_categories(value.replace("VERIFY_FIRST", "")):
+        return False
+    configuration = pack.get("project_configuration") or {}
+    brand = configuration.get("brand") or configuration
+    brand_name = str(brand.get("brand_name") or configuration.get("brand_name") or "").strip()
+    count = int(observation.get("valid_run_count") or 0)
+    if not brand_name or count <= 0:
+        return False
+    numbers = [int(raw) for raw in re.findall(r"\d+", value)]
+    if numbers != [count]:
+        return False
+
+    # The closed clause grammar below decides equivalence. An approved
+    # limitation intentionally contains words such as "推荐" and "能力";
+    # mixed positive claims still fail the exact grammar.
+    terms = _brand_terms(pack)
+    clauses = [part.strip() for part in re.split(r"[，,。！？!?；;]+", value) if part.strip()]
+    absence_seen = False
+    for index, raw_clause in enumerate(clauses):
+        clause = _QA_ABSENCE_CLAUSE_PREFIX.sub("", raw_clause, count=1).strip()
+        clause = re.sub(r"^VERIFY_FIRST\s*[：:]\s*", "", clause, count=1)
+        compact = re.sub(r"\s+", "", clause)
+        brand = re.escape(brand_name)
+        is_absence = bool(re.fullmatch(
+            rf"(?:(?:品牌字面(?:出现|缺席)|品牌观察)[：:])?"
+            rf"(?:(?:冻结证据|服务端(?:已)?核验)(?:仅|只)?"
+            rf"(?:证明|说明|显示|观察到|核验)?)?"
+            rf"(?:本次冻结(?:范围内)?(?:的)?)?{count}条(?:有效)?(?:回答|样本)(?:中)?"
+            rf"(?:按已冻结的品牌名称与别名字面匹配规则)?(?:均)?"
+            rf"(?:未检测到|未出现|未提及|未被提到)[“\"]?{brand}[”\"]?"
+            rf"(?:的)?(?:字面)?(?:出现)?(?:情况)?",
+            compact,
+        ))
+        if is_absence and not absence_seen:
+            absence_seen = True
+            continue
+        is_limitation = _closed_negative_inference_boundary(clause, terms)
+        if is_limitation:
+            continue
+        # A short Markdown label before the first colon is presentation only.
+        if index == 0 and len(clause) <= 32 and not re.search(
+                r"\d|回答|样本|Run|推荐|排名|能力|因果|原因|支持|出现|提及|缺席", clause):
+            continue
+        return False
+    return absence_seen
+
+
+_TRUTH_SEMANTIC_FIELDS = (
+    "capability_label", "statement", "fact_text", "claim", "normalized_claim",
+    "effective_grounded_text", "description", "name", "value",
+)
+_CAPABILITY_VERBS = r"不支持|不具备|无法|支持|具备|提供|可用于|能够|可以"
+_EXPLICIT_THIRD_PARTY_SUBJECT = re.compile(
+    rf"^\s*(?:(?:竞品|竞争对手)[\u3400-\u9fffA-Za-z0-9_-]{{0,16}}|"
+    rf"其他品牌|第三方(?:品牌|产品|服务)?).{{0,12}}(?:{_CAPABILITY_VERBS})"
+)
+
+
+def _normalize_capability_object(value: str) -> str:
+    value = re.sub(r"(?:这一|这个|相关)?(?:产品)?(?:能力|功能|服务|特性)$", "", value)
+    return "".join(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", value)).casefold()
+
+
+def _split_capability_clauses(text: str, subject_pattern: str = "") -> list[str]:
+    subject = rf"(?:{subject_pattern})?" if subject_pattern else ""
+    text = re.sub(
+        rf"(?:但(?:是)?|且|并且|同时|而|却)(?=\s*{subject}\s*(?:{_CAPABILITY_VERBS}))",
+        "，", text,
+    )
+    return [part.strip() for part in re.split(r"[，,。；;！？!?]+", text) if part.strip()]
+
+
+def _capability_analysis(sentence: str, terms: list[str]) -> tuple[list[tuple[str, bool]], bool]:
+    """Extract target-brand predicates and flag any target clause not fully consumed."""
+    without_refs = _V5_REF.sub("", sentence)
+    subjects = sorted({*terms, "目标品牌", "该品牌", "这个品牌", "它"}, key=len, reverse=True)
+    subject_pattern = "|".join(re.escape(value) for value in subjects)
+    values: list[tuple[str, bool]] = []
+    subject_seen = False
+    incomplete_target_clause = False
+    for clause in _split_capability_clauses(without_refs, subject_pattern):
+        capability_signal = bool(re.search(_CAPABILITY_VERBS, clause))
+        explicit_subject = bool(re.search(
+            rf"(?:{subject_pattern}).{{0,24}}(?:{_CAPABILITY_VERBS})", clause,
+        ))
+        inherited_subject = bool(
+            subject_seen and re.match(
+                rf"^\s*(?:明确|确实)?(?:{_CAPABILITY_VERBS})", clause,
+            )
+        )
+        if explicit_subject:
+            subject_seen = True
+            pattern = (
+                rf"(?:{subject_pattern})(?:的[^，,。；;！？!?：:]{{0,12}}[：:])?\s*"
+                rf"(?:明确|确实)?(?P<verb>{_CAPABILITY_VERBS})(?P<object>.{{2,48}})$"
+            )
+        elif inherited_subject:
+            # A coordinated clause may inherit the already explicit target-brand
+            # subject ("目标品牌支持 A，同时支持 B").  Only accept a verb at the
+            # beginning; never inherit across an intervening third-party subject.
+            pattern = rf"^\s*(?:明确|确实)?(?P<verb>{_CAPABILITY_VERBS})(?P<object>.{{2,48}})$"
+        else:
+            if capability_signal:
+                if _EXPLICIT_THIRD_PARTY_SUBJECT.search(clause):
+                    # Only an explicit third-party subject ends target inheritance.
+                    # An ambiguous continuation (for example "另外还支持") remains
+                    # in target context and must fail closed instead of disappearing.
+                    subject_seen = False
+                elif subject_seen:
+                    incomplete_target_clause = True
+            continue
+        matches = list(re.finditer(pattern, clause))
+        if capability_signal and not matches:
+            incomplete_target_clause = True
+        for match in matches:
+            capability = _normalize_capability_object(match.group("object"))
+            if len(capability) >= 2:
+                values.append((capability, match.group("verb") in {"不支持", "不具备", "无法"}))
+            else:
+                incomplete_target_clause = True
+    return list(dict.fromkeys(values)), incomplete_target_clause
+
+
+def _capability_objects(sentence: str, terms: list[str]) -> list[tuple[str, bool]]:
+    """Extract every target-brand capability predicate with local polarity."""
+    return _capability_analysis(sentence, terms)[0]
+
+
+def _truth_capability_objects(text: str) -> list[tuple[str, bool]]:
+    """Extract independently frozen truth predicates; polarity never crosses predicates."""
+    values: list[tuple[str, bool]] = []
+    for clause in _split_capability_clauses(text):
+        for match in re.finditer(
+                rf"(?P<verb>{_CAPABILITY_VERBS})(?P<object>.{{2,48}})$", clause):
+            capability = _normalize_capability_object(match.group("object"))
+            if len(capability) >= 2:
+                values.append((capability, match.group("verb") in {"不支持", "不具备", "无法"}))
+    return list(dict.fromkeys(values))
+
+
+def _same_capability(left: str, right: str) -> bool:
+    # Evidence must support the exact normalized predicate.  Substring matching
+    # lets one frozen fact silently authorize extra abilities or quantifiers
+    # ("文件上传" must not support "无限文件上传" or "文件上传和跨域跳转").
+    return left == right
+
+
+def _truth_supports_capability_claim(claim: tuple[str, bool], locator: str,
+                                     pack: dict[str, Any]) -> bool:
+    fact_id, _version = locator.rsplit(":", 1)
+    row = next((item for item in (pack.get("product_truth") or {}).get("facts") or []
+                if str(item.get("truth_id", item.get("id"))) == fact_id), None)
+    if not row:
+        return False
+    text = " ".join(
+        str(row.get(field) or "") for field in _TRUTH_SEMANTIC_FIELDS
+        if isinstance(row.get(field), (str, int, float))
+    )
+    capability, claim_negative = claim
+    return any(
+        claim_negative == truth_negative and _same_capability(capability, truth_capability)
+        for truth_capability, truth_negative in _truth_capability_objects(text)
+    )
+
+
+def _qa_unverified_brand_claim(sentence: str, pack: dict[str, Any]) -> str | None:
+    """Return an unsafe relation kind, while allowing independently grounded claims."""
+    terms = _brand_terms(pack)
+    if not terms or not (any(term in sentence for term in terms)
+                         or _BRAND_PRONOUN_SUBJECT.search(sentence)):
+        return None
+    negative_boundary = _closed_negative_inference_boundary(sentence, terms)
+    future_check = _closed_future_verification_question(sentence, terms)
+    answer_locators = [match.group(2) for match in _V5_REF.finditer(sentence)
+                       if match.group(1) == "answer"
+                       and _validate_reference(match.group(1), match.group(2), pack) is None]
+    truth_locators = [match.group(2) for match in _V5_REF.finditer(sentence)
+                      if match.group(1) == "truth"
+                      and _validate_reference(match.group(1), match.group(2), pack) is None]
+
+    causal = bool(re.search(r"因为|因此|所以|导致|归因于|原因(?:是|在于)", sentence))
+    if causal and not negative_boundary and not future_check:
+        return "UNVERIFIED_CAUSAL_CLAIM"
+
+    relations = []
+    if _has_brand_relation(sentence, terms, "RECOMMENDATION"):
+        relations.append("RECOMMENDATION")
+    if _has_brand_relation(sentence, terms, "SUPERLATIVE"):
+        relations.append("RANKING")
+    if _has_negative_brand_recommendation(sentence, terms):
+        relations.append("NEGATIVE_RECOMMENDATION")
+    capability_claims, incomplete_capability = _capability_analysis(sentence, terms)
+    if capability_claims or incomplete_capability:
+        relations.append("CAPABILITY")
+    if not relations or future_check:
+        return None
+    if negative_boundary:
+        return None
+
+    for relation in relations:
+        if relation == "CAPABILITY":
+            if not capability_claims or incomplete_capability:
+                return "UNVERIFIED_CAPABILITY_CLAIM"
+            for claim in capability_claims:
+                truth_supported = any(
+                    _truth_supports_capability_claim(claim, locator, pack)
+                    for locator in truth_locators
+                )
+                answer_supported = False
+                for locator in answer_locators:
+                    _run, excerpt = _answer_reference_excerpt(locator, pack)
+                    answer_supported = answer_supported or any(
+                        claim[1] == excerpt_claim[1]
+                        and _same_capability(claim[0], excerpt_claim[0])
+                        for excerpt_claim in _capability_objects(excerpt, terms)
+                    )
+                if not (truth_supported or answer_supported):
+                    return "UNVERIFIED_CAPABILITY_CLAIM"
+            continue
+        supported = False
+        for locator in answer_locators:
+            _run, excerpt = _answer_reference_excerpt(locator, pack)
+            if relation == "RECOMMENDATION":
+                supported = supported or _has_brand_relation(excerpt, terms, "RECOMMENDATION")
+            elif relation == "RANKING":
+                supported = supported or _has_brand_relation(excerpt, terms, "SUPERLATIVE")
+            elif relation == "NEGATIVE_RECOMMENDATION":
+                supported = supported or _has_negative_brand_recommendation(excerpt, terms)
+        if not supported:
+            return f"UNVERIFIED_{relation}_CLAIM"
+    return None
+
+
+def _replace_top_level_section(markdown: str, section_name: str, body: str) -> str:
+    matches = list(_HEADING.finditer(markdown))
+    target = next((index for index, match in enumerate(matches)
+                   if match.group(1).strip() == section_name), None)
+    if target is None:
+        return markdown
+    match = matches[target]
+    end = matches[target + 1].start() if target + 1 < len(matches) else len(markdown)
+    suffix = markdown[end:]
+    return f"{markdown[:match.end()]}\n{body.strip()}\n\n{suffix.lstrip()}"
+
+
+def _compose_qa_v1(qa: str, pack: dict[str, Any]) -> tuple[str, dict[str, Any], list[dict[str, str]]]:
+    """Compose public QA without mutating or laundering the Provider response."""
+    integrity_issues = _aggregate_pack_integrity_issues(pack)
+    observations = pack.get("verified_brand_observations") or []
+    if integrity_issues or len(observations) != 1:
+        issues = [*integrity_issues]
+        if len(observations) != 1:
+            issues.append({
+                "code": "QA_COMPOSITION_OBSERVATION_UNAVAILABLE",
+                "detail": "QA Composition v1 需要唯一且完整验证的服务端 Observation",
+            })
+        manifest = {
+            "contract_version": QA_COMPOSITION_CONTRACT,
+            "status": "BLOCKED",
+            "provider_qa_hash": digest(qa),
+            "excluded_fragments": [],
+            "issues": issues,
+        }
+        return qa, manifest, issues
+
+    observation = observations[0]
+    pieces: list[str] = []
+    excluded: list[dict[str, Any]] = []
+    unsafe: list[dict[str, str]] = []
+    token_pattern = re.compile(r"[^。！？!?；;\n]+(?:[。！？!?；;]+|$)|\n+")
+    for match in token_pattern.finditer(qa):
+        fragment = match.group(0)
+        sentence = fragment.strip()
+        if sentence and _unstructured_frozen_scope_assertion(sentence, pack):
+            if _safe_qa_aggregate_restatement(sentence, observation, pack):
+                excluded.append({
+                    "section": "QA 与事实限制",
+                    "source_start": match.start(),
+                    "source_end": match.end(),
+                    "fragment_hash": digest(fragment),
+                    "reason": "SAFE_REDUNDANT_SERVER_OBSERVATION",
+                    "observation_id": observation.get("observation_id"),
+                    "evidence_set_id": observation.get("evidence_set_id"),
+                })
+                continue
+            unsafe.append({
+                "code": "QA_COMPOSITION_UNSAFE_AGGREGATE_ASSERTION",
+                "detail": digest(fragment),
+            })
+        pieces.append(fragment)
+    retained = "".join(pieces).strip()
+    limitation = _server_qa_limitation(observation, pack)
+    composed = limitation["block_markdown"]
+    if retained:
+        composed = f"{composed}\n\n{retained}"
+    manifest_payload = {
+        "contract_version": QA_COMPOSITION_CONTRACT,
+        "status": "COMPOSED" if not unsafe else "REJECTED",
+        "provider_qa_hash": digest(qa),
+        "retained_model_qa_hash": digest(retained),
+        "excluded_fragments": excluded,
+        "server_limitation": limitation,
+        "composed_qa_hash": digest(composed),
+        "issues": unsafe,
+    }
+    return composed, {**manifest_payload, "composition_hash": digest(manifest_payload)}, unsafe
+
+
 def build_evidence_pack(
         scope: dict[str, Any], *, text_budget: int = DEFAULT_TEXT_BUDGET,
         execution_contract: str = EVIDENCE_PACK_EXECUTION_CONTRACT,
@@ -582,7 +998,10 @@ def build_evidence_pack(
             "evidence_locator": f"[[truth:{truth_id}:{version}]]",
         })
     brand_context = scope.get("brand_context") or {}
-    structured_observations = execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT
+    structured_observations = execution_contract in {
+        AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        EVIDENCE_PACK_EXECUTION_CONTRACT,
+    }
     aggregate_evidence_set: dict[str, Any] | None = None
     verified_brand_observations: list[dict[str, Any]] = []
     if structured_observations:
@@ -795,6 +1214,7 @@ def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VE
     if prompt_version not in {
         QUALITY_GATE_V1_EVIDENCE_PACK_PROMPT_VERSION,
         QUALITY_GATE_V2_EVIDENCE_PACK_PROMPT_VERSION,
+        AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION,
         EVIDENCE_PACK_PROMPT_VERSION,
     }:
         return _render_evidence_pack_prompt_v7(
@@ -803,6 +1223,7 @@ def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VE
     alignment_rule = ""
     if prompt_version in {
         QUALITY_GATE_V2_EVIDENCE_PACK_PROMPT_VERSION,
+        AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION,
         EVIDENCE_PACK_PROMPT_VERSION,
     }:
         help_structure_rule = (
@@ -821,7 +1242,10 @@ def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VE
             "  必须明确写成单一样本观察，不得扩展为总体结论。品牌缺席只能用完整回答 locator。\n"
             f"{help_structure_rule}"
         )
-        if prompt_version == EVIDENCE_PACK_PROMPT_VERSION:
+        if prompt_version in {
+            AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION,
+            EVIDENCE_PACK_PROMPT_VERSION,
+        }:
             alignment_rule = (
                 "\n输出前必须逐项自检并修正：\n\n"
                 "- 证据标记必须裸写，标记整体不得放在单反引号、代码围栏或转义符中。\n"
@@ -833,6 +1257,11 @@ def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VE
                 "  不得伪造 locator、SAMPLE 或总体结论；服务端将 fail-closed。\n"
                 "- 任何其他章节不得另写关于冻结回答、全部回答、本批样本或 Run 集合的范围结论；\n"
                 "  服务端观察只证明冻结回答中的目标品牌字面出现情况。\n"
+                + (
+                    "- `QA 与事实限制` 不要重复冻结范围品牌观察；新版交付由服务端根据同一 Observation\n"
+                    "  生成范围限制说明。仍须保留其他独立、合法的事实核验提醒。\n"
+                    if prompt_version == EVIDENCE_PACK_PROMPT_VERSION else ""
+                ) +
                 "- `GEO 诊断与依据`、`品牌表现与证据缺口`、`优化策略与渠道` 必须分别保留至少一个\n"
                 "  本节直接使用的裸写完整 locator；渠道观察必须裸写真实 citation locator。\n"
                 f"{help_structure_rule}"
@@ -851,7 +1280,10 @@ def render_evidence_pack_prompt(*, prompt_version: str = EVIDENCE_PACK_PROMPT_VE
         "- `[[source:SNAPSHOT_ID:PASSAGE_ID]]`\n"
         "- `[[truth:TRUTH_ID:VERSION]]`"
     )
-    if prompt_version == EVIDENCE_PACK_PROMPT_VERSION:
+    if prompt_version in {
+        AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION,
+        EVIDENCE_PACK_PROMPT_VERSION,
+    }:
         locator_examples += "\n- `[[observation:SERVER_GENERATED_OBSERVATION_ID]]`"
     return f"""# GEO 冻结证据包单次综合任务
 
@@ -1465,10 +1897,15 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
                              requested_artifact_types: list[str] | None = None,
                              execution_contract: str = EVIDENCE_PACK_EXECUTION_CONTRACT,
                              ) -> tuple[dict[str, Any], dict[str, str]]:
-    quality_gate_v5 = execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT
+    quality_gate_v6 = execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT
+    quality_gate_v5 = execution_contract in {
+        AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        EVIDENCE_PACK_EXECUTION_CONTRACT,
+    }
     quality_gate_v4 = execution_contract in {
         QUALITY_GATE_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
         QUALITY_GATE_V2_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
         EVIDENCE_PACK_EXECUTION_CONTRACT,
     }
     selected = _normalize_requested_artifacts(requested_artifact_types)
@@ -1478,9 +1915,32 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
     if selected == ["HELP_DOC"] and "## 帮助文档" not in markdown and "## 完整正文" in markdown:
         artifact_sections = {"HELP_DOC": "完整正文"}
     required = [*REQUIRED_SECTIONS[:3], *artifact_sections.values(), *REQUIRED_SECTIONS[4:]]
-    normalized_markdown, normalizations = _normalize_draft_heading_levels(
+    provider_markdown, normalizations = _normalize_draft_heading_levels(
         markdown, set(artifact_sections.values()))
-    sections, parse_issues = _parse_sections(normalized_markdown, required_sections=required)
+    provider_sections, _provider_parse_issues = _parse_sections(
+        provider_markdown, required_sections=required)
+    delivery_markdown = provider_markdown
+    qa_composition: dict[str, Any] | None = None
+    composition_issues: list[dict[str, str]] = []
+    if quality_gate_v6 and provider_sections.get("QA 与事实限制"):
+        composed_qa, qa_composition, composition_issues = _compose_qa_v1(
+            provider_sections["QA 与事实限制"], pack)
+        delivery_markdown = _replace_top_level_section(
+            provider_markdown, "QA 与事实限制", composed_qa)
+        qa_composition = {
+            **(qa_composition or {}),
+            "provider_output_hash": digest(markdown),
+            "delivery_projection_hash": digest(delivery_markdown),
+        }
+        qa_composition["composition_hash"] = digest({
+            key: value for key, value in qa_composition.items()
+            if key != "composition_hash"
+        })
+        normalizations.append({
+            "code": "QA_SERVER_COMPOSED",
+            "detail": str((qa_composition or {}).get("composition_hash") or "BLOCKED"),
+        })
+    sections, parse_issues = _parse_sections(delivery_markdown, required_sections=required)
     section_to_artifact = {section: artifact_type for artifact_type, section in artifact_sections.items()}
     shared_issues: list[dict[str, str]] = []
     artifact_issues: dict[str, list[dict[str, str]]] = {
@@ -1495,22 +1955,25 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
         else:
             shared_issues.append(annotated)
 
+    for issue in composition_issues:
+        add_issue(issue, "QA 与事实限制")
+
     for issue in parse_issues:
         # Missing/duplicate typed draft sections belong only to that child.
         # Unknown/global section shape remains a shared contract failure.
         add_issue(issue, issue.get("detail") if issue.get("detail") in section_to_artifact else None)
 
-    heading_matches = list(_HEADING.finditer(normalized_markdown))
+    heading_matches = list(_HEADING.finditer(delivery_markdown))
 
     def section_at(offset: int) -> str | None:
         for index, heading in enumerate(heading_matches):
             end = heading_matches[index + 1].start() if index + 1 < len(heading_matches) \
-                else len(normalized_markdown)
+                else len(delivery_markdown)
             if heading.end() <= offset < end:
                 return heading.group(1).strip()
         return None
 
-    evidence_markdown = _mask_markdown_code(normalized_markdown)
+    evidence_markdown = _mask_markdown_code(delivery_markdown)
     reference_pattern = _V5_REF if quality_gate_v5 else _LEGACY_REF
     references = []
     matched_spans: set[tuple[int, int]] = set()
@@ -1539,10 +2002,13 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
                 sections["品牌表现与证据缺口"], references, pack):
             add_issue(issue, "品牌表现与证据缺口")
         observations = pack.get("verified_brand_observations") or []
-        outside_fact_block = normalized_markdown
+        outside_fact_block = delivery_markdown
         if len(observations) == 1:
             server_block = _canonical_observation_block(observations[0])
-            outside_fact_block = normalized_markdown.replace(server_block, "", 1)
+            outside_fact_block = outside_fact_block.replace(server_block, "", 1)
+            if quality_gate_v6:
+                qa_block = _server_qa_limitation(observations[0], pack)["block_markdown"]
+                outside_fact_block = outside_fact_block.replace(qa_block, "", 1)
         for sentence in [value.strip() for value in _SENTENCE_SPLIT.split(outside_fact_block)
                          if value.strip()
                          and _unstructured_frozen_scope_assertion(value, pack)]:
@@ -1622,9 +2088,42 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
     authoritative = [row for row in references if row["valid"] and row["kind"] in {"source", "truth"}]
     grade = "L2_PARTIALLY_GROUNDED" if authoritative else "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS"
     qa = sections.get("QA 与事实限制", "")
-    if grade == "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS" and "VERIFY_FIRST" not in qa:
+    provider_qa = provider_sections.get("QA 与事实限制", "")
+    # The server-composed limitation keeps VERIFY_FIRST visible after a safe
+    # redundant observation is removed, but it must not upgrade an unqualified
+    # Provider response. L3 qualification remains a requirement on the raw
+    # Provider QA; composition is a delivery projection, not a fact repair.
+    if grade == "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS" and "VERIFY_FIRST" not in provider_qa:
         add_issue({"code": "L3_VERIFY_FIRST_REQUIRED", "detail": "QA 必须标记 VERIFY_FIRST"},
                   "QA 与事实限制")
+    if quality_gate_v6:
+        # VERIFY_FIRST is the public qualification label required by this same
+        # contract; it is not an authoring/runtime instruction inside QA.
+        for category in _internal_authoring_leak_categories(qa.replace("VERIFY_FIRST", "")):
+            add_issue({
+                "code": "QA_INTERNAL_AUTHORING_INSTRUCTION_LEAK",
+                "detail": category,
+            }, "QA 与事实限制")
+        for paragraph in [part for part in qa.split("\n\n") if part.strip()]:
+            if (_has_unsupported_numeric_claim(paragraph)
+                    and not re.search(r"\[\[(?:source|truth):", paragraph)):
+                add_issue({
+                    "code": "QA_NUMERIC_CLAIM_WITHOUT_AUTHORITY",
+                    "detail": digest(paragraph),
+                }, "QA 与事实限制")
+        qa_for_model_claims = qa
+        observations = pack.get("verified_brand_observations") or []
+        if len(observations) == 1:
+            qa_for_model_claims = qa_for_model_claims.replace(
+                _server_qa_limitation(observations[0], pack)["block_markdown"], "", 1)
+        for sentence in [value.strip() for value in _SENTENCE_SPLIT.split(qa_for_model_claims)
+                         if value.strip()]:
+            unsafe_kind = _qa_unverified_brand_claim(sentence, pack)
+            if unsafe_kind:
+                add_issue({
+                    "code": "QA_UNVERIFIED_BRAND_CLAIM",
+                    "detail": unsafe_kind,
+                }, "QA 与事实限制")
     for artifact_type, draft in draft_by_artifact.items():
         for paragraph in [part for part in draft.split("\n\n") if part.strip()]:
             if _has_unsupported_numeric_claim(paragraph) \
@@ -1662,7 +2161,9 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
 
     validation = {
         "contract_version": (
-            "geo.evidence-pack.validation.v5"
+            EVIDENCE_PACK_VALIDATION_CONTRACT
+            if quality_gate_v6
+            else "geo.evidence-pack.validation.v5"
             if quality_gate_v5
             else "geo.evidence-pack.validation.v4"
             if quality_gate_v4
@@ -1683,6 +2184,7 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
         "verified_brand_observations": (
             pack.get("verified_brand_observations") or [] if quality_gate_v5 else []
         ),
+        **({"qa_composition": qa_composition} if quality_gate_v6 else {}),
     }
     eligibility = {
         "evidence_grade": grade,
@@ -1699,9 +2201,13 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
         "qa": sections.get("QA 与事实限制", ""),
         "validation_plan": sections.get("复测计划", ""),
         "limitations": ["模型输出必须经过服务端校验，不能自行批准 Truth、发布或效果因果。"],
-        "raw_markdown": normalized_markdown,
+        "raw_markdown": provider_markdown,
         "provider_output_hash": digest(markdown),
         "normalizations": normalizations,
+        **({
+            "delivery_markdown": delivery_markdown,
+            "qa_composition": qa_composition,
+        } if quality_gate_v6 else {}),
         "evidence_pack": {
             "evidence_pack_hash": pack["evidence_pack_hash"],
             "coverage": pack["coverage"],

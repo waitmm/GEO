@@ -1004,6 +1004,42 @@ supersedes: null
 last_verified_at: 2026-11-10
 ```
 
+### SC-SERVER-COMPOSED-QA-001 Server-Composed Aggregate QA Limitation
+
+```yaml
+contract_id: SC-SERVER-COMPOSED-QA-001
+contract_name: Server-Composed Aggregate QA Limitation
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: IMPLEMENTED_OFFLINE_NOT_RELEASED
+definition: Prompt v11 / Execution v13 / Validation v6 中，Provider 原文保持不可变；服务端只在 QA 与事实限制中对与已验证总体 Observation 完全一致的安全冗余句做可审计排除，并从同一 Observation 生成标准范围说明，形成独立哈希的交付投影。
+allowed_inferences:
+  - QA 句逐项满足精确样本数、目标品牌、字面缺席谓词及可选否定推断边界时，可视为同一服务端 Observation 的安全冗余。
+  - 安全冗余不构成资产失败；服务端标准说明可在两份子资产的 QA 中显示同一 Observation/Evidence Set 身份。
+forbidden_inferences:
+  - QA Composition 可改写诊断、策略、HELP_DOC、FAQ 正文或历史 Provider 原文。
+  - 删除一句总体观察可使能力、推荐、排名、因果、数字、内部编写指令或其他未验证事实获得资格。
+  - 模糊关键词相似、相邻免责声明或合法 Evidence Set ID 足以证明等价关系。
+unknown_behavior: 句子等价性、Observation、Evidence Set、成员、hash、版本或范围任一不确定时 fail-closed；UNKNOWN 不转换为安全冗余。
+output_boundary: 原始响应与历史结果不可变；新版交付投影记录原文 hash、片段偏移/hash、排除原因、Observation/Evidence Set、模板、组合与最终交付 hash。服务端说明和模型分析在 UI 中区分。
+identity: exact provider output hash + QA fragment offsets/hash + observation id/hash + evidence set id/hash + composition/template versions + delivery projection hash
+history: v4/v5 与第四次真实 FAIL 保持原字节、状态、账本和解释；只允许受保护 shadow 验证 v6，不回填、不重标。
+step_boundary: Evidence Pack 结果校验和交付组合内部；不改变采样、正式 V2、Truth、Review、发布或父子资产不可变规则。
+source_references:
+  - docs/semantics/rfcs/RFC-EVIDENCE-PACK-SERVER-COMPOSED-QA-002.md
+  - docs/semantics/approvals/RFC-EVIDENCE-PACK-SERVER-COMPOSED-QA-002.definition-freeze.md
+enforcement_refs:
+  - backend/app/modules/agent_experiment/evidence_pack.py
+  - backend/tests/test_agent_experiment.py
+approved_by: Product Owner
+approved_at: 2026-11-13
+approval_reference: GEO M1.2 QA 服务端组合契约批准及自动执行令
+golden_case_ids: [QA-COMPOSE-SAFE-REDUNDANCY, QA-COMPOSE-UNSAFE-BLOCK, QA-COMPOSE-AUDIT, QA-COMPOSE-HISTORY-COMPAT]
+effective_from: 2026-11-13
+supersedes: null
+last_verified_at: 2026-11-13
+```
+
 ## 3. Definition Freeze Queue
 
 `SC-RUNTIME-001@0.1.0` 已由 Product Owner 在独立 Review 005 通过后正式

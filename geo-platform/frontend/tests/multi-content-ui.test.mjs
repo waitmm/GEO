@@ -40,6 +40,7 @@ test("多内容结果不再把父报告伪装成第三份稿件", () => {
   assert.match(panel, /导出本次优化完整报告/);
   assert.match(panel, /!hasDraftArtifacts && <Button/);
   assert.match(panel, /各内容资产/);
+  assert.match(panel, /delivery_markdown.*raw_markdown/s);
 });
 
 test("结构化品牌观察以业务文案展示且不暴露内部 hash", () => {

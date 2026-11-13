@@ -43,8 +43,10 @@ test("structured validation failure is translated instead of exposing raw JSON",
 
 test("panel keeps raw JSON secondary and translates feedback history", () => {
   const panel = readFileSync(new URL("../src/DraftArtifactPanel.tsx", import.meta.url), "utf8");
-  for (const text of ["证据数量", "证据类型", "证据定位", "QA 资格", "需先核实（VERIFY_FIRST）", "技术详情（原始数据）", "feedbackRatingLabel"]) {
+  for (const text of ["证据数量", "证据类型", "证据定位", "QA 资格", "需先核实（VERIFY_FIRST）", "服务端验证的范围说明", "技术详情（原始数据）", "feedbackRatingLabel"]) {
     assert.match(panel, new RegExp(text));
   }
+  assert.match(panel, /qa_composition/);
+  assert.match(panel, /server_limitation/);
   assert.match(panel, /JSON\.stringify\(artifact\.evidence/);
 });

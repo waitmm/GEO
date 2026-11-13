@@ -69,7 +69,8 @@ test('AI optimization is the default lane and feedback uses actual APIs', () => 
   assert.match(panel, /复制完整正文/);
   assert.match(panel, /内容已经生成并保存，但没有通过证据校验/);
   assert.match(panel, /复制未通过草稿/);
-  assert.match(panel, /result\?\.result\?\.raw_markdown \|\| result\?\.deliverable_markdown/);
+  assert.match(panel, /result\?\.result\?\.delivery_markdown \|\| result\?\.result\?\.raw_markdown/);
+  assert.match(panel, /result\?\.deliverable_markdown/);
   assert.match(panel, /download\(reportMarkdown, result\.result_version\)/);
   assert.match(panel, /引用来源渠道观察（不是渠道效果结论）/);
   assert.match(panel, /BusinessMarkdown/);

@@ -106,7 +106,8 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   const active = detail || runs.find(row => row.run_id === selectedId);
   const activeIsRunning = Boolean(active && ["QUEUED", "RUNNING"].includes(active.status));
   const result = results.find(row => row.result_version === selectedResultVersion) || results[0] || active?.result || undefined;
-  const reportMarkdown = result?.result?.raw_markdown || result?.deliverable_markdown || "";
+  const reportMarkdown = result?.result?.delivery_markdown || result?.result?.raw_markdown
+    || result?.deliverable_markdown || "";
   const sections = splitAgentResult(reportMarkdown);
   const hasDraftArtifacts = Boolean(result?.draft_artifacts?.length);
   const aggregateObservation = aggregateObservationSummary(result);

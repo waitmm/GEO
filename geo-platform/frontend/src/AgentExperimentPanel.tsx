@@ -7,6 +7,7 @@ import { aggregateObservationSummary, savedResultLabel, splitAgentResult } from 
 import { formatBeijingDateTime } from "./time";
 import { BusinessMarkdown } from "./BusinessMarkdown";
 import { DraftArtifactPanel, type DraftArtifact } from "./DraftArtifactPanel";
+import { beginAgentHistorySelection, completeAgentHistorySelection, failAgentHistorySelection, isCurrentAgentHistoryLoad, isCurrentAgentHistoryRequest, isCurrentAgentHistoryResult, type AgentHistorySelection } from "./agentHistorySelection";
 
 type AgentResult = {
   result_version: string; version_number: number; evidence_grade: string;
@@ -93,6 +94,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   const [detail, setDetail] = useState<AgentRun>();
   const [results, setResults] = useState<AgentResult[]>([]);
   const [selectedResultVersion, setSelectedResultVersion] = useState<string>();
+  const [historySelection, setHistorySelection] = useState<AgentHistorySelection>(() => ({ loading: true, error: "" }));
   const [feedback, setFeedback] = useState<Feedback[]>([]);
   const [comparison, setComparison] = useState<any>();
   const [capabilities, setCapabilities] = useState<Capabilities>();
@@ -103,9 +105,12 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   const [error, setError] = useState("");
   const [feedbackForm] = Form.useForm();
   const generation = useRef(0);
+  const selectedRunRef = useRef<string | undefined>(undefined);
   const active = detail || runs.find(row => row.run_id === selectedId);
   const activeIsRunning = Boolean(active && ["QUEUED", "RUNNING"].includes(active.status));
-  const result = results.find(row => row.result_version === selectedResultVersion) || results[0] || active?.result || undefined;
+  const result = isCurrentAgentHistoryResult(historySelection, active?.run_id)
+    ? results.find(row => row.result_version === selectedResultVersion) || results[0] || active?.result || undefined
+    : undefined;
   const reportMarkdown = result?.result?.delivery_markdown || result?.result?.raw_markdown
     || result?.deliverable_markdown || "";
   const sections = splitAgentResult(reportMarkdown);
@@ -119,34 +124,60 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
 
   const refresh = useCallback(async () => {
     const epoch = generation.current;
+    let attemptedRunId: string | undefined;
     try {
       const [rows, nextCapabilities] = await Promise.all([
         request<AgentRun[]>(`${base}/analyses/${encodeURIComponent(analysisId)}/agent-experiments?${query}`),
         request<Capabilities>(`${base}/agent-experiments/capabilities?project_id=${projectId}`),
       ]);
-      if (generation.current !== epoch) return;
+      if (!isCurrentAgentHistoryRequest(epoch, generation.current)) return;
       setRuns(rows); setCapabilities(nextCapabilities); setError("");
-      const id = selectedId && rows.some(row => row.run_id === selectedId) ? selectedId : rows[0]?.run_id;
+      const requestedId = selectedRunRef.current || selectedId;
+      const id = requestedId && rows.some(row => row.run_id === requestedId) ? requestedId : rows[0]?.run_id;
       setSelectedId(id);
-      if (!id) { setDetail(undefined); setResults([]); setFeedback([]); setComparison(undefined); return; }
+      if (selectedRunRef.current !== id) {
+        setDetail(undefined); setResults([]); setFeedback([]); setComparison(undefined); setSelectedResultVersion(undefined);
+        setHistorySelection(id ? beginAgentHistorySelection(id) : { loading: false, error: "" });
+      }
+      selectedRunRef.current = id;
+      if (!id) { setDetail(undefined); setResults([]); setFeedback([]); setComparison(undefined); setHistorySelection({ loading: false, error: "" }); return; }
+      attemptedRunId = id;
       const [next, compared, versions, notes] = await Promise.all([
         request<AgentRun>(`${base}/agent-experiments/${encodeURIComponent(id)}?${query}`),
         request<any>(`${base}/agent-experiments/${encodeURIComponent(id)}/comparison?${query}`),
         request<AgentResult[]>(`${base}/agent-experiments/${encodeURIComponent(id)}/results?${query}`),
         request<Feedback[]>(`${base}/agent-experiments/${encodeURIComponent(id)}/feedback?${query}`),
       ]);
-      if (generation.current !== epoch) return;
+      if (!isCurrentAgentHistoryRequest(epoch, generation.current) || selectedRunRef.current !== id) return;
       setDetail(next); setComparison(compared); setResults(versions); setFeedback(notes);
       setSelectedResultVersion(current => versions.some(row => row.result_version === current)
         ? current : versions[0]?.result_version);
-    } catch (e) { if (generation.current === epoch) setError((e as Error).message); }
-    finally { if (generation.current === epoch) setLoading(false); }
+      setHistorySelection(current => completeAgentHistorySelection(current, id));
+    } catch (e) {
+      if (isCurrentAgentHistoryRequest(epoch, generation.current)) {
+        const message = (e as Error).message;
+        if (!attemptedRunId) setError(message);
+        if (isCurrentAgentHistoryLoad(selectedRunRef.current, attemptedRunId)) {
+          setError(message);
+          setHistorySelection(current => failAgentHistorySelection(current, attemptedRunId!, message));
+        }
+      }
+    }
+    finally { if (isCurrentAgentHistoryRequest(epoch, generation.current)) setLoading(false); }
   }, [analysisId, projectId, query, selectedId]);
 
   useEffect(() => {
     generation.current += 1; setRuns([]); setDetail(undefined); setResults([]); setFeedback([]);
-    setSelectedId(undefined); setSelectedResultVersion(undefined); setLoading(true); setError("");
+    selectedRunRef.current = undefined;
+    setSelectedId(undefined); setSelectedResultVersion(undefined); setHistorySelection({ loading: true, error: "" }); setLoading(true); setError("");
   }, [projectId, promptId, analysisId, contextId]);
+
+  function selectHistoryRun(runId: string) {
+    ++generation.current;
+    selectedRunRef.current = runId;
+    setSelectedId(runId); setDetail(undefined); setResults([]); setFeedback([]); setComparison(undefined); setSelectedResultVersion(undefined);
+    setHistorySelection(beginAgentHistorySelection(runId)); setError("");
+  }
   useEffect(() => {
     void refresh();
     const timer = window.setInterval(() => void refresh(), 5000);
@@ -167,7 +198,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           completion_manifest_hash: completion?.payload_hash || null,
         }),
       });
-      setSelectedId(saved.run_id); setDetail(saved); setSelectedResultVersion(undefined);
+      selectHistoryRun(saved.run_id); setDetail(saved);
       message.success("AI 优化任务已创建并开始运行；历史结果不会被冒充为本次生成。" );
       await refresh();
     } catch (e) { setError((e as Error).message); }
@@ -252,7 +283,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
         <Typography.Title level={4} style={{ marginTop: 20 }}>优化历史</Typography.Title>
         <Table className="agent-history-table" size="small" pagination={{ pageSize: 8 }} rowKey="run_id" dataSource={runs}
           rowSelection={{ type: "radio", selectedRowKeys: selectedId ? [selectedId] : [],
-            onChange: keys => { setSelectedId(String(keys[0])); setDetail(undefined); setSelectedResultVersion(undefined); } }}
+            onChange: keys => selectHistoryRun(String(keys[0])) }}
           columns={[
             { title: "创建时间", dataIndex: "created_at", render: humanTime },
             { title: "状态", dataIndex: "status", render: (value, row) => <Space><Tag>{statusLabel[value] || value}</Tag><Typography.Text type="secondary">{savedResultLabel(row.usage.model_calls, value)}</Typography.Text></Space> },
@@ -262,6 +293,10 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           {active.blocker && <Alert type={active.status === "WAITING_AUTHORIZATION" ? "warning" : "error"} showIcon
             message={active.blocker.code === "EVIDENCE_PACK_OUTPUT_VALIDATION_FAILED" ? "内容已生成，但未通过证据校验" : statusLabel[active.status] || active.blocker.code}
             description={blockerText(active)} />}
+          {historySelection.loading && <Spin tip="正在读取所选优化历史"><div style={{ minHeight: 80 }} /></Spin>}
+          {historySelection.error && <Alert type="error" showIcon message="所选优化历史读取失败" description="未显示其他任务的结果，请重试或选择另一条历史记录。" />}
+          {!historySelection.loading && !historySelection.error && !result && <Alert type="info" showIcon message="所选任务尚无可展示结果" />}
+          {result && <>
           <Space wrap style={{ marginTop: 12 }}>
             {active.status === "WAITING_AUTHORIZATION" && capabilities?.new_generation_enabled && <Button onClick={restartWithServerPolicy}>重新尝试启动</Button>}
             {active.status === "WAITING_AUTHORIZATION" && !capabilities?.new_generation_enabled && <Tag color="orange">AI 生成服务暂未启用</Tag>}
@@ -270,7 +305,6 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           {results.length > 0 && <Select className="agent-result-version-select" aria-label="结果历史版本" style={{ width: "100%", marginTop: 16 }} value={result?.result_version}
             onChange={setSelectedResultVersion} options={results.map(item => ({ value: item.result_version,
               label: `结果 V${item.version_number} · ${humanTime(item.created_at)} · ${item.evidence_grade}` }))} />}
-          {result && <>
             <Alert style={{ marginTop: 12 }} type={result.validation?.status === "PASS" ? "success" : "warning"} showIcon
               message={result.validation?.status === "PASS" ? `服务端校验通过 · ${result.evidence_grade}` : `草稿已保存，服务端校验未通过 · ${result.evidence_grade}`}
               description={result.validation?.status === "PASS"

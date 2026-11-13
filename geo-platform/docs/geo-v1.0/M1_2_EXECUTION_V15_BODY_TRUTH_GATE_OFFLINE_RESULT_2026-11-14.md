@@ -21,7 +21,9 @@
 - 历史冻结：Execution v14 保持 `valid-run-eligibility.v2`、Run projection、Pack/hash 和原 Validation v6
   解释；旧结果不重验、不重标。
 - v15 对每份正文独立检查目标品牌能力。能力谓词必须由同句有效 `truth` locator 支持，且 Truth 必须
-  支持同一谓词与极性；回答或竞品能力不能替代 Product Truth。
+  支持同一谓词与极性；回答或竞品能力不能替代 Product Truth。仅谓词匹配仍不足以准入：服务端使用
+  既有 `_truth_statement_eligibility` 重新计算资格，并同时要求 `MANUAL_CONFIRMED`、有效来源、已确认
+  status 和冻结 `statement_eligibility=ELIGIBLE`。不信任投影中单独填写的 `ELIGIBLE`。
 - 问题归属精确 DraftArtifact，单稿失败不删除或降级另一份合格资产，父任务仍可真实部分成功。
 - `VERIFY_FIRST` 不能洗白未经证实的能力。
 - 极窄的未来内容行动边界不视为既有产品能力，例如“目标品牌可以在官网发布帮助文档”或“可以补充
@@ -38,14 +40,17 @@
 - `VERIFY_FIRST` 加在未经证实能力前仍阻断。
 - HELP_DOC 失败、FAQ 合格时父结果为 `PARTIAL`。
 - 两种明确的未来内容发布行动通过，而真实产品能力“可以跨域跳转”仍阻断。
+- 即使谓词与 locator 匹配，`UNKNOWN`、`NOT_SUPPORTED`、`PARTIALLY_SUPPORTED`、`VERIFY_FIRST`、
+  `PROHIBITED` 均不能授权公开正文；符合真实 Pack 字段的人工确认、有来源、ELIGIBLE Truth 才能通过。
+- 否定能力表述同样必须满足既有资格：受支持且 ELIGIBLE 的否定事实可用，PROHIBITED Truth 不可用。
 
 验证命令与结果：
 
 - `PYTHONPATH=. .venv/bin/pytest -q tests/test_agent_experiment.py tests/test_agent_draft_artifacts.py`：
-  146 passed。
+  152 passed。
 - `PYTHONPATH=. .venv/bin/pytest -q tests/test_agent_draft_artifacts.py -k 'current_draft'`：
-  6 passed（包含最终行动边界正反例）。
-- Agent、子资产、内部 Beta 与容量相关联合回归：177 passed。
+  14 passed（包含非人工确认、缺失来源、资格、否定事实和行动边界正反例）。
+- Agent、子资产、内部 Beta 与容量相关联合回归：183 passed。
 
 全部为离线测试；文心、DeepSeek、网页抓取和其他外部调用均为 0。
 

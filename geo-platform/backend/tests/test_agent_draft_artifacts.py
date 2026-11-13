@@ -258,6 +258,10 @@ def test_current_draft_gate_accepts_third_party_fact_but_requires_truth_for_targ
     scope["product_truth"]["facts"] = [{
         "truth_id": "cross-domain", "truth_correction_version": 1,
         "capability_label": "目标品牌支持跨域跳转",
+        "product_truth_status": "SUPPORTED",
+        "truth_source": "MANUAL_CONFIRMED",
+        "source_reference": "https://target.example.com/product/cross-domain",
+        "statement_eligibility": {"status": "ELIGIBLE", "issues": []},
     }]
     truth_pack = build_evidence_pack(scope)
     truth_markdown = _evidence_markdown(truth_pack).replace(
@@ -267,6 +271,73 @@ def test_current_draft_gate_accepts_third_party_fact_but_requires_truth_for_targ
     )
     accepted, _ = validate_markdown_result(truth_markdown, truth_pack)
     assert accepted["validation"]["status"] == "PASS"
+
+
+@pytest.mark.parametrize(("truth_status", "statement_status", "truth_source", "source_reference"), [
+    ("UNKNOWN", "ELIGIBLE", "MANUAL_CONFIRMED", "https://target.example.com/product/cross-domain"),
+    ("NOT_SUPPORTED", "ELIGIBLE", "MANUAL_CONFIRMED", "https://target.example.com/product/cross-domain"),
+    ("PARTIALLY_SUPPORTED", "ELIGIBLE", "MANUAL_CONFIRMED", "https://target.example.com/product/cross-domain"),
+    ("SUPPORTED", "VERIFY_FIRST", "MANUAL_CONFIRMED", "https://target.example.com/product/cross-domain"),
+    ("SUPPORTED", "PROHIBITED", "MANUAL_CONFIRMED", "https://target.example.com/product/cross-domain"),
+    ("SUPPORTED", "ELIGIBLE", "MODEL_INFERRED", "https://target.example.com/product/cross-domain"),
+    ("SUPPORTED", "ELIGIBLE", "MANUAL_CONFIRMED", ""),
+])
+def test_current_draft_gate_rejects_unqualified_matching_truth(
+        truth_status, statement_status, truth_source, source_reference):
+    scope = _quality_gate_scope("竞品甲支持跨域跳转。")
+    scope["product_truth"]["facts"] = [{
+        "truth_id": "cross-domain", "truth_correction_version": 1,
+        "capability_label": "目标品牌支持跨域跳转",
+        "product_truth_status": truth_status,
+        "truth_source": truth_source,
+        "source_reference": source_reference,
+        "statement_eligibility": {"status": statement_status, "issues": []},
+    }]
+    pack = build_evidence_pack(scope)
+    markdown = _evidence_markdown(pack).replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        "目标品牌支持跨域跳转[[truth:cross-domain:1]]。"
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+    )
+    rejected, _ = validate_markdown_result(markdown, pack)
+    assert rejected["validation"]["status"] == "FAIL"
+    assert "DRAFT_UNVERIFIED_BRAND_CAPABILITY_CLAIM" in {
+        issue["code"] for issue in rejected["validation"]["issues"]
+    }
+
+
+def test_current_draft_gate_requires_eligible_truth_for_negative_capability_too():
+    scope = _quality_gate_scope("竞品甲提供视频剪辑。")
+    truth = {
+        "truth_id": "no-video-editing", "truth_correction_version": 1,
+        "capability_label": "目标品牌不支持视频剪辑",
+        "product_truth_status": "SUPPORTED",
+        "truth_source": "MANUAL_CONFIRMED",
+        "source_reference": "https://target.example.com/product/limits",
+        "statement_eligibility": {"status": "ELIGIBLE", "issues": []},
+    }
+    scope["product_truth"]["facts"] = [truth]
+    qualified_pack = build_evidence_pack(scope)
+    qualified_markdown = _evidence_markdown(qualified_pack).replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        "目标品牌不支持视频剪辑[[truth:no-video-editing:1]]。"
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+    )
+    accepted, _ = validate_markdown_result(qualified_markdown, qualified_pack)
+    assert accepted["validation"]["status"] == "PASS"
+
+    truth["product_truth_status"] = "NOT_SUPPORTED"
+    truth["statement_eligibility"] = {"status": "PROHIBITED", "issues": [
+        "CONFIRMED_NOT_SUPPORTED",
+    ]}
+    prohibited_pack = build_evidence_pack(scope)
+    prohibited_markdown = _evidence_markdown(prohibited_pack).replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        "目标品牌不支持视频剪辑[[truth:no-video-editing:1]]。"
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+    )
+    rejected, _ = validate_markdown_result(prohibited_markdown, prohibited_pack)
+    assert rejected["validation"]["status"] == "FAIL"
 
 
 def test_current_draft_gate_does_not_let_verify_first_launder_capability():

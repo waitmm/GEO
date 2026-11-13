@@ -63,7 +63,7 @@ test('AI optimization is the default lane and feedback uses actual APIs', () => 
   const panel = readFileSync(new URL('../src/AgentExperimentPanel.tsx', import.meta.url), 'utf8');
   const optimize = readFileSync(new URL('../src/AutomaticOptimizePanel.tsx', import.meta.url), 'utf8');
   assert.match(optimize, /useState<"workflow" \| "agent">\("agent"\)/);
-  assert.match(panel, /agent-experiments\/\$\{encodeURIComponent\(active\.run_id\)\}\/feedback/);
+  assert.match(panel, /agent-experiments\/\$\{encodeURIComponent\(selectedRun\.run_id\)\}\/feedback/);
   assert.match(panel, /agent-experiments\/capabilities/);
   assert.match(panel, /结果历史版本/);
   assert.match(panel, /复制完整正文/);

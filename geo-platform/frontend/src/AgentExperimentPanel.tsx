@@ -7,7 +7,7 @@ import { aggregateObservationSummary, savedResultLabel, splitAgentResult } from 
 import { formatBeijingDateTime } from "./time";
 import { BusinessMarkdown } from "./BusinessMarkdown";
 import { DraftArtifactPanel, type DraftArtifact } from "./DraftArtifactPanel";
-import { beginAgentHistorySelection, completeAgentHistorySelection, failAgentHistorySelection, isCurrentAgentHistoryLoad, isCurrentAgentHistoryRequest, isCurrentAgentHistoryResult, type AgentHistorySelection } from "./agentHistorySelection";
+import { agentHistoryTaskControls, beginAgentHistorySelection, completeAgentHistorySelection, failAgentHistorySelection, isCurrentAgentHistoryLoad, isCurrentAgentHistoryOperation, isCurrentAgentHistoryRequest, isCurrentAgentHistoryResult, type AgentHistoryOperation, type AgentHistorySelection } from "./agentHistorySelection";
 
 type AgentResult = {
   result_version: string; version_number: number; evidence_grade: string;
@@ -106,8 +106,14 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   const [feedbackForm] = Form.useForm();
   const generation = useRef(0);
   const selectedRunRef = useRef<string | undefined>(undefined);
+  const selectedResultRef = useRef<string | undefined>(undefined);
+  const scopeKey = `${projectId}:${promptId}:${analysisId}:${contextId}`;
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
   const active = detail || runs.find(row => row.run_id === selectedId);
-  const activeIsRunning = Boolean(active && ["QUEUED", "RUNNING"].includes(active.status));
+  const selectedRun = isCurrentAgentHistoryLoad(selectedRunRef.current, active?.run_id) ? active : undefined;
+  const activeIsRunning = Boolean(selectedRun && ["QUEUED", "RUNNING"].includes(selectedRun.status));
+  const selectedRunControls = agentHistoryTaskControls(selectedRun?.status);
   const result = isCurrentAgentHistoryResult(historySelection, active?.run_id)
     ? results.find(row => row.result_version === selectedResultVersion) || results[0] || active?.result || undefined
     : undefined;
@@ -121,6 +127,12 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
     : (["GEO 诊断与依据", "品牌表现与证据缺口", "优化策略与渠道", "完整正文", "QA 与事实限制", "复测计划"] as const);
   const query = `project_id=${projectId}&prompt_id=${promptId}`;
   const base = "/api/v2/single-prompt";
+  const operationIsCurrent = (operation: AgentHistoryOperation) => isCurrentAgentHistoryOperation(operation, {
+    generation: generation.current,
+    scopeKey: scopeRef.current,
+    runId: selectedRunRef.current,
+    resultVersion: selectedResultRef.current,
+  });
 
   const refresh = useCallback(async () => {
     const epoch = generation.current;
@@ -136,7 +148,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
       const id = requestedId && rows.some(row => row.run_id === requestedId) ? requestedId : rows[0]?.run_id;
       setSelectedId(id);
       if (selectedRunRef.current !== id) {
-        setDetail(undefined); setResults([]); setFeedback([]); setComparison(undefined); setSelectedResultVersion(undefined);
+        setDetail(undefined); setResults([]); setFeedback([]); setComparison(undefined); selectedResultRef.current = undefined; setSelectedResultVersion(undefined);
         setHistorySelection(id ? beginAgentHistorySelection(id) : { loading: false, error: "" });
       }
       selectedRunRef.current = id;
@@ -150,8 +162,10 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
       ]);
       if (!isCurrentAgentHistoryRequest(epoch, generation.current) || selectedRunRef.current !== id) return;
       setDetail(next); setComparison(compared); setResults(versions); setFeedback(notes);
-      setSelectedResultVersion(current => versions.some(row => row.result_version === current)
-        ? current : versions[0]?.result_version);
+      const nextResultVersion = versions.some(row => row.result_version === selectedResultRef.current)
+        ? selectedResultRef.current : versions[0]?.result_version;
+      selectedResultRef.current = nextResultVersion;
+      setSelectedResultVersion(nextResultVersion);
       setHistorySelection(current => completeAgentHistorySelection(current, id));
     } catch (e) {
       if (isCurrentAgentHistoryRequest(epoch, generation.current)) {
@@ -168,15 +182,15 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
 
   useEffect(() => {
     generation.current += 1; setRuns([]); setDetail(undefined); setResults([]); setFeedback([]);
-    selectedRunRef.current = undefined;
-    setSelectedId(undefined); setSelectedResultVersion(undefined); setHistorySelection({ loading: true, error: "" }); setLoading(true); setError("");
+    selectedRunRef.current = undefined; selectedResultRef.current = undefined;
+    setSelectedId(undefined); setSelectedResultVersion(undefined); setHistorySelection({ loading: true, error: "" }); setLoading(true); setBusy(false); setError("");
   }, [projectId, promptId, analysisId, contextId]);
 
   function selectHistoryRun(runId: string) {
     ++generation.current;
-    selectedRunRef.current = runId;
+    selectedRunRef.current = runId; selectedResultRef.current = undefined;
     setSelectedId(runId); setDetail(undefined); setResults([]); setFeedback([]); setComparison(undefined); setSelectedResultVersion(undefined);
-    setHistorySelection(beginAgentHistorySelection(runId)); setError("");
+    setHistorySelection(beginAgentHistorySelection(runId)); setBusy(false); setError("");
   }
   useEffect(() => {
     void refresh();
@@ -185,6 +199,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
   }, [refresh]);
 
   async function start() {
+    const operation: AgentHistoryOperation = { generation: generation.current, scopeKey };
     setBusy(true); setError("");
     try {
       const nonce = crypto.randomUUID();
@@ -198,42 +213,49 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           completion_manifest_hash: completion?.payload_hash || null,
         }),
       });
+      if (!operationIsCurrent(operation)) return;
       selectHistoryRun(saved.run_id); setDetail(saved);
       message.success("AI 优化任务已创建并开始运行；历史结果不会被冒充为本次生成。" );
+      if (!operationIsCurrent({ ...operation, generation: generation.current })) return;
       await refresh();
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+    } catch (e) { if (operationIsCurrent(operation)) setError((e as Error).message); }
+    finally { if (operationIsCurrent(operation)) setBusy(false); }
   }
 
   async function post(action: "cancel" | "authorization", extra: Record<string, unknown> = {}) {
-    if (!active) return;
+    if (!selectedRun) return;
+    const operation: AgentHistoryOperation = { generation: generation.current, scopeKey, runId: selectedRun.run_id };
     setBusy(true); setError("");
     try {
-      const saved = await request<AgentRun>(`${base}/agent-experiments/${encodeURIComponent(active.run_id)}/${action}`, {
+      const saved = await request<AgentRun>(`${base}/agent-experiments/${encodeURIComponent(selectedRun.run_id)}/${action}`, {
         method: "POST", body: JSON.stringify({ project_id: projectId, prompt_id: promptId, ...extra }),
       });
+      if (!operationIsCurrent(operation)) return;
       setDetail(saved); await refresh();
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+    } catch (e) { if (operationIsCurrent(operation)) setError((e as Error).message); }
+    finally { if (operationIsCurrent(operation)) setBusy(false); }
   }
 
   function restartWithServerPolicy() {
-    if (!active) return;
-    void post("authorization", { revision: active.revision });
+    if (!selectedRun) return;
+    void post("authorization", { revision: selectedRun.revision });
   }
 
   async function submitFeedback(values: any) {
-    if (!active || !result) return;
+    if (!selectedRun || !result) return;
+    const operation: AgentHistoryOperation = { generation: generation.current, scopeKey,
+      runId: selectedRun.run_id, resultVersion: result.result_version };
     setBusy(true); setError("");
     try {
-      await request(`${base}/agent-experiments/${encodeURIComponent(active.run_id)}/feedback`, {
+      await request(`${base}/agent-experiments/${encodeURIComponent(selectedRun.run_id)}/feedback`, {
         method: "POST", body: JSON.stringify({
           project_id: projectId, prompt_id: promptId, result_version: result.result_version, ...values,
         }),
       });
+      if (!operationIsCurrent(operation)) return;
       feedbackForm.resetFields(); message.success("反馈已追加保存，原结果与此前反馈均未被覆盖"); await refresh();
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+    } catch (e) { if (operationIsCurrent(operation)) setError((e as Error).message); }
+    finally { if (operationIsCurrent(operation)) setBusy(false); }
   }
 
   function copy(text: string) {
@@ -296,14 +318,14 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           {historySelection.loading && <Spin tip="正在读取所选优化历史"><div style={{ minHeight: 80 }} /></Spin>}
           {historySelection.error && <Alert type="error" showIcon message="所选优化历史读取失败" description="未显示其他任务的结果，请重试或选择另一条历史记录。" />}
           {!historySelection.loading && !historySelection.error && !result && <Alert type="info" showIcon message="所选任务尚无可展示结果" />}
+          {selectedRun && <Space wrap style={{ marginTop: 12 }}>
+            {selectedRunControls.restart && capabilities?.new_generation_enabled && <Button onClick={restartWithServerPolicy}>重新尝试启动</Button>}
+            {selectedRunControls.restart && !capabilities?.new_generation_enabled && <Tag color="orange">AI 生成服务暂未启用</Tag>}
+            {selectedRunControls.stop && <Button danger icon={<Square size={16} />} onClick={() => void post("cancel")}>停止任务</Button>}
+          </Space>}
           {result && <>
-          <Space wrap style={{ marginTop: 12 }}>
-            {active.status === "WAITING_AUTHORIZATION" && capabilities?.new_generation_enabled && <Button onClick={restartWithServerPolicy}>重新尝试启动</Button>}
-            {active.status === "WAITING_AUTHORIZATION" && !capabilities?.new_generation_enabled && <Tag color="orange">AI 生成服务暂未启用</Tag>}
-            {['QUEUED', 'RUNNING', 'WAITING_AUTHORIZATION'].includes(active.status) && <Button danger icon={<Square size={16} />} onClick={() => void post("cancel")}>停止任务</Button>}
-          </Space>
           {results.length > 0 && <Select className="agent-result-version-select" aria-label="结果历史版本" style={{ width: "100%", marginTop: 16 }} value={result?.result_version}
-            onChange={setSelectedResultVersion} options={results.map(item => ({ value: item.result_version,
+            onChange={value => { selectedResultRef.current = value; setSelectedResultVersion(value); }} options={results.map(item => ({ value: item.result_version,
               label: `结果 V${item.version_number} · ${humanTime(item.created_at)} · ${item.evidence_grade}` }))} />}
             <Alert style={{ marginTop: 12 }} type={result.validation?.status === "PASS" ? "success" : "warning"} showIcon
               message={result.validation?.status === "PASS" ? `服务端校验通过 · ${result.evidence_grade}` : `草稿已保存，服务端校验未通过 · ${result.evidence_grade}`}

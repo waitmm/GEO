@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from sqlalchemy.orm import Session
 
 from app.models import AgentExperimentRun
+from app.modules.single_prompt_v2.diagnosis import _truth_statement_eligibility
 from app.modules.single_prompt_v2.delivery_text import digest
 from app.services.semantic_llm.base import SemanticLLMError
 from app.services.semantic_llm.deepseek import DeepSeekClient
@@ -870,6 +871,25 @@ def _truth_supports_capability_claim(claim: tuple[str, bool], locator: str,
     )
 
 
+def _qualified_truth_supports_draft_capability(
+        claim: tuple[str, bool], locator: str, pack: dict[str, Any]) -> bool:
+    """Apply the existing public-statement qualification to the v15 body Gate."""
+    fact_id, _version = locator.rsplit(":", 1)
+    row = next((item for item in (pack.get("product_truth") or {}).get("facts") or []
+                if str(item.get("truth_id", item.get("id"))) == fact_id), None)
+    if not row or row.get("truth_source") != "MANUAL_CONFIRMED":
+        return False
+    derived = _truth_statement_eligibility(
+        capability_label=str(row.get("capability_label") or ""),
+        product_truth_status=str(row.get("product_truth_status") or ""),
+        source_reference=str(row.get("source_reference") or ""),
+    )
+    projected = row.get("statement_eligibility") or {}
+    if derived.get("status") != "ELIGIBLE" or projected.get("status") != "ELIGIBLE":
+        return False
+    return _truth_supports_capability_claim(claim, locator, pack)
+
+
 def _qa_unverified_brand_claim(sentence: str, pack: dict[str, Any]) -> str | None:
     """Return an unsafe relation kind, while allowing independently grounded claims."""
     terms = _brand_terms(pack)
@@ -969,7 +989,7 @@ def _draft_has_unverified_brand_capability(sentence: str, pack: dict[str, Any]) 
         and _validate_reference(match.group(1), match.group(2), pack) is None
     ]
     return any(
-        not any(_truth_supports_capability_claim(claim, locator, pack)
+        not any(_qualified_truth_supports_draft_capability(claim, locator, pack)
                 for locator in truth_locators)
         for claim in claims
     )

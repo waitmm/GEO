@@ -12,7 +12,13 @@ from app.models import (
     BrowserMonitorRun, BrowserMonitorTask, ProjectConfigurationVersion, PromptVersion,
     ReferenceSource, SinglePromptAnalysis, SinglePromptAnalysisContext, SinglePromptManualImport,
 )
-from app.modules.single_prompt_v2.service import prompt_version_binding_for_runs
+from app.modules.single_prompt_v2.service import (
+    _run_input_fingerprint,
+    _snapshot_run_rows,
+    create_analysis_from_runs,
+    project_configuration_binding_for_runs,
+    prompt_version_binding_for_runs,
+)
 from app.modules.agent_experiment.evidence_pack import build_evidence_pack
 from app.modules.agent_experiment.service import create_agent_run
 from app.release_main import create_release_app
@@ -85,6 +91,37 @@ def test_valid_manual_import_is_bound_range_selectable_and_zero_analysis(tmp_pat
         assert plan["prompt_version"]["prompt_version_id"] == binding["prompt_version_id"]
         assert plan["project_configuration"]["configuration_version_id"] == group["identity"]["project_configuration_version_id"]
         assert source.analysis_id != frozen.json()["analysis"]["analysis_id"]
+    finally:
+        db.close(); engine.dispose()
+
+
+def test_manual_and_source_runs_share_only_the_same_proven_configuration(tmp_path, monkeypatch):
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    try:
+        source = _seed_frozen_analysis(db, reference_urls=[])
+        source_run = db.query(BrowserMonitorRun).filter_by(task_id=source.task_id).one()
+        imported = _client(db).post(
+            "/api/v2/projects/1/prompts/44/manual-imports",
+            json=_payload(db, idempotency_key="manual-source-compatible"),
+        )
+        assert imported.status_code == 201, imported.text
+        imported_run = db.get(BrowserMonitorRun, imported.json()["run_id"])
+        run_ids = [source_run.id, imported_run.id]
+        configuration = project_configuration_binding_for_runs(db, run_ids=run_ids)
+        assert configuration["binding_status"] == "BOUND"
+        assert configuration == json.loads(source.sampling_plan_json)["project_configuration"]
+        prompt_version = prompt_version_binding_for_runs(db, run_ids=run_ids)
+        snapshots = _snapshot_run_rows(db, [source_run, imported_run])
+        analysis, created = create_analysis_from_runs(
+            db, project_id=1, prompt_id=44,
+            prompt_version_id=prompt_version["prompt_version_id"],
+            snapshot_hash=prompt_version["snapshot_hash"], run_ids=run_ids,
+            run_fingerprints={int(row["run_id"]): _run_input_fingerprint(row) for row in snapshots},
+            base_context_id=None, idempotency_key="manual-source-compatible-analysis",
+            project_configuration=configuration,
+        )
+        assert created is True
+        assert json.loads(analysis.sampling_plan_json)["project_configuration"] == configuration
     finally:
         db.close(); engine.dispose()
 

@@ -4,10 +4,14 @@ import json
 
 from release_test_client import TestClient
 
+from app.api.release_catalog import _record_project_configuration
 from app.core.release_database import get_release_db
-from app.models import BrowserMonitorRun, BrowserMonitorTask, SinglePromptAnalysis, SinglePromptAnalysisContext
+from app.models import BrowserMonitorRun, BrowserMonitorTask, Project, SinglePromptAnalysis, SinglePromptAnalysisContext
 from app.modules.single_prompt_v2.scheduling import create_schedule, executions, queue_immediate, tick
-from app.modules.single_prompt_v2.service import prompt_version_binding_for_runs
+from app.modules.single_prompt_v2.service import (
+    project_configuration_binding_for_runs,
+    prompt_version_binding_for_runs,
+)
 from app.release_main import create_release_app
 from scripts.release_worker import recover_interrupted_collection_tasks
 from test_release_first_slice import _migrated_session, _seed_frozen_analysis
@@ -100,6 +104,115 @@ def test_range_preview_groups_and_freezes_exact_runs(tmp_path, monkeypatch):
         queue_immediate(db, schedule, schedule.revision, "later-run-fixed-scope", now + timedelta(hours=10))
         db.refresh(analysis)
         assert json.loads(analysis.sampling_plan_json)["origin_monitor_scope"] == before
+    finally:
+        db.close(); engine.dispose()
+
+
+def test_scheduled_run_keeps_observation_time_configuration_after_current_configuration_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEO_BETA_SCHEDULED_SAMPLING_ENABLED", "1")
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    try:
+        source = _seed_frozen_analysis(db, reference_urls=[])
+        schedule = _collection_schedule(db, source, datetime(2026, 10, 20))
+        schedule_configuration = json.loads(schedule.plan_json)["project_configuration"]
+        tick(db, datetime(2026, 10, 20, 9))
+        task = db.query(BrowserMonitorTask).filter_by(schedule_type="collection_only_schedule").one()
+        run = db.query(BrowserMonitorRun).filter_by(task_id=task.id).order_by(BrowserMonitorRun.id).first()
+        run.status = "success"; run.stage = "success"; run.answer_text = "配置一期间采集的回答"
+        run.finished_at = datetime(2026, 10, 20, 9); run.reference_complete = True
+        task.status = "completed"; db.commit()
+
+        project = db.get(Project, 1)
+        project.brand_name = "Target Updated"
+        current_configuration = _record_project_configuration(db, project)
+        db.commit()
+        assert current_configuration.configuration_version_id != schedule_configuration["configuration_version_id"]
+
+        app = create_release_app(validate_on_startup=False)
+        app.dependency_overrides[get_release_db] = lambda: db
+        client = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
+        base = "/api/v2/projects/1/prompts/44/analysis-ranges"
+        preview = client.post(base + "/preview", json={"mode": "RUN_IDS", "run_ids": [run.id]})
+        assert preview.status_code == 200, preview.text
+        body = preview.json(); group = body["groups"][0]
+        assert group["project_configuration"] == schedule_configuration
+        assert group["identity"]["project_configuration_version_id"] == schedule_configuration["configuration_version_id"]
+        frozen = client.post(base + "/freeze", json={"selector": body["selector"],
+            "preview_hash": body["preview_hash"], "group_hash": group["group_hash"],
+            "selected_run_ids": group["selected_run_ids"]})
+        assert frozen.status_code == 201, frozen.text
+        analysis = db.query(SinglePromptAnalysis).filter_by(
+            analysis_id=frozen.json()["analysis"]["analysis_id"],
+        ).one()
+        assert json.loads(analysis.sampling_plan_json)["project_configuration"] == schedule_configuration
+
+        selection = client.get("/api/v2/projects/1/prompts/44/monitor").json()["analysis_selection"]
+        assert selection["project_configuration"] == schedule_configuration
+        direct = client.post("/api/v2/projects/1/prompts/44/monitor-analysis", json={
+            "scope_hash": selection["scope_hash"],
+        })
+        assert direct.status_code == 201, direct.text
+        direct_analysis = db.query(SinglePromptAnalysis).filter_by(
+            analysis_id=direct.json()["analysis"]["analysis_id"],
+        ).one()
+        assert json.loads(direct_analysis.sampling_plan_json)["project_configuration"] == schedule_configuration
+    finally:
+        db.close(); engine.dispose()
+
+
+def test_configuration_resolver_rejects_mixed_tampered_and_legacy_lineage(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEO_BETA_SCHEDULED_SAMPLING_ENABLED", "1")
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    try:
+        source = _seed_frozen_analysis(db, reference_urls=[])
+        source_run = db.query(BrowserMonitorRun).filter_by(task_id=source.task_id).one()
+        v1 = project_configuration_binding_for_runs(db, run_ids=[source_run.id])
+        project = db.get(Project, 1); project.brand_name = "Target V2"
+        _record_project_configuration(db, project); db.commit()
+        binding = _binding(source)
+        from app.modules.single_prompt_v2.service import claim_analysis, create_analysis, finalize_analysis
+        newer, _ = create_analysis(db, project_id=1, prompt_id=44,
+            prompt_version_id=binding["prompt_version_id"], snapshot_hash=binding["snapshot_hash"],
+            sample_count=1, idempotency_key="configuration-v2-source")
+        token = claim_analysis(db, newer.analysis_id)
+        newer_run = db.query(BrowserMonitorRun).filter_by(task_id=newer.task_id).one()
+        newer_run.status = "success"; newer_run.stage = "success"; newer_run.answer_text = "配置二回答"
+        newer_run.reference_complete = True; db.commit()
+        assert token and finalize_analysis(db, newer.analysis_id, token)
+        assert project_configuration_binding_for_runs(db, run_ids=[source_run.id, newer_run.id]) == {
+            "binding_status": "UNSAFE", "reason": "MIXED_PROJECT_CONFIGURATION_VERSIONS",
+        }
+        assert project_configuration_binding_for_runs(db, run_ids=[source_run.id]) == v1
+        app = create_release_app(validate_on_startup=False)
+        app.dependency_overrides[get_release_db] = lambda: db
+        client = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
+        preview = client.post("/api/v2/projects/1/prompts/44/analysis-ranges/preview", json={
+            "mode": "RUN_IDS", "run_ids": [source_run.id, newer_run.id],
+        })
+        assert preview.status_code == 200 and preview.json()["mixed_groups"] is True
+        assert len(preview.json()["groups"]) == 2
+        selection = client.get("/api/v2/projects/1/prompts/44/monitor").json()["analysis_selection"]
+        assert selection["project_configuration"] == {
+            "binding_status": "UNSAFE", "reason": "MIXED_PROJECT_CONFIGURATION_VERSIONS",
+        }
+        blocked = client.post("/api/v2/projects/1/prompts/44/monitor-analysis", json={
+            "scope_hash": selection["scope_hash"],
+        })
+        assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "RUN_PROJECT_CONFIGURATION_UNPROVEN"
+
+        schedule = _collection_schedule(db, source, datetime(2026, 10, 21))
+        tick(db, datetime(2026, 10, 21, 9))
+        task = db.query(BrowserMonitorTask).filter_by(schedule_type="collection_only_schedule").one()
+        scheduled_run = db.query(BrowserMonitorRun).filter_by(task_id=task.id).first()
+        task.created_by = "legacy-unbound"; db.commit()
+        assert project_configuration_binding_for_runs(db, run_ids=[scheduled_run.id]) == {
+            "binding_status": "LEGACY_UNBOUND", "reason": "RUN_CONFIGURATION_LINEAGE_UNPROVEN",
+        }
+        task.created_by = "sampling_schedule:tampered-missing-schedule:slot"; db.commit()
+        assert project_configuration_binding_for_runs(db, run_ids=[scheduled_run.id]) == {
+            "binding_status": "UNSAFE", "reason": "COLLECTION_SCHEDULE_LINEAGE_INVALID",
+        }
     finally:
         db.close(); engine.dispose()
 

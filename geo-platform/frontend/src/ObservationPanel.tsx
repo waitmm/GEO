@@ -165,6 +165,10 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       setError(monitorAnalysisBindingReason(selection));
       return;
     }
+    if (selection?.project_configuration?.binding_status !== "BOUND") {
+      setError(monitorAnalysisConfigurationReason(selection));
+      return;
+    }
     setOpeningPrompt(row.prompt.id); setError("");
     try {
       const next = await request<any>(`/api/v2/projects/${project.id}/prompts/${row.prompt.id}/monitor-analysis`, {
@@ -195,6 +199,13 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     if (status === "LEGACY_UNBOUND") return "这些旧回答缺少当时的问题版本，无法安全用于新分析。";
     if (status) return `这些回答的问题版本状态为 ${status}，无法确认属于同一个版本，不能建立分析。`;
     return "这些回答缺少可确认的问题版本，不能建立分析。";
+  };
+  const monitorAnalysisConfigurationReason = (selection: any) => {
+    const reason = selection?.project_configuration?.reason;
+    if (reason === "RUN_CONFIGURATION_LINEAGE_UNPROVEN") return "这些回答缺少观察时项目配置版本，无法安全用于新分析。";
+    if (reason === "MIXED_PROJECT_CONFIGURATION_VERSIONS") return "这些回答来自不同的观察时项目配置版本，无法安全用于新分析。";
+    if (reason) return "这些回答的观察时项目配置无法验证，不能建立分析。";
+    return "这些回答缺少可确认的观察时项目配置版本，不能建立分析。";
   };
   const output = result?.output || result || (mode === "monitor" && pool?.runs?.length ? pool : undefined);
   const measuredIdentity = result?.input?.identity || output?.identity;
@@ -251,13 +262,16 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
           { title: "采样范围", render: (_, row: any) => `${row.run_ids.length} 条当前问题回答 / ${row.pool_count} 条历史尝试` },
           { title: "操作", render: (_, row: any) => <>
             <Button onClick={() => openPromptMonitor(row.prompt.id)}>查看这个问题</Button>
-            <Button loading={openingPrompt === row.prompt.id} disabled={openingPrompt !== undefined || !row.analysis_selection.selected_run_ids.length || row.analysis_selection.prompt_version?.binding_status !== "BOUND" || !row.analysis_selection.prompt_version?.prompt_version_id || !row.analysis_selection.prompt_version?.snapshot_hash}
+            <Button loading={openingPrompt === row.prompt.id} disabled={openingPrompt !== undefined || !row.analysis_selection.selected_run_ids.length || row.analysis_selection.prompt_version?.binding_status !== "BOUND" || !row.analysis_selection.prompt_version?.prompt_version_id || !row.analysis_selection.prompt_version?.snapshot_hash || row.analysis_selection.project_configuration?.binding_status !== "BOUND"}
               onClick={() => openAnalysis(row)}>分析这 {row.analysis_selection.selected_run_ids.length} 条回答</Button>
             {!row.analysis_selection.selected_run_ids.length && <Typography.Paragraph type="warning">
               当前没有可安全分析的回答。请先打开这个问题，选择时间范围；若没有回答，可人工导入或配置采集计划。
             </Typography.Paragraph>}
             {row.analysis_selection.prompt_version?.binding_status !== "BOUND" && <Typography.Paragraph type="warning">
               {monitorAnalysisBindingReason(row.analysis_selection)} 请点击“查看这个问题”，系统只会列出身份完整、可以安全分析的回答。
+            </Typography.Paragraph>}
+            {row.analysis_selection.project_configuration?.binding_status !== "BOUND" && <Typography.Paragraph type="warning">
+              {monitorAnalysisConfigurationReason(row.analysis_selection)} 请点击“查看这个问题”，系统只会列出身份完整、可以安全分析的回答。
             </Typography.Paragraph>}
             {row.analysis_selection.excluded_run_ids.length > 0 && <Typography.Paragraph type="warning">
               Run {row.analysis_selection.excluded_run_ids.join("、")} 没有可分析正文，不进入该分析；监测统计仍保留这些尝试。

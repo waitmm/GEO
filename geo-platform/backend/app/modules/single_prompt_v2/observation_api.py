@@ -17,7 +17,7 @@ from . import scheduling
 from app.models import SinglePromptSamplingSchedule
 from .service import (_snapshot_run_rows, _hash, _run_input_fingerprint, create_analysis_from_runs,
     get_analysis_status, prompt_version_binding_for_runs, VALID_RUN_STATUSES,
-    _current_analysis_configuration)
+    project_configuration_binding_for_runs)
 from urllib.parse import urlsplit
 from .manual_import import import_manual_observation, manual_import_view
 
@@ -62,14 +62,18 @@ def current_monitor(project_id: int, prompt_id: int, db: Session = Depends(get_r
     result['prompt'] = {'id': prompt.id, 'text': prompt.prompt_text, 'intent_type': prompt.intent_type, 'group': prompt.prompt_group}
     result['opportunity'] = opportunity_hint(prompt.intent_type, result['metrics'])
     result['identity'] = identity
+    run_fingerprints = {
+        str(r['run_id']): _run_input_fingerprint(r) for r in raw['runs']
+        if r['status'] in VALID_RUN_STATUSES and str(r.get('answer_text') or '').strip()
+    }
+    selected_run_ids = sorted(int(key) for key in run_fingerprints)
     selection = {'project_id': project_id, 'prompt_id': prompt_id,
         'observed_run_ids': [r.id for r in matching],
         'raw_output_hash': result['input']['raw_output_hash'], 'identity_hash': _hash(identity),
-        'project_configuration': _current_analysis_configuration(db, project_id),
+        'project_configuration': project_configuration_binding_for_runs(db, run_ids=selected_run_ids),
         'prompt_configuration': {'text': prompt.prompt_text, 'intent_type': prompt.intent_type, 'group': prompt.prompt_group},
-        'run_fingerprints': {str(r['run_id']): _run_input_fingerprint(r) for r in raw['runs']
-            if r['status'] in VALID_RUN_STATUSES and str(r.get('answer_text') or '').strip()}}
-    selection['selected_run_ids'] = sorted(int(key) for key in selection['run_fingerprints'])
+        'run_fingerprints': run_fingerprints}
+    selection['selected_run_ids'] = selected_run_ids
     selection['excluded_run_ids'] = [r.id for r in matching if r.id not in selection['selected_run_ids']]
     try:
         selection['prompt_version'] = prompt_version_binding_for_runs(
@@ -199,14 +203,19 @@ def _range_preview(project_id: int, prompt_id: int, payload: RangePreviewCreate,
         manual_identity = None
         if run.sampling_mode == 'MANUAL_IMPORT':
             from .manual_import import manual_import_binding
-            manual_identity = manual_import_binding(db, run)
-        project_configuration = (manual_identity or {}).get('project_configuration')
+            try:
+                manual_identity = manual_import_binding(db, run)
+            except HTTPException:
+                manual_identity = {'source_assertion_status': 'UNSAFE'}
+        project_configuration = project_configuration_binding_for_runs(db, run_ids=[run.id])
         identity = {'platform': run.platform, 'source_type': run.source_type, 'adapter': run.adapter,
             'collection_mode': run.collection_mode, 'original_query': run.original_query,
             'prompt_version_id': binding.get('prompt_version_id'), 'snapshot_hash': binding.get('snapshot_hash'),
             'binding_status': binding.get('binding_status'), 'binding_reason': binding.get('reason'),
             'project_configuration_version_id': (project_configuration or {}).get('configuration_version_id'),
             'project_configuration_snapshot_hash': (project_configuration or {}).get('snapshot_hash'),
+            'project_configuration_binding_status': (project_configuration or {}).get('binding_status'),
+            'project_configuration_binding_reason': (project_configuration or {}).get('reason'),
             'source_assertion_status': (manual_identity or {}).get('source_assertion_status')}
         key = _hash(identity)
         group = grouped.setdefault(key, {'group_hash': key, 'identity': identity, 'prompt_version': binding,
@@ -250,6 +259,13 @@ def freeze_analysis_range(project_id: int, prompt_id: int, payload: RangeFreezeC
     binding = group['prompt_version']
     if binding.get('binding_status') != 'BOUND':
         raise HTTPException(409, detail={'code': 'RUN_PROMPT_VERSION_UNPROVEN', 'message': '所选 Run 没有单一可证明的 Prompt 冻结版本'})
+    project_configuration = group.get('project_configuration') or {}
+    if project_configuration.get('binding_status') != 'BOUND':
+        raise HTTPException(409, detail={
+            'code': 'RUN_PROJECT_CONFIGURATION_UNPROVEN',
+            'message': '所选 Run 没有单一可证明的观察时项目配置版本',
+            'reason': project_configuration.get('reason', 'RUN_CONFIGURATION_LINEAGE_UNPROVEN'),
+        })
     snapshots = _snapshot_run_rows(db, db.query(BrowserMonitorRun).filter(BrowserMonitorRun.id.in_(selected)).order_by(BrowserMonitorRun.id).all())
     fingerprints = {int(item['run_id']): _run_input_fingerprint(item) for item in snapshots}
     selection_hash = _hash({'preview_hash': payload.preview_hash, 'group_hash': payload.group_hash, 'run_ids': selected})
@@ -260,7 +276,7 @@ def freeze_analysis_range(project_id: int, prompt_id: int, payload: RangeFreezeC
         prompt_version_id=binding['prompt_version_id'], snapshot_hash=binding['snapshot_hash'],
         run_ids=selected, run_fingerprints=fingerprints, base_context_id=None,
         idempotency_key=f'range:{selection_hash}', origin_monitor_scope=origin,
-        project_configuration=group.get('project_configuration'))
+        project_configuration=project_configuration)
     if not created: response.status_code = 200
     return get_analysis_status(db, analysis.analysis_id)
 
@@ -287,11 +303,19 @@ def analyze_monitor_scope(project_id: int, prompt_id: int, payload: MonitorAnaly
             'code': 'RUN_PROMPT_VERSION_UNPROVEN',
             'message': '当前监测范围包含历史未绑定或混合 Prompt 版本，不能创建不安全的新 Analysis',
         })
+    project_configuration = selected.get('project_configuration') or {}
+    if project_configuration.get('binding_status') != 'BOUND':
+        raise HTTPException(409, detail={
+            'code': 'RUN_PROJECT_CONFIGURATION_UNPROVEN',
+            'message': '当前监测范围包含无法证明观察时项目配置的 Run',
+            'reason': project_configuration.get('reason', 'RUN_CONFIGURATION_LINEAGE_UNPROVEN'),
+        })
     analysis, created = create_analysis_from_runs(db, project_id=project_id, prompt_id=prompt_id,
         prompt_version_id=prompt_version['prompt_version_id'],
         snapshot_hash=prompt_version['snapshot_hash'],
         run_ids=selected['selected_run_ids'], run_fingerprints=selected['run_fingerprints'],
-        base_context_id=None, idempotency_key=request_key, origin_monitor_scope=selected)
+        base_context_id=None, idempotency_key=request_key, origin_monitor_scope=selected,
+        project_configuration=project_configuration)
     if not created:
         response.status_code = 200
     return get_analysis_status(db, analysis.analysis_id)

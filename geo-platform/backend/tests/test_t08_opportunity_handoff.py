@@ -63,12 +63,13 @@ def test_monitor_handoff_freezes_full_identity_and_only_creates_one_analysis(tmp
             project.region = "EU"
             _record_project_configuration(db, project)
             db.commit()
-            stale = client.post(uri + "/monitor-analysis", json={"scope_hash": stale_selection["scope_hash"]})
-            assert stale.status_code == 409
-
             current = client.get(uri + "/monitor").json()["analysis_selection"]
-            assert current["scope_hash"] != stale_selection["scope_hash"]
-            assert current["project_configuration"]["brand"]["region"] == "EU"
+            # Existing Runs retain their observation-time project configuration.
+            # A later mutable project edit must not silently rebind or invalidate
+            # the already displayed frozen Run selection.
+            assert current["scope_hash"] == stale_selection["scope_hash"]
+            assert current["project_configuration"] == stale_selection["project_configuration"]
+            assert current["project_configuration"]["brand"]["region"] != "EU"
 
             prompt = db.get(Prompt, 44)
             prompt.prompt_group = "changed-after-display"

@@ -320,6 +320,125 @@ def prompt_version_binding_for_runs(
     return first
 
 
+def _task_matches_run_identity(task: BrowserMonitorTask | None, run: BrowserMonitorRun) -> bool:
+    """Prove that a task is the immutable single-Prompt owner of a Run."""
+
+    if not task:
+        return False
+    question_ids = loads(task.question_ids_json, [])
+    return (
+        task.id == run.task_id
+        and task.project_id == run.project_id
+        and question_ids == [run.prompt_id]
+        and task.platform == run.platform
+        and task.source_type == run.source_type
+        and task.adapter == run.adapter
+    )
+
+
+def _plan_matches_run_identity(plan: dict[str, Any], task: BrowserMonitorTask,
+                               run: BrowserMonitorRun) -> bool:
+    return (
+        plan.get("project_id") == run.project_id
+        and plan.get("prompt_id") == run.prompt_id
+        and plan.get("prompt_text") == run.original_query
+        and plan.get("platform") == run.platform == task.platform
+        and plan.get("source_type") == run.source_type == task.source_type
+        and plan.get("adapter") == run.adapter == task.adapter
+        and plan.get("collection_mode") == run.collection_mode
+        and plan.get("sample_count") == task.run_count
+    )
+
+
+def project_configuration_binding_for_runs(
+    db: Session,
+    *,
+    run_ids: list[int],
+) -> dict[str, Any]:
+    """Resolve one proven observation-time project configuration for a Run set.
+
+    New explicit analyses must never substitute the mutable current project
+    configuration for an unbound historical Run.  The only admitted owners are
+    the source Analysis, an append-only MANUAL_IMPORT admission, or an exact
+    COLLECTION_ONLY schedule lineage.
+    """
+
+    requested = [int(run_id) for run_id in run_ids]
+    if not requested:
+        return {"binding_status": "LEGACY_UNBOUND", "reason": "EMPTY_RUN_SET"}
+    if len(requested) != len(set(requested)):
+        return {"binding_status": "UNSAFE", "reason": "DUPLICATE_RUN_IDS"}
+    rows = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.id.in_(requested)).all()
+    if {row.id for row in rows} != set(requested):
+        return {"binding_status": "UNSAFE", "reason": "RUN_SET_INCOMPLETE"}
+
+    task_ids = {row.task_id for row in rows}
+    tasks = db.query(BrowserMonitorTask).filter(BrowserMonitorTask.id.in_(task_ids)).all()
+    task_by_id = {row.id: row for row in tasks}
+    source_analyses = db.query(SinglePromptAnalysis).filter(
+        SinglePromptAnalysis.task_id.in_(task_ids),
+    ).all()
+    source_by_task = {row.task_id: row for row in source_analyses}
+    bindings: list[dict[str, Any]] = []
+
+    for run in rows:
+        task = task_by_id.get(run.task_id)
+        if not _task_matches_run_identity(task, run):
+            return {"binding_status": "UNSAFE", "reason": "RUN_TASK_IDENTITY_INVALID"}
+
+        source = source_by_task.get(run.task_id)
+        if source:
+            plan = loads(source.sampling_plan_json, {})
+            if (source.project_id != run.project_id or source.prompt_id != run.prompt_id
+                    or source.task_id != task.id or not isinstance(plan, dict)
+                    or not _plan_matches_run_identity(plan, task, run)):
+                return {"binding_status": "UNSAFE", "reason": "SOURCE_ANALYSIS_LINEAGE_INVALID"}
+            try:
+                binding = _validate_analysis_configuration(db, source, plan)
+            except (HTTPException, TypeError):
+                return {"binding_status": "UNSAFE", "reason": "SOURCE_ANALYSIS_CONFIGURATION_INVALID"}
+        elif task.schedule_type == "manual_import" and task.created_by.startswith("manual_import:"):
+            from .manual_import import manual_import_binding
+            record = db.query(SinglePromptManualImport).filter_by(run_id=run.id).one_or_none()
+            if (not record or task.created_by != f"manual_import:{record.import_id}"
+                    or task.run_count != 1):
+                return {"binding_status": "UNSAFE", "reason": "MANUAL_IMPORT_LINEAGE_INVALID"}
+            try:
+                identity = manual_import_binding(db, run)
+                binding = _validate_configuration_binding(
+                    db, run.project_id, (identity or {}).get("project_configuration"),
+                )
+            except (HTTPException, TypeError):
+                return {"binding_status": "UNSAFE", "reason": "MANUAL_IMPORT_CONFIGURATION_INVALID"}
+        else:
+            prefix = "sampling_schedule:"
+            if task.schedule_type != "collection_only_schedule" or not task.created_by.startswith(prefix):
+                return {"binding_status": "LEGACY_UNBOUND", "reason": "RUN_CONFIGURATION_LINEAGE_UNPROVEN"}
+            schedule_id = task.created_by[len(prefix):].split(":", 1)[0]
+            schedule = db.query(SinglePromptSamplingSchedule).filter_by(schedule_id=schedule_id).one_or_none()
+            plan = loads(schedule.plan_json, {}) if schedule else {}
+            if (not schedule or schedule.project_id != run.project_id or schedule.prompt_id != run.prompt_id
+                    or not isinstance(plan, dict) or _hash(plan) != schedule.plan_hash
+                    or plan.get("automation_policy") != "COLLECTION_ONLY"
+                    or not _plan_matches_run_identity(plan, task, run)):
+                return {"binding_status": "UNSAFE", "reason": "COLLECTION_SCHEDULE_LINEAGE_INVALID"}
+            try:
+                binding = _validate_configuration_binding(
+                    db, run.project_id, plan.get("project_configuration"),
+                )
+            except (HTTPException, TypeError):
+                return {"binding_status": "UNSAFE", "reason": "COLLECTION_SCHEDULE_CONFIGURATION_INVALID"}
+
+        if binding.get("binding_status") != "BOUND":
+            return {"binding_status": "LEGACY_UNBOUND", "reason": "RUN_CONFIGURATION_LINEAGE_UNPROVEN"}
+        bindings.append(binding)
+
+    first = bindings[0]
+    if any(binding != first for binding in bindings[1:]):
+        return {"binding_status": "UNSAFE", "reason": "MIXED_PROJECT_CONFIGURATION_VERSIONS"}
+    return first
+
+
 def _require_runs_bound_to_prompt_version(
     db: Session,
     *,
@@ -1009,34 +1128,24 @@ def create_analysis_from_runs(
         prompt_id=prompt_id,
         run_ids=run_ids,
     )
-    manual_run_ids = [
-        int(row["run_id"]) for row in snapshots
-        if (row.get("environment") or {}).get("sampling_mode") == "MANUAL_IMPORT"
-    ]
-    if manual_run_ids:
-        if len(manual_run_ids) != len(snapshots):
-            raise HTTPException(status_code=409, detail={
-                "code": "MIXED_ACQUISITION_CONFIGURATION_UNPROVEN",
-                "message": "人工导入与其他来源 Run 的观察时项目配置无法证明一致，请分组分析",
-            })
-        from .manual_import import manual_import_binding
-        run_rows = db.query(BrowserMonitorRun).filter(BrowserMonitorRun.id.in_(manual_run_ids)).all()
-        manual_configurations = [(manual_import_binding(db, row) or {}).get("project_configuration") for row in run_rows]
-        first_configuration = manual_configurations[0] if manual_configurations else None
-        if (not first_configuration or any(item != first_configuration for item in manual_configurations[1:])):
-            raise HTTPException(status_code=409, detail={
-                "code": "MIXED_PROJECT_CONFIGURATION_VERSIONS",
-                "message": "所选人工观测不属于同一项目配置版本",
-            })
-        validated_manual_configuration = _validate_configuration_binding(db, project_id, first_configuration)
-        if project_configuration is not None and project_configuration != validated_manual_configuration:
+    proven_configuration = project_configuration_binding_for_runs(
+        db, run_ids=[int(row["run_id"]) for row in snapshots],
+    )
+    if proven_configuration.get("binding_status") != "BOUND":
+        raise HTTPException(status_code=409, detail={
+            "code": "RUN_PROJECT_CONFIGURATION_UNPROVEN",
+            "message": "所选 Run 无法证明属于同一观察时项目配置版本",
+            "reason": proven_configuration.get("reason", "RUN_CONFIGURATION_LINEAGE_UNPROVEN"),
+            "run_ids": [int(row["run_id"]) for row in snapshots],
+        })
+    if project_configuration is not None:
+        supplied_configuration = _validate_configuration_binding(db, project_id, project_configuration)
+        if supplied_configuration != proven_configuration:
             raise HTTPException(status_code=409, detail={
                 "code": "RUN_CONFIGURATION_BINDING_MISMATCH",
-                "message": "提交的项目配置版本与人工观测身份不匹配",
+                "message": "提交的项目配置版本与 Run 的冻结身份不匹配",
             })
-        project_configuration = validated_manual_configuration
-    elif project_configuration is not None:
-        project_configuration = _validate_configuration_binding(db, project_id, project_configuration)
+    project_configuration = proven_configuration
     _require_runs_bound_to_prompt_version(
         db,
         run_ids=[int(row["run_id"]) for row in snapshots],
@@ -1070,7 +1179,7 @@ def create_analysis_from_runs(
         "run_ids": ordered_ids,
         "run_fingerprints": actual_fingerprints,
         "base_context_id": base_context_id,
-        "project_configuration": project_configuration or _current_analysis_configuration(db, project_id),
+        "project_configuration": project_configuration,
     }
     if origin_monitor_scope is not None:
         plan['origin_monitor_scope'] = origin_monitor_scope

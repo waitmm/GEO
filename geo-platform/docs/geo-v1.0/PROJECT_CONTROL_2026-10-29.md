@@ -53,7 +53,7 @@ Mac 历史运行曾保存 22 Run 真实 AI 优化结果，但服务、局域网�
 | 采集 | Playwright 立即采集 | PILOT_READY（历史本机验收） | Mac 服务现已关闭；公司候选默认关闭，需独立许可与目标机验收 |
 | 采集 | 定时采集、幂等、暂停/恢复 | PILOT_READY（历史本机验收） | Mac 计划和自动启用标记现已关闭；公司候选默认关闭，不继承历史计划 |
 | Monitor | 回答、引用、状态、趋势与历史 Run | PILOT_READY | 项目概览提供“查看这个问题”进入问题级范围选择；没有安全回答时给出导入/采集下一步；未分析不能显示成品牌零表现 |
-| 范围 | 7/14/30 天、自定义、指定/排除 Run | DONE | 最终冻结明确 Run IDs、版本及 hash，新采样不改变旧范围 |
+| 范围 | 7/14/30 天、自定义、指定/排除 Run | DONE | 最终冻结明确 Run IDs、PromptVersion、观察时 ProjectConfigurationVersion 及 hash；新采样或当前品牌配置变更不改变旧范围，无法证明的 legacy Run 不补绑 current/latest |
 | 范围 | 冻结范围的业务可读时间命名 | DONE | UI 显示北京时间、回答数和范围，不要求员工理解内部 hash |
 | Optimize | Evidence Pack v3 单包生成 | LIMITED | 当前 22 Run 真实基线可用；容量取决于回答、唯一 URL 与正文长度 |
 | Optimize | HELP_DOC + FAQ 多内容父子版本 | REAL_GATE_FAILED / V6_OFFLINE_ACCEPTED | 四次真实父子版本保持原失败解释；v6 仅完成 QA 服务端组合、受保护 shadow 与隔离验收，不重标历史结果、不进入 M1.1；第五次真实复测未授权 |
@@ -95,6 +95,7 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
 | GEO-MULTI-UI-001 | P1 | RESOLVED：隔离浏览器已验收双成功及 HELP_DOC 成功/FAQ 失败的部分成功链路 | 失败资产禁止导出；成功资产可下载；反馈、历史版本和刷新恢复已验证；无授权时单篇重生成 fail-closed | 保留报告与失败证据；真实生成质量继续由 `GEO-MULTI-001` 管控 |
 | GEO-TEST-001 | P2 | 两个 Agent 回归曾把 2026-10-22/26 价格核验日期写死，跨 7 天后固定失败 | RESOLVED；测试统一使用单次测试进程冻结的当前价格证据日，生产七天时效 Gate 未放宽 | 本轮 Agent 与子资产联合回归 84/84、容量回归 29/29 通过 |
 | GEO-HANDOFF-001 | P1 | RESOLVED：项目 Monitor 无安全回答时缺少问题级下一步；`partial_success` 完整回答在范围服务可用、进入 Agent 冻结时却被错误降级 | 新项目使用动态 Project/Prompt/版本/Run 身份完成导入、范围冻结和 Optimize 建立；新 v14/v2 将完整回答纳入，同时在模型输入、Coverage、Evidence Set 与完整性校验中保留 UNKNOWN/PARSE_FAILED 和人工来源边界；旧 v13 仍按 v1 排除该状态 | 后端联合回归 151 passed、前端 48 passed、release build 通过；success/partial 两份隔离浏览器报告均含动态 Project 2 / Prompt 45 且 `external_calls=0`；真实模型质量仍由 `GEO-MULTI-001` 管控 |
+| GEO-RANGE-001 | P1 | RESOLVED：自动/定时 Run 在范围预览和冻结时曾丢失观察时项目配置，并静默回退冻结时 current 配置 | 统一从源 Analysis、MANUAL_IMPORT 或 COLLECTION_ONLY schedule 的不可变 lineage 证明配置；混合配置分组，篡改/缺失/legacy 身份 fail-closed；UI 显示观察时配置版本并提前禁用不安全分组；不重写历史 Analysis | v1 采集后 current 变 v2 仍冻结 v1；后端相关联合回归 186 passed、客户端 50 passed、release build 与动态 Project 2 / Prompt 45 隔离浏览器 PASS；无迁移、无外调 |
 
 ### GEO-CAP-001 详细记录
 

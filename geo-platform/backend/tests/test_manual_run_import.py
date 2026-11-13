@@ -13,6 +13,8 @@ from app.models import (
     ReferenceSource, SinglePromptAnalysis, SinglePromptAnalysisContext, SinglePromptManualImport,
 )
 from app.modules.single_prompt_v2.service import prompt_version_binding_for_runs
+from app.modules.agent_experiment.evidence_pack import build_evidence_pack
+from app.modules.agent_experiment.service import create_agent_run
 from app.release_main import create_release_app
 from test_release_first_slice import _migrated_session, _seed_frozen_analysis
 
@@ -83,6 +85,120 @@ def test_valid_manual_import_is_bound_range_selectable_and_zero_analysis(tmp_pat
         assert plan["prompt_version"]["prompt_version_id"] == binding["prompt_version_id"]
         assert plan["project_configuration"]["configuration_version_id"] == group["identity"]["project_configuration_version_id"]
         assert source.analysis_id != frozen.json()["analysis"]["analysis_id"]
+    finally:
+        db.close(); engine.dispose()
+
+
+def test_fresh_project_partial_reference_run_freezes_into_optimize_without_fixed_identity(tmp_path, monkeypatch):
+    """A new tenant must not depend on Project 1, Prompt 44, or cached analyses.
+
+    Citation UNKNOWN keeps its uncertainty but does not erase the admitted
+    answer when the exact Run is handed from Monitor to Optimize.
+    """
+    db, engine = _migrated_session(tmp_path, monkeypatch)
+    try:
+        client = _client(db)
+        # Occupy the first identities so this regression cannot accidentally
+        # pass by relying on the historical Project 1 / Prompt 44 fixture.
+        filler = client.post("/api/projects", json={
+            "name": "无关项目", "brand_name": "无关品牌",
+        }).json()
+        assert client.post(f"/api/projects/{filler['id']}/prompts", json={
+            "prompt_text": "这是一条与被测链路无关的问题。",
+        }).status_code == 200
+        project_response = client.post("/api/projects", json={
+            "name": "全新品牌项目",
+            "brand_name": "星河工具",
+            "brand_aliases": ["星河"],
+            "website_url": "https://xinghe.example/",
+            "competitors": [{"name": "云端工具", "aliases": ["云端"]}],
+        })
+        assert project_response.status_code == 200, project_response.text
+        project_id = project_response.json()["id"]
+        assert project_id != 1
+
+        prompt_response = client.post(f"/api/projects/{project_id}/prompts", json={
+            "prompt_text": "如何为团队选择一个可靠的文件协作工具？",
+            "intent_type": "product_selection",
+        })
+        assert prompt_response.status_code == 200, prompt_response.text
+        prompt_id = prompt_response.json()["id"]
+        assert prompt_id not in {1, 44}
+
+        prompt_version = client.get(
+            f"/api/projects/{project_id}/prompts/{prompt_id}/versions"
+        ).json()[0]
+        project_version = client.get(
+            f"/api/projects/{project_id}/configuration-versions"
+        ).json()[0]
+        imported = client.post(
+            f"/api/v2/projects/{project_id}/prompts/{prompt_id}/manual-imports",
+            json={
+                "prompt_version_id": prompt_version["prompt_version_id"],
+                "prompt_snapshot_hash": prompt_version["snapshot_hash"],
+                "configuration_version_id": project_version["configuration_version_id"],
+                "configuration_snapshot_hash": project_version["snapshot_hash"],
+                "observed_at": (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+                "source_platform": "wenxin",
+                "source_page_url": "https://yiyan.baidu.com/",
+                "answer_text": "这是从真实产品页面人工观察到的完整回答，正文可以用于诊断，但页面引用区域当时无法可靠确认。",
+                "citations": [],
+                "citation_observation_status": "UNKNOWN",
+                "citation_note": "引用区域未稳定显示，不能解释为零引用。",
+                "idempotency_key": "fresh-project-import-0001",
+            },
+        )
+        assert imported.status_code == 201, imported.text
+        run_id = imported.json()["run_id"]
+        assert db.get(BrowserMonitorRun, run_id).status == "partial_success"
+
+        range_base = f"/api/v2/projects/{project_id}/prompts/{prompt_id}/analysis-ranges"
+        preview = client.post(range_base + "/preview", json={"mode": "RUN_IDS", "run_ids": [run_id]})
+        assert preview.status_code == 200, preview.text
+        group = preview.json()["groups"][0]
+        assert group["selected_run_ids"] == [run_id]
+        frozen = client.post(range_base + "/freeze", json={
+            "selector": preview.json()["selector"],
+            "preview_hash": preview.json()["preview_hash"],
+            "group_hash": group["group_hash"],
+            "selected_run_ids": [run_id],
+        })
+        assert frozen.status_code == 201, frozen.text
+        analysis_id = frozen.json()["analysis"]["analysis_id"]
+        context_id = frozen.json()["context_id"]
+
+        agent, created = create_agent_run(
+            db,
+            project_id=project_id,
+            prompt_id=prompt_id,
+            analysis_id=analysis_id,
+            context_id=context_id,
+            idempotency_key="fresh-project-optimize-0001",
+            requested_by="isolated-test",
+            execution_mode="EVIDENCE_PACK",
+        )
+        assert created is True and agent.status == "QUEUED"
+        scope = json.loads(agent.input_scope_json)
+        assert scope["identity"]["project_id"] == project_id
+        assert scope["identity"]["prompt_id"] == prompt_id
+        assert scope["run_scope"]["run_ids"] == [run_id]
+        assert scope["runs"][0]["status"] == "partial_success"
+        assert scope["runs"][0]["reference_complete"] is False
+        assert scope["runs"][0]["references"] == []
+        assert scope["runs"][0]["environment"]["manual_observation"]["citation_observation_status"] == "UNKNOWN"
+        assert scope["project_entities"]["target_brand"]["brand_name"] == "星河工具"
+        assert scope["project_entities"]["competitors"][0]["name"] == "云端工具"
+        assert scope["qualification"]["valid_answer_count"] == 1
+        assert scope["qualification"]["planned_delivery_level"] == "L3_ACTIONABLE_WITHOUT_FACT_CLAIMS"
+        assert scope["qualification"]["evidence_qualification"] == "NOT_EVALUATED"
+        pack = build_evidence_pack(scope)
+        assert pack["coverage"]["valid_answer_count"] == 1
+        assert [member["run_id"] for member in pack["aggregate_evidence_sets"][0]["members"]] == [str(run_id)]
+        assert pack["runs"][0]["status"] == "partial_success"
+        assert pack["runs"][0]["reference_count"] == 0
+        assert pack["runs"][0]["reference_complete"] is False
+        assert pack["runs"][0]["collection_method"] == "MANUAL_IMPORT"
+        assert pack["runs"][0]["citation_observation_status"] == "UNKNOWN"
     finally:
         db.close(); engine.dispose()
 

@@ -41,7 +41,8 @@ QUALITY_GATE_V2_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.
 QUALITY_GATE_V2_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v9"
 AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v12"
 AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v10"
-EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v13"
+QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v13"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v14"
 EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v11"
 EVIDENCE_PACK_VALIDATION_CONTRACT = "geo.evidence-pack.validation.v6"
 QA_COMPOSITION_CONTRACT = "geo.evidence-pack.qa-composition.v1"
@@ -61,6 +62,7 @@ _PROMPT_VERSION_BY_EXECUTION_CONTRACT = {
         QUALITY_GATE_V2_EVIDENCE_PACK_PROMPT_VERSION,
     AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT:
         AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION,
+    QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
     EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
 }
 DEFAULT_TEXT_BUDGET = 90_000
@@ -159,7 +161,23 @@ _CAUSAL_WORDING = re.compile(r"因为|因此|所以|导致|原因|说明|证明|
 _BRAND_MATCH_RULE_VERSION = "geo.brand-literal-match.v1"
 _EVIDENCE_SET_CONTRACT = "geo.evidence-pack.answer-evidence-set.v1"
 _OBSERVATION_CONTRACT = "geo.evidence-pack.brand-observation.v1"
-_VALID_RUN_RULE_VERSION = "geo.evidence-pack.valid-run-eligibility.v1"
+_VALID_RUN_RULE_V1 = "geo.evidence-pack.valid-run-eligibility.v1"
+_VALID_RUN_RULE_V2 = "geo.evidence-pack.valid-run-eligibility.v2"
+_ELIGIBLE_ANSWER_STATUSES_BY_RULE = {
+    _VALID_RUN_RULE_V1: frozenset({"success", "completed"}),
+    _VALID_RUN_RULE_V2: frozenset({"success", "completed", "partial_success"}),
+}
+
+
+def _eligibility_rule_for_execution(execution_contract: str) -> str:
+    # v13 and all earlier profiles retain their frozen interpretation.  Only
+    # v14 admits a non-empty partial_success answer while keeping its citation
+    # observation state explicit and fail-closed.
+    return (
+        _VALID_RUN_RULE_V2
+        if execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT
+        else _VALID_RUN_RULE_V1
+    )
 
 
 class EvidencePackCapacityError(RuntimeError):
@@ -416,8 +434,26 @@ def _complete_frozen_identity(scope: dict[str, Any]) -> bool:
     )
 
 
+def _eligible_answer(row: dict[str, Any], *, eligibility_rule_version: str) -> bool:
+    """Return whether a frozen Run contributes its complete answer text.
+
+    ``partial_success`` keeps citation/retrieval uncertainty but does not erase
+    an otherwise complete answer.  Reference qualification is carried by the
+    explicit observation fields in the pack and remains fail-closed.
+    """
+    statuses = _ELIGIBLE_ANSWER_STATUSES_BY_RULE.get(eligibility_rule_version)
+    if statuses is None:
+        return False
+    return (
+        row.get("status") in statuses
+        and bool(str(row.get("answer_text") or "").strip())
+    )
+
+
 def _build_aggregate_brand_observation(
-        scope: dict[str, Any], runs: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        scope: dict[str, Any], runs: list[dict[str, Any]], *,
+        eligibility_rule_version: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     identity = scope.get("identity") or {}
     configuration = scope.get("project_configuration") or {}
     brand = configuration.get("brand") or configuration
@@ -436,7 +472,7 @@ def _build_aggregate_brand_observation(
         run_id = str(row.get("run_id"))
         answer = str(row.get("answer_text") or "")
         answer_by_run[run_id] = answer
-        eligible = row.get("status") in {"success", "completed"} and bool(answer.strip())
+        eligible = _eligible_answer(row, eligibility_rule_version=eligibility_rule_version)
         if run_id in seen_run_ids:
             duplicate_run_ids.append(run_id)
             excluded.append({"run_id": run_id, "reason": "DUPLICATE_RUN_ID"})
@@ -474,7 +510,7 @@ def _build_aggregate_brand_observation(
             }),
             "run_scope_hash": identity.get("run_scope_hash"),
         },
-        "eligibility_rule_version": _VALID_RUN_RULE_VERSION,
+        "eligibility_rule_version": eligibility_rule_version,
         "members": members,
         "excluded_members": excluded,
         "brand_rule": {
@@ -998,21 +1034,21 @@ def build_evidence_pack(
             "evidence_locator": f"[[truth:{truth_id}:{version}]]",
         })
     brand_context = scope.get("brand_context") or {}
+    eligibility_rule_version = _eligibility_rule_for_execution(execution_contract)
     structured_observations = execution_contract in {
         AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
         EVIDENCE_PACK_EXECUTION_CONTRACT,
     }
     aggregate_evidence_set: dict[str, Any] | None = None
     verified_brand_observations: list[dict[str, Any]] = []
     if structured_observations:
         aggregate_evidence_set, verified_brand_observations = _build_aggregate_brand_observation(
-            scope, runs,
+            scope, runs, eligibility_rule_version=eligibility_rule_version,
         )
-    core = {
-        "identity": identity,
-        "prompt": scope.get("prompt") or {},
-        "project_configuration": scope.get("project_configuration") or {},
-        "runs": [{
+    projected_runs = []
+    for row in runs:
+        projected = {
             "run_id": row.get("run_id"), "status": row.get("status"),
             "answer_text": row.get("answer_text") or "",
             "answer_hash": digest(row.get("answer_text") or ""),
@@ -1022,7 +1058,37 @@ def build_evidence_pack(
             "brand_mentioned": row.get("brand_mentioned"),
             "competitors": row.get("competitors") or [],
             "reference_count": len(row.get("references") or []),
-        } for row in runs],
+        }
+        if execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT:
+            manual_observation = (
+                ((row.get("environment") or {}).get("manual_observation") or None)
+            )
+            projected.update({
+                "reference_complete": row.get("reference_complete"),
+                "citation_observation_status": (
+                    manual_observation.get("citation_observation_status")
+                    if manual_observation
+                    else "COMPLETE" if row.get("reference_complete") is True
+                    else "UNKNOWN"
+                ),
+                "source_type": (
+                    ((row.get("observed_conditions") or {}).get("source_type") or {}).get("value")
+                ),
+                "collection_method": (
+                    manual_observation.get("method") if manual_observation else None
+                ),
+                "source_assertion_status": (
+                    manual_observation.get("source_assertion_status")
+                    if manual_observation else None
+                ),
+                "manual_observation": manual_observation,
+            })
+        projected_runs.append(projected)
+    core = {
+        "identity": identity,
+        "prompt": scope.get("prompt") or {},
+        "project_configuration": scope.get("project_configuration") or {},
+        "runs": projected_runs,
         "citation_occurrences": [],
         "citation_channel_observations": _citation_channel_observations(all_citations),
         "source_dispositions": sorted(
@@ -1092,7 +1158,7 @@ def build_evidence_pack(
         "estimated_text_characters": text_budget - remaining,
         "run_ids": [str(row.get("run_id")) for row in runs],
         "valid_answer_count": sum(
-            row.get("status") in {"success", "completed"} and bool(str(row.get("answer_text") or "").strip())
+            _eligible_answer(row, eligibility_rule_version=eligibility_rule_version)
             for row in runs
         ),
         "citation_occurrence_count": len(all_citations),
@@ -1112,6 +1178,8 @@ def build_evidence_pack(
         ),
         "omitted_materials": omitted,
     }
+    if execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT:
+        coverage["eligibility_rule_version"] = eligibility_rule_version
     pack = {
         "contract_version": EVIDENCE_PACK_CONTRACT,
         **core,
@@ -1125,6 +1193,9 @@ def build_evidence_pack(
             "unavailable": "省略、抓取失败、未知与合法零值保持区分",
         },
     }
+    if execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT:
+        pack["execution_contract"] = execution_contract
+        pack["eligibility_rule_version"] = eligibility_rule_version
     pack["evidence_pack_hash"] = digest(pack)
     return pack
 
@@ -1600,9 +1671,14 @@ def _brand_section_has_relevant_answer(section: str, references: list[dict[str, 
         return False
     if not aggregate_scope:
         return True
-    valid_runs = [row for row in pack.get("runs") or []
-                  if row.get("status") in {"success", "completed"}
-                  and str(row.get("answer_text") or "").strip()]
+    sets = pack.get("aggregate_evidence_sets") or []
+    eligibility_rule_version = (
+        sets[0].get("eligibility_rule_version") if len(sets) == 1 else _VALID_RUN_RULE_V1
+    )
+    valid_runs = [
+        row for row in pack.get("runs") or []
+        if _eligible_answer(row, eligibility_rule_version=eligibility_rule_version)
+    ]
     return relevant_observation_runs == {str(row.get("run_id")) for row in valid_runs}
 
 
@@ -1630,6 +1706,14 @@ def _aggregate_pack_integrity_issues(pack: dict[str, Any]) -> list[dict[str, str
     frozen_set = sets[0]
     set_payload = _aggregate_set_payload(frozen_set)
     issues: list[dict[str, str]] = []
+    eligibility_rule_version = set_payload.get("eligibility_rule_version")
+    expected_eligibility_rule = _eligibility_rule_for_execution(
+        str(pack.get("execution_contract") or QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT)
+    )
+    if (eligibility_rule_version not in _ELIGIBLE_ANSWER_STATUSES_BY_RULE
+            or eligibility_rule_version != expected_eligibility_rule):
+        return [{"code": "AGGREGATE_EVIDENCE_SET_CONTRACT_MISMATCH",
+                 "detail": "集合契约或资格规则版本不受支持"}]
     pack_payload = {key: value for key, value in pack.items() if key != "evidence_pack_hash"}
     if pack.get("evidence_pack_hash") != digest(pack_payload):
         issues.append({"code": "EVIDENCE_PACK_HASH_MISMATCH",
@@ -1647,7 +1731,8 @@ def _aggregate_pack_integrity_issues(pack: dict[str, Any]) -> list[dict[str, str
             continue
         seen.add(run_id)
         answer = str(row.get("answer_text") or "")
-        if row.get("status") not in {"success", "completed"} or not answer.strip():
+        if not _eligible_answer(
+                row, eligibility_rule_version=str(eligibility_rule_version)):
             expected_excluded.append({
                 "run_id": run_id, "status": row.get("status"),
                 "answer_hash": digest(answer), "reason": "ANSWER_NOT_ELIGIBLE",
@@ -1700,7 +1785,9 @@ def _aggregate_pack_integrity_issues(pack: dict[str, Any]) -> list[dict[str, str
                        "detail": "品牌配置或字面识别规则不一致"})
     if set_payload.get("contract_version") != _EVIDENCE_SET_CONTRACT \
             or set_payload.get("set_kind") != "FROZEN_VALID_ANSWER_SET" \
-            or set_payload.get("eligibility_rule_version") != _VALID_RUN_RULE_VERSION:
+            or set_payload.get("eligibility_rule_version") not in {
+                _VALID_RUN_RULE_V1, _VALID_RUN_RULE_V2,
+            }:
         issues.append({"code": "AGGREGATE_EVIDENCE_SET_CONTRACT_MISMATCH",
                        "detail": "集合契约或资格规则版本不受支持"})
     member_answers = {str(row.get("run_id")): str(row.get("answer_text") or "")
@@ -1897,15 +1984,20 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
                              requested_artifact_types: list[str] | None = None,
                              execution_contract: str = EVIDENCE_PACK_EXECUTION_CONTRACT,
                              ) -> tuple[dict[str, Any], dict[str, str]]:
-    quality_gate_v6 = execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT
+    quality_gate_v6 = execution_contract in {
+        QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        EVIDENCE_PACK_EXECUTION_CONTRACT,
+    }
     quality_gate_v5 = execution_contract in {
         AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
         EVIDENCE_PACK_EXECUTION_CONTRACT,
     }
     quality_gate_v4 = execution_contract in {
         QUALITY_GATE_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
         QUALITY_GATE_V2_EVIDENCE_PACK_EXECUTION_CONTRACT,
         AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
         EVIDENCE_PACK_EXECUTION_CONTRACT,
     }
     selected = _normalize_requested_artifacts(requested_artifact_types)

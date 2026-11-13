@@ -1525,7 +1525,10 @@ def list_analysis_statuses(
             "sampling": status["sampling"],
             "result_version": status["result_version"],
             "context_id": status["context_id"],
-            "origin_monitor_scope": status["origin_monitor_scope"],
+            # Historical/compact status payloads predate the Monitor-origin
+            # metadata.  Navigation must preserve that explicit analysis
+            # identity without failing or substituting a newer scope.
+            "origin_monitor_scope": status.get("origin_monitor_scope"),
             "created_at": status["created_at"],
             "finished_at": status["finished_at"],
         })

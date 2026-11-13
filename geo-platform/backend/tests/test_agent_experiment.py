@@ -29,7 +29,9 @@ from app.modules.agent_experiment.grading import validate_and_grade
 from app.modules.agent_experiment.evidence_pack import (
     EvidencePackCapacityError,
     AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
+    QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
     _PROMPT_VERSION_BY_EXECUTION_CONTRACT,
+    _aggregate_pack_integrity_issues,
     _canonical_observation_block,
     build_evidence_pack,
     render_evidence_pack_prompt,
@@ -401,7 +403,7 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v13"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v14"
     assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v11"
     assert execution["requested_artifact_types"] == ["HELP_DOC"]
     assert execution["model_profile"]["reasoning_effort"] == "none"
@@ -682,6 +684,9 @@ def test_execution_contract_routes_to_frozen_prompt_identity():
     assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v13"] == (
         "geo-evidence-pack-synthesis.v11"
     )
+    assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v14"] == (
+        "geo-evidence-pack-synthesis.v11"
+    )
     assert "geo.evidence-pack.execution.v4" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
     assert "geo.evidence-pack.execution.v7" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
 
@@ -960,6 +965,80 @@ def test_quality_gate_v5_server_verifies_complete_nonempty_absence_scope():
     assert checked["validation"]["verified_brand_observations"][0]["observation_id"] == (
         observation["observation_id"]
     )
+
+
+def test_execution_v14_admits_nonempty_partial_answer_without_reinterpreting_v13():
+    scope = _quality_gate_scope("竞品甲提供教程。")
+    scope["runs"][0].update({
+        "status": "partial_success",
+        "reference_complete": False,
+        "observed_conditions": {
+            "source_type": {"value": "manual_observation", "source": "RUN_CAPTURE"},
+        },
+        "environment": {"manual_observation": {
+            "method": "MANUAL_IMPORT",
+            "source_assertion_status": "USER_ATTESTED_UNVERIFIED",
+            "citation_observation_status": "UNKNOWN",
+            "observed_at": "2026-11-12T09:00:00Z",
+            "imported_at": "2026-11-12T09:01:00Z",
+            "imported_by": "operator",
+            "identity_hash": "manual-identity-hash",
+            "payload_hash": "manual-payload-hash",
+        }},
+    })
+
+    historical = build_evidence_pack(
+        scope, execution_contract=QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
+    )
+    historical_set = historical["aggregate_evidence_sets"][0]
+    assert historical_set["eligibility_rule_version"].endswith(".v1")
+    assert historical_set["members"] == []
+    assert historical_set["excluded_members"][0]["reason"] == "ANSWER_NOT_ELIGIBLE"
+    assert historical["coverage"]["valid_answer_count"] == 0
+    assert "reference_complete" not in historical["runs"][0]
+    assert "manual_observation" not in historical["runs"][0]
+    assert "execution_contract" not in historical
+    assert historical["evidence_pack_hash"] == digest({
+        key: value for key, value in historical.items() if key != "evidence_pack_hash"
+    })
+    assert historical == build_evidence_pack(
+        scope, execution_contract=QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
+    )
+
+    current = build_evidence_pack(scope)
+    current_set = current["aggregate_evidence_sets"][0]
+    assert current["execution_contract"] == "geo.evidence-pack.execution.v14"
+    assert current["eligibility_rule_version"].endswith(".v2")
+    assert current_set["eligibility_rule_version"].endswith(".v2")
+    assert [member["run_id"] for member in current_set["members"]] == ["1"]
+    assert current["coverage"]["valid_answer_count"] == 1
+    assert current["runs"][0]["reference_complete"] is False
+    assert current["runs"][0]["citation_observation_status"] == "UNKNOWN"
+    assert current["runs"][0]["manual_observation"]["method"] == "MANUAL_IMPORT"
+    assert current["runs"][0]["source_assertion_status"] == "USER_ATTESTED_UNVERIFIED"
+
+    parse_failed_scope = json.loads(json.dumps(scope))
+    parse_failed_scope["runs"][0]["environment"]["manual_observation"][
+        "citation_observation_status"
+    ] = "PARSE_FAILED"
+    parse_failed = build_evidence_pack(parse_failed_scope)
+    assert parse_failed["runs"][0]["citation_observation_status"] == "PARSE_FAILED"
+
+    automatic_scope = _quality_gate_scope("竞品乙提供教程。", "竞品丙提供帮助。")
+    automatic_scope["runs"][0].update({
+        "status": "partial_success", "reference_complete": False,
+        "environment": {},
+    })
+    automatic_scope["runs"][1]["reference_complete"] = True
+    automatic = build_evidence_pack(automatic_scope)
+    assert automatic["runs"][0]["citation_observation_status"] == "UNKNOWN"
+    assert automatic["runs"][1]["citation_observation_status"] == "COMPLETE"
+    assert automatic["runs"][0]["manual_observation"] is None
+
+    current_set["eligibility_rule_version"] = "geo.evidence-pack.valid-run-eligibility.v1"
+    assert "AGGREGATE_EVIDENCE_SET_CONTRACT_MISMATCH" in {
+        issue["code"] for issue in _aggregate_pack_integrity_issues(current)
+    }
 
 
 def test_quality_gate_v5_missing_frozen_identity_stays_unknown():

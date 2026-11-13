@@ -142,6 +142,105 @@ def main() -> None:
             page = context.new_page()
             page.on("pageerror", lambda error: report["errors"].append(str(error)))
             origin = f"http://127.0.0.1:{port}"
+            page.goto(f"{origin}/?release_view=releaseMonitor&v2_project=1")
+            expect(page.get_by_role("region", name="项目监控概览")).to_be_visible(timeout=15000)
+            prompt_entry = page.get_by_role("button", name="查看这个问题", exact=True)
+            expect(prompt_entry).to_have_count(1)
+            prompt_entry.click()
+            expect(page).to_have_url(
+                f"{origin}/?release_view=releaseMonitor&v2_project=1&v2_prompt=44"
+            )
+            expect(page.get_by_text("从这里开始：选择一段时间内的回答", exact=True)).to_be_visible()
+            report["monitor_prompt_handoff"] = {
+                "project_id": 1,
+                "prompt_id": 44,
+                "status": "PASS",
+            }
+
+            isolated_project_response = page.request.post(origin + "/api/projects", data={
+                "name": "浏览器隔离新项目", "brand_name": "星河工具",
+                "brand_aliases": ["星河"], "website_url": "https://xinghe.example/",
+                "competitors": [{"name": "云端工具", "aliases": ["云端"]}],
+            })
+            assert isolated_project_response.ok, isolated_project_response.text()
+            isolated_project_id = isolated_project_response.json()["id"]
+            assert isolated_project_id != 1
+            isolated_prompt_response = page.request.post(
+                f"{origin}/api/projects/{isolated_project_id}/prompts",
+                data={"prompt_text": "如何为团队选择一个可靠的文件协作工具？",
+                      "intent_type": "product_selection"},
+            )
+            assert isolated_prompt_response.ok, isolated_prompt_response.text()
+            isolated_prompt_id = isolated_prompt_response.json()["id"]
+            assert isolated_prompt_id != 44
+            prompt_versions = page.request.get(
+                f"{origin}/api/projects/{isolated_project_id}/prompts/{isolated_prompt_id}/versions"
+            ).json()
+            configuration_versions = page.request.get(
+                f"{origin}/api/projects/{isolated_project_id}/configuration-versions"
+            ).json()
+            imported_response = page.request.post(
+                f"{origin}/api/v2/projects/{isolated_project_id}/prompts/{isolated_prompt_id}/manual-imports",
+                data={
+                    "prompt_version_id": prompt_versions[0]["prompt_version_id"],
+                    "prompt_snapshot_hash": prompt_versions[0]["snapshot_hash"],
+                    "configuration_version_id": configuration_versions[0]["configuration_version_id"],
+                    "configuration_snapshot_hash": configuration_versions[0]["snapshot_hash"],
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "source_platform": "wenxin", "source_page_url": "https://yiyan.baidu.com/",
+                    "answer_text": "这是人工观察到的完整回答，正文可以用于诊断，但页面引用区域当时无法可靠确认。",
+                    "citations": [], "citation_observation_status": "UNKNOWN",
+                    "citation_note": "引用区域未稳定显示，不能解释为零引用。",
+                    "idempotency_key": "browser-isolated-import-0001",
+                },
+            )
+            assert imported_response.ok, imported_response.text()
+            isolated_run_id = imported_response.json()["run_id"]
+            range_base = (
+                f"{origin}/api/v2/projects/{isolated_project_id}/prompts/"
+                f"{isolated_prompt_id}/analysis-ranges"
+            )
+            preview_response = page.request.post(
+                range_base + "/preview", data={"mode": "RUN_IDS", "run_ids": [isolated_run_id]}
+            )
+            assert preview_response.ok, preview_response.text()
+            preview = preview_response.json()
+            selected_group = preview["groups"][0]
+            freeze_response = page.request.post(range_base + "/freeze", data={
+                "selector": preview["selector"], "preview_hash": preview["preview_hash"],
+                "group_hash": selected_group["group_hash"], "selected_run_ids": [isolated_run_id],
+            })
+            assert freeze_response.ok, freeze_response.text()
+            isolated_analysis_id = freeze_response.json()["analysis"]["analysis_id"]
+
+            page.goto(f"{origin}/?release_view=releaseMonitor&v2_project={isolated_project_id}")
+            expect(page.get_by_text("如何为团队选择一个可靠的文件协作工具？", exact=True)).to_be_visible(
+                timeout=15000
+            )
+            isolated_prompt_entry = page.get_by_role("button", name="查看这个问题", exact=True)
+            expect(isolated_prompt_entry).to_have_count(1)
+            isolated_prompt_entry.click()
+            expect(page).to_have_url(
+                f"{origin}/?release_view=releaseMonitor&v2_project={isolated_project_id}"
+                f"&v2_prompt={isolated_prompt_id}"
+            )
+            expect(page.get_by_text("累计采样尝试 1 条", exact=False)).to_be_visible(timeout=15000)
+            page.reload()
+            expect(page).to_have_url(
+                f"{origin}/?release_view=releaseMonitor&v2_project={isolated_project_id}"
+                f"&v2_prompt={isolated_prompt_id}"
+            )
+            page.goto(
+                f"{origin}/?release_view=coreV2&v2_project={isolated_project_id}"
+                f"&v2_prompt={isolated_prompt_id}&v2_analysis={isolated_analysis_id}"
+            )
+            expect(page.get_by_text("当前冻结分析还没有优化历史", exact=True)).to_be_visible(timeout=15000)
+            expect(page.get_by_text("本次优化的内容资产", exact=True)).to_have_count(0)
+            report["dynamic_project_isolation"] = {
+                "project_id": isolated_project_id, "prompt_id": isolated_prompt_id,
+                "run_id": isolated_run_id, "analysis_id": isolated_analysis_id,
+                "citation_observation_status": "UNKNOWN", "status": "PASS",
+            }
             page.goto(f"{origin}/?release_view=coreV2&v2_project=1&v2_prompt=44&v2_analysis={analysis_id}")
             expect(page.get_by_text("AI 优化", exact=True)).to_be_visible(timeout=15000)
             expect(page.get_by_role("region", name="AI 优化")).to_be_visible()

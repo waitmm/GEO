@@ -76,7 +76,7 @@ def _execution_profile(*, regenerate_nonce: str | None = None,
         raise HTTPException(422, {"code": "AGENT_EXECUTION_MODE_INVALID"})
     if execution_mode == "EVIDENCE_PACK":
         return {
-            "contract_version": "geo.evidence-pack.execution.v13",
+            "contract_version": "geo.evidence-pack.execution.v14",
             "execution_mode": "EVIDENCE_PACK",
             "decision_contract": "ONE_MARKDOWN_SYNTHESIS_NO_TOOLS",
             "model_profile": {

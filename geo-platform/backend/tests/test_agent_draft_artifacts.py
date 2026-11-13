@@ -609,7 +609,7 @@ def test_regeneration_executor_claims_and_appends_only_target_asset(tmp_path, mo
     audit = loads(stored.audit_json, {})
     assert audit["external_request_state"] == "PROVIDER_RETURNED"
     assert audit["generation_profile"] == {
-        "execution_contract": "geo.evidence-pack.execution.v13",
+        "execution_contract": "geo.evidence-pack.execution.v14",
         "prompt_version": "geo-evidence-pack-synthesis.v11",
         "validation_contract": "geo.evidence-pack.validation.v6",
     }

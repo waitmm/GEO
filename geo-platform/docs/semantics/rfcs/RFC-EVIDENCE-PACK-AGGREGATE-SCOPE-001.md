@@ -140,3 +140,17 @@ passed v5. This proves the new deterministic binding path, not real model compli
 
 Detailed evidence is recorded in
 `docs/geo-v1.0/M1_2_AGGREGATE_SCOPE_V5_OFFLINE_RESULT_2026-11-10.md`.
+
+### Implementation compatibility note — 2026-11-13
+
+Execution v14 keeps Prompt v11, Validation v6, the frozen aggregate predicate and all Evidence Set identity
+requirements unchanged. It selects `geo.evidence-pack.valid-run-eligibility.v2`, which admits a non-empty
+`partial_success` answer only where the Run already preserves a complete answer body and the partial state is the
+separate citation-observation boundary. The Evidence Pack records `reference_complete`, the explicit
+`UNKNOWN`/`PARSE_FAILED` citation state and manual-import provenance; none of those states becomes confirmed zero
+citations or Product Truth. Citation-dependent denominators remain unchanged.
+
+Execution v12/v13 continue selecting `geo.evidence-pack.valid-run-eligibility.v1`; their Run projection, Pack bytes,
+hashes, validation meaning and stored results are not reinterpreted. This is an implementation alignment with
+`SC-GRADED-DELIVERY-001`, `SC-RUN-IMPORT-001` and the existing single-Prompt partial-answer boundary, not a new
+aggregate predicate or a production cutover.

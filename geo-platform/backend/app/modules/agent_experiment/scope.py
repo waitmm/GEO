@@ -30,7 +30,14 @@ from app.modules.single_prompt_v2.truth_corrections import project_truths
 from app.services.serialization import loads
 
 
-VALID_ANSWER_STATUSES = frozenset({"success", "completed"})
+# Keep Agent qualification aligned with the formal Run admission boundary.
+# A partial_success Run can still contain a complete, analyzable answer while
+# its citation observation is unknown/incomplete.  Treating that answer as
+# absent incorrectly downgraded a freshly frozen scope to L4 recovery even
+# though the range service had already admitted the same Run for non-citation
+# diagnosis.  Evidence/reference completeness remains represented separately
+# by source dispositions and does not get upgraded here.
+VALID_ANSWER_STATUSES = frozenset({"success", "completed", "partial_success"})
 
 
 def _conflict(code: str, message: str) -> None:

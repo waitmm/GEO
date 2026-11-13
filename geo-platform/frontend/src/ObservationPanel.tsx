@@ -177,6 +177,10 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     } catch (e) { if (epoch === generation.current) setError((e as Error).message); }
     finally { if (epoch === generation.current) setOpeningPrompt(undefined); }
   }
+  function openPromptMonitor(targetPromptId: number) {
+    const params = new URLSearchParams({ release_view: "releaseMonitor", v2_project: String(project.id), v2_prompt: String(targetPromptId) });
+    window.location.assign(`/?${params}`);
+  }
   const scopeLabel = (scope: any) => {
     const count = (scope.run_scope?.run_ids || []).length;
     const selector = scope.origin_monitor_scope?.selector;
@@ -246,10 +250,14 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
           { title: "下一步", render: (_, row: any) => <><Typography.Text>{row.opportunity.label}</Typography.Text><br /><Typography.Text type="secondary">{row.opportunity.reason}</Typography.Text></> },
           { title: "采样范围", render: (_, row: any) => `${row.run_ids.length} 条当前问题回答 / ${row.pool_count} 条历史尝试` },
           { title: "操作", render: (_, row: any) => <>
+            <Button onClick={() => openPromptMonitor(row.prompt.id)}>查看这个问题</Button>
             <Button loading={openingPrompt === row.prompt.id} disabled={openingPrompt !== undefined || !row.analysis_selection.selected_run_ids.length || row.analysis_selection.prompt_version?.binding_status !== "BOUND" || !row.analysis_selection.prompt_version?.prompt_version_id || !row.analysis_selection.prompt_version?.snapshot_hash}
               onClick={() => openAnalysis(row)}>分析这 {row.analysis_selection.selected_run_ids.length} 条回答</Button>
+            {!row.analysis_selection.selected_run_ids.length && <Typography.Paragraph type="warning">
+              当前没有可安全分析的回答。请先打开这个问题，选择时间范围；若没有回答，可人工导入或配置采集计划。
+            </Typography.Paragraph>}
             {row.analysis_selection.prompt_version?.binding_status !== "BOUND" && <Typography.Paragraph type="warning">
-              {monitorAnalysisBindingReason(row.analysis_selection)} 请使用下方“选择本次要分析的回答”，系统只会列出身份完整、可以安全分析的回答。
+              {monitorAnalysisBindingReason(row.analysis_selection)} 请点击“查看这个问题”，系统只会列出身份完整、可以安全分析的回答。
             </Typography.Paragraph>}
             {row.analysis_selection.excluded_run_ids.length > 0 && <Typography.Paragraph type="warning">
               Run {row.analysis_selection.excluded_run_ids.join("、")} 没有可分析正文，不进入该分析；监测统计仍保留这些尝试。

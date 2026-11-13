@@ -1,7 +1,7 @@
 # GEO M1 内部试用项目总控
 
-更新时间：2026-11-10（Asia/Shanghai）
-当前阶段：`M1_1_WINDOWS_DEPLOYMENT_PENDING / M1_2_AGGREGATE_SCOPE_OFFLINE_ACCEPTED`
+更新时间：2026-11-13（Asia/Shanghai）
+当前阶段：`M1_1_WINDOWS_DEPLOYMENT_PENDING / M1_2_QA_COMPOSITION_OFFLINE_ACCEPTED`
 M1.1 稳定线：`codex/m1-1-windows-dev`（当前归档 SHA `c5f2dbbc`，目标机验收前不得宣称已部署）
 M1.2 研发线：`codex/m1-2-multicontent`（以该分支最新已验收 HEAD 为准，不自动升级 M1.1）
 C0 研究线：`codex/c0-second-platform-eval`（归档 SHA `13ecd983`；C1 未获授权，不启动真实平台采集）
@@ -46,18 +46,18 @@ Mac 历史运行曾保存 22 Run 真实 AI 优化结果，但服务、局域网�
 
 | 领域 | 子需求 | 状态 | 当前结论 / 下一 Gate |
 |---|---|---|---|
-| 项目 | 项目、Prompt 选择及项目隔离 | DONE | UI/API 已存在；公司部署需复验多账号项目权限 |
+| 项目 | 项目、Prompt 选择及项目隔离 | DONE | 新建非固定 ID 项目已完成“回答 → 冻结范围 → Optimize”离线纵向回归；公司部署仍需复验多人访问边界 |
 | 品牌 | 品牌、别名、官网、事实、禁止表述 | PILOT_READY | 能进入分析；内容完整性由项目组维护，目标关联不能冒充 Product Truth |
 | 数据 | Run 长期累积、原始回答/hash/引用保存 | DONE | 新数据不覆盖旧 Run；失败尝试与有效业务样本已区分 |
 | 数据 | `MANUAL_IMPORT` 正式入口 | DONE | 固定版本、观察时间、导入人、hash；不宣称平台真实性已独立验证 |
 | 采集 | Playwright 立即采集 | PILOT_READY（历史本机验收） | Mac 服务现已关闭；公司候选默认关闭，需独立许可与目标机验收 |
 | 采集 | 定时采集、幂等、暂停/恢复 | PILOT_READY（历史本机验收） | Mac 计划和自动启用标记现已关闭；公司候选默认关闭，不继承历史计划 |
-| Monitor | 回答、引用、状态、趋势与历史 Run | PILOT_READY | 可用于现有真实数据；未分析不能显示成品牌零表现 |
+| Monitor | 回答、引用、状态、趋势与历史 Run | PILOT_READY | 项目概览提供“查看这个问题”进入问题级范围选择；没有安全回答时给出导入/采集下一步；未分析不能显示成品牌零表现 |
 | 范围 | 7/14/30 天、自定义、指定/排除 Run | DONE | 最终冻结明确 Run IDs、版本及 hash，新采样不改变旧范围 |
 | 范围 | 冻结范围的业务可读时间命名 | DONE | UI 显示北京时间、回答数和范围，不要求员工理解内部 hash |
 | Optimize | Evidence Pack v3 单包生成 | LIMITED | 当前 22 Run 真实基线可用；容量取决于回答、唯一 URL 与正文长度 |
-| Optimize | HELP_DOC + FAQ 多内容父子版本 | REAL_GATE_FAILED / V5_OFFLINE_ACCEPTED | 第三次真实父子版本保持失败；新 v5 只完成离线实施和受保护回放，不重标历史结果、不进入 M1.1。第四次真实复测尚未授权 |
-| Optimize | 多内容结构与重复度质量 Gate | PROMPT_V10 / EXECUTION_V12 / VALIDATION_V5_OFFLINE | RFC 已批准并冻结；服务端构建精确 Evidence Set、计算品牌字面观察并验证封闭事实区及全输出总体品牌事实边界。117 项核心后端、40 项容量/试用保护回归、47 项前端测试及成功/部分成功浏览器场景通过，尚未发布 |
+| Optimize | HELP_DOC + FAQ 多内容父子版本 | REAL_GATE_FAILED / V6_OFFLINE_ACCEPTED | 四次真实父子版本保持原失败解释；v6 仅完成 QA 服务端组合、受保护 shadow 与隔离验收，不重标历史结果、不进入 M1.1；第五次真实复测未授权 |
+| Optimize | 多内容结构与质量 Gate | PROMPT_V11 / EXECUTION_V14 / VALIDATION_V6_OFFLINE | v14 只新增版本化回答准入 `valid-run-eligibility.v2`：完整非空的 `partial_success` 回答可进入非引用诊断和字面观察，但引用 UNKNOWN/PARSE_FAILED、人工来源声明及引用完整性继续显式保留；v13/v6 历史 Pack、hash 和解释保持不变。服务端 Evidence Set/Observation 与 QA Composition 规则未放宽，尚未发布 |
 | Optimize | 引用平台/竞品渠道分析 | DONE | 基于冻结引用观察，不把 AI 推荐渠道伪装成已验证效果 |
 | Optimize | 诊断、策略、渠道、完整正文、QA | PILOT_READY | 工程链可交付；必须用同事反馈评估品牌关联与内容采用价值 |
 | Optimize | 证据、Truth 与分级资格 Gate | DONE | 生成失败或证据不足不伪装成功；草稿与通过资格分开 |
@@ -91,9 +91,10 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
 | GEO-COL-001 | P2 | 自动文心采集未获许可且未做长期真实验收 | 计划暂停、重试 0、人工导入可用 | 获明确许可后先单条联调，再单独批准定时计划 |
 | GEO-VAL-001 | P1 | Validate 缺足够新增真实范围 | 不伪造趋势改善 | 有至少两个同口径真实冻结范围并由员工完成比较 |
 | GEO-DOC-001 | P1 | 旧 V2/实验/Beta 文档并存，容易误读状态 | 历史文档保留 | 以本总控为当前入口，发布候选时同步 RUNBOOK/USER_GUIDE |
-| GEO-MULTI-001 | P1 | 三次真实双稿均由 Provider 完整返回但未通过完整 Gate；v4 整节 aggregate 识别缺陷已用服务端结构化观察修复，但真实模型尚未按 v10/v12/v5 复验 | 三次原始结果、usage 与审计保留在受保护本地目录；v4 历史不变；v5 离线 Gate、22 条失败稿保护回放和隔离浏览器已通过，未发布、未调用模型 | 新授权下完成一次 v10/v12/v5 真实双稿；服务端 PASS 后仍需员工逐稿评价 |
+| GEO-MULTI-001 | P1 | 四次真实双稿均由 Provider 完整返回但未通过完整 Gate；第四次已把问题收敛到 QA 对已验证 Observation 的安全重复 | 四次原始结果、usage 与审计保留在受保护本地目录；历史 v4/v5 解释不变；v6 QA Composition 离线 Gate、保护回放和隔离浏览器通过，未发布、未新增模型调用 | 获得新授权后完成一次 Prompt v11 / Execution v14 / Validation v6 真实双稿；服务端 PASS 后仍需员工逐稿评价，离线 PASS 不替代采用价值 |
 | GEO-MULTI-UI-001 | P1 | RESOLVED：隔离浏览器已验收双成功及 HELP_DOC 成功/FAQ 失败的部分成功链路 | 失败资产禁止导出；成功资产可下载；反馈、历史版本和刷新恢复已验证；无授权时单篇重生成 fail-closed | 保留报告与失败证据；真实生成质量继续由 `GEO-MULTI-001` 管控 |
 | GEO-TEST-001 | P2 | 两个 Agent 回归曾把 2026-10-22/26 价格核验日期写死，跨 7 天后固定失败 | RESOLVED；测试统一使用单次测试进程冻结的当前价格证据日，生产七天时效 Gate 未放宽 | 本轮 Agent 与子资产联合回归 84/84、容量回归 29/29 通过 |
+| GEO-HANDOFF-001 | P1 | RESOLVED：项目 Monitor 无安全回答时缺少问题级下一步；`partial_success` 完整回答在范围服务可用、进入 Agent 冻结时却被错误降级 | 新项目使用动态 Project/Prompt/版本/Run 身份完成导入、范围冻结和 Optimize 建立；新 v14/v2 将完整回答纳入，同时在模型输入、Coverage、Evidence Set 与完整性校验中保留 UNKNOWN/PARSE_FAILED 和人工来源边界；旧 v13 仍按 v1 排除该状态 | 后端联合回归 151 passed、前端 48 passed、release build 通过；success/partial 两份隔离浏览器报告均含动态 Project 2 / Prompt 45 且 `external_calls=0`；真实模型质量仍由 `GEO-MULTI-001` 管控 |
 
 ### GEO-CAP-001 详细记录
 

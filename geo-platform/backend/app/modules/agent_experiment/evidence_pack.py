@@ -42,7 +42,8 @@ QUALITY_GATE_V2_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v9"
 AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v12"
 AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v10"
 QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v13"
-EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v14"
+PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v14"
+EVIDENCE_PACK_EXECUTION_CONTRACT = "geo.evidence-pack.execution.v15"
 EVIDENCE_PACK_PROMPT_VERSION = "geo-evidence-pack-synthesis.v11"
 EVIDENCE_PACK_VALIDATION_CONTRACT = "geo.evidence-pack.validation.v6"
 QA_COMPOSITION_CONTRACT = "geo.evidence-pack.qa-composition.v1"
@@ -63,6 +64,7 @@ _PROMPT_VERSION_BY_EXECUTION_CONTRACT = {
     AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT:
         AGGREGATE_SCOPE_EVIDENCE_PACK_PROMPT_VERSION,
     QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
+    PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
     EVIDENCE_PACK_EXECUTION_CONTRACT: EVIDENCE_PACK_PROMPT_VERSION,
 }
 DEFAULT_TEXT_BUDGET = 90_000
@@ -156,6 +158,8 @@ _RECOMMENDATION_WORDING = re.compile(r"推荐|首选|优先选择")
 _SUPERLATIVE_WORDING = re.compile(r"最好|最佳|最优|第一")
 _CAPABILITY_WORDING = re.compile(r"支持|具备|提供|可用于|能够|可以|不支持|不具备|无法")
 _NEGATIVE_CAPABILITY_WORDING = re.compile(r"不支持|不具备|无法")
+_CONTENT_ACTION_VERB = r"发布|补充|新增|完善|更新|制作|建设"
+_CONTENT_ACTION_ASSET = r"帮助文档|FAQ|常见问题|教程|内容资产|文章|页面"
 _SENTENCE_SPLIT = re.compile(r"[。！？!?；;\n]+")
 _CAUSAL_WORDING = re.compile(r"因为|因此|所以|导致|原因|说明|证明|由此|归因")
 _BRAND_MATCH_RULE_VERSION = "geo.brand-literal-match.v1"
@@ -170,12 +174,15 @@ _ELIGIBLE_ANSWER_STATUSES_BY_RULE = {
 
 
 def _eligibility_rule_for_execution(execution_contract: str) -> str:
-    # v13 and all earlier profiles retain their frozen interpretation.  Only
-    # v14 admits a non-empty partial_success answer while keeping its citation
+    # v13 and all earlier profiles retain their frozen interpretation.  v14+
+    # admit a non-empty partial_success answer while keeping its citation
     # observation state explicit and fail-closed.
     return (
         _VALID_RUN_RULE_V2
-        if execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT
+        if execution_contract in {
+            PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
+            EVIDENCE_PACK_EXECUTION_CONTRACT,
+        }
         else _VALID_RUN_RULE_V1
     )
 
@@ -931,6 +938,43 @@ def _qa_unverified_brand_claim(sentence: str, pack: dict[str, Any]) -> str | Non
     return None
 
 
+def _draft_has_unverified_brand_capability(sentence: str, pack: dict[str, Any]) -> bool:
+    """Require Product Truth for target-brand abilities asserted in a public draft."""
+    terms = _brand_terms(pack)
+    if not terms or not (any(term in sentence for term in terms)
+                         or _BRAND_PRONOUN_SUBJECT.search(sentence)):
+        return False
+    if (_closed_negative_inference_boundary(sentence, terms)
+            or _closed_future_verification_question(sentence, terms)):
+        return False
+    # A bounded publishing recommendation is an action for the brand team, not
+    # an assertion that the product already has a capability. Keep this grammar
+    # deliberately narrow so "目标品牌可以跨域跳转" still requires Product Truth.
+    subjects = [*terms, "目标品牌", "该品牌", "这个品牌"]
+    subject_pattern = "|".join(re.escape(value) for value in dict.fromkeys(subjects))
+    if subject_pattern and re.fullmatch(
+            rf"\s*(?:建议|后续建议)?\s*(?:{subject_pattern})\s*(?:可以|可)\s*"
+            rf"(?:在[^，,；;。！？!?]{{1,24}})?\s*(?:{_CONTENT_ACTION_VERB})\s*"
+            rf"[^，,；;。！？!?]{{0,24}}(?:{_CONTENT_ACTION_ASSET})\s*",
+            _V5_REF.sub("", sentence)):
+        return False
+    claims, incomplete_capability = _capability_analysis(sentence, terms)
+    if not claims and not incomplete_capability:
+        return False
+    if incomplete_capability:
+        return True
+    truth_locators = [
+        match.group(2) for match in _V5_REF.finditer(sentence)
+        if match.group(1) == "truth"
+        and _validate_reference(match.group(1), match.group(2), pack) is None
+    ]
+    return any(
+        not any(_truth_supports_capability_claim(claim, locator, pack)
+                for locator in truth_locators)
+        for claim in claims
+    )
+
+
 def _replace_top_level_section(markdown: str, section_name: str, body: str) -> str:
     matches = list(_HEADING.finditer(markdown))
     target = next((index for index, match in enumerate(matches)
@@ -1038,6 +1082,7 @@ def build_evidence_pack(
     structured_observations = execution_contract in {
         AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
         QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
         EVIDENCE_PACK_EXECUTION_CONTRACT,
     }
     aggregate_evidence_set: dict[str, Any] | None = None
@@ -1059,7 +1104,10 @@ def build_evidence_pack(
             "competitors": row.get("competitors") or [],
             "reference_count": len(row.get("references") or []),
         }
-        if execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT:
+        if execution_contract in {
+            PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
+            EVIDENCE_PACK_EXECUTION_CONTRACT,
+        }:
             manual_observation = (
                 ((row.get("environment") or {}).get("manual_observation") or None)
             )
@@ -1178,7 +1226,10 @@ def build_evidence_pack(
         ),
         "omitted_materials": omitted,
     }
-    if execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT:
+    if execution_contract in {
+        PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        EVIDENCE_PACK_EXECUTION_CONTRACT,
+    }:
         coverage["eligibility_rule_version"] = eligibility_rule_version
     pack = {
         "contract_version": EVIDENCE_PACK_CONTRACT,
@@ -1193,7 +1244,10 @@ def build_evidence_pack(
             "unavailable": "省略、抓取失败、未知与合法零值保持区分",
         },
     }
-    if execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT:
+    if execution_contract in {
+        PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        EVIDENCE_PACK_EXECUTION_CONTRACT,
+    }:
         pack["execution_contract"] = execution_contract
         pack["eligibility_rule_version"] = eligibility_rule_version
     pack["evidence_pack_hash"] = digest(pack)
@@ -1986,11 +2040,13 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
                              ) -> tuple[dict[str, Any], dict[str, str]]:
     quality_gate_v6 = execution_contract in {
         QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
         EVIDENCE_PACK_EXECUTION_CONTRACT,
     }
     quality_gate_v5 = execution_contract in {
         AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
         QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
         EVIDENCE_PACK_EXECUTION_CONTRACT,
     }
     quality_gate_v4 = execution_contract in {
@@ -1998,6 +2054,7 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
         QUALITY_GATE_V2_EVIDENCE_PACK_EXECUTION_CONTRACT,
         AGGREGATE_SCOPE_EVIDENCE_PACK_EXECUTION_CONTRACT,
         QA_COMPOSITION_V1_EVIDENCE_PACK_EXECUTION_CONTRACT,
+        PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
         EVIDENCE_PACK_EXECUTION_CONTRACT,
     }
     selected = _normalize_requested_artifacts(requested_artifact_types)
@@ -2153,6 +2210,16 @@ def validate_markdown_result(markdown: str, pack: dict[str, Any],
                     "code": "INTERNAL_AUTHORING_INSTRUCTION_LEAK",
                     "detail": category,
                 }, section_name)
+        if execution_contract == EVIDENCE_PACK_EXECUTION_CONTRACT:
+            for sentence in [
+                    value.strip() for value in _SENTENCE_SPLIT.split(
+                        _mask_markdown_code(draft)) if value.strip()
+            ]:
+                if _draft_has_unverified_brand_capability(sentence, pack):
+                    add_issue({
+                        "code": "DRAFT_UNVERIFIED_BRAND_CAPABILITY_CLAIM",
+                        "detail": digest(sentence),
+                    }, section_name)
 
     if set(artifact_sections) == {"HELP_DOC", "FAQ"}:
         help_metrics = _help_doc_structure_metrics(draft_by_artifact["HELP_DOC"])

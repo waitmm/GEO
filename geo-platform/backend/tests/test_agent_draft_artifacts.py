@@ -17,6 +17,7 @@ from app.models import (
     AgentExperimentRun, AgentResultVersion,
 )
 from app.modules.agent_experiment.evidence_pack import (
+    PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
     _draft_similarity_metrics, _has_sufficient_faq_structure,
     _has_unsupported_numeric_claim, _help_doc_structure_metrics, build_evidence_pack,
     validate_markdown_result,
@@ -42,6 +43,7 @@ from app.modules.agent_experiment.service import (
 from app.services.serialization import loads
 from test_agent_experiment import (
     CURRENT_PRICING_DATE, ScriptedEvidencePackClient, _artifact, _evidence_markdown,
+    _quality_gate_scope,
 )
 from test_release_first_slice import _migrated_session, _seed_citation_contribution_fixture
 
@@ -212,6 +214,117 @@ def _faq_markdown(pack, *, valid=True):
     if not valid:
         faq = "只有一条未完成的回答。"
     return f"{before}## 常见问题\n{faq}\n\n## QA 与事实限制{after}"
+
+
+def test_current_draft_gate_blocks_competitor_capability_transfer_without_reclassifying_v14():
+    scope = _quality_gate_scope("竞品甲支持跨域跳转。", "竞品乙提供帮助。")
+    current_pack = build_evidence_pack(scope)
+    current_markdown = _evidence_markdown(current_pack).replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        "目标品牌支持跨域跳转。第三方竞品甲支持跨域跳转。"
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+    )
+    rejected, _ = validate_markdown_result(current_markdown, current_pack)
+    assert rejected["validation"]["status"] == "FAIL"
+    assert "DRAFT_UNVERIFIED_BRAND_CAPABILITY_CLAIM" in {
+        issue["code"] for issue in rejected["validation"]["issues"]
+    }
+
+    historical_pack = build_evidence_pack(
+        scope, execution_contract=PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
+    )
+    historical_markdown = _evidence_markdown(historical_pack).replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        "目标品牌支持跨域跳转。第三方竞品甲支持跨域跳转。"
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+    )
+    historical, _ = validate_markdown_result(
+        historical_markdown, historical_pack,
+        execution_contract=PARTIAL_ANSWER_EVIDENCE_PACK_EXECUTION_CONTRACT,
+    )
+    assert historical["validation"]["status"] == "PASS"
+
+
+def test_current_draft_gate_accepts_third_party_fact_but_requires_truth_for_target_brand():
+    scope = _quality_gate_scope("竞品甲支持跨域跳转。", "竞品乙提供帮助。")
+    third_party_pack = build_evidence_pack(scope)
+    third_party_markdown = _evidence_markdown(third_party_pack).replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        "竞品甲支持跨域跳转。这是一份面向当前搜索问题的完整可编辑内容。",
+    )
+    third_party, _ = validate_markdown_result(third_party_markdown, third_party_pack)
+    assert third_party["validation"]["status"] == "PASS"
+
+    scope["product_truth"]["facts"] = [{
+        "truth_id": "cross-domain", "truth_correction_version": 1,
+        "capability_label": "目标品牌支持跨域跳转",
+    }]
+    truth_pack = build_evidence_pack(scope)
+    truth_markdown = _evidence_markdown(truth_pack).replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        "目标品牌支持跨域跳转[[truth:cross-domain:1]]。"
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+    )
+    accepted, _ = validate_markdown_result(truth_markdown, truth_pack)
+    assert accepted["validation"]["status"] == "PASS"
+
+
+def test_current_draft_gate_does_not_let_verify_first_launder_capability():
+    pack = build_evidence_pack(
+        _quality_gate_scope("竞品甲支持跨域跳转。", "竞品乙提供帮助。"))
+    markdown = _evidence_markdown(pack).replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        "VERIFY_FIRST；目标品牌支持跨域跳转。"
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+    )
+    rejected, _ = validate_markdown_result(markdown, pack)
+    assert rejected["validation"]["status"] == "FAIL"
+    assert "DRAFT_UNVERIFIED_BRAND_CAPABILITY_CLAIM" in {
+        issue["code"] for issue in rejected["validation"]["issues"]
+    }
+
+
+@pytest.mark.parametrize("action", [
+    "目标品牌可以在官网发布帮助文档。",
+    "目标品牌可以补充 FAQ。",
+])
+def test_current_draft_gate_allows_bounded_future_content_actions(action):
+    pack = build_evidence_pack(
+        _quality_gate_scope("竞品甲支持跨域跳转。", "竞品乙提供帮助。"))
+    markdown = _evidence_markdown(pack).replace(
+        "这是一份面向当前搜索问题的完整可编辑内容。",
+        f"{action}这是一份面向当前搜索问题的完整可编辑内容。",
+    )
+    checked, _ = validate_markdown_result(markdown, pack)
+    assert checked["validation"]["status"] == "PASS"
+
+    unsupported = markdown.replace(action, "目标品牌可以跨域跳转。")
+    rejected, _ = validate_markdown_result(unsupported, pack)
+    assert rejected["validation"]["status"] == "FAIL"
+    assert "DRAFT_UNVERIFIED_BRAND_CAPABILITY_CLAIM" in {
+        issue["code"] for issue in rejected["validation"]["issues"]
+    }
+
+
+def test_current_draft_capability_failure_is_scoped_to_one_asset():
+    pack = build_evidence_pack(
+        _quality_gate_scope("竞品甲支持跨域跳转。", "竞品乙提供帮助。"))
+    markdown = _multi_markdown(pack).replace(
+        "这是一份面向当前搜索问题的可编辑操作说明，",
+        "目标品牌支持跨域跳转。这是一份面向当前搜索问题的可编辑操作说明，",
+        1,
+    )
+    checked, _ = validate_markdown_result(
+        markdown, pack, requested_artifact_types=["HELP_DOC", "FAQ"],
+    )
+    by_type = {row["asset_type"]: row for row in checked["result"]["deliverables"]}
+    assert checked["validation"]["status"] == "PARTIAL"
+    assert by_type["HELP_DOC"]["artifact_validation"]["status"] == "FAIL"
+    assert by_type["FAQ"]["artifact_validation"]["status"] == "PASS"
+    assert "DRAFT_UNVERIFIED_BRAND_CAPABILITY_CLAIM" in {
+        issue["code"]
+        for issue in by_type["HELP_DOC"]["artifact_validation"]["issues"]
+    }
 
 
 def test_internal_authoring_leak_fails_only_affected_draft_asset(tmp_path, monkeypatch):
@@ -609,7 +722,7 @@ def test_regeneration_executor_claims_and_appends_only_target_asset(tmp_path, mo
     audit = loads(stored.audit_json, {})
     assert audit["external_request_state"] == "PROVIDER_RETURNED"
     assert audit["generation_profile"] == {
-        "execution_contract": "geo.evidence-pack.execution.v14",
+        "execution_contract": "geo.evidence-pack.execution.v15",
         "prompt_version": "geo-evidence-pack-synthesis.v11",
         "validation_contract": "geo.evidence-pack.validation.v6",
     }

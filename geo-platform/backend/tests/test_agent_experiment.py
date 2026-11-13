@@ -403,7 +403,7 @@ def test_evidence_pack_builds_from_frozen_scope_without_workflow_outputs(tmp_pat
     )
     assert created
     execution = loads(run.agent_execution_json, {})
-    assert execution["contract_version"] == "geo.evidence-pack.execution.v14"
+    assert execution["contract_version"] == "geo.evidence-pack.execution.v15"
     assert execution["model_profile"]["prompt_version"] == "geo-evidence-pack-synthesis.v11"
     assert execution["requested_artifact_types"] == ["HELP_DOC"]
     assert execution["model_profile"]["reasoning_effort"] == "none"
@@ -685,6 +685,9 @@ def test_execution_contract_routes_to_frozen_prompt_identity():
         "geo-evidence-pack-synthesis.v11"
     )
     assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v14"] == (
+        "geo-evidence-pack-synthesis.v11"
+    )
+    assert _PROMPT_VERSION_BY_EXECUTION_CONTRACT["geo.evidence-pack.execution.v15"] == (
         "geo-evidence-pack-synthesis.v11"
     )
     assert "geo.evidence-pack.execution.v4" not in _PROMPT_VERSION_BY_EXECUTION_CONTRACT
@@ -1007,7 +1010,7 @@ def test_execution_v14_admits_nonempty_partial_answer_without_reinterpreting_v13
 
     current = build_evidence_pack(scope)
     current_set = current["aggregate_evidence_sets"][0]
-    assert current["execution_contract"] == "geo.evidence-pack.execution.v14"
+    assert current["execution_contract"] == "geo.evidence-pack.execution.v15"
     assert current["eligibility_rule_version"].endswith(".v2")
     assert current_set["eligibility_rule_version"].endswith(".v2")
     assert [member["run_id"] for member in current_set["members"]] == ["1"]

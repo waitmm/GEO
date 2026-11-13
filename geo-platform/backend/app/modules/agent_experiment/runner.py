@@ -674,6 +674,7 @@ def execute_agent_run(run_id: str, *, session_factory, client: DecisionClient | 
         "geo.evidence-pack.execution.v9", "geo.evidence-pack.execution.v10",
         "geo.evidence-pack.execution.v11", "geo.evidence-pack.execution.v12",
         "geo.evidence-pack.execution.v13", "geo.evidence-pack.execution.v14",
+        "geo.evidence-pack.execution.v15",
     }:
         from .evidence_pack import execute_evidence_pack_run
         execute_evidence_pack_run(

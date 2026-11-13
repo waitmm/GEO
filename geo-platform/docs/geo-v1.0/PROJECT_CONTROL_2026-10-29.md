@@ -1,7 +1,7 @@
 # GEO M1 内部试用项目总控
 
-更新时间：2026-11-13（Asia/Shanghai）
-当前阶段：`M1_1_WINDOWS_DEPLOYMENT_PENDING / M1_2_QA_COMPOSITION_OFFLINE_ACCEPTED`
+更新时间：2026-11-14（Asia/Shanghai）
+当前阶段：`M1_1_WINDOWS_DEPLOYMENT_PENDING / M1_2_BODY_TRUTH_GATE_OFFLINE_ACCEPTED`
 M1.1 稳定线：`codex/m1-1-windows-dev`（当前归档 SHA `c5f2dbbc`，目标机验收前不得宣称已部署）
 M1.2 研发线：`codex/m1-2-multicontent`（以该分支最新已验收 HEAD 为准，不自动升级 M1.1）
 C0 研究线：`codex/c0-second-platform-eval`（归档 SHA `13ecd983`；C1 未获授权，不启动真实平台采集）
@@ -57,7 +57,7 @@ Mac 历史运行曾保存 22 Run 真实 AI 优化结果，但服务、局域网�
 | 范围 | 冻结范围的业务可读时间命名 | DONE | UI 显示北京时间、回答数和范围，不要求员工理解内部 hash |
 | Optimize | Evidence Pack v3 单包生成 | LIMITED | 当前 22 Run 真实基线可用；容量取决于回答、唯一 URL 与正文长度 |
 | Optimize | HELP_DOC + FAQ 多内容父子版本 | REAL_GATE_FAILED / V6_OFFLINE_ACCEPTED | 四次真实父子版本保持原失败解释；v6 仅完成 QA 服务端组合、受保护 shadow 与隔离验收，不重标历史结果、不进入 M1.1；第五次真实复测未授权 |
-| Optimize | 多内容结构与质量 Gate | PROMPT_V11 / EXECUTION_V14 / VALIDATION_V6_OFFLINE | v14 只新增版本化回答准入 `valid-run-eligibility.v2`：完整非空的 `partial_success` 回答可进入非引用诊断和字面观察，但引用 UNKNOWN/PARSE_FAILED、人工来源声明及引用完整性继续显式保留；v13/v6 历史 Pack、hash 和解释保持不变。服务端 Evidence Set/Observation 与 QA Composition 规则未放宽，尚未发布 |
+| Optimize | 多内容结构与质量 Gate | PROMPT_V11 / EXECUTION_V15 / VALIDATION_V6_OFFLINE | v14 冻结版本化回答准入 `valid-run-eligibility.v2` 及原 Validation v6 解释；v15 沿用同一 Prompt/Validation，并新增正文目标品牌能力必须由精确 Product Truth 支持的资产级 Gate。竞品/回答能力不能授权目标品牌事实，未来内容发布行动不误判为产品能力；旧 v14 Pack、hash 和历史结果不重解释。尚未发布 |
 | Optimize | 引用平台/竞品渠道分析 | DONE | 基于冻结引用观察，不把 AI 推荐渠道伪装成已验证效果 |
 | Optimize | 诊断、策略、渠道、完整正文、QA | PILOT_READY | 工程链可交付；必须用同事反馈评估品牌关联与内容采用价值 |
 | Optimize | 证据、Truth 与分级资格 Gate | DONE | 生成失败或证据不足不伪装成功；草稿与通过资格分开 |
@@ -91,8 +91,9 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
 | GEO-COL-001 | P2 | 自动文心采集未获许可且未做长期真实验收 | 计划暂停、重试 0、人工导入可用 | 获明确许可后先单条联调，再单独批准定时计划 |
 | GEO-VAL-001 | P1 | Validate 缺足够新增真实范围 | 不伪造趋势改善 | 有至少两个同口径真实冻结范围并由员工完成比较 |
 | GEO-DOC-001 | P1 | 旧 V2/实验/Beta 文档并存，容易误读状态 | 历史文档保留 | 以本总控为当前入口，发布候选时同步 RUNBOOK/USER_GUIDE |
-| GEO-MULTI-001 | P1 | 四次真实双稿均由 Provider 完整返回但未通过完整 Gate；第四次已把问题收敛到 QA 对已验证 Observation 的安全重复 | 四次原始结果、usage 与审计保留在受保护本地目录；历史 v4/v5 解释不变；v6 QA Composition 离线 Gate、保护回放和隔离浏览器通过，未发布、未新增模型调用 | 获得新授权后完成一次 Prompt v11 / Execution v14 / Validation v6 真实双稿；服务端 PASS 后仍需员工逐稿评价，离线 PASS 不替代采用价值 |
+| GEO-MULTI-001 | P1 | 四次真实双稿均由 Provider 完整返回但未通过完整 Gate；离线审计另发现正文可把竞品能力转成目标品牌能力 | 四次原始结果、usage 与审计保留在受保护本地目录；历史 v4/v5/v14 解释不变；当前 v15 依据 SC-PT-001 与分级交付约束增加资产级 Product Truth Gate，未发布、未新增模型调用 | 获得新授权后完成一次 Prompt v11 / Execution v15 / Validation v6 真实双稿；服务端 PASS 后仍需员工逐稿评价，离线 PASS 不替代采用价值 |
 | GEO-MULTI-UI-001 | P1 | RESOLVED：隔离浏览器已验收双成功及 HELP_DOC 成功/FAQ 失败的部分成功链路 | 失败资产禁止导出；成功资产可下载；反馈、历史版本和刷新恢复已验证；无授权时单篇重生成 fail-closed | 保留报告与失败证据；真实生成质量继续由 `GEO-MULTI-001` 管控 |
+| GEO-HISTORY-001 | P1 | RESOLVED：Optimize 切换历史任务时曾短暂沿用上一任务的结果、资产、QA、反馈或比较状态 | 选择变化立即清空旧投影；列表与详情请求按选择 epoch 和 Run ID 双重绑定，旧请求成功或失败均不能污染当前任务；读取失败明确不展示其他任务结果 | 客户端 55 passed、release build 通过；Luna 独立复核覆盖 A→B、详情竞态、列表竞态和失败态，未发现剩余 P0/P1 |
 | GEO-TEST-001 | P2 | 两个 Agent 回归曾把 2026-10-22/26 价格核验日期写死，跨 7 天后固定失败 | RESOLVED；测试统一使用单次测试进程冻结的当前价格证据日，生产七天时效 Gate 未放宽 | 本轮 Agent 与子资产联合回归 84/84、容量回归 29/29 通过 |
 | GEO-HANDOFF-001 | P1 | RESOLVED：项目 Monitor 无安全回答时缺少问题级下一步；`partial_success` 完整回答在范围服务可用、进入 Agent 冻结时却被错误降级 | 新项目使用动态 Project/Prompt/版本/Run 身份完成导入、范围冻结和 Optimize 建立；新 v14/v2 将完整回答纳入，同时在模型输入、Coverage、Evidence Set 与完整性校验中保留 UNKNOWN/PARSE_FAILED 和人工来源边界；旧 v13 仍按 v1 排除该状态 | 后端联合回归 151 passed、前端 48 passed、release build 通过；success/partial 两份隔离浏览器报告均含动态 Project 2 / Prompt 45 且 `external_calls=0`；真实模型质量仍由 `GEO-MULTI-001` 管控 |
 | GEO-RANGE-001 | P1 | RESOLVED：自动/定时 Run 在范围预览和冻结时曾丢失观察时项目配置，并静默回退冻结时 current 配置 | 统一从源 Analysis、MANUAL_IMPORT 或 COLLECTION_ONLY schedule 的不可变 lineage 证明配置；混合配置分组，篡改/缺失/legacy 身份 fail-closed；UI 显示观察时配置版本并提前禁用不安全分组；不重写历史 Analysis | v1 采集后 current 变 v2 仍冻结 v1；后端相关联合回归 186 passed、客户端 50 passed、release build 与动态 Project 2 / Prompt 45 隔离浏览器 PASS；无迁移、无外调 |
@@ -168,6 +169,11 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
   双稿正文不做自动改写，能力/推荐/排名/因果及未知等价仍阻断。第四次保护库精确 shadow 保持历史
   v5 FAIL，同时 v6 PASS 且数据库前后 hash 一致。第五次调用及发布仍未授权。详情见
   [v6 离线结果](M1_2_SERVER_COMPOSED_QA_V6_OFFLINE_RESULT_2026-11-13.md)。
+- 2026-11-14 依据既有 `SC-PT-001` 与分级交付规则完成实现缺口修复：Execution v15 保持 Prompt v11 /
+  Validation v6，不新增语义 RFC；HELP_DOC、FAQ 和 legacy 完整正文中的目标品牌能力现在必须由同句精确
+  Product Truth locator 支持。竞品能力、回答中的未核实能力和 `VERIFY_FIRST` 均不能授权目标品牌事实；
+  问题精确归属单份资产，仍支持部分成功。v14 Pack/hash/历史状态与解释保持不变。详情见
+  [v15 正文 Truth Gate 离线结果](M1_2_EXECUTION_V15_BODY_TRUTH_GATE_OFFLINE_RESULT_2026-11-14.md)。
 
 ## 5. 下一里程碑：公司单机内部试用
 
@@ -266,6 +272,8 @@ Python/Node 版本和网络出口。使用专用运行目录和服务账号，�
 - [x] 第四次真实复测已按独立授权完成且保持真实 FAIL；未自动重跑或重标。
 - [x] `RFC-EVIDENCE-PACK-SERVER-COMPOSED-QA-002` 已批准并 Definition Freeze；v6 离线实现和第四次
   保护稿 shadow 已通过，历史 v5 与数据库不变。
+- [x] Execution v15 已按既有 `SC-PT-001` / 分级交付契约补齐正文 Product Truth Gate；竞品能力转移反例、
+  精确 Truth 正例、`VERIFY_FIRST` 负例、未来内容行动正例、双资产部分成功及 v14 历史兼容均通过。
 - [ ] 第五次真实复测需新的独立付费授权；不得因 v6 shadow 通过自动调用模型或发布 M1.2。
 - [ ] 在两份资产通过服务端 Gate 后安排员工逐稿质量评审；不得以首次失败稿或合成结果替代。
 - [x] 当前 M1.2 候选已在 M1.1 只读数据副本上通过升级、备份、恢复和回滚演练；正式提升仍需真实质量与审批。

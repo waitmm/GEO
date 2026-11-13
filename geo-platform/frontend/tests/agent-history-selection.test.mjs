@@ -74,6 +74,7 @@ test("the history panel clears all A-specific projections and renders only a sel
   assert.match(source, /agentHistoryTaskControls\(selectedRun\?\.status\)/);
   assert.match(source, /const operation: AgentHistoryOperation = \{ generation: generation\.current, scopeKey \}/);
   assert.match(source, /if \(operationIsCurrent\(operation\)\) setError/);
+  assert.match(source, /selectedResultRef\.current = value; setSelectedResultVersion\(value\); setBusy\(false\)/);
   assert.match(source, /encodeURIComponent\(selectedRun\.run_id\)/);
   assert.ok(source.indexOf("selectedRunControls.stop") < source.indexOf("{result && <>"), "controls must not be gated by a result");
   assert.match(source, /\+\+generation\.current;\n    selectedRunRef\.current = runId/);

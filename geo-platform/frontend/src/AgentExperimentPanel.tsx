@@ -325,7 +325,7 @@ export function AgentExperimentPanel({ projectId, promptId, analysisId, contextI
           </Space>}
           {result && <>
           {results.length > 0 && <Select className="agent-result-version-select" aria-label="结果历史版本" style={{ width: "100%", marginTop: 16 }} value={result?.result_version}
-            onChange={value => { selectedResultRef.current = value; setSelectedResultVersion(value); }} options={results.map(item => ({ value: item.result_version,
+            onChange={value => { selectedResultRef.current = value; setSelectedResultVersion(value); setBusy(false); }} options={results.map(item => ({ value: item.result_version,
               label: `结果 V${item.version_number} · ${humanTime(item.created_at)} · ${item.evidence_grade}` }))} />}
             <Alert style={{ marginTop: 12 }} type={result.validation?.status === "PASS" ? "success" : "warning"} showIcon
               message={result.validation?.status === "PASS" ? `服务端校验通过 · ${result.evidence_grade}` : `草稿已保存，服务端校验未通过 · ${result.evidence_grade}`}

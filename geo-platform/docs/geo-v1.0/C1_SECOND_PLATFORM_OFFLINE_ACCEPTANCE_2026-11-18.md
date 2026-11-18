@@ -22,6 +22,8 @@
 - `UNKNOWN` 与 `PARSE_FAILED` 引用观察保持不完整，不能变成已确认零引用。
 - `CONFIRMED_NONE` 仅在显式状态、零引用且计数一致时成立。
 - `COMPLETE` 要求引用计数一致且存在实际引用；未解析目标继续以不完整状态保存。
+- Collector `environment` 只允许写入浏览器、采样模式和解析器等运行环境字段；Project、Prompt、平台、adapter、状态、计数和引用资格均由服务端身份与确定性校验控制。
+- `COMPLETE` 的解析计数必须与实际引用记录数量一致，resolved 计数不得超过解析记录；只有计数而没有引用记录时 fail-closed 为 `partial_success/reference_incomplete`。
 - 引用展示平台名由服务端依据 Run 的平台身份映射，采集 payload 不能伪造为其他平台。
 - 合成元宝 Run 的平台、adapter、PromptVersion、ProjectConfigurationVersion 与采样计划 lineage 通过正式范围 Gate；未使用 `latest` 或绕过校验。
 - 冻结输入保留 Run 平台/adapter、引用、候选及完整性状态，随后进入现有唯一 Optimize/Evidence Pack 路径。
@@ -45,6 +47,8 @@ Run→freeze→Optimize→Evidence Pack 行为完成后，测试把整数 `run_i
 依赖/ORM warning，耗时 478.11 秒；没有剩余 assertion 或 migration 失败。
 测试覆盖 C0 两个原 strict-xfail 的修复、四种引用观察状态、registry fail-closed，以及完整离线纵向投影。
 上述耗时不作为产品性能结论。
+
+组合 Gate 前新增三个反例：恶意 environment 不得覆盖冻结身份或引用资格、`COMPLETE` 计数不得替代实际引用记录、负数计数不得成为 `CONFIRMED_NONE`。这些用例仅验证离线确定性边界，不构成真实平台验收。
 
 ## 剩余真实 Gate
 

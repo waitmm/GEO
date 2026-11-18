@@ -17,6 +17,21 @@ from app.services.serialization import dumps
 from app.services.url_identity import url_identity_fields
 
 
+_COLLECTOR_ENVIRONMENT_FIELDS = frozenset({
+    "collection_mode",
+    "collector_id",
+    "browser",
+    "browser_version",
+    "os",
+    "profile_identifier",
+    "conversation_id",
+    "sampling_mode",
+    "network_region",
+    "collector_version",
+    "parser_version",
+})
+
+
 class MonitoringTaskExecutor:
     def __init__(self) -> None:
         self.artifacts = ArtifactService()
@@ -251,17 +266,25 @@ class MonitoringTaskExecutor:
         run.detected_reference_count = dom_count
         run.resolved_reference_count = resolved_count
         run.unresolved_reference_count = max(0, parsed_count - resolved_count)
+        observed_counts = (ui_count, dom_count, parsed_count, resolved_count)
+        references_match_counts = (
+            all(count >= 0 for count in observed_counts)
+            and parsed_count == len(result.references)
+            and resolved_count <= parsed_count
+        )
         if observation_status == "CONFIRMED_NONE":
-            run.reference_complete = not result.references and max(ui_count, dom_count, parsed_count, resolved_count) == 0
+            run.reference_complete = not result.references and all(count == 0 for count in observed_counts)
         elif observation_status == "COMPLETE":
-            run.reference_complete = ui_count > 0 and (
+            run.reference_complete = references_match_counts and ui_count > 0 and (
                 ui_count == dom_count == parsed_count
                 and resolved_count / max(1, parsed_count) >= 0.95
             )
         else:
             run.reference_complete = False
+        for field in _COLLECTOR_ENVIRONMENT_FIELDS:
+            if field in result.environment and hasattr(run, field):
+                setattr(run, field, result.environment[field])
         field_values = {
-            **result.environment,
             "ui_declared_count": ui_count,
             "dom_reference_count": dom_count,
             "parsed_reference_count": parsed_count,

@@ -193,6 +193,49 @@ def test_complete_counts_without_reference_records_fail_closed(monkeypatch):
     assert run.error_type == "reference_incomplete"
 
 
+def test_complete_resolved_count_must_match_actual_urls(monkeypatch):
+    executor = object.__new__(MonitoringTaskExecutor)
+    monkeypatch.setattr(executor, "_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_clear_run_outputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_references", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_candidates", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_result_artifacts", lambda *args, **kwargs: None)
+
+    class DB:
+        def add(self, value):
+            pass
+
+    class Row:
+        id = 1
+        platform = "yuanbao"
+
+    class Project:
+        brand_name = "合成品牌"
+        brand_aliases_json = "[]"
+
+    result = CollectorResult(
+        answer_text="这是一段足够长的离线合成回答，用来验证已解析计数必须对应实际非空引用 URL。",
+        references=[{
+            "display_title": "合成未解析引用",
+            "url": "",
+            "resolution_method": "unresolved",
+        }],
+        metrics={
+            "ui_declared_count": 1,
+            "dom_reference_count": 1,
+            "parsed_reference_count": 1,
+            "resolved_url_count": 1,
+        },
+        reference_observation_status="COMPLETE",
+    )
+    run = Row()
+    executor.apply_result(DB(), run, Project(), result)
+
+    assert run.reference_complete is False
+    assert run.status == "partial_success"
+    assert run.error_type == "reference_incomplete"
+
+
 def test_negative_counts_cannot_qualify_confirmed_none(monkeypatch):
     executor = object.__new__(MonitoringTaskExecutor)
     monkeypatch.setattr(executor, "_stage", lambda *args, **kwargs: None)

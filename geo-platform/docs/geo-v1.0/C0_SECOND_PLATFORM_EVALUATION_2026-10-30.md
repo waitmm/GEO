@@ -106,7 +106,8 @@ SC-EVIDENCE-001/003、SC-UNKNOWN-001 和现有精确版本范围规则。
 - 两平台字段 envelope 序列化回放、回答 hash、重复 occurrence、候选/引用分离；
 - 当前自动 registry 和人工导入 schema 对未支持平台 fail-closed；
 - COMPLETE、CONFIRMED_NONE、UNKNOWN、PARSE_FAILED 的现有人工引用校验；
-- 两个 `strict xfail` 保留当前共享 executor 的已知 C1 反例：UNKNOWN → 零引用、平台名串成文心。
+- 原 C0 的两个 `strict xfail` 已由 C1-OFFLINE-01 转为通过：UNKNOWN 不再降级为合法零引用，
+  引用展示平台名由不可变 Run 平台决定，不再固定为文心。
 
 执行命令（仅复用已安装依赖，不安装/下载任何包）：
 
@@ -116,10 +117,12 @@ cd /private/tmp/geo-c0-platform-eval/geo-platform/backend
   -m pytest -q tests/test_c0_second_platform_probe.py --disable-warnings -rx
 ```
 
-结果：**10 passed、2 xfailed，4.15 秒**。既有 `tests/test_manual_run_import.py`
+原始 C0 结果：**10 passed、2 xfailed，4.15 秒**。C1-OFFLINE-01 已将两项反例转为
+正式回归，且新增合成元宝纵向投影验收；最新结果与边界见
+`C1_SECOND_PLATFORM_OFFLINE_ACCEPTANCE_2026-11-18.md`。既有 `tests/test_manual_run_import.py`
 独立回归 **3 passed，10.69 秒**。`git diff --check` 通过。
 合成 fixture SHA-256：`04c588872742ff434aaa71f5a58c5031d58827132d6bf138969962611df4607e`。
-`xfail` 明确代表尚未修复的接入阻断，不能计作 C1 功能通过。
+原 `xfail` 在 C0 时明确代表接入阻断；其转为通过只证明共享离线契约已修复，仍不能计作真实采集或生产准入。
 这些测试没有证明页面 selector、真实登录、真实内容质量或第二平台生产准入已完成。
 
 ## 6. C1 最小 Gate（提议，不是本次授权）

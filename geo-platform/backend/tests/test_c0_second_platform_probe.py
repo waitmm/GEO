@@ -77,27 +77,34 @@ def test_existing_manual_citation_state_contract_is_reusable_without_external_ca
     assert _validate_citations(state, citations, note) == citations
 
 
-@pytest.mark.xfail(strict=True, reason="C1-GAP-01: missing reference metadata becomes a false complete zero")
 def test_missing_reference_metadata_must_not_become_confirmed_zero(monkeypatch):
     executor = object.__new__(MonitoringTaskExecutor)
     for method in ("_stage", "_clear_run_outputs", "_save_references", "_save_candidates", "_save_result_artifacts"):
         monkeypatch.setattr(executor, method, lambda *args, **kwargs: None)
     captured = []
     db = SimpleNamespace(add=captured.append)
-    run = SimpleNamespace(id=1)
+    run = SimpleNamespace(id=1, platform="yuanbao")
     project = SimpleNamespace(brand_name="合成品牌", brand_aliases_json="[]")
     result = CollectorResult(answer_text="合成离线回答，正文足够长，但没有任何可确认的引用区域观测或计数信息。")
     executor.apply_result(db, run, project, result)
     assert run.reference_complete is False
+    assert run.status == "partial_success"
+    assert run.error_type == "reference_observation_unknown"
 
 
-@pytest.mark.xfail(strict=True, reason="C1-GAP-02: shared reference persistence hardcodes 文心助手")
 def test_second_platform_reference_must_not_be_relabelled_wenxin():
     executor = object.__new__(MonitoringTaskExecutor)
     captured = []
     db = SimpleNamespace(add=captured.append)
     executor._save_references(db, 1, [{
         "reference_index": 1, "display_title": "合成引用", "url": "https://example.invalid/a",
-        "platform_name": "腾讯元宝", "resolution_method": "synthetic_observed_link",
-    }])
+        "platform_name": "伪造的平台名称不能覆盖服务端身份", "resolution_method": "synthetic_observed_link",
+    }], platform_name="腾讯元宝")
     assert captured[0].platform_name == "腾讯元宝"
+
+
+def test_reference_persistence_requires_server_platform_identity():
+    executor = object.__new__(MonitoringTaskExecutor)
+    db = SimpleNamespace(add=lambda row: None)
+    with pytest.raises(TypeError, match="platform_name"):
+        executor._save_references(db, 1, [])

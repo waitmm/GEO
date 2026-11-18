@@ -1,0 +1,80 @@
+{
+  "fixture_version": "c1-yuanbao-offline-replay.v1",
+  "provenance": "SYNTHETIC_CONTRACT_PROBE",
+  "actual_platform_capture": false,
+  "production_admission": false,
+  "platform": "yuanbao",
+  "adapter": "yuanbao_web_audit",
+  "platform_label": "腾讯元宝",
+  "cases": [
+    {
+      "name": "complete_unresolved_target",
+      "reference_observation_status": "COMPLETE",
+      "answer_text": "【合成离线回放，非腾讯元宝真实回答】选择文件二维码方案时，应核实文件支持范围、可见性和更新规则；来源列表不自动证明文章支持全部结论。",
+      "references": [
+        {
+          "reference_index": 1,
+          "display_title": "合成来源，仅保留观察到的包装链接",
+          "url": "https://redirect.example.invalid/link?target=unknown",
+          "resolution_method": "synthetic_observed_unresolved_target",
+          "evidence_path": "synthetic://yuanbao/reference/1"
+        },
+        {
+          "reference_index": 2,
+          "display_title": "同一来源的第二次出现",
+          "url": "https://redirect.example.invalid/link?target=unknown",
+          "resolution_method": "synthetic_observed_unresolved_target",
+          "evidence_path": "synthetic://yuanbao/reference/2"
+        }
+      ],
+      "retrieval_candidates": [
+        {
+          "rank": 1,
+          "title": "仅为检索候选，不是答案引用",
+          "url": "https://candidate.example.invalid/search-result",
+          "evidence_path": "synthetic://yuanbao/candidate/1"
+        }
+      ],
+      "metrics": {
+        "ui_declared_count": 2,
+        "dom_reference_count": 2,
+        "parsed_reference_count": 2,
+        "resolved_url_count": 0
+      }
+    },
+    {
+      "name": "confirmed_none",
+      "reference_observation_status": "CONFIRMED_NONE",
+      "answer_text": "【合成离线回放】页面引用区域已被明确检查并确认没有展示引用，回答仍可作为有限分析输入。",
+      "references": [],
+      "retrieval_candidates": [],
+      "metrics": {
+        "ui_declared_count": 0,
+        "dom_reference_count": 0,
+        "parsed_reference_count": 0,
+        "resolved_url_count": 0
+      }
+    },
+    {
+      "name": "unknown",
+      "reference_observation_status": "UNKNOWN",
+      "answer_text": "【合成离线回放】回答正文可读，但引用区域没有形成可确认观测，不能据此记录为零引用。",
+      "references": [],
+      "retrieval_candidates": [],
+      "metrics": {}
+    },
+    {
+      "name": "parse_failed",
+      "reference_observation_status": "PARSE_FAILED",
+      "answer_text": "【合成离线回放】回答正文可读，页面显示了引用区域但解析失败，不能解释为没有引用。",
+      "references": [],
+      "retrieval_candidates": [],
+      "metrics": {
+        "ui_declared_count": 1,
+        "dom_reference_count": 1,
+        "parsed_reference_count": 0,
+        "resolved_url_count": 0
+      }
+    }
+  ]
+}

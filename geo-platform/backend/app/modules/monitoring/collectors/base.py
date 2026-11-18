@@ -16,6 +16,16 @@ class CollectorResult:
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     metrics: dict[str, Any] = field(default_factory=dict)
     environment: dict[str, Any] = field(default_factory=dict)
+    # COMPLETE and CONFIRMED_NONE are positive observations.  UNKNOWN and
+    # PARSE_FAILED must never be inferred as a confirmed zero merely because
+    # the collector returned no reference rows.
+    reference_observation_status: str = ""
+
+
+class CollectorError(Exception):
+    """Platform-neutral collector failure consumed by the shared executor."""
+
+    error_type = "unknown_error"
 
 
 @dataclass

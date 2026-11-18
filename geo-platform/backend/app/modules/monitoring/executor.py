@@ -267,10 +267,11 @@ class MonitoringTaskExecutor:
         run.resolved_reference_count = resolved_count
         run.unresolved_reference_count = max(0, parsed_count - resolved_count)
         observed_counts = (ui_count, dom_count, parsed_count, resolved_count)
+        actual_resolved_count = sum(1 for item in result.references if item.get("url"))
         references_match_counts = (
             all(count >= 0 for count in observed_counts)
             and parsed_count == len(result.references)
-            and resolved_count <= parsed_count
+            and resolved_count == actual_resolved_count
         )
         if observation_status == "CONFIRMED_NONE":
             run.reference_complete = not result.references and all(count == 0 for count in observed_counts)

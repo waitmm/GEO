@@ -1040,6 +1040,43 @@ supersedes: null
 last_verified_at: 2026-11-13
 ```
 
+### SC-MULTI-BATCH-EVIDENCE-MERGE-001 Frozen-Scope Multi-Batch Evidence Merge
+
+```yaml
+contract_id: SC-MULTI-BATCH-EVIDENCE-MERGE-001
+contract_name: Frozen-Scope Multi-Batch Evidence Merge
+contract_version: 1.0.0
+maturity: FROZEN
+implementation_status: SHADOW_CONTRACT_IMPLEMENTED_NOT_CUT_OVER
+definition: 一个不可变 Optimize 冻结范围可被确定性投影为有序批次；批次结果仅是绑定原始 locator 的局部候选，完整范围观察必须由服务端从完整冻结 manifest 重算，全部批次成功并验证后才允许进入独立 aggregate Gate。
+allowed_inferences:
+  - 完整 manifest 中的有效回答可按既有 eligibility v2 重算目标品牌字面出现观察；批次 finding 不决定完整范围分母。
+  - 普通诊断和行动候选只在其 batch scope 内成立；相同来源快照可被多个批次读取，但支持归属仍按原始 identity 计算。
+  - 全部批次、预算预留、重试上限、aggregate 输入和最终父子绑定都可使用独立、可审计的 append-only identity。
+forbidden_inferences:
+  - 缺失、失败或取消批次可产生最终 AgentResultVersion 或 DraftArtifactVersion。
+  - 多数投票、文本拼接、latest 回退、共享来源重复计数或模型 finding 数量可改变完整范围事实。
+  - 本合同 Definition Freeze 表示生产 executor、持久化、真实调用或 production cutover 已获批准。
+unknown_behavior: 品牌身份、回答资格、成员、hash、版本、locator、批次结果或冲突任一不确定时保留 UNKNOWN/REVIEW_REQUIRED；UNKNOWN 不变成零、ABSENT 或可发布结论。
+identity: exact frozen scope + ordered plan/batch/member hashes + append-only attempts + reservation identity + batch result hashes + aggregate input/output + final parent/child binding
+history: single-pack Evidence Pack v3、Execution v15、Validation v6、历史结果、usage 和状态保持原解释；不回填、不重验、不重标。
+step_boundary: isolated Agent Experiment Evidence Pack execution/validation shadow only; no formal V2 write, no provider call and no production result merge
+source_references:
+  - docs/semantics/rfcs/RFC-EVIDENCE-PACK-MULTI-BATCH-MERGE-001.md
+  - docs/semantics/reviews/RFC-EVIDENCE-PACK-MULTI-BATCH-MERGE-001.review-001.md
+  - docs/semantics/approvals/RFC-EVIDENCE-PACK-MULTI-BATCH-MERGE-001.definition-freeze.md
+enforcement_refs:
+  - backend/app/modules/agent_experiment/evidence_pack_multibatch_shadow.py
+  - backend/tests/test_evidence_pack_multibatch_shadow.py
+approved_by: Product Owner + independent geo_supervisor
+approved_at: 2026-11-18
+approval_reference: GEO Platform 1.0 全项目持续并行开发指令
+golden_case_ids: [MULTIBATCH-COMPLETE, MULTIBATCH-UNKNOWN, MULTIBATCH-CONFLICT, MULTIBATCH-RETRY, MULTIBATCH-CANCEL, MULTIBATCH-BUDGET, MULTIBATCH-HISTORY]
+effective_from: 2026-11-18
+supersedes: null
+last_verified_at: 2026-11-18
+```
+
 ## 3. Definition Freeze Queue
 
 `SC-RUNTIME-001@0.1.0` 已由 Product Owner 在独立 Review 005 通过后正式

@@ -569,6 +569,66 @@ class AgentMultiBatchAggregateCandidate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AgentMultiBatchAggregateReplayAttempt(Base):
+    """One immutable offline aggregate replay claim; never a provider call."""
+
+    __tablename__ = "agent_multibatch_aggregate_replay_attempts"
+    __table_args__ = (
+        UniqueConstraint("aggregate_candidate_id", "attempt_number",
+                         name="uq_agent_multibatch_aggregate_replay_attempt_number"),
+        UniqueConstraint("aggregate_candidate_id", "idempotency_key",
+                         name="uq_agent_multibatch_aggregate_replay_attempt_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    aggregate_candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_multibatch_aggregate_candidates.candidate_id"), index=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("agent_multibatch_plans.plan_id"), index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    execution_identity: Mapped[str] = mapped_column(String(96))
+    frozen_scope_hash: Mapped[str] = mapped_column(String(64))
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    aggregate_input_hash: Mapped[str] = mapped_column(String(64))
+    ordered_batch_result_hashes_json: Mapped[str] = mapped_column(Text)
+    identity_json: Mapped[str] = mapped_column(Text)
+    identity_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="STARTED")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentMultiBatchAggregateReplayResultCandidate(Base):
+    """Append-only protected replay result; explicitly not an AgentResultVersion."""
+
+    __tablename__ = "agent_multibatch_aggregate_replay_result_candidates"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", name="uq_agent_multibatch_aggregate_replay_result_attempt"),
+        UniqueConstraint("aggregate_candidate_id",
+                         name="uq_agent_multibatch_aggregate_replay_result_candidate"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    replay_result_id: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_multibatch_aggregate_replay_attempts.attempt_id"), index=True)
+    aggregate_candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_multibatch_aggregate_candidates.candidate_id"), index=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("agent_multibatch_plans.plan_id"), index=True)
+    raw_response_hash: Mapped[str] = mapped_column(String(64))
+    validation_profile: Mapped[str] = mapped_column(String(96))
+    validation_status: Mapped[str] = mapped_column(String(32))
+    validation_report_json: Mapped[str] = mapped_column(Text)
+    validation_report_hash: Mapped[str] = mapped_column(String(64))
+    replay_bundle_json: Mapped[str] = mapped_column(Text)
+    replay_bundle_hash: Mapped[str] = mapped_column(String(64))
+    binding_json: Mapped[str] = mapped_column(Text)
+    binding_hash: Mapped[str] = mapped_column(String(64))
+    prospective_result_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(48))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class AgentResultFeedback(Base):
     """Append-only internal Beta feedback bound to an immutable Agent result."""
 

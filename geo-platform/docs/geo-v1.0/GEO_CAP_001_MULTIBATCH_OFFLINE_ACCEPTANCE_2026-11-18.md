@@ -25,4 +25,3 @@ Production cutover remains blocked. It requires additive persistence,
 authorized replay/provider acceptance, isolated migration/recovery evidence,
 full regression, and separate Product Owner production approval. Current
 single-pack production behavior and historical results remain unchanged.
-

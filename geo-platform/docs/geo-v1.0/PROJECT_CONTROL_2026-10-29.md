@@ -290,4 +290,5 @@ Python/Node 版本和网络出口。使用专用运行目录和服务账号，�
 - [x] `RFC-EVIDENCE-PACK-MULTI-BATCH-MERGE-001` 已完成 Definition Freeze、独立 Supervisor 审核和 10/10 shadow 定向验收；未切生产。
 - [x] GEO-CAP-001 追加持久化、原子预算身份、有限重试、取消竞争、恢复重算与审计保留已完成 11/11 隔离验收；未接生产执行器。
 - [x] GEO-CAP-001 aggregate replay 候选已完成 24/24 定向验收（与持久化合并 35/35）：单次预留、幂等、重启、取消、UNKNOWN 阻断、完整持久字段与结果状态篡改、0 正式结果写入均通过；仅使用合成 fixture，未真实执行 Validation v6 或历史保护回放。
+- [x] 2026-11-18 研发组合 Gate 已将 C1 离线平台切片、D1-D3 容量切片及 Validate 请求隔离合入同一非发布分支；后端 103/103、客户端 61/61、release build 通过；C1 environment 身份覆盖和引用计数矛盾反例已 fail-closed，未启用外调、正式结果或 cutover。
 - [ ] GEO-CAP-001 真实 aggregate 模型执行、独立 Validation v6、费用结算和 production cutover 仍需独立授权。

@@ -1,4 +1,7 @@
-class WenxinCollectorError(Exception):
+from app.modules.monitoring.collectors.base import CollectorError
+
+
+class WenxinCollectorError(CollectorError):
     error_type = "unknown_error"
 
 

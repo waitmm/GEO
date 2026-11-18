@@ -10,10 +10,9 @@ from sqlalchemy.orm import Session
 from app.models import BrandMention, BrowserMonitorRun, ReferenceSource, RetrievalCandidate, Project, RunArtifact
 from app.modules.monitoring.analysis import analyze_brand
 from app.modules.monitoring.artifacts import ArtifactService
-from app.modules.monitoring.collectors.base import CollectorResult
+from app.modules.monitoring.collectors.base import CollectorError, CollectorResult
 from app.modules.monitoring.collectors.registry import get_collector
-from app.modules.monitoring.collectors.wenxin.exceptions import WenxinCollectorError
-from app.modules.monitoring.enums import NON_RETRYABLE_ERRORS
+from app.modules.monitoring.enums import NON_RETRYABLE_ERRORS, platform_display_name
 from app.services.serialization import dumps
 from app.services.url_identity import url_identity_fields
 
@@ -118,7 +117,7 @@ class MonitoringTaskExecutor:
                     self.artifacts.save_text(db, run.id, "collector_log", "collector.log", "\n".join(logs) + "\n")
                     db.commit()
                     completed += 1
-                except WenxinCollectorError as exc:
+                except CollectorError as exc:
                     self._fail_run(run, exc.error_type, str(exc))
                     logs.append(f"collector failed: {exc.error_type} {exc}")
                     run.finished_at = datetime.utcnow()
@@ -168,7 +167,7 @@ class MonitoringTaskExecutor:
             self.apply_result(db, run, project, result)
             logs.append(f"run {run.id} finished with status={run.status}")
             self.artifacts.save_json(db, run.id, "raw_result", "result.json", result.__dict__)
-        except WenxinCollectorError as exc:
+        except CollectorError as exc:
             self._fail_run(run, exc.error_type, str(exc))
             logs.append(f"collector failed: {exc.error_type} {exc}")
         except Exception as exc:
@@ -224,6 +223,21 @@ class MonitoringTaskExecutor:
         run.brand_mention_count = brand["mention_count"]
         run.brand_first_position = brand["first_char_position"]
         run.brand_recommendation_level = brand["recommendation_level"]
+        metric_keys = {
+            "ui_declared_count", "dom_reference_count",
+            "parsed_reference_count", "resolved_url_count",
+        }
+        has_reference_observation = metric_keys.issubset(result.metrics)
+        observation_status = str(result.reference_observation_status or "").strip().upper()
+        if not observation_status:
+            if has_reference_observation:
+                observed_counts = [int(result.metrics[key]) for key in metric_keys]
+                observation_status = "CONFIRMED_NONE" if not any(observed_counts) else "COMPLETE"
+            else:
+                observation_status = "UNKNOWN"
+        if observation_status not in {"COMPLETE", "CONFIRMED_NONE", "UNKNOWN", "PARSE_FAILED"}:
+            raise ValueError(f"Unsupported reference observation status: {observation_status}")
+
         ui_count = int(result.metrics.get("ui_declared_count", len(result.references)))
         dom_count = int(result.metrics.get("dom_reference_count", len(result.references)))
         parsed_count = int(result.metrics.get("parsed_reference_count", len(result.references)))
@@ -237,21 +251,30 @@ class MonitoringTaskExecutor:
         run.detected_reference_count = dom_count
         run.resolved_reference_count = resolved_count
         run.unresolved_reference_count = max(0, parsed_count - resolved_count)
-        run.reference_complete = ui_count == 0 or (
-            ui_count == dom_count == parsed_count
-            and resolved_count / max(1, parsed_count) >= 0.95
-        )
+        if observation_status == "CONFIRMED_NONE":
+            run.reference_complete = not result.references and max(ui_count, dom_count, parsed_count, resolved_count) == 0
+        elif observation_status == "COMPLETE":
+            run.reference_complete = ui_count > 0 and (
+                ui_count == dom_count == parsed_count
+                and resolved_count / max(1, parsed_count) >= 0.95
+            )
+        else:
+            run.reference_complete = False
         field_values = {
             **result.environment,
             "ui_declared_count": ui_count,
             "dom_reference_count": dom_count,
             "parsed_reference_count": parsed_count,
             "resolved_url_count": resolved_count,
+            "reference_observation_status": observation_status,
         }
         for field, value in field_values.items():
             if hasattr(run, field):
                 setattr(run, field, value)
-        self._save_references(db, run.id, result.references)
+        self._save_references(
+            db, run.id, result.references,
+            platform_name=platform_display_name(run.platform),
+        )
         self._save_candidates(db, run.id, result.retrieval_candidates)
         self._save_result_artifacts(db, run.id, result.artifacts)
         if not answer_text:
@@ -273,10 +296,20 @@ class MonitoringTaskExecutor:
             run.blocked_type = ""
         if hasattr(run, "blocked_reason"):
             run.blocked_reason = ""
-        if run.status != "failed":
+        if run.status == "success":
             run.error_stage = ""
             run.error_type = ""
             run.error_message = ""
+        elif run.status == "partial_success":
+            run.error_stage = "reference_observation"
+            run.error_type = {
+                "UNKNOWN": "reference_observation_unknown",
+                "PARSE_FAILED": "reference_parse_failed",
+            }.get(observation_status, "reference_incomplete")
+            run.error_message = {
+                "UNKNOWN": "引用观察状态未知，不能解释为已确认零引用",
+                "PARSE_FAILED": "引用区域解析失败，不能解释为已确认零引用",
+            }.get(observation_status, "引用观察或链接解析不完整")
         return run
 
     def _stage(self, db: Session, run: BrowserMonitorRun, stage: str, status: str) -> None:
@@ -315,7 +348,9 @@ class MonitoringTaskExecutor:
         db.query(RetrievalCandidate).filter(RetrievalCandidate.run_id == run_id).delete()
         db.query(RunArtifact).filter(RunArtifact.run_id == run_id).delete()
 
-    def _save_references(self, db: Session, run_id: int, references: list[dict]) -> None:
+    def _save_references(
+        self, db: Session, run_id: int, references: list[dict], *, platform_name: str,
+    ) -> None:
         for index, item in enumerate(references, start=1):
             raw_url = item.get("url") or ""
             identity = url_identity_fields(raw_url, item.get("canonical_url") or raw_url)
@@ -328,7 +363,7 @@ class MonitoringTaskExecutor:
                     url=raw_url,
                     **identity,
                     domain=item.get("domain") or "",
-                    platform_name="文心助手",
+                    platform_name=platform_name,
                     resolution_method=item.get("resolution_method") or "unresolved",
                     match_confidence=item.get("match_confidence") or 0,
                     evidence_path=item.get("evidence_path") or "",

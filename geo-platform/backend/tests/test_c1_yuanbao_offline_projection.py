@@ -103,6 +103,135 @@ def test_reference_observation_states_do_not_collapse_unknown_to_zero(
         assert run.reference_complete is False
 
 
+def test_collector_environment_cannot_override_run_identity_or_qualification(monkeypatch):
+    executor = object.__new__(MonitoringTaskExecutor)
+    monkeypatch.setattr(executor, "_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_clear_run_outputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_references", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_candidates", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_result_artifacts", lambda *args, **kwargs: None)
+
+    class DB:
+        def add(self, value):
+            pass
+
+    class Row:
+        id = 1
+        project_id = 1
+        prompt_id = 44
+        platform = "yuanbao"
+        adapter = "yuanbao_web_audit"
+        reference_complete = True
+        sampling_mode = "ORIGINAL"
+
+    class Project:
+        brand_name = "合成品牌"
+        brand_aliases_json = "[]"
+
+    result = CollectorResult(
+        answer_text="这是一段足够长的离线合成回答，用来验证采集环境不能覆盖服务端冻结身份或引用资格。",
+        references=[],
+        metrics={},
+        environment={
+            "project_id": 99,
+            "prompt_id": 999,
+            "platform": "wenxin",
+            "adapter": "wenxin_web_audit",
+            "reference_complete": True,
+            "status": "success",
+            "sampling_mode": "SYNTHETIC_OFFLINE_REPLAY",
+        },
+        reference_observation_status="UNKNOWN",
+    )
+    run = Row()
+    executor.apply_result(DB(), run, Project(), result)
+
+    assert (run.project_id, run.prompt_id) == (1, 44)
+    assert (run.platform, run.adapter) == ("yuanbao", "yuanbao_web_audit")
+    assert run.reference_complete is False
+    assert run.status == "partial_success"
+    assert run.error_type == "reference_observation_unknown"
+    assert run.sampling_mode == "SYNTHETIC_OFFLINE_REPLAY"
+
+
+def test_complete_counts_without_reference_records_fail_closed(monkeypatch):
+    executor = object.__new__(MonitoringTaskExecutor)
+    monkeypatch.setattr(executor, "_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_clear_run_outputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_references", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_candidates", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_result_artifacts", lambda *args, **kwargs: None)
+
+    class DB:
+        def add(self, value):
+            pass
+
+    class Row:
+        id = 1
+        platform = "yuanbao"
+
+    class Project:
+        brand_name = "合成品牌"
+        brand_aliases_json = "[]"
+
+    result = CollectorResult(
+        answer_text="这是一段足够长的离线合成回答，用来验证引用计数不能代替实际引用记录。",
+        references=[],
+        metrics={
+            "ui_declared_count": 1,
+            "dom_reference_count": 1,
+            "parsed_reference_count": 1,
+            "resolved_url_count": 1,
+        },
+        reference_observation_status="COMPLETE",
+    )
+    run = Row()
+    executor.apply_result(DB(), run, Project(), result)
+
+    assert run.reference_complete is False
+    assert run.status == "partial_success"
+    assert run.error_type == "reference_incomplete"
+
+
+def test_negative_counts_cannot_qualify_confirmed_none(monkeypatch):
+    executor = object.__new__(MonitoringTaskExecutor)
+    monkeypatch.setattr(executor, "_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_clear_run_outputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_references", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_candidates", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_save_result_artifacts", lambda *args, **kwargs: None)
+
+    class DB:
+        def add(self, value):
+            pass
+
+    class Row:
+        id = 1
+        platform = "yuanbao"
+
+    class Project:
+        brand_name = "合成品牌"
+        brand_aliases_json = "[]"
+
+    result = CollectorResult(
+        answer_text="这是一段足够长的离线合成回答，用来验证负数计数不能成为已确认零引用。",
+        references=[],
+        metrics={
+            "ui_declared_count": -1,
+            "dom_reference_count": 0,
+            "parsed_reference_count": 0,
+            "resolved_url_count": 0,
+        },
+        reference_observation_status="CONFIRMED_NONE",
+    )
+    run = Row()
+    executor.apply_result(DB(), run, Project(), result)
+
+    assert run.reference_complete is False
+    assert run.status == "partial_success"
+    assert run.error_type == "reference_incomplete"
+
+
 def test_yuanbao_offline_result_persists_freezes_and_enters_optimize_without_admission(
     tmp_path, monkeypatch,
 ):

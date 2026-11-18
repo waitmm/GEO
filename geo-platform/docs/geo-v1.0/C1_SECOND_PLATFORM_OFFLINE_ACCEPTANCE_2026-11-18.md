@@ -38,10 +38,11 @@ PYTHONPYCACHEPREFIX=/private/tmp/geo-c1-pycache PYTHONPATH=. \
   tests/test_c1_yuanbao_offline_projection.py --disable-warnings -rx
 ```
 
-完整两文件运行得到 **16 passed、1 test-assertion failed**（470.21 秒）：唯一失败发生在全部
+首次完整两文件运行得到 **16 passed、1 test-assertion failed**（470.21 秒）：唯一失败发生在全部
 Run→freeze→Optimize→Evidence Pack 行为完成后，测试把整数 `run_id` 错误地预期为字符串；该断言已修正。
 随后针对 UNKNOWN、平台归属及缺少服务端平台身份的 fail-closed 用例复跑为 **3 passed**（274.67 秒）。
-由于本机当时存在严重 I/O 竞争，按主控要求没有再次执行完整 migration 套件；发布集成 Gate 仍应复跑完整两文件。
+2026-11-18 主控在修正后重新执行上述完整两文件集成 Gate，结果为 **18 passed**、904 条既有
+依赖/ORM warning，耗时 478.11 秒；没有剩余 assertion 或 migration 失败。
 测试覆盖 C0 两个原 strict-xfail 的修复、四种引用观察状态、registry fail-closed，以及完整离线纵向投影。
 上述耗时不作为产品性能结论。
 

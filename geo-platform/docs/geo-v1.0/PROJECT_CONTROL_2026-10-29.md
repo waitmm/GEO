@@ -1,11 +1,11 @@
 # GEO M1 内部试用项目总控
 
 更新时间：2026-11-18（Asia/Shanghai）
-当前阶段：`M1_1_WINDOWS_DEPLOYMENT_PENDING / M1_2_BODY_TRUTH_GATE_OFFLINE_ACCEPTED / C1_OFFLINE_ACCEPTED / GEO_CAP_PERSISTENCE_OFFLINE_ACCEPTED`
+当前阶段：`M1_1_WINDOWS_DEPLOYMENT_PENDING / M1_2_BODY_TRUTH_GATE_OFFLINE_ACCEPTED / C1_OFFLINE_ACCEPTED / GEO_CAP_AGGREGATE_REPLAY_OFFLINE_ACCEPTED`
 M1.1 稳定线：`codex/m1-1-windows-dev`（当前归档 SHA `c5f2dbbc`，目标机验收前不得宣称已部署）
 M1.2 研发线：`codex/m1-2-multicontent`（以该分支最新已验收 HEAD 为准，不自动升级 M1.1）
 C 线：`codex/c1-second-platform-offline`（离线适配 SHA `cb2bbb7a`；未获授权，不启动真实平台采集）
-D 线：`codex/capacity-multibatch-persistence`（多批语义、shadow 与追加持久化离线验收；生产 cutover 未批准）
+D 线：`codex/capacity-multibatch-aggregate-offline`（多批语义、追加持久化及聚合 replay 候选离线验收；生产 cutover 未批准）
 Mac 归档安装：`/Users/bmwqr/Library/Application Support/GEO Beta`，最后版本
 `geo-m1.1-lan-3fcad83`；Backend、Worker、局域网代理和自动启用标记均已关闭。
 
@@ -65,6 +65,7 @@ Mac 历史运行曾保存 22 Run 真实 AI 优化结果，但服务、局域网�
 | 容量 | 大范围确定性分批规划 | DONE（SHADOW） | 22/50/100/300/1000 离线覆盖通过，不执行模型、不合并结果 |
 | 容量 | 多批结果语义与离线 shadow | OFFLINE_ACCEPTED | `SC-MULTI-BATCH-EVIDENCE-MERGE-001` 已冻结；完整 manifest 重算、UNKNOWN、locator、重试/取消/预算反例通过 |
 | 容量 | 多批追加持久化与恢复 | OFFLINE_ACCEPTED | Plan/Attempt/Result/aggregate candidate 追加保存、幂等、有限重试、取消并发、恢复重算和非空审计降级保护通过；仅 replay/shadow，不写正式结果 |
+| 容量 | 聚合 replay 执行候选 | OFFLINE_ACCEPTED | 仅消费已验证持久化 aggregate input；一次 replay attempt、CAS 取消、重启恢复、Validation v6 形状的合成 fixture 与 prospective hash 可审计；不宣称真实 v6 执行或历史保护回放，0 外调、0 正式结果 |
 | 容量 | 生产多批分析及结果合并 | BLOCKED（CUTOVER） | 仍需 aggregate 执行、授权真实模型验收与独立生产审批；不得写成已上线 |
 | 结果 | 独立 AgentResultVersion、历史版本 | DONE | 不覆盖正式 V2 ResultVersion/Truth/Review/Gate |
 | 结果 | 复制、Markdown 导出、刷新恢复 | DONE | 本机浏览器已验收 |
@@ -90,7 +91,7 @@ WAITING_DEPENDENCIES、1 OUT_OF_SCOPE），不再作为 M1 内部 Beta 的唯一
 | GEO-AUTH-001 | P0 | 共享密码和多人访问尚未在目标机器复验；本阶段不具备可信个人身份 | 仍只监听 localhost；公司试用限爱短链单项目和可信局域网 | 两个独立浏览器会话完成密码门禁、并发读写、刷新恢复和密码撤换；独立账号/跨项目隔离留待正式多人版 |
 | GEO-MODEL-001 | P0 | Mac 历史授权已停用，公司授权尚未建立 | 新安装强制关闭，防止继承历史权限 | 公司管理员配置独立额度并完成一次受控真实任务 |
 | GEO-QUAL-001 | P0 | 内容业务价值缺真实同事评分 | 工程与历史结果可操作 | 2～3 人处理 5～10 个 Prompt，记录采用/修改/行动价值 |
-| GEO-CAP-001 | P1 | 大范围 Evidence Pack 会因完整请求、唯一 URL 或正文增长超限 | Definition Freeze、shadow 与追加持久化离线 Gate 已通过；生产 v3 仍仅小范围单请求 | 实现隔离 aggregate 执行并完成授权验收后，单独批准 cutover |
+| GEO-CAP-001 | P1 | 大范围 Evidence Pack 会因完整请求、唯一 URL 或正文增长超限 | Definition Freeze、shadow、追加持久化及 aggregate replay 候选离线 Gate 已通过；生产 v3 仍仅小范围单请求 | 完成授权真实 aggregate 执行与独立 Validation/费用验收后，单独批准 cutover |
 | GEO-COL-001 | P2 | 自动文心采集未获许可且未做长期真实验收 | 计划暂停、重试 0、人工导入可用 | 获明确许可后先单条联调，再单独批准定时计划 |
 | GEO-VAL-001 | P1 | Validate 缺足够新增真实范围 | 不伪造趋势改善 | 有至少两个同口径真实冻结范围并由员工完成比较 |
 | GEO-DOC-001 | P1 | 旧 V2/实验/Beta 文档并存，容易误读状态 | 历史文档保留 | 以本总控为当前入口，发布候选时同步 RUNBOOK/USER_GUIDE |
@@ -242,7 +243,7 @@ Python/Node 版本和网络出口。使用专用运行目录和服务账号，�
 2. **B / M1.2 多内容研发**：完成 HELP_DOC + FAQ 离线纵向实现、真实质量验收及升级/回滚 Gate；未完成三项前不部署。
 3. **M1.1 爱短链员工试用**：完成 D4，冻结第一轮反馈，优先修品牌事实、渠道依据、正文采用价值和状态恢复。
 4. **C 第二平台离线适配**：离线纵向切片已完成；获得平台许可与真实采集授权后才进入真实 Gate。
-5. **D 容量多批**：Definition Freeze、shadow 与追加持久化/恢复已完成离线验收；继续隔离 aggregate 执行候选，production cutover 另行审批。
+5. **D 容量多批**：Definition Freeze、shadow、追加持久化/恢复及 aggregate replay 候选已完成离线验收；真实 aggregate 执行与 production cutover 另行审批。
 6. **M2 八木屋接入**：只通过项目/品牌/Prompt/数据配置接入同一软件。
 7. **M3 通用化**：根据两个项目真实反馈再决定自动化、成本、团队和商业能力。
 
@@ -287,4 +288,5 @@ Python/Node 版本和网络出口。使用专用运行目录和服务账号，�
 - [x] 当前 M1.2 候选已在 M1.1 只读数据副本上通过升级、备份、恢复和回滚演练；正式提升仍需真实质量与审批。
 - [x] `RFC-EVIDENCE-PACK-MULTI-BATCH-MERGE-001` 已完成 Definition Freeze、独立 Supervisor 审核和 10/10 shadow 定向验收；未切生产。
 - [x] GEO-CAP-001 追加持久化、原子预算身份、有限重试、取消竞争、恢复重算与审计保留已完成 11/11 隔离验收；未接生产执行器。
-- [ ] GEO-CAP-001 继续 aggregate 隔离执行候选；真实模型和 production cutover 仍需独立授权。
+- [x] GEO-CAP-001 aggregate replay 候选已完成 24/24 定向验收（与持久化合并 35/35）：单次预留、幂等、重启、取消、UNKNOWN 阻断、完整持久字段与结果状态篡改、0 正式结果写入均通过；仅使用合成 fixture，未真实执行 Validation v6 或历史保护回放。
+- [ ] GEO-CAP-001 真实 aggregate 模型执行、独立 Validation v6、费用结算和 production cutover 仍需独立授权。

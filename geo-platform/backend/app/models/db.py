@@ -484,6 +484,91 @@ class AgentResultVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AgentMultiBatchPlan(Base):
+    """Offline-only immutable multi-batch identity with mutable runtime status."""
+
+    __tablename__ = "agent_multibatch_plans"
+    __table_args__ = (
+        UniqueConstraint("agent_run_id", "idempotency_key", name="uq_agent_multibatch_plan_key"),
+        UniqueConstraint("agent_run_id", "plan_hash", name="uq_agent_multibatch_plan_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_experiment_runs.run_id"), index=True)
+    frozen_scope_hash: Mapped[str] = mapped_column(String(64), index=True)
+    plan_hash: Mapped[str] = mapped_column(String(64), index=True)
+    reservation_identity_hash: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    plan_json: Mapped[str] = mapped_column(Text)
+    reservation_json: Mapped[str] = mapped_column(Text)
+    max_attempts_per_batch: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(48), default="PLANNED", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    cancel_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AgentMultiBatchAttempt(Base):
+    __tablename__ = "agent_multibatch_attempts"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "batch_hash", "attempt_number",
+                         name="uq_agent_multibatch_attempt_number"),
+        UniqueConstraint("plan_id", "idempotency_key", name="uq_agent_multibatch_attempt_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("agent_multibatch_plans.plan_id"), index=True)
+    batch_hash: Mapped[str] = mapped_column(String(64), index=True)
+    batch_number: Mapped[int] = mapped_column(Integer)
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    failure_code: Mapped[str] = mapped_column(String(96), default="")
+    result_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentMultiBatchResult(Base):
+    __tablename__ = "agent_multibatch_results"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "batch_hash", name="uq_agent_multibatch_success"),
+        UniqueConstraint("plan_id", "result_hash", name="uq_agent_multibatch_result_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    result_id: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("agent_multibatch_plans.plan_id"), index=True)
+    attempt_id: Mapped[str] = mapped_column(ForeignKey("agent_multibatch_attempts.attempt_id"), unique=True)
+    batch_hash: Mapped[str] = mapped_column(String(64), index=True)
+    result_hash: Mapped[str] = mapped_column(String(64))
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentMultiBatchAggregateCandidate(Base):
+    __tablename__ = "agent_multibatch_aggregate_candidates"
+    __table_args__ = (
+        UniqueConstraint("plan_id", name="uq_agent_multibatch_aggregate_plan"),
+        UniqueConstraint("plan_id", "aggregate_input_hash",
+                         name="uq_agent_multibatch_aggregate_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("agent_multibatch_plans.plan_id"), index=True)
+    aggregate_input_hash: Mapped[str] = mapped_column(String(64))
+    ordered_batch_result_hashes_json: Mapped[str] = mapped_column(Text)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(48), default="SHADOW_CANDIDATE_ONLY")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class AgentResultFeedback(Base):
     """Append-only internal Beta feedback bound to an immutable Agent result."""
 

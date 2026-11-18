@@ -9,6 +9,7 @@ import { AnalysisRangePanel } from "./AnalysisRangePanel";
 import { SupplementalSources } from "./SupplementalSources";
 import { brandAssociationContent } from "./brandAssociationContext";
 import { formatBeijingDateTime } from "./time";
+import { ObservationRequestEpoch } from "./observationRequestEpoch";
 
 const names: Record<string, string> = { brand_mention_rate: "正文提及", brand_option_rate: "列为选项", brand_recommendation_rate: "明确推荐", target_brand_official_reference_rate: "官方来源引用", published_url_reference_rate: "目标 URL 引用" };
 const ratio = (m: any) => m?.value == null ? "不可计算" : `${m.hit_count}/${m.evaluable_count} (${(m.value * 100).toFixed(1)}%)`;
@@ -73,8 +74,18 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
   const [reload, setReload] = useState(0);
   const [form] = Form.useForm();
   const generation = useRef(0);
+  const observationRequestEpoch = useRef(new ObservationRequestEpoch());
+  const observationRequestActive = useRef(false);
   const base = `/api/v2/projects/${project.id}/prompts/${promptId}`;
+  function invalidateObservationRequest() {
+    observationRequestEpoch.current.invalidate();
+    if (observationRequestActive.current) {
+      observationRequestActive.current = false;
+      setBusy(false);
+    }
+  }
   function restoreComparison(saved: any) {
+    invalidateObservationRequest();
     setResult(saved);
     if (!saved) return;
     setLeft(saved.input.baseline.context_id); setRight(saved.input.comparison.context_id);
@@ -83,6 +94,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     setTarget(saved.input.target_url || "");
   }
   function clearComparisonSelection() {
+    invalidateObservationRequest();
     setResult(undefined);
     if (mode !== "compare") return;
     const params = new URLSearchParams(window.location.search);
@@ -90,6 +102,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     window.history.replaceState(null, "", params.toString() ? `?${params}` : window.location.pathname);
   }
   useEffect(() => {
+    invalidateObservationRequest();
     const epoch = ++generation.current;
     const controller = new AbortController();
     setResult(undefined); setPool(undefined); setOverview(undefined); setScopes([]); setHistory([]); setContexts([]);
@@ -116,7 +129,12 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
         }
       }
     }).catch(e => { if (!controller.signal.aborted) setError(e.message); }).finally(() => { if (!controller.signal.aborted) setBusy(false); });
-    return () => { if (generation.current === epoch) generation.current++; controller.abort(); };
+    return () => {
+      observationRequestEpoch.current.invalidate();
+      observationRequestActive.current = false;
+      if (generation.current === epoch) generation.current++;
+      controller.abort();
+    };
   }, [base, mode, reload, project.id, promptId]);
   const ref = (id: string | undefined, answer: string | undefined) => {
     const s = scopes.find(x => x.context_id === id);
@@ -124,7 +142,8 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
     return { context_id: s.context_id, raw_output_hash: s.raw_output_hash, ...(a ? { answer_result_version: a.result_version, answer_result_hash: a.output_hash } : {}) };
   };
   async function run() {
-    const epoch = generation.current;
+    const epoch = observationRequestEpoch.current.begin();
+    observationRequestActive.current = true;
     setBusy(true); setError("");
     try {
       let domain = "";
@@ -132,15 +151,20 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       const identity = { canonical_brand_name: project.brand_name, accepted_aliases: project.brand_aliases || [], official_domains: domain ? [domain] : [], official_urls: project.website_url ? [project.website_url] : [] };
       const payload = mode === "monitor" ? { scope: ref(left, leftAnswer), identity, target_url: target } : { baseline: ref(left, leftAnswer), comparison: ref(right, rightAnswer), identity, target_url: target };
       const next = await request<any>(`${base}/${mode === "monitor" ? "measurements" : "observation-comparisons"}`, { method: "POST", body: JSON.stringify(payload) });
-      if (generation.current !== epoch) return;
+      if (!observationRequestEpoch.current.isCurrent(epoch)) return;
       setResult(next);
       if (mode === "compare") {
         setHistory(current => [next, ...current.filter(x => x.result_version !== next.result_version)]);
         const params = new URLSearchParams(window.location.search); params.set("observation_result", next.result_version);
         window.history.replaceState(null, "", `?${params}`);
       }
-    } catch (e) { if (generation.current === epoch) setError((e as Error).message); }
-    finally { if (generation.current === epoch) setBusy(false); }
+    } catch (e) { if (observationRequestEpoch.current.isCurrent(epoch)) setError((e as Error).message); }
+    finally {
+      if (observationRequestEpoch.current.isCurrent(epoch)) {
+        observationRequestActive.current = false;
+        setBusy(false);
+      }
+    }
   }
   async function save(values: any) {
     const epoch = generation.current;
@@ -218,7 +242,7 @@ export function ObservationPanel({ project, promptId, mode }: { project: Project
       options={(scopes.find(s => s.context_id === value)?.answer_results || []).map((r: any) => ({ value: r.result_version, label: r.result_version }))} />
   </Space>;
   return <section className="observation-panel">
-    <Space style={{ marginBottom: 16 }}><Button aria-label="刷新当前页面" icon={<RefreshCw size={16} />} loading={busy} onClick={() => setReload(n => n + 1)} /></Space>
+    <Space style={{ marginBottom: 16 }}><Button aria-label="刷新当前页面" icon={<RefreshCw size={16} />} loading={busy} onClick={() => { invalidateObservationRequest(); setReload(n => n + 1); }} /></Space>
     {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
     {mode === "context" ? <>
       <SupplementalSources key={project.id} projectId={project.id} />
